@@ -89,8 +89,8 @@ pub async fn create_pin(
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO train_subscriptions \
             (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
-             pin_operator, pin_skipped_stations) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             pin_operator, pin_skipped_stations, pin_platform, pin_planned_platform) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          RETURNING id",
     )
     .bind(user_id)
@@ -100,6 +100,8 @@ pub async fn create_pin(
     .bind(&pin.destination_crs)
     .bind(&pin.operator)
     .bind(&pin.skipped_stations)
+    .bind(&pin.platform)
+    .bind(&pin.planned_platform)
     .fetch_one(pool)
     .await?;
 
@@ -854,6 +856,13 @@ pub struct PendingSchedulePin {
     /// the time the periodic sweep resolves it instead. `NOT NULL DEFAULT
     /// '{}'` on the column, so this is a bare `Vec`, never an `Option`.
     pub pin_skipped_stations: Vec<String>,
+    /// Same idea as `pin_skipped_stations` immediately above, for the
+    /// origin platform snapshot instead -- see
+    /// `common::TrackPinRequest.platform`/`planned_platform`'s own doc
+    /// comments. Nullable (unlike the array above): a single scalar has no
+    /// safe non-`NULL` "no signal" sentinel to invent.
+    pub pin_platform: Option<String>,
+    pub pin_planned_platform: Option<String>,
 }
 
 /// Every row the periodic schedule-match sweep should retry: still
@@ -924,7 +933,8 @@ pub async fn list_pending_pins_for_schedule_match(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
     let rows = sqlx::query_as::<_, PendingSchedulePin>(
-        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure, pin_skipped_stations \
+        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure, pin_skipped_stations, \
+                pin_platform, pin_planned_platform \
          FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending' \
          AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL",
     )
@@ -1064,6 +1074,15 @@ pub struct TrackedTrainState {
     /// `JourneyStop`'s own `skipSource`).
     #[serde(skip_serializing)]
     pub schedule_skipped_stations: Vec<String>,
+    /// The shared row's own captured origin-platform snapshot
+    /// (`trains.platform`/`planned_platform`) -- same internal-plumbing
+    /// posture as `schedule_skipped_stations` immediately above, fed to
+    /// `journey::build_journey_stops` and never sent to the frontend
+    /// directly (the origin `JourneyStop` carries it instead).
+    #[serde(skip_serializing)]
+    pub schedule_platform: Option<String>,
+    #[serde(skip_serializing)]
+    pub schedule_planned_platform: Option<String>,
     pub status: Option<String>,
     pub last_reported_location: Option<String>,
     pub last_event_type: Option<String>,
@@ -1172,6 +1191,7 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
            tr.calling_points AS schedule_calling_points, \
            COALESCE(tr.skipped_stations, '{}') AS schedule_skipped_stations, \
+           tr.platform AS schedule_platform, tr.planned_platform AS schedule_planned_platform, \
            tr.id AS trains_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
@@ -1377,6 +1397,8 @@ mod tests {
             destination_crs: None,
             operator: None,
             skipped_stations: vec![],
+            platform: None,
+            planned_platform: None,
         }
     }
 
@@ -3682,6 +3704,8 @@ mod db_tests {
             "line-a",
             &serde_json::json!([]),
             &[],
+            None,
+            None,
         )
         .await
         .expect("find_or_create_train_with_schedule_match");
@@ -4030,7 +4054,7 @@ mod db_tests {
                 list_pending_pins_for_schedule_match_excludes_a_pruned_nr_primary_row_with_null_pins \
                 -- --ignored --test-threads=1`"]
     async fn list_pending_pins_for_schedule_match_excludes_a_pruned_nr_primary_row_with_null_pins()
-     {
+    {
         let pool = connect().await;
         let user_id = "TEST-PRUNED-NR-PRIMARY-SWEEP";
         seed_user(&pool, user_id).await;
@@ -4079,15 +4103,16 @@ mod db_tests {
             row_status, "pending",
             "resolution_status is untouched by the FK cascade"
         );
-        assert_eq!(row_origin, None, "this subscription never had schedule data");
+        assert_eq!(
+            row_origin, None,
+            "this subscription never had schedule data"
+        );
         assert_eq!(row_departure, None);
 
-        let pending = list_pending_pins_for_schedule_match(&pool)
-            .await
-            .expect(
-                "must not error even though a pruned NR-primary row with NULL pin columns is \
+        let pending = list_pending_pins_for_schedule_match(&pool).await.expect(
+            "must not error even though a pruned NR-primary row with NULL pin columns is \
                  present in the table",
-            );
+        );
         assert!(
             !pending.iter().any(|row| row.id == tracking_id),
             "a row with NULL pin_origin_crs/pin_scheduled_departure must be excluded, not \

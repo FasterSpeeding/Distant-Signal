@@ -106,12 +106,25 @@ pub async fn find_or_create_train_with_schedule_match(
     // `attempt_schedule_match_for_shared_train`, which always passes `&[]`
     // here) silently erase a first subscriber's real Darwin snapshot.
     skipped_stations: &[String],
+    // Darwin/LDBWS's own origin-platform snapshot for THIS schedule match's
+    // caller (`common::TrackPinRequest.platform`/`planned_platform`,
+    // threaded via `schedule_matching::attempt_schedule_match`'s own
+    // `pin_platform`/`pin_planned_platform` params) -- feeds the origin
+    // `JourneyStop`'s `platform`/`plannedPlatform`/`platformChanged`
+    // (`journey::build_journey_stops`). Merged onto the shared row via a
+    // plain `COALESCE` (unlike `skipped_stations`' `CASE`): these are
+    // nullable scalars, so `COALESCE(existing, new)` already has the same
+    // "never clobber a real value already written" property the `CASE`
+    // exists to give the non-nullable array a NULL-free default for.
+    platform: Option<&str>,
+    planned_platform: Option<&str>,
 ) -> anyhow::Result<i64> {
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO trains \
             (train_uid, service_date, origin_crs, scheduled_departure, destination_crs, \
-             matched_line_id, calling_points, schedule_matched_at, skipped_stations) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8) \
+             matched_line_id, calling_points, schedule_matched_at, skipped_stations, \
+             platform, planned_platform) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10) \
          ON CONFLICT (train_uid, service_date) DO UPDATE SET \
             train_uid            = EXCLUDED.train_uid, \
             origin_crs           = COALESCE(trains.origin_crs, EXCLUDED.origin_crs), \
@@ -122,7 +135,9 @@ pub async fn find_or_create_train_with_schedule_match(
             schedule_matched_at  = COALESCE(trains.schedule_matched_at, EXCLUDED.schedule_matched_at), \
             skipped_stations     = CASE WHEN cardinality(trains.skipped_stations) > 0 \
                                         THEN trains.skipped_stations \
-                                        ELSE EXCLUDED.skipped_stations END \
+                                        ELSE EXCLUDED.skipped_stations END, \
+            platform              = COALESCE(trains.platform, EXCLUDED.platform), \
+            planned_platform      = COALESCE(trains.planned_platform, EXCLUDED.planned_platform) \
          RETURNING id",
     )
     .bind(train_uid)
@@ -133,6 +148,8 @@ pub async fn find_or_create_train_with_schedule_match(
     .bind(matched_line_id)
     .bind(calling_points)
     .bind(skipped_stations)
+    .bind(platform)
+    .bind(planned_platform)
     .fetch_one(pool)
     .await?;
     Ok(row.0)
@@ -328,6 +345,13 @@ pub struct PublicTrainState {
     /// wire.
     #[serde(skip_serializing)]
     pub skipped_stations: Vec<String>,
+    /// The shared row's own captured origin-platform snapshot
+    /// (`trains.platform`/`planned_platform`) -- same internal-plumbing
+    /// posture as `skipped_stations` immediately above.
+    #[serde(skip_serializing)]
+    pub platform: Option<String>,
+    #[serde(skip_serializing)]
+    pub planned_platform: Option<String>,
     /// See `train_tracking::TrackedTrainState::journey_stops`'s doc
     /// comment -- same contract, populated the same "read row, then
     /// overlay" way by `routes::train::get_by_uid_and_date`. This struct
@@ -398,7 +422,7 @@ pub async fn get_public_train_state(
     let row = sqlx::query_as::<_, PublicTrainState>(
         "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
                 tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
-                tr.calling_points, tr.train_id, tr.skipped_stations, \
+                tr.calling_points, tr.train_id, tr.skipped_stations, tr.platform, tr.planned_platform, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
@@ -443,7 +467,7 @@ pub async fn get_public_train_states_for_line(
     let rows = sqlx::query_as::<_, PublicTrainState>(
         "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
                 tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
-                tr.calling_points, tr.train_id, tr.skipped_stations, \
+                tr.calling_points, tr.train_id, tr.skipped_stations, tr.platform, tr.planned_platform, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
@@ -634,6 +658,8 @@ mod db_tests {
             "line-a",
             &calling_points,
             &[],
+            None,
+            None,
         )
         .await
         .expect("first find_or_create_train_with_schedule_match");
@@ -648,6 +674,8 @@ mod db_tests {
             "line-b",
             &calling_points,
             &[],
+            None,
+            None,
         )
         .await
         .expect("second find_or_create_train_with_schedule_match");
@@ -712,6 +740,8 @@ mod db_tests {
             "line-a",
             &calling_points,
             &[],
+            None,
+            None,
         )
         .await
         .expect("seed a trains row via schedule match");
@@ -777,6 +807,8 @@ mod db_tests {
             "line-a",
             &calling_points,
             &[],
+            None,
+            None,
         )
         .await
         .expect("seed resolved trains row");
@@ -851,7 +883,10 @@ mod db_tests {
         let known = is_known_scheduled_train(&pool, "NOSUCHUID", "2026-09-06".parse().unwrap())
             .await
             .expect("is_known_scheduled_train");
-        assert!(!known, "a uid never published by CIF must not read as known");
+        assert!(
+            !known,
+            "a uid never published by CIF must not read as known"
+        );
     }
 
     #[tokio::test]
@@ -871,10 +906,9 @@ mod db_tests {
         .await
         .expect("seed fixture schedule_destination_departures row");
 
-        let known =
-            is_known_scheduled_train(&pool, "TEST-SCHED-KNOWN-UID", service_date)
-                .await
-                .expect("is_known_scheduled_train");
+        let known = is_known_scheduled_train(&pool, "TEST-SCHED-KNOWN-UID", service_date)
+            .await
+            .expect("is_known_scheduled_train");
         assert!(
             known,
             "a uid CIF actually published for this service_date must read as known"

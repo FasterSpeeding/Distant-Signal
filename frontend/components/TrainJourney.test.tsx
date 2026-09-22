@@ -303,6 +303,9 @@ describe('TrainJourney', () => {
               delayMinutes: 0,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
             {
               crs: 'WOK',
@@ -320,6 +323,9 @@ describe('TrainJourney', () => {
               delayMinutes: 2,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}
@@ -358,6 +364,9 @@ describe('TrainJourney', () => {
               delayMinutes: null,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}
@@ -391,6 +400,9 @@ describe('TrainJourney', () => {
               delayMinutes: null,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}
@@ -428,6 +440,9 @@ describe('TrainJourney', () => {
               delayMinutes: null,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}
@@ -466,6 +481,9 @@ describe('TrainJourney', () => {
               delayMinutes: null,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}
@@ -529,6 +547,9 @@ describe('TrainJourney', () => {
               delayMinutes: null,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}
@@ -567,6 +588,9 @@ describe('TrainJourney', () => {
               delayMinutes: null,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}
@@ -600,6 +624,9 @@ describe('TrainJourney', () => {
               delayMinutes: 0,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
             {
               crs: 'SUR',
@@ -617,6 +644,9 @@ describe('TrainJourney', () => {
               delayMinutes: 2,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
             {
               crs: 'WOK',
@@ -634,6 +664,9 @@ describe('TrainJourney', () => {
               delayMinutes: null,
               stopStatus: 'Unknown',
               skipSource: null,
+              platform: null,
+              plannedPlatform: null,
+              platformChanged: false,
             },
           ],
         })}

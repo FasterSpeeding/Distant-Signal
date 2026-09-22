@@ -23,6 +23,9 @@ function stop(overrides: Partial<JourneyStop>): JourneyStop {
     delayMinutes: null,
     stopStatus: 'Unknown',
     skipSource: null,
+    platform: null,
+    plannedPlatform: null,
+    platformChanged: false,
     ...overrides,
   };
 }
@@ -600,6 +603,64 @@ describe('JourneyProgress', () => {
     expect(screen.getByText('London Waterloo')).toBeInTheDocument();
     expect(screen.getByText('Woking')).toBeInTheDocument();
     expect(screen.queryByText('Clapham Junction')).not.toBeInTheDocument();
+  });
+
+  it('shows an endpoint node\'s platform badge underneath its name when known', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin', platform: '6', plannedPlatform: '6' }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    expect(screen.getByText('Platform 6')).toBeInTheDocument();
+  });
+
+  it('names both the current and originally planned platform in text when an endpoint\'s platform changed', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({
+            crs: 'WAT',
+            name: 'London Waterloo',
+            kind: 'Origin',
+            platform: '9',
+            plannedPlatform: '6',
+            platformChanged: true,
+          }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    expect(screen.getByText('Platform 9 (changed from 6)')).toBeInTheDocument();
+  });
+
+  it('shows no platform badge for an endpoint node with no known platform', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin', platform: null }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    expect(screen.queryByText(/Platform/)).not.toBeInTheDocument();
   });
 
   it('reveals an intermediate node\'s name and scheduled time via Tooltip on hover', async () => {

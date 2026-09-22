@@ -514,6 +514,27 @@ export interface JourneyStop {
   delayMinutes: number | null;
   stopStatus: StopStatus;
   skipSource: SkipSource | null;
+  // Platform is `null` for every stop except (today) the ORIGIN -- Darwin/
+  // LDBWS's live departure board only ever reports a station's OWN
+  // platform for a service actually departing FROM it, never a
+  // per-calling-point platform for the rest of the route, so this codebase
+  // genuinely has no platform signal for any other calling point. See
+  // `crates/api/src/data/journey.rs`'s `apply_origin_platform` for the full
+  // reasoning. `null` here means exactly "not known", never a fabricated
+  // value.
+  platform: string | null;
+  // The EARLIEST platform observed for the origin call -- Darwin has no
+  // separate "planned platform" field of its own, so this is reconstructed
+  // by `poller-ldbws::platform_history::PlatformHistory` from repeated
+  // polls of the origin station's own board. `null` under the same
+  // conditions as `platform` above, or when no platform has been observed
+  // more than once yet.
+  plannedPlatform: string | null;
+  // `true` only when both `platform` and `plannedPlatform` are known AND
+  // differ -- the non-colour signal to pair with any colour change when
+  // showing a changed platform (WCAG 1.4.1). Always `false` when either is
+  // `null` -- there is nothing to have changed.
+  platformChanged: boolean;
 }
 
 /** `GET /Train/{trackingId}`'s response shape
@@ -698,6 +719,14 @@ export interface TrackPinRequest {
   // the CIF-picker or manual-entry path, which has no live board at all.
   // See `common::TrackPinRequest.skipped_stations`'s own doc comment.
   skipped_stations?: string[];
+  // Same idea as `skipped_stations` immediately above, for Darwin's
+  // platform signal instead (`DepartureRow.platform`/`plannedPlatform`) --
+  // carries the picked row's platform snapshot through so the journey
+  // page's origin stop can show it once a `trains` row exists. See
+  // `common::TrackPinRequest.platform`/`planned_platform`'s own doc
+  // comments.
+  platform?: string;
+  planned_platform?: string;
 }
 
 /** `POST /Train/track`'s response body -- camelCase, like every other

@@ -138,6 +138,15 @@ pub(crate) fn full_coverage_availability_json(
 /// (`poller-ldbws/src/schema.rs:104-105`), and `TrackPinRequest` has no
 /// field for it anyway.
 pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
+    // `true` only when BOTH a planned and a current platform are known AND
+    // they differ -- a platform seen for the first time (`planned_platform:
+    // None`, see `common::StationDeparture`'s own doc comment) is not a
+    // "change", it's simply the first fact we have. Computed here, at
+    // serialization time, rather than stored: it's a pure function of the
+    // two persisted fields, so storing a third redundant value risks it
+    // drifting out of sync with them.
+    let platform_changed =
+        d.platform.is_some() && d.planned_platform.is_some() && d.platform != d.planned_platform;
     json!({
         "serviceId": d.service_id,
         "operator": d.operator,
@@ -149,6 +158,9 @@ pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
         "cancelReason": d.cancel_reason,
         "delayReason": d.delay_reason,
         "skippedStations": d.skipped_stations,
+        "platform": d.platform,
+        "plannedPlatform": d.planned_platform,
+        "platformChanged": platform_changed,
     })
 }
 
@@ -672,6 +684,8 @@ mod tests {
             delay_reason: Some("signalling problem".to_string()),
             headcode: None,
             skipped_stations: vec!["ZQT".to_string()],
+            platform: Some("6".to_string()),
+            planned_platform: Some("6".to_string()),
         };
         let json = station_departure_json(&departure);
         assert_eq!(
@@ -687,6 +701,9 @@ mod tests {
                 "cancelReason": null,
                 "delayReason": "signalling problem",
                 "skippedStations": ["ZQT"],
+                "platform": "6",
+                "plannedPlatform": "6",
+                "platformChanged": false,
             })
         );
         // No stray snake_case field survives alongside the camelCase one.
@@ -696,6 +713,8 @@ mod tests {
         assert!(json.get("cancel_reason").is_none());
         assert!(json.get("delay_reason").is_none());
         assert!(json.get("skipped_stations").is_none());
+        assert!(json.get("planned_platform").is_none());
+        assert!(json.get("platform_changed").is_none());
         assert!(
             json.get("headcode").is_none(),
             "headcode is never carried through"
@@ -716,6 +735,8 @@ mod tests {
             delay_reason: None,
             headcode: None,
             skipped_stations: vec![],
+            platform: None,
+            planned_platform: None,
         };
         let json = station_departure_json(&departure);
         assert_eq!(json["cancelReason"], "fleet issue");
@@ -726,6 +747,69 @@ mod tests {
         assert!(json.get("delayReason").is_some(), "key must be present");
         assert!(json["delayReason"].is_null());
         assert_eq!(json["skippedStations"], serde_json::json!([]));
+        // No platform known at all: both values are a present `null`, and
+        // "changed" is `false` -- there is nothing to compare, so nothing
+        // is asserted to have changed, matching `JourneyStop.platformChanged`'s
+        // same posture for a stop with no platform signal (see journey.rs).
+        assert!(json["platform"].is_null());
+        assert!(json["plannedPlatform"].is_null());
+        assert_eq!(json["platformChanged"], false);
+    }
+
+    #[test]
+    fn station_departure_json_flags_a_changed_platform_with_both_colour_and_a_boolean_text_signal()
+    {
+        // Real-world case this whole feature exists for: the platform
+        // originally announced (`plannedPlatform`) differs from what's
+        // currently showing (`platform`) -- `platformChanged` is the
+        // explicit, non-colour signal the frontend pairs with a badge
+        // colour change (WCAG 1.4.1 -- colour is never the only signal).
+        let departure = common::StationDeparture {
+            service_id: "svc-3".to_string(),
+            operator: "GW".to_string(),
+            destination_crs: "RDG".to_string(),
+            scheduled: "10:00".to_string(),
+            estimated: "10:05".to_string(),
+            is_cancelled: false,
+            delay_minutes: 5,
+            cancel_reason: None,
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: vec![],
+            platform: Some("9".to_string()),
+            planned_platform: Some("6".to_string()),
+        };
+        let json = station_departure_json(&departure);
+        assert_eq!(json["platform"], "9");
+        assert_eq!(json["plannedPlatform"], "6");
+        assert_eq!(json["platformChanged"], true);
+    }
+
+    #[test]
+    fn station_departure_json_platform_known_only_currently_is_not_flagged_as_changed() {
+        // A freshly-first-seen platform (no history yet to compare against)
+        // must not read as "changed" -- `planned_platform` is `None` until
+        // a platform has actually been observed more than once (see
+        // `poller_ldbws::platform_history::PlatformHistory`).
+        let departure = common::StationDeparture {
+            service_id: "svc-4".to_string(),
+            operator: "GW".to_string(),
+            destination_crs: "RDG".to_string(),
+            scheduled: "10:00".to_string(),
+            estimated: "10:00".to_string(),
+            is_cancelled: false,
+            delay_minutes: 0,
+            cancel_reason: None,
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: vec![],
+            platform: Some("6".to_string()),
+            planned_platform: None,
+        };
+        let json = station_departure_json(&departure);
+        assert_eq!(json["platform"], "6");
+        assert!(json["plannedPlatform"].is_null());
+        assert_eq!(json["platformChanged"], false);
     }
 
     #[test]
@@ -937,6 +1021,8 @@ mod tests {
             eta_next: None,
             eta_source: None,
             skipped_stations: vec![],
+            platform: None,
+            planned_platform: None,
             journey_stops: None,
             may_have_arrived: false,
         };

@@ -2,11 +2,12 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Badge, Button, Group, Stack, Text } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+import { ScheduleRow } from './ScheduleRow';
 import { TextLink } from './TextLink';
 import { TrackDestinationModal } from './TrackDestinationModal';
 import { searchStations, searchTocs } from '@/lib/suggestions';
@@ -171,6 +172,12 @@ interface DepartureRow {
   cancelReason: string | null;
   delayReason: string | null;
   skippedStations: string[];
+  // See `JourneyStop.platform`/`plannedPlatform`/`platformChanged`'s own
+  // doc comments in `lib/types.ts` -- same fields, same meaning, this
+  // route's own copy of them (`station_departure_json`).
+  platform: string | null;
+  plannedPlatform: string | null;
+  platformChanged: boolean;
 }
 
 /** Wire shape of `GET /public/stations/{crs}/schedule-departures`
@@ -282,6 +289,14 @@ export function TrackTrainForm({
   // picked -- the CIF-picker/manual-entry paths have no such signal at
   // all.
   const [skippedStations, setSkippedStations] = useState<string[]>([]);
+  // Darwin's own platform snapshot for whichever live departure-board row
+  // the user picked (`pickDeparture`, below) -- carried through to the pin
+  // so the journey timeline's origin stop can eventually show it (see
+  // `common::TrackPinRequest.platform`/`planned_platform`'s own doc
+  // comments). `null` (never sent) until an LDBWS row is actually picked --
+  // same posture as `skippedStations` immediately above.
+  const [platform, setPlatform] = useState<string | null>(null);
+  const [plannedPlatform, setPlannedPlatform] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const needsLoginState = useNeedsLogin();
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -401,6 +416,8 @@ export function TrackTrainForm({
     const date = resolveLdbwsDepartureDate(row.scheduled, dayjs());
     setScheduledDeparture(`${date} ${hh}:${mm}:00`);
     setSkippedStations(row.skippedStations);
+    setPlatform(row.platform);
+    setPlannedPlatform(row.plannedPlatform);
   }
 
   /** CIF-derived sibling of `pickDeparture` -- fills only
@@ -429,8 +446,11 @@ export function TrackTrainForm({
     // The CIF SCHEDULE feed has no per-service skip signal at all (Decision
     // 2) -- clears any snapshot a previously-picked LDBWS row may have left
     // behind, so switching pickers can't carry a stale skip list onto a
-    // different service.
+    // different service. Same reasoning for platform: CIF has no live
+    // platform signal either.
     setSkippedStations([]);
+    setPlatform(null);
+    setPlannedPlatform(null);
     const [hh, mm] = row.scheduled.split(':');
     // `?? 0`: defends against an old `api` pod (a separate Helm Deployment,
     // rolled independently of `frontend`) omitting `dayOffset` from the JSON
@@ -472,6 +492,8 @@ export function TrackTrainForm({
         ...(destinationCrs.trim() ? { destination_crs: destinationCrs.trim().toUpperCase() } : {}),
         ...(operator.trim() ? { operator: operator.trim() } : {}),
         ...(skippedStations.length > 0 ? { skipped_stations: skippedStations } : {}),
+        ...(platform !== null ? { platform } : {}),
+        ...(plannedPlatform !== null ? { planned_platform: plannedPlatform } : {}),
       };
 
       const response = await fetch('/api/Train/track', {
@@ -681,51 +703,29 @@ export function TrackTrainForm({
         // `pickerContent`'s own doc comment for the full reasoning. This
         // branch's rows are `role="button"` pickers, so the clipping this
         // used to cause made them literally unselectable.
+        //
+        // Rows render via the shared `ScheduleRow` component (not
+        // hand-rolled here) -- see that component's own doc comment for
+        // the AA-contrast reasoning behind dimming only the row's TEXT,
+        // never its status badge, for a non-clickable (cancelled) row.
         <Stack gap="xs" data-departure-picker-rows>
-          {filtered.map((row) => {
-            const clickable = !row.isCancelled;
-            const badge = row.isCancelled ? (
-              <Badge color="red">Cancelled</Badge>
-            ) : row.delayMinutes > 0 ? (
-              <Badge color="orange">+{row.delayMinutes} min</Badge>
-            ) : (
-              <Badge color="green">On time</Badge>
-            );
-            return (
-              <Group
-                key={row.serviceId}
-                justify="space-between"
-                wrap="nowrap"
-                role={clickable ? 'button' : undefined}
-                tabIndex={clickable ? 0 : undefined}
-                onClick={clickable ? () => pickDeparture(row) : undefined}
-                onKeyDown={
-                  clickable
-                    ? (event) => {
-                        if (event.key === 'Enter' || event.key === ' ') pickDeparture(row);
-                      }
-                    : undefined
-                }
-                style={{ cursor: clickable ? 'pointer' : 'default' }}
-              >
-                {/* The `opacity: 0.6` that used to sit on this whole Group
-                    now sits on the text alone. Composited against the row's
-                    white background it took the `Cancelled` badge --
-                    `filled` red, whose black label `autoContrast` had
-                    already made AA-safe at full strength -- down to 2.73:1
-                    (axe measured #666666 on #fc9797), and that badge is the
-                    one thing on the row a reader most needs: it is the
-                    entire reason the row is not selectable. The de-emphasis
-                    itself is kept, just moved off the element carrying the
-                    status. Black at 0.6 over white is #666666, 5.74:1, so
-                    the text stays over AA where it is. */}
-                <Text size="sm" style={{ opacity: clickable ? 1 : 0.6 }}>
-                  {row.scheduled} · {row.destinationCrs} · {row.operator}
-                </Text>
-                {badge}
-              </Group>
-            );
-          })}
+          {filtered.map((row) => (
+            <ScheduleRow
+              key={row.serviceId}
+              row={{
+                key: row.serviceId,
+                scheduled: row.scheduled,
+                destinationCrs: row.destinationCrs,
+                operator: row.operator,
+                isCancelled: row.isCancelled,
+                delayMinutes: row.delayMinutes,
+                platform: row.platform,
+                plannedPlatform: row.plannedPlatform,
+                platformChanged: row.platformChanged,
+              }}
+              onSelect={() => pickDeparture(row)}
+            />
+          ))}
         </Stack>
       );
     }
