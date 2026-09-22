@@ -75,10 +75,11 @@ describe('app/error.tsx', () => {
     expect(screen.queryByText(/^Reference:/)).not.toBeInTheDocument();
   });
 
-  it('offers a route out, not just a retry that will re-throw', () => {
+  it('offers a route out, not just a retry that will re-throw, with copy that works for an anonymous visitor too (regression: 2026-09-22 UX review §5.1, "your dashboard" on a shared boundary an anonymous visitor also hits)', () => {
     renderWithMantine(<ErrorBoundary error={errorWithDigest('boom')} reset={() => {}} />);
-    const link = screen.getByRole('link', { name: 'Back to your dashboard' });
+    const link = screen.getByRole('link', { name: 'Back to the home page' });
     expect(link).toHaveAttribute('href', '/');
+    expect(screen.queryByText(/your dashboard/)).not.toBeInTheDocument();
   });
 
   it('still offers a Try again button that calls reset', () => {

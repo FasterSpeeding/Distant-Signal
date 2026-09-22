@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { Alert, Divider, Skeleton, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text, Title } from '@mantine/core';
+import { Alert, Divider, Paper, Skeleton, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text, Title } from '@mantine/core';
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
@@ -11,6 +11,7 @@ import {
   resolveRange,
   retentionShortfallDays,
   type HistorySpan,
+  type RangePreset,
 } from '@/lib/history';
 import { formatDate, formatTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import { severityLabel } from '@/lib/severity';
@@ -182,7 +183,13 @@ export default async function LineHistoryPage({
                 </Text>
               }
             >
-              <HistoryResults id={id} from={range.from} to={range.to} />
+              <HistoryResults
+                id={id}
+                from={range.from}
+                to={range.to}
+                preset={range.preset}
+                basePath={`/lines/${id}/history`}
+              />
             </Suspense>
           </Stack>
         </TabsPanel>
@@ -263,13 +270,70 @@ function timelineReasonText(span: HistorySpan): string {
   return span.reason;
 }
 
-export async function HistoryResults({ id, from, to }: { id: string; from: string; to: string }) {
-  const entries = await getLineStatusHistory(id, from, to);
+export async function HistoryResults({
+  id,
+  from,
+  to,
+  preset,
+  basePath,
+}: {
+  id: string;
+  from: string;
+  to: string;
+  /** The active preset, if any -- drives the empty state's "Try 30 days"
+   * way out below (suppressed once already viewing 30 days, since there's
+   * no wider preset to offer). `null` for a genuine custom range, same as
+   * `resolveRange`'s own `preset`. */
+  preset: RangePreset | null;
+  /** `/lines/{id}/history` -- same value `HistoryRangePicker` is already
+   * given, needed here only to build the "Try 30 days" link below. */
+  basePath: string;
+}) {
+  let entries: Awaited<ReturnType<typeof getLineStatusHistory>>;
+  try {
+    entries = await getLineStatusHistory(id, from, to);
+  } catch (err) {
+    // 2026-09-22 UX review §5.1: this Suspense boundary only catches
+    // *suspension*, not errors, so an unhandled rejection here propagated
+    // past it to the route's global error.tsx -- blanking the page title,
+    // "Back to line" link, Period control and BOTH tabs (Trends survives
+    // fine on its own; only this Timeline panel lacked the same
+    // catch-and-render-a-Paper guard `TrendsResults`/`LineTrainsResults`
+    // already use). Logged so a genuine backend regression here isn't
+    // silent, the same posture `resolveLineName` above takes for its own
+    // swallowed failure.
+    console.error(`Could not load line status history for "${id}" (${from} to ${to}).`, err);
+    return (
+      <Paper withBorder p="md">
+        <Text c="dimmed">Couldn&apos;t load this line&apos;s history right now.</Text>
+      </Paper>
+    );
+  }
   const days = groupHistoryByDay(entries);
   const spanCount = days.reduce((total, day) => total + day.spans.length, 0);
 
   if (days.length === 0) {
-    return <Text c="dimmed">No history entries in that range.</Text>;
+    // 2026-09-22 UX review §5.2: honest but previously terminal -- the
+    // control that would change the answer (the Period picker above) is
+    // 40px away with nothing pointing at it, and the copy didn't say
+    // whether a genuinely quiet line just has nothing to show or the
+    // range is simply too short to have caught anything. "Try 30 days" is
+    // withheld once 30 days is already the active preset -- there's no
+    // wider preset this page offers to suggest instead.
+    return (
+      <Stack gap="xs">
+        <Text c="dimmed">No history entries in that range.</Text>
+        {preset !== '30d' && (
+          <Text size="sm" c="dimmed">
+            Try{' '}
+            <TextLink href={`${basePath}?range=30d`} inline underline="always">
+              30 days
+            </TextLink>
+            , or see the Trends tab above for delay and cancellation rates.
+          </Text>
+        )}
+      </Stack>
+    );
   }
 
   return (

@@ -84,6 +84,16 @@ describe('toCoverageChartPoints', () => {
 });
 
 describe('CoverageTrendsResults', () => {
+  it('resolves to a real Paper instead of throwing when the fetch fails (regression: 2026-09-22 UX review §5.1 -- an unguarded throw here propagates past the route Suspense boundary to the global error boundary, blanking the whole history page)', async () => {
+    vi.mocked(api.getLineDailyCoverageStats).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    renderWithMantine(
+      await CoverageTrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
+    );
+    const text = screen.getByText("Full-coverage data isn't available right now.");
+    expect(text).toBeInTheDocument();
+    expect(text.closest('.mantine-Paper-root')).not.toBeNull();
+  });
+
   it('renders the empty state (distinct wording from the sample-series one) when there are no rows', async () => {
     vi.mocked(api.getLineDailyCoverageStats).mockResolvedValue([]);
     renderWithMantine(
