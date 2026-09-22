@@ -291,6 +291,21 @@ export interface LineSixHourlyStats {
   skipRate: number;
 }
 
+/** `GET /public/operators/{code}/stats/...` and `GET /public/network/stats/...`
+ * share the exact same per-bucket response shape the per-line routes
+ * already use -- `LineDailyStats` etc. carry no line-specific field, so
+ * these are plain aliases for readability at the new call sites, not new
+ * structural types. See
+ * docs/superpowers/plans/2026-09-22-operator-overview-phase4-historical-views-plan.md. */
+export type OperatorDailyStats = LineDailyStats;
+export type OperatorHalfHourlyStats = LineHalfHourlyStats;
+export type OperatorHourlyStats = LineHourlyStats;
+export type OperatorSixHourlyStats = LineSixHourlyStats;
+export type NetworkDailyStats = LineDailyStats;
+export type NetworkHalfHourlyStats = LineHalfHourlyStats;
+export type NetworkHourlyStats = LineHourlyStats;
+export type NetworkSixHourlyStats = LineSixHourlyStats;
+
 /** `GET /Line/{id}/Stats/Coverage/{from}/to/{to}`'s per-day response shape --
  * the full-coverage sibling of `LineDailyStats` (`resolvedWindows` in place
  * of `sampleCycles`). Rates shown cover every scheduled service on the

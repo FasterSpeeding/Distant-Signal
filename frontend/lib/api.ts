@@ -8,6 +8,14 @@ import type {
   LineSixHourlyStats,
   LineDailyCoverageStats,
   LineHalfHourlyCoverageStats,
+  OperatorDailyStats,
+  OperatorHalfHourlyStats,
+  OperatorHourlyStats,
+  OperatorSixHourlyStats,
+  NetworkDailyStats,
+  NetworkHalfHourlyStats,
+  NetworkHourlyStats,
+  NetworkSixHourlyStats,
   Preferences,
   LineSummary,
   CustomLineDetail,
@@ -279,6 +287,95 @@ export async function getLineHalfHourlyCoverageStats(
   return fetchJson<LineHalfHourlyCoverageStats[]>(
     `${baseUrl()}/Line/${id}/Stats/Coverage/HalfHourly/${from}/to/${to}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
+  );
+}
+
+/** `GET /public/operators/{code}/stats/{from}/to/{to}` -- the operator-scoped
+ * daily Trends rollup (Phase 4). Public, unauthenticated -- no
+ * `cookieForwardInit()`, matching `getHistoryRetention`/`getDataFreshness`'s
+ * own precedent for a genuinely public endpoint, unlike the per-line
+ * `getLineDailyStats` family (which forwards cookies because a `custom-`
+ * id might be in play; this route's line-id set never includes one). */
+export async function getOperatorDailyStats(
+  code: string,
+  from: string,
+  to: string,
+): Promise<OperatorDailyStats[]> {
+  return fetchJson<OperatorDailyStats[]>(
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** Half-hourly sibling of `getOperatorDailyStats` -- `from`/`to` are RFC3339
+ * instants, same reasoning as `getLineHalfHourlyStats`. */
+export async function getOperatorHalfHourlyStats(
+  code: string,
+  from: string,
+  to: string,
+): Promise<OperatorHalfHourlyStats[]> {
+  return fetchJson<OperatorHalfHourlyStats[]>(
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/half-hourly/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** 1-hour sub-daily sibling, mirrors `getLineHourlyStats`. */
+export async function getOperatorHourlyStats(
+  code: string,
+  from: string,
+  to: string,
+): Promise<OperatorHourlyStats[]> {
+  return fetchJson<OperatorHourlyStats[]>(
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/hourly/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** 6-hour sub-daily sibling, mirrors `getLineSixHourlyStats`. */
+export async function getOperatorSixHourlyStats(
+  code: string,
+  from: string,
+  to: string,
+): Promise<OperatorSixHourlyStats[]> {
+  return fetchJson<OperatorSixHourlyStats[]>(
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/six-hourly/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** `GET /public/network/stats/{from}/to/{to}` -- the whole-network
+ * (catalogue National Rail lines only -- see this plan's Judgment Call 5
+ * for why TfL lines never contribute) daily Trends rollup. */
+export async function getNetworkDailyStats(from: string, to: string): Promise<NetworkDailyStats[]> {
+  return fetchJson<NetworkDailyStats[]>(`${baseUrl()}/public/network/stats/${from}/to/${to}`, {
+    cache: 'no-store',
+  });
+}
+
+export async function getNetworkHalfHourlyStats(
+  from: string,
+  to: string,
+): Promise<NetworkHalfHourlyStats[]> {
+  return fetchJson<NetworkHalfHourlyStats[]>(
+    `${baseUrl()}/public/network/stats/half-hourly/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+export async function getNetworkHourlyStats(from: string, to: string): Promise<NetworkHourlyStats[]> {
+  return fetchJson<NetworkHourlyStats[]>(`${baseUrl()}/public/network/stats/hourly/${from}/to/${to}`, {
+    cache: 'no-store',
+  });
+}
+
+export async function getNetworkSixHourlyStats(
+  from: string,
+  to: string,
+): Promise<NetworkSixHourlyStats[]> {
+  return fetchJson<NetworkSixHourlyStats[]>(
+    `${baseUrl()}/public/network/stats/six-hourly/${from}/to/${to}`,
+    { cache: 'no-store' },
   );
 }
 
