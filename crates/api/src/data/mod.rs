@@ -10,6 +10,7 @@ pub mod journey;
 pub mod legacy_backfill;
 pub mod notifications;
 pub mod notifier_forward_queue;
+pub mod operators;
 pub mod preferences;
 pub mod queries;
 pub mod reconciliation;
