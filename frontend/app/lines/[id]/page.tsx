@@ -22,6 +22,7 @@ import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityLabel } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
+import { londonDayKey } from '@/lib/dateFormat';
 import type {
   CustomLineDetail,
   LineDefinitionSummary,
@@ -31,6 +32,7 @@ import type {
 } from '@/lib/types';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
+import { LineTrainsResults } from './LineTrainsResults';
 
 /** `Suspense` fallback for both "Recent trends" boundaries below (review
  * §2.11). Sized to the *empty* state both `HalfHourlyTrendsResults` and
@@ -45,6 +47,19 @@ function TrendsLoadingFallback() {
   return (
     <Paper withBorder p="md" role="status" aria-busy="true">
       <Text c="dimmed">Loading trends…</Text>
+    </Paper>
+  );
+}
+
+/** `Suspense` fallback for the "Trains running today" boundary below, same
+ * shape as `TrendsLoadingFallback` above (own copy rather than a shared one
+ * -- the two boundaries' fallback copy is allowed to diverge independently,
+ * and a shared helper would tempt someone to parameterise the wording
+ * instead of just writing a second four-line function). */
+function TrainsLoadingFallback() {
+  return (
+    <Paper withBorder p="md" role="status" aria-busy="true">
+      <Text c="dimmed">Loading today&apos;s trains…</Text>
     </Paper>
   );
 }
@@ -252,6 +267,18 @@ export default async function LineDetailPage({
 }) {
   const { id } = await params;
 
+  // No CIF-derived schedule population is ever published for a TfL line
+  // (`schedule-reference`'s own `lines_to_publish` only ever iterates the
+  // catalogue TOML, `app.config.lines` -- TfL lines come from
+  // `queries::tfl_line_summaries` instead, never fed into that writer at
+  // all). A guaranteed 404 from `getLineTrains` is harmless (LineTrainsResults
+  // renders its own honest "not available" state for it) but pointless --
+  // skip the fetch and the panel entirely for this id shape. Same literal
+  // `'tfl-'` prefix convention `lib/modes.ts` already uses for its own
+  // TfL-adjacent line list; there is no shared Rust->TypeScript constant to
+  // import `common::TFL_LINE_ID_PREFIX` from.
+  const isTflLine = id.startsWith('tfl-');
+
   // A 404 here no longer 404s the page by itself -- see
   // `fetchLineStatusResult`'s comment. `withStaleFallback` still rethrows
   // `ApiNotFoundError` unconditionally (a deleted line is a real
@@ -319,6 +346,12 @@ export default async function LineDetailPage({
     isCustom = false;
   }
 
+  // A custom line has exactly the same "no schedule population, ever"
+  // property as a TfL line, per the same get_line_schedule doc-comment
+  // finding above ("an unknown, custom, or not-yet-published catalogue id
+  // alike simply 404s") -- skip the panel for both, for the same reason.
+  const showTrainsPanel = !isCustom && !isTflLine;
+
   // A tooltip showing stations/operators is a nice-to-have, not core page
   // functionality — if this fails for any reason, just don't show it
   // rather than breaking the whole page over it. Works for both catalogue
@@ -365,6 +398,13 @@ export default async function LineDetailPage({
   // "View history" below remains the way to reach the full range picker
   // and the daily Trends tab.
   const trendsRange = resolveHalfHourlyRange(now);
+
+  // The same rail day used both to fetch LineTrainsResults' data and to
+  // build every one of its rows' `/train/{uid}/{date}` links -- computed
+  // once so the two can never disagree (see LineTrainsResults' own doc
+  // comment). London-day, not a bare UTC day: this app's stated
+  // network-time convention (lib/dateFormat.ts's own module doc).
+  const trainsDate = londonDayKey(new Date(now));
 
   return (
     <Stack p="lg" gap="md">
@@ -487,6 +527,23 @@ export default async function LineDetailPage({
               side has real sampleStats and merging would blur that. */}
           <Text fw={500}>TfL also reports:</Text>
           <IssueList items={statusResult.report.tflStatus.map((status) => ({ status }))} now={now} />
+        </Stack>
+      )}
+      {/* Skipped entirely (no heading, no fetch) for a TfL line or a custom
+          line -- both guarantee a 404 from `getLineTrains` (see
+          `isTflLine`/`showTrainsPanel` above), so there is nothing honest
+          this panel could show for either. Its own Suspense boundary, same
+          rationale as the trend charts' below: `getLineTrains` is a
+          separate, comparatively slow fetch that must not block the rest
+          of the page behind it. */}
+      {showTrainsPanel && (
+        <Stack gap="xs">
+          <Title order={2} size="h4">
+            Trains running today
+          </Title>
+          <Suspense fallback={<TrainsLoadingFallback />}>
+            <LineTrainsResults id={id} date={trainsDate} />
+          </Suspense>
         </Stack>
       )}
       <Stack gap="xs">

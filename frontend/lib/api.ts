@@ -18,6 +18,7 @@ import type {
   SessionInfo,
   TrackedTrainState,
   PublicTrainState,
+  LineTrainEntry,
   TrackedTrainListItem,
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
@@ -407,6 +408,30 @@ export async function getCustomLine(id: string): Promise<CustomLineDetail> {
 export async function getLineDefinition(id: string): Promise<LineDefinitionSummary> {
   const url = `${baseUrl()}/public/lines/${id}/definition`;
   return fetchJson<LineDefinitionSummary>(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+}
+
+/** `GET /public/lines/{id}/trains?date=` -- every scheduled UID on line
+ * `id` for one rail day, each paired with its live status where one
+ * already exists (`crates/api/src/routes/lines.rs`'s `get_line_trains`).
+ * `date` is `"YYYY-MM-DD"`; when omitted the backend defaults to its own
+ * UTC "today" (`resolve_schedule_date`) -- callers that build a link from
+ * this response (e.g. `/train/{uid}/{date}`) should always pass `date`
+ * explicitly instead, so the fetched day and the link's day can never
+ * disagree (see `LineTrainsResults`'s own use of `londonDayKey`, this
+ * app's stated London-calendar-day convention, `lib/dateFormat.ts`).
+ * 404s (`ApiNotFoundError`) when there is no CIF-derived schedule
+ * population for this `(id, date)` -- an unpublished catalogue line, a
+ * custom line, a TfL line (neither ever has one at all -- see
+ * `get_line_schedule`'s own doc comment), or a rail day not yet published,
+ * all indistinguishable from here, same as `getLineDefinition`'s sibling
+ * route just above. */
+export async function getLineTrains(id: string, date?: string): Promise<LineTrainEntry[]> {
+  const query = date ? `?date=${encodeURIComponent(date)}` : '';
+  const url = `${baseUrl()}/public/lines/${id}/trains${query}`;
+  return fetchJson<LineTrainEntry[]>(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });

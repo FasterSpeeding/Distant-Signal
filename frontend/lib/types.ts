@@ -1084,3 +1084,71 @@ export interface GroupJoinPreview {
   groupName: string;
   memberCount: number;
 }
+
+export type LineTrainCallingPointKind = 'Origin' | 'Intermediate' | 'Terminate';
+
+/** One calling point inside a `GET /public/lines/{id}/trains?date=` entry's
+ * `callingPoints` array (`crates/api/src/routes/lines.rs`'s `get_line_trains`,
+ * rendered by `crates/api/src/render.rs`'s `line_train_json`). NOT the same
+ * shape as `ScheduleCallingPoint` above (that one is fully camelCase,
+ * backed by a different Rust type, `schedule_matching::ScheduleCallingPointDto`).
+ * `line_train_json` passes the population entry's `calling_points` array
+ * through UNPROCESSED -- only the outer `callingPoints` envelope key is
+ * camelCase; see `render.rs`'s own
+ * `line_train_json_with_no_live_row_passes_the_population_entry_through_and_nulls_live_status`
+ * test, which asserts `json["callingPoints"] == entry["calling_points"]`
+ * verbatim. Field names below are therefore this crate's usual accidental
+ * exception, not a typo: the real `schedule_query::CallingPoint` snake_case
+ * names, the same documented wart `get_line_schedule`'s own doc comment
+ * accepts for this identical underlying data. */
+export interface LineTrainCallingPoint {
+  tiploc: string;
+  kind: LineTrainCallingPointKind;
+  booked_arrival: string | null; // "HH:MM:SS", CIF/UK-local, no date component
+  booked_departure: string | null;
+  is_half_minute_arrival: boolean;
+  is_half_minute_departure: boolean;
+  day_offset: number;
+}
+
+/** The `liveStatus` field of a `GET /public/lines/{id}/trains?date=` entry
+ * -- `null` whenever no live `trains`/`train_current_state` row exists yet
+ * for this UID on this date (an expected, honest gap: this route never
+ * triggers a `find_or_create_train` upsert the way
+ * `GET /Train/by-uid/{uid}/{date}` does -- see `get_line_trains`'s own doc
+ * comment). Deliberately its own type, not a reuse of `PublicTrainState`:
+ * `line_train_json` (`render.rs:295-310`) includes only these 14 fields
+ * inside `liveStatus`, explicitly omitting `journeyStops`/`callingPoints`/
+ * `trainUid`/`serviceDate`/`mayHaveArrived` -- confirmed by that file's
+ * `line_train_json_with_a_live_row_attaches_live_status_in_camel_case`
+ * test, which asserts all five omitted fields are absent. */
+export interface LineTrainLiveStatus {
+  trainsId: number;
+  trainId: string | null;
+  originCrs: string | null;
+  originName: string | null;
+  destinationCrs: string | null;
+  destinationName: string | null;
+  scheduledDeparture: string | null; // RFC3339
+  status: JourneyStatus | null;
+  lastReportedLocation: string | null;
+  lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
+  delayMinutes: number | null;
+  nextCallingPoint: string | null;
+  etaNext: string | null; // RFC3339
+  etaSource: EtaSource | null;
+}
+
+/** One `GET /public/lines/{id}/trains?date=` response entry
+ * (`crates/api/src/routes/lines.rs`'s `get_line_trains`) -- every scheduled
+ * UID on one line for one rail day, paired with live status where one
+ * already exists. See that route's own doc comment and
+ * docs/superpowers/specs/2026-09-09-mcp-schedule-data-follow-up-design.md
+ * §5.3. The full response is `LineTrainEntry[]`, not wrapped in an
+ * envelope -- unlike `GET /public/trains/search`, this route has no cursor
+ * of its own; it always returns the whole day's population in one call. */
+export interface LineTrainEntry {
+  uid: string;
+  callingPoints: LineTrainCallingPoint[] | null;
+  liveStatus: LineTrainLiveStatus | null;
+}
