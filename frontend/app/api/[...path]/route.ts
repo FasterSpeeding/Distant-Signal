@@ -31,29 +31,48 @@ import { NextRequest, NextResponse } from 'next/server';
 // Decision 4) -- that route is mounted directly on the backend's root
 // router (`crates/api/src/main.rs`'s `.merge(routes::train::router())`),
 // not nested under `/public`, the same way `/StopPoint/...`/`/Line/...`
-// aren't. Each prefix maps to how the *backend* path is actually built:
-// everything else still gets `/public/` prepended (unchanged from
-// before this list existed); a `Train/...` request is passed straight
+// aren't. `/Journeys/...` was added the same way for journey tracking
+// (`POST /Journeys`, `GET /Journeys/mine`, `GET /Journeys/{id}`,
+// `GET /Journeys/{id}/legs/{id}/candidates`,
+// `POST /Journeys/{id}/legs/{id}/train`,
+// docs/superpowers/plans/2026-09-22-journey-tracking-phase1-single-leg-migration-plan.md)
+// -- `routes::journeys::router()` is likewise `.merge`d onto the backend's
+// root router in `crates/api/src/main.rs`, not nested under `/public`.
+// Each prefix maps to how the *backend* path is actually built: everything
+// else still gets `/public/` prepended (unchanged from before this list
+// existed); a `Train/...` or `Journeys/...` request is passed straight
 // through with no prefix inserted, since the backend already expects it
 // bare.
+const ROOT_MOUNTED_PREFIXES = new Set(['Train', 'Journeys']);
+
 function resolveTargetPath(path: string[]): string {
-  return path[0] === 'Train' ? `/${path.join('/')}` : `/public/${path.join('/')}`;
+  return ROOT_MOUNTED_PREFIXES.has(path[0]) ? `/${path.join('/')}` : `/public/${path.join('/')}`;
 }
 
 async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   // Build the target as a `URL` and check the *resolved* pathname still
-  // lives under one of the two allowed prefixes, rather than trying to
-  // reject specific traversal patterns in the raw segments. Next.js
-  // decodes catch-all segments before populating `path`, so a raw join
-  // could otherwise let `..` (however it got there — literal, `%2e%2e`,
-  // an embedded `%2F`, etc.) escape the intended scope and reach other
-  // routes on the backend host. Checking the URL parser's actual
-  // normalized output is strictly stronger than enumerating every
-  // encoding trick that could produce a traversal — same check as
-  // before this prefix list existed, just checked against either
-  // allowed prefix instead of one.
+  // lives under one of the three allowed prefixes (`/public/`, `/Train/`,
+  // `/Journeys`), rather than trying to reject specific traversal patterns
+  // in the raw segments. Next.js decodes catch-all segments before
+  // populating `path`, so a raw join could otherwise let `..` (however it
+  // got there — literal, `%2e%2e`, an embedded `%2F`, etc.) escape the
+  // intended scope and reach other routes on the backend host. Checking
+  // the URL parser's actual normalized output is strictly stronger than
+  // enumerating every encoding trick that could produce a traversal —
+  // same check as before this prefix list existed, just checked against
+  // whichever allowed prefix applies instead of one.
   const target = new URL(`${process.env.API_BASE_URL}${resolveTargetPath(path)}${req.nextUrl.search}`);
-  if (!target.pathname.startsWith('/public/') && !target.pathname.startsWith('/Train/')) {
+  // `POST /api/Journeys` resolves to the bare `/Journeys` path (no
+  // trailing segment at all, unlike every `/Train/...` call this proxy
+  // has ever forwarded), so this can't just check a `/Journeys/` prefix
+  // the way `/public/` and `/Train/` are checked below -- it has to accept
+  // `/Journeys` exactly too.
+  const isAllowed =
+    target.pathname.startsWith('/public/') ||
+    target.pathname.startsWith('/Train/') ||
+    target.pathname === '/Journeys' ||
+    target.pathname.startsWith('/Journeys/');
+  if (!isAllowed) {
     return new NextResponse('invalid path', { status: 400 });
   }
 

@@ -790,7 +790,7 @@ async fn post_track_by_uid(
 /// in `crates/trust-consumer/src/process.rs`, and by
 /// `an_nr_primary_subscription_receives_live_movement_events` in
 /// `train_tracking`'s own `db_tests`.
-async fn enrich_shared_train(
+pub(crate) async fn enrich_shared_train(
     app: &App,
     tracking_id: i64,
     trains_id: i64,
@@ -880,7 +880,7 @@ async fn enrich_shared_train(
 /// (no row yet, a transient DB error) just leaves `state` as TRUST's own
 /// propagation already had it -- this is a nice-to-have enhancement, not
 /// something either read route should fail over.
-async fn blend_darwin_eta(
+pub(crate) async fn blend_darwin_eta(
     app: &App,
     mut state: train_tracking::TrackedTrainState,
 ) -> train_tracking::TrackedTrainState {
@@ -928,7 +928,7 @@ async fn blend_darwin_eta(
 /// building the overlay degrades to `journey_stops: None` rather than
 /// failing the whole request -- the same best-effort posture
 /// `blend_darwin_eta` already has for its own overlay.
-async fn attach_journey_stops(
+pub(crate) async fn attach_journey_stops(
     app: &App,
     mut state: train_tracking::TrackedTrainState,
 ) -> train_tracking::TrackedTrainState {

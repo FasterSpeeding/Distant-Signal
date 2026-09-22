@@ -7,6 +7,7 @@ pub mod groups;
 pub mod incident_line_backfill;
 pub mod island_of_ireland;
 pub mod journey;
+pub mod journeys;
 pub mod legacy_backfill;
 pub mod notifications;
 pub mod notifier_forward_queue;

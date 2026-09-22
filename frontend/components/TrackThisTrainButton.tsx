@@ -8,16 +8,21 @@ import { LoginPromptModal } from './LoginPromptModal';
 import { TrackDestinationModal } from './TrackDestinationModal';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
+import type { CreateJourneyResponse } from '@/lib/types';
 
 /** The "Track this train" action for a train whose real CIF identity is
- * already known -- a `(train_uid, service_date)` pair. Calls
- * `POST /Train/by-uid/{uid}/{date}/track`
- * (`crates/api/src/routes/train.rs`'s `post_track_by_uid`, the NR-primary
- * tracking entry point), which takes NO request body at all: identity is
- * entirely in the path, so there is no form to fill in and nothing to
- * validate client-side. That is the whole difference from
+ * already known -- a `(train_uid, service_date)` pair. Calls `POST
+ * /Journeys` (`crates/api/src/routes/journeys.rs`) with a single
+ * `knownTrain`-mode leg (`{ mode: 'knownTrain', trainUid, serviceDate }`):
+ * identity is already fully known, so there is no form to fill in and
+ * nothing to validate client-side. That is the whole difference from
  * `TrackTrainForm`'s legacy `POST /Train/track` flow, which has to guess an
- * identity from a CRS + time pin.
+ * identity from a CRS + time pin. Journey tracking Phase 1 -- see
+ * .superpowers/sdd/2026-09-22-journey-tracking-phase1-single-leg-migration-plan
+ * -- moved this off the former single-purpose
+ * `POST /Train/by-uid/{uid}/{date}/track` route onto the new journeys
+ * entry point; the response now carries a `journeyId` alongside the
+ * underlying `trackingId`.
  *
  * Two call sites, deliberately different:
  * * `/trains` result rows pass `attachTicketId`, giving the listing page's
@@ -59,7 +64,7 @@ import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
  * more groups instead routes the click through `TrackDestinationModal`
  * (see its own doc comment for why it's safe to reuse this same `track()`
  * function unmodified for the confirm step); either way, `track()` itself
- * is the single place that actually calls `POST .../track`, so the
+ * is the single place that actually calls `POST /Journeys`, so the
  * zero-groups code path an existing test locks down is untouched. Once
  * tracking succeeds, sharing into the chosen group
  * (`shareTrackedTrainToGroup`) is a second best-effort follow-up, same
@@ -88,16 +93,21 @@ export function TrackThisTrainButton({
     needsLoginState.reset();
     setError(null);
     try {
-      const response = await fetch(
-        `/api/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}/track`,
-        { method: 'POST' },
-      );
+      const response = await fetch('/api/Journeys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leg: { mode: 'knownTrain', trainUid: uid, serviceDate: date },
+        }),
+      });
 
       if (response.ok) {
-        const result: { trackingId: number } = await response.json();
+        const result: CreateJourneyResponse = await response.json();
         if (attachTicketId !== undefined) {
-          // Best-effort, exactly as TrackTrainForm does it -- see this
-          // component's own doc comment.
+          // Best-effort, exactly as before -- tracking has already
+          // succeeded above. Still keyed on `trackingId`, not the new
+          // `journeyId`: ticket attachment is scoped to the underlying
+          // `train_subscriptions` row, unchanged by this feature.
           try {
             await fetch(`/api/Train/tickets/${attachTicketId}/attach`, {
               method: 'POST',
@@ -108,12 +118,17 @@ export function TrackThisTrainButton({
             // Deliberately swallowed.
           }
         }
-        if (groupId !== null) {
-          // Best-effort, same posture as the ticket-attach block above --
-          // see shareTrackedTrainToGroup's own doc comment.
+        if (groupId !== null && result.trackingId !== null) {
+          // Best-effort, same posture as the ticket-attach block above.
+          // `result.trackingId` is always non-null here -- `knownTrain`
+          // mode always binds a train immediately -- but the check keeps
+          // this call site honest against `CreateJourneyResponse`'s wider
+          // (window-mode-inclusive) type. Still shares into the group via
+          // the EXISTING group_trains table, unchanged -- journey-level
+          // sharing is Phase 4 (see this plan's own Non-goals).
           await shareTrackedTrainToGroup(groupId, result.trackingId);
         }
-        router.push(`/train/by-id/${result.trackingId}`);
+        router.push(`/journeys/${result.journeyId}`);
         return;
       }
       if (response.status === 401) {

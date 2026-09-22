@@ -2,20 +2,21 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
-import { DateTimePicker } from '@mantine/dates';
+import { Alert, Autocomplete, Badge, Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
+import { DateTimePicker, DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import { ScheduleRow } from './ScheduleRow';
 import { TextLink } from './TextLink';
 import { TrackDestinationModal } from './TrackDestinationModal';
+import { TimeFilterInput } from './TimeFilterInput';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
-import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
+import type { CreateJourneyResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
@@ -229,38 +230,49 @@ type Picker =
  *
  * `attachTicketId`, when given, is a standalone ticket (created via
  * `POST /Train/tickets`, no tracked train yet) the caller is looking for/
- * creating a tracked train for. Once `POST /Train/track` succeeds, this
- * form makes one best-effort follow-up call,
- * `POST /Train/tickets/{attachTicketId}/attach`, before navigating to the
- * new pin's detail page -- if that call fails for any reason (network
+ * creating a tracked train for. Once `submitTrack`'s `POST /Journeys`
+ * (`pin`-mode leg) call succeeds, this form makes one best-effort follow-up
+ * call, `POST /Train/tickets/{attachTicketId}/attach`, before navigating to
+ * the new journey's page -- if that call fails for any reason (network
  * blip, the ticket having since been attached elsewhere), tracking the
  * train has ALREADY succeeded and this form still navigates on; the ticket
  * just stays standalone and attachable later from the merged trains/tickets
  * list, rather than the whole flow failing over a non-essential follow-up.
+ * `submitWindow`'s open-window leg has no bound train at all yet, so it has
+ * no equivalent ticket-attach step.
  *
- * Submits through the same-origin `/api/Train/track` proxy (Client
- * Components can't read the server-only `API_BASE_URL` env var
- * `lib/api.ts` relies on -- same reasoning as `PinToggle`). Mirrors
- * `PinToggle`'s `needsLogin` 401 pattern, with one deliberate difference:
- * a 401 here does NOT reset the form. `PinToggle` can afford to forget its
- * click (there was no typed input to lose); a four-field form has real
- * input worth protecting, so all four fields stay exactly as typed while
- * the login prompt renders alongside them (Decision 4, "no navigation
- * away").
+ * Journey tracking Phase 1 (this task) moved both submit paths off the
+ * legacy `POST /Train/track` route onto `POST /Journeys`: `submitTrack`
+ * posts a `pin`-mode leg (the pre-existing "pick a departure"/manual-entry
+ * flow, field-for-field identical to the old `TrackPinRequest`), and the
+ * new `submitWindow` posts a `window`-mode leg for the `SegmentedControl`'s
+ * second option -- an open time-window search with no train chosen yet
+ * (the journey view, Task 17, is where a candidate gets picked next). Both
+ * go through the same same-origin `/api/Journeys` proxy (Client Components
+ * can't read the server-only `API_BASE_URL` env var `lib/api.ts` relies on
+ * -- same reasoning as `PinToggle`). Mirrors `PinToggle`'s `needsLogin` 401
+ * pattern, with one deliberate difference: a 401 here does NOT reset the
+ * form. `PinToggle` can afford to forget its click (there was no typed
+ * input to lose); a form with real typed input is worth protecting, so
+ * every field stays exactly as typed while the login prompt renders
+ * alongside it (Decision 4, "no navigation away").
  *
  * Shared-groups follow-up: `useGroupSummaries()` decides, once on mount,
  * whether this user belongs to any group. Zero groups (the majority case,
  * and every anonymous visitor) leaves `handleSubmit`'s form `onSubmit`
- * calling `submitTrack(null)` directly -- no prompt, no behavior change
- * from before this feature existed. One or more groups instead makes
- * `handleSubmit` open `TrackDestinationModal` first and defer the actual
- * submit to its `onConfirm`, which calls this same `submitTrack` -- see
- * that component's own doc comment for why reusing it unmodified (rather
- * than a second, divergent submit path) is safe. Sharing the new pin into
- * the chosen group (`shareTrackedTrainToGroup`) is a further best-effort
- * follow-up performed only once the track call itself has already
+ * calling `submitTrack(null)`/`submitWindow(null)` (per `mode`) directly --
+ * no prompt, no behavior change from before this feature existed. One or
+ * more groups instead makes `handleSubmit` open `TrackDestinationModal`
+ * first and defer the actual submit to its `onConfirm`, which calls
+ * whichever of the two matches the current `mode` -- see that component's
+ * own doc comment for why reusing it unmodified (rather than a second,
+ * divergent submit path) is safe. Sharing the new pin into the chosen
+ * group (`shareTrackedTrainToGroup`) is a further best-effort follow-up
+ * `submitTrack` performs once the track call itself has already
  * succeeded, same swallow-every-failure posture as the `attachTicketId`
- * block right below it. */
+ * block right below it -- `submitWindow` has no such follow-up yet (see
+ * that function's own doc comment on why `groupId` is currently unused
+ * there). */
 export function TrackTrainForm({
   initialOrigin = '',
   attachTicketId,
@@ -283,11 +295,12 @@ export function TrackTrainForm({
   );
   // Darwin's own explicit skipped-calling-point snapshot for whichever
   // live departure-board row the user picked (`pickDeparture`, below) --
-  // carried through to the pin so the journey timeline can eventually key
-  // its "Skipped" treatment off it (`common::TrackPinRequest.skipped_stations`'s
-  // own doc comment). `[]` (never sent) until an LDBWS row is actually
-  // picked -- the CIF-picker/manual-entry paths have no such signal at
-  // all.
+  // a live-board pick is the only source that ever has this signal at all
+  // (the CIF-picker/manual-entry paths never do). `submitTrack`'s `pin`-mode
+  // leg forwards this to `POST /Journeys` (`CreateJourneyLegRequest::Pin`'s
+  // own `skippedStations` field, `crates/api/src/routes/journeys.rs`), the
+  // same value the legacy `TrackPinRequest` this form used to submit
+  // carried under the same name.
   const [skippedStations, setSkippedStations] = useState<string[]>([]);
   // Darwin's own platform snapshot for whichever live departure-board row
   // the user picked (`pickDeparture`, below) -- carried through to the pin
@@ -327,6 +340,47 @@ export function TrackTrainForm({
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
   const canSubmit = originValid && scheduledDeparture !== null && !submitting;
+
+  // Window-search mode -- the `SegmentedControl`'s second option. Reuses
+  // `TimeFilterInput`'s existing before/after convention verbatim (per the
+  // journey-tracking design doc's own §0.5 direction) rather than inventing
+  // a new one for leg-window entry.
+  const [mode, setMode] = useState<'pick' | 'window'>('pick');
+  const [windowDestinationCrs, setWindowDestinationCrs] = useState('');
+  // A dedicated suggestions hook, not a reuse of the pin-mode Destination
+  // field's own `destinationSuggestions`/`destinationSuggestionsLoading`
+  // above -- the two Destination fields are separate state
+  // (`destinationCrs` vs `windowDestinationCrs`), so sharing one hook
+  // instance between them would leave the window-mode field's suggestions
+  // dropdown driven by whatever was last typed into the PIN-mode field
+  // (usually nothing, in window mode) rather than by what's actually typed
+  // here.
+  const { suggestions: windowDestinationSuggestions, loading: windowDestinationSuggestionsLoading } = useSuggestions(
+    windowDestinationCrs,
+    searchStations,
+  );
+  const [windowServiceDate, setWindowServiceDate] = useState<string | null>(null);
+  const [departFrom, setDepartFrom] = useState('');
+  const [departTo, setDepartTo] = useState('');
+  const [arriveFrom, setArriveFrom] = useState('');
+  const [arriveTo, setArriveTo] = useState('');
+  // Same half-entered-time bookkeeping TrainSearchForm.tsx's own four
+  // TimeFilterInput fields already need -- see that component's own
+  // `incompleteTimes` doc comment for the full reasoning (a native
+  // `<input type="time">` reports a half-entered value as `''`,
+  // indistinguishable from untouched).
+  const [windowIncompleteTimes, setWindowIncompleteTimes] = useState({
+    departFrom: false,
+    departTo: false,
+    arriveFrom: false,
+    arriveTo: false,
+  });
+  const windowDestinationValid = CRS_PATTERN.test(windowDestinationCrs.trim());
+  const windowTimesComplete = !Object.values(windowIncompleteTimes).some(Boolean);
+  const windowHasABound =
+    departFrom.trim() !== '' || departTo.trim() !== '' || arriveFrom.trim() !== '' || arriveTo.trim() !== '';
+  const canSubmitWindow =
+    originValid && windowDestinationValid && windowTimesComplete && windowHasABound && !submitting;
 
   // Fetch the live departures picker whenever the origin resolves to a
   // syntactically valid CRS -- same same-origin `/api/*` proxy pattern
@@ -485,30 +539,41 @@ export function TrackTrainForm({
       // for the (correctly UTC) `scheduled_departure` field.
       const serviceDate = scheduledDeparture.slice(0, 10);
       const departure = new Date(scheduledDeparture.replace(' ', 'T'));
-      const body: TrackPinRequest = {
-        service_date: serviceDate,
-        origin_crs: originCrs.trim().toUpperCase(),
-        scheduled_departure: departure.toISOString(),
-        ...(destinationCrs.trim() ? { destination_crs: destinationCrs.trim().toUpperCase() } : {}),
-        ...(operator.trim() ? { operator: operator.trim() } : {}),
-        ...(skippedStations.length > 0 ? { skipped_stations: skippedStations } : {}),
-        ...(platform !== null ? { platform } : {}),
-        ...(plannedPlatform !== null ? { planned_platform: plannedPlatform } : {}),
+      const body = {
+        customName: null,
+        leg: {
+          mode: 'pin' as const,
+          originCrs: originCrs.trim().toUpperCase(),
+          scheduledDeparture: departure.toISOString(),
+          serviceDate,
+          ...(destinationCrs.trim() ? { destinationCrs: destinationCrs.trim().toUpperCase() } : {}),
+          ...(operator.trim() ? { operator: operator.trim() } : {}),
+          ...(skippedStations.length > 0 ? { skippedStations } : {}),
+          // Integration note (2026-09-22): the Darwin platform snapshot the
+          // departure-board picker captures (`pickDeparture`) used to ride
+          // on the legacy `POST /Train/track` body as
+          // `platform`/`planned_platform`. `POST /Journeys` replaced that
+          // route, so the same two values now travel inside the pin-mode
+          // LEG, in this endpoint's camelCase convention -- see
+          // `CreateJourneyLegRequest::Pin` in
+          // `crates/api/src/routes/journeys.rs`, which forwards them into
+          // the very same `common::TrackPinRequest` fields the old route
+          // filled. Dropping them here would silently lose the origin
+          // calling point's platform on every newly pinned journey.
+          ...(platform !== null ? { platform } : {}),
+          ...(plannedPlatform !== null ? { plannedPlatform } : {}),
+        },
       };
 
-      const response = await fetch('/api/Train/track', {
+      const response = await fetch('/api/Journeys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
 
       if (response.ok) {
-        const result: TrackPinResponse = await response.json();
-        if (attachTicketId !== undefined) {
-          // Best-effort: tracking the train has already succeeded above --
-          // don't let a failure here (network blip, the ticket having
-          // since been attached elsewhere) block navigating to the new
-          // pin. The ticket just stays attachable later if this fails.
+        const result: CreateJourneyResponse = await response.json();
+        if (attachTicketId !== undefined && result.trackingId !== null) {
           try {
             await fetch(`/api/Train/tickets/${attachTicketId}/attach`, {
               method: 'POST',
@@ -516,15 +581,16 @@ export function TrackTrainForm({
               body: JSON.stringify({ trackingId: result.trackingId }),
             });
           } catch {
-            // Deliberately swallowed -- see this block's own comment.
+            // Deliberately swallowed -- see this block's own comment above.
           }
         }
-        if (groupId !== null) {
-          // Best-effort, same posture as the ticket-attach block above --
-          // see shareTrackedTrainToGroup's own doc comment.
+        if (groupId !== null && result.trackingId !== null) {
+          // Still shares the underlying train_subscriptions row via the
+          // EXISTING group_trains table, unchanged -- journey-level
+          // sharing is Phase 4 (see this plan's own Non-goals).
           await shareTrackedTrainToGroup(groupId, result.trackingId);
         }
-        router.push(`/train/by-id/${result.trackingId}`);
+        router.push(`/journeys/${result.journeyId}`);
         return;
       }
       if (response.status === 401) {
@@ -539,6 +605,67 @@ export function TrackTrainForm({
       setFieldError("Couldn't create the tracking pin. Try again.");
     } catch {
       setFieldError("Couldn't create the tracking pin. Try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /** The window-search mode's own submit -- posts a `window`-mode leg to
+   * `POST /Journeys` instead of a `pin`-mode one, creating an `'unmatched'`
+   * leg with no train bound yet (the journey view, Task 17, is where a
+   * candidate gets picked next). Reuses `TrackDestinationModal`'s
+   * Personal-vs-group prompt the same way `submitTrack` does -- see
+   * `handleSubmit`'s own doc comment -- but `groupId` is currently a
+   * placeholder here: sharing an open/unmatched leg into a group at
+   * creation time has no real precedent yet (there is no train to share),
+   * and this plan's Non-goals explicitly defer journey-level group sharing
+   * to Phase 4. The parameter is kept, unused, purely so `handleSubmit`'s
+   * dispatch to either `submitTrack`/`submitWindow` can share one call
+   * shape without a branch on arity. */
+  async function submitWindow(groupId: string | null) {
+    if (!canSubmitWindow) return;
+    setSubmitting(true);
+    needsLoginState.reset();
+    setFieldError(null);
+    try {
+      const body = {
+        customName: null,
+        leg: {
+          mode: 'window' as const,
+          originCrs: originCrs.trim().toUpperCase(),
+          destinationCrs: windowDestinationCrs.trim().toUpperCase(),
+          serviceDate: windowServiceDate ?? dayjs().format('YYYY-MM-DD'),
+          departWindow: { after: departFrom || null, before: departTo || null },
+          arriveWindow: { after: arriveFrom || null, before: arriveTo || null },
+        },
+      };
+      const response = await fetch('/api/Journeys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (response.ok) {
+        const result: CreateJourneyResponse = await response.json();
+        // No trackingId yet (an open leg has no train bound) -- so no
+        // ticket-attach or group-share follow-up is possible here, unlike
+        // submitTrack/pin mode. The journey view itself (Task 17) is where
+        // a candidate gets picked next.
+        void groupId; // reserved for a future group-share-on-window-search follow-up
+        router.push(`/journeys/${result.journeyId}`);
+        return;
+      }
+      if (response.status === 401) {
+        needsLoginState.markNeedsLogin();
+        return;
+      }
+      if (response.status === 400) {
+        const text = await response.text();
+        setFieldError(text || "Couldn't search for a train. Try again.");
+        return;
+      }
+      setFieldError("Couldn't search for a train. Try again.");
+    } catch {
+      setFieldError("Couldn't search for a train. Try again.");
     } finally {
       setSubmitting(false);
     }
@@ -567,6 +694,23 @@ export function TrackTrainForm({
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (submitting) return;
+    if (mode === 'window') {
+      if (!originValid || !windowDestinationValid || !windowHasABound) {
+        setFieldError(
+          !originValid || !windowDestinationValid
+            ? 'Enter a valid origin and destination station before searching.'
+            : 'Enter at least one earliest/latest departure or arrival time to search a window.',
+        );
+        return;
+      }
+      setFieldError(null);
+      if (groups.length > 0) {
+        setDestinationPromptOpened(true);
+        return;
+      }
+      void submitWindow(null);
+      return;
+    }
     if (!originValid || scheduledDeparture === null) {
       setFieldError(
         !originValid
@@ -851,86 +995,178 @@ export function TrackTrainForm({
         // validation bubble the button's near-invisible disabled state
         // was already standing in for.
       />
-      <Group align="flex-end" gap="xs">
-        <DateTimePicker
-          label="Scheduled departure"
-          placeholder="Pick date and time"
-          value={scheduledDeparture}
-          onChange={setScheduledDeparture}
-          // The backend rejects a departure more than 6 hours in the past
-          // (`crates/api/src/data/train_tracking.rs`'s `MAX_PIN_AGE`) --
-          // this hint is here so a rejection is rare rather than the
-          // user's first encounter with the rule, per Decision 1.
-          description="Must be within the last 6 hours, or any time in the future"
-          // Same reasoning as the Origin field just above -- a cleared
-          // departure is validated by `handleSubmit` itself now, not by
-          // native `required` constraint validation.
-          style={{ flexGrow: 1 }}
-        />
-        {/* `@mantine/dates`' own `presets` prop (9.5.2) only ever assigns a
-            *date* (`DatePickerPreset['value']` is a bare `DateStringValue`,
-            like `DatePicker`'s "Today"/"Yesterday" presets) -- it has no
-            way to also fill in a time-of-day, so it can't produce "right
-            now" on its own; a plain Button next to the picker is the clean
-            fit here instead. `dayjs().format('YYYY-MM-DD HH:mm:ss')`
-            deliberately matches the exact local-wall-clock string shape
-            the picker itself produces (`assign-time.mjs`'s own
-            `date.format('YYYY-MM-DD HH:mm:ss')`) -- see this file's own
-            `handleSubmit` comment on why that shape, not an ISO string,
-            is required to avoid an around-local-midnight day-off-by-one. */}
-        <Button variant="default" onClick={() => setScheduledDeparture(dayjs().format('YYYY-MM-DD HH:mm:ss'))}>
-          Now
-        </Button>
-      </Group>
-      <Autocomplete
-        label="Destination station (optional)"
-        placeholder="e.g. Woking or WOK"
-        value={destinationCrs}
-        onChange={setDestinationCrs}
-        data={withNoMatchPlaceholder(
-          destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching stations',
-          { active: destinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-          if (placeholder) return placeholder;
-          const match = destinationSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
+      {/* Origin is the one field both modes share -- every leg shape
+          (`pin`/`knownTrain`/`window`) needs an `originCrs`, so it stays
+          above the mode switch rather than being duplicated inside each
+          branch. */}
+      <SegmentedControl
+        value={mode}
+        onChange={(value) => setMode(value as 'pick' | 'window')}
+        data={[
+          { label: 'Pick a departure', value: 'pick' },
+          { label: 'Search a time window', value: 'window' },
+        ]}
       />
-      <Autocomplete
-        label="Operator (optional)"
-        placeholder="e.g. SW"
-        value={operator}
-        onChange={setOperator}
-        data={withNoMatchPlaceholder(
-          operatorSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching operators',
-          { active: operator.trim().length > 0 && !operatorSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching operators');
-          if (placeholder) return placeholder;
-          const match = operatorSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
-      />
-      {/* Always present -- never absent from the DOM, per
-          docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
-          Decision 4. `mih={72}` blunts the size jump between the
-          one/two-line text states; row-list states can legitimately grow
-          past the minimum and are deliberately given no maximum -- see
-          `pickerContent`'s own doc comment for why the `mah`-capped
-          `ScrollArea` that used to bound them was a clip, not a scroller,
-          and why nothing replaced it. */}
-      <Stack gap="xs" mih={72}>
-        {pickerContent()}
-      </Stack>
+      {mode === 'window' ? (
+        <>
+          <Autocomplete
+            label="Destination station"
+            placeholder="e.g. Reading or RDG"
+            value={windowDestinationCrs}
+            onChange={setWindowDestinationCrs}
+            data={withNoMatchPlaceholder(
+              windowDestinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
+              'No matching stations',
+              { active: windowDestinationCrs.trim().length > 0 && !windowDestinationSuggestionsLoading },
+            )}
+            filter={({ options }) => options}
+            error={
+              windowDestinationCrs.length > 0 && !windowDestinationValid
+                ? 'Must be a 3-letter CRS code'
+                : null
+            }
+            // NOT the native `required` attribute -- same reasoning as the
+            // Origin field's own comment above: a native `required` field
+            // would let the browser's own constraint validation intercept
+            // the submit event before `handleSubmit` ever runs (confirmed
+            // live -- jsdom enforces this too), silently replacing this
+            // form's own explanatory `fieldError` message with (at best) a
+            // native validation bubble instead. `handleSubmit`'s own
+            // `!windowDestinationValid` check already owns this
+            // validation.
+          />
+          <DatePickerInput
+            label="Date"
+            placeholder="Today"
+            value={windowServiceDate}
+            onChange={setWindowServiceDate}
+            clearable
+          />
+          <Group grow align="flex-start">
+            <TimeFilterInput
+              label="Earliest departure (optional)"
+              name="earliest departure"
+              description={`Only trains at ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or after this time.`}
+              value={departFrom}
+              onChange={setDepartFrom}
+              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departFrom: v }))}
+              error={null}
+            />
+            <TimeFilterInput
+              label="Latest departure (optional)"
+              name="latest departure"
+              description="Only trains at or before this time."
+              value={departTo}
+              onChange={setDepartTo}
+              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departTo: v }))}
+              error={null}
+            />
+          </Group>
+          <Group grow align="flex-start">
+            <TimeFilterInput
+              label="Earliest arrival (optional)"
+              name="earliest arrival"
+              description="Only trains reaching the destination at or after this time."
+              value={arriveFrom}
+              onChange={setArriveFrom}
+              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
+              error={null}
+            />
+            <TimeFilterInput
+              label="Latest arrival (optional)"
+              name="latest arrival"
+              description="Only trains reaching the destination at or before this time."
+              value={arriveTo}
+              onChange={setArriveTo}
+              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
+              error={null}
+            />
+          </Group>
+        </>
+      ) : (
+        <>
+          <Group align="flex-end" gap="xs">
+            <DateTimePicker
+              label="Scheduled departure"
+              placeholder="Pick date and time"
+              value={scheduledDeparture}
+              onChange={setScheduledDeparture}
+              // The backend rejects a departure more than 6 hours in the past
+              // (`crates/api/src/data/train_tracking.rs`'s `MAX_PIN_AGE`) --
+              // this hint is here so a rejection is rare rather than the
+              // user's first encounter with the rule, per Decision 1.
+              description="Must be within the last 6 hours, or any time in the future"
+              // Same reasoning as the Origin field above -- a cleared
+              // departure is validated by `handleSubmit` itself now, not by
+              // native `required` constraint validation.
+              style={{ flexGrow: 1 }}
+            />
+            {/* `@mantine/dates`' own `presets` prop (9.5.2) only ever assigns a
+                *date* (`DatePickerPreset['value']` is a bare `DateStringValue`,
+                like `DatePicker`'s "Today"/"Yesterday" presets) -- it has no
+                way to also fill in a time-of-day, so it can't produce "right
+                now" on its own; a plain Button next to the picker is the clean
+                fit here instead. `dayjs().format('YYYY-MM-DD HH:mm:ss')`
+                deliberately matches the exact local-wall-clock string shape
+                the picker itself produces (`assign-time.mjs`'s own
+                `date.format('YYYY-MM-DD HH:mm:ss')`) -- see this file's own
+                `handleSubmit` comment on why that shape, not an ISO string,
+                is required to avoid an around-local-midnight day-off-by-one. */}
+            <Button variant="default" onClick={() => setScheduledDeparture(dayjs().format('YYYY-MM-DD HH:mm:ss'))}>
+              Now
+            </Button>
+          </Group>
+          <Autocomplete
+            label="Destination station (optional)"
+            placeholder="e.g. Woking or WOK"
+            value={destinationCrs}
+            onChange={setDestinationCrs}
+            data={withNoMatchPlaceholder(
+              destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
+              'No matching stations',
+              { active: destinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
+            )}
+            filter={({ options }) => options}
+            renderOption={({ option }) => {
+              const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+              if (placeholder) return placeholder;
+              const match = destinationSuggestions.find((s) => s.code === option.value);
+              return match ? `${match.code} — ${match.name}` : option.value;
+            }}
+          />
+          <Autocomplete
+            label="Operator (optional)"
+            placeholder="e.g. SW"
+            value={operator}
+            onChange={setOperator}
+            data={withNoMatchPlaceholder(
+              operatorSuggestions.map((s) => ({ value: s.code, label: s.code })),
+              'No matching operators',
+              { active: operator.trim().length > 0 && !operatorSuggestionsLoading },
+            )}
+            filter={({ options }) => options}
+            renderOption={({ option }) => {
+              const placeholder = noMatchOptionContent(option.value, 'No matching operators');
+              if (placeholder) return placeholder;
+              const match = operatorSuggestions.find((s) => s.code === option.value);
+              return match ? `${match.code} — ${match.name}` : option.value;
+            }}
+          />
+          {/* Always present -- never absent from the DOM, per
+              docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
+              Decision 4. `mih={72}` blunts the size jump between the
+              one/two-line text states; row-list states can legitimately grow
+              past the minimum and are deliberately given no maximum -- see
+              `pickerContent`'s own doc comment for why the `mah`-capped
+              `ScrollArea` that used to bound them was a clip, not a scroller,
+              and why nothing replaced it. */}
+          <Stack gap="xs" mih={72}>
+            {pickerContent()}
+          </Stack>
+        </>
+      )}
       {fieldError && (
-        <Alert color="red" title="Couldn't track this train">
+        <Alert color="red" title={mode === 'window' ? "Couldn't search for a train" : "Couldn't track this train"}>
           {fieldError}
         </Alert>
       )}
@@ -940,14 +1176,20 @@ export function TrackTrainForm({
             invalid-but-not-yet-submitted form no longer disables this
             button at all. */}
         <Button type="submit" disabled={submitting}>
-          {submitting ? 'Tracking…' : 'Track this train'}
+          {mode === 'window'
+            ? submitting
+              ? 'Searching…'
+              : 'Search for a train'
+            : submitting
+              ? 'Tracking…'
+              : 'Track this train'}
         </Button>
       </Group>
       <TrackDestinationModal
         opened={destinationPromptOpened}
         groups={groups}
         onClose={() => setDestinationPromptOpened(false)}
-        onConfirm={(groupId) => void submitTrack(groupId)}
+        onConfirm={(groupId) => void (mode === 'window' ? submitWindow(groupId) : submitTrack(groupId))}
       />
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to track this train.

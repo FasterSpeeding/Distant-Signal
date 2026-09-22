@@ -308,7 +308,7 @@ research surfaced — see below).
   tasks done (`.github/workflows/ci.yml:271-272`'s `npm run build`).
 - **File scope.** Modified/created:
   `crates/common/src/lib.rs`,
-  `crates/api/migrations/20260922090000_pinned_operators.sql` (new),
+  `crates/api/migrations/20260922080000_pinned_operators.sql` (new),
   `crates/api/src/data/mod.rs`,
   `crates/api/src/data/operators.rs` (new),
   `crates/api/src/data/preferences.rs`,
@@ -461,7 +461,7 @@ git commit -m "common: add merge_sample_stats, combining several lines' SampleSt
 
 ## Task 2: Migration — `pinned_operators`
 
-**Files:** create `crates/api/migrations/20260922090000_pinned_operators.sql`.
+**Files:** create `crates/api/migrations/20260922080000_pinned_operators.sql`.
 
 Independent of Task 1. `20260922090000` sorts after the latest existing
 migration (`20260917090000_incidents_affected_lines.sql`, confirmed via
@@ -512,7 +512,7 @@ psql "$DATABASE_URL" -c "\d pinned_operators"
 - [ ] **Step 3: Commit**
 
 ```bash
-git add crates/api/migrations/20260922090000_pinned_operators.sql
+git add crates/api/migrations/20260922080000_pinned_operators.sql
 git commit -m "api: add pinned_operators table"
 ```
 

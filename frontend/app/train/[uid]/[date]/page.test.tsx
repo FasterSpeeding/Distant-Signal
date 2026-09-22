@@ -202,7 +202,11 @@ describe('TrackedTrainByUidPage success path', () => {
     // Discriminating: the fixture's own trainUid deliberately differs from
     // the URL segment, so a component wired to the wrong source fails here.
     const fetchMock = vi.fn(
-      async () => new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }),
+      async () =>
+        new Response(
+          JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+          { status: 200 },
+        ),
     );
     vi.stubGlobal('fetch', fetchMock);
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
@@ -216,8 +220,13 @@ describe('TrackedTrainByUidPage success path', () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/Train/by-uid/W12345/2026-08-31/track',
-        expect.objectContaining({ method: 'POST' }),
+        '/api/Journeys',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            leg: { mode: 'knownTrain', trainUid: 'W12345', serviceDate: '2026-08-31' },
+          }),
+        }),
       ),
     );
   });
@@ -227,7 +236,11 @@ describe('TrackedTrainByUidPage success path', () => {
   // ticketId convention to source one from.
   it('makes no ticket-attach call after tracking', async () => {
     const fetchMock = vi.fn(
-      async () => new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }),
+      async () =>
+        new Response(
+          JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+          { status: 200 },
+        ),
     );
     vi.stubGlobal('fetch', fetchMock);
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());

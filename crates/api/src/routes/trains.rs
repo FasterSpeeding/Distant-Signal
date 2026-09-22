@@ -111,7 +111,7 @@ use crate::data::queries::CallingPointDepartureCursor;
 use crate::render::calling_point_departure_json;
 
 /// Page size when the caller does not ask for one.
-const DEFAULT_SEARCH_LIMIT: i64 = 50;
+pub(crate) const DEFAULT_SEARCH_LIMIT: i64 = 50;
 
 /// Hard ceiling on one page, clamped server-side rather than rejected.
 ///
@@ -133,7 +133,7 @@ const DEFAULT_SEARCH_LIMIT: i64 = 50;
 /// under a filter the caller thinks is still applied. That reads as a
 /// broken search, not a rejected input, so those fields 400 instead of
 /// clamping or ignoring.
-const MAX_SEARCH_LIMIT: i64 = 200;
+pub(crate) const MAX_SEARCH_LIMIT: i64 = 200;
 
 /// Forward search window, in days: the furthest future `date` this route
 /// will accept. Must be kept in sync by hand with `schedule-reference`'s
@@ -302,7 +302,7 @@ fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)>
 }
 
 /// Parses and bounds the page size.
-fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
+pub(crate) fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(DEFAULT_SEARCH_LIMIT);
     };
@@ -330,7 +330,7 @@ fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
 /// Base64 makes the value visibly OPAQUE, matching this crate's established
 /// posture for other cursors in this codebase. Not signed: the cursor names
 /// a public timetable row on an unauthenticated route.
-fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
+pub(crate) fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
     URL_SAFE_NO_PAD.encode(format!(
         "{}|{}",
         cursor.scheduled.format("%H:%M:%S"),
@@ -341,7 +341,7 @@ fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
 /// Inverse of `encode_cursor`. A malformed cursor is a `400`, never
 /// silently ignored -- ignoring it would restart the caller at page 1
 /// while their UI appended the result as page 2, duplicating every row.
-fn decode_cursor(raw: &str) -> Result<CallingPointDepartureCursor, (StatusCode, String)> {
+pub(crate) fn decode_cursor(raw: &str) -> Result<CallingPointDepartureCursor, (StatusCode, String)> {
     let invalid = || {
         (
             StatusCode::BAD_REQUEST,

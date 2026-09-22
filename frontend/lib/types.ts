@@ -742,6 +742,96 @@ export interface TrackedTrainListItem {
   sharedGroupCount: number;
 }
 
+/** `common::TimeWindow` on the wire -- `crates/common/src/lib.rs`. Both
+ * fields `"HH:MM:SS" | null`. */
+export interface TimeWindow {
+  after: string | null;
+  before: string | null;
+}
+
+/** One row of `GET /Journeys/mine`
+ * (`crates/api/src/data/journeys.rs::JourneyListItem`, camelCase).
+ * Deliberately lighter than `JourneyDetail` below -- see that Rust
+ * struct's own doc comment for why. */
+export interface JourneyListItem {
+  id: number;
+  customName: string | null;
+  createdAt: string;
+  legId: number;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  matchMode: 'unmatched' | 'manual' | 'auto';
+  trainSubscriptionId: number | null;
+  resolutionStatus: string | null;
+  status: string | null;
+  delayMinutes: number | null;
+}
+
+/** One leg of `GET /Journeys/{id}`'s response
+ * (`crates/api/src/routes/journeys.rs::JourneyLegDetailResponse`).
+ * `trackedTrainState` is `null` for an unmatched leg, and otherwise the
+ * EXACT SAME shape `GET /Train/{trackingId}` returns -- `TrackedTrainState`
+ * is reused verbatim, not a narrower/different type. */
+export interface JourneyLegDetail {
+  id: number;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  serviceDate: string;
+  departAfter: string | null;
+  departBefore: string | null;
+  arriveAfter: string | null;
+  arriveBefore: string | null;
+  matchMode: 'unmatched' | 'manual' | 'auto';
+  trackedTrainState: TrackedTrainState | null;
+}
+
+/** `GET /Journeys/{id}`'s full response. */
+export interface JourneyDetail {
+  id: number;
+  customName: string | null;
+  createdAt: string;
+  legs: JourneyLegDetail[];
+}
+
+/** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec
+ * §3) -- two of the three shapes `POST /Journeys` already sends for a
+ * journey's first leg (no `pin` mode -- spec §3 only offers a direct
+ * known-train pick or an open time-window search for "add a leg"),
+ * discriminated by `mode` exactly like the backend's own
+ * `AddJourneyLegRequest` (`crates/api/src/routes/journeys.rs`). */
+export type NewJourneyLegRequest =
+  | {
+      mode: 'knownTrain';
+      trainUid: string;
+      serviceDate: string; // "YYYY-MM-DD"
+    }
+  | {
+      mode: 'window';
+      originCrs: string;
+      destinationCrs: string;
+      serviceDate: string; // "YYYY-MM-DD"
+      departWindow?: TimeWindow;
+      arriveWindow?: TimeWindow;
+    };
+
+/** `POST /Journeys/{journeyId}/legs`'s response
+ * (`crates/api/src/routes/journeys.rs::AddLegResponse`). `trackingId` is
+ * `null` for a `window`-mode leg -- no train bound yet, same convention as
+ * `CreateJourneyResponse.trackingId`. */
+export interface AddJourneyLegResponse {
+  legId: number;
+  trackingId: number | null;
+}
+
+/** `POST /Journeys`'s response
+ * (`crates/api/src/routes/journeys.rs::CreateJourneyResponse`). */
+export interface CreateJourneyResponse {
+  journeyId: number;
+  legId: number;
+  trackingId: number | null;
+  resolutionStatus: string | null;
+}
+
 /** `POST /Train/track`'s request body (`common::TrackPinRequest`). Plain
  * snake_case on the wire -- unlike every other type in this file, which
  * mirrors `crates/api`'s camelCase public JSON, this one matches
