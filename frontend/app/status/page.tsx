@@ -5,7 +5,13 @@ import { getLineStatusForMode } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM, type Country } from '@/lib/modes';
 import { buildNetworkStatusOverview } from '@/lib/networkStatusOverview';
-import { isGoodSeverity, SEVERITY_GROUP_LABELS, SEVERITY_GROUPS_BY_RANK, worstStatus } from '@/lib/severity';
+import {
+  isGoodSeverity,
+  SEVERITY_GROUP_LABELS,
+  SEVERITY_GROUPS_BY_RANK,
+  type SeverityGroup,
+  worstStatus,
+} from '@/lib/severity';
 import { StatusBadge } from '@/components/StatusBadge';
 import type { LineStatusReport } from '@/lib/types';
 
@@ -98,7 +104,7 @@ function SeverityCounterTile({
   group,
   count,
 }: {
-  group: (typeof SEVERITY_GROUPS_BY_RANK)[number];
+  group: SeverityGroup;
   count: number;
 }) {
   return (

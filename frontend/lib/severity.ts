@@ -69,13 +69,9 @@ export const SEVERITY_GROUP_LABELS: Record<SeverityGroup, string> = {
  * iteration order for the dashboard's five counter tiles and
  * `AllLinesTable`'s filter chips, so both render in one deliberate order
  * rather than relying on object-key iteration order. */
-export const SEVERITY_GROUPS_BY_RANK: readonly SeverityGroup[] = [
-  'good',
-  'informational',
-  'planned',
-  'mild',
-  'severe',
-];
+export const SEVERITY_GROUPS_BY_RANK: readonly SeverityGroup[] = (
+  Object.keys(GROUP_RANK) as SeverityGroup[]
+).sort((a, b) => GROUP_RANK[a] - GROUP_RANK[b]);
 
 /** Narrows an untyped query-string value (e.g. `/lines?statusGroup=severe`)
  * to a real `SeverityGroup`, or `false` for anything else -- an unknown/

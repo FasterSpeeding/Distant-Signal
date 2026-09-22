@@ -14,9 +14,18 @@ export const revalidate = 0;
  * shape every detail page in this app already emits (see
  * `app/train/[uid]/[date]/page.tsx`'s `generateMetadata` for the canonical
  * version, and `app/page.tsx`'s own static export for why these top-level
- * pages spell it as a plain `export const metadata` instead). This route
- * takes no params of any kind -- no dynamic segment, no `searchParams` --
- * so a static export is the only shape that makes sense here.
+ * pages spell it as a plain `export const metadata` instead).
+ *
+ * Static rather than an async `generateMetadata()` even though this route
+ * DOES read `searchParams`: `generateMetadata` is handed `searchParams`
+ * too, so a filter-aware title ("Severe Disruption on All Lines — Distant
+ * Signal") is technically reachable -- but `statusGroup` only ever seeds
+ * `AllLinesTable`'s client-side filter (`initialStatusGroup` below, fed by
+ * the dashboard's own counter-tile links in `app/status/page.tsx`'s
+ * `SeverityCounterTile`) purely to decorate a preview card, and a
+ * pre-filtered `/lines?statusGroup=...` link is not the link people paste.
+ * Deliberately left as one honest description of the page itself; revisit
+ * only if shared filtered links become a real use.
  *
  * Title matches the page's own `<h1>` ("All Lines"), so the tab title and
  * the heading a visitor lands on agree -- the same rule `/incidents`,
