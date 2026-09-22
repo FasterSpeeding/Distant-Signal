@@ -351,11 +351,11 @@ pub async fn set_leg_train_subscription(
 /// One row of `GET /Journeys/mine` -- deliberately lighter than the full
 /// `GET /Journeys/{id}` detail (`routes::journeys::JourneyDetailResponse`),
 /// mirroring `TrackedTrainListItem`'s own "list is lighter than detail"
-/// split. Phase 1 never creates more than one leg per journey (this
-/// module's own doc comment), so this surfaces `leg_order = 1`'s own
-/// fields directly rather than a nested array -- a genuine multi-leg
-/// rollup (design doc §3's "worst status across legs" idiom) is a later
-/// phase's job, once a journey can actually have more than one leg.
+/// split. This surfaces a single leg's fields directly, not a nested array
+/// -- the "current leg" (the earliest leg that isn't already `completed`,
+/// or the journey's LAST leg if every leg is `completed`). A genuine
+/// multi-leg rollup (design doc §3's "worst status across legs" idiom) is a
+/// later phase's job.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JourneyListItem {
@@ -376,20 +376,33 @@ pub struct JourneyListItem {
 /// `train_tracking::MINE_LIST_LIMIT` `GET /Train/mine` already uses --
 /// `pub(crate)` on that constant already permits this cross-module read
 /// (see its own doc comment, which anticipates exactly this: "any list
-/// this list's own cap should agree with").
+/// this list's own cap should agree with"). Each journey is shown with its
+/// "current leg" -- the earliest leg that isn't already `completed`, or the
+/// journey's LAST leg (highest `leg_order`) if every leg is `completed`.
 pub async fn list_journeys_for_user(
     pool: &PgPool,
     user_id: &str,
 ) -> anyhow::Result<Vec<JourneyListItem>> {
     let rows = sqlx::query_as::<_, JourneyListItem>(
-        "SELECT j.id, j.custom_name, j.created_at, \
-                jl.id AS leg_id, jl.origin_crs, jl.destination_crs, jl.match_mode, \
-                jl.train_subscription_id, \
-                ts.resolution_status, cs.status, cs.delay_minutes \
+        "WITH ranked_legs AS ( \
+             SELECT jl.id, jl.journey_id, jl.leg_order, jl.origin_crs, jl.destination_crs, \
+                    jl.match_mode, jl.train_subscription_id, \
+                    ts.resolution_status, cs.status, cs.delay_minutes, \
+                    ROW_NUMBER() OVER ( \
+                        PARTITION BY jl.journey_id \
+                        ORDER BY (cs.status IS DISTINCT FROM 'completed') DESC, \
+                                 CASE WHEN cs.status = 'completed' \
+                                      THEN -jl.leg_order ELSE jl.leg_order END ASC \
+                    ) AS rn \
+             FROM journey_legs jl \
+             LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+             LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         ) \
+         SELECT j.id, j.custom_name, j.created_at, \
+                rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.match_mode, \
+                rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes \
          FROM journeys j \
-         JOIN journey_legs jl ON jl.journey_id = j.id AND jl.leg_order = 1 \
-         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
-         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         JOIN ranked_legs rl ON rl.journey_id = j.id AND rl.rn = 1 \
          WHERE j.user_id = $1 \
          ORDER BY j.created_at DESC \
          LIMIT $2",
@@ -737,5 +750,212 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OWNER").await;
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_journeys_for_user -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_picks_the_earliest_non_completed_leg() {
+        let pool = connect().await;
+        let user_id = "TEST-LIST-JOURNEYS-MULTI-LEG";
+        seed_user(&pool, user_id).await;
+
+        // Create a journey and add two legs
+        let journey_id = insert_journey(&pool, user_id, Some("Multi-leg journey"))
+            .await
+            .expect("insert journey");
+
+        // Insert a dummy train to use for marking legs as completed
+        // Use ON CONFLICT DO NOTHING to handle re-runs and get the existing train
+        sqlx::query(
+            "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(format!("TEST-TRAIN-{}-1", user_id))
+        .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+        .execute(&pool)
+        .await
+        .expect("insert test train 1");
+
+        let trains_id_1: i64 =
+            sqlx::query_scalar("SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2")
+                .bind(format!("TEST-TRAIN-{}-1", user_id))
+                .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+                .fetch_one(&pool)
+                .await
+                .expect("get trains_id_1");
+
+        // Leg 1: Create with a train subscription that points to trains_id_1
+        let tracking_id_1 = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO train_subscriptions (user_id, trains_id, service_date) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(trains_id_1)
+        .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+        .fetch_one(&pool)
+        .await
+        .expect("insert train subscription 1");
+
+        let _leg_id_1 = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, \
+                                        train_subscription_id, match_mode) \
+             VALUES ($1, 1, $2, $3, $4, $5, 'manual') \
+             RETURNING id",
+        )
+        .bind(journey_id)
+        .bind("KGX")
+        .bind("EDB")
+        .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+        .bind(tracking_id_1)
+        .fetch_one(&pool)
+        .await
+        .expect("insert leg 1");
+
+        // Mark leg 1 as completed
+        sqlx::query("DELETE FROM train_current_state WHERE trains_id = $1")
+            .bind(trains_id_1)
+            .execute(&pool)
+            .await
+            .expect("clear existing train state");
+        sqlx::query(
+            "INSERT INTO train_current_state (trains_id, status, delay_minutes) \
+             VALUES ($1, 'completed', 0)",
+        )
+        .bind(trains_id_1)
+        .execute(&pool)
+        .await
+        .expect("mark leg 1 as completed");
+
+        // Leg 2: Create an unmatched leg (no train subscription yet)
+        let leg_id_2 = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 2, $2, $3, $4, 'unmatched') \
+             RETURNING id",
+        )
+        .bind(journey_id)
+        .bind("EDB")
+        .bind("GLG")
+        .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+        .fetch_one(&pool)
+        .await
+        .expect("insert leg 2");
+
+        // Call list_journeys_for_user and verify that leg 2 is returned
+        let journeys = list_journeys_for_user(&pool, user_id)
+            .await
+            .expect("list journeys");
+
+        // Should return at least one journey (the one we just created)
+        assert!(!journeys.is_empty(), "Expected at least one journey");
+
+        // Find our journey
+        let our_journey = journeys
+            .iter()
+            .find(|j| j.id == journey_id)
+            .expect("Our journey should be in the list");
+
+        // Verify that leg 2's data is shown (earliest non-completed leg)
+        assert_eq!(our_journey.leg_id, leg_id_2, "Should show leg 2's ID");
+        assert_eq!(
+            our_journey.origin_crs.as_deref(),
+            Some("EDB"),
+            "Should show leg 2's origin"
+        );
+        assert_eq!(
+            our_journey.destination_crs.as_deref(),
+            Some("GLG"),
+            "Should show leg 2's destination"
+        );
+        assert_eq!(
+            our_journey.match_mode, "unmatched",
+            "Should show leg 2's match_mode"
+        );
+
+        // Verify that the journey appears exactly once
+        let journey_count = journeys.iter().filter(|j| j.id == journey_id).count();
+        assert_eq!(
+            journey_count, 1,
+            "Journey should appear exactly once in the list"
+        );
+
+        // Now test: mark leg 2 as also completed, and verify it shows leg 2 (the last leg)
+        sqlx::query(
+            "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(format!("TEST-TRAIN-{}-2", user_id))
+        .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+        .execute(&pool)
+        .await
+        .expect("insert test train 2");
+
+        let trains_id_2: i64 =
+            sqlx::query_scalar("SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2")
+                .bind(format!("TEST-TRAIN-{}-2", user_id))
+                .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+                .fetch_one(&pool)
+                .await
+                .expect("get trains_id_2");
+
+        let tracking_id_2 = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO train_subscriptions (user_id, trains_id, service_date) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(trains_id_2)
+        .bind("2026-09-22".parse::<NaiveDate>().unwrap())
+        .fetch_one(&pool)
+        .await
+        .expect("insert train subscription 2");
+
+        sqlx::query("UPDATE journey_legs SET train_subscription_id = $1, match_mode = 'manual' WHERE id = $2")
+            .bind(tracking_id_2)
+            .bind(leg_id_2)
+            .execute(&pool)
+            .await
+            .expect("update leg 2 with subscription");
+
+        sqlx::query("DELETE FROM train_current_state WHERE trains_id = $1")
+            .bind(trains_id_2)
+            .execute(&pool)
+            .await
+            .expect("clear existing train state for leg 2");
+        sqlx::query(
+            "INSERT INTO train_current_state (trains_id, status, delay_minutes) \
+             VALUES ($1, 'completed', 0)",
+        )
+        .bind(trains_id_2)
+        .execute(&pool)
+        .await
+        .expect("mark leg 2 as completed");
+
+        // Now both legs are completed, should still show leg 2 (the last one)
+        let journeys = list_journeys_for_user(&pool, user_id)
+            .await
+            .expect("list journeys after all legs completed");
+
+        let our_journey = journeys
+            .iter()
+            .find(|j| j.id == journey_id)
+            .expect("Our journey should still be in the list");
+
+        assert_eq!(
+            our_journey.leg_id, leg_id_2,
+            "When all legs completed, should show last leg (leg 2)"
+        );
+
+        // Clean up test trains (cleanup_user doesn't remove trains since they're shared)
+        sqlx::query("DELETE FROM train_current_state WHERE trains_id IN ($1, $2)")
+            .bind(trains_id_1)
+            .bind(trains_id_2)
+            .execute(&pool)
+            .await
+            .expect("cleanup train_current_state");
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(trains_id_1)
+            .bind(trains_id_2)
+            .execute(&pool)
+            .await
+            .expect("cleanup trains");
+
+        cleanup_user(&pool, user_id).await;
     }
 }
