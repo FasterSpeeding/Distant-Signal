@@ -3,6 +3,7 @@ import Link from 'next/link';
 import {
   getGroup,
   getGroupCustomLines,
+  getGroupJourneys,
   getGroupMembers,
   getGroupTrains,
   getLineStatus,
@@ -21,6 +22,8 @@ import { RemoveGroupTrainButton } from '@/components/RemoveGroupTrainButton';
 import { AddTrainToGroupButton } from '@/components/AddTrainToGroupButton';
 import { AddCustomLineToGroupButton } from '@/components/AddCustomLineToGroupButton';
 import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantButton';
+import { AddJourneyToGroupButton } from '@/components/AddJourneyToGroupButton';
+import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
@@ -30,7 +33,7 @@ import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { getSiteOrigin } from '@/lib/siteOrigin';
-import type { GroupCustomLine, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
+import type { GroupCustomLine, GroupJourney, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
 
 export const revalidate = 0;
 
@@ -79,10 +82,11 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
     throw err;
   }
 
-  const [members, trains, customLines, session] = await Promise.all([
+  const [members, trains, customLines, journeys, session] = await Promise.all([
     getGroupMembers(id),
     getGroupTrains(id),
     getGroupCustomLines(id),
+    getGroupJourneys(id),
     getSession().catch(() => ({ authenticated: false, id: null, email: null, name: null })),
   ]);
 
@@ -262,6 +266,39 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
         )}
       </Stack>
 
+      <Divider />
+
+      {/* A fifth, separate section, mirroring "Shared trains"'s own shape
+          exactly (unlike "Shared custom lines", which has a genuinely
+          different add-permission story) -- sharing a journey has the
+          identical "any member may share one of THEIR OWN" model
+          group_trains already established. See the journey-tracking
+          spec's §6. */}
+      <Stack gap="sm">
+        <Group justify="space-between" align="baseline">
+          <Title order={2} size="h4">
+            Shared journeys
+          </Title>
+          <AddJourneyToGroupButton
+            groupId={id}
+            excludeJourneyIds={journeys.map((j) => j.journeyId)}
+          />
+        </Group>
+        {journeys.length === 0 ? (
+          <Text c="dimmed">No journeys have been shared into this group yet.</Text>
+        ) : (
+          journeys.map((journey) => (
+            <SharedJourneyRow
+              key={journey.journeyId}
+              groupId={id}
+              journey={journey}
+              canManage={canManage}
+              currentUserId={currentUserId}
+            />
+          ))
+        )}
+      </Stack>
+
       {/* "Danger zone" (review §3.2.1, design decision) -- the demoted
           home for "Delete group", now a subtle red text button rather than
           a second red-outline button beside "Leave group" in the header.
@@ -395,6 +432,76 @@ function SharedTrainRow({
             <TrackedTrainStatusBadge train={train} />
             {canRemove && (
               <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
+            )}
+          </Group>
+        }
+      />
+    </Card>
+  );
+}
+
+/** One journey shared into this group -- mirrors `SharedTrainRow` exactly,
+ * one level up (a journey's identity/status instead of a single train's).
+ * `canRemove` mirrors `groups::remove_journey_from_group`'s own
+ * sharer-or-manager check exactly, the same way `SharedTrainRow`'s does.
+ * Links out to `/journeys/{journeyId}` for full detail -- reachable by a
+ * non-owning group member because of Task 4's `journey_readable_by`
+ * widening, the one piece of this feature that isn't a pure
+ * `SharedTrainRow` copy (that link resolving to a real page, rather than a
+ * 404, for a member who isn't the journey's owner, IS the whole point of
+ * this feature's one new authorization path). */
+function SharedJourneyRow({
+  groupId,
+  journey,
+  canManage,
+  currentUserId,
+}: {
+  groupId: string;
+  journey: GroupJourney;
+  canManage: boolean;
+  currentUserId: string | null;
+}) {
+  const canRemove = canManage || (currentUserId !== null && journey.addedBy === currentUserId);
+  // Falls back to a plain leg-count label when no custom name was set --
+  // mirrors trackedTrainDisplayName's own "compute a sensible default from
+  // whatever's on the row" posture, kept inline here since it's a single
+  // conditional rather than a reusable multi-field default-name
+  // computation like that helper's.
+  const displayName =
+    journey.customName ?? (journey.legCount === 1 ? 'Untitled journey' : `Untitled journey (${journey.legCount} legs)`);
+  return (
+    <Card withBorder>
+      <StatusRow
+        title={
+          <Link href={`/journeys/${journey.journeyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Text fw={500}>{displayName}</Text>
+          </Link>
+        }
+        subtitle={
+          <Text size="sm" c="dimmed">
+            Shared by {memberLabel(journey.addedByName, journey.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
+          </Text>
+        }
+        trailing={
+          <Group gap="xs" wrap="nowrap">
+            {/* `TrackedTrainStatusBadge`'s prop type requires a non-nullable
+                `resolutionStatus`, but `GroupJourney.resolutionStatus` is
+                nullable (a journey's first leg may have no bound train yet)
+                -- coalesce to 'unresolved' here rather than widening that
+                component's prop type, which `SharedTrainRow` above also
+                relies on staying non-nullable. 'unresolved' already renders
+                as the red "Unmatched" badge via that component's own
+                `STATUS_LABELS` map, the accurate reading for a leg with no
+                train bound yet. */}
+            <TrackedTrainStatusBadge
+              train={{
+                resolutionStatus: journey.resolutionStatus ?? 'unresolved',
+                status: journey.status,
+                delayMinutes: journey.delayMinutes,
+              }}
+            />
+            {canRemove && (
+              <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />
             )}
           </Group>
         }
