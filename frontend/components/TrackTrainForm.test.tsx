@@ -597,11 +597,21 @@ describe('TrackTrainForm', () => {
       fireEvent.click(screen.getByRole('radio', { name: 'Search a time window' }));
     }
 
-    it('defaults to "Pick a departure" mode, showing the pin-mode fields', () => {
+    it('defaults to "I know the train" mode, showing the pin-mode fields', () => {
       renderWithMantine(<TrackTrainForm />);
-      expect(screen.getByRole('radio', { name: 'Pick a departure' })).toBeChecked();
+      expect(screen.getByRole('radio', { name: 'I know the train' })).toBeChecked();
       expect(screen.getByLabelText(/Scheduled departure/)).toBeInTheDocument();
       expect(screen.queryByRole('combobox', { name: /^Destination station$/ })).not.toBeInTheDocument();
+    });
+
+    // Review §2.1/I21: `?mode=window` (wired through `track/page.tsx`) is
+    // the one thing that can now send a user straight to this mode -- the
+    // toggle used to be the ONLY discovery path, unreachable from anywhere
+    // else in the app (not even a bookmark).
+    it('starts in window mode when initialMode="window" is passed', () => {
+      renderWithMantine(<TrackTrainForm initialMode="window" />);
+      expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toBeInTheDocument();
     });
 
     it('switching to "Search a time window" swaps the pin fields for the window fields', async () => {
@@ -739,8 +749,96 @@ describe('TrackTrainForm', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
 
-      expect(await screen.findByText('Log in to track this train.')).toBeInTheDocument();
+      // Review §2.5/M19: the modal's own copy now matches the mode -- a
+      // window search hasn't tracked anything yet, so "track this train"
+      // was never true here.
+      expect(await screen.findByText('Log in to search for a train.')).toBeInTheDocument();
       expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
+    });
+
+    it('the login-modal copy still says "track this train" in pick mode', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))));
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
+
+      expect(await screen.findByText('Log in to track this train.')).toBeInTheDocument();
+    });
+
+    // Review §2.2/M14: the ordering check -- previously only PRESENCE was
+    // validated, so "earliest after latest" reached the backend unexamined.
+    it('rejects a window whose latest departure is before its earliest departure, with no network call', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'RDG' },
+      });
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '18:00' } });
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '09:00' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      expect(screen.getByText('Latest departure must be after earliest departure.')).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
+    });
+
+    it('rejects a window whose latest arrival is before its earliest arrival, with no network call', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'RDG' },
+      });
+      fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '12:00' } });
+      fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), { target: { value: '11:00' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      expect(screen.getByText('Latest arrival must be after earliest arrival.')).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
+    });
+
+    // Review §2.2/I17: the labels still say "(optional)" per-field (each
+    // one individually is), but the group-level rule -- at least one of
+    // the four is required -- is now stated up front instead of only
+    // surfacing as a post-submit error.
+    it('states the at-least-one-of-four rule up front, not only after a failed submit', () => {
+      renderWithMantine(<TrackTrainForm />);
+      switchToWindowMode();
+
+      expect(screen.getByText('At least one of the four times below is required to search.')).toBeInTheDocument();
+    });
+
+    // Review §2.2/M13: the field shows a real default value, not a grey
+    // placeholder indistinguishable from "nothing selected".
+    it("seeds the Date field with today's date rather than leaving it an empty placeholder", () => {
+      renderWithMantine(<TrackTrainForm />);
+      switchToWindowMode();
+
+      // `DatePickerInput`'s labelled control is a `<button>` whose text
+      // IS the formatted value (not an `<input value>`) -- see the
+      // `DateTimePicker` mock's own comment above for why the pin-mode
+      // sibling needs a stand-in but this one, being asserted on its
+      // rendered text rather than driven via `fireEvent.change`, does not.
+      const dateButton = screen.getByLabelText('Date');
+      expect(dateButton).toHaveTextContent(dayjs().format('MMMM D, YYYY'));
+      expect(dateButton).not.toHaveTextContent('Today');
+    });
+
+    // Review §2.1/I21: the page's own mode-aware intro copy now lives
+    // inside this form (see its own comment) rather than as static text
+    // owned by the page, so it reacts to the client-side toggle.
+    it('switches the intro copy to describe window mode once selected', () => {
+      renderWithMantine(<TrackTrainForm />);
+      expect(screen.getByText(/Pin a specific train to see its live position/)).toBeInTheDocument();
+
+      switchToWindowMode();
+
+      expect(screen.queryByText(/Pin a specific train to see its live position/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Not sure which train yet\?/)).toBeInTheDocument();
     });
   });
 

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Group, Modal, SegmentedControl, Stack, TextInput } from '@mantine/core';
+import { Alert, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -107,6 +107,12 @@ export function AddJourneyLegButton({
   const windowTimesComplete = !Object.values(incompleteTimes).some(Boolean);
   const windowHasABound =
     departFrom.trim() !== '' || departTo.trim() !== '' || arriveFrom.trim() !== '' || arriveTo.trim() !== '';
+  // Review §2.2/M14: same "no visible earliest > latest check" gap
+  // `TrackTrainForm`'s own window fields had -- plain string comparison is
+  // safe here for the same reason it is there (`"HH:MM"` sorts
+  // lexicographically identical to chronologically within one day).
+  const windowOrderValid =
+    (!departFrom || !departTo || departFrom <= departTo) && (!arriveFrom || !arriveTo || arriveFrom <= arriveTo);
 
   const isValid =
     mode === 'knownTrain'
@@ -115,7 +121,8 @@ export function AddJourneyLegButton({
         destinationCrs.trim() !== '' &&
         serviceDate !== '' &&
         windowTimesComplete &&
-        windowHasABound;
+        windowHasABound &&
+        windowOrderValid;
 
   async function handleSubmit() {
     if (!isValid) return;
@@ -158,11 +165,18 @@ export function AddJourneyLegButton({
       </Button>
       <Modal opened={opened} onClose={close} title="Add a leg to this journey">
         <Stack>
+          {/* Review §2.1/I21: aligned with `TrackTrainForm`'s own mode
+              toggle, which used to say "Search a time window" while this
+              one said "Search by time window" -- two near-identical
+              phrasings for the same choice. "I know the train" was already
+              here and is the better of the two labels the codebase had for
+              the OTHER option, so `TrackTrainForm` adopted it too rather
+              than the reverse. */}
           <SegmentedControl
             value={mode}
             onChange={(value) => setMode(value as LegMode)}
             data={[
-              { label: 'Search by time window', value: 'window' },
+              { label: 'Search a time window', value: 'window' },
               { label: 'I know the train', value: 'knownTrain' },
             ]}
           />
@@ -186,11 +200,21 @@ export function AddJourneyLegButton({
                 value={destinationCrs}
                 onChange={(event) => setDestinationCrs(event.currentTarget.value)}
               />
+              {/* Review §2.2/I17: same fix as `TrackTrainForm`'s own window
+                  fields -- states the at-least-one-of-four rule up front
+                  rather than leaving it to a disabled button with no
+                  explanation. */}
+              <Text size="sm">At least one of the four times below is required.</Text>
+              {/* Review §2.2/M14: matches `TrackTrainForm`'s own four
+                  descriptions verbatim ("leaving X"/"reaching Y" rather
+                  than the bare "departing"/"arriving" this modal used
+                  before) -- one phrasing for one rule, not three across
+                  the app. */}
               <Group grow align="flex-start">
                 <TimeFilterInput
                   label="Earliest departure (optional)"
                   name="earliest departure"
-                  description="Only trains departing at or after this time."
+                  description={`Only trains leaving ${originCrs.trim() || 'the origin'} at or after this time.`}
                   value={departFrom}
                   onChange={setDepartFrom}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, departFrom: v }))}
@@ -199,7 +223,7 @@ export function AddJourneyLegButton({
                 <TimeFilterInput
                   label="Latest departure (optional)"
                   name="latest departure"
-                  description="Only trains departing at or before this time."
+                  description={`Only trains leaving ${originCrs.trim() || 'the origin'} at or before this time.`}
                   value={departTo}
                   onChange={setDepartTo}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, departTo: v }))}
@@ -210,7 +234,7 @@ export function AddJourneyLegButton({
                 <TimeFilterInput
                   label="Earliest arrival (optional)"
                   name="earliest arrival"
-                  description="Only trains arriving at or after this time."
+                  description={`Only trains reaching ${destinationCrs.trim() || 'the destination'} at or after this time.`}
                   value={arriveFrom}
                   onChange={setArriveFrom}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
@@ -219,7 +243,7 @@ export function AddJourneyLegButton({
                 <TimeFilterInput
                   label="Latest arrival (optional)"
                   name="latest arrival"
-                  description="Only trains arriving at or before this time."
+                  description={`Only trains reaching ${destinationCrs.trim() || 'the destination'} at or before this time.`}
                   value={arriveTo}
                   onChange={setArriveTo}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
