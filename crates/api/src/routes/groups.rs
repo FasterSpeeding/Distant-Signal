@@ -91,6 +91,16 @@ pub fn router() -> Router {
             "/groups/shared-custom-lines",
             axum::routing::get(list_shared_custom_lines_route),
         )
+        // A fourth literal segment at `/groups/{id}`'s dynamic position,
+        // resolved ahead of it by the same matchit precedence
+        // `/groups/shared-trains` and `/groups/shared-custom-lines` above
+        // already rely on (and which those files' own precedence tests
+        // pin). Group ids are 32 random base64url bytes, so no real group
+        // can ever be shadowed by this path.
+        .route(
+            "/groups/shared-journeys",
+            axum::routing::get(list_shared_journeys_route),
+        )
         .route(
             "/groups/{id}/trains",
             axum::routing::get(list_group_trains_route).post(add_group_train),
@@ -98,6 +108,14 @@ pub fn router() -> Router {
         .route(
             "/groups/{id}/trains/{train_subscription_id}",
             axum::routing::delete(remove_group_train),
+        )
+        .route(
+            "/groups/{id}/journeys",
+            axum::routing::get(list_group_journeys_route).post(add_group_journey),
+        )
+        .route(
+            "/groups/{id}/journeys/{journey_id}",
+            axum::routing::delete(remove_group_journey),
         )
         // Custom-line group grants. A distinct `.../lines/custom` sub-path
         // rather than a bare `.../lines`: a future `group_lines`
@@ -680,6 +698,95 @@ async fn remove_group_train(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `_route` suffix avoids shadowing `groups::list_group_journeys` while
+/// still reading naturally at the call site. Mirrors
+/// `list_group_trains_route` exactly.
+async fn list_group_journeys_route(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<groups::GroupJourney>>, (StatusCode, String)> {
+    require_member(&app, &group_id, &user.id).await?;
+
+    let journeys = groups::list_group_journeys(&app.database, &group_id)
+        .await
+        .map_err(internal_error("list group journeys"))?;
+    Ok(Json(journeys))
+}
+
+/// `GET /groups/shared-journeys` -- every journey shared into ANY group
+/// the caller belongs to, minus the ones they own themselves. Mirrors
+/// `list_shared_trains_route` exactly, including its "no group id in the
+/// path, no `require_member` gate" reasoning: the caller's own membership
+/// rows ARE the scope of `groups::list_shared_journeys_for_user`'s query.
+/// Not consumed by any frontend page in this phase -- see this feature's
+/// plan, Judgment Call 4 -- built for parity with `group_trains`'s own
+/// route set per spec §6.
+async fn list_shared_journeys_route(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<groups::SharedJourney>>, (StatusCode, String)> {
+    let journeys = groups::list_shared_journeys_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list shared journeys"))?;
+    Ok(Json(journeys))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddGroupJourneyRequest {
+    journey_id: i64,
+}
+
+/// Any current member may add one of their OWN journeys (spec §6);
+/// `groups::add_journey_to_group`'s own ownership check is what actually
+/// enforces "their own" -- this handler only checks group membership.
+/// Mirrors `add_group_train` exactly.
+async fn add_group_journey(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+    Json(req): Json<AddGroupJourneyRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_member(&app, &group_id, &user.id).await?;
+
+    let added = groups::add_journey_to_group(&app.database, &group_id, req.journey_id, &user.id)
+        .await
+        .map_err(internal_error("add journey to group"))?;
+    if !added {
+        return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /groups/{id}/journeys/{journeyId}` -- the sharer, or any
+/// `admin`/`owner`, may remove a shared journey. Mirrors
+/// `remove_group_train` exactly.
+async fn remove_group_journey(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((group_id, journey_id)): Path<(String, i64)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let role = require_member(&app, &group_id, &user.id).await?;
+
+    let removed = groups::remove_journey_from_group(
+        &app.database,
+        &group_id,
+        journey_id,
+        &user.id,
+        role.can_manage(),
+    )
+    .await
+    .map_err(internal_error("remove journey from group"))?;
+    if !removed {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no shared journey with that id".to_string(),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------------
 // Custom-line group grants. See
 // docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md.
@@ -953,6 +1060,40 @@ mod tests {
             .unwrap();
         assert_eq!(&body[..], b"shared-lines");
     }
+
+    /// The same precedence check for `/groups/shared-journeys`, the fourth
+    /// literal segment this file registers at `/groups/{id}`'s dynamic
+    /// position. Same hand-rolled two-route shape as its three siblings
+    /// above, for the same reason.
+    #[tokio::test]
+    async fn shared_journeys_literal_route_wins_over_same_position_dynamic_id_route() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route(
+                "/groups/shared-journeys",
+                axum::routing::get(|| async { "shared-journeys" }),
+            )
+            .route("/groups/{id}", axum::routing::get(|| async { "dynamic" }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/groups/shared-journeys")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"shared-journeys");
+    }
 }
 
 /// Route-level permission tests for this file's handlers, driven through
@@ -1136,9 +1277,29 @@ mod db_tests {
         row.0
     }
 
+    async fn seed_journey(pool: &PgPool, user_id: &str) -> i64 {
+        let journey_id: (i64,) = sqlx::query_as(
+            "INSERT INTO journeys (user_id, custom_name) VALUES ($1, NULL) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("seed a journey");
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 1, 'WOK', 'WAT', CURRENT_DATE, 'manual')",
+        )
+        .bind(journey_id.0)
+        .execute(pool)
+        .await
+        .expect("seed a journey leg");
+        journey_id.0
+    }
+
     /// Deletes the fixture group (cascading `group_members`,
-    /// `group_trains`, and `group_invite_links`) and THEN its fixture
-    /// users. Order matters: `groups.created_by` and
+    /// `group_trains`, `group_journeys`, and `group_invite_links`) and THEN
+    /// its fixture users. Order matters: `groups.created_by` and
     /// `group_invite_links.created_by` reference `users(id)` with no
     /// `ON DELETE CASCADE` (see
     /// `crates/api/migrations/20260911090000_shared_groups.sql`), so
@@ -2092,6 +2253,53 @@ mod db_tests {
                 "TEST-ROUTE-GRANT-LIST-SHARER",
                 "TEST-ROUTE-GRANT-LIST-VIEWER",
                 "TEST-ROUTE-GRANT-LIST-STRANGER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_group_journey_a_caller_who_does_not_own_the_journey_gets_404 -- --ignored \
+                --test-threads=1`"]
+    async fn add_group_journey_a_caller_who_does_not_own_the_journey_gets_404() {
+        let pool = connect().await;
+        let member_token = seed_session(&pool, "TEST-ROUTE-GROUPS-ADDJOURNEY-MEMBER").await;
+        seed_session(&pool, "TEST-ROUTE-GROUPS-ADDJOURNEY-STRANGER").await;
+
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Test Add Journey",
+            "TEST-ROUTE-GROUPS-ADDJOURNEY-MEMBER",
+        )
+        .await
+        .expect("create fixture group");
+        let journey_id = seed_journey(&pool, "TEST-ROUTE-GROUPS-ADDJOURNEY-STRANGER").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = post_json(
+            router,
+            format!("/groups/{group_id}/journeys"),
+            Some(&member_token),
+            Some(serde_json::json!({ "journeyId": journey_id })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no journey with that id".to_string()));
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GROUPS-ADDJOURNEY-MEMBER",
+                "TEST-ROUTE-GROUPS-ADDJOURNEY-STRANGER",
             ],
         )
         .await;

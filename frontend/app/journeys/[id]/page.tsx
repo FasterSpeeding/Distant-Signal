@@ -5,14 +5,19 @@ import { AddJourneyLegButton } from '@/components/AddJourneyLegButton';
 import { JourneyLegCard } from '@/components/JourneyLegCard';
 import { JourneyStatusBadge } from '@/components/JourneyStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
+import { ShareJourneyButton } from '@/components/ShareJourneyButton';
 
 export const revalidate = 0;
 
 /** `/journeys/[id]` -- design doc §4. One card per leg (Phase 1: always
  * exactly one, see `crates/api/src/data/journeys.rs`'s own module doc
- * comment). No editable header, no delete, no share-to-group button, no
- * skip badge, no platform column -- all explicitly deferred, see this
- * plan's own Non-goals for the reasoning behind each. */
+ * comment). No editable header, no delete, no skip badge, no platform
+ * column -- all explicitly deferred, see this plan's own Non-goals for the
+ * reasoning behind each. A share-to-group button DOES exist (Task 8), but
+ * only for the journey's owner (`journey.isOwner`) -- a non-owning group
+ * member reaches this page via `journey_readable_by`'s group-shared read
+ * path and gets neither that button nor the leg-level owner-only controls
+ * (`JourneyLegCard`'s own `isOwner` gating). */
 export default async function JourneyDetailPage({
   params,
 }: {
@@ -51,15 +56,26 @@ export default async function JourneyDetailPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Group justify="space-between">
+      <Group justify="space-between" align="baseline">
         <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
-        <Group gap="sm">
+        <Group gap="xs">
+          {/* Phase 2's status badge is a pure read -- shown to every viewer,
+              owner or shared-group member alike. */}
           <JourneyStatusBadge legs={journey.legs} />
-          <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
+          {/* Both ACTIONS are owner-only. "Share" was already gated by
+              Phase 4; "Add leg" is gated here for the same reason -- POST
+              /Journeys/{id}/legs answers 404 for a non-owner (see
+              `post_journey_leg_a_journey_owned_by_someone_else_is_404_not_403`),
+              so offering the button to a shared-group viewer would only
+              produce a dead end. */}
+          {journey.isOwner && (
+            <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
+          )}
+          {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
         </Group>
       </Group>
       {journey.legs.map((leg) => (
-        <JourneyLegCard key={leg.id} journeyId={journey.id} leg={leg} />
+        <JourneyLegCard key={leg.id} journeyId={journey.id} leg={leg} isOwner={journey.isOwner} />
       ))}
     </Stack>
   );

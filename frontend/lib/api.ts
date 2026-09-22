@@ -41,6 +41,8 @@ import type {
   SharedGroupTrain,
   GroupCustomLine,
   SharedGroupCustomLine,
+  GroupJourney,
+  SharedGroupJourney,
   GroupJoinPreview,
   OperatorSummary,
   JourneyDetail,
@@ -855,6 +857,29 @@ export async function getSharedGroupCustomLines(): Promise<SharedGroupCustomLine
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<SharedGroupCustomLine[]>;
+}
+
+/** `GET /public/groups/{id}/journeys` -- the journeys shared into this
+ * group. Any current member may read it; a non-member gets the group's
+ * usual `404`. Throws on a `401`, like `getGroupTrains`/`getGroupCustomLines`
+ * and for the same reason (there is an id in the path). */
+export async function getGroupJourneys(id: string): Promise<GroupJourney[]> {
+  const url = `${baseUrl()}/public/groups/${id}/journeys`;
+  return fetchJson<GroupJourney[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+}
+
+/** `GET /public/groups/shared-journeys` -- every journey OTHER members
+ * have shared into any group the caller belongs to (never the caller's
+ * own). Not called by any page yet -- see this feature's plan, Judgment
+ * Call 4 -- built now for parity with `getSharedGroupTrains`/
+ * `getSharedGroupCustomLines`. `null` on a `401`, same reasoning as those
+ * two: no id in the path, so a `401` can only ever mean "not logged in". */
+export async function getSharedGroupJourneys(): Promise<SharedGroupJourney[] | null> {
+  const url = `${baseUrl()}/public/groups/shared-journeys`;
+  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  if (response.status === 401) return null;
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<SharedGroupJourney[]>;
 }
 
 /** `GET /public/groups/join/{token}` -- unauthenticated on the backend

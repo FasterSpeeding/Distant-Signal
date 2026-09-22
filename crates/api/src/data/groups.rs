@@ -478,7 +478,16 @@ pub async fn remove_member(
     // deleting the line outright (the FK cascades every grant everywhere).
     // `remove_member_does_not_touch_custom_line_group_grants_even_when_the_departing_member_is_the_grantor`
     // pins this.
+    // group_journeys follows group_trains's own cleanup precedent, not
+    // custom_line_group_grants's persist-after-departure exception -- spec
+    // §6: "a journey is an active, live-tracked personal thing, not a
+    // static definition."
     sqlx::query("DELETE FROM group_trains WHERE group_id = $1 AND added_by = $2")
+        .bind(group_id)
+        .bind(target_user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM group_journeys WHERE group_id = $1 AND added_by = $2")
         .bind(group_id)
         .bind(target_user_id)
         .execute(&mut *tx)
@@ -718,6 +727,47 @@ pub async fn add_train_to_group(
     Ok(true)
 }
 
+/// Adds one of the caller's own journeys to a group. Ownership is enforced
+/// at the APPLICATION layer, not the DB -- the exact `WHERE id = $1 AND
+/// user_id = $2` shape [`add_train_to_group`] already uses, now against
+/// `journeys` instead of `train_subscriptions` (spec §6: "share requires
+/// the caller to own the journey ... same as `add_train_to_group`'s
+/// ownership check"). Idempotent: re-adding an already-shared journey is a
+/// silent no-op (`ON CONFLICT DO NOTHING`), matching
+/// [`add_train_to_group`].
+///
+/// Returns `false` if `journey_id` doesn't exist or isn't owned by
+/// `user_id` -- the route maps this to `404`, never `403`, same as every
+/// other ownership check in this file.
+pub async fn add_journey_to_group(
+    pool: &PgPool,
+    group_id: &str,
+    journey_id: i64,
+    user_id: &str,
+) -> Result<bool> {
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
+            .bind(journey_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    if owned.is_none() {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "INSERT INTO group_journeys (group_id, journey_id, added_by, added_at) \
+         VALUES ($1, $2, $3, NOW()) \
+         ON CONFLICT (group_id, journey_id) DO NOTHING",
+    )
+    .bind(group_id)
+    .bind(journey_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(true)
+}
+
 /// Removes a shared train from a group. `caller_can_manage` should be the
 /// route's own already-resolved `GroupRole::can_manage()` for this caller
 /// -- an `admin`/`owner` may remove ANY shared train; anyone else may only
@@ -745,6 +795,39 @@ pub async fn remove_train_from_group(
         )
         .bind(group_id)
         .bind(train_subscription_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?
+    };
+    Ok(result.rows_affected() > 0)
+}
+
+/// Removes a shared journey from a group. `caller_can_manage` should be
+/// the route's own already-resolved `GroupRole::can_manage()` -- an
+/// `admin`/`owner` may remove ANY shared journey; anyone else may only
+/// remove one THEY added (spec §6: "unshare is sharer-or-manager", same
+/// rule as [`remove_train_from_group`]). Returns `false` if no matching
+/// row was deleted -- the route maps that to `404`.
+pub async fn remove_journey_from_group(
+    pool: &PgPool,
+    group_id: &str,
+    journey_id: i64,
+    user_id: &str,
+    caller_can_manage: bool,
+) -> Result<bool> {
+    let result = if caller_can_manage {
+        sqlx::query("DELETE FROM group_journeys WHERE group_id = $1 AND journey_id = $2")
+            .bind(group_id)
+            .bind(journey_id)
+            .execute(pool)
+            .await?
+    } else {
+        sqlx::query(
+            "DELETE FROM group_journeys \
+             WHERE group_id = $1 AND journey_id = $2 AND added_by = $3",
+        )
+        .bind(group_id)
+        .bind(journey_id)
         .bind(user_id)
         .execute(pool)
         .await?
@@ -837,6 +920,89 @@ impl From<GroupTrainRow> for GroupTrain {
     }
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct GroupJourneyRow {
+    journey_id: i64,
+    custom_name: Option<String>,
+    leg_count: i64,
+    // First-leg (leg_order = 1) identity + live status -- Judgment Call 2:
+    // a journey always has at least one leg (Phase 1's migration
+    // guarantees this), so this join can never come back NULL for a
+    // well-formed journey.
+    pin_origin_crs: Option<String>,
+    pin_destination_crs: Option<String>,
+    pin_origin_name: Option<String>,
+    pin_destination_name: Option<String>,
+    pin_scheduled_departure: Option<DateTime<Utc>>,
+    service_date: chrono::NaiveDate,
+    resolution_status: Option<String>,
+    train_uid: Option<String>,
+    status: Option<String>,
+    delay_minutes: Option<i32>,
+    added_by: String,
+    added_by_name: Option<String>,
+    added_by_username: Option<String>,
+}
+
+/// A shared journey's display shape for `GET /groups/{id}/journeys` --
+/// `GroupTrain`'s direct analogue, one level up. Carries the FIRST leg's
+/// identity/live-status fields (Judgment Call 2 in this feature's plan) so
+/// the group page can render something useful without duplicating a
+/// worst-status-across-legs rollup that belongs to the journey's own
+/// detail page instead. `legCount` lets the row at least signal "there's
+/// more" for a multi-leg journey once Phase 2 ships.
+///
+/// Same hard privacy constraint `GroupTrain` documents: no ticket field,
+/// no `notificationsEnabled`/exact `addedAt` -- a shared journey's group
+/// row must never widen past what `group_trains` already decided was safe
+/// to show a fellow member for the underlying tracked-train resource.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupJourney {
+    pub journey_id: i64,
+    pub custom_name: Option<String>,
+    pub leg_count: i64,
+    pub pin_origin_crs: Option<String>,
+    pub pin_destination_crs: Option<String>,
+    pub pin_origin_name: Option<String>,
+    pub pin_destination_name: Option<String>,
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    pub service_date: chrono::NaiveDate,
+    pub resolution_status: Option<String>,
+    pub train_uid: Option<String>,
+    pub status: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub added_by: String,
+    pub added_by_name: Option<String>,
+    /// Same contract as `GroupTrain.added_by_tag`.
+    pub added_by_tag: Option<String>,
+}
+
+impl From<GroupJourneyRow> for GroupJourney {
+    fn from(row: GroupJourneyRow) -> Self {
+        let added_by =
+            users::MemberDisplay::of(row.added_by_name, row.added_by_username, &row.added_by);
+        GroupJourney {
+            journey_id: row.journey_id,
+            custom_name: row.custom_name,
+            leg_count: row.leg_count,
+            pin_origin_crs: row.pin_origin_crs,
+            pin_destination_crs: row.pin_destination_crs,
+            pin_origin_name: row.pin_origin_name,
+            pin_destination_name: row.pin_destination_name,
+            pin_scheduled_departure: row.pin_scheduled_departure,
+            service_date: row.service_date,
+            resolution_status: row.resolution_status,
+            train_uid: row.train_uid,
+            status: row.status,
+            delay_minutes: row.delay_minutes,
+            added_by: row.added_by,
+            added_by_name: added_by.label,
+            added_by_tag: added_by.tag,
+        }
+    }
+}
+
 /// Every train shared into `group_id`, oldest-shared first. No permission
 /// check here -- the route's own `get_member_role` call gates "is the
 /// caller even a member." See `GroupTrain`'s own doc comment for the
@@ -864,6 +1030,42 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(GroupTrain::from).collect())
+}
+
+/// Every journey shared into `group_id`, oldest-shared first. No
+/// permission check here -- the route's own `require_member` call gates
+/// "is the caller even a member," the same split [`list_group_trains`]
+/// already uses.
+///
+/// The first-leg join (`jl.leg_order = 1`) and the `leg_count` subquery
+/// are this function's one real divergence from `list_group_trains` --
+/// see `GroupJourney`'s own doc comment (Judgment Call 2 in this
+/// feature's plan) for why.
+pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<GroupJourney>> {
+    let rows: Vec<GroupJourneyRow> = sqlx::query_as(
+        "SELECT gj.journey_id, j.custom_name, \
+                (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
+                ts.pin_origin_crs, ts.pin_destination_crs, \
+                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
+                ts.pin_scheduled_departure, jl.service_date, ts.resolution_status, \
+                tr.train_uid, cs.status, cs.delay_minutes, \
+                gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
+         FROM group_journeys gj \
+         JOIN journeys j ON j.id = gj.journey_id \
+         JOIN journey_legs jl ON jl.journey_id = j.id AND jl.leg_order = 1 \
+         JOIN users u ON u.id = gj.added_by \
+         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+         LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         WHERE gj.group_id = $1 \
+         ORDER BY gj.added_at",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(GroupJourney::from).collect())
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1030,6 +1232,125 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(SharedTrain::from).collect())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct SharedJourneyRow {
+    group_id: String,
+    group_name: String,
+    journey_id: i64,
+    custom_name: Option<String>,
+    leg_count: i64,
+    pin_origin_crs: Option<String>,
+    pin_destination_crs: Option<String>,
+    pin_origin_name: Option<String>,
+    pin_destination_name: Option<String>,
+    pin_scheduled_departure: Option<DateTime<Utc>>,
+    service_date: chrono::NaiveDate,
+    resolution_status: Option<String>,
+    train_uid: Option<String>,
+    status: Option<String>,
+    delay_minutes: Option<i32>,
+    added_by: String,
+    added_by_name: Option<String>,
+    added_by_username: Option<String>,
+}
+
+/// One journey shared into one group the CALLER is a member of --
+/// [`GroupJourney`] plus the two fields that only make sense once rows
+/// from several groups land in one list, mirroring [`SharedTrain`]
+/// exactly. Not consumed by any frontend page in this phase -- see this
+/// feature's plan, Judgment Call 4 -- but built now for parity with
+/// `group_trains`'s own route/function set, per spec §6.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedJourney {
+    pub group_id: String,
+    pub group_name: String,
+    pub journey_id: i64,
+    pub custom_name: Option<String>,
+    pub leg_count: i64,
+    pub pin_origin_crs: Option<String>,
+    pub pin_destination_crs: Option<String>,
+    pub pin_origin_name: Option<String>,
+    pub pin_destination_name: Option<String>,
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    pub service_date: chrono::NaiveDate,
+    pub resolution_status: Option<String>,
+    pub train_uid: Option<String>,
+    pub status: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub added_by: String,
+    pub added_by_name: Option<String>,
+    pub added_by_tag: Option<String>,
+}
+
+impl From<SharedJourneyRow> for SharedJourney {
+    fn from(row: SharedJourneyRow) -> Self {
+        let added_by =
+            users::MemberDisplay::of(row.added_by_name, row.added_by_username, &row.added_by);
+        SharedJourney {
+            group_id: row.group_id,
+            group_name: row.group_name,
+            journey_id: row.journey_id,
+            custom_name: row.custom_name,
+            leg_count: row.leg_count,
+            pin_origin_crs: row.pin_origin_crs,
+            pin_destination_crs: row.pin_destination_crs,
+            pin_origin_name: row.pin_origin_name,
+            pin_destination_name: row.pin_destination_name,
+            pin_scheduled_departure: row.pin_scheduled_departure,
+            service_date: row.service_date,
+            resolution_status: row.resolution_status,
+            train_uid: row.train_uid,
+            status: row.status,
+            delay_minutes: row.delay_minutes,
+            added_by: row.added_by,
+            added_by_name: added_by.label,
+            added_by_tag: added_by.tag,
+        }
+    }
+}
+
+/// Every journey shared into ANY group `user_id` belongs to, EXCLUDING the
+/// ones they own themselves -- mirrors [`list_shared_trains_for_user`]
+/// exactly, including its `LIMIT`/ordering/one-row-per-pair reasoning; see
+/// that function's own doc comment for the full justification, which
+/// applies here unchanged with `journeys`/`group_journeys` in place of
+/// `train_subscriptions`/`group_trains`.
+pub async fn list_shared_journeys_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<SharedJourney>> {
+    let rows: Vec<SharedJourneyRow> = sqlx::query_as(
+        "SELECT g.id AS group_id, g.name AS group_name, \
+                gj.journey_id, j.custom_name, \
+                (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
+                ts.pin_origin_crs, ts.pin_destination_crs, \
+                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
+                ts.pin_scheduled_departure, jl.service_date, ts.resolution_status, \
+                tr.train_uid, cs.status, cs.delay_minutes, \
+                gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
+         FROM group_members me \
+         JOIN groups g ON g.id = me.group_id \
+         JOIN group_journeys gj ON gj.group_id = g.id \
+         JOIN journeys j ON j.id = gj.journey_id \
+         JOIN journey_legs jl ON jl.journey_id = j.id AND jl.leg_order = 1 \
+         JOIN users u ON u.id = gj.added_by \
+         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+         LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         WHERE me.user_id = $1 AND j.user_id <> $1 \
+         ORDER BY gj.added_at DESC, gj.journey_id DESC \
+         LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(SharedJourney::from).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -2571,6 +2892,340 @@ mod db_tests {
         cleanup(&pool, &["TEST-GROUPS-LISTTRAINS-OWNER"]).await;
     }
 
+    async fn seed_journey(pool: &PgPool, user_id: &str) -> i64 {
+        let journey_id: (i64,) = sqlx::query_as(
+            "INSERT INTO journeys (user_id, custom_name) VALUES ($1, NULL) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("seed a journey");
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 1, 'WOK', 'WAT', CURRENT_DATE, 'manual')",
+        )
+        .bind(journey_id.0)
+        .execute(pool)
+        .await
+        .expect("seed a journey leg");
+        journey_id.0
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_journey_to_group_rejects_a_journey_the_caller_does_not_own -- --ignored`"]
+    async fn add_journey_to_group_rejects_a_journey_the_caller_does_not_own() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-ADDJOURNEY-OWNER-1").await;
+        seed_user(&pool, "TEST-GROUPS-ADDJOURNEY-STRANGER-1").await;
+        let group_id = create_group(
+            &pool,
+            "Add Journey Test 1",
+            "TEST-GROUPS-ADDJOURNEY-OWNER-1",
+        )
+        .await
+        .expect("create group");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-ADDJOURNEY-STRANGER-1").await;
+
+        let added = add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-GROUPS-ADDJOURNEY-OWNER-1", // owns the GROUP, not the journey
+        )
+        .await
+        .expect("add attempt");
+        assert!(!added);
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-ADDJOURNEY-OWNER-1",
+                "TEST-GROUPS-ADDJOURNEY-STRANGER-1",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_journey_to_group_is_idempotent -- --ignored`"]
+    async fn add_journey_to_group_is_idempotent() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-ADDJOURNEY-OWNER-2").await;
+        let group_id = create_group(
+            &pool,
+            "Add Journey Test 2",
+            "TEST-GROUPS-ADDJOURNEY-OWNER-2",
+        )
+        .await
+        .expect("create group");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-ADDJOURNEY-OWNER-2").await;
+
+        assert!(
+            add_journey_to_group(
+                &pool,
+                &group_id,
+                journey_id,
+                "TEST-GROUPS-ADDJOURNEY-OWNER-2"
+            )
+            .await
+            .expect("first add")
+        );
+        assert!(
+            add_journey_to_group(
+                &pool,
+                &group_id,
+                journey_id,
+                "TEST-GROUPS-ADDJOURNEY-OWNER-2"
+            )
+            .await
+            .expect("second add is a no-op, not an error")
+        );
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM group_journeys WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(count.0, 1);
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-ADDJOURNEY-OWNER-2"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_journey_from_group_allows_the_sharer_to_remove_their_own_journey \
+                -- --ignored`"]
+    async fn remove_journey_from_group_allows_the_sharer_to_remove_their_own_journey() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-REMOVEJOURNEY-1").await;
+        let group_id = create_group(
+            &pool,
+            "Remove Journey Test 1",
+            "TEST-GROUPS-REMOVEJOURNEY-1",
+        )
+        .await
+        .expect("create group");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-REMOVEJOURNEY-1").await;
+        add_journey_to_group(&pool, &group_id, journey_id, "TEST-GROUPS-REMOVEJOURNEY-1")
+            .await
+            .expect("add");
+
+        let removed = remove_journey_from_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-GROUPS-REMOVEJOURNEY-1",
+            false, // plain member, but they ARE the sharer
+        )
+        .await
+        .expect("remove");
+        assert!(removed);
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-REMOVEJOURNEY-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_journey_from_group_denies_a_plain_member_removing_someone_elses_journey \
+                -- --ignored`"]
+    async fn remove_journey_from_group_denies_a_plain_member_removing_someone_elses_journey() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-REMOVEJOURNEY-OWNER-2").await;
+        seed_user(&pool, "TEST-GROUPS-REMOVEJOURNEY-OTHER-2").await;
+        let group_id = create_group(
+            &pool,
+            "Remove Journey Test 2",
+            "TEST-GROUPS-REMOVEJOURNEY-OWNER-2",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-REMOVEJOURNEY-OTHER-2")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-REMOVEJOURNEY-OWNER-2").await;
+        add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-GROUPS-REMOVEJOURNEY-OWNER-2",
+        )
+        .await
+        .expect("add");
+
+        let removed = remove_journey_from_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-GROUPS-REMOVEJOURNEY-OTHER-2", // did not share it, not a manager
+            false,
+        )
+        .await
+        .expect("attempt remove");
+        assert!(!removed);
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-REMOVEJOURNEY-OWNER-2",
+                "TEST-GROUPS-REMOVEJOURNEY-OTHER-2",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_group_journeys_returns_shared_journeys_with_attribution -- --ignored`"]
+    async fn list_group_journeys_returns_shared_journeys_with_attribution() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-LISTJOURNEY-1").await;
+        let group_id = create_group(&pool, "List Journey Test 1", "TEST-GROUPS-LISTJOURNEY-1")
+            .await
+            .expect("create group");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-LISTJOURNEY-1").await;
+        add_journey_to_group(&pool, &group_id, journey_id, "TEST-GROUPS-LISTJOURNEY-1")
+            .await
+            .expect("add");
+
+        let journeys = list_group_journeys(&pool, &group_id)
+            .await
+            .expect("list group journeys");
+        assert_eq!(journeys.len(), 1);
+        assert_eq!(journeys[0].journey_id, journey_id);
+        assert_eq!(journeys[0].leg_count, 1);
+        assert_eq!(journeys[0].added_by, "TEST-GROUPS-LISTJOURNEY-1");
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-LISTJOURNEY-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_member_deletes_a_departed_members_shared_journeys_in_the_same_transaction \
+                -- --ignored`"]
+    async fn remove_member_deletes_a_departed_members_shared_journeys_in_the_same_transaction() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-REMOVE-OWNER-J1").await;
+        seed_user(&pool, "TEST-GROUPS-REMOVE-MEMBER-J1").await;
+        let group_id = create_group(
+            &pool,
+            "Remove Journey Cleanup Test",
+            "TEST-GROUPS-REMOVE-OWNER-J1",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-REMOVE-MEMBER-J1")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-REMOVE-MEMBER-J1").await;
+        add_journey_to_group(&pool, &group_id, journey_id, "TEST-GROUPS-REMOVE-MEMBER-J1")
+            .await
+            .expect("share the journey into the group");
+
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-REMOVE-MEMBER-J1")
+            .await
+            .expect("remove member");
+        assert_eq!(outcome, RemoveMemberOutcome::Removed { new_owner: None });
+
+        let remaining_shared: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM group_journeys WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count group_journeys");
+        assert_eq!(
+            remaining_shared.0, 0,
+            "the departed member's shared journey should be pulled"
+        );
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-REMOVE-OWNER-J1",
+                "TEST-GROUPS-REMOVE-MEMBER-J1",
+            ],
+        )
+        .await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
@@ -2906,17 +3561,15 @@ mod db_tests {
             .expect("grant");
 
         // A plain member who didn't grant it: refused.
-        assert!(
-            !remove_custom_line_grant(
-                &pool,
-                &group_id,
-                &line_id,
-                "TEST-GRANT-RM-BYSTANDER",
-                false,
-            )
-            .await
-            .expect("bystander remove attempt")
-        );
+        assert!(!remove_custom_line_grant(
+            &pool,
+            &group_id,
+            &line_id,
+            "TEST-GRANT-RM-BYSTANDER",
+            false,
+        )
+        .await
+        .expect("bystander remove attempt"));
         // The granter themselves, still a plain member: allowed.
         assert!(
             remove_custom_line_grant(&pool, &group_id, &line_id, "TEST-GRANT-RM-SHARER", false)

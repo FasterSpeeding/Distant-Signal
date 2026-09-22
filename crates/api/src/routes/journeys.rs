@@ -570,6 +570,14 @@ struct JourneyDetailResponse {
     custom_name: Option<String>,
     created_at: DateTime<Utc>,
     legs: Vec<JourneyLegDetailResponse>,
+    /// Whether the CALLER owns this journey, as opposed to reading it via a
+    /// group it's been shared into (`journey_readable_by`). The frontend
+    /// gates every owner-only action (share-to-group button, unmatched-leg
+    /// candidate picker, matched-leg "Change train") on this flag -- the
+    /// backend still refuses all three regardless for a non-owner, but
+    /// showing them at all to a fellow group member who can only ever get a
+    /// 404 is its own bug. See this plan's final-review findings (I1).
+    is_owner: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -608,15 +616,37 @@ struct LegSkipResponse {
 /// `TRACKED_TRAIN_STATE_SELECT` per matched leg, exactly as the design doc
 /// itself specifies: "the wire payload for a matched leg is exactly
 /// today's `TrackedTrainState` shape, unchanged."
+///
+/// `GET /Journeys/{journeyId}` -- the ONE read route in this file gated on
+/// `journeys::journey_readable_by` (owner OR group-shared-with) rather
+/// than the ownership-only check folded directly into every write route's
+/// own query (e.g. `journeys::get_owned_leg`/
+/// `journeys::set_leg_train_subscription`'s `WHERE ... AND user_id = $N`).
+/// See
+/// docs/superpowers/specs/2026-09-22-journey-tracking-design.md §6's final
+/// paragraph and
+/// docs/superpowers/plans/2026-09-22-journey-tracking-phase4-group-sharing-plan.md's
+/// Task 4: this is the one place in the whole /Journeys/* surface where a
+/// caller who does not own the resource can still read it, and it must
+/// stay that way -- deliberately -- while every other handler in this
+/// file keeps the ownership-only gate.
 async fn get_journey(
     State(app): State<App>,
     user: AuthenticatedUser,
     Path(journey_id): Path<i64>,
 ) -> Result<Json<JourneyDetailResponse>, (StatusCode, String)> {
-    let summary = journeys::get_owned_journey_summary(&app.database, journey_id, &user.id)
+    let readable = journeys::journey_readable_by(&app.database, journey_id, &user.id)
+        .await
+        .map_err(internal_error("check journey readability"))?;
+    if !readable {
+        return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
+    }
+
+    let summary = journeys::get_journey_summary(&app.database, journey_id)
         .await
         .map_err(internal_error("read journey"))?
         .ok_or((StatusCode::NOT_FOUND, "no journey with that id".to_string()))?;
+    let is_owner = summary.user_id == user.id;
 
     let leg_rows = journeys::list_legs_for_journey(&app.database, journey_id)
         .await
@@ -694,6 +724,7 @@ async fn get_journey(
         custom_name: summary.custom_name,
         created_at: summary.created_at,
         legs,
+        is_owner,
     }))
 }
 
@@ -1242,6 +1273,10 @@ mod db_tests {
         assert_eq!(legs[0]["matchMode"], "manual");
         assert!(legs[0]["trackedTrainState"].is_object());
         assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "A44444");
+        // I1 (final review): the owner reading their own journey must see
+        // `isOwner: true` -- the frontend gates every owner-only control on
+        // this flag.
+        assert_eq!(body["isOwner"], true);
 
         cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY").await;
     }
@@ -1592,5 +1627,139 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-ROUTE-LEG-SKIP").await;
+    }
+
+
+    /// Deletes a group row and its cascading `group_members`/`group_trains`/
+    /// `group_journeys` rows -- this module's own equivalent of
+    /// `data::journeys::db_tests`'s inline `DELETE FROM groups WHERE id =
+    /// $1` cleanup, factored out since both new tests below need it.
+    async fn cleanup_group(pool: &PgPool, group_id: &str) {
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(group_id)
+            .execute(pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_a_group_member_can_read_a_shared_journey_the_owner_never_authorized \
+                -- --ignored --test-threads=1`"]
+    async fn get_journey_a_group_member_can_read_a_shared_journey_the_owner_never_authorized() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-OWNER").await;
+        let member_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-MEMBER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        // Owner creates a journey with a matched leg -- same shape
+        // `get_journey_returns_the_matched_legs_tracked_train_state` above
+        // already exercises, so this test's own point (whether the SECOND
+        // user can read it) isn't muddied by also being the first test of
+        // matched-leg rendering.
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "A88888", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        // Share the journey into a group both the owner and the member are
+        // in -- the member was never given any `train_subscriptions`-level
+        // ownership of the leg's underlying row at all.
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Get Journey Share Test",
+            "TEST-ROUTE-GET-JOURNEY-SHARE-OWNER",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-ROUTE-GET-JOURNEY-SHARE-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        crate::data::groups::add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-ROUTE-GET-JOURNEY-SHARE-OWNER",
+        )
+        .await
+        .expect("share journey");
+
+        // The fellow group member reads the journey via the real HTTP
+        // handler -- 200 with the same leg detail the owner would see, not
+        // 404. This is the concrete, end-to-end proof of Task 4's whole
+        // point: the member was never checked against
+        // `train_subscriptions.user_id` at all, and correctly doesn't need
+        // to be.
+        let (status, body) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&member_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "group member read: {body:?}");
+        let legs = body["legs"].as_array().expect("legs array");
+        assert_eq!(legs.len(), 1);
+        assert_eq!(legs[0]["matchMode"], "manual");
+        assert!(legs[0]["trackedTrainState"].is_object());
+        assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "A88888");
+        // I1 (final review): a group member reading a journey shared into
+        // their group (never authorized as the owner) must see
+        // `isOwner: false` -- the frontend uses this to hide the
+        // share-journey button and the two owner-only leg controls
+        // (`JourneyLegCandidates`/"Change train") that would otherwise 404
+        // for them.
+        assert_eq!(body["isOwner"], false);
+
+        cleanup_group(&pool, &group_id).await;
+        cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-MEMBER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_a_stranger_in_no_shared_group_still_gets_404 -- --ignored \
+                --test-threads=1`"]
+    async fn get_journey_a_stranger_in_no_shared_group_still_gets_404() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER-OWNER").await;
+        let stranger_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "A99999", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        // The stranger has no ownership and no group-share relationship to
+        // this journey at all -- the ordinary 404, identical to today's
+        // (pre-Phase-4) behavior. No group is even created here: this is
+        // the plain, no-sharing-involved negative case.
+        let (status, _) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&stranger_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER").await;
     }
 }

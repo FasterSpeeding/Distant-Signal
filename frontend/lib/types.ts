@@ -803,6 +803,16 @@ export interface JourneyDetail {
   customName: string | null;
   createdAt: string;
   legs: JourneyLegDetail[];
+  /** Whether the CALLER owns this journey, as opposed to reading it via a
+   * group it's been shared into (`journey_readable_by`,
+   * `crates/api/src/data/journeys.rs`). Gate every owner-only action on
+   * this flag -- the share-journey button
+   * (`app/journeys/[id]/page.tsx`) and both owner-only branches of
+   * `JourneyLegCard` (the unmatched-leg candidate picker and the
+   * matched-leg "Change train" toggle). The backend still refuses all
+   * three regardless for a non-owner, but showing them at all to a fellow
+   * group member who can only ever get a 404 is its own bug. */
+  isOwner: boolean;
 }
 
 /** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec
@@ -1213,6 +1223,45 @@ export interface GroupCustomLine {
  * `lib/sharedCustomLines.ts` merges those back into a single row carrying
  * both group tags. Never includes the caller's OWN custom lines. */
 export interface SharedGroupCustomLine extends GroupCustomLine {
+  groupId: string;
+  groupName: string;
+}
+
+/** A journey shared into a group -- `crates/api/src/data/groups.rs`'s
+ * `GroupJourney`. Carries the journey's own identity plus its FIRST leg's
+ * identity/live-status fields (not a full multi-leg rollup -- see this
+ * feature's plan, Judgment Call 2) and a `legCount` so a multi-leg journey
+ * at least signals "there's more". Same "never shown" privacy constraint
+ * `GroupTrain` documents: no ticket field, no notification state, no
+ * exact `addedAt`. */
+export interface GroupJourney {
+  journeyId: number;
+  customName: string | null;
+  legCount: number;
+  pinOriginCrs: string | null;
+  pinDestinationCrs: string | null;
+  pinOriginName: string | null;
+  pinDestinationName: string | null;
+  pinScheduledDeparture: string | null; // RFC3339
+  serviceDate: string; // "YYYY-MM-DD"
+  resolutionStatus: string | null;
+  trainUid: string | null;
+  status: string | null;
+  delayMinutes: number | null;
+  addedBy: string;
+  /** Same contract as `GroupMember.displayName`: the sharer's own name, or
+   * `null` -- never their email address. */
+  addedByName: string | null;
+  /** Same contract as `GroupMember.displayTag`, for the sharer. */
+  addedByTag: string | null;
+}
+
+/** `GET /public/groups/shared-journeys`'s per-item shape
+ * (`crates/api/src/data/groups.rs`'s `SharedJourney`): a `GroupJourney`
+ * plus the group it was shared into. Not consumed by any page in this
+ * phase (see this feature's plan, Judgment Call 4) -- kept for parity with
+ * `SharedGroupTrain`. */
+export interface SharedGroupJourney extends GroupJourney {
   groupId: string;
   groupName: string;
 }
