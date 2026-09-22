@@ -1393,6 +1393,16 @@ a[data-text-link='always'] {
      2px outline at a 2px offset, so 4px is an exact fit with no slack for a
      `--mantine-scale` bump or a custom `focusClassName`. */
   padding-block: 6px;
+  /* 2026-09-22 UX review finding I5/2.8: on a narrow viewport the end
+     node's always-visible label (spec Decision 3) is centered on a circle
+     that sits right at the scroll container's own edge -- with no
+     horizontal buffer there, the label's last glyph got clipped by this
+     element's own scroll/padding box ("Edinburgh" rendering as
+     "Edinburgł" in the review's capture). This is exactly the review's
+     own second suggested fix ("padding-inline on the container") --
+     enough room for a bold 12px label's descender/edge to clear the box
+     without materially narrowing the diagram's own scroll range. */
+  padding-inline: 10px;
 }
 
 /* `width: 100%` + a `min-width` computed from the node counts, rather than
