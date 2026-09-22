@@ -34,6 +34,10 @@ pub fn router() -> Router {
             "/Journeys/{journey_id}/legs/{leg_id}/train",
             axum::routing::post(post_leg_train),
         )
+        .route(
+            "/Journeys/{journey_id}/legs",
+            axum::routing::post(post_journey_leg),
+        )
 }
 
 /// Three mutually-exclusive leg-creation shapes, discriminated by an
@@ -114,6 +118,44 @@ struct CreateJourneyRequest {
     leg: CreateJourneyLegRequest,
 }
 
+/// Two of `CreateJourneyLegRequest`'s three shapes (no `Pin` -- spec §3's
+/// "add a leg" only offers a direct known-train pick or an open
+/// time-window search), for `POST /Journeys/{journeyId}/legs` (Phase 2).
+/// Field names and the `mode` tag are IDENTICAL to the matching
+/// `CreateJourneyLegRequest` variants on purpose -- same wire shape, same
+/// serde gotcha applies: `rename_all_fields = "camelCase"` is REQUIRED in
+/// addition to the container-level `rename_all`, or every field below
+/// fails to deserialize off camelCase JSON (see `CreateJourneyLegRequest`'s
+/// own doc comment for the full explanation; this plan's `wire_format_tests`
+/// step below reproduces that same regression test against this enum).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum AddJourneyLegRequest {
+    KnownTrain {
+        train_uid: String,
+        service_date: NaiveDate,
+    },
+    Window {
+        origin_crs: String,
+        destination_crs: String,
+        service_date: NaiveDate,
+        #[serde(default)]
+        depart_window: TimeWindow,
+        #[serde(default)]
+        arrive_window: TimeWindow,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AddLegResponse {
+    leg_id: i64,
+    /// `Some` only for a `knownTrain`-mode leg -- mirrors
+    /// `CreateJourneyResponse::tracking_id`'s own `None`-for-window
+    /// convention exactly.
+    tracking_id: Option<i64>,
+}
+
 /// No live database needed -- pure wire-format deserialization, unlike
 /// `db_tests` below. Covers Finding I2's regression risk directly: that
 /// `CreateJourneyLegRequest::Pin`'s `skippedStations` field actually
@@ -131,7 +173,7 @@ struct CreateJourneyRequest {
 /// as it stood before that fix.
 #[cfg(test)]
 mod wire_format_tests {
-    use super::CreateJourneyLegRequest;
+    use super::{AddJourneyLegRequest, CreateJourneyLegRequest};
 
     #[test]
     fn pin_mode_leg_deserializes_a_present_skipped_stations_array() {
@@ -189,6 +231,27 @@ mod wire_format_tests {
         )
         .expect("valid window-mode leg JSON should deserialize");
         assert!(matches!(window, CreateJourneyLegRequest::Window { .. }));
+    }
+
+    #[test]
+    fn add_journey_leg_known_train_and_window_mode_legs_deserialize_their_camel_case_fields() {
+        let known_train: AddJourneyLegRequest = serde_json::from_str(
+            r#"{"mode": "knownTrain", "trainUid": "A11111", "serviceDate": "2026-09-22"}"#,
+        )
+        .expect("valid knownTrain-mode leg JSON should deserialize");
+        assert!(matches!(known_train, AddJourneyLegRequest::KnownTrain { .. }));
+
+        let window: AddJourneyLegRequest = serde_json::from_str(
+            r#"{
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": "2026-09-22",
+                "departWindow": {"after": "08:00:00"}
+            }"#,
+        )
+        .expect("valid window-mode leg JSON should deserialize");
+        assert!(matches!(window, AddJourneyLegRequest::Window { .. }));
     }
 }
 
@@ -359,6 +422,92 @@ async fn post_journey(
                 leg_id,
                 tracking_id: None,
                 resolution_status: None,
+            }))
+        }
+    }
+}
+
+/// `POST /Journeys/{journeyId}/legs` -- adds a new leg to an existing
+/// journey the caller owns (spec §3). `leg_order` is assigned by
+/// `data::journeys::add_known_train_leg_to_journey`/`add_window_leg_to_journey`
+/// as `max(leg_order) + 1` for this journey, never supplied by the caller.
+/// Same 404-never-403 ownership convention as every other route in this
+/// app: "journey doesn't exist" and "journey exists but isn't yours" are
+/// indistinguishable to the caller.
+async fn post_journey_leg(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+    Json(request): Json<AddJourneyLegRequest>,
+) -> Result<Json<AddLegResponse>, (StatusCode, String)> {
+    match request {
+        AddJourneyLegRequest::KnownTrain {
+            train_uid,
+            service_date,
+        } => {
+            let trains_id =
+                crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
+                    .await
+                    .map_err(internal_error("find or create train"))?;
+            let added = journeys::add_known_train_leg_to_journey(
+                &app.database,
+                journey_id,
+                &user.id,
+                trains_id,
+                service_date,
+            )
+            .await
+            .map_err(internal_error("add leg to journey (known-train)"))?;
+            let Some((leg_id, tracking_id)) = added else {
+                return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
+            };
+
+            // Same best-effort enrichment `post_journey`'s own `KnownTrain`
+            // arm and `post_leg_train` already make for the exact same
+            // `create_subscription_for_train` call.
+            crate::routes::train::enrich_shared_train(
+                &app,
+                tracking_id,
+                trains_id,
+                &train_uid,
+                service_date,
+            )
+            .await;
+
+            Ok(Json(AddLegResponse {
+                leg_id,
+                tracking_id: Some(tracking_id),
+            }))
+        }
+        AddJourneyLegRequest::Window {
+            origin_crs,
+            destination_crs,
+            service_date,
+            depart_window,
+            arrive_window,
+        } => {
+            journeys::validate_window_leg(&origin_crs, &destination_crs, &depart_window, &arrive_window)
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+            let added = journeys::add_window_leg_to_journey(
+                &app.database,
+                journey_id,
+                &user.id,
+                &origin_crs.trim().to_ascii_uppercase(),
+                &destination_crs.trim().to_ascii_uppercase(),
+                service_date,
+                depart_window,
+                arrive_window,
+            )
+            .await
+            .map_err(internal_error("add leg to journey (window)"))?;
+            let Some(leg_id) = added else {
+                return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
+            };
+
+            Ok(Json(AddLegResponse {
+                leg_id,
+                tracking_id: None,
             }))
         }
     }
@@ -1092,5 +1241,158 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-ROUTE-MY-JOURNEYS").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey_leg -- --ignored --test-threads=1`"]
+    async fn post_journey_leg_adds_a_window_leg_and_assigns_the_next_leg_order() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-WINDOW").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = post_json(
+            router,
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "window",
+                "originCrs": "RDG",
+                "destinationCrs": "PAD",
+                "serviceDate": "2026-09-22",
+                "departWindow": { "after": "10:00:00" }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add window leg: {body:?}");
+        let leg_id = body["legId"].as_i64().expect("legId present");
+        assert!(body["trackingId"].is_null());
+
+        let leg_order: i32 =
+            sqlx::query_scalar("SELECT leg_order FROM journey_legs WHERE id = $1")
+                .bind(leg_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read leg_order");
+        assert_eq!(leg_order, 2);
+
+        cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-WINDOW").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey_leg -- --ignored --test-threads=1`"]
+    async fn post_journey_leg_a_journey_owned_by_someone_else_is_404_not_403() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-OWNER").await;
+        let bystander_token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-BYSTANDER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = post_json(
+            router,
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&bystander_token),
+            serde_json::json!({
+                "mode": "knownTrain",
+                "trainUid": "A88888",
+                "serviceDate": "2026-09-22"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, serde_json::Value::String("no journey with that id".to_string()));
+
+        cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey_leg -- --ignored --test-threads=1`"]
+    async fn post_journey_leg_a_known_train_leg_is_immediately_matched() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-KNOWN-TRAIN").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = post_json(
+            router,
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "knownTrain",
+                "trainUid": "A99999",
+                "serviceDate": "2026-09-22"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add known-train leg: {body:?}");
+        let leg_id = body["legId"].as_i64().expect("legId present");
+        let tracking_id = body["trackingId"].as_i64().expect("trackingId present");
+
+        let (match_mode, train_subscription_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT match_mode, train_subscription_id FROM journey_legs WHERE id = $1",
+        )
+        .bind(leg_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read leg match_mode/train_subscription_id");
+        assert_eq!(match_mode, "manual");
+        assert_eq!(train_subscription_id, Some(tracking_id));
+
+        cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-KNOWN-TRAIN").await;
     }
 }
