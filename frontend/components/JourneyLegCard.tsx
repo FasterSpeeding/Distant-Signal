@@ -61,12 +61,25 @@ function formatWindowTime(value: string): string {
  * realistically never returns `null` at this call site, but it's a
  * plain function of the four fields, not leg-mode-aware, so it stays
  * honest for any future caller). */
+/** One side's (depart or arrive) contribution to `windowSummary`, given
+ * that side's own after/before bounds. Collapses to a single "between X
+ * and Y" phrase when BOTH bounds on this side are set, rather than the
+ * literal "departing at or after 19:00 · departing at or before 21:00"
+ * the naive per-field join used to produce -- the same verb repeated back
+ * to back reads as a copy-paste bug even though it isn't one. `null` when
+ * neither bound on this side is set. */
+function windowSideSummary(verb: 'departing' | 'arriving', after: string | null, before: string | null): string | null {
+  if (after && before) return `${verb} between ${formatWindowTime(after)} and ${formatWindowTime(before)}`;
+  if (after) return `${verb} at or after ${formatWindowTime(after)}`;
+  if (before) return `${verb} at or before ${formatWindowTime(before)}`;
+  return null;
+}
+
 function windowSummary(leg: JourneyLegDetail): string | null {
-  const parts: string[] = [];
-  if (leg.departAfter) parts.push(`departing at or after ${formatWindowTime(leg.departAfter)}`);
-  if (leg.departBefore) parts.push(`departing at or before ${formatWindowTime(leg.departBefore)}`);
-  if (leg.arriveAfter) parts.push(`arriving at or after ${formatWindowTime(leg.arriveAfter)}`);
-  if (leg.arriveBefore) parts.push(`arriving at or before ${formatWindowTime(leg.arriveBefore)}`);
+  const parts = [
+    windowSideSummary('departing', leg.departAfter, leg.departBefore),
+    windowSideSummary('arriving', leg.arriveAfter, leg.arriveBefore),
+  ].filter((part): part is string => part !== null);
   if (parts.length === 0) return null;
   const [first, ...rest] = parts;
   const capitalised = first.charAt(0).toUpperCase() + first.slice(1);

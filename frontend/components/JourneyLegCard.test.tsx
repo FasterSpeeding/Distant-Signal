@@ -245,6 +245,75 @@ describe('JourneyLegCard', () => {
     ).toBeInTheDocument();
   });
 
+  // 2026-09-22 UX review addendum: with both bounds on the SAME side set
+  // (e.g. depart-after + depart-before, no arrive bound at all), the naive
+  // per-field join used to repeat the verb back to back -- "Departing at
+  // or after 19:00 · departing at or before 21:00" -- which reads like a
+  // copy-paste bug. Each of the seven realistic depart/arrive bound
+  // combinations is exercised here (the pre-existing test above already
+  // covers the eighth: a depart+arrive mix).
+  it.each([
+    {
+      name: 'only depart-after',
+      overrides: { departAfter: '19:00:00' },
+      expected: 'Departing at or after 19:00',
+    },
+    {
+      name: 'only depart-before',
+      overrides: { departBefore: '21:00:00' },
+      expected: 'Departing at or before 21:00',
+    },
+    {
+      name: 'both depart bounds, no arrive bound',
+      overrides: { departAfter: '19:00:00', departBefore: '21:00:00' },
+      expected: 'Departing between 19:00 and 21:00',
+    },
+    {
+      name: 'only arrive-after',
+      overrides: { arriveAfter: '19:00:00' },
+      expected: 'Arriving at or after 19:00',
+    },
+    {
+      name: 'only arrive-before',
+      overrides: { arriveBefore: '21:00:00' },
+      expected: 'Arriving at or before 21:00',
+    },
+    {
+      name: 'both arrive bounds, no depart bound',
+      overrides: { arriveAfter: '19:00:00', arriveBefore: '21:00:00' },
+      expected: 'Arriving between 19:00 and 21:00',
+    },
+    {
+      name: 'a depart+arrive mix with both bounds set on each side',
+      overrides: {
+        departAfter: '18:00:00',
+        departBefore: '19:00:00',
+        arriveAfter: '20:00:00',
+        arriveBefore: '21:00:00',
+      },
+      expected: 'Departing between 18:00 and 19:00 · arriving between 20:00 and 21:00',
+    },
+  ])('shows the search window for $name', ({ overrides, expected }) => {
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={167}
+        leg={baseLeg({
+          trackedTrainState: null,
+          originCrs: 'YRK',
+          destinationCrs: 'NCL',
+          departAfter: null,
+          departBefore: null,
+          arriveAfter: null,
+          arriveBefore: null,
+          ...overrides,
+        })}
+        isOwner
+        isOnlyLeg={false}
+      />,
+    );
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+
   it('shows nothing extra for an open leg with no window at all', () => {
     renderWithMantine(
       <JourneyLegCard
