@@ -46,10 +46,13 @@ export const metadata: Metadata = {
  * form is the honest fallback for every gap this search cannot close.
  *
  * Query params mirror `/track`'s own convention: `?station=` pre-fills the
- * required search key, `?origin=`/`?stops_at=` pre-fill the optional
- * filters (so a filtered search is a shareable link), and `?ticketId=`
- * carries a standalone ticket through so the row-level "Track this train"
- * action can attach it. */
+ * required search key, `?origin=`/`?stops_at=`/`?date=`/`?from=`/`?to=`/
+ * `?arrival_from=`/`?arrival_to=` pre-fill the optional filters (so a
+ * filtered search is a shareable link, and so this /trains history entry's
+ * own URL can restore what was last searched -- see
+ * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md),
+ * and `?ticketId=` carries a standalone ticket through so the row-level
+ * "Track this train" action can attach it. */
 export default async function TrainsPage({
   searchParams,
 }: {
@@ -58,10 +61,24 @@ export default async function TrainsPage({
     origin?: string | string[];
     stops_at?: string | string[];
     date?: string | string[];
+    from?: string | string[];
+    to?: string | string[];
+    arrival_from?: string | string[];
+    arrival_to?: string | string[];
     ticketId?: string | string[];
   }>;
 }) {
-  const { station, origin, stops_at: stopsAt, date, ticketId } = await searchParams;
+  const {
+    station,
+    origin,
+    stops_at: stopsAt,
+    date,
+    from,
+    to,
+    arrival_from: arrivalFrom,
+    arrival_to: arrivalTo,
+    ticketId,
+  } = await searchParams;
   // Next.js supplies a `string[]` for a repeated query param -- fall back
   // to the first value rather than letting `.toUpperCase()` throw on an
   // array. Same handling as `app/track/page.tsx:10-13`. `stops_at` is a
@@ -71,6 +88,13 @@ export default async function TrainsPage({
   const originParam = Array.isArray(origin) ? origin[0] : origin;
   const stopsAtParam = Array.isArray(stopsAt) ? stopsAt[0] : stopsAt;
   const dateParam = Array.isArray(date) ? date[0] : date;
+  // `from`/`to`/`arrival_from`/`arrival_to` are time-of-day strings
+  // (`"HH:MM"`), not station codes -- unlike `station`/`origin`/`stops_at`
+  // below, these are never `.toUpperCase()`d.
+  const fromParam = Array.isArray(from) ? from[0] : from;
+  const toParam = Array.isArray(to) ? to[0] : to;
+  const arrivalFromParam = Array.isArray(arrivalFrom) ? arrivalFrom[0] : arrivalFrom;
+  const arrivalToParam = Array.isArray(arrivalTo) ? arrivalTo[0] : arrivalTo;
   const ticketIdParam = Array.isArray(ticketId) ? ticketId[0] : ticketId;
   const attachTicketId = ticketIdParam && /^\d+$/.test(ticketIdParam) ? Number(ticketIdParam) : undefined;
 
@@ -87,6 +111,10 @@ export default async function TrainsPage({
         initialOrigin={originParam?.toUpperCase()}
         initialStopsAt={stopsAtParam?.toUpperCase()}
         initialDate={dateParam}
+        initialFrom={fromParam}
+        initialTo={toParam}
+        initialArrivalFrom={arrivalFromParam}
+        initialArrivalTo={arrivalToParam}
         attachTicketId={attachTicketId}
       />
     </Stack>
