@@ -393,13 +393,16 @@ async fn fetch_previous_derived_state(
     pool: &PgPool,
     trains_id: i64,
 ) -> anyhow::Result<DerivedState> {
-    let row: Option<(
+    // status, last_reported_location, last_event_type, delay_minutes,
+    // next_calling_point.
+    type DerivedStateRow = (
         String,
         Option<String>,
         Option<String>,
         Option<i32>,
         Option<String>,
-    )> = sqlx::query_as(
+    );
+    let row: Option<DerivedStateRow> = sqlx::query_as(
         "SELECT status, last_reported_location, last_event_type, delay_minutes, next_calling_point \
              FROM train_current_state WHERE trains_id = $1",
     )
@@ -466,14 +469,17 @@ async fn fetch_previous_derived_states_batch(
             "test-injected fetch_previous_derived_states_batch failure"
         ));
     }
-    let rows: Vec<(
+    // trains_id, status, last_reported_location, last_event_type,
+    // delay_minutes, next_calling_point.
+    type DerivedStateBatchRow = (
         i64,
         String,
         Option<String>,
         Option<String>,
         Option<i32>,
         Option<String>,
-    )> = sqlx::query_as(
+    );
+    let rows: Vec<DerivedStateBatchRow> = sqlx::query_as(
         "SELECT trains_id, status, last_reported_location, last_event_type, delay_minutes, \
                 next_calling_point \
          FROM train_current_state WHERE trains_id = ANY($1)",

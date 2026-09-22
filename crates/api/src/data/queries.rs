@@ -1458,14 +1458,18 @@ pub async fn search_schedule_calling_point_departures(
 ) -> Result<Option<CallingPointDeparturePage>> {
     let fetch = limit.saturating_add(1);
 
-    let rows: Vec<(
+    // train_uid, destination_crs, true_origin_crs, scheduled,
+    // destination_arrival, destination_arrival_day_offset.
+    type CallingPointDepartureRow = (
         String,
         String,
         Option<String>,
         chrono::NaiveTime,
         Option<chrono::NaiveTime>,
         i16,
-    )> = sqlx::query_as(
+    );
+
+    let rows: Vec<CallingPointDepartureRow> = sqlx::query_as(
         r#"
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset
             FROM schedule_destination_departures main
@@ -5843,7 +5847,15 @@ mod schedule_destination_departures_query_tests {
         // Each call is (crs, booked departure, day_offset, this call's own
         // booked arrival).
         type Call = (&'static str, (u32, u32), i16, Option<(u32, u32)>);
-        let schedules: &[(&str, &str, Option<(u32, u32)>, &[Call])] = &[
+        // Each schedule is (train_uid, true_origin_crs, destination_arrival,
+        // calls).
+        type Schedule = (
+            &'static str,
+            &'static str,
+            Option<(u32, u32)>,
+            &'static [Call],
+        );
+        let schedules: &[Schedule] = &[
             (
                 "L82877",
                 "WAT",

@@ -258,22 +258,22 @@ async fn search_incidents(
         .map(|s| normalize_rfc3339("to", s))
         .transpose()?;
 
-    if let (Some(from_bound), Some(to_bound)) = (from, to) {
-        if from_bound > to_bound {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "from must not be after to".to_string(),
-            ));
-        }
+    if let (Some(from_bound), Some(to_bound)) = (from, to)
+        && from_bound > to_bound
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "from must not be after to".to_string(),
+        ));
     }
 
-    if let (Some(min), Some(max)) = (params.priority_min, params.priority_max) {
-        if min > max {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "priority_min must not exceed priority_max".to_string(),
-            ));
-        }
+    if let (Some(min), Some(max)) = (params.priority_min, params.priority_max)
+        && min > max
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "priority_min must not exceed priority_max".to_string(),
+        ));
     }
 
     let limit = normalize_limit(params.limit.as_deref())?;
