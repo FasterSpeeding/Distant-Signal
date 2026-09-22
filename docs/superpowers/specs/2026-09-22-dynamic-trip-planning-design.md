@@ -27,6 +27,103 @@ result should still create a journey via the existing `POST /Journeys` +
 still correct — only the "this page doesn't exist, building it is now in
 scope here" framing needs discarding.
 
+---
+
+## Addendum (2026-09-22): findings from a sibling reference implementation
+
+A sister project in this same organisation —
+`ssh://git@git-bringer-ssh.fox-prometheus.ts.net/lucy/Distant-Signal-MCP.git`,
+an MCP server over the same National Rail CIF data this app ingests — has
+**already built and shipped** exactly this feature (`plan_journey`, per its
+own `docs/superpowers/specs/2026-07-22-train-mcp-phase2b-journey-planner-design.md`
+and `src/tools/plan-journey.ts` + `src/timetable/plan/{csa,raptor,connections,interchange,constraints}.ts`).
+This is real, measured, working prior art on the identical problem against
+the identical data source, not a hypothetical comparison — and it changes
+three of this document's own conclusions materially enough to record here
+rather than silently keep the superseded reasoning above as if untouched.
+
+**1. The resident-index-vs-bounded-subgraph dilemma (§3) may be a false
+choice — there's a third option, already proven at scale.** The sibling
+project builds the **whole day's** connection set fresh per query and
+discards it, no prefilter, no residency: "That is small enough to build per
+query and discard; the store's seven million calling points are never all
+in memory" (design doc, "The connection set"). Measured on a real weekday
+(2026-10-15): 26,848 schedules, 316,362 public calling points, ~289,514
+connections — built once per `plan_journey` call, shared by both search
+algorithms, then thrown away. **This directly undercuts §3's Option 2
+downside** (a catalogue-guided prefilter can silently miss an obscure real
+route) **without taking on §3's Option 1 cost** (a resident whole-network
+index, this codebase's first-ever such commitment) — if ~290K connection
+objects for one day is genuinely cheap to build-and-discard per request (it
+evidently is, in a sibling project against the same feed), a full,
+unbounded connection set built fresh per query may be entirely viable for
+this app's MVP too, sidestepping the tradeoff §3 spent most of its length
+on. **This needs its own measurement against this app's actual schema**
+(the sibling project's own `TimetableStore` is a from-scratch SQLite-backed
+CIF store, not `schedule-query`'s `ScheduleIndex` — the shapes are
+comparable, not identical, and this app's per-CRS Postgres row fetch
+pattern may have different per-query overhead than a purpose-built
+timetable store's own query path) before treating this as settled, but it
+is a real, working existence proof that the false dichotomy this document
+posed in §3 is not the only shape the problem can take.
+
+**2. Walking/differently-named-station transfers are NOT "fully new" (§2's
+table) — they're an unparsed CIF file member this app's own ingestion
+already touches the delivery for.** Confirmed directly against this app's
+own code (`crates/schedule-reference/src/{parser.rs,discovery.rs,main.rs}`):
+this pipeline already discovers and downloads the `RJTTF*MSN.txt` file per
+delivery, but only parses its `TI` (station name/TIPLOC/CRS) records — not
+column 65, which the sibling project verified (against real extract 904:
+3,295 stations, 2,512 of them at 5 minutes, range 0–9, with two documented
+sentinel sub-cases at 98/99 meaning "not a real rail interchange, a
+bus/coach stand" — `src/timetable/plan/interchange.ts`'s own carefully-reasoned
+handling) carries each station's own minimum same-station change time. This
+is a **small parser addition to an already-fetched file**, not new data
+acquisition. Separately, the `ALF` member (fixed links between *different*
+CRS codes — the sibling project's own count: 4,222 links, 1,772 metro,
+1,600 tube, 557 transfer, 237 walk, 50 bus, 4 tram, 2 ferry, each with its
+own validity window since e.g. Euston↔King's Cross is 5–10 min by tube but
+15 by transfer depending on time of day) is **not currently fetched by this
+app's CIF ingestion at all** (grepped, confirmed absent) — genuinely new
+ingestion work, but of an already-standardised CIF file this codebase's
+existing delivery-discovery mechanism would need only a small extension to
+also pick up, not a from-scratch transfer-graph invention as §2's table
+currently states.
+
+**3. Two concrete API/architecture ideas worth adopting regardless of which
+compute option (§3) is chosen:**
+- **Let the caller pick the algorithm by desired outcome, not expose the
+  algorithm name**: a `results: 'fastest' | 'options'` parameter, `'fastest'`
+  running Connection Scan (single earliest-arrival answer, cheaper), `'options'`
+  running RAPTOR (a Pareto set trading arrival time against number of
+  changes — "fewest changes" falls out of RAPTOR's own round structure
+  rather than needing separate logic). This app's MVP (§4) proposed
+  "earliest arrival only, plus 1-2 cheap alternatives as a byproduct" —
+  the sibling project's two-algorithm split is a cleaner way to reach that
+  same place, deferring the RAPTOR/"options" half to a later phase rather
+  than building it into an MVP that only needs CSA.
+- **Differential testing as the primary correctness mechanism**: "For any
+  query, RAPTOR's earliest arrival must equal Connection Scan's... on a
+  graph of roughly 290,000 edges per day no fixture can be hand-verified."
+  Running two independently-implemented algorithms against the same
+  connection set and asserting agreement is a materially cheaper way to
+  gain confidence at this scale than hand-verifying itineraries — directly
+  relevant once/if this app builds a second algorithm, and worth keeping in
+  mind even for a CSA-only MVP as the reason a second algorithm might be
+  worth building sooner than "later phase" if correctness confidence turns
+  out to matter more than this document originally weighted it.
+
+**Not re-litigated here**: the sibling project's `via`/`avoid`/`viaStop`/`avoidStop`
+route constraints, its rich per-leg output (headcode/"wider working" linkage,
+explicit interchange description), and its failure-attribution UX ("name the
+constraint that made it impossible") are all real, well-reasoned ideas worth
+reading directly from that repo's design doc when this feature reaches an
+implementation-planning stage — not summarised exhaustively here since they
+don't change this document's own MVP-scope recommendation (§4), only enrich
+a later phase's design once one exists.
+
+---
+
 **A naming collision, flagged up front, same posture as the two parent
 specs' own front-matter warnings.** Two existing design docs already use the
 phrase "trip search"/"whole-network trip search"
