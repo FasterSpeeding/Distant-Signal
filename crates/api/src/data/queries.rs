@@ -1612,7 +1612,7 @@ pub async fn search_schedule_calling_point_departures(
 /// (maps to a 404, mirroring the function above). `Ok(Some(page))` with an
 /// empty `page.departures` means the day IS published and the window
 /// matched nothing.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn search_journey_leg_candidates(
     pool: &PgPool,
     origin_crs: &str,
