@@ -786,7 +786,14 @@ export interface LegSkipStatus {
 export interface JourneyLegDetail {
   id: number;
   originCrs: string | null;
+  /** `null` whenever `originCrs` is `null`, or there is no `stations`
+   * reference row for the code -- same `LEFT JOIN stations` mechanism as
+   * `TrackedTrainState.pinOriginName`, see that field's own doc comment. */
+  originName: string | null;
   destinationCrs: string | null;
+  /** See `originName`'s doc comment -- same mechanism, resolved from
+   * `destinationCrs`. */
+  destinationName: string | null;
   serviceDate: string;
   departAfter: string | null;
   departBefore: string | null;

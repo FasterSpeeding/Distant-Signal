@@ -83,6 +83,34 @@ pub async fn get_owned_leg(
     Ok(row)
 }
 
+/// Same shape as [`JourneyLegRow`] plus the two resolved station names --
+/// `LEFT JOIN stations` on `origin_crs`/`destination_crs`, the same
+/// mechanism `train_tracking::TrackedTrainState::pin_origin_name`/
+/// `TrackedTrainListItem::origin_name` already use (see those fields' own
+/// doc comments). `None` on either name has the same meaning it does
+/// there: no reference row for that code, not "no leg". Backs
+/// `GET /Journeys/{id}`'s open-leg card, which previously rendered bare
+/// CRS codes ("KGX → EDB") while `GET /Train/mine`'s sibling rows resolved
+/// full names -- see
+/// docs/superpowers/specs/2026-09-22-ux-review-journey-creation-flow.md
+/// §2.5/§2.9.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct JourneyLegWithNamesRow {
+    pub id: i64,
+    pub journey_id: i64,
+    pub origin_crs: Option<String>,
+    pub origin_name: Option<String>,
+    pub destination_crs: Option<String>,
+    pub destination_name: Option<String>,
+    pub service_date: NaiveDate,
+    pub depart_after: Option<NaiveTime>,
+    pub depart_before: Option<NaiveTime>,
+    pub arrive_after: Option<NaiveTime>,
+    pub arrive_before: Option<NaiveTime>,
+    pub train_subscription_id: Option<i64>,
+    pub match_mode: String,
+}
+
 async fn insert_journey(
     pool: &PgPool,
     user_id: &str,
@@ -662,12 +690,19 @@ pub async fn journey_readable_by(
 /// `journey_readable_by` re-filters a leg's `train_subscriptions` row by
 /// `user_id`, because this function never took a `user_id` to filter by in
 /// the first place.
-pub async fn list_legs_for_journey(pool: &PgPool, journey_id: i64) -> anyhow::Result<Vec<JourneyLegRow>> {
-    let rows = sqlx::query_as::<_, JourneyLegRow>(
-        "SELECT id, journey_id, origin_crs, destination_crs, service_date, \
-                depart_after, depart_before, arrive_after, arrive_before, \
-                train_subscription_id, match_mode \
-         FROM journey_legs WHERE journey_id = $1 ORDER BY leg_order",
+pub async fn list_legs_for_journey(
+    pool: &PgPool,
+    journey_id: i64,
+) -> anyhow::Result<Vec<JourneyLegWithNamesRow>> {
+    let rows = sqlx::query_as::<_, JourneyLegWithNamesRow>(
+        "SELECT jl.id, jl.journey_id, jl.origin_crs, so.name AS origin_name, \
+                jl.destination_crs, sd.name AS destination_name, jl.service_date, \
+                jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
+                jl.train_subscription_id, jl.match_mode \
+         FROM journey_legs jl \
+         LEFT JOIN stations so ON so.crs = UPPER(jl.origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(jl.destination_crs) \
+         WHERE jl.journey_id = $1 ORDER BY jl.leg_order",
     )
     .bind(journey_id)
     .fetch_all(pool)
