@@ -7,7 +7,7 @@ import {
 } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
 import type { TrendGranularity } from '@/lib/history';
-import { HONESTY_COPY, SPARSE_FLOOR, toChartPoints } from '@/app/lines/[id]/history/TrendsResults';
+import { HONESTY_COPY, HONESTY_COPY_DETAILS, SPARSE_FLOOR, toChartPoints } from '@/app/lines/[id]/history/TrendsResults';
 import { TrendsCharts } from '@/app/lines/[id]/history/TrendsCharts';
 import type { ChartPoint } from '@/app/lines/[id]/history/chartPoint';
 
@@ -73,7 +73,7 @@ export async function OperatorTrendsResults({
       <Paper withBorder p="md">
         <Text c="dimmed">
           Not enough sampled data yet for this operator. If this operator&apos;s lines are TfL-operated, this
-          may never populate -- TfL lines don&apos;t currently feed this rollup.
+          may never populate — TfL lines aren&apos;t counted here yet.
         </Text>
       </Paper>
     );
@@ -81,11 +81,26 @@ export async function OperatorTrendsResults({
 
   return (
     <Stack gap="lg">
+      {/* One template literal, not `{HONESTY_COPY[granularity]} Rates shown…`
+          split across the expression boundary: `GranularityControl.tsx`'s own
+          doc comment records a real, already-diagnosed bug where Next's SWC
+          (the real dev/prod bundler) silently drops the space right after a
+          `{expr}` in some line-wrap shapes, while Vitest's esbuild-based
+          transform does not -- passing every unit test while shipping
+          "running.Rates" live (review [OH] §3.3, flagged there as
+          "needs verifying against the deployed build"). A single template
+          literal has no such boundary for either transform to disagree
+          about. */}
       <Text size="sm" c="dimmed">
-        {HONESTY_COPY[granularity]} Rates shown are summed across every line this operator runs (excluding
-        any private custom lines, which never appear in a public rollup).
+        {`${HONESTY_COPY[granularity]} Rates shown are summed across every line this operator runs. Private custom lines are never included, since they aren't public.`}
       </Text>
       <TrendsCharts points={points} granularity={granularity} order={2} showVolume />
+      <details>
+        <summary>How these rates are calculated</summary>
+        <Text size="sm" c="dimmed" mt="xs">
+          {HONESTY_COPY_DETAILS[granularity]}
+        </Text>
+      </details>
     </Stack>
   );
 }

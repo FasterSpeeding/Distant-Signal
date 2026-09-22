@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { Alert, Skeleton, Stack, Title } from '@mantine/core';
+import { Alert, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { getHistoryRetention } from '@/lib/api';
 import { TextLink } from '@/components/TextLink';
 import {
@@ -52,7 +52,16 @@ export default async function NetworkHistoryPage({
       <TextLink href="/lines" underline="always">
         Back to all lines
       </TextLink>
-      <Title order={1}>Network history</Title>
+      {/* Review M11/§3.5: matches "History: {name}" -- the pattern both
+          `/lines/[id]/history` and `/operators/[code]/history` already use
+          -- rather than the one-off "Network history" this page shipped
+          with. */}
+      <Title order={1}>History: Network</Title>
+      {/* Review [OH] §3.4/I11: same "say the scope" line the operator
+          history page carries under its own title. */}
+      <Text c="dimmed" size="sm">
+        Every National Rail line this app tracks (TfL not included)
+      </Text>
       <HistoryRangePicker basePath={basePath} preset={range.preset} from={range.from} to={range.to} />
       <GranularityControl
         basePath={basePath}
@@ -67,7 +76,7 @@ export default async function NetworkHistoryPage({
           This server only keeps {retentionDaysForGranularity}{' '}
           {retentionDaysForGranularity === 1 ? 'day' : 'days'} of data at this granularity. The oldest{' '}
           {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of the range you picked has
-          already been removed -- if this range looks empty or short, that may be why, not because nothing
+          already been removed — if this range looks empty or short, that may be why, not because nothing
           happened.
         </Alert>
       )}
