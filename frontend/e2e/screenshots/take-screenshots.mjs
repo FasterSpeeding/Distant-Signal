@@ -281,10 +281,10 @@ async function main() {
         console.log(`[ok]   ${shot.name} -> ${entry.filePath}`);
       } catch (err) {
         failed += 1;
-        // eslint-disable-next-line no-control-regex -- stripping ANSI color
-        // codes Playwright embeds in its own error messages (e.g. from a
-        // waitForSelector timeout's call log), so the manifest stays plain
-        // text/JSON-clean rather than carrying terminal escape sequences.
+        // Stripping ANSI color codes Playwright embeds in its own error
+        // messages (e.g. from a waitForSelector timeout's call log), so the
+        // manifest stays plain text/JSON-clean rather than carrying
+        // terminal escape sequences.
         const rawMessage = err instanceof Error ? err.message : String(err);
         const message = rawMessage.replace(/\x1b\[[0-9;]*m/g, '');
         console.error(`[fail] ${shot.name}: ${message}`);
