@@ -747,3 +747,46 @@ describe('AllLinesTable country filter', () => {
     expect(screen.queryByText('Synthetic NI Line')).not.toBeInTheDocument();
   });
 });
+
+// Fixture check (against the top-of-file `lines`/`reports`): wcml has
+// statusSeverity 9 ("Minor Delays"), which `severityGroup` buckets as
+// 'mild' ("Minor Disruption"); gwr has statusSeverity 2 ("Suspended"),
+// bucketed as 'severe' ("Severe Disruption"); swr has no report at all, so
+// its `worst` is undefined and it can never match a specific bucket.
+describe('status-group filter', () => {
+  it('shows only lines whose worst status is in the selected group', () => {
+    renderWithMantine(
+      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />,
+    );
+    // A non-`multiple` Mantine `ChipGroup` renders each `Chip` as
+    // `type="radio"`, exposed to Testing Library as `role="radio"` (not
+    // `role="button"`) -- unlike the country filter's `multiple` ChipGroup
+    // above, which renders `role="checkbox"`.
+    fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
+    expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'West Coast Main Line' })).not.toBeInTheDocument();
+  });
+
+  it('seeds the filter from initialStatusGroup and filters on first render', () => {
+    renderWithMantine(
+      <AllLinesTable
+        lines={lines}
+        reports={reports}
+        pinnedLineIds={[]}
+        tocs={[]}
+        initialStatusGroup="mild"
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Great Western Railway' })).not.toBeInTheDocument();
+  });
+
+  it('"All statuses" clears the filter back to every line', () => {
+    renderWithMantine(
+      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
+    );
+    fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
+    expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
+  });
+});
