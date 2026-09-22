@@ -271,6 +271,106 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
     }
 }
 
+async fn get_my_journeys(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<journeys::JourneyListItem>>, (StatusCode, String)> {
+    let rows = journeys::list_journeys_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list journeys"))?;
+    Ok(Json(rows))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JourneyDetailResponse {
+    id: i64,
+    custom_name: Option<String>,
+    created_at: DateTime<Utc>,
+    legs: Vec<JourneyLegDetailResponse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JourneyLegDetailResponse {
+    id: i64,
+    origin_crs: Option<String>,
+    destination_crs: Option<String>,
+    service_date: NaiveDate,
+    depart_after: Option<NaiveTime>,
+    depart_before: Option<NaiveTime>,
+    arrive_after: Option<NaiveTime>,
+    arrive_before: Option<NaiveTime>,
+    match_mode: String,
+    /// `Some` once a train is bound -- the EXACT same shape
+    /// `GET /Train/{trackingId}` returns
+    /// (`train_tracking::TRACKED_TRAIN_STATE_SELECT`, `attach_journey_stops`,
+    /// `blend_darwin_eta`, all reused unchanged; design doc §4). `None`
+    /// for an unmatched (`train_subscription_id IS NULL`) leg.
+    tracked_train_state: Option<train_tracking::TrackedTrainState>,
+}
+
+/// `GET /Journeys/{journeyId}` -- design doc §4. No new backend read-model
+/// query beyond joining straight into the existing
+/// `TRACKED_TRAIN_STATE_SELECT` per matched leg, exactly as the design doc
+/// itself specifies: "the wire payload for a matched leg is exactly
+/// today's `TrackedTrainState` shape, unchanged."
+async fn get_journey(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+) -> Result<Json<JourneyDetailResponse>, (StatusCode, String)> {
+    let summary = journeys::get_owned_journey_summary(&app.database, journey_id, &user.id)
+        .await
+        .map_err(internal_error("read journey"))?
+        .ok_or((StatusCode::NOT_FOUND, "no journey with that id".to_string()))?;
+
+    let leg_rows = journeys::list_legs_for_journey(&app.database, journey_id)
+        .await
+        .map_err(internal_error("list journey legs"))?;
+
+    let mut legs = Vec::with_capacity(leg_rows.len());
+    for leg in leg_rows {
+        let tracked_train_state = match leg.train_subscription_id {
+            Some(tracking_id) => {
+                match train_tracking::get_by_tracking_id(&app.database, tracking_id)
+                    .await
+                    .map_err(internal_error("read tracked train state"))?
+                {
+                    Some(state) => Some(
+                        crate::routes::train::attach_journey_stops(
+                            &app,
+                            crate::routes::train::blend_darwin_eta(&app, state).await,
+                        )
+                        .await,
+                    ),
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        legs.push(JourneyLegDetailResponse {
+            id: leg.id,
+            origin_crs: leg.origin_crs,
+            destination_crs: leg.destination_crs,
+            service_date: leg.service_date,
+            depart_after: leg.depart_after,
+            depart_before: leg.depart_before,
+            arrive_after: leg.arrive_after,
+            arrive_before: leg.arrive_before,
+            match_mode: leg.match_mode,
+            tracked_train_state,
+        });
+    }
+
+    Ok(Json(JourneyDetailResponse {
+        id: summary.id,
+        custom_name: summary.custom_name,
+        created_at: summary.created_at,
+        legs,
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 struct CandidatesParams {
     limit: Option<String>,
@@ -782,5 +882,96 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_journey -- --ignored --test-threads=1`"]
+    async fn get_journey_returns_the_matched_legs_tracked_train_state() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "A44444", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = request(router, format!("/Journeys/{journey_id}"), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK, "get journey: {body:?}");
+        let legs = body["legs"].as_array().expect("legs array");
+        assert_eq!(legs.len(), 1);
+        assert_eq!(legs[0]["matchMode"], "manual");
+        assert!(legs[0]["trackedTrainState"].is_object());
+        assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "A44444");
+
+        cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_journey -- --ignored --test-threads=1`"]
+    async fn get_journey_a_journey_owned_by_someone_else_is_404_not_403() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-OWNER").await;
+        let bystander_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-BYSTANDER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "A55555", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, _) = request(router, format!("/Journeys/{journey_id}"), Some(&bystander_token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_my_journeys -- --ignored --test-threads=1`"]
+    async fn get_my_journeys_lists_every_owned_journey_most_recent_first() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-MY-JOURNEYS").await;
+        let router = test_router(test_app(pool.clone()));
+
+        post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": { "mode": "knownTrain", "trainUid": "A66666", "serviceDate": "2026-09-22" } }),
+        )
+        .await;
+        post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": { "mode": "knownTrain", "trainUid": "A77777", "serviceDate": "2026-09-22" } }),
+        )
+        .await;
+
+        let (status, body) = request(router, "/Journeys/mine".to_string(), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body.as_array().expect("array response");
+        assert_eq!(rows.len(), 2);
+
+        cleanup_user(&pool, "TEST-ROUTE-MY-JOURNEYS").await;
     }
 }
