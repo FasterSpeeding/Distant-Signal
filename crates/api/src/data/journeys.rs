@@ -406,6 +406,7 @@ pub struct JourneySummaryRow {
     pub id: i64,
     pub custom_name: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub user_id: String,
 }
 
 /// Unscoped journey summary fetch -- `journey_id` alone, no `user_id`
@@ -423,7 +424,7 @@ pub async fn get_journey_summary(
     journey_id: i64,
 ) -> anyhow::Result<Option<JourneySummaryRow>> {
     let row = sqlx::query_as::<_, JourneySummaryRow>(
-        "SELECT id, custom_name, created_at FROM journeys WHERE id = $1",
+        "SELECT id, custom_name, created_at, user_id FROM journeys WHERE id = $1",
     )
     .bind(journey_id)
     .fetch_optional(pool)
@@ -448,8 +449,10 @@ pub async fn get_journey_summary(
 /// READ-ONLY AUTHORIZATION ONLY. This function must NEVER be used to gate
 /// a write route (rename/add-leg/commit-leg/delete a journey, or anything
 /// under `/Journeys/*` that mutates state) -- every write stays scoped to
-/// `journeys.user_id = caller.id` alone, via `journey_owner` (this file's
-/// existing ownership-only check, unchanged by this feature). Sharing a
+/// `journeys.user_id = caller.id` alone, via each write function's own
+/// folded-in `WHERE ... AND user_id = $N` ownership clause (e.g.
+/// `get_owned_leg`/`set_leg_train_subscription` in this file), unchanged by
+/// this feature. Sharing a
 /// journey into a group conveys READ access ONLY, per
 /// docs/superpowers/specs/2026-09-22-journey-tracking-design.md §6 -- the
 /// same hard boundary `custom_line_group_grants`/`group_trains` already
@@ -902,7 +905,10 @@ mod db_tests {
         cleanup_journey(
             &pool,
             journey_id,
-            &["TEST-JOURNEY-READABLE-OWNER-2", "TEST-JOURNEY-READABLE-MEMBER-2"],
+            &[
+                "TEST-JOURNEY-READABLE-OWNER-2",
+                "TEST-JOURNEY-READABLE-MEMBER-2",
+            ],
         )
         .await;
     }
@@ -944,7 +950,10 @@ mod db_tests {
         cleanup_journey(
             &pool,
             journey_id,
-            &["TEST-JOURNEY-READABLE-OWNER-3", "TEST-JOURNEY-READABLE-STRANGER-3"],
+            &[
+                "TEST-JOURNEY-READABLE-OWNER-3",
+                "TEST-JOURNEY-READABLE-STRANGER-3",
+            ],
         )
         .await;
     }
@@ -1010,7 +1019,10 @@ mod db_tests {
         cleanup_journey(
             &pool,
             journey_id,
-            &["TEST-JOURNEY-READABLE-OWNER-4", "TEST-JOURNEY-READABLE-MEMBER-4"],
+            &[
+                "TEST-JOURNEY-READABLE-OWNER-4",
+                "TEST-JOURNEY-READABLE-MEMBER-4",
+            ],
         )
         .await;
     }

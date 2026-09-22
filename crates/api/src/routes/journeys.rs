@@ -388,6 +388,14 @@ struct JourneyDetailResponse {
     custom_name: Option<String>,
     created_at: DateTime<Utc>,
     legs: Vec<JourneyLegDetailResponse>,
+    /// Whether the CALLER owns this journey, as opposed to reading it via a
+    /// group it's been shared into (`journey_readable_by`). The frontend
+    /// gates every owner-only action (share-to-group button, unmatched-leg
+    /// candidate picker, matched-leg "Change train") on this flag -- the
+    /// backend still refuses all three regardless for a non-owner, but
+    /// showing them at all to a fellow group member who can only ever get a
+    /// 404 is its own bug. See this plan's final-review findings (I1).
+    is_owner: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -418,8 +426,10 @@ struct JourneyLegDetailResponse {
 ///
 /// `GET /Journeys/{journeyId}` -- the ONE read route in this file gated on
 /// `journeys::journey_readable_by` (owner OR group-shared-with) rather
-/// than `journeys::journey_owner` (owner only, used by every write route
-/// in this file). See
+/// than the ownership-only check folded directly into every write route's
+/// own query (e.g. `journeys::get_owned_leg`/
+/// `journeys::set_leg_train_subscription`'s `WHERE ... AND user_id = $N`).
+/// See
 /// docs/superpowers/specs/2026-09-22-journey-tracking-design.md §6's final
 /// paragraph and
 /// docs/superpowers/plans/2026-09-22-journey-tracking-phase4-group-sharing-plan.md's
@@ -436,16 +446,14 @@ async fn get_journey(
         .await
         .map_err(internal_error("check journey readability"))?;
     if !readable {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "no journey with that id".to_string(),
-        ));
+        return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
     }
 
     let summary = journeys::get_journey_summary(&app.database, journey_id)
         .await
         .map_err(internal_error("read journey"))?
         .ok_or((StatusCode::NOT_FOUND, "no journey with that id".to_string()))?;
+    let is_owner = summary.user_id == user.id;
 
     let leg_rows = journeys::list_legs_for_journey(&app.database, journey_id)
         .await
@@ -490,6 +498,7 @@ async fn get_journey(
         custom_name: summary.custom_name,
         created_at: summary.created_at,
         legs,
+        is_owner,
     }))
 }
 
@@ -1033,6 +1042,10 @@ mod db_tests {
         assert_eq!(legs[0]["matchMode"], "manual");
         assert!(legs[0]["trackedTrainState"].is_object());
         assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "A44444");
+        // I1 (final review): the owner reading their own journey must see
+        // `isOwner: true` -- the frontend gates every owner-only control on
+        // this flag.
+        assert_eq!(body["isOwner"], true);
 
         cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY").await;
     }
@@ -1199,6 +1212,13 @@ mod db_tests {
         assert_eq!(legs[0]["matchMode"], "manual");
         assert!(legs[0]["trackedTrainState"].is_object());
         assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "A88888");
+        // I1 (final review): a group member reading a journey shared into
+        // their group (never authorized as the owner) must see
+        // `isOwner: false` -- the frontend uses this to hide the
+        // share-journey button and the two owner-only leg controls
+        // (`JourneyLegCandidates`/"Change train") that would otherwise 404
+        // for them.
+        assert_eq!(body["isOwner"], false);
 
         cleanup_group(&pool, &group_id).await;
         cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-OWNER").await;

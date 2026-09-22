@@ -462,13 +462,20 @@ function SharedJourneyRow({
   currentUserId: string | null;
 }) {
   const canRemove = canManage || (currentUserId !== null && journey.addedBy === currentUserId);
-  // Falls back to a plain leg-count label when no custom name was set --
-  // mirrors trackedTrainDisplayName's own "compute a sensible default from
-  // whatever's on the row" posture, kept inline here since it's a single
-  // conditional rather than a reusable multi-field default-name
-  // computation like that helper's.
+  // Same route+date(/time) default `SharedTrainRow` above computes via
+  // `trackedTrainDisplayName` -- `GroupJourney` carries every field that
+  // helper needs (it's the first leg's own identity/status fields), so
+  // this row's default now agrees with every other tracked-train label in
+  // the app instead of a hand-rolled "Untitled journey" placeholder.
+  // Appends a "+N more legs" suffix for a multi-leg journey (this row's
+  // own prior intent, kept): the helper's default only ever describes ONE
+  // leg's route, so a journey with more legs than that needs its own
+  // signal that there's more to it.
   const displayName =
-    journey.customName ?? (journey.legCount === 1 ? 'Untitled journey' : `Untitled journey (${journey.legCount} legs)`);
+    trackedTrainDisplayName(journey) +
+    (journey.legCount > 1
+      ? ` (+${journey.legCount - 1} more leg${journey.legCount > 2 ? 's' : ''})`
+      : '');
   return (
     <Card withBorder>
       <StatusRow

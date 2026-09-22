@@ -1298,8 +1298,8 @@ mod db_tests {
     }
 
     /// Deletes the fixture group (cascading `group_members`,
-    /// `group_trains`, and `group_invite_links`) and THEN its fixture
-    /// users. Order matters: `groups.created_by` and
+    /// `group_trains`, `group_journeys`, and `group_invite_links`) and THEN
+    /// its fixture users. Order matters: `groups.created_by` and
     /// `group_invite_links.created_by` reference `users(id)` with no
     /// `ON DELETE CASCADE` (see
     /// `crates/api/migrations/20260911090000_shared_groups.sql`), so

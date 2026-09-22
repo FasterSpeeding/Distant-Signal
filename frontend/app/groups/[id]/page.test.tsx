@@ -6,6 +6,7 @@ import GroupDetailPage from './page';
 import {
   getGroup,
   getGroupCustomLines,
+  getGroupJourneys,
   getGroupMembers,
   getGroupTrains,
   getLineStatus,
@@ -27,6 +28,7 @@ vi.mock('@/lib/api', async () => {
     ...actual,
     getGroup: vi.fn(),
     getGroupCustomLines: vi.fn(),
+    getGroupJourneys: vi.fn(),
     getGroupMembers: vi.fn(),
     getGroupTrains: vi.fn(),
     getLineStatus: vi.fn(),
@@ -35,11 +37,12 @@ vi.mock('@/lib/api', async () => {
 });
 
 // Every test that gets past the group fetch renders the shared-custom-lines
-// section, so both of its calls need a default; individual tests below
-// override what they care about.
+// and shared-journeys sections, so their defaults need to be set here too;
+// individual tests below override what they care about.
 beforeEach(() => {
   vi.mocked(getGroupCustomLines).mockResolvedValue([]);
   vi.mocked(getLineStatus).mockResolvedValue([]);
+  vi.mocked(getGroupJourneys).mockResolvedValue([]);
 });
 
 vi.mock('next/navigation', () => ({

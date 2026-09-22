@@ -726,6 +726,16 @@ export interface JourneyDetail {
   customName: string | null;
   createdAt: string;
   legs: JourneyLegDetail[];
+  /** Whether the CALLER owns this journey, as opposed to reading it via a
+   * group it's been shared into (`journey_readable_by`,
+   * `crates/api/src/data/journeys.rs`). Gate every owner-only action on
+   * this flag -- the share-journey button
+   * (`app/journeys/[id]/page.tsx`) and both owner-only branches of
+   * `JourneyLegCard` (the unmatched-leg candidate picker and the
+   * matched-leg "Change train" toggle). The backend still refuses all
+   * three regardless for a non-owner, but showing them at all to a fellow
+   * group member who can only ever get a 404 is its own bug. */
+  isOwner: boolean;
 }
 
 /** `POST /Journeys`'s response

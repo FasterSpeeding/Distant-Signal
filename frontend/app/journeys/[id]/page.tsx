@@ -9,9 +9,13 @@ export const revalidate = 0;
 
 /** `/journeys/[id]` -- design doc §4. One card per leg (Phase 1: always
  * exactly one, see `crates/api/src/data/journeys.rs`'s own module doc
- * comment). No editable header, no delete, no share-to-group button, no
- * skip badge, no platform column -- all explicitly deferred, see this
- * plan's own Non-goals for the reasoning behind each. */
+ * comment). No editable header, no delete, no skip badge, no platform
+ * column -- all explicitly deferred, see this plan's own Non-goals for the
+ * reasoning behind each. A share-to-group button DOES exist (Task 8), but
+ * only for the journey's owner (`journey.isOwner`) -- a non-owning group
+ * member reaches this page via `journey_readable_by`'s group-shared read
+ * path and gets neither that button nor the leg-level owner-only controls
+ * (`JourneyLegCard`'s own `isOwner` gating). */
 export default async function JourneyDetailPage({
   params,
 }: {
@@ -49,11 +53,11 @@ export default async function JourneyDetailPage({
       <Group justify="space-between" align="baseline">
         <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
         <Group gap="xs">
-          <ShareJourneyButton journeyId={journey.id} />
+          {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
         </Group>
       </Group>
       {journey.legs.map((leg) => (
-        <JourneyLegCard key={leg.id} journeyId={journey.id} leg={leg} />
+        <JourneyLegCard key={leg.id} journeyId={journey.id} leg={leg} isOwner={journey.isOwner} />
       ))}
     </Stack>
   );
