@@ -220,7 +220,25 @@ export function TimeFilterInput({
       // option, only forwards ordinary `<input>` props like this one).
       lang="en-GB"
       label={label}
-      description={description}
+      // Confirmed by a standalone repro this session: `lang="en-GB"` above
+      // pins the INPUT's own segment rendering (09/59 vs AM/PM) on
+      // Firefox/Safari, but Chromium's native `<input type="time">` picker
+      // chrome ignores `lang` for its own display and shows a 12-hour
+      // AM/PM face regardless -- a genuine platform limitation with no
+      // patch through `lang`, confirmed against Chromium's own source
+      // (LocaleConvertedFromLang is deliberately not consulted for the
+      // picker UI). Replacing the native input with a masked text field
+      // would fix this but throws away the OS wheel picker this component's
+      // own doc comment explains is the whole reason it stays native
+      // (most of this app's traffic is mobile, where a native `type="time"`
+      // is at its best). The least-destructive fix that still resolves the
+      // confusion -- someone types "19:00", the input (or its picker) shows
+      // "7:00 PM", and they can't tell if that's the site or their own
+      // typo -- is a small, always-visible hint confirming the field reads
+      // and stores 24-hour time, appended to the caller's own field-specific
+      // description rather than duplicated at every TimeFilterInput call
+      // site.
+      description={`${description} Uses a 24-hour clock, e.g. 19:00 for 7pm.`}
       value={value}
       onChange={(event) => {
         syncIncomplete(event.currentTarget);
