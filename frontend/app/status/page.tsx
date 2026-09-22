@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 import { getLineStatusForMode } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM, type Country } from '@/lib/modes';
-import { buildNetworkStatusOverview, type NetworkStatusOverview } from '@/lib/networkStatusOverview';
+import { buildNetworkStatusOverview } from '@/lib/networkStatusOverview';
 import { isGoodSeverity, SEVERITY_GROUP_LABELS, SEVERITY_GROUPS_BY_RANK, worstStatus } from '@/lib/severity';
 import { StatusBadge } from '@/components/StatusBadge';
 import type { LineStatusReport } from '@/lib/types';
