@@ -33,6 +33,7 @@ import type {
   GroupCustomLine,
   SharedGroupCustomLine,
   GroupJoinPreview,
+  OperatorSummary,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -314,7 +315,7 @@ export async function getPreferences(): Promise<Preferences> {
     ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
   });
   if (response.status === 401) {
-    return { pinnedLines: [], pinnedStations: [] };
+    return { pinnedLines: [], pinnedStations: [], pinnedOperators: [] };
   }
   if (!response.ok) {
     throw errorForResponse(url, response);
@@ -371,6 +372,19 @@ export async function getAllLines(): Promise<LineSummary[]> {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
+}
+
+/** Every operator with at least one currently-tracked public line
+ * (`crates/api/src/routes/operators.rs`'s `list_operators`) -- real ATOC
+ * codes from `tocs` plus a synthetic `"TfL"` row, each with a rolled-up
+ * worst status + merged sample stats. Unauthenticated and caller-identity-
+ * independent (unlike `getAllLines`, which appends the caller's own custom
+ * lines) -- no cookie forwarding needed. `cache: 'no-store'`, same as
+ * `getAllLines`/`getLineStatusForMode`: this is live status data, not
+ * slow-changing reference data. */
+export async function getAllOperators(): Promise<OperatorSummary[]> {
+  const url = `${baseUrl()}/public/operators`;
+  return fetchJson<OperatorSummary[]>(url, { cache: 'no-store' });
 }
 
 /** Every TOC (code + name), for resolving a fixed known set of operator
