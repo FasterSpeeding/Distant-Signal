@@ -35,7 +35,9 @@ function baseLeg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
   return {
     id: 1,
     originCrs: 'WAT',
+    originName: null,
     destinationCrs: 'WOK',
+    destinationName: null,
     serviceDate: '2026-08-28',
     departAfter: null,
     departBefore: null,

@@ -44,6 +44,21 @@ describe('TrackPage', () => {
 
     expect(screen.getByText(/Find or track the train your saved ticket is for/)).toBeInTheDocument();
   });
+
+  // Review §2.1/I21: previously nothing in the app could link straight to
+  // window mode. `?mode=window` mirrors the existing `?origin=` pattern.
+  it('starts the form in window mode for ?mode=window', async () => {
+    renderWithMantine(await TrackPage({ searchParams: Promise.resolve({ mode: 'window' }) }));
+
+    expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+    expect(screen.getByText(/Not sure which train yet\?/)).toBeInTheDocument();
+  });
+
+  it('falls back to pick mode for an unrecognised ?mode=', async () => {
+    renderWithMantine(await TrackPage({ searchParams: Promise.resolve({ mode: 'bogus' }) }));
+
+    expect(screen.getByRole('radio', { name: 'I know the train' })).toBeChecked();
+  });
 });
 
 describe('metadata', () => {
@@ -53,7 +68,7 @@ describe('metadata', () => {
 
   it('describes pinning one train rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it.',
+      'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
     );
   });
 
@@ -75,14 +90,14 @@ describe('metadata', () => {
     expect(metadata.openGraph).toMatchObject({
       title: 'Track a Train — Distant Signal',
       description:
-        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it.',
+        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
       title: 'Track a Train — Distant Signal',
       description:
-        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it.',
+        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
     });
   });
 

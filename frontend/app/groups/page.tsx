@@ -1,4 +1,4 @@
-import { Badge, Card, Group, Stack, Text, Title } from '@mantine/core';
+import { Badge, Button, Card, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getMyGroups } from '@/lib/api';
@@ -89,13 +89,32 @@ export default async function GroupsPage() {
     <Stack p="lg" gap="lg" maw={640}>
       <Group justify="space-between" align="baseline">
         <Title order={1}>Groups</Title>
-        <TextLink href="/groups/new">Create group</TextLink>
+        {/* Review §2.7/M20: the empty state below has its own, single
+            "Create a group" call to action in the body -- a second,
+            differently-styled link up here would duplicate it 40px away and
+            (with nothing else in this row to balance `justify="space-between"`)
+            float alone in the middle of the header on a wide viewport. This
+            link earns its place once there are rows to scroll past. */}
+        {groups.length > 0 && <TextLink href="/groups/new">Create group</TextLink>}
       </Group>
       {groups.length === 0 ? (
-        <Text c="dimmed">
-          You&apos;re not in any groups yet. <Link href="/groups/new">Create one</Link> to share tracked trains
-          with other people.
-        </Text>
+        <Stack gap="sm" align="flex-start">
+          {/* Review §2.7/M20: body colour, not `c="dimmed"` -- this sentence
+              is the only guidance on the page, not metadata to be
+              de-emphasised. "journeys and custom lines" matches this route's
+              own `<meta description>` above (a group shares both); the old
+              copy said "tracked trains" alone. The second clause names the
+              far more common way most people actually end up in a group --
+              being invited -- which the page previously never mentioned at
+              all. */}
+          <Text>
+            You&apos;re not in any groups yet. Create one to share journeys and custom lines with other people —
+            or ask a group member to send you their invite link if you&apos;re joining an existing one.
+          </Text>
+          <Link href="/groups/new" style={{ textDecoration: 'none' }}>
+            <Button>Create a group</Button>
+          </Link>
+        </Stack>
       ) : (
         <Stack gap="xs">
           {groups.map((group) => (

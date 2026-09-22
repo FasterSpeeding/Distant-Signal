@@ -35,7 +35,7 @@ import { TrackTrainForm } from '@/components/TrackTrainForm';
  * board for, and says so in its own copy. */
 const METADATA_TITLE = 'Track a Train — Distant Signal';
 const METADATA_DESCRIPTION =
-  'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it.';
+  'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.';
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,
@@ -47,9 +47,9 @@ export const metadata: Metadata = {
 export default async function TrackPage({
   searchParams,
 }: {
-  searchParams: Promise<{ origin?: string | string[]; ticketId?: string | string[] }>;
+  searchParams: Promise<{ origin?: string | string[]; ticketId?: string | string[]; mode?: string | string[] }>;
 }) {
-  const { origin, ticketId } = await searchParams;
+  const { origin, ticketId, mode } = await searchParams;
   // Next.js supplies a `string[]` for a repeated query param (e.g.
   // `?origin=a&origin=b`) -- fall back to the first value rather than
   // letting `.toUpperCase()` throw on an array.
@@ -61,15 +61,31 @@ export default async function TrackPage({
   // the same as absent, rather than passing NaN through.
   const ticketIdParam = Array.isArray(ticketId) ? ticketId[0] : ticketId;
   const attachTicketId = ticketIdParam && /^\d+$/.test(ticketIdParam) ? Number(ticketIdParam) : undefined;
+  // Review §2.1/I21: previously nothing in the app could link straight to
+  // window mode -- it lived only in `TrackTrainForm`'s own `useState`, not
+  // URL-addressable at all (unlike `?origin=` just above, which already had
+  // this exact pattern). `JourneyLegCard`'s "Edit search" link
+  // (`components/JourneyLegCard.tsx`) is the first real caller. Anything
+  // other than the literal string falls back to pick mode, the same
+  // "malformed means absent" posture `ticketIdParam` takes above.
+  const modeParam = Array.isArray(mode) ? mode[0] : mode;
+  const initialMode = modeParam === 'window' ? 'window' : 'pick';
 
   return (
     <Stack p="lg" gap="md">
       <Title order={1}>Track a Train</Title>
-      <Text c="dimmed">
-        {attachTicketId !== undefined
-          ? "Find or track the train your saved ticket is for — it'll be attached automatically once you do."
-          : 'Pin a specific train to see its live position, delay and next calling point as Network Rail reports it.'}
-      </Text>
+      {/* Review §2.1/I21: the mode-aware "Pin a specific train…"/"Not sure
+          which train yet?" sentence now lives inside `TrackTrainForm`
+          itself, where it can react to the client-side mode toggle -- a
+          visitor who switches modes without reloading the page used to
+          keep seeing copy that only described pick mode. The ticket-attach
+          sentence stays here: it's mode-independent (attaching a ticket
+          only ever follows the pin-mode path) and needs no reactivity. */}
+      {attachTicketId !== undefined && (
+        <Text c="dimmed">
+          Find or track the train your saved ticket is for — it&apos;ll be attached automatically once you do.
+        </Text>
+      )}
       {/* Review §2.16: `TrackTrainForm`'s own "Track this train" button is
           shown to every visitor, logged in or not (the Tier-2 "show the
           control, gate on the real 401" pattern `useNeedsLogin.ts`
@@ -83,7 +99,11 @@ export default async function TrackPage({
         Tracking a train needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
         aren&apos;t already signed in.
       </Text>
-      <TrackTrainForm initialOrigin={originParam?.toUpperCase()} attachTicketId={attachTicketId} />
+      <TrackTrainForm
+        initialOrigin={originParam?.toUpperCase()}
+        attachTicketId={attachTicketId}
+        initialMode={initialMode}
+      />
     </Stack>
   );
 }

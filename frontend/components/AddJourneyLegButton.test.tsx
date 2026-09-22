@@ -100,6 +100,30 @@ describe('AddJourneyLegButton', () => {
     expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled();
   });
 
+  // Review §2.2/I17: states the rule up front rather than only via a
+  // disabled button with no explanation.
+  it('shows the at-least-one-of-four hint in window mode', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByText('At least one of the four times below is required.')).toBeInTheDocument();
+  });
+
+  // Review §2.2/M14: same "no visible earliest > latest check" gap
+  // TrackTrainForm's own window fields had.
+  it('disables submit when the latest departure is before the earliest departure', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const destination = await screen.findByLabelText('Destination CRS');
+    fireEvent.change(destination, { target: { value: 'CLJ' } });
+    fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '18:00' } });
+    fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '09:00' } });
+
+    expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+  });
+
   it('POSTs a knownTrain-mode request when the direct-pick mode is selected', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(legResponse());

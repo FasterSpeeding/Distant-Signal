@@ -43,4 +43,18 @@ describe('PlatformBadge', () => {
     const badge = screen.getByText('Platform 6');
     expect(badge.closest('[data-platform-changed="true"]')).toBeNull();
   });
+
+  // Review §2.4/I20: orange is reserved for lateness elsewhere in the app
+  // (the filled "+N MIN" delay badge sits right next to this one on a
+  // departure row) -- a changed platform used to share that hue, reading
+  // at a glance as a second lateness warning rather than "where to stand".
+  it('uses a neutral colour for a changed platform, not the delay-badge orange', () => {
+    renderWithMantine(<PlatformBadge platform="9" plannedPlatform="6" platformChanged={true} />);
+    const badge = screen.getByText('Platform 9 (changed from 6)').closest('.mantine-Badge-root');
+    expect(badge).not.toBeNull();
+    // Mantine writes the colour into inline CSS custom properties rather
+    // than a `data-color` attribute -- asserting on `style` is the one
+    // reliable way to see which colour actually reached the DOM.
+    expect(badge?.getAttribute('style')).not.toMatch(/orange/i);
+  });
 });

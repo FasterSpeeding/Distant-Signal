@@ -652,7 +652,14 @@ struct JourneyDetailResponse {
 struct JourneyLegDetailResponse {
     id: i64,
     origin_crs: Option<String>,
+    /// `None` whenever `origin_crs` is `None`, or there is no `stations`
+    /// reference row for the code (a real, if rare, gap) -- see
+    /// `data::journeys::JourneyLegWithNamesRow`'s own doc comment.
+    origin_name: Option<String>,
     destination_crs: Option<String>,
+    /// See `origin_name`'s doc comment -- same mechanism, joined on
+    /// `destination_crs`.
+    destination_name: Option<String>,
     service_date: NaiveDate,
     depart_after: Option<NaiveTime>,
     depart_before: Option<NaiveTime>,
@@ -774,7 +781,9 @@ async fn get_journey(
         legs.push(JourneyLegDetailResponse {
             id: leg.id,
             origin_crs: leg.origin_crs,
+            origin_name: leg.origin_name,
             destination_crs: leg.destination_crs,
+            destination_name: leg.destination_name,
             service_date: leg.service_date,
             depart_after: leg.depart_after,
             depart_before: leg.depart_before,

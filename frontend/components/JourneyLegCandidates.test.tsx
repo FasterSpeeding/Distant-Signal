@@ -106,6 +106,38 @@ describe('JourneyLegCandidates', () => {
     expect(screen.getAllByText('Train C11052 · BRI → PAD')).toHaveLength(1);
   });
 
+  // Review §2.5/M15 -- the list's own intro line, added independently of
+  // the per-row leg-times rewrite above (both land on this component).
+  it('names the match count and says the pick can still be changed', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(
+      await screen.findByText("2 trains match your search — pick the one you'll be on. You can change it later."),
+    ).toBeInTheDocument();
+  });
+
+  it('singularizes the match count for exactly one candidate', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        candidates: () =>
+          new Response(JSON.stringify({ results: [CANDIDATES_FIXTURE.results[0]], nextCursor: null }), {
+            status: 200,
+          }),
+      }),
+    );
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(
+      await screen.findByText("1 train matches your search — pick the one you'll be on. You can change it later."),
+    ).toBeInTheDocument();
+  });
+
   it('gives every "Track this train" button its own accessible name', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(

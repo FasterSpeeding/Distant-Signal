@@ -2,7 +2,18 @@
 
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Badge, Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
+import {
+  Alert,
+  Autocomplete,
+  Badge,
+  Button,
+  Group,
+  SegmentedControl,
+  SimpleGrid,
+  Stack,
+  Text,
+  VisuallyHidden,
+} from '@mantine/core';
 import { DateTimePicker, DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -276,9 +287,15 @@ type Picker =
 export function TrackTrainForm({
   initialOrigin = '',
   attachTicketId,
+  initialMode = 'pick',
 }: {
   initialOrigin?: string;
   attachTicketId?: number;
+  // Review §2.1/I21: the mode toggle used to live only in `useState`, so
+  // nothing in the app could send a user straight to window mode -- not
+  // even `JourneyLegCard`'s own "Edit search" link. `track/page.tsx` reads
+  // this off `?mode=window`, the same pattern its `?origin=` already uses.
+  initialMode?: 'pick' | 'window';
 }) {
   const router = useRouter();
   const [originCrs, setOriginCrs] = useState(initialOrigin);
@@ -345,7 +362,7 @@ export function TrackTrainForm({
   // `TimeFilterInput`'s existing before/after convention verbatim (per the
   // journey-tracking design doc's own §0.5 direction) rather than inventing
   // a new one for leg-window entry.
-  const [mode, setMode] = useState<'pick' | 'window'>('pick');
+  const [mode, setMode] = useState<'pick' | 'window'>(initialMode);
   const modeLabelId = useId();
   const [windowDestinationCrs, setWindowDestinationCrs] = useState('');
   // A dedicated suggestions hook, not a reuse of the pin-mode Destination
@@ -360,7 +377,15 @@ export function TrackTrainForm({
     windowDestinationCrs,
     searchStations,
   );
-  const [windowServiceDate, setWindowServiceDate] = useState<string | null>(null);
+  // Review §2.2/M13: seeded with today's real date, not `null` -- a `null`
+  // value rendered the field as empty with "Today" as a grey PLACEHOLDER,
+  // which reads as "nothing selected" even though `submitWindow` (below)
+  // already resolves a `null` to today. Pin-mode's own `scheduledDeparture`
+  // field, twenty pixels away in the other branch, shows its default as a
+  // real value for the same reason -- this brings window mode in line with
+  // it. Still `clearable` (below), and `submitWindow`'s `?? dayjs()...`
+  // fallback stays as defence if a caller ever clears it back to `null`.
+  const [windowServiceDate, setWindowServiceDate] = useState<string | null>(() => dayjs().format('YYYY-MM-DD'));
   const [departFrom, setDepartFrom] = useState('');
   const [departTo, setDepartTo] = useState('');
   const [arriveFrom, setArriveFrom] = useState('');
@@ -704,6 +729,20 @@ export function TrackTrainForm({
         );
         return;
       }
+      // Review §2.2/M14: "no visible earliest > latest check" -- both were
+      // previously checked only for PRESENCE, never for order, so
+      // "earliest 18:00, latest 09:00" reached the backend unexamined.
+      // Plain string comparison is safe here: both are always `"HH:MM"`
+      // (`TimeFilterInput`'s own value contract), which sorts
+      // lexicographically identical to chronologically within one day.
+      if (departFrom && departTo && departFrom > departTo) {
+        setFieldError('Latest departure must be after earliest departure.');
+        return;
+      }
+      if (arriveFrom && arriveTo && arriveFrom > arriveTo) {
+        setFieldError('Latest arrival must be after earliest arrival.');
+        return;
+      }
       setFieldError(null);
       if (groups.length > 0) {
         setDestinationPromptOpened(true);
@@ -963,7 +1002,23 @@ export function TrackTrainForm({
   }
 
   return (
-    <Stack gap="md" component="form" onSubmit={handleSubmit}>
+    <Stack gap="md">
+      {/* Review §2.1/I21: the page's own intro used to be static copy
+          owned by `track/page.tsx` ("Pin a specific train…"), true of pick
+          mode only -- a visitor who switched to window mode was still told
+          the page was for a *specific* train. Lives here, not there, so it
+          can react to the client-side mode toggle instead of only the
+          initial `?mode=` a page load saw. The ticket-attach case keeps its
+          own mode-independent copy from the caller (`track/page.tsx`),
+          since attaching a ticket only ever follows the pin-mode path. */}
+      {attachTicketId === undefined && (
+        <Text c="dimmed">
+          {mode === 'window'
+            ? "Not sure which train yet? Tell us roughly when you're travelling — Origin, Destination and at least one of the times below — and we'll show you the matches to choose from. You can change your pick later."
+            : 'Pin a specific train to see its live position, delay and next calling point as Network Rail reports it.'}
+        </Text>
+      )}
+      <Stack gap="md" component="form" onSubmit={handleSubmit} maw={640}>
       <Autocomplete
         label="Origin station"
         placeholder="e.g. Woking or WOK"
@@ -1000,12 +1055,20 @@ export function TrackTrainForm({
           (`pin`/`knownTrain`/`window`) needs an `originCrs`, so it stays
           above the mode switch rather than being duplicated inside each
           branch. */}
-      {/* A visible label wired as the radiogroup's own name. Without it
+      {/* Review §2.1/I21: "Pick a departure"/"Search a time window" named
+          the FORM's own mechanism, not the traveller's situation -- and the
+          sibling `AddJourneyLegButton` modal already used the clearer "I
+          know the train" for the equivalent choice, so the codebase had two
+          different vocabularies for one decision. Both controls now agree:
+          "I know the train" / "Search a time window".
+
+          A visible label wired as the radiogroup's own name. Without it
           a screen reader announced "radiogroup, Pick a departure, radio
           button, 1 of 2, checked" -- the group itself unnamed -- and this
-          toggle is the ONLY discovery path for window mode (the mode is
-          not URL-addressable), so the name is load-bearing (2026-09-22 UX
-          review, I9/P4). Same `Text id` + `aria-labelledby` shape
+          toggle is the main discovery path for window mode (`?mode=window`
+          deep-links into it, but nothing links there), so the name is
+          load-bearing (2026-09-22 UX review, I9/P4). Same `Text id` +
+          `aria-labelledby` shape
           `HistoryRangePicker`'s "Period" control already uses; the
           question is phrased from the traveller's situation rather than
           from the form's mechanism. */}
@@ -1017,10 +1080,18 @@ export function TrackTrainForm({
         value={mode}
         onChange={(value) => setMode(value as 'pick' | 'window')}
         data={[
-          { label: 'Pick a departure', value: 'pick' },
+          { label: 'I know the train', value: 'pick' },
           { label: 'Search a time window', value: 'window' },
         ]}
       />
+      {/* Review §2.1/M23: the toggle swaps ~400px of form beneath it with
+          no announcement -- sighted users see it happen, screen-reader
+          users get nothing until they tab forward into different fields.
+          `VisuallyHidden` keeps this out of the visual layout entirely; the
+          visible cue (the fields themselves changing) is unaffected. */}
+      <VisuallyHidden role="status" aria-live="polite">
+        {mode === 'window' ? 'Showing time-window search.' : 'Showing pick-a-departure search.'}
+      </VisuallyHidden>
       {mode === 'window' ? (
         <>
           <Autocomplete
@@ -1051,16 +1122,30 @@ export function TrackTrainForm({
           />
           <DatePickerInput
             label="Date"
+            // Review §2.2/M13: `windowServiceDate` is seeded with today's
+            // real date above (not `null`), so this now shows an actual
+            // value ("22 Sept 2026") the way pin-mode's own default
+            // departure does -- "Today" stays only as the placeholder for
+            // if the field is ever cleared back to empty.
             placeholder="Today"
             value={windowServiceDate}
             onChange={setWindowServiceDate}
             clearable
           />
-          <Group grow align="flex-start">
+          {/* Review §2.2/I17: all four fields below say "(optional)" in
+              their own label, which is individually true but collectively
+              misleading -- `windowHasABound` (used by `handleSubmit`
+              above) refuses to submit unless at least one of the four is
+              set, and until now that rule surfaced only as a post-submit
+              error. This states it up front instead of relabelling the
+              fields (which would have to explain "optional, but not all
+              four of you" some other way). */}
+          <Text size="sm">At least one of the four times below is required to search.</Text>
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <TimeFilterInput
               label="Earliest departure (optional)"
               name="earliest departure"
-              description={`Only trains at ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or after this time.`}
+              description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or after this time.`}
               value={departFrom}
               onChange={setDepartFrom}
               onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departFrom: v }))}
@@ -1069,18 +1154,18 @@ export function TrackTrainForm({
             <TimeFilterInput
               label="Latest departure (optional)"
               name="latest departure"
-              description="Only trains at or before this time."
+              description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or before this time.`}
               value={departTo}
               onChange={setDepartTo}
               onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departTo: v }))}
               error={null}
             />
-          </Group>
-          <Group grow align="flex-start">
+          </SimpleGrid>
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <TimeFilterInput
               label="Earliest arrival (optional)"
               name="earliest arrival"
-              description="Only trains reaching the destination at or after this time."
+              description={`Only trains reaching ${windowDestinationValid ? windowDestinationCrs.trim().toUpperCase() : 'the destination above'} at or after this time.`}
               value={arriveFrom}
               onChange={setArriveFrom}
               onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
@@ -1089,17 +1174,22 @@ export function TrackTrainForm({
             <TimeFilterInput
               label="Latest arrival (optional)"
               name="latest arrival"
-              description="Only trains reaching the destination at or before this time."
+              description={`Only trains reaching ${windowDestinationValid ? windowDestinationCrs.trim().toUpperCase() : 'the destination above'} at or before this time.`}
               value={arriveTo}
               onChange={setArriveTo}
               onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
               error={null}
             />
-          </Group>
+          </SimpleGrid>
         </>
       ) : (
         <>
-          <Group align="flex-end" gap="xs">
+          {/* Review §2.3/M12: `wrap="nowrap"` plus the button's own
+              `flexShrink: 0` -- without them this `Group` wraps at 390px,
+              orphaning "Now" alone on its own row under a full-width
+              picker (the same §2.5 shrink-guard idiom `StatusRow` already
+              centralises for badge/text rows). */}
+          <Group align="flex-end" gap="xs" wrap="nowrap">
             <DateTimePicker
               label="Scheduled departure"
               placeholder="Pick date and time"
@@ -1126,7 +1216,11 @@ export function TrackTrainForm({
                 `date.format('YYYY-MM-DD HH:mm:ss')`) -- see this file's own
                 `handleSubmit` comment on why that shape, not an ISO string,
                 is required to avoid an around-local-midnight day-off-by-one. */}
-            <Button variant="default" onClick={() => setScheduledDeparture(dayjs().format('YYYY-MM-DD HH:mm:ss'))}>
+            <Button
+              variant="default"
+              style={{ flexShrink: 0 }}
+              onClick={() => setScheduledDeparture(dayjs().format('YYYY-MM-DD HH:mm:ss'))}
+            >
               Now
             </Button>
           </Group>
@@ -1199,14 +1293,18 @@ export function TrackTrainForm({
               : 'Track this train'}
         </Button>
       </Group>
+      </Stack>
       <TrackDestinationModal
         opened={destinationPromptOpened}
         groups={groups}
         onClose={() => setDestinationPromptOpened(false)}
         onConfirm={(groupId) => void (mode === 'window' ? submitWindow(groupId) : submitTrack(groupId))}
       />
+      {/* Review §2.5/M19: the modal used to say "Log in to track this
+          train" unconditionally, even in window mode -- where nothing is
+          tracked yet (a window search doesn't have a chosen train). */}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
-        Log in to track this train.
+        {mode === 'window' ? 'Log in to search for a train.' : 'Log in to track this train.'}
       </LoginPromptModal>
     </Stack>
   );

@@ -7,6 +7,31 @@ import { JourneyStatusBadge } from '@/components/JourneyStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
 import { ShareJourneyButton } from '@/components/ShareJourneyButton';
 import { TextLink } from '@/components/TextLink';
+import { formatDate } from '@/lib/dateFormat';
+import { routeLabel } from '@/lib/stationLabel';
+import type { JourneyDetail } from '@/lib/types';
+
+/** "London Kings Cross → Edinburgh, 22 Sept 2026" -- the fallback `<h1>`
+ * for a journey with no `customName` set (the spec §4 rename pattern is
+ * still deferred, see the code comment at its one call site below).
+ * Review §2.5/M18: "Tracked journey" named nothing about THIS journey; the
+ * 09-17 review made the same "default the title to the route" call for the
+ * single-train page, and the route is exactly the one fact every journey
+ * already carries on its first leg. Uses the FIRST leg's origin and the
+ * LAST leg's destination so a (currently hypothetical, Phase 1 is
+ * always-one-leg -- see `crates/api/src/data/journeys.rs`'s own module
+ * doc comment) multi-leg journey reads as one through-route rather than
+ * just its first leg. `null` only for a journey with zero legs, which
+ * should not occur in practice (`journeys.legs` is never empty by
+ * construction) -- falls back to the old generic title rather than
+ * rendering an empty `<h1>`. */
+function defaultJourneyTitle(journey: JourneyDetail): string {
+  const firstLeg = journey.legs[0];
+  if (!firstLeg) return 'Tracked journey';
+  const lastLeg = journey.legs.at(-1) ?? firstLeg;
+  const route = routeLabel(firstLeg.originCrs, firstLeg.originName, lastLeg.destinationCrs, lastLeg.destinationName);
+  return `${route}, ${formatDate(firstLeg.serviceDate)}`;
+}
 
 export const revalidate = 0;
 
@@ -54,6 +79,12 @@ export default async function JourneyDetailPage({
   const lastLeg = journey.legs.at(-1) ?? null;
   const priorDestinationCrs =
     lastLeg?.destinationCrs ?? lastLeg?.trackedTrainState?.scheduleDestinationCrs ?? null;
+  // Review §2.5/M16: "Add a leg" used to be offered at the same visual
+  // weight as the status badge even while the CURRENT leg still needs a
+  // train picked -- there is nothing to chain a new leg onto yet, and it
+  // competed for attention with the one action that actually matters on
+  // this page. Hidden until the last leg is matched.
+  const canAddLeg = lastLeg !== null && lastLeg.trackedTrainState !== null;
 
   return (
     <Stack p="lg" gap="md">
@@ -66,7 +97,7 @@ export default async function JourneyDetailPage({
         Back to my trains &amp; journeys
       </TextLink>
       <Group justify="space-between" align="baseline">
-        <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
+        <Title order={1}>{journey.customName ?? defaultJourneyTitle(journey)}</Title>
         <Group gap="xs">
           {/* Phase 2's status badge is a pure read -- shown to every viewer,
               owner or shared-group member alike. */}
@@ -76,8 +107,8 @@ export default async function JourneyDetailPage({
               /Journeys/{id}/legs answers 404 for a non-owner (see
               `post_journey_leg_a_journey_owned_by_someone_else_is_404_not_403`),
               so offering the button to a shared-group viewer would only
-              produce a dead end. */}
-          {journey.isOwner && (
+              produce a dead end. Also gated on `canAddLeg` (M16, above). */}
+          {journey.isOwner && canAddLeg && (
             <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
