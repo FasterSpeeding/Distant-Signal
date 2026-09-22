@@ -269,7 +269,10 @@ fn first_and_last_tiploc(entry: &Value) -> (Option<String>, Option<String>) {
         return (None, None);
     };
     let tiploc_of = |p: &Value| p.get("tiploc").and_then(Value::as_str).map(str::to_string);
-    (points.first().and_then(tiploc_of), points.last().and_then(tiploc_of))
+    (
+        points.first().and_then(tiploc_of),
+        points.last().and_then(tiploc_of),
+    )
 }
 
 async fn get_line_trains(

@@ -1006,14 +1006,22 @@ mod db_tests {
             after: Some("08:00:00".parse().unwrap()),
             before: None,
         };
-        assert!(validate_window_leg("WAT", "RDG", &depart_window, &common::TimeWindow::default()).is_ok());
+        assert!(
+            validate_window_leg("WAT", "RDG", &depart_window, &common::TimeWindow::default())
+                .is_ok()
+        );
     }
 
     #[test]
     fn validate_window_leg_messages_carry_no_internal_field_names() {
         let messages = [
-            validate_window_leg("W", "RDG", &common::TimeWindow::default(), &common::TimeWindow::default())
-                .unwrap_err(),
+            validate_window_leg(
+                "W",
+                "RDG",
+                &common::TimeWindow::default(),
+                &common::TimeWindow::default(),
+            )
+            .unwrap_err(),
             validate_window_leg(
                 "WAT",
                 "RDG",
@@ -1024,7 +1032,10 @@ mod db_tests {
         ];
         for message in messages {
             assert!(!message.is_empty());
-            assert!(!message.contains('_'), "user-facing copy leaked an identifier: {message}");
+            assert!(
+                !message.contains('_'),
+                "user-facing copy leaked an identifier: {message}"
+            );
         }
     }
 
@@ -1052,10 +1063,13 @@ mod db_tests {
         .expect("create window leg");
 
         // First pick.
-        let first_tracking_id =
-            crate::data::train_tracking::create_pin(&pool, &fixture_pin("WAT"), "TEST-JOURNEY-COMMIT")
-                .await
-                .expect("seed first candidate subscription");
+        let first_tracking_id = crate::data::train_tracking::create_pin(
+            &pool,
+            &fixture_pin("WAT"),
+            "TEST-JOURNEY-COMMIT",
+        )
+        .await
+        .expect("seed first candidate subscription");
         let updated = set_leg_train_subscription(
             &pool,
             journey_id,
@@ -1079,10 +1093,13 @@ mod db_tests {
 
         // "Change train" re-pick -- same route, same function, an UPDATE
         // not a new leg.
-        let second_tracking_id =
-            crate::data::train_tracking::create_pin(&pool, &fixture_pin("WAT"), "TEST-JOURNEY-COMMIT")
-                .await
-                .expect("seed second candidate subscription");
+        let second_tracking_id = crate::data::train_tracking::create_pin(
+            &pool,
+            &fixture_pin("WAT"),
+            "TEST-JOURNEY-COMMIT",
+        )
+        .await
+        .expect("seed second candidate subscription");
         let updated = set_leg_train_subscription(
             &pool,
             journey_id,
@@ -1127,10 +1144,13 @@ mod db_tests {
         )
         .await
         .expect("create window leg");
-        let tracking_id =
-            crate::data::train_tracking::create_pin(&pool, &fixture_pin("WAT"), "TEST-JOURNEY-COMMIT-OTHER")
-                .await
-                .expect("seed candidate subscription");
+        let tracking_id = crate::data::train_tracking::create_pin(
+            &pool,
+            &fixture_pin("WAT"),
+            "TEST-JOURNEY-COMMIT-OTHER",
+        )
+        .await
+        .expect("seed candidate subscription");
 
         let updated = set_leg_train_subscription(
             &pool,

@@ -1343,8 +1343,7 @@ mod poll_once_tests {
             storage_dir: std::path::PathBuf::from("/tmp/schedule-reference-test-does-not-exist"),
             poll_interval_secs: 1800,
             api_ingest_url: "http://127.0.0.1:1/stanox-crs".to_string(),
-            schedule_line_population_url: "http://127.0.0.1:1/schedule-line-population"
-                .to_string(),
+            schedule_line_population_url: "http://127.0.0.1:1/schedule-line-population".to_string(),
             schedule_network_departures_url: "http://127.0.0.1:1/schedule-network-departures"
                 .to_string(),
             schedule_destination_departures_url:
@@ -1372,13 +1371,17 @@ mod poll_once_tests {
     /// `seed_last_processed_delivery`'s real `common::ingest::get_json`
     /// call succeeds its bearer-token fetch before hitting whichever
     /// `/schedule-feed-ingests` mock each test below mounts separately.
-    async fn mock_token_cache(server: &wiremock::MockServer) -> common::oauth_client::OAuthTokenCache {
+    async fn mock_token_cache(
+        server: &wiremock::MockServer,
+    ) -> common::oauth_client::OAuthTokenCache {
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/token/"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "access_token": "fake-jwt",
-                "expires_in": 300,
-            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "fake-jwt",
+                    "expires_in": 300,
+                })),
+            )
             .mount(server)
             .await;
         common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {

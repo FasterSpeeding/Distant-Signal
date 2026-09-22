@@ -552,7 +552,9 @@ mod db_tests {
             .expect("nearest_stations query");
         let codes: Vec<&str> = results
             .iter()
-            .filter(|r| r.code.starts_with('Z') && r.code.len() == 3 && r.code.as_bytes()[1] == b'N')
+            .filter(|r| {
+                r.code.starts_with('Z') && r.code.len() == 3 && r.code.as_bytes()[1] == b'N'
+            })
             .map(|r| r.code.as_str())
             .collect();
         assert_eq!(
