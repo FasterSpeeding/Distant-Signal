@@ -95,4 +95,18 @@ describe('JourneyStatusBadge', () => {
     const { container } = renderWithMantine(<JourneyStatusBadge legs={[]} />);
     expect(container.querySelectorAll('.mantine-Badge-root')).toHaveLength(0);
   });
+
+  // Review §2.5/M17: no `Tooltip` wrapper repeating the badge's own visible
+  // text -- it added nothing for a sighted user and was unreachable by
+  // keyboard (a bare `Badge` isn't a focusable tooltip trigger). Mantine's
+  // `Tooltip` only mounts its floating content on hover/focus, so the
+  // meaningful assertion is structural: the badge renders as a direct
+  // child, not wrapped in whatever trigger element `Tooltip` adds.
+  it('renders the badge directly, with no wrapping tooltip trigger', () => {
+    const { container } = renderWithMantine(
+      <JourneyStatusBadge legs={[baseLeg({ matchMode: 'unmatched', trackedTrainState: null })]} />,
+    );
+    const badge = container.querySelector('.mantine-Badge-root');
+    expect(badge?.parentElement).toBe(container);
+  });
 });
