@@ -1088,11 +1088,11 @@ export interface LineTrainCallingPoint {
  * triggers a `find_or_create_train` upsert the way
  * `GET /Train/by-uid/{uid}/{date}` does -- see `get_line_trains`'s own doc
  * comment). Deliberately its own type, not a reuse of `PublicTrainState`:
- * `line_train_json` (`render.rs:295-310`) includes only these 13 fields
+ * `line_train_json` (`render.rs:295-310`) includes only these 14 fields
  * inside `liveStatus`, explicitly omitting `journeyStops`/`callingPoints`/
  * `trainUid`/`serviceDate`/`mayHaveArrived` -- confirmed by that file's
  * `line_train_json_with_a_live_row_attaches_live_status_in_camel_case`
- * test, which asserts both omitted fields are absent. */
+ * test, which asserts all five omitted fields are absent. */
 export interface LineTrainLiveStatus {
   trainsId: number;
   trainId: string | null;
