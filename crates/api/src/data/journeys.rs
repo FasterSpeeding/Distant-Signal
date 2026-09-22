@@ -5,14 +5,17 @@
 //! docs/superpowers/specs/2026-09-22-journey-tracking-design.md and
 //! docs/superpowers/plans/2026-09-22-journey-tracking-phase1-single-leg-migration-plan.md.
 //!
-//! **Phase 1 never creates more than one leg per journey.** Every
-//! leg-creation function in this file hardcodes `leg_order = 1` and says so
-//! in its own doc comment -- multi-leg chaining (design doc §3, "add a leg
-//! to an existing journey") is a later phase's job. The schema itself
-//! (`leg_order`, `UNIQUE (journey_id, leg_order)`) is already
-//! multi-leg-shaped regardless, per the design doc's own reasoning for not
-//! folding leg fields onto `train_subscriptions` (§1.1) -- so that later
-//! phase needs no schema change, only a new writer.
+//! **Phase 1 never creates more than one leg per journey** -- every
+//! journey-CREATION function below (`create_journey_with_pin_leg`,
+//! `create_journey_with_known_train_leg`, `create_journey_with_window_leg`)
+//! always passes `leg_order = 1`. **Phase 2 (design doc §3) adds a leg to an
+//! EXISTING journey instead** -- `add_known_train_leg_to_journey` and
+//! `add_window_leg_to_journey`, both computing `leg_order = MAX(...) + 1` via
+//! the shared `owned_next_leg_order` helper. The schema itself (`leg_order`,
+//! `UNIQUE (journey_id, leg_order)`) was already multi-leg-shaped from Phase
+//! 1 onward, per the design doc's own reasoning for not folding leg fields
+//! onto `train_subscriptions` (§1.1) -- so Phase 2 needed no schema change,
+//! only the new writers below.
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use common::TimeWindow;
@@ -94,34 +97,85 @@ async fn insert_journey(
     Ok(id)
 }
 
-/// `leg_order` is always `1` -- see this module's own doc comment on why
-/// Phase 1 never writes anything else.
 #[allow(clippy::too_many_arguments)]
 async fn insert_leg(
     pool: &PgPool,
     journey_id: i64,
+    leg_order: i32,
     origin_crs: Option<&str>,
     destination_crs: Option<&str>,
     service_date: NaiveDate,
     train_subscription_id: Option<i64>,
     match_mode: &str,
+    depart_after: Option<NaiveTime>,
+    depart_before: Option<NaiveTime>,
+    arrive_after: Option<NaiveTime>,
+    arrive_before: Option<NaiveTime>,
 ) -> anyhow::Result<i64> {
     let (id,): (i64,) = sqlx::query_as(
         "INSERT INTO journey_legs \
             (journey_id, leg_order, origin_crs, destination_crs, service_date, \
-             train_subscription_id, match_mode) \
-         VALUES ($1, 1, $2, $3, $4, $5, $6) \
+             train_subscription_id, match_mode, \
+             depart_after, depart_before, arrive_after, arrive_before) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          RETURNING id",
     )
     .bind(journey_id)
+    .bind(leg_order)
     .bind(origin_crs)
     .bind(destination_crs)
     .bind(service_date)
     .bind(train_subscription_id)
     .bind(match_mode)
+    .bind(depart_after)
+    .bind(depart_before)
+    .bind(arrive_after)
+    .bind(arrive_before)
     .fetch_one(pool)
     .await?;
     Ok(id)
+}
+
+/// Shared by Phase 2's "add a leg to an EXISTING journey" functions below.
+/// `Ok(None)` if `journey_id` doesn't exist or isn't owned by `user_id`
+/// (404-never-403, same posture as every other ownership check in this
+/// app); `Ok(Some(next_leg_order))` otherwise, `next_leg_order` being
+/// `MAX(leg_order) + 1` for this journey (`1` if it somehow has none yet,
+/// though that can't happen in practice since every journey is created
+/// with a leg).
+///
+/// **Race, stated rather than hidden**: under READ COMMITTED, two
+/// simultaneous calls for the SAME journey can both read the same
+/// `MAX(leg_order)` and both attempt to insert the same value -- the
+/// schema's own `UNIQUE (journey_id, leg_order)` constraint rejects the
+/// second with a constraint-violation error, surfaced as a plain
+/// `anyhow::Error` (mapped to the route's existing 500 path). This closes
+/// the ordinary repeat-click case (the frontend disables its submit
+/// button while a request is in flight, Task 7), not a true concurrent
+/// double-submit from two different tabs -- same accepted-limitation
+/// posture as `train_tracking::create_subscription_for_train`'s own doc
+/// comment.
+async fn owned_next_leg_order(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+) -> anyhow::Result<Option<i32>> {
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
+            .bind(journey_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    if owned.is_none() {
+        return Ok(None);
+    }
+    let next_leg_order: (i32,) = sqlx::query_as(
+        "SELECT COALESCE(MAX(leg_order), 0) + 1 FROM journey_legs WHERE journey_id = $1",
+    )
+    .bind(journey_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(Some(next_leg_order.0))
 }
 
 /// Creates a one-leg journey around a legacy CRS+time GUESS pin
@@ -158,11 +212,16 @@ pub async fn create_journey_with_pin_leg(
     let leg_id = insert_leg(
         pool,
         journey_id,
+        1,
         Some(pin.origin_crs.as_str()),
         pin.destination_crs.as_deref(),
         pin.service_date,
         Some(tracking_id),
         "manual",
+        None,
+        None,
+        None,
+        None,
     )
     .await?;
     Ok((journey_id, leg_id, tracking_id))
@@ -207,14 +266,70 @@ pub async fn create_journey_with_known_train_leg(
     let leg_id = insert_leg(
         pool,
         journey_id,
+        1,
         origin_crs.as_deref(),
         destination_crs.as_deref(),
         service_date,
         Some(tracking_id),
         "manual",
+        None,
+        None,
+        None,
+        None,
     )
     .await?;
     Ok((journey_id, leg_id, tracking_id))
+}
+
+/// Adds a direct, already-known-train leg to an EXISTING journey (Phase 2,
+/// spec §3) -- the `leg_order = max(...) + 1` sibling of
+/// [`create_journey_with_known_train_leg`], minus the `insert_journey`
+/// call (the journey already exists). Same
+/// `train_tracking::create_subscription_for_train` + read-back-the-pin-CRS
+/// logic as that function, unchanged.
+///
+/// Returns `Ok(None)` for "no such journey, or not this caller's" (route
+/// maps to 404). Returns `Ok(Some((leg_id, tracking_id)))` on success --
+/// `tracking_id` is needed by the route layer to run the same
+/// `enrich_shared_train` best-effort enrichment `post_journey`'s own
+/// `KnownTrain` arm and `post_leg_train` already run for every new
+/// `train_subscriptions` row.
+pub async fn add_known_train_leg_to_journey(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+    trains_id: i64,
+    service_date: NaiveDate,
+) -> anyhow::Result<Option<(i64, i64)>> {
+    let Some(next_leg_order) = owned_next_leg_order(pool, journey_id, user_id).await? else {
+        return Ok(None);
+    };
+    let tracking_id =
+        crate::data::train_tracking::create_subscription_for_train(pool, trains_id, user_id)
+            .await?;
+    let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
+    )
+    .bind(tracking_id)
+    .fetch_optional(pool)
+    .await?;
+    let (origin_crs, destination_crs) = pins.unwrap_or((None, None));
+    let leg_id = insert_leg(
+        pool,
+        journey_id,
+        next_leg_order,
+        origin_crs.as_deref(),
+        destination_crs.as_deref(),
+        service_date,
+        Some(tracking_id),
+        "manual",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    Ok(Some((leg_id, tracking_id)))
 }
 
 /// User-facing validation for a window-search leg's request fields --
@@ -289,24 +404,66 @@ pub async fn create_journey_with_window_leg(
     arrive_window: TimeWindow,
 ) -> anyhow::Result<(i64, i64)> {
     let journey_id = insert_journey(pool, user_id, custom_name).await?;
-    let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO journey_legs \
-            (journey_id, leg_order, origin_crs, destination_crs, service_date, \
-             depart_after, depart_before, arrive_after, arrive_before, match_mode) \
-         VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, 'unmatched') \
-         RETURNING id",
+    let leg_id = insert_leg(
+        pool,
+        journey_id,
+        1,
+        Some(origin_crs),
+        Some(destination_crs),
+        service_date,
+        None,
+        "unmatched",
+        depart_window.after,
+        depart_window.before,
+        arrive_window.after,
+        arrive_window.before,
     )
-    .bind(journey_id)
-    .bind(origin_crs)
-    .bind(destination_crs)
-    .bind(service_date)
-    .bind(depart_window.after)
-    .bind(depart_window.before)
-    .bind(arrive_window.after)
-    .bind(arrive_window.before)
-    .fetch_one(pool)
     .await?;
-    Ok((journey_id, id))
+    Ok((journey_id, leg_id))
+}
+
+/// Adds an open time-window-search leg to an EXISTING journey (Phase 2,
+/// spec §3) -- the `leg_order = max(...) + 1` sibling of
+/// [`create_journey_with_window_leg`], minus the `insert_journey` call.
+/// Caller must have already run the four `&str`/`TimeWindow` arguments
+/// through [`validate_window_leg`] -- this function does no validation of
+/// its own, matching this file's established "route validates, data layer
+/// writes" split.
+///
+/// Returns `Ok(None)` for "no such journey, or not this caller's" (route
+/// maps to 404). Returns `Ok(Some(leg_id))` on success -- an `'unmatched'`
+/// leg with no `train_subscription_id`, exactly like a window-mode
+/// journey's own first leg.
+#[allow(clippy::too_many_arguments)]
+pub async fn add_window_leg_to_journey(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+    origin_crs: &str,
+    destination_crs: &str,
+    service_date: NaiveDate,
+    depart_window: TimeWindow,
+    arrive_window: TimeWindow,
+) -> anyhow::Result<Option<i64>> {
+    let Some(next_leg_order) = owned_next_leg_order(pool, journey_id, user_id).await? else {
+        return Ok(None);
+    };
+    let leg_id = insert_leg(
+        pool,
+        journey_id,
+        next_leg_order,
+        Some(origin_crs),
+        Some(destination_crs),
+        service_date,
+        None,
+        "unmatched",
+        depart_window.after,
+        depart_window.before,
+        arrive_window.after,
+        arrive_window.before,
+    )
+    .await?;
+    Ok(Some(leg_id))
 }
 
 /// Binds (or re-binds) a leg to a real train working -- the `manual`-mode
@@ -957,5 +1114,205 @@ mod db_tests {
             .expect("cleanup trains");
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// Small helper for the `add_*_leg_to_journey` tests below -- none of
+    /// them can use [`JourneyLegRow`] to see `leg_order` (that struct
+    /// deliberately omits it, same as every other read in this file), so
+    /// they read it back directly the same way
+    /// `list_journeys_for_user_picks_the_earliest_non_completed_leg` above
+    /// already reads other raw columns not exposed by this file's own
+    /// structs.
+    async fn leg_order_of(pool: &PgPool, leg_id: i64) -> i32 {
+        sqlx::query_scalar("SELECT leg_order FROM journey_legs WHERE id = $1")
+            .bind(leg_id)
+            .fetch_one(pool)
+            .await
+            .expect("read leg_order")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_window_leg_to_journey -- --ignored --test-threads=1`"]
+    async fn add_window_leg_to_journey_assigns_incrementing_leg_order() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-ADD-WINDOW";
+        seed_user(&pool, user_id).await;
+
+        let (journey_id, first_leg_id) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create initial window leg");
+        assert_eq!(leg_order_of(&pool, first_leg_id).await, 1);
+
+        let depart_window = common::TimeWindow {
+            after: Some("12:00:00".parse().unwrap()),
+            before: Some("14:00:00".parse().unwrap()),
+        };
+        let second_leg_id = add_window_leg_to_journey(
+            &pool,
+            journey_id,
+            user_id,
+            "RDG",
+            "EDB",
+            "2026-09-22".parse().unwrap(),
+            depart_window,
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("add second window leg")
+        .expect("journey is owned");
+        assert_eq!(leg_order_of(&pool, second_leg_id).await, 2);
+
+        let second_leg = get_owned_leg(&pool, journey_id, second_leg_id, user_id)
+            .await
+            .expect("read second leg")
+            .expect("leg exists");
+        assert_eq!(second_leg.match_mode, "unmatched");
+        assert_eq!(second_leg.train_subscription_id, None);
+        assert_eq!(second_leg.depart_after, Some("12:00:00".parse().unwrap()));
+        assert_eq!(second_leg.depart_before, Some("14:00:00".parse().unwrap()));
+
+        let third_leg_id = add_window_leg_to_journey(
+            &pool,
+            journey_id,
+            user_id,
+            "EDB",
+            "GLG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("16:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("add third window leg")
+        .expect("journey is owned");
+        assert_eq!(leg_order_of(&pool, third_leg_id).await, 3);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_known_train_leg_to_journey -- --ignored --test-threads=1`"]
+    async fn add_known_train_leg_to_journey_sets_train_subscription_and_manual_mode() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-ADD-KNOWN";
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        let (journey_id, first_leg_id) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            service_date,
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create initial window leg");
+        assert_eq!(leg_order_of(&pool, first_leg_id).await, 1);
+
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-TRAIN-ADD-KNOWN", service_date)
+                .await
+                .expect("seed fixture train");
+
+        let (leg_id, tracking_id) =
+            add_known_train_leg_to_journey(&pool, journey_id, user_id, trains_id, service_date)
+                .await
+                .expect("add known-train leg")
+                .expect("journey is owned");
+        assert_eq!(leg_order_of(&pool, leg_id).await, 2);
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, user_id)
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(leg.train_subscription_id, Some(tracking_id));
+        assert_eq!(leg.match_mode, "manual");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_known_train_leg_to_journey -- --ignored --test-threads=1`"]
+    async fn add_leg_to_journey_a_non_owner_cannot_add_a_leg_to_someone_elses_journey() {
+        let pool = connect().await;
+        let owner_id = "TEST-JOURNEY-ADD-LEG-OWNER";
+        let other_id = "TEST-JOURNEY-ADD-LEG-OTHER";
+        seed_user(&pool, owner_id).await;
+        seed_user(&pool, other_id).await;
+
+        let (journey_id, _leg_id) = create_journey_with_window_leg(
+            &pool,
+            owner_id,
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create window leg for owner");
+
+        let window_result = add_window_leg_to_journey(
+            &pool,
+            journey_id,
+            other_id,
+            "RDG",
+            "EDB",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("12:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("attempt add window leg as non-owner");
+        assert_eq!(window_result, None);
+
+        // `trains_id` is never dereferenced: ownership is checked first,
+        // before this function ever touches `train_subscriptions`.
+        let known_train_result = add_known_train_leg_to_journey(
+            &pool,
+            journey_id,
+            other_id,
+            i64::MAX,
+            "2026-09-22".parse().unwrap(),
+        )
+        .await
+        .expect("attempt add known-train leg as non-owner");
+        assert_eq!(known_train_result, None);
+
+        cleanup_user(&pool, owner_id).await;
+        cleanup_user(&pool, other_id).await;
     }
 }
