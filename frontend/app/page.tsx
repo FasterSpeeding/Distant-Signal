@@ -80,7 +80,7 @@ export const revalidate = 0;
  * `/stations` spell theirs. */
 const METADATA_TITLE = 'Distant Signal';
 const METADATA_DESCRIPTION =
-  "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.";
+  "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines, stations and operators you care about, and track your trains, once you're logged in.";
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,
@@ -275,8 +275,8 @@ export default async function DashboardPage() {
             <NotificationsToggle />
           </Group>
           <Text c="dimmed">
-            Live UK rail line status, train tracking, and Delay Repay support — pin the lines and
-            stations you care about once you&apos;re logged in.
+            Live UK rail line status, train tracking, and Delay Repay support — pin the lines,
+            stations and operators you care about once you&apos;re logged in.
           </Text>
         </Stack>
 
@@ -285,12 +285,18 @@ export default async function DashboardPage() {
         <Group gap="lg">
           <TextLink href="/lines">Browse all lines</TextLink>
           <TextLink href="/stations">Look up a station</TextLink>
+          {/* Review M8: the anonymous homepage is the only place that can
+              advertise the operators list exists to a visitor who hasn't
+              logged in yet -- added alongside the other two quick links it
+              already carries, in the same position "Browse operators"
+              takes in the logged-in "Your Operators" section below. */}
+          <TextLink href="/operators">Browse operators</TextLink>
           {/* Proactive, not reactive -- session is already in hand on this
               page (see this task's own Step 1), so there's no reason to
               wait for a failed pin click the way PinToggle does elsewhere.
               §Policy's Tier-2 "proactive where session is already fetched"
               refinement. */}
-          <LoginLink underline="always">Log in to pin your lines and stations</LoginLink>
+          <LoginLink underline="always">Log in to pin your lines, stations and operators</LoginLink>
         </Group>
       </Stack>
     );
@@ -436,10 +442,11 @@ export default async function DashboardPage() {
   // `allReports`, so "Your Lines" does not render it -- excluding it here
   // too would drop it from the home page entirely rather than deduplicate
   // it. `pinnedLineReports` is exactly the set that section will render.
-  const sharedLines: MergedSharedCustomLine[] = mergeSharedCustomLines(
-    sharedCustomLines ?? [],
-    new Set(pinnedLineReports.map((report) => report.id)),
-  );
+  // Named rather than inlined at its one prior call site: also reused below
+  // to de-duplicate "Your Operators" against lines already shown in "Your
+  // Lines" a few hundred pixels above it (review M10).
+  const pinnedLineIds = new Set(pinnedLineReports.map((report) => report.id));
+  const sharedLines: MergedSharedCustomLine[] = mergeSharedCustomLines(sharedCustomLines ?? [], pinnedLineIds);
   const reportByLineId = new Map(allReports.map((report) => [report.id, report]));
 
   // Review §3.1.4: both empty states below used to pair a "Browse all
@@ -569,7 +576,23 @@ export default async function DashboardPage() {
         ) : (
           <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
             {pinnedOperatorSummaries.map((operator) => (
-              <OperatorStatusCard key={operator.code} operator={operator} pinned />
+              <OperatorStatusCard
+                key={operator.code}
+                operator={operator}
+                pinned
+                // Review M9: `LineStatusCard` (the "Your Lines" card just
+                // above) has no pin control of its own -- rather than the
+                // dashboard teaching two different rules for two
+                // same-shaped cards, this card goes without one here too;
+                // unpinning stays available from `/operators` itself.
+                showPin={false}
+                // Review M10: when the line actually driving this
+                // operator's rollup is already a card in "Your Lines"
+                // above, collapse the repeated reason into a short
+                // cross-reference instead of printing the same disruption
+                // a second (or third, alongside the station row) time.
+                dedupedLineId={operator.worstLineId && pinnedLineIds.has(operator.worstLineId) ? operator.worstLineId : undefined}
+              />
             ))}
           </SimpleGrid>
         )}

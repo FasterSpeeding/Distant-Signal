@@ -94,7 +94,7 @@ describe('TrendsResults', () => {
     vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyRow({ day: '2026-08-01' })]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
     expect(api.getLineDailyStats).toHaveBeenCalledWith('wcml', '2026-08-01', '2026-08-08');
-    expect(screen.getByText(/Rates shown count each distinct train once per day/)).toBeInTheDocument();
+    expect(screen.getByText(/Each train is counted once per day/)).toBeInTheDocument();
   });
 
   it('renders the empty state when there are no rows, inside a bounded container', async () => {
@@ -145,7 +145,7 @@ describe('TrendsResults', () => {
       await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
     );
     expect(mockFn).toHaveBeenCalledWith('wcml', '2026-08-31T00:00:00Z', '2026-09-01T00:00:00Z');
-    expect(screen.getByText(new RegExp(`Rates shown count each distinct train once ${copyFragment}`))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`Each train is counted once ${copyFragment}`))).toBeInTheDocument();
 
     const charts = screen.getAllByTestId('line-chart');
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
@@ -167,6 +167,36 @@ describe('TrendsResults', () => {
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     const points = JSON.parse(rateChart!.dataset.points as string);
     expect(points[0].delayRate).toBeNull();
+  });
+
+  // Review §3.3/I10: the fuller mechanical explanation moved out of the
+  // always-visible paragraph into a collapsed disclosure -- this checks
+  // it's still there (nothing was dropped, just hidden by default), not
+  // gone.
+  it('collapses the fuller explanation behind a "How these rates are calculated" disclosure', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyRow({ day: '2026-08-01' })]);
+    const { container } = renderWithMantine(
+      await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
+    );
+    const details = container.querySelector('details');
+    expect(details).toBeInTheDocument();
+    expect(details?.querySelector('summary')?.textContent).toBe('How these rates are calculated');
+    expect(screen.getByText(/not a running tally/)).toBeInTheDocument();
+  });
+
+  it('does not use "--" for a dash anywhere in the honesty copy (review §3.3)', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyRow({ day: '2026-08-01' })]);
+    const { container } = renderWithMantine(
+      await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
+    );
+    // Scoped to the rendered `<details>` disclosure and its sibling
+    // paragraph, not `container.textContent` as a whole -- Mantine injects
+    // a `<style>` tag full of `--mantine-*` CSS custom properties into the
+    // same subtree, which would make this assertion fail for a reason that
+    // has nothing to do with the honesty copy.
+    const details = container.querySelector('details') as HTMLElement;
+    expect(details.textContent).not.toContain('--');
+    expect(screen.getByText(/Each train is counted once per day/).textContent).not.toContain('--');
   });
 
   it('renders the trains-counted bar chart for the default day granularity', async () => {

@@ -489,6 +489,19 @@ export async function getAllOperators(): Promise<OperatorSummary[]> {
   return fetchJson<OperatorSummary[]>(url, { cache: 'no-store' });
 }
 
+/** Single-operator rollup (`crates/api/src/routes/operators.rs`'s
+ * `get_operator`) -- same shape as one row of `getAllOperators()`, fetched
+ * directly rather than filtering the full list client-side, for a page that
+ * only needs one operator's rollup (e.g. the operator history page's line
+ * count). Unauthenticated, same as `getAllOperators`. Throws
+ * `ApiNotFoundError` on a 404 -- an unknown code, or a real `tocs` code with
+ * zero currently-matching lines (Judgment Call 4, same omission as the
+ * list). */
+export async function getOperator(code: string): Promise<OperatorSummary> {
+  const url = `${baseUrl()}/public/operators/${encodeURIComponent(code)}`;
+  return fetchJson<OperatorSummary>(url, { cache: 'no-store' });
+}
+
 /** Every TOC (code + name), for resolving a fixed known set of operator
  * codes up front (e.g. the All Lines operator filter) rather than
  * type-ahead searching one at a time. Cached for an hour like

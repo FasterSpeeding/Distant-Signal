@@ -7,7 +7,7 @@ import {
 } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
 import type { TrendGranularity } from '@/lib/history';
-import { HONESTY_COPY, SPARSE_FLOOR, toChartPoints } from '@/app/lines/[id]/history/TrendsResults';
+import { HONESTY_COPY, HONESTY_COPY_DETAILS, SPARSE_FLOOR, toChartPoints } from '@/app/lines/[id]/history/TrendsResults';
 import { TrendsCharts } from '@/app/lines/[id]/history/TrendsCharts';
 import type { ChartPoint } from '@/app/lines/[id]/history/chartPoint';
 
@@ -73,11 +73,19 @@ export async function NetworkTrendsResults({
 
   return (
     <Stack gap="lg">
+      {/* Template literal, not `{expr} text…` split across the expression
+          boundary -- see OperatorTrendsResults.tsx's identical comment for
+          why (the same fix for the "running.Rates" finding, [OH] §3.3). */}
       <Text size="sm" c="dimmed">
-        {HONESTY_COPY[granularity]} Rates shown are summed across every National Rail catalogue line (TfL
-        lines aren&apos;t currently part of this rollup).
+        {`${HONESTY_COPY[granularity]} Rates shown are summed across every National Rail line this app tracks. TfL isn't included yet.`}
       </Text>
       <TrendsCharts points={points} granularity={granularity} order={2} showVolume />
+      <details>
+        <summary>How these rates are calculated</summary>
+        <Text size="sm" c="dimmed" mt="xs">
+          {HONESTY_COPY_DETAILS[granularity]}
+        </Text>
+      </details>
     </Stack>
   );
 }

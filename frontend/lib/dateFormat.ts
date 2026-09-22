@@ -34,6 +34,18 @@ const DATE = new Intl.DateTimeFormat('en-GB', {
   dateStyle: 'medium',
 });
 
+/** "15 Sep" -- for a chart axis tick, where `formatDate`'s "10 May 2026" is
+ * too wide to repeat across a dozen-plus ticks and a bare ISO bucket key
+ * ("2026-09-15") is what the trend charts printed before (review [OH]
+ * §3.3/I10: "the rest of the app prints '15 Sep' style"). No year: an axis
+ * never spans more than a year of history (`resolveRange`'s own ceilings),
+ * so it would only ever repeat the same value on every tick. */
+const SHORT_DATE = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/London',
+  day: 'numeric',
+  month: 'short',
+});
+
 /** No `timeStyle: 'medium'`: seconds on a status timestamp are noise — the
  * aggregator recomputes every few minutes. */
 const DATE_TIME = new Intl.DateTimeFormat('en-GB', {
@@ -64,6 +76,11 @@ function asDate(value: string | Date): Date {
 /** "10 May 2026" */
 export function formatDate(value: string | Date): string {
   return DATE.format(asDate(value));
+}
+
+/** "15 Sep" -- see `SHORT_DATE`'s own doc comment above. */
+export function formatShortDate(value: string | Date): string {
+  return SHORT_DATE.format(asDate(value));
 }
 
 /** "19 Aug 2026, 19:56" */

@@ -155,7 +155,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByText(/Every line is running a Good Service/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Log in to pin your lines and stations' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Log in to pin your lines, stations and operators' })).toHaveAttribute(
       'href', '/api/auth/login?return_to=%2F',
     );
   });
@@ -209,7 +209,7 @@ describe('DashboardPage', () => {
     // pinned a line, so "Right now" must stay absent even though the
     // authenticated branch can now render it for a zero-pinned-lines user.
     expect(screen.queryByText(/Right now/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Log in to pin your lines and stations' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Log in to pin your lines, stations and operators' })).not.toBeInTheDocument();
   });
 
   it('shows the live "Right now" module to a logged-in user with no pinned lines', async () => {
@@ -519,7 +519,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('link', { name: 'Log in to pin your lines and stations' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in to pin your lines, stations and operators' })).toBeInTheDocument();
   });
 });
 
@@ -1040,6 +1040,68 @@ describe('DashboardPage -- Your Operators section', () => {
     expect(screen.getByText(/haven't pinned any operators yet/)).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load operator status right now.")).not.toBeInTheDocument();
   });
+
+  // Review M9: "Your Lines" (`LineStatusCard`) has no pin control of its
+  // own, so "Your Operators" cards drop theirs on this page too, rather
+  // than the dashboard having one card type pinnable and the other not for
+  // no visible reason. Unpinning stays reachable from `/operators` itself.
+  it('does not render a pin star on an operator card here (review M9)', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: ['VT'],
+    });
+    vi.mocked(api.getAllOperators).mockResolvedValue([operator({ code: 'VT', name: 'Avanti West Coast' })]);
+    const { container } = renderWithMantine(await DashboardPage());
+
+    expect(container.querySelector('[aria-label*="Pin"]')).not.toBeInTheDocument();
+  });
+
+  // Review M10: the LNER signalling failure used to print in full on both
+  // the "Your Lines" card and the "Your Operators" card for a caller who
+  // pinned both the line and its operator -- collapse the operator card's
+  // copy of it into a cross-reference once the driving line is already
+  // pinned and shown above.
+  it('collapses the reason into a cross-reference when the worst line is already pinned in Your Lines (review M10)', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: ['ecml'],
+      pinnedStations: [],
+      pinnedOperators: ['LN'],
+    });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({
+        id: 'ecml',
+        name: 'LNER East Coast Main Line',
+        lineStatuses: [
+          {
+            statusSeverity: 6,
+            statusSeverityDescription: 'Severe Delays',
+            reason: 'Signalling failure near Peterborough',
+            sampleAvailability: { state: 'no-coverage' },
+          } as never,
+        ],
+      }),
+    ]);
+    vi.mocked(api.getAllOperators).mockResolvedValue([
+      operator({
+        code: 'LN',
+        name: 'London North Eastern Railway',
+        lineIds: ['ecml'],
+        worstSeverity: 6,
+        reason: 'Signalling failure near Peterborough',
+        worstLineId: 'ecml',
+        worstLineName: 'LNER East Coast Main Line',
+      }),
+    ]);
+    renderWithMantine(await DashboardPage());
+
+    // The full sentence appears once, on the "Your Lines" card -- the
+    // operator card underneath cross-references it instead of repeating it.
+    expect(screen.getAllByText('Signalling failure near Peterborough')).toHaveLength(1);
+    expect(screen.getByText(/See/)).toBeInTheDocument();
+  });
 });
 
 // The home page's own copy of the /track/mine fix: a train another member
@@ -1395,7 +1457,7 @@ describe('metadata', () => {
 
   it('carries its own description rather than only inheriting the site-wide one', () => {
     expect(metadata.description).toBe(
-      "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.",
+      "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines, stations and operators you care about, and track your trains, once you're logged in.",
     );
   });
 
@@ -1418,14 +1480,14 @@ describe('metadata', () => {
     expect(metadata.openGraph).toMatchObject({
       title: 'Distant Signal',
       description:
-        "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.",
+        "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines, stations and operators you care about, and track your trains, once you're logged in.",
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
       title: 'Distant Signal',
       description:
-        "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.",
+        "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines, stations and operators you care about, and track your trains, once you're logged in.",
     });
   });
 });

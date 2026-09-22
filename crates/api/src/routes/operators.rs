@@ -56,6 +56,8 @@ fn operator_rollup_json(r: &operators::OperatorRollup) -> Value {
         "lineIds": r.line_ids,
         "worstSeverity": r.worst_severity as i32,
         "reason": r.reason,
+        "worstLineId": r.worst_line_id,
+        "worstLineName": r.worst_line_name,
         "computedAt": r.computed_at,
     });
     if let Some(stats) = &r.sample_stats {
@@ -283,6 +285,8 @@ mod db_tests {
         assert_eq!(za["name"], "Z Test Rail");
         assert_eq!(za["lineIds"], serde_json::json!(["ztest-operators-line"]));
         assert_eq!(za["worstSeverity"], 9);
+        assert_eq!(za["worstLineId"], "ztest-operators-line");
+        assert_eq!(za["worstLineName"], "ztest-operators-line");
 
         cleanup(&pool, "ZA", "ztest-operators-line").await;
     }

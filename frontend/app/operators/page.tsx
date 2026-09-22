@@ -3,7 +3,8 @@ import type { Metadata } from 'next';
 import { getAllOperators, getPreferences, getSession } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
-import type { Preferences } from '@/lib/types';
+import { severityRank } from '@/lib/severity';
+import type { OperatorSummary, Preferences } from '@/lib/types';
 
 export const revalidate = 0;
 
@@ -23,6 +24,21 @@ export const metadata: Metadata = {
 // posture as app/lines/page.tsx's own NO_PREFERENCES.
 const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [], pinnedOperators: [] };
 
+/** Worst-first, then alphabetical -- the same sort `app/page.tsx`'s "Your
+ * Operators" section already applies to the caller's own pinned subset
+ * (review M7/§2.6: this list was alphabetical only, unlike every other
+ * worst-first surface in the app, "fine at nine operators, not at the
+ * 25-40 the homepage source describes"). Kept here as this page's own copy
+ * rather than a shared export, since `app/page.tsx`'s version is typed
+ * against its own local sort callback shape and there is no third caller
+ * yet to justify factoring one out. */
+function worstFirst(operators: OperatorSummary[]): OperatorSummary[] {
+  return [...operators].sort((a, b) => {
+    const rankDiff = severityRank(b.worstSeverity) - severityRank(a.worstSeverity);
+    return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
+  });
+}
+
 export default async function OperatorsPage() {
   const [operators, preferences, viewerIsAnonymous] = await Promise.all([
     withStaleFallback('allOperators', () => getAllOperators()),
@@ -33,15 +49,27 @@ export default async function OperatorsPage() {
   ]);
 
   const pinnedSet = new Set(preferences.pinnedOperators);
+  const sortedOperators = worstFirst(operators);
 
   return (
     <Stack p="lg" gap="xl">
-      <Title order={1}>Operators</Title>
-      {operators.length === 0 ? (
+      <Stack gap={4}>
+        <Title order={1}>Operators</Title>
+        {/* Review M7/§2.6: `/stations` opens with a one-sentence
+            description under its own `<h1>`; this page went straight from
+            title to cards. Echoes this page's own `<meta description>`
+            rather than inventing separate wording, so the two can't drift
+            apart. */}
+        <Text c="dimmed">
+          Every operator this app tracks, with its worst current line status and today&apos;s delay and
+          cancellation figures — worst first.
+        </Text>
+      </Stack>
+      {sortedOperators.length === 0 ? (
         <Text c="dimmed">No operator status data available right now.</Text>
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-          {operators.map((operator) => (
+          {sortedOperators.map((operator) => (
             <OperatorStatusCard
               key={operator.code}
               operator={operator}

@@ -24,6 +24,11 @@ export interface NavDestination {
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   { href: '/status', label: 'Status' },
   { href: '/lines', label: 'All Lines' },
+  // Moved beside "All Lines" and "Station Lookup" (review M7/§2.7): three
+  // ways to browse status, previously split apart by having this one sit
+  // last, after "Incident Archive" -- reading as an afterthought rather
+  // than a sibling of the other two catalogue-browsing destinations.
+  { href: '/operators', label: 'Operators' },
   { href: '/stations', label: 'Station Lookup' },
   // The primary train-discovery surface. `/track` is still reachable
   // (from here via /trains' own manual fallback link, from
@@ -32,7 +37,6 @@ export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   // docs/superpowers/specs/2026-09-07-train-listing-page-design.md §4.
   { href: '/trains', label: 'Find a Train' },
   { href: '/incidents', label: 'Incident Archive' },
-  { href: '/operators', label: 'Operators' },
 ];
 
 /** Reclassified from Tier 3 (hidden entirely when logged out) to
