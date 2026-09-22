@@ -287,18 +287,14 @@ export function TrackTrainForm({
     dayjs().format('YYYY-MM-DD HH:mm:ss'),
   );
   // Darwin's own explicit skipped-calling-point snapshot for whichever
-  // live departure-board row the user picked (`pickDeparture`, below).
-  // Still captured (a live-board pick is the only source that ever has
-  // this signal at all -- the CIF-picker/manual-entry paths never do), but
-  // as of journey tracking Phase 1 (this task) no longer read anywhere:
-  // `POST /Journeys`'s `pin`-mode leg (`CreateJourneyLegRequest::Pin`,
-  // `crates/api/src/routes/journeys.rs`) carries no `skippedStations`
-  // field of its own, unlike the legacy `TrackPinRequest` this form used
-  // to submit -- see that route's own doc comment on the same gap. Kept
-  // (rather than deleted outright) so a later phase can wire it back
-  // through without having to rediscover where the value comes from; the
-  // getter half is unused for now, hence the array-hole destructure.
-  const [, setSkippedStations] = useState<string[]>([]);
+  // live departure-board row the user picked (`pickDeparture`, below) --
+  // a live-board pick is the only source that ever has this signal at all
+  // (the CIF-picker/manual-entry paths never do). `submitTrack`'s `pin`-mode
+  // leg forwards this to `POST /Journeys` (`CreateJourneyLegRequest::Pin`'s
+  // own `skippedStations` field, `crates/api/src/routes/journeys.rs`), the
+  // same value the legacy `TrackPinRequest` this form used to submit
+  // carried under the same name.
+  const [skippedStations, setSkippedStations] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const needsLoginState = useNeedsLogin();
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -532,6 +528,7 @@ export function TrackTrainForm({
           serviceDate,
           ...(destinationCrs.trim() ? { destinationCrs: destinationCrs.trim().toUpperCase() } : {}),
           ...(operator.trim() ? { operator: operator.trim() } : {}),
+          ...(skippedStations.length > 0 ? { skippedStations } : {}),
         },
       };
 

@@ -47,8 +47,22 @@ pub fn router() -> Router {
 /// "unknown variant" message naming the three real, meaningful wire
 /// values. See this plan's own Judgment Call 3 for why THREE shapes, not
 /// two.
+///
+/// `rename_all_fields = "camelCase"`, ADDITIONALLY to the container-level
+/// `rename_all` above, is load-bearing and not redundant with it: serde's
+/// enum-level `rename_all` only renames the *variant* identifiers used for
+/// the `mode` tag ("Pin" -> "pin" etc.) -- it does NOT cascade into the
+/// fields of a struct-shaped variant the way it would for a plain struct.
+/// Without `rename_all_fields` too, every field below (`originCrs`,
+/// `scheduledDeparture`, `trainUid`, `departWindow`, the `skippedStations`
+/// field this finding adds, ...) would only deserialize off a snake_case
+/// wire key, which nothing that calls `POST /Journeys` (`TrackTrainForm.tsx`,
+/// `TrackThisTrainButton.tsx`, this file's own `db_tests`) ever sends --
+/// confirmed by writing `wire_format_tests` below against the *actual*
+/// enum (not just believing the doc comments): every field failed to
+/// deserialize with "missing field" until this attribute was added.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "mode", rename_all = "camelCase")]
+#[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum CreateJourneyLegRequest {
     /// The legacy CRS+time GUESS pin, field-for-field identical to
     /// `common::TrackPinRequest` -- what `TrackTrainForm.tsx`'s existing
@@ -61,6 +75,16 @@ enum CreateJourneyLegRequest {
         destination_crs: Option<String>,
         #[serde(default)]
         operator: Option<String>,
+        /// Field-for-field the same as `common::TrackPinRequest::skipped_stations`
+        /// (same name, same default-empty-list semantics via
+        /// `#[serde(default)]`) -- `TrackTrainForm.tsx`'s departure-board
+        /// picker (`pickDeparture`) is the only producer of this signal
+        /// anywhere in the codebase, and it's wired straight through to the
+        /// `TrackPinRequest` built below, the same way it always reached
+        /// `train_tracking::create_pin` via the legacy `POST /Train/track`
+        /// route.
+        #[serde(default)]
+        skipped_stations: Vec<String>,
     },
     /// An already-known identity -- what `TrackThisTrainButton.tsx` submits
     /// (Task 14).
@@ -90,6 +114,84 @@ struct CreateJourneyRequest {
     leg: CreateJourneyLegRequest,
 }
 
+/// No live database needed -- pure wire-format deserialization, unlike
+/// `db_tests` below. Covers Finding I2's regression risk directly: that
+/// `CreateJourneyLegRequest::Pin`'s `skippedStations` field actually
+/// deserializes off the wire (and defaults to empty when the caller omits
+/// it, for an older frontend build or the CIF-picker/manual-entry path),
+/// since `post_journey` silently dropped this value entirely before this
+/// field existed at all.
+///
+/// Also covers the `rename_all_fields` gap this same investigation turned
+/// up (see the enum's own doc comment above): before that attribute was
+/// added, NONE of these three variants' camelCase wire fields deserialized
+/// at all, not just `skippedStations` -- `pin_mode_leg_...` and
+/// `known_train_and_window_mode_legs_deserialize_their_camel_case_fields`
+/// below both fail with a real live "missing field" error against the enum
+/// as it stood before that fix.
+#[cfg(test)]
+mod wire_format_tests {
+    use super::CreateJourneyLegRequest;
+
+    #[test]
+    fn pin_mode_leg_deserializes_a_present_skipped_stations_array() {
+        let leg: CreateJourneyLegRequest = serde_json::from_str(
+            r#"{
+                "mode": "pin",
+                "originCrs": "WAT",
+                "scheduledDeparture": "2026-09-22T18:32:00Z",
+                "serviceDate": "2026-09-22",
+                "skippedStations": ["CLJ", "WOK"]
+            }"#,
+        )
+        .expect("valid pin-mode leg JSON should deserialize");
+
+        let CreateJourneyLegRequest::Pin { skipped_stations, .. } = leg else {
+            panic!("expected a Pin-mode leg, got {leg:?}");
+        };
+        assert_eq!(skipped_stations, vec!["CLJ".to_string(), "WOK".to_string()]);
+    }
+
+    #[test]
+    fn pin_mode_leg_defaults_skipped_stations_to_empty_when_omitted() {
+        let leg: CreateJourneyLegRequest = serde_json::from_str(
+            r#"{
+                "mode": "pin",
+                "originCrs": "WAT",
+                "scheduledDeparture": "2026-09-22T18:32:00Z",
+                "serviceDate": "2026-09-22"
+            }"#,
+        )
+        .expect("a pin-mode leg omitting skippedStations should still deserialize");
+
+        let CreateJourneyLegRequest::Pin { skipped_stations, .. } = leg else {
+            panic!("expected a Pin-mode leg, got {leg:?}");
+        };
+        assert!(skipped_stations.is_empty());
+    }
+
+    #[test]
+    fn known_train_and_window_mode_legs_deserialize_their_camel_case_fields() {
+        let known_train: CreateJourneyLegRequest = serde_json::from_str(
+            r#"{"mode": "knownTrain", "trainUid": "A11111", "serviceDate": "2026-09-22"}"#,
+        )
+        .expect("valid knownTrain-mode leg JSON should deserialize");
+        assert!(matches!(known_train, CreateJourneyLegRequest::KnownTrain { .. }));
+
+        let window: CreateJourneyLegRequest = serde_json::from_str(
+            r#"{
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": "2026-09-22",
+                "departWindow": {"after": "08:00:00"}
+            }"#,
+        )
+        .expect("valid window-mode leg JSON should deserialize");
+        assert!(matches!(window, CreateJourneyLegRequest::Window { .. }));
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateJourneyResponse {
@@ -117,6 +219,7 @@ async fn post_journey(
             service_date,
             destination_crs,
             operator,
+            skipped_stations,
         } => {
             let pin = common::TrackPinRequest {
                 service_date,
@@ -124,16 +227,13 @@ async fn post_journey(
                 scheduled_departure,
                 destination_crs,
                 operator,
-                // `CreateJourneyLegRequest::Pin` carries no Darwin
-                // per-calling-point skip snapshot of its own (unlike
-                // `TrackPinRequest`'s own optional field, which
-                // `TrackTrainForm.tsx`'s departure-board picker
-                // populates) -- an empty list is exactly what
-                // `skipped_stations`'s own doc comment already calls
-                // "no known skip", the same value an older frontend
-                // build or the CIF-picker/manual-entry path already
-                // produces via `#[serde(default)]` on that field.
-                skipped_stations: Vec::new(),
+                // Wired straight through from the wire request -- an older
+                // frontend build, or the CIF-picker/manual-entry path
+                // (neither of which has this signal at all), still
+                // deserializes as an empty list, "no known skip", via
+                // `#[serde(default)]` on `CreateJourneyLegRequest::Pin`'s
+                // own `skipped_stations` field above.
+                skipped_stations,
             };
             train_tracking::validate_pin(&pin, Utc::now())
                 .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;

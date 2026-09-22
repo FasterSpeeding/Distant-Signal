@@ -312,6 +312,7 @@ describe('TrackTrainForm', () => {
     const body = journeyCallBody(fetchMock);
     expect(body.leg).not.toHaveProperty('destinationCrs');
     expect(body.leg).not.toHaveProperty('operator');
+    expect(body.leg).not.toHaveProperty('skippedStations');
   });
 
   it('on success, POSTs to /api/Journeys and redirects to /journeys/{journeyId}', async () => {
@@ -846,6 +847,41 @@ describe('TrackTrainForm', () => {
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('SW');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
       expect(picker.value).toBe(`${today} 10:40:00`);
+    });
+
+    it('picking a departure-board row with skipped stations carries skippedStations through to the submitted leg', async () => {
+      // Regression for Finding I2: `pickDeparture` captures
+      // `row.skippedStations` into state, but the submitted `POST
+      // /api/Journeys` body used to never include it at all -- the value
+      // was captured then silently discarded. Confirm it now reaches the
+      // wire.
+      const rowsWithSkips = [
+        {
+          serviceId: 'svc-skips',
+          operator: 'SW',
+          destinationCrs: 'BSK',
+          scheduled: '10:40',
+          estimated: 'On time',
+          isCancelled: false,
+          delayMinutes: 0,
+          cancelReason: null,
+          delayReason: null,
+          skippedStations: ['CLJ', 'WOK'],
+        },
+      ];
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(rowsWithSkips), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      const onTimeRow = await screen.findByRole('button', { name: /10:40/ });
+      fireEvent.click(onTimeRow);
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
+      });
+      const body = journeyCallBody(fetchMock);
+      expect(body.leg.skippedStations).toEqual(['CLJ', 'WOK']);
     });
 
     // Regression coverage for the LDBWS sibling of the CIF post-midnight
