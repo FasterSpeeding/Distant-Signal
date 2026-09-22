@@ -11,6 +11,40 @@ import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import type { JourneyLegDetail } from '@/lib/types';
 
+/** `"HH:MM:SS"` -> `"HH:MM"` -- these are bare wall-clock bounds
+ * (`common::TimeWindow` on the wire), never full RFC3339 instants, so
+ * there is no timezone conversion to do (unlike `lib/dateFormat.ts`'s
+ * formatters, which all pin `Europe/London` for a real instant) -- just
+ * trimming the seconds a passenger never entered. */
+function formatWindowTime(value: string): string {
+  return value.slice(0, 5);
+}
+
+/** "Departing at or after 18:00 · Arriving at or before 09:00"-shaped
+ * summary of an open leg's own search window -- 2026-09-22 UX review
+ * finding I18: "the window the user just typed is never shown back to
+ * them" (spec §4 explicitly asks the open-leg card to show "the search
+ * parameters (origin, destination, windows)"; only origin/destination
+ * were ever rendered). Phrased to match `AddJourneyLegButton.tsx`'s own
+ * field descriptions exactly ("Only trains departing at or after this
+ * time.", etc.) rather than inventing new wording for the same facts.
+ * `null` when the leg has no window at all (a `pin`/`knownTrain`-mode
+ * leg is never `trackedTrainState === null` in the first place, so this
+ * realistically never returns `null` at this call site, but it's a
+ * plain function of the four fields, not leg-mode-aware, so it stays
+ * honest for any future caller). */
+function windowSummary(leg: JourneyLegDetail): string | null {
+  const parts: string[] = [];
+  if (leg.departAfter) parts.push(`departing at or after ${formatWindowTime(leg.departAfter)}`);
+  if (leg.departBefore) parts.push(`departing at or before ${formatWindowTime(leg.departBefore)}`);
+  if (leg.arriveAfter) parts.push(`arriving at or after ${formatWindowTime(leg.arriveAfter)}`);
+  if (leg.arriveBefore) parts.push(`arriving at or before ${formatWindowTime(leg.arriveBefore)}`);
+  if (parts.length === 0) return null;
+  const [first, ...rest] = parts;
+  const capitalised = first.charAt(0).toUpperCase() + first.slice(1);
+  return [capitalised, ...rest].join(' · ');
+}
+
 /** One leg's card on `/journeys/[id]` (design doc §4). Two branches:
  *
  * - **Open** (`trackedTrainState === null`): the search parameters plus,
@@ -95,6 +129,11 @@ export function JourneyLegCard({
           <Text fw={700}>
             Pick a train — {route}, {formatDate(leg.serviceDate)}
           </Text>
+          {windowSummary(leg) && (
+            <Text size="sm" c="dimmed">
+              {windowSummary(leg)}
+            </Text>
+          )}
           {isOwner ? (
             <>
               <Text size="sm" c="dimmed">

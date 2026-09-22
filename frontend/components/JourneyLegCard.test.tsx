@@ -217,4 +217,39 @@ describe('JourneyLegCard', () => {
     expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
     expect(screen.getByText('Searching for a train to track — pick one below.')).toBeInTheDocument();
   });
+
+  // 2026-09-22 UX review finding I18: "the window the user just typed is
+  // never shown back to them" -- an open leg's own departAfter/etc. used
+  // to be silently dropped from the card entirely.
+  it('shows the leg\'s own search window on an open leg', () => {
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={167}
+        leg={baseLeg({
+          trackedTrainState: null,
+          originCrs: 'YRK',
+          destinationCrs: 'NCL',
+          departAfter: '18:00:00',
+          arriveBefore: '21:30:00',
+        })}
+        isOwner
+        isOnlyLeg={false}
+      />,
+    );
+    expect(
+      screen.getByText('Departing at or after 18:00 · arriving at or before 21:30'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows nothing extra for an open leg with no window at all', () => {
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={167}
+        leg={baseLeg({ trackedTrainState: null, originCrs: 'YRK', destinationCrs: 'NCL' })}
+        isOwner
+        isOnlyLeg={false}
+      />,
+    );
+    expect(screen.queryByText(/Departing|Arriving/)).not.toBeInTheDocument();
+  });
 });
