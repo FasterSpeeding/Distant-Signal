@@ -44,6 +44,21 @@ pub struct OperatorRollup {
     pub line_ids: Vec<String>,
     pub worst_severity: common::Severity,
     pub reason: String,
+    /// The id/name of the SPECIFIC line whose status set `worst_severity`/
+    /// `reason` above -- added so a UI presenting the rollup can say which
+    /// line is actually driving it ("Worst of 4 lines · LNER East Coast
+    /// Main Line") instead of implying the whole operator is in the state
+    /// one line is in (2026-09-22 UX review [OH] §2.3/I11). Tracked
+    /// alongside `reason` in [`build_rollup`]'s loop so the two can never
+    /// disagree about which line they describe. Always `Some` together with
+    /// a non-empty `reason` in practice -- same "always populated for a
+    /// non-empty `matching` slice" guarantee `computed_at`'s own doc comment
+    /// describes -- but kept as `Option` rather than a bare `String` so a
+    /// theoretically-empty `matching` slice (already turned into `None` by
+    /// [`build_rollup`] before this struct is even constructed) has no
+    /// invalid empty-string state to accidentally construct by hand.
+    pub worst_line_id: Option<String>,
+    pub worst_line_name: Option<String>,
     pub sample_stats: Option<common::SampleStats>,
     /// The OLDEST `computed_at` across every matching line -- an aggregate
     /// is only as fresh as its stalest input, so this (not the newest) is
@@ -198,6 +213,8 @@ fn build_rollup(
 
     let mut worst_severity = common::Severity::GoodService;
     let mut reason = String::new();
+    let mut worst_line_id: Option<String> = None;
+    let mut worst_line_name: Option<String> = None;
     let mut representative_stats: Vec<common::SampleStats> = Vec::new();
     let mut computed_at: Option<DateTime<Utc>> = None;
 
@@ -214,6 +231,8 @@ fn build_rollup(
             if common::severity_rank(status.severity) >= common::severity_rank(worst_severity) {
                 worst_severity = status.severity;
                 reason = status.reason.clone();
+                worst_line_id = Some(row.id.clone());
+                worst_line_name = Some(row.name.clone());
             }
         }
         if let Some(stats) = representative_sample_stats(&row.statuses) {
@@ -231,6 +250,8 @@ fn build_rollup(
         line_ids: matching.iter().map(|r| r.id.clone()).collect(),
         worst_severity,
         reason,
+        worst_line_id,
+        worst_line_name,
         sample_stats: common::merge_sample_stats(&representative_stats),
         computed_at,
     })
@@ -326,6 +347,39 @@ mod build_rollup_tests {
         .unwrap();
         assert_eq!(rollup.worst_severity, Severity::Diverted);
         assert_eq!(rollup.reason, "diverted");
+        assert_eq!(rollup.worst_line_id, Some("line-b".to_string()));
+        assert_eq!(rollup.worst_line_name, Some("line-b".to_string()));
+    }
+
+    #[test]
+    fn worst_line_tracks_the_line_that_set_the_current_worst_status_not_the_first_or_last() {
+        // Three lines, worst status in the middle one -- guards against a
+        // version of this that only remembers the first or last row rather
+        // than the one that actually won the `>=` comparison.
+        let a = row(
+            "line-a",
+            &["SW"],
+            vec![status(Severity::GoodService, "", None)],
+        );
+        let b = row(
+            "line-b",
+            &["SW"],
+            vec![status(Severity::SevereDelays, "severe delays", None)],
+        );
+        let c = row(
+            "line-c",
+            &["SW"],
+            vec![status(Severity::MinorDelays, "minor delays", None)],
+        );
+        let rollup = build_rollup(
+            "SW".to_string(),
+            "South Western Railway".to_string(),
+            &[&a, &b, &c],
+        )
+        .unwrap();
+        assert_eq!(rollup.worst_line_id, Some("line-b".to_string()));
+        assert_eq!(rollup.worst_line_name, Some("line-b".to_string()));
+        assert_eq!(rollup.reason, "severe delays");
     }
 
     #[test]
