@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useId, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Badge, Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import { DateTimePicker, DatePickerInput } from '@mantine/dates';
@@ -346,6 +346,7 @@ export function TrackTrainForm({
   // journey-tracking design doc's own §0.5 direction) rather than inventing
   // a new one for leg-window entry.
   const [mode, setMode] = useState<'pick' | 'window'>('pick');
+  const modeLabelId = useId();
   const [windowDestinationCrs, setWindowDestinationCrs] = useState('');
   // A dedicated suggestions hook, not a reuse of the pin-mode Destination
   // field's own `destinationSuggestions`/`destinationSuggestionsLoading`
@@ -999,7 +1000,20 @@ export function TrackTrainForm({
           (`pin`/`knownTrain`/`window`) needs an `originCrs`, so it stays
           above the mode switch rather than being duplicated inside each
           branch. */}
+      {/* A visible label wired as the radiogroup's own name. Without it
+          a screen reader announced "radiogroup, Pick a departure, radio
+          button, 1 of 2, checked" -- the group itself unnamed -- and this
+          toggle is the ONLY discovery path for window mode (the mode is
+          not URL-addressable), so the name is load-bearing (2026-09-22 UX
+          review, I9/P4). Same `Text id` + `aria-labelledby` shape
+          `HistoryRangePicker`'s "Period" control already uses; the
+          question is phrased from the traveller's situation rather than
+          from the form's mechanism. */}
+      <Text id={modeLabelId} size="xs" fw={600} c="dimmed">
+        How do you want to find the train?
+      </Text>
       <SegmentedControl
+        aria-labelledby={modeLabelId}
         value={mode}
         onChange={(value) => setMode(value as 'pick' | 'window')}
         data={[

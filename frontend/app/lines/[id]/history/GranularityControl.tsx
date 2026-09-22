@@ -1,5 +1,6 @@
 'use client';
 
+import { useId } from 'react';
 import { useRouter } from 'next/navigation';
 import { SegmentedControl, Stack, Text } from '@mantine/core';
 import type { RangePreset, TrendGranularity } from '@/lib/history';
@@ -48,6 +49,7 @@ export function GranularityControl({
   available: TrendGranularity[];
 }) {
   const router = useRouter();
+  const granularityLabelId = useId();
   const unavailable = DISPLAY_ORDER.filter((g) => !available.includes(g));
 
   function handleChange(value: string) {
@@ -57,7 +59,28 @@ export function GranularityControl({
 
   return (
     <Stack gap={4}>
+      {/* Visible label + `aria-labelledby`, and `color="grape"`, copied
+          from the "Period" control this one sits directly beneath
+          (`HistoryRangePicker.tsx`). Before this, a screen-reader user
+          reached an unnamed radiogroup and heard three bare options, and
+          a sighted user's only hint was the dimmed helper text BELOW the
+          control -- which explains an ABSENT option before naming the
+          present ones (2026-09-22 UX review, I9/P4). The two controls also
+          read as two unrelated widgets while one was grape-filled and the
+          other white-on-grey; they are two settings of one chart, so they
+          now share one idiom (09-17 §2.13 asked for this; only the Period
+          half had been done). */}
+      <Text id={granularityLabelId} size="xs" fw={600} c="dimmed">
+        Granularity
+      </Text>
       <SegmentedControl
+        aria-labelledby={granularityLabelId}
+        color="grape"
+        // Same reasoning as `HistoryRangePicker`'s own
+        // `autoContrast={false}` -- see its comment: Mantine's
+        // `getContrastColor` is scheme-blind here and picks black on the
+        // grape 7 this app substitutes, which is 4.33:1, under AA.
+        autoContrast={false}
         value={granularity}
         onChange={handleChange}
         data={DISPLAY_ORDER.filter((g) => available.includes(g)).map((g) => ({ label: LABELS[g], value: g }))}

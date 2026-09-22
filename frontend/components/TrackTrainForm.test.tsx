@@ -1763,4 +1763,14 @@ describe('TrackTrainForm', () => {
       expect(screen.queryAllByLabelText('Track into')).toHaveLength(0);
     });
   });
+  // 2026-09-22 UX review, I9/P4: this toggle passed only
+  // value/onChange/data -- no heading, legend or aria-label -- and it is
+  // the ONLY discovery path for window mode.
+  it('names the pick-mode / window-mode radiogroup', () => {
+    renderWithMantine(<TrackTrainForm />);
+    expect(
+      screen.getByRole('radiogroup', { name: 'How do you want to find the train?' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('How do you want to find the train?')).toBeInTheDocument();
+  });
 });

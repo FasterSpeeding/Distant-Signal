@@ -72,4 +72,23 @@ describe('GranularityControl', () => {
       '/lines/northern/history?from=2026-07-22T00%3A00%3A00Z&to=2026-08-21T00%3A00%3A00Z&granularity=halfHour',
     );
   });
+  // 2026-09-22 UX review, I9/P4: this control shipped with no
+  // `aria-label`, no `aria-labelledby` and no visible label, directly
+  // beneath a "Period" control that has all three.
+  it('names its radiogroup, the same way the sibling Period control does', () => {
+    renderWithMantine(
+      <GranularityControl
+        basePath="/lines/northern/history"
+        preset="7d"
+        from="2026-08-14T00:00:00Z"
+        to="2026-08-21T00:00:00Z"
+        granularity="day"
+        available={['halfHour', 'hour', 'sixHour', 'day']}
+      />,
+    );
+    expect(screen.getByRole('radiogroup', { name: 'Granularity' })).toBeInTheDocument();
+    // Visible, not label-only: a sighted user's only previous hint was
+    // dimmed helper text BELOW the control naming the ABSENT options.
+    expect(screen.getByText('Granularity')).toBeInTheDocument();
+  });
 });
