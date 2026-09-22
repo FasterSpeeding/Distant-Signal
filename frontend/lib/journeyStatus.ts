@@ -81,7 +81,14 @@ export function journeyListItemStatusGroup(item: JourneyListItem): LegStatusGrou
   return legStatusGroup({
     id: item.legId,
     originCrs: item.originCrs,
+    // `JourneyListItem` resolves the same two station names the detail
+    // leg does, so the adapter passes them straight through rather than
+    // nulling them -- they play no part in the classification below, but
+    // an adapter that silently drops a field it HAS is a trap for the
+    // next person who reads one of them in `legStatusGroup`.
+    originName: item.originName,
     destinationCrs: item.destinationCrs,
+    destinationName: item.destinationName,
     serviceDate: item.serviceDate,
     departAfter: null,
     departBefore: null,
