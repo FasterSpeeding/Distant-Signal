@@ -21,13 +21,45 @@ export const SPARSE_FLOOR: Record<TrendGranularity, number> = {
 
 // One honesty-copy sentence per granularity (Ruling A,
 // .superpowers/sdd/2026-08-31-line-history-graphics/progress.md, extended
-// to the two new tiers by the same template) -- must not be softened or
-// dropped, same as this file's pre-existing `day` copy.
+// to the two new tiers by the same template) -- the underlying commitment
+// (never draw a misleading flat line over data too sparse to trust) must
+// not be softened or dropped, same as this file's pre-existing `day` copy.
+//
+// Reworded per the 2026-09-22 UX review ([OH] §3.3/I10): the original
+// five-sentence-in-one paragraph read as a developer's own note to
+// themselves -- "poll cycles", "coverage", `--` for a dash, all inherited
+// verbatim from this constant's OWN prior doc comment above, which is
+// exactly the leak review §3.3 called out. Split in two: this one short,
+// plain-language sentence stays inline next to the charts; the fuller
+// mechanical explanation (still saying everything the original one did)
+// moved to `HONESTY_COPY_DETAILS` below, behind a collapsed "How these
+// rates are calculated" disclosure (`TrendsResults`'s own render).
 export const HONESTY_COPY: Record<TrendGranularity, string> = {
-  day: 'Rates shown count each distinct train once per day, based on its status the first time it was seen that day -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Days with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for days too sparse to trust for a rate -- a low number there is exactly why a day may show as a gap above; it counts each train once, in the day it was first seen, not how many were simultaneously running.',
-  halfHour: 'Rates shown count each distinct train once per half hour, based on its status the first time it was seen that half hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Half-hour periods with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for half hours too sparse to trust for a rate -- a low number there is exactly why a half hour may show as a gap above; it counts each train once, in the half hour it was first seen, not how many were simultaneously running.',
-  hour: 'Rates shown count each distinct train once per hour, based on its status the first time it was seen that hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Hours with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for hours too sparse to trust for a rate -- a low number there is exactly why an hour may show as a gap above; it counts each train once, in the hour it was first seen, not how many were simultaneously running.',
-  sixHour: 'Rates shown count each distinct train once per six-hour period, based on its status the first time it was seen in that period -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Six-hour periods with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for six-hour periods too sparse to trust for a rate -- a low number there is exactly why a period may show as a gap above; it counts each train once, in the period it was first seen, not how many were simultaneously running.',
+  day: 'Each train is counted once per day, by the status it had when first seen. Days with too little data are left blank rather than shown as a misleading flat line.',
+  halfHour:
+    'Each train is counted once per half hour, by the status it had when first seen. Half-hour periods with too little data are left blank rather than shown as a misleading flat line.',
+  hour: 'Each train is counted once per hour, by the status it had when first seen. Hours with too little data are left blank rather than shown as a misleading flat line.',
+  sixHour:
+    'Each train is counted once per six-hour period, by the status it had when first seen. Six-hour periods with too little data are left blank rather than shown as a misleading flat line.',
+};
+
+/** The rest of what `HONESTY_COPY` used to say in one paragraph -- same
+ * facts, same "must not be softened" commitment, just moved behind a
+ * collapsed disclosure rather than printed in full every time (review
+ * §3.3's recommendation). Plain `<details>`/`<summary>`, not Mantine's
+ * `Spoiler`: this codebase already chose that for exactly this "collapsed
+ * extra detail" shape (`app/chat/callback/page.tsx`'s "Show error
+ * details") over `Spoiler`, whose own measured-height-gated control and
+ * "hidden but still mounted" content are the wrong fit here too (see
+ * `components/StationAccessibilitySection.tsx`'s `Disclosure` doc comment
+ * for the fuller reasoning against `Spoiler` specifically). */
+export const HONESTY_COPY_DETAILS: Record<TrendGranularity, string> = {
+  day: "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen that day, even a day too sparse to trust for a rate — a low bar there is exactly why that day may show as a gap in the rate chart below it. It counts each train once, in the day it was first seen, not how many were running at the same time.",
+  halfHour:
+    "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen that half hour, even a half hour too sparse to trust for a rate — a low bar there is exactly why that half hour may show as a gap in the rate chart below it. It counts each train once, in the half hour it was first seen, not how many were running at the same time.",
+  hour: "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen that hour, even an hour too sparse to trust for a rate — a low bar there is exactly why that hour may show as a gap in the rate chart below it. It counts each train once, in the hour it was first seen, not how many were running at the same time.",
+  sixHour:
+    "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen in that six-hour period, even a period too sparse to trust for a rate — a low bar there is exactly why that period may show as a gap in the rate chart below it. It counts each train once, in the period it was first seen, not how many were running at the same time.",
 };
 
 interface StatsRow {
@@ -150,6 +182,15 @@ export async function TrendsResults({
           h1 ("History: {name}"), with nothing between -- h2 keeps the
           chart titles one level below that h1, with no skip. */}
       <TrendsCharts points={points} granularity={granularity} order={2} showVolume />
+      {/* Review §3.3: the data now leads, with the fuller mechanical
+          explanation collapsed below it rather than printed in full above
+          the charts every time. */}
+      <details>
+        <summary>How these rates are calculated</summary>
+        <Text size="sm" c="dimmed" mt="xs">
+          {HONESTY_COPY_DETAILS[granularity]}
+        </Text>
+      </details>
     </Stack>
   );
 }

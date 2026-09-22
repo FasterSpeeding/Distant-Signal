@@ -3,7 +3,7 @@
 import { BarChart, LineChart } from '@mantine/charts';
 import { Stack, Title, type TitleOrder } from '@mantine/core';
 import { ReferenceArea } from 'recharts';
-import { formatTime } from '@/lib/dateFormat';
+import { formatShortDate, formatTime } from '@/lib/dateFormat';
 import type { TrendGranularity } from '@/lib/history';
 import type { ChartPoint } from './chartPoint';
 
@@ -109,9 +109,14 @@ export function TrendsCharts({
    * "Scope decision: full-coverage". */
   showVolume?: boolean;
 }) {
+  // Review §3.3: the day axis used to print the raw "2026-09-15" bucket key
+  // verbatim -- every other date in the app reads "15 Sep". The other three
+  // granularities already had a tick formatter (`formatTime`, since their
+  // bucket key is a full instant, not just a calendar day); `day` did not,
+  // simply because nothing had added one yet.
   const xAxisProps = {
     padding: { right: 12 },
-    ...(granularity !== 'day' ? { tickFormatter: (value: string) => formatTime(value) } : {}),
+    tickFormatter: (value: string) => (granularity === 'day' ? formatShortDate(value) : formatTime(value)),
   };
 
   return (

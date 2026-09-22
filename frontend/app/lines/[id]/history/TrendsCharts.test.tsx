@@ -9,6 +9,9 @@ vi.mock('@mantine/charts', () => ({
     <div
       data-testid="line-chart"
       data-has-tick-formatter={String(typeof props.xAxisProps?.tickFormatter === 'function')}
+      data-formatted-first-point={
+        props.xAxisProps?.tickFormatter ? props.xAxisProps.tickFormatter('2026-08-01T12:00:00Z') : ''
+      }
     />
   ),
   BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
@@ -131,16 +134,23 @@ describe('TrendsCharts granularity prop', () => {
   ];
 
   it.each(['halfHour', 'hour', 'sixHour'] as const)(
-    'gives the x-axis a tickFormatter for the %s granularity',
+    'gives the x-axis a time-of-day tickFormatter for the %s granularity',
     (granularity) => {
       renderWithMantine(<TrendsCharts points={points} granularity={granularity} order={2} />);
-      expect(screen.getAllByTestId('line-chart')[0]).toHaveAttribute('data-has-tick-formatter', 'true');
+      const chart = screen.getAllByTestId('line-chart')[0];
+      expect(chart).toHaveAttribute('data-has-tick-formatter', 'true');
+      expect(chart).toHaveAttribute('data-formatted-first-point', '13:00');
     },
   );
 
-  it('gives the x-axis no tickFormatter for the day granularity', () => {
+  // Review §3.3/I10: the day axis used to print the raw bucket key
+  // ("2026-08-01") verbatim -- every other date in the app reads "15 Sep"
+  // style. Now formatted, not omitted.
+  it('gives the x-axis a human short-date tickFormatter for the day granularity', () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} />);
-    expect(screen.getAllByTestId('line-chart')[0]).toHaveAttribute('data-has-tick-formatter', 'false');
+    const chart = screen.getAllByTestId('line-chart')[0];
+    expect(chart).toHaveAttribute('data-has-tick-formatter', 'true');
+    expect(chart).toHaveAttribute('data-formatted-first-point', '1 Aug');
   });
 });
 
