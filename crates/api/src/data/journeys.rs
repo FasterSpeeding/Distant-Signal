@@ -309,6 +309,45 @@ pub async fn create_journey_with_window_leg(
     Ok((journey_id, id))
 }
 
+/// Binds (or re-binds) a leg to a real train working -- the `manual`-mode
+/// commit route's data function (design doc §2.3), reused UNCHANGED for
+/// both a leg's first pick and any later "Change train" re-pick: this is
+/// always a plain `UPDATE`, never a new `journey_legs` row, per the
+/// 2026-09-22 addendum's explicit decision that the leg's OLD
+/// `train_subscription_id` is simply orphaned from the leg once
+/// overwritten -- left exactly as today's `delete_tracked_train`/re-pin
+/// flows already leave an unreferenced row, no extra cleanup here. The
+/// leg's `depart_*`/`arrive_*` window is deliberately left untouched by
+/// this `UPDATE` -- it is what makes a later "Change train" possible at
+/// all (design doc §1.1/§2.3).
+///
+/// Ownership-scoped via the same `journeys j` join `get_owned_leg` uses,
+/// folded directly into the `UPDATE` (not re-derived from a prior read
+/// alone) -- same paranoia as every other ownership-scoped write in this
+/// codebase. Returns `true` if a row was updated, `false` for "no such
+/// leg, or not this caller's" (the route maps this to `404`, never `403`).
+pub async fn set_leg_train_subscription(
+    pool: &PgPool,
+    journey_id: i64,
+    leg_id: i64,
+    user_id: &str,
+    train_subscription_id: i64,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE journey_legs SET train_subscription_id = $1, match_mode = 'manual' \
+         FROM journeys j \
+         WHERE journey_legs.id = $2 AND journey_legs.journey_id = $3 \
+           AND j.id = journey_legs.journey_id AND j.user_id = $4",
+    )
+    .bind(train_subscription_id)
+    .bind(leg_id)
+    .bind(journey_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
@@ -477,5 +516,130 @@ mod db_tests {
             assert!(!message.is_empty());
             assert!(!message.contains('_'), "user-facing copy leaked an identifier: {message}");
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                set_leg_train_subscription -- --ignored --test-threads=1`"]
+    async fn set_leg_train_subscription_binds_an_unmatched_leg_and_is_reusable_for_change_train() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-COMMIT").await;
+        let (journey_id, leg_id) = create_journey_with_window_leg(
+            &pool,
+            "TEST-JOURNEY-COMMIT",
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create window leg");
+
+        // First pick.
+        let first_tracking_id =
+            crate::data::train_tracking::create_pin(&pool, &fixture_pin("WAT"), "TEST-JOURNEY-COMMIT")
+                .await
+                .expect("seed first candidate subscription");
+        let updated = set_leg_train_subscription(
+            &pool,
+            journey_id,
+            leg_id,
+            "TEST-JOURNEY-COMMIT",
+            first_tracking_id,
+        )
+        .await
+        .expect("commit first pick");
+        assert!(updated);
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, "TEST-JOURNEY-COMMIT")
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(leg.train_subscription_id, Some(first_tracking_id));
+        assert_eq!(leg.match_mode, "manual");
+        // The window survives the first commit -- this is what makes
+        // "Change train" possible at all.
+        assert_eq!(leg.depart_after, Some("08:00:00".parse().unwrap()));
+
+        // "Change train" re-pick -- same route, same function, an UPDATE
+        // not a new leg.
+        let second_tracking_id =
+            crate::data::train_tracking::create_pin(&pool, &fixture_pin("WAT"), "TEST-JOURNEY-COMMIT")
+                .await
+                .expect("seed second candidate subscription");
+        let updated = set_leg_train_subscription(
+            &pool,
+            journey_id,
+            leg_id,
+            "TEST-JOURNEY-COMMIT",
+            second_tracking_id,
+        )
+        .await
+        .expect("commit re-pick");
+        assert!(updated);
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, "TEST-JOURNEY-COMMIT")
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(leg.train_subscription_id, Some(second_tracking_id));
+        assert_eq!(leg.depart_after, Some("08:00:00".parse().unwrap()));
+
+        cleanup_user(&pool, "TEST-JOURNEY-COMMIT").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                set_leg_train_subscription -- --ignored --test-threads=1`"]
+    async fn set_leg_train_subscription_a_non_owner_cannot_bind_someone_elses_leg() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-COMMIT-OWNER").await;
+        seed_user(&pool, "TEST-JOURNEY-COMMIT-OTHER").await;
+        let (journey_id, leg_id) = create_journey_with_window_leg(
+            &pool,
+            "TEST-JOURNEY-COMMIT-OWNER",
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create window leg");
+        let tracking_id =
+            crate::data::train_tracking::create_pin(&pool, &fixture_pin("WAT"), "TEST-JOURNEY-COMMIT-OTHER")
+                .await
+                .expect("seed candidate subscription");
+
+        let updated = set_leg_train_subscription(
+            &pool,
+            journey_id,
+            leg_id,
+            "TEST-JOURNEY-COMMIT-OTHER",
+            tracking_id,
+        )
+        .await
+        .expect("attempt bind as non-owner");
+        assert!(!updated);
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, "TEST-JOURNEY-COMMIT-OWNER")
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(leg.train_subscription_id, None);
+
+        cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OWNER").await;
+        cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OTHER").await;
     }
 }
