@@ -22,6 +22,7 @@ export interface NavDestination {
 /** Always visible to everyone, logged in or not. Rendered inline in the
  * bar at `md` and up, and in the drawer below it. */
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
+  { href: '/status', label: 'Status' },
   { href: '/lines', label: 'All Lines' },
   { href: '/stations', label: 'Station Lookup' },
   // The primary train-discovery surface. `/track` is still reachable

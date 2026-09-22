@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isGoodSeverity, severityColor, severityLabel, worstStatus } from './severity';
+import { isGoodSeverity, isSeverityGroup, severityColor, severityGroup, severityLabel, worstStatus } from './severity';
 import type { LineStatusReport } from './types';
 
 describe('severityColor', () => {
@@ -139,5 +139,45 @@ describe('isGoodSeverity', () => {
     expect(isGoodSeverity(6)).toBe(false);  // SevereDelays
     expect(isGoodSeverity(22)).toBe(false); // Service Closed (informational, not good)
     expect(isGoodSeverity(999)).toBe(false);
+  });
+});
+
+describe('severityGroup', () => {
+  it('groups every NR severity the same way severityColor already does', () => {
+    expect(severityGroup(10)).toBe('good');        // Good Service
+    expect(severityGroup(9)).toBe('mild');          // Minor Delays
+    expect(severityGroup(7)).toBe('mild');          // Reduced Service
+    expect(severityGroup(2)).toBe('severe');        // Suspended
+    expect(severityGroup(21)).toBe('severe');       // Diverted
+    expect(severityGroup(4)).toBe('planned');       // Planned Closure
+    expect(severityGroup(0)).toBe('informational'); // Special Service
+  });
+
+  it('groups the five TfL-only codes the same way severityColor already does', () => {
+    expect(severityGroup(25)).toBe('good');          // No Issues
+    expect(severityGroup(24)).toBe('mild');          // Issues Reported
+    expect(severityGroup(23)).toBe('severe');        // Not Running
+    expect(severityGroup(22)).toBe('informational'); // Service Closed
+    expect(severityGroup(26)).toBe('informational'); // Information
+  });
+
+  it('falls back to informational for an unrecognized value, matching severityRank', () => {
+    expect(severityGroup(999)).toBe('informational');
+  });
+});
+
+describe('isSeverityGroup', () => {
+  it('accepts every real SeverityGroup value', () => {
+    for (const group of ['good', 'informational', 'planned', 'mild', 'severe']) {
+      expect(isSeverityGroup(group)).toBe(true);
+    }
+  });
+
+  it('rejects an unrecognized string', () => {
+    expect(isSeverityGroup('extremely-bad')).toBe(false);
+  });
+
+  it('rejects undefined (no query param at all)', () => {
+    expect(isSeverityGroup(undefined)).toBe(false);
   });
 });

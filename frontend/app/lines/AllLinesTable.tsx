@@ -24,7 +24,7 @@ import {
 import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
-import { worstStatus, severityRank } from '@/lib/severity';
+import { worstStatus, severityRank, severityGroup, SEVERITY_GROUP_LABELS, SEVERITY_GROUPS_BY_RANK, type SeverityGroup } from '@/lib/severity';
 import { cancelledPercent, formatSampleSummary, representativeStatus, sampleUnavailableReason } from '@/lib/sampleStats';
 import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
@@ -113,6 +113,13 @@ function countryChipLabel(selected: number): string {
   return selected === 0 ? 'Country — showing all' : `Country — ${selected} selected`;
 }
 
+/** Mirrors `countryChipLabel` immediately above -- single-select, not
+ * multi (a line has exactly one worst status right now, so "2 selected"
+ * would never be a meaningful state the way it is for operator/country). */
+function statusChipLabel(selected: SeverityGroup | null): string {
+  return selected ? `Status — ${SEVERITY_GROUP_LABELS[selected]}` : 'Status — showing all';
+}
+
 /** Same gap, same fix, as `components/IncidentSearchForm.tsx`'s own
  * `noOptionsFound` (see that file's comment for the underlying Mantine
  * behaviour): a `searchable` combobox's own `Combobox.Empty` is an
@@ -137,6 +144,7 @@ export function AllLinesTable({
   pinnedLineIds,
   tocs,
   viewerIsAnonymous = false,
+  initialStatusGroup,
 }: {
   lines: LineSummary[];
   reports: LineStatusReport[];
@@ -146,9 +154,16 @@ export function AllLinesTable({
   // visitor who has none yet. Optional, defaulting to `false`, so every
   // existing caller/test that doesn't pass it keeps today's behaviour.
   viewerIsAnonymous?: boolean;
+  /** Seeds the new status-group filter below from a query param (e.g.
+   * `/lines?statusGroup=severe`, followed from `app/status/page.tsx`'s
+   * counter tiles) -- consumed only as this `useState`'s initial value,
+   * never re-read after mount, exactly like `IncidentSearchForm`'s own
+   * `initialOperator`/`initialLine`/`initialFrom`/`initialTo` props. */
+  initialStatusGroup?: SeverityGroup;
 }) {
   const [selectedOperators, setSelectedOperators] = useState<string[]>([]);
   const [selectedCountries, setSelectedCountries] = useState<Country[]>([]);
+  const [statusGroupFilter, setStatusGroupFilter] = useState<SeverityGroup | null>(initialStatusGroup ?? null);
   const [nameQuery, setNameQuery] = useState('');
   // Task 3.4.2: defaults to name order rather than the catalogue's own
   // (arbitrary-looking) ordering, so a first-time visitor to a 125-row
@@ -156,6 +171,7 @@ export function AllLinesTable({
   // exists first.
   const [sort, setSort] = useState<SortState | null>({ field: 'name', direction: 'asc' });
   const countryLabelId = useId();
+  const statusLabelId = useId();
 
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
   const pinnedSet = useMemo(() => new Set(pinnedLineIds), [pinnedLineIds]);
@@ -234,8 +250,19 @@ export function AllLinesTable({
     if (selectedCountries.length > 0) {
       result = result.filter((row) => selectedCountries.includes(row.country));
     }
+    // AND-combined with the other three filters, same posture: a
+    // severity-group filter answers a different question (what state is
+    // the line in right now) than operator/country/name do. `row.worst` is
+    // `undefined` for a line with no computed status at all ("NO DATA" in
+    // the table below) -- such a row cannot match any specific bucket, and
+    // is only ever visible under "All statuses".
+    if (statusGroupFilter) {
+      result = result.filter(
+        (row) => row.worst !== undefined && severityGroup(row.worst.statusSeverity) === statusGroupFilter,
+      );
+    }
     return result;
-  }, [rows, selectedOperators, selectedCountries, nameQuery]);
+  }, [rows, selectedOperators, selectedCountries, statusGroupFilter, nameQuery]);
 
   // Missing avgDelay/cancelled values (no sample stats) always sort to the
   // end, regardless of direction -- flipping direction shouldn't make
@@ -310,6 +337,31 @@ export function AllLinesTable({
             style={{ flex: '1 1 220px' }}
           />
         </Group>
+        <Stack gap={4}>
+          <Text id={statusLabelId} size="xs" fw={600} c="dimmed">
+            {statusChipLabel(statusGroupFilter)}
+          </Text>
+          <ChipGroup
+            value={statusGroupFilter ?? ''}
+            onChange={(value) => setStatusGroupFilter(value === '' ? null : (value as SeverityGroup))}
+          >
+            <Group gap="xs" role="group" aria-labelledby={statusLabelId}>
+              <Chip value="" size="xs" variant={statusGroupFilter === null ? 'filled' : 'outline'}>
+                All statuses
+              </Chip>
+              {SEVERITY_GROUPS_BY_RANK.map((group) => (
+                <Chip
+                  key={group}
+                  value={group}
+                  size="xs"
+                  variant={statusGroupFilter === group ? 'filled' : 'outline'}
+                >
+                  {SEVERITY_GROUP_LABELS[group]}
+                </Chip>
+              ))}
+            </Group>
+          </ChipGroup>
+        </Stack>
         {/* Self-hiding per Decision 4/5: with fewer than two countries present
             (today, always exactly ['Gb']) there is nothing meaningful to
             filter by, and a one-option control is worse than no control at

@@ -1,6 +1,6 @@
 import type { LineStatusReport } from './types';
 
-type SeverityGroup = 'good' | 'informational' | 'planned' | 'mild' | 'severe';
+export type SeverityGroup = 'good' | 'informational' | 'planned' | 'mild' | 'severe';
 
 const SEVERITY_TABLE: Record<number, { label: string; group: SeverityGroup }> = {
   0: { label: 'Special Service', group: 'informational' },
@@ -45,13 +45,43 @@ const GROUP_COLOR: Record<SeverityGroup, string> = {
 // true severity ordering — severe > mild > planned > informational > good —
 // and should be used instead of the raw `statusSeverity` number whenever
 // statuses need to be compared/ranked (e.g. picking the "worst" status).
-const GROUP_RANK: Record<SeverityGroup, number> = {
+export const GROUP_RANK: Record<SeverityGroup, number> = {
   good: 0,
   informational: 1,
   planned: 2,
   mild: 3,
   severe: 4,
 };
+
+/** Display copy for each `SeverityGroup`, single-sourced so the network
+ * dashboard's counter tiles (`app/status/page.tsx`) and `AllLinesTable`'s
+ * status-group filter chips can never say something different for the same
+ * bucket. */
+export const SEVERITY_GROUP_LABELS: Record<SeverityGroup, string> = {
+  good: 'Good Service',
+  informational: 'Informational',
+  planned: 'Planned',
+  mild: 'Minor Disruption',
+  severe: 'Severe Disruption',
+};
+
+/** Every `SeverityGroup`, ordered best-to-worst by `GROUP_RANK` -- the
+ * iteration order for the dashboard's five counter tiles and
+ * `AllLinesTable`'s filter chips, so both render in one deliberate order
+ * rather than relying on object-key iteration order. */
+export const SEVERITY_GROUPS_BY_RANK: readonly SeverityGroup[] = (
+  Object.keys(GROUP_RANK) as SeverityGroup[]
+).sort((a, b) => GROUP_RANK[a] - GROUP_RANK[b]);
+
+/** Narrows an untyped query-string value (e.g. `/lines?statusGroup=severe`)
+ * to a real `SeverityGroup`, or `false` for anything else -- an unknown/
+ * missing/malformed value must fall back to "no filter" rather than being
+ * silently treated as some specific bucket. Used by `app/lines/page.tsx` to
+ * validate `searchParams.statusGroup` before handing it to `AllLinesTable`
+ * as `initialStatusGroup`. */
+export function isSeverityGroup(value: string | undefined): value is SeverityGroup {
+  return value !== undefined && (SEVERITY_GROUPS_BY_RANK as readonly string[]).includes(value);
+}
 
 export function severityColor(severity: number): string {
   const entry = SEVERITY_TABLE[severity];
@@ -75,6 +105,18 @@ export function severityLabel(severity: number): string {
 export function severityRank(severity: number): number {
   const entry = SEVERITY_TABLE[severity];
   return GROUP_RANK[entry?.group ?? 'informational'];
+}
+
+/** The `SeverityGroup` a raw severity number belongs to (see
+ * `SEVERITY_TABLE` above) -- the bucket-membership counterpart of
+ * `severityRank`'s numeric ordering. Added for the network-wide dashboard's
+ * five-bucket breakdown (`lib/networkStatusOverview.ts`) and
+ * `AllLinesTable`'s own status-group filter, both of which need to know
+ * WHICH group a status falls into, not just how it ranks against another
+ * one. Same unknown-severity fallback as `severityRank`: an unrecognized
+ * number is treated as `'informational'`. */
+export function severityGroup(severity: number): SeverityGroup {
+  return SEVERITY_TABLE[severity]?.group ?? 'informational';
 }
 
 /** Picks the most severe status on a report by true severity rank (see
