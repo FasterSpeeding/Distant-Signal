@@ -1644,9 +1644,52 @@ pub async fn search_journey_leg_candidates(
         chrono::NaiveTime,
         Option<chrono::NaiveTime>,
         i16,
+        Option<chrono::NaiveTime>,
+        Option<i16>,
     )> = sqlx::query_as(
         r#"
-            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset
+            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset,
+                   -- The arrival at the LEG's own destination, which is
+                   -- what the traveller is actually choosing between --
+                   -- NOT `destination_arrival`, the arrival at the
+                   -- schedule's TERMINUS, which for a York->Newcastle leg
+                   -- on a London->Edinburgh service names a station the
+                   -- traveller never reaches. Two branches, mirroring the
+                   -- arrive_after/arrive_before filter below exactly: the
+                   -- leg's destination IS this schedule's terminus (a
+                   -- terminus has no departure row of its own, so the
+                   -- value lives on `main`), or it is an intermediate
+                   -- call, found by the same keys the EXISTS below uses.
+                   -- COALESCE onto `stop.scheduled` because
+                   -- `calling_point_arrival` is NULL by design for a
+                   -- schedule's own true origin and for rows published
+                   -- before that column existed: the booked DEPARTURE at
+                   -- that calling point is an honest, real scheduled time
+                   -- for that station rather than a fabricated one, and
+                   -- it is the same departure-or-arrival precedence
+                   -- `JourneyTimeline` already displays per stop. NULL
+                   -- stays NULL when neither is known -- the caller
+                   -- renders nothing rather than guessing.
+                   CASE WHEN main.destination_crs = $5 THEN main.destination_arrival
+                        ELSE (SELECT COALESCE(stop.calling_point_arrival, stop.scheduled)
+                              FROM schedule_destination_departures stop
+                              WHERE stop.service_date = $1
+                                AND stop.train_uid = main.train_uid
+                                AND stop.origin_crs = $5
+                                AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
+                              ORDER BY stop.day_offset, stop.scheduled
+                              LIMIT 1)
+                   END AS leg_destination_arrival,
+                   CASE WHEN main.destination_crs = $5 THEN main.destination_arrival_day_offset
+                        ELSE (SELECT stop.day_offset
+                              FROM schedule_destination_departures stop
+                              WHERE stop.service_date = $1
+                                AND stop.train_uid = main.train_uid
+                                AND stop.origin_crs = $5
+                                AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
+                              ORDER BY stop.day_offset, stop.scheduled
+                              LIMIT 1)
+                   END AS leg_destination_arrival_day_offset
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
@@ -1725,7 +1768,7 @@ pub async fn search_journey_leg_candidates(
 
     let next_cursor = if has_more {
         page_rows.last().map(
-            |(train_uid, _, _, scheduled, _, _)| CallingPointDepartureCursor {
+            |(train_uid, _, _, scheduled, _, _, _, _)| CallingPointDepartureCursor {
                 scheduled: *scheduled,
                 train_uid: train_uid.clone(),
             },
@@ -1744,6 +1787,8 @@ pub async fn search_journey_leg_candidates(
                 scheduled,
                 destination_arrival,
                 destination_arrival_day_offset,
+                leg_destination_arrival,
+                leg_destination_arrival_day_offset,
             )| {
                 serde_json::json!({
                     "uid": train_uid,
@@ -1752,6 +1797,20 @@ pub async fn search_journey_leg_candidates(
                     "scheduled": scheduled.format("%H:%M:%S").to_string(),
                     "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                     "destination_arrival_day_offset": destination_arrival_day_offset,
+                    // Two EXTRA keys this sibling emits and
+                    // `search_schedule_calling_point_departures` does not:
+                    // the arrival at the LEG's own destination. Carried on
+                    // the same opaque row `Value` the shared
+                    // `render::calling_point_departure_json` already
+                    // consumes, so `/public/trains/search` (which has no
+                    // leg, and no destination to scope to) is untouched --
+                    // the journeys route picks these two off the row
+                    // itself. `null` is a real, expected value: a
+                    // candidate whose schedule has no arrival or departure
+                    // recorded at the leg's destination renders no arrival
+                    // rather than a guessed one.
+                    "leg_destination_arrival": leg_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
+                    "leg_destination_arrival_day_offset": leg_destination_arrival_day_offset,
                 })
             },
         )

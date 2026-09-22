@@ -191,6 +191,73 @@ struct AddLegResponse {
 /// below both fail with a real live "missing field" error against the enum
 /// as it stood before that fix.
 #[cfg(test)]
+mod leg_candidate_json_tests {
+    use super::leg_candidate_json;
+    use serde_json::json;
+
+    /// One `search_journey_leg_candidates` row for a York->Newcastle leg
+    /// riding a London Kings Cross -> Edinburgh service.
+    fn row() -> serde_json::Value {
+        json!({
+            "uid": "P9E011",
+            "destination_crs": "EDB",
+            "true_origin_crs": "KGX",
+            "scheduled": "19:00:00",
+            "destination_arrival": "21:40:00",
+            "destination_arrival_day_offset": 0,
+            "leg_destination_arrival": "19:55:00",
+            "leg_destination_arrival_day_offset": 0,
+        })
+    }
+
+    #[test]
+    fn renders_the_leg_s_own_endpoints_and_arrival_alongside_the_train_s_own_route() {
+        let json = leg_candidate_json(&row(), "YRK", "NCL");
+        // The leg: leaves York 19:00, reaches Newcastle 19:55.
+        assert_eq!(json["stationCrs"], "YRK");
+        assert_eq!(json["legOriginCrs"], "YRK");
+        assert_eq!(json["legDestinationCrs"], "NCL");
+        assert_eq!(json["scheduled"], "19:00");
+        assert_eq!(json["legDestinationArrival"], "19:55");
+        // The train, unchanged and still available as secondary detail --
+        // this is what every candidate row USED to be labelled with, on
+        // its own.
+        assert_eq!(json["originCrs"], "KGX");
+        assert_eq!(json["destinationCrs"], "EDB");
+        assert_eq!(json["destinationArrival"], "21:40");
+    }
+
+    #[test]
+    fn a_missing_leg_arrival_is_an_explicit_null_not_a_guess_from_the_terminus() {
+        let mut row = row();
+        row["leg_destination_arrival"] = serde_json::Value::Null;
+        let json = leg_candidate_json(&row, "YRK", "NCL");
+        assert!(json["legDestinationArrival"].is_null());
+        // Specifically NOT silently backfilled from the terminus arrival,
+        // which is a different station.
+        assert_eq!(json["destinationArrival"], "21:40");
+    }
+
+    #[test]
+    fn an_absent_day_offset_key_reads_as_same_day_rather_than_failing() {
+        let mut row = row();
+        row.as_object_mut()
+            .unwrap()
+            .remove("leg_destination_arrival_day_offset");
+        let json = leg_candidate_json(&row, "YRK", "NCL");
+        assert_eq!(json["legDestinationArrivalDayOffset"], 0);
+    }
+
+    #[test]
+    fn a_leg_that_ends_at_the_schedule_s_own_terminus_still_names_the_leg_s_end() {
+        let json = leg_candidate_json(&row(), "KGX", "EDB");
+        assert_eq!(json["legOriginCrs"], "KGX");
+        assert_eq!(json["legDestinationCrs"], "EDB");
+        assert_eq!(json["stationCrs"], "KGX");
+    }
+}
+
+#[cfg(test)]
 mod wire_format_tests {
     use super::{AddJourneyLegRequest, CreateJourneyLegRequest};
 
@@ -799,10 +866,71 @@ async fn get_leg_candidates(
         "results": page
             .departures
             .iter()
-            .map(|row| crate::render::calling_point_departure_json(row, origin_crs))
+            .map(|row| leg_candidate_json(row, origin_crs, destination_crs))
             .collect::<Vec<serde_json::Value>>(),
         "nextCursor": page.next_cursor.as_ref().map(crate::routes::trains::encode_cursor),
     })))
+}
+
+/// `render::calling_point_departure_json`'s output plus the three fields
+/// that make a row about the TRAVELLER'S LEG rather than about the train's
+/// own route -- 2026-09-22 UX review, C4.
+///
+/// The shared renderer already gives `scheduled` (the departure at the
+/// leg's ORIGIN, since `search_journey_leg_candidates` keys `main` on
+/// `main.origin_crs = <leg origin>`) and `stationCrs` (that origin). What
+/// it cannot give is where the leg ENDS: its `destinationCrs`/
+/// `destinationArrival` are the schedule's own terminus and the arrival
+/// there, which for a York->Newcastle leg on a London->Edinburgh service
+/// describe Edinburgh. Rendered on their own, three candidates all read
+/// "19:00 · KGX → EDB" and the one decision the window search exists to
+/// support -- which of these gets me from York to Newcastle, and when --
+/// cannot be made from what is on screen.
+///
+/// Additive, never a rename: `destinationCrs`/`destinationArrival` keep
+/// their existing meaning so `/public/trains/search` and the shared
+/// renderer are untouched, and the frontend renders the train's own route
+/// as dimmed secondary text beside the leg-scoped primary line.
+///
+/// `legDestinationArrival` is `null` whenever the schedule records neither
+/// an arrival nor a booked departure at the leg's destination -- the row
+/// then shows no arrival rather than a fabricated one.
+fn leg_candidate_json(
+    row: &serde_json::Value,
+    leg_origin_crs: &str,
+    leg_destination_crs: &str,
+) -> serde_json::Value {
+    let mut json = crate::render::calling_point_departure_json(row, leg_origin_crs);
+    let arrival = row
+        .get("leg_destination_arrival")
+        .and_then(serde_json::Value::as_str)
+        // Trimmed "HH:MM:SS" -> "HH:MM" exactly as the shared renderer
+        // trims `scheduled` and `destinationArrival`, so the two times on
+        // one row are always the same shape.
+        .map(|s| s.chars().take(5).collect::<String>());
+    let day_offset = row
+        .get("leg_destination_arrival_day_offset")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if let Some(object) = json.as_object_mut() {
+        object.insert(
+            "legOriginCrs".to_string(),
+            serde_json::Value::String(leg_origin_crs.to_string()),
+        );
+        object.insert(
+            "legDestinationCrs".to_string(),
+            serde_json::Value::String(leg_destination_crs.to_string()),
+        );
+        object.insert(
+            "legDestinationArrival".to_string(),
+            arrival.map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
+        object.insert(
+            "legDestinationArrivalDayOffset".to_string(),
+            serde_json::Value::from(day_offset),
+        );
+    }
+    json
 }
 
 #[derive(Debug, Deserialize)]

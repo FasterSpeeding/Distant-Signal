@@ -3,6 +3,10 @@ import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
 
+// A BTH -> SWI leg riding two Bristol -> London Paddington services: the
+// leg's own two ends (`legOriginCrs`/`legDestinationCrs`) are neither of
+// the train's (`originCrs`/`destinationCrs`), which is exactly the shape
+// that made every row read identically before the 2026-09-22 review's C4.
 const CANDIDATES_FIXTURE = {
   results: [
     {
@@ -11,6 +15,10 @@ const CANDIDATES_FIXTURE = {
       destinationCrs: 'PAD',
       originCrs: 'BRI',
       destinationArrival: '12:05',
+      legOriginCrs: 'BTH',
+      legDestinationCrs: 'SWI',
+      legDestinationArrival: '11:08',
+      legDestinationArrivalDayOffset: 0,
     },
     {
       uid: 'C11099',
@@ -18,6 +26,10 @@ const CANDIDATES_FIXTURE = {
       destinationCrs: 'PAD',
       originCrs: 'BRI',
       destinationArrival: '12:35',
+      legOriginCrs: 'BTH',
+      legDestinationCrs: 'SWI',
+      legDestinationArrival: '11:38',
+      legDestinationArrivalDayOffset: 0,
     },
   ],
   nextCursor: null,
@@ -81,15 +93,108 @@ describe('JourneyLegCandidates', () => {
     await screen.findByText(/No scheduled trains match this window\./);
   });
 
-  it('renders a "Track this train" button per candidate row', async () => {
+  it('leads each row with the traveller\'s own leg times, not the train\'s route', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(
       <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
     );
 
-    expect(await screen.findAllByRole('button', { name: 'Track this train' })).toHaveLength(2);
-    expect(screen.getByText('10:32 · BRI → PAD')).toBeInTheDocument();
-    expect(screen.getByText('11:02 · BRI → PAD')).toBeInTheDocument();
+    expect(await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08')).toBeInTheDocument();
+    expect(screen.getByText('dep. BTH 11:02 → arr. SWI 11:38')).toBeInTheDocument();
+    // The train's own identity and route survive as dimmed secondary
+    // text -- useful context, no longer the whole row.
+    expect(screen.getAllByText('Train C11052 · BRI → PAD')).toHaveLength(1);
+  });
+
+  it('gives every "Track this train" button its own accessible name', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    // The pre-fix state: two buttons, both named exactly "Track this
+    // train", indistinguishable in a screen reader's control list.
+    expect(await screen.findAllByRole('button', { name: /^Track this train/ })).toHaveLength(2);
+    expect(
+      screen.getByRole('button', { name: 'Track this train — dep. BTH 10:32 → arr. SWI 11:08' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Track this train — dep. BTH 11:02 → arr. SWI 11:38' }),
+    ).toBeInTheDocument();
+    // Label-in-Name (WCAG 2.5.3): the accessible name still CONTAINS the
+    // visible label.
+    expect(screen.getAllByText('Track this train')).toHaveLength(2);
+  });
+
+  it('offers a per-row "View live status" link, as the /trains result row does', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    const link = await screen.findByRole('link', {
+      name: 'View live status for the dep. BTH 10:32 → arr. SWI 11:08',
+    });
+    expect(link).toHaveAttribute('href', '/train/C11052/2026-09-22');
+  });
+
+  it('omits the arrival rather than guessing when the schedule has none for the leg destination', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        candidates: () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  ...CANDIDATES_FIXTURE.results[0],
+                  legDestinationArrival: null,
+                },
+              ],
+              nextCursor: null,
+            }),
+            { status: 200 },
+          ),
+      }),
+    );
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(await screen.findByText('dep. BTH 10:32')).toBeInTheDocument();
+    // Never the train's terminus arrival standing in for the leg's own.
+    expect(screen.queryByText(/12:05/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/arr\./)).not.toBeInTheDocument();
+  });
+
+  it('says so when the leg arrives the next day', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        candidates: () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  ...CANDIDATES_FIXTURE.results[0],
+                  scheduled: '23:40',
+                  legDestinationArrival: '02:15',
+                  legDestinationArrivalDayOffset: 1,
+                },
+              ],
+              nextCursor: null,
+            }),
+            { status: 200 },
+          ),
+      }),
+    );
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(
+      await screen.findByText('dep. BTH 23:40 → arr. SWI 02:15 (next day)'),
+    ).toBeInTheDocument();
   });
 
   it('POSTs the picked train and calls onPicked on success', async () => {
@@ -99,7 +204,7 @@ describe('JourneyLegCandidates', () => {
       <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
     );
 
-    const buttons = await screen.findAllByRole('button', { name: 'Track this train' });
+    const buttons = await screen.findAllByRole('button', { name: /^Track this train/ });
     fireEvent.click(buttons[0]);
 
     await waitFor(() => {
@@ -124,7 +229,7 @@ describe('JourneyLegCandidates', () => {
       <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
     );
 
-    const buttons = await screen.findAllByRole('button', { name: 'Track this train' });
+    const buttons = await screen.findAllByRole('button', { name: /^Track this train/ });
     fireEvent.click(buttons[0]);
 
     expect(await screen.findByText("Couldn't track that train. Try again.")).toBeInTheDocument();
