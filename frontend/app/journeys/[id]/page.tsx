@@ -1,7 +1,9 @@
-import { Stack, Title } from '@mantine/core';
+import { Group, Stack, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getJourney, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
+import { AddJourneyLegButton } from '@/components/AddJourneyLegButton';
 import { JourneyLegCard } from '@/components/JourneyLegCard';
+import { JourneyStatusBadge } from '@/components/JourneyStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
 
 export const revalidate = 0;
@@ -43,9 +45,19 @@ export default async function JourneyDetailPage({
     throw err;
   }
 
+  const lastLeg = journey.legs.at(-1) ?? null;
+  const priorDestinationCrs =
+    lastLeg?.destinationCrs ?? lastLeg?.trackedTrainState?.scheduleDestinationCrs ?? null;
+
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
+      <Group justify="space-between">
+        <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
+        <Group gap="sm">
+          <JourneyStatusBadge legs={journey.legs} />
+          <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
+        </Group>
+      </Group>
       {journey.legs.map((leg) => (
         <JourneyLegCard key={leg.id} journeyId={journey.id} leg={leg} />
       ))}
