@@ -32,6 +32,22 @@ describe('AddJourneyLegButton', () => {
     expect(origin).toHaveValue('WAT');
   });
 
+  it('re-seeds the origin field from priorDestinationCrs on every open, not just the first', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const origin = await screen.findByLabelText('Origin CRS');
+    fireEvent.change(origin, { target: { value: 'CLJ' } });
+    expect(origin).toHaveValue('CLJ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByLabelText('Origin CRS')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    const reopenedOrigin = await screen.findByLabelText('Origin CRS');
+    expect(reopenedOrigin).toHaveValue('WAT');
+  });
+
   it('POSTs a window-mode request with the entered origin/destination/date', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(legResponse());
