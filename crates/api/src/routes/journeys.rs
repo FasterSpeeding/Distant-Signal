@@ -590,6 +590,17 @@ struct JourneyLegDetailResponse {
     /// `blend_darwin_eta`, all reused unchanged; design doc §4). `None`
     /// for an unmatched (`train_subscription_id IS NULL`) leg.
     tracked_train_state: Option<train_tracking::TrackedTrainState>,
+    /// `null` when the leg has no matched train yet, or no known
+    /// origin/destination to check against (nothing to report -- not
+    /// "checked and clean"). See station_skip.rs and this plan's §5.2.
+    leg_skip: Option<LegSkipResponse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegSkipResponse {
+    origin_skipped: bool,
+    destination_skipped: bool,
 }
 
 /// `GET /Journeys/{journeyId}` -- design doc §4. No new backend read-model
@@ -631,6 +642,38 @@ async fn get_journey(
             }
             None => None,
         };
+
+        let leg_skip = match (
+            leg.origin_crs.as_deref(),
+            leg.destination_crs.as_deref(),
+            &tracked_train_state,
+        ) {
+            (Some(origin_crs), Some(destination_crs), Some(state)) => {
+                let match_target = state
+                    .pin_destination_crs
+                    .as_deref()
+                    .or(state.next_calling_point.as_deref());
+                let status = match state.trains_id {
+                    Some(trains_id) => {
+                        crate::data::station_skip::leg_skip_status(
+                            &app.database,
+                            trains_id,
+                            origin_crs,
+                            destination_crs,
+                            match_target,
+                        )
+                        .await
+                    }
+                    None => crate::data::station_skip::LegSkipStatus::default(),
+                };
+                Some(LegSkipResponse {
+                    origin_skipped: status.origin_skipped,
+                    destination_skipped: status.destination_skipped,
+                })
+            }
+            _ => None,
+        };
+
         legs.push(JourneyLegDetailResponse {
             id: leg.id,
             origin_crs: leg.origin_crs,
@@ -642,6 +685,7 @@ async fn get_journey(
             arrive_before: leg.arrive_before,
             match_mode: leg.match_mode,
             tracked_train_state,
+            leg_skip,
         });
     }
 
@@ -1432,5 +1476,121 @@ mod db_tests {
         assert_eq!(train_subscription_id, Some(tracking_id));
 
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-KNOWN-TRAIN").await;
+    }
+
+
+    /// The wire contract for `legSkip`'s two states (this plan's `LegSkipResponse`,
+    /// above) -- `null` for a leg with no matched train yet, an OBJECT (never
+    /// `null`) once one is, regardless of whether either end actually turns
+    /// out to be skipped. The unmatched half reuses the same `window`-mode
+    /// leg shape `get_leg_candidates_a_non_owner_gets_404` already creates.
+    /// The matched half deliberately uses `pin` mode, not `knownTrain`: a
+    /// `knownTrain` leg's `origin_crs`/`destination_crs` are read back off
+    /// `train_subscriptions.pin_origin_crs`/`pin_destination_crs`, which
+    /// `create_subscription_for_train` only populates from the shared
+    /// `trains` row's OWN schedule data (see that function's doc comment) --
+    /// a fresh, fake test UID like `A88888` has none, so those columns (and
+    /// therefore `legSkip`, which requires both CRSes known) would stay
+    /// `NULL`/`None` even though a train IS bound. A `pin`-mode leg's
+    /// `origin_crs`/`destination_crs` come straight off the request instead
+    /// (`create_journey_with_pin_leg`'s own doc comment), so it's the only
+    /// mode that reliably exercises the "matched AND both ends known"
+    /// branch without first seeding a real schedule fixture. No
+    /// `station_samples` row is seeded here, so `leg_skip_status` falls back
+    /// to its own `LegSkipStatus::default()` (both flags `false`) -- fine,
+    /// since this test is only proving the field is object-shaped once
+    /// matched, not exercising the skip-detection logic itself (that's
+    /// `station_skip.rs`'s own `find_leg_skip` unit tests, and
+    /// `crates/notifier/src/skip_check.rs`'s DB-gated tests, for the
+    /// notifier-side twin).
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_journey -- --ignored --test-threads=1`"]
+    async fn get_journey_reports_leg_skip_as_null_when_unmatched_and_an_object_when_matched() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-LEG-SKIP").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, unmatched_created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        let unmatched_journey_id =
+            unmatched_created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = request(
+            router.clone(),
+            format!("/Journeys/{unmatched_journey_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "get unmatched journey: {body:?}");
+        let legs = body["legs"].as_array().expect("legs array");
+        assert_eq!(legs.len(), 1);
+        assert!(
+            legs[0]["trackedTrainState"].is_null(),
+            "an unmatched (window-mode) leg should have no tracked train state: {legs:?}"
+        );
+        assert_eq!(
+            legs[0]["legSkip"],
+            serde_json::Value::Null,
+            "an unmatched leg must report legSkip: null, not an object: {legs:?}"
+        );
+
+        let scheduled_departure = chrono::Utc::now().to_rfc3339();
+        let (_, matched_created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "pin",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "scheduledDeparture": scheduled_departure,
+                    "serviceDate": "2026-09-22"
+                }
+            }),
+        )
+        .await;
+        let matched_journey_id =
+            matched_created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) =
+            request(router, format!("/Journeys/{matched_journey_id}"), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK, "get matched journey: {body:?}");
+        let legs = body["legs"].as_array().expect("legs array");
+        assert_eq!(legs.len(), 1);
+        assert!(
+            legs[0]["trackedTrainState"].is_object(),
+            "a pin-mode leg is bound to a train_subscriptions row from birth, so this should be Some: {legs:?}"
+        );
+        let leg_skip = &legs[0]["legSkip"];
+        assert!(
+            leg_skip.is_object(),
+            "a matched leg must report legSkip as an object, never null, once a train is bound: {leg_skip:?}"
+        );
+        assert!(
+            leg_skip["originSkipped"].is_boolean(),
+            "legSkip: {leg_skip:?}"
+        );
+        assert!(
+            leg_skip["destinationSkipped"].is_boolean(),
+            "legSkip: {leg_skip:?}"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-LEG-SKIP").await;
     }
 }

@@ -1,5 +1,6 @@
 import {
   Badge,
+  Group,
   Table,
   TableScrollContainer,
   TableThead,
@@ -56,9 +57,18 @@ export interface JourneyEndpointNames {
 export function JourneyTimeline({
   stops,
   endpointNames,
+  skippedCrs,
 }: {
   stops: JourneyStop[];
   endpointNames?: JourneyEndpointNames;
+  /** CRS codes of stops on THIS leg that a live Darwin sample reports as
+   * no longer being called at today (§5.2) -- optional, `undefined` for
+   * every caller outside the journey view (single-train tracking has no
+   * leg-scoped skip concept, per Judgment Call 7). At most two entries in
+   * practice (a leg's own origin and/or destination), but this accepts a
+   * plain list rather than two named booleans so `JourneyStopRow` doesn't
+   * need to know which end it's rendering. */
+  skippedCrs?: string[];
 }) {
   const total = stops.length;
   // Genuinely degenerate case (Task 3.6.2 point 4): every stop -- including
@@ -99,6 +109,7 @@ export function JourneyTimeline({
               index={index}
               total={total}
               endpointNames={endpointNames}
+              skippedCrs={skippedCrs}
             />
           ))}
         </TableTbody>
@@ -200,13 +211,21 @@ function JourneyStopRow({
   index,
   total,
   endpointNames,
+  skippedCrs,
 }: {
   stop: JourneyStop;
   index: number;
   total: number;
   endpointNames?: JourneyEndpointNames;
+  skippedCrs?: string[];
 }) {
   const label = journeyStopLabel(stop, index, total, endpointNames);
+  // Leg-scoped, live-Darwin-sample-derived signal (§5.2) -- distinct from
+  // `stop.stopStatus === 'Skipped'` below, which is the pre-existing
+  // whole-route, schedule/TRUST-derived signal. The two can legitimately
+  // agree on the same stop; this one is additive, not a replacement.
+  const isSkippedOnLeg =
+    stop.crs !== null && (skippedCrs ?? []).some((crs) => crs.toUpperCase() === stop.crs?.toUpperCase());
   const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
   const actual = stop.actualDeparture ?? stop.actualArrival;
   // A booked calling point the train did NOT call at today -- computed
@@ -228,12 +247,19 @@ function JourneyStopRow({
   return (
     <TableTr>
       <TableTd>
-        <Text
-          fw={stop.kind === 'Origin' || stop.kind === 'Terminate' ? 700 : 400}
-          c={reached ? undefined : 'dimmed'}
-        >
-          {label}
-        </Text>
+        <Group gap={6} wrap="nowrap">
+          <Text
+            fw={stop.kind === 'Origin' || stop.kind === 'Terminate' ? 700 : 400}
+            c={reached ? undefined : 'dimmed'}
+          >
+            {label}
+          </Text>
+          {isSkippedOnLeg && (
+            <Badge color="red" variant="light" size="sm">
+              Skipped
+            </Badge>
+          )}
+        </Group>
         {caption && (
           <Text size="sm" c="dimmed">
             {caption}

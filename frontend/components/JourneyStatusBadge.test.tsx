@@ -48,6 +48,12 @@ function baseLeg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
     arriveBefore: null,
     matchMode: 'auto',
     trackedTrainState: baseTrackedTrainState(),
+    // Integration (2026-09-22): journey Phase 3 made `legSkip` a REQUIRED
+    // field on `JourneyLegDetail` -- the API always emits it, `null` for a
+    // leg with no matched train yet and an object once one is bound. These
+    // Phase 2 factories predate that field; `null` is the right default
+    // here because nothing in these suites exercises skip detection.
+    legSkip: null,
     ...overrides,
   };
 }

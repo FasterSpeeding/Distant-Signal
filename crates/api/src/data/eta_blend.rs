@@ -26,11 +26,7 @@ pub fn find_darwin_eta(
     service_date: NaiveDate,
 ) -> Option<DateTime<Utc>> {
     let target_destination = pin_destination_crs.or(next_calling_point)?;
-
-    let matched = samples
-        .iter()
-        .find(|d| !d.is_cancelled && d.destination_crs.eq_ignore_ascii_case(target_destination))?;
-
+    let matched = common::match_darwin_departure(samples, Some(target_destination))?;
     let time = NaiveTime::parse_from_str(&matched.estimated, "%H:%M").ok()?;
     london_to_utc(service_date.and_time(time))
 }

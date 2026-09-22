@@ -229,6 +229,30 @@ describe('JourneyTimeline', () => {
     expect(screen.getByText('Did not stop here')).toBeInTheDocument();
   });
 
+  // `skippedCrs` (§5.2's leg-scoped, live-Darwin-sample-derived signal) is
+  // additive to, and independent of, `stopStatus`/`skipSource` above -- it
+  // drives its own "Skipped" badge next to the station name, matched
+  // case-insensitively (`JourneyStopRow`'s own `isSkippedOnLeg`).
+  it('shows a "Skipped" badge for a stop whose CRS is in skippedCrs, matched case-insensitively', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[stop({ crs: 'wok', name: 'Woking', stopStatus: 'Scheduled', skipSource: null })]}
+        skippedCrs={['WOK']}
+      />,
+    );
+    expect(screen.getByText('Skipped')).toBeInTheDocument();
+  });
+
+  // `skippedCrs` is optional -- every caller outside the journey view
+  // (single-train tracking) omits it entirely, and must get no badge at
+  // all, not a crash or a badge rendered for every stop.
+  it('renders no "Skipped" badge when skippedCrs is omitted', () => {
+    renderWithMantine(
+      <JourneyTimeline stops={[stop({ crs: 'WOK', name: 'Woking', stopStatus: 'Scheduled', skipSource: null })]} />,
+    );
+    expect(screen.queryByText('Skipped')).not.toBeInTheDocument();
+  });
+
   // A skipped stop's `delayMinutes` is already `null` by the time it
   // reaches the frontend (`apply_stop_status`'s own documented decision) --
   // this proves the timeline doesn't show a delay badge next to a "did not

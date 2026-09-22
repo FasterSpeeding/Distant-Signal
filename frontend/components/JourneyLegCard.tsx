@@ -52,10 +52,20 @@ export function JourneyLegCard({ journeyId, leg }: { journeyId: number; leg: Jou
     );
   }
 
+  // Leg-scoped skip signal (§5.2) -- at most the leg's own origin/destination
+  // CRS, sourced from Task 4's `legSkip` wire field. `TrainJourney`/
+  // `JourneyTimeline` treat `undefined` and `[]` identically, but this is
+  // always a concrete (possibly empty) array here since `leg.legSkip` is
+  // only `null` when there's nothing to report.
+  const skippedCrs = [
+    leg.legSkip?.originSkipped ? leg.originCrs : null,
+    leg.legSkip?.destinationSkipped ? leg.destinationCrs : null,
+  ].filter((crs): crs is string => crs !== null);
+
   return (
     <Card withBorder>
       <Stack gap="sm">
-        <TrainJourney state={leg.trackedTrainState} />
+        <TrainJourney state={leg.trackedTrainState} skippedCrs={skippedCrs} />
         {hasWindow && (
           <>
             <Button size="xs" variant="default" onClick={() => setChangingTrain((c) => !c)}>
