@@ -73,8 +73,7 @@ export async function OperatorTrendsResults({
       <Paper withBorder p="md">
         <Text c="dimmed">
           Not enough sampled data yet for this operator. If this operator&apos;s lines are TfL-operated, this
-          may never populate -- TfL lines don&apos;t currently feed this rollup (see Judgment Call 5 of
-          docs/superpowers/plans/2026-09-22-operator-overview-phase4-historical-views-plan.md).
+          may never populate -- TfL lines don&apos;t currently feed this rollup.
         </Text>
       </Paper>
     );

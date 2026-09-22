@@ -1856,6 +1856,16 @@ pub async fn daily_stats_for_range(
 /// `= ANY('{}')` is always false, never an error) -- the caller (an
 /// unknown operator code, or a network with zero catalogue lines) needs
 /// no special-case branch for this.
+///
+/// **`sample_cycles` is the one exception to "every column here is a plain
+/// sum"**: it is normalized to the AVERAGE per contributing line
+/// (`SUM(sample_cycles) / COUNT(*)`, `COUNT(*)` here counting the number of
+/// per-line rows -- i.e. lines with a row -- that fed this day) rather than
+/// summed outright. `SPARSE_FLOOR` in the frontend's `toChartPoints` is
+/// calibrated against one line's poll-cycle count; a raw cross-line sum
+/// would scale with however many lines are in `line_ids` (~125 at network
+/// scope) and make the sparse-data gap check effectively never fire. See
+/// Finding 1 of the Phase 4 final-review pass for the full reasoning.
 pub async fn daily_stats_for_range_multi(
     pool: &PgPool,
     line_ids: &[String],
@@ -1865,7 +1875,7 @@ pub async fn daily_stats_for_range_multi(
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT day,
-                SUM(sample_cycles)::bigint AS sample_cycles,
+                (SUM(sample_cycles) / GREATEST(COUNT(*), 1))::bigint AS sample_cycles,
                 SUM(total)::bigint AS total,
                 SUM(delayed)::bigint AS delayed,
                 SUM(cancelled)::bigint AS cancelled,
@@ -1957,7 +1967,11 @@ pub async fn half_hourly_stats_for_range(
 }
 
 /// Cross-line sibling of `half_hourly_stats_for_range` -- same relationship
-/// `daily_stats_for_range_multi` has to `daily_stats_for_range`.
+/// `daily_stats_for_range_multi` has to `daily_stats_for_range`, including
+/// the same `sample_cycles` normalization: `SUM(sample_cycles) / COUNT(*)`
+/// (average per contributing line for this bucket, `COUNT(*)` counting the
+/// per-line rows that fed it), not a raw sum -- see
+/// `daily_stats_for_range_multi`'s doc comment for why.
 pub async fn half_hourly_stats_for_range_multi(
     pool: &PgPool,
     line_ids: &[String],
@@ -1967,7 +1981,7 @@ pub async fn half_hourly_stats_for_range_multi(
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT half_hour_start,
-                SUM(sample_cycles)::bigint AS sample_cycles,
+                (SUM(sample_cycles) / GREATEST(COUNT(*), 1))::bigint AS sample_cycles,
                 SUM(total)::bigint AS total,
                 SUM(delayed)::bigint AS delayed,
                 SUM(cancelled)::bigint AS cancelled,
@@ -2089,6 +2103,18 @@ pub async fn sub_daily_stats_for_range(
 /// "sum across lines, then re-bucket" and "re-bucket, then sum across
 /// lines" for a plain SUM aggregate, so the single combined query is
 /// preferred for one round trip instead of two.
+///
+/// **`sample_cycles` is normalized here too, but by a different
+/// denominator than its two siblings above**: `SUM(sample_cycles) /
+/// COUNT(DISTINCT line_id)`, not `/ COUNT(*)`. This query's `GROUP BY` can
+/// combine BOTH several half-hourly sub-buckets from one line AND several
+/// lines into a single output row, so `COUNT(*)` here would count
+/// half-hour rows, not lines, and would under-count the true per-line
+/// average whenever a bucket legitimately aggregates several half-hours of
+/// real coverage from one line. Dividing by the number of distinct lines
+/// keeps the same "average coverage per contributing line" meaning
+/// `daily_stats_for_range_multi`'s doc comment describes, without
+/// double-penalizing wider sub-daily buckets.
 pub async fn sub_daily_stats_for_range_multi(
     pool: &PgPool,
     line_ids: &[String],
@@ -2100,7 +2126,7 @@ pub async fn sub_daily_stats_for_range_multi(
     let rows = sqlx::query(
         "SELECT
             date_bin($4 * INTERVAL '1 minute', half_hour_start, TIMESTAMPTZ '2000-01-01T00:00:00Z') AS half_hour_start,
-            SUM(sample_cycles)::bigint AS sample_cycles,
+            (SUM(sample_cycles) / GREATEST(COUNT(DISTINCT line_id), 1))::bigint AS sample_cycles,
             SUM(total)::bigint AS total,
             SUM(delayed)::bigint AS delayed,
             SUM(cancelled)::bigint AS cancelled,
@@ -4243,7 +4269,11 @@ mod tests {
         let row = &rows[0];
         assert_eq!(row.total, 180, "100 + 80, TEST-MULTI-OTHER excluded");
         assert_eq!(row.delayed, 8);
-        assert_eq!(row.sample_cycles, 18);
+        // sample_cycles is normalized to the average per contributing line,
+        // not a raw sum (Finding 1 of the Phase 4 final-review pass): both
+        // TEST-MULTI-A and TEST-MULTI-B have a row for this day, so
+        // COUNT(*) = 2, and (10 + 8) / 2 = 9 -- not the raw sum, 18.
+        assert_eq!(row.sample_cycles, 9);
         assert_eq!(row.delay_minutes_sum, 180.0);
     }
 

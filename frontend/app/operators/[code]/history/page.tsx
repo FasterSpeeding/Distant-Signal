@@ -15,9 +15,14 @@ import { OperatorTrendsResults } from './OperatorTrendsResults';
 export const revalidate = 0;
 
 /** "TfL" has no `tocs` row (it's a synthetic operator tag, not a real
- * ATOC code -- see spec Open Question 2) -- special-cased the same literal
- * way `AllLinesTable.tsx` already does, since there is no Rust->TypeScript
- * constant bridge to import `common::TFL_OPERATOR` from here. */
+ * ATOC code -- see spec Open Question 2), so it needs an explicit
+ * early-return here rather than a `tocs`-lookup-with-fallback: there is no
+ * Rust->TypeScript constant bridge to import `common::TFL_OPERATOR` from
+ * this file. `AllLinesTable.tsx` reaches the same displayed value a
+ * different way -- it has no literal `code === 'TfL'` branch at all, just a
+ * `nameByCode` map built from `tocs` with a fallback to the raw code when a
+ * code has no map entry, which happens to read as "TfL" only because the
+ * code and the desired display string are the same string. */
 async function resolveOperatorName(code: string): Promise<string> {
   if (code === 'TfL') return 'TfL';
   try {
@@ -68,8 +73,8 @@ export default async function OperatorHistoryPage({
 
   return (
     <Stack p="lg" gap="md">
-      <TextLink href={`/operators/${code}`} underline="always">
-        Back to operator
+      <TextLink href="/operators" underline="always">
+        Back to operators
       </TextLink>
       <Title order={1}>History: {name}</Title>
       <HistoryRangePicker basePath={basePath} preset={range.preset} from={range.from} to={range.to} />
