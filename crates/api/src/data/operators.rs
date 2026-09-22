@@ -68,6 +68,18 @@ pub async fn all_operator_rollups(
 
     let mut out = Vec::with_capacity(tocs.len() + 1);
     for toc in &tocs {
+        // Defensive guard (final whole-branch review, Fix 12): if `tocs`
+        // ever somehow contained a literal `atoc_code = "TfL"` row
+        // (implausible from the real RDM feed, but not structurally
+        // prevented by this table), this loop must not emit a second
+        // `code: "TfL"` entry alongside the synthetic one appended below --
+        // two rows with the same code would be a duplicate React `key` on
+        // the frontend list and make `operator_rollup`'s `.find()` silently
+        // return only the first. The synthetic row below is always the sole
+        // source of a `"TfL"` entry.
+        if toc.code == common::TFL_OPERATOR {
+            continue;
+        }
         let matching: Vec<&queries::LineStatusRow> = rows
             .iter()
             .filter(|row| row.operators.iter().any(|op| op == &toc.code))
@@ -79,13 +91,7 @@ pub async fn all_operator_rollups(
 
     let tfl_matching: Vec<&queries::LineStatusRow> = rows
         .iter()
-        .filter(|row| {
-            row.operators.iter().any(|op| op == common::TFL_OPERATOR)
-                || row
-                    .operators
-                    .iter()
-                    .any(|op| TFL_ADJACENT_OPERATORS.contains(&op.as_str()))
-        })
+        .filter(|row| operator_matches_tfl_rollup(&row.operators))
         .collect();
     if let Some(rollup) = build_rollup(
         common::TFL_OPERATOR.to_string(),
@@ -96,6 +102,26 @@ pub async fn all_operator_rollups(
     }
 
     Ok(out)
+}
+
+/// Whether one row's `operators` list should fold into the synthetic
+/// `"TfL"` rollup built by [`all_operator_rollups`]: literally `"TfL"`
+/// itself, or any of [`TFL_ADJACENT_OPERATORS`] (a London Overground /
+/// Elizabeth line catalogue row that ALSO counts toward "TfL"'s rollup --
+/// see that constant's own doc comment for the one-directional reasoning).
+///
+/// Extracted as a plain, synchronous function -- unlike
+/// [`all_operator_rollups`], which needs a `PgPool` -- specifically so this,
+/// one of the two genuinely novel pieces of logic in this module, can be
+/// unit tested directly rather than only reachable through a DB-gated
+/// integration test. See this module's `tfl_rollup_matching_tests` below,
+/// and this plan's closing "Note for Phase 4" on why this guarantee matters
+/// beyond this phase.
+fn operator_matches_tfl_rollup(operators: &[String]) -> bool {
+    operators.iter().any(|op| op == common::TFL_OPERATOR)
+        || operators
+            .iter()
+            .any(|op| TFL_ADJACENT_OPERATORS.contains(&op.as_str()))
 }
 
 /// Single-operator version of [`all_operator_rollups`], for
@@ -135,10 +161,27 @@ async fn public_line_status_rows(
     let mut ids: Vec<String> = catalogue_lines.iter().map(|l| l.id.clone()).collect();
     ids.extend(
         tfl.into_iter()
-            .filter(|line| common::nr_line_id_for_tfl(&line.id).is_none())
+            .filter(|line| is_unmerged_tfl_line(&line.id))
             .map(|line| line.id),
     );
     queries::line_status_for_ids(pool, &ids).await
+}
+
+/// Whether a TfL line id has no NR catalogue counterpart it should be
+/// merged into instead -- the same exclusion [`public_line_status_rows`]'s
+/// own doc comment describes, and the inverse of
+/// `routes::lines::is_merged_into_nr_line`, which applies the identical
+/// check on `/public/lines` for the same reason (never double-count a
+/// merged TfL line alongside its NR catalogue counterpart).
+///
+/// Extracted as a plain, synchronous wrapper around
+/// `common::nr_line_id_for_tfl` -- the second of this module's two novel
+/// pieces of logic, and the one this plan's closing "Note for Phase 4"
+/// explicitly says a later phase depends on -- so it can be unit tested
+/// directly without a `queries::TflLineSummary` or a database. See this
+/// module's `unmerged_tfl_line_tests` below.
+fn is_unmerged_tfl_line(line_id: &str) -> bool {
+    common::nr_line_id_for_tfl(line_id).is_none()
 }
 
 /// Rolls up one operator's matching lines into an [`OperatorRollup`], or
@@ -366,5 +409,89 @@ mod build_rollup_tests {
         let rollup =
             build_rollup("SW".to_string(), "South Western Railway".to_string(), &[&a]).unwrap();
         assert_eq!(rollup.sample_stats, None);
+    }
+}
+
+#[cfg(test)]
+mod tfl_rollup_matching_tests {
+    use super::*;
+
+    fn ops(codes: &[&str]) -> Vec<String> {
+        codes.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_row_carrying_the_literal_tfl_code_matches() {
+        assert!(operator_matches_tfl_rollup(&ops(&["TfL"])));
+    }
+
+    #[test]
+    fn a_row_carrying_london_overground_matches() {
+        assert!(operator_matches_tfl_rollup(&ops(&["LO"])));
+    }
+
+    #[test]
+    fn a_row_carrying_elizabeth_line_matches() {
+        assert!(operator_matches_tfl_rollup(&ops(&["XR"])));
+    }
+
+    #[test]
+    fn a_row_carrying_a_real_non_tfl_adjacent_operator_does_not_match() {
+        // "SW" (South Western Railway) is a real ATOC code with no TfL
+        // adjacency at all -- the negative case this predicate must get
+        // right, or every real operator would silently fold into "TfL".
+        assert!(!operator_matches_tfl_rollup(&ops(&["SW"])));
+    }
+
+    #[test]
+    fn a_row_with_several_operators_matches_if_any_one_is_tfl_adjacent() {
+        assert!(operator_matches_tfl_rollup(&ops(&["SW", "XR"])));
+    }
+}
+
+#[cfg(test)]
+mod unmerged_tfl_line_tests {
+    use super::*;
+
+    #[test]
+    fn a_tfl_line_with_an_nr_counterpart_is_not_unmerged() {
+        // Real example from `common::TFL_TO_NR_LINE_ID`, the same fixture
+        // `routes::lines::is_merged_into_nr_line`'s own tests use --
+        // `tfl-elizabeth` merges into the NR catalogue's `elizabeth-line`.
+        assert!(!is_unmerged_tfl_line("tfl-elizabeth"));
+    }
+
+    #[test]
+    fn an_overground_tfl_line_with_an_nr_counterpart_is_not_unmerged() {
+        assert!(!is_unmerged_tfl_line("tfl-mildmay"));
+    }
+
+    #[test]
+    fn a_tfl_line_with_no_nr_counterpart_is_unmerged() {
+        // Real example with no entry in `common::TFL_TO_NR_LINE_ID` -- the
+        // same fixture `routes::lines::is_merged_into_nr_line`'s own
+        // negative-case test uses.
+        assert!(is_unmerged_tfl_line("tfl-northern"));
+    }
+}
+
+#[cfg(test)]
+mod tfl_adjacent_operators_drift_guard_tests {
+    use super::*;
+
+    #[test]
+    fn matches_the_frontends_own_copy_of_this_list() {
+        // Guards exactly the kind of duplication
+        // `crates/common/src/lib.rs`'s `severity_rank_tests::
+        // rank_matches_the_frontends_group_table` already guards for a
+        // different pair of duplicated constants: this Rust-side array has
+        // no shared-constant bridge to
+        // `frontend/app/lines/AllLinesTable.tsx`'s own
+        // `TFL_ADJACENT_OPERATORS`, so drift between the two must be a test
+        // failure here rather than a silently divergent operator rollup. If
+        // this ever needs to change, update
+        // `frontend/app/lines/AllLinesTable.tsx`'s `TFL_ADJACENT_OPERATORS`
+        // in lockstep.
+        assert_eq!(TFL_ADJACENT_OPERATORS, ["LO", "XR"]);
     }
 }
