@@ -569,9 +569,28 @@ families, and why each does or doesn't fit this app's actual shape:
   separate, harder "realtime-aware routing" extension neither this
   document nor a first build should attempt — see §4's MVP scope).
 
-**Recommendation: build the MVP on Connection Scan Algorithm, computed
-from a per-day connections array derived directly from §0.2's already-existing
-`ScheduleIndex` resolve, not RAPTOR/McRAPTOR.** Reasoning:
+**Superseded by product decisions below (recorded 2026-09-22) — kept for its
+reasoning, not its conclusion.** The product owner has since confirmed
+multi-criteria ranking IS a day-one requirement, not deferred to Phase 2
+(§7 Q4, resolved). This section's original recommendation ("CSA only, defer
+RAPTOR") no longer describes v1. **Revised recommendation: build BOTH
+algorithms from day one, adopting the sibling `Distant-Signal-MCP` project's
+own proven shape (see the Addendum above) — Connection Scan for a single
+`results: 'fastest'` earliest-arrival answer, RAPTOR for a `results:
+'options'` Pareto set trading arrival time against interchange count — and
+use their required agreement on earliest-arrival as the primary correctness
+mechanism (Addendum, point 3), since that mechanism is now available from
+day one rather than "once a second algorithm eventually gets built."** The
+reasoning in points 1-3 below for why CSA fits this codebase's existing
+"transient, rebuilt-per-cycle, never resident" posture still holds and still
+applies to CSA's own role — RAPTOR is additive, not a replacement, and its
+own connections-array input is the *same* structure CSA consumes (per the
+Addendum, both algorithms share one connections build in the sibling
+project). This does mean v1 now needs the sibling project's `raptor.ts`-shaped
+round-based search too, not just `csa.ts`-shaped — a materially larger v1
+than this section originally scoped, reflected in §4's revised MVP below.
+
+**Original CSA-only reasoning, preserved for context:**
 
 1. CSA's input requirement is the smallest possible delta on top of data
    this app already produces every 30 minutes — no route-pattern grouping
@@ -713,13 +732,21 @@ change up front on projected need alone.
 
 ## 4. Proposed MVP scope, and what's deliberately deferred
 
+**Revised 2026-09-22 per three product decisions** (§7 Q2, Q4, Q5 all
+resolved) — v1 is materially larger than this section's original draft.
+Two of the three original scope cuts below are now reversed; only the
+network-scope cut (GB National Rail only) was confirmed as originally
+recommended.
+
 Real journey planners (this document takes Citymapper/Google Maps transit
 mode as the honest reference point for "full generality," not a strawman)
 support same-day and future-day search, walking transfers between any two
 stations within a radius, multi-criteria ranking, accessibility
-constraints, live disruption-aware re-routing, and fare information. Almost
-none of that is realistic for a first slice here, and pretending otherwise
-would understate the real scope. Proposed MVP, deliberately narrow:
+constraints, live disruption-aware re-routing, and fare information. The
+product owner has now confirmed two of those ARE day-one requirements here
+(walking transfers, multi-criteria ranking) — the remaining cuts below are
+still real and still narrow the problem meaningfully, just not as far as
+originally proposed:
 
 - **Single service day only.** The user picks one date; the planner
   searches only within that calendar day (matching `journey_legs.service_date`'s
@@ -727,31 +754,40 @@ would understate the real scope. Proposed MVP, deliberately narrow:
   A journey that would need to continue past midnight into the next
   calendar day (a genuinely late overnight service) is out of scope for
   v1 — flagged, not silently handled by an incorrect date rollover.
-- **Ranked by earliest arrival only** — no multi-criteria Pareto set
-  (fewest changes vs. fastest vs. cheapest) in v1. Return the single
-  earliest-arrival itinerary CSA finds under the interchange cap below,
-  plus (cheaply, as a byproduct of the same scan) one or two *alternative*
-  itineraries if they exist with a different, also-reasonable interchange
-  pattern — not a full ranked list.
-  the CSA scan.
+- **RESOLVED — multi-criteria ranking IS a v1 requirement (§7 Q4).**
+  Reversing this document's original recommendation: v1 must return both a
+  `results: 'fastest'` single earliest-arrival answer (Connection Scan) AND
+  a `results: 'options'` Pareto set trading arrival time against
+  interchange count (RAPTOR), per the Addendum's `Distant-Signal-MCP`
+  precedent. §1's engine recommendation is updated accordingly — build
+  both algorithms from day one, use their required agreement on
+  earliest-arrival as the correctness mechanism. This is the single
+  largest scope increase from the original draft: v1 now needs a
+  round-based RAPTOR search, not just a CSA sweep.
 - **A hard cap of at most 2 interchanges** (i.e., at most 3 legs) per
-  computed itinerary. Bounds both the search space (§3) and the
-  presentation complexity — a route needing 4+ changes is a real
-  possibility on this network but a poor first-slice UX target, and
-  capping this also caps how large a "no scored answer, but here are your
-  own two closest options" degraded response looks (§4's error case,
-  below).
-- **Same-CRS interchange only — no walking transfers between differently-named
-  stations in v1.** This is the single biggest scope cut, made explicitly
-  because §0.4 confirms there is no walking-transfer data model in this
-  app at all today; building one (even a minimal curated table) is real,
-  separable work this MVP should not be blocked on. The practical
-  consequence: a route that a human would obviously take via, say, a
-  cross-London Underground hop between two National Rail termini is
-  **not findable by this MVP** — it will either find a same-CRS-only
-  all-rail alternative (often slower) or report no route found. This is a
-  real, honestly-flagged gap, not a hidden one (§4's UX must say so, not
-  silently omit the better route).
+  computed itinerary, still recommended unchanged — bounds both the search
+  space (§3) and presentation complexity for the `'fastest'` mode; RAPTOR's
+  own round count for `'options'` mode should use the same cap (per the
+  sibling project's `PLAN_MAX_CHANGES` config precedent, Addendum) rather
+  than a separate, undiscussed limit.
+- **RESOLVED — walking transfers between differently-named stations ARE a
+  v1 requirement (§7 Q2).** Reversing this document's original
+  recommendation: v1 must be able to route via a cross-London (or
+  equivalent) Underground/walk/bus/tram/ferry hop between two different
+  CRS codes, not same-CRS interchange only. Per the Addendum, this is
+  buildable from the sibling project's proven `ALF` fixed-links approach —
+  **new CIF ingestion work now pulled into v1** (this app's
+  `schedule-reference` delivery-discovery mechanism needs extending to also
+  fetch the `ALF` file member, and a new parser + `fixed_links`-shaped
+  table, mirroring `crates/schedule-reference/src/cif/alf.ts`'s reference
+  shape — mode, from-CRS, to-CRS, minutes, validity window, day mask). This
+  is real, non-trivial new scope, not a small addition — it needs its own
+  task(s) in a Phase 1 plan, not a "quick data model tweak" framing.
+  Same-CRS interchange (MSN column 65, also not yet parsed by this app's
+  ingestion per the Addendum) is a smaller, still-necessary companion
+  piece — both interchange data sources are needed together for v1's
+  interchange validity checking (§0's baseline "Interchange" section, once
+  written into this doc's own §0, mirrors the Addendum's findings).
 - **Optional waypoints are ordered, not a "visit these in any order"
   problem.** The user-supplied waypoint list is treated as fixed
   sub-journey boundaries — start→waypoint₁, waypoint₁→waypoint₂, ...,
@@ -916,31 +952,27 @@ document should assume away.
    miss real routes too often in practice? Not resolved here — flagged as
    the single biggest architecture decision this feature raises, deferred
    until real usage data exists per §3's own recommended sequencing.
-2. **Walking transfers between differently-named stations** — is a
-   same-CRS-only v1 (§4) an acceptable first slice, given it will visibly
-   fail to find some routes a human would obviously take (e.g. via an
-   Underground hop between two mainline termini)? If not, this needs its
-   own separate design pass for a curated or radius-derived transfer table
-   (§0.4) before v1, materially expanding scope.
+2. ~~**Walking transfers between differently-named stations**~~ —
+   **RESOLVED 2026-09-22 (product owner): required in v1, not deferred.**
+   Same-CRS-only is NOT acceptable as v1. Per the Addendum, this is
+   buildable via the sibling project's proven `ALF` fixed-links approach —
+   real, new CIF ingestion work, now a Phase 1 task, not a later-phase
+   design pass (§4).
 3. **Naming** — "Plan a trip" / "Route planner," or different
    product-facing language, and does the API surface live under a new
    `/Trips/*` prefix (§5.2) or somewhere under the existing `/Journeys/*`
    namespace? No existing precedent settles this; flagged the same way the
    two parent specs flagged their own "Journey" naming collisions.
-4. **Multi-criteria ranking priority** — is "earliest arrival only" (§4)
-   an acceptable v1, or does the product owner consider "fewest changes"
-   or "shortest total travel time" a day-one requirement rather than a
-   Phase 2 add-on? Affects whether McRAPTOR-style Pareto ranking should be
-   pulled forward into the MVP (§1's engine recommendation would likely
-   need revisiting if so).
-5. **Underground/NI/ROI expectations** — does the product owner understand
-   and accept that this feature, as scoped, **cannot** route across the
-   London Underground network or within Northern Ireland/the Republic of
-   Ireland at all (§0.6), given those networks have no calling-point-level
-   data in this codebase today? If cross-network routing (e.g. "GB
-   National Rail to a Belfast-area station") is an expected day-one
-   capability, this is a materially larger, separately-scoped project,
-   not an extension of this MVP.
+4. ~~**Multi-criteria ranking priority**~~ — **RESOLVED 2026-09-22 (product
+   owner): required in v1, not deferred.** "Earliest arrival only" is NOT
+   acceptable as v1 — the product owner considers multi-criteria ranking a
+   day-one requirement. §1's engine recommendation has been revised: build
+   both CSA (`'fastest'`) and RAPTOR (`'options'`) from day one (§4), per
+   the Addendum's sibling-project precedent.
+5. ~~**Underground/NI/ROI expectations**~~ — **RESOLVED 2026-09-22 (product
+   owner): GB National Rail only for v1 is accepted.** No Underground/DLR/tram
+   routing, no Northern Ireland/Republic of Ireland routing, in v1 — matches
+   this document's original recommendation, unchanged (§4, §0.6).
 6. **Live-disruption honesty in the UI** — confirm the recommended framing
    ("this is a scheduled plan, not live-confirmed," mirroring the existing
    CIF-fallback picker's own disclosed-staleness copy) is acceptable,
@@ -956,6 +988,14 @@ document should assume away.
 ---
 
 ## 8. Proposed phased delivery plan
+
+**Note (2026-09-22): the phasing below predates the three product decisions
+resolved in §4/§7 above and needs revisiting by whoever writes the actual
+implementation plan.** In particular, walking transfers (ALF ingestion) and
+RAPTOR (multi-criteria ranking) — both originally sketched as later phases
+below — are now confirmed v1/Phase-1 requirements, not deferred. Read this
+section for its sequencing logic (what depends on what) rather than trusting
+its phase boundaries as still-current.
 
 **Phase 0 — Connections-array extraction + CSA engine, no product surface
 yet.** A new pure function (structurally sibling to `departures_by_crs`/
