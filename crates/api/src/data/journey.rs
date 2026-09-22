@@ -226,6 +226,27 @@ pub struct JourneyStop {
     /// [`SkipSource`]'s own doc comment for why this lives here rather than
     /// nested inside `stop_status` itself.
     pub skip_source: Option<SkipSource>,
+    /// The CURRENT platform, `None` for every stop except (today) the
+    /// ORIGIN -- see `build_journey_stops`'s `platform`/`planned_platform`
+    /// params for why: Darwin/LDBWS's live departure board only ever
+    /// reports a station's OWN platform for a service actually departing
+    /// FROM it, never a per-calling-point platform for the rest of the
+    /// route (`poller-ldbws/src/schema.rs`'s `RdmCallingPoint` carries no
+    /// platform field at all), so this codebase genuinely has no platform
+    /// signal to show for any other calling point. `None` here means
+    /// exactly that -- "not known" -- never a fabricated value, same
+    /// posture as every other `Option` field on this struct.
+    pub platform: Option<String>,
+    /// The EARLIEST platform observed for the origin call, reconstructing
+    /// "planned" the same way `common::StationDeparture.planned_platform`
+    /// does -- see that field's own doc comment. `None` under the same
+    /// conditions as `platform` above.
+    pub planned_platform: Option<String>,
+    /// `true` only when both `platform` and `planned_platform` are known
+    /// AND differ -- see `api::render::station_departure_json`'s identical
+    /// derivation for `StationDeparture`. Always `false` for a stop with no
+    /// platform signal at all (there is nothing to have changed).
+    pub platform_changed: bool,
 }
 
 impl JourneyStop {
@@ -270,6 +291,12 @@ impl JourneyStop {
             // `build_journey_stops` -- see that field's own doc comment.
             stop_status: StopStatus::Unknown,
             skip_source: None,
+            // Overwritten for the origin stop by `apply_origin_platform`,
+            // later in `build_journey_stops` -- see that function's own
+            // doc comment.
+            platform: None,
+            planned_platform: None,
+            platform_changed: false,
         }
     }
 }
@@ -344,6 +371,15 @@ fn apply_station_names(stops: &mut [JourneyStop], names: &HashMap<String, String
 /// snapshot) is a completely ordinary input -- every stop's `stop_status`
 /// then depends on the TRUST signal alone, same as before this parameter
 /// existed.
+///
+/// `platform`/`planned_platform` are the shared `trains` row's own captured
+/// origin-platform snapshot (`trains.platform`/`planned_platform`, read off
+/// `TrackedTrainState`/`PublicTrainState`'s `schedule_platform`/
+/// `schedule_planned_platform`) -- applied to the ORIGIN stop only by
+/// `apply_origin_platform`, below; see that function's own doc comment for
+/// why every other stop's `platform` genuinely cannot be known from this
+/// codebase's data sources today.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_journey_stops(
     pool: &PgPool,
     trains_id: i64,
@@ -352,6 +388,8 @@ pub async fn build_journey_stops(
     calling_points_json: Option<&serde_json::Value>,
     current_delay_minutes: Option<i32>,
     skipped_stations: &[String],
+    platform: Option<&str>,
+    planned_platform: Option<&str>,
 ) -> anyhow::Result<Option<Vec<JourneyStop>>> {
     let mut stops: Vec<JourneyStop> = match calling_points_json {
         Some(json) => {
@@ -405,6 +443,9 @@ pub async fn build_journey_stops(
                     delay_minutes: None,
                     stop_status: StopStatus::Unknown,
                     skip_source: None,
+                    platform: None,
+                    planned_platform: None,
+                    platform_changed: false,
                 })
                 .collect();
 
@@ -430,6 +471,9 @@ pub async fn build_journey_stops(
                     delay_minutes: None,
                     stop_status: StopStatus::Unknown,
                     skip_source: None,
+                    platform: None,
+                    planned_platform: None,
+                    platform_changed: false,
                 });
             }
             built
@@ -450,6 +494,8 @@ pub async fn build_journey_stops(
     overlay_movement_events(&mut stops, &events);
 
     apply_stop_status(&mut stops, skipped_stations);
+
+    apply_origin_platform(&mut stops, platform, planned_platform);
 
     apply_delay_estimates(&mut stops, current_delay_minutes);
 
@@ -508,7 +554,8 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
                 // calling point per `schedule_query::parse::parse_calling_point`)
                 // -- keeps the old behavior unchanged: there is no real
                 // "booked but skipped" stop being misrepresented there.
-                let booked_calling_point = stop.kind == Some(schedule_query::CallingPointKind::Intermediate)
+                let booked_calling_point = stop.kind
+                    == Some(schedule_query::CallingPointKind::Intermediate)
                     && stop.scheduled_arrival.is_some()
                     && stop.scheduled_departure.is_some();
                 if !booked_calling_point {
@@ -596,7 +643,8 @@ fn apply_stop_status(stops: &mut [JourneyStop], skipped_stations: &[String]) {
     for stop in stops.iter_mut() {
         stop.skip_source = None;
 
-        let booked_calling_point = stop.kind == Some(schedule_query::CallingPointKind::Intermediate)
+        let booked_calling_point = stop.kind
+            == Some(schedule_query::CallingPointKind::Intermediate)
             && stop.scheduled_arrival.is_some()
             && stop.scheduled_departure.is_some();
         if !booked_calling_point {
@@ -640,6 +688,53 @@ fn apply_stop_status(stops: &mut [JourneyStop], skipped_stations: &[String]) {
             stop.delay_minutes = None;
         }
     }
+}
+
+/// Attaches the shared `trains` row's captured origin-platform snapshot
+/// (`trains.platform`/`planned_platform`, see `build_journey_stops`'s own
+/// `platform`/`planned_platform` params) to the ORIGIN calling point only --
+/// every other stop is left with `platform: None`, `planned_platform: None`,
+/// `platform_changed: false`, the values every freshly-built `JourneyStop`
+/// already carries. This is a real, honest data-availability limit, not a
+/// shortcut: Darwin/LDBWS's live departure board only ever reports a
+/// station's OWN platform for a service actually departing FROM it, never a
+/// per-calling-point platform for the rest of the route -- see
+/// `common::StationDeparture.platform`'s own doc comment and
+/// `poller-ldbws/src/schema.rs`'s `RdmCallingPoint`, which carries no
+/// platform field at all. There is no live cross-station correlation
+/// system in this codebase that could source platform for any other stop
+/// without either guessing (risky for a travel app -- a wrong platform is
+/// worse than none) or a materially larger feature (continuous per-station
+/// polling correlated across a train's whole route).
+///
+/// A no-op when `platform` is `None` (nothing was ever captured, e.g. a
+/// CIF-picker/manual-entry pin, or an NR-primary subscription with no
+/// departure-board pin at all) -- every stop is simply left as it already
+/// is. Matches ONLY the FIRST stop whose `kind` is
+/// [`schedule_query::CallingPointKind::Origin`] (there is at most one by
+/// construction, but `.find` rather than asserting that, for the same
+/// defensive reason every other pass in this module tolerates an
+/// unexpected shape rather than panicking on it).
+fn apply_origin_platform(
+    stops: &mut [JourneyStop],
+    platform: Option<&str>,
+    planned_platform: Option<&str>,
+) {
+    let Some(platform) = platform else {
+        return;
+    };
+    let Some(origin) = stops
+        .iter_mut()
+        .find(|stop| stop.kind == Some(schedule_query::CallingPointKind::Origin))
+    else {
+        return;
+    };
+    origin.platform = Some(platform.to_string());
+    origin.planned_platform = planned_platform.map(str::to_string);
+    // Mirrors `api::render::station_departure_json`'s identical derivation
+    // for `StationDeparture` -- see that function's own comment.
+    origin.platform_changed =
+        origin.planned_platform.is_some() && origin.planned_platform.as_deref() != Some(platform);
 }
 
 /// The instant a movement event actually describes -- its reported
@@ -1164,6 +1259,9 @@ mod tests {
             delay_minutes: None,
             stop_status: StopStatus::Unknown,
             skip_source: None,
+            platform: None,
+            planned_platform: None,
+            platform_changed: false,
         }
     }
 
@@ -1368,18 +1466,28 @@ mod tests {
     #[test]
     fn tiploc_to_crs_to_name_resolves_end_to_end_for_a_stop_with_only_a_tiploc() {
         let service_date: NaiveDate = "2026-09-17".parse().unwrap();
-        let tiploc_to_crs: HashMap<String, String> =
-            [("KNGX".to_string(), "KGX".to_string())].into_iter().collect();
+        let tiploc_to_crs: HashMap<String, String> = [("KNGX".to_string(), "KGX".to_string())]
+            .into_iter()
+            .collect();
         let names: HashMap<String, String> =
-            [("KGX".to_string(), "LONDON KINGS CROSS".to_string())].into_iter().collect();
+            [("KGX".to_string(), "LONDON KINGS CROSS".to_string())]
+                .into_iter()
+                .collect();
 
         let raw = vec![raw_cp("KNGX")];
         let mut stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
-        assert_eq!(stops[0].name, None, "name is not yet resolved by stops_from_calling_points alone");
+        assert_eq!(
+            stops[0].name, None,
+            "name is not yet resolved by stops_from_calling_points alone"
+        );
 
         apply_station_names(&mut stops, &names);
 
-        assert_eq!(stops[0].crs.as_deref(), Some("KGX"), "the tiploc->crs half of the join");
+        assert_eq!(
+            stops[0].crs.as_deref(),
+            Some("KGX"),
+            "the tiploc->crs half of the join"
+        );
         assert_eq!(
             stops[0].name.as_deref(),
             Some("LONDON KINGS CROSS"),
@@ -2014,6 +2122,81 @@ mod tests {
 
         assert_eq!(stops[0].stop_status, StopStatus::Unknown);
         assert_eq!(stops[0].skip_source, None);
+    }
+
+    #[test]
+    fn apply_origin_platform_attaches_platform_to_the_origin_stop_only() {
+        use schedule_query::CallingPointKind::{Intermediate, Origin, Terminate};
+        let mut stops = vec![
+            stop_at("WAT", Origin),
+            stop_at("CLJ", Intermediate),
+            stop_at("WOK", Terminate),
+        ];
+
+        apply_origin_platform(&mut stops, Some("6"), Some("6"));
+
+        assert_eq!(stops[0].platform, Some("6".to_string()));
+        assert_eq!(stops[0].planned_platform, Some("6".to_string()));
+        assert!(!stops[0].platform_changed);
+        // Every other stop is genuinely unknown -- Darwin has no
+        // per-calling-point platform signal for the rest of the route.
+        assert_eq!(stops[1].platform, None);
+        assert_eq!(stops[2].platform, None);
+    }
+
+    #[test]
+    fn apply_origin_platform_flags_a_changed_platform_with_a_non_colour_boolean_signal() {
+        use schedule_query::CallingPointKind::Origin;
+        let mut stops = vec![stop_at("WAT", Origin)];
+
+        apply_origin_platform(&mut stops, Some("9"), Some("6"));
+
+        assert_eq!(stops[0].platform, Some("9".to_string()));
+        assert_eq!(stops[0].planned_platform, Some("6".to_string()));
+        assert!(stops[0].platform_changed);
+    }
+
+    #[test]
+    fn apply_origin_platform_is_a_no_op_when_no_platform_was_ever_captured() {
+        use schedule_query::CallingPointKind::Origin;
+        let mut stops = vec![stop_at("WAT", Origin)];
+
+        apply_origin_platform(&mut stops, None, None);
+
+        assert_eq!(stops[0].platform, None);
+        assert_eq!(stops[0].planned_platform, None);
+        assert!(!stops[0].platform_changed);
+    }
+
+    #[test]
+    fn apply_origin_platform_leaves_every_stop_alone_when_there_is_no_origin_stop() {
+        // Defensive: a stop list built from the fallback
+        // `schedule_destination_departures` source can legitimately have no
+        // `Origin`-kinded stop (see `build_journey_stops`'s fallback
+        // branch) -- this must not panic, and must leave every stop
+        // untouched.
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![stop_at("CLJ", Intermediate)];
+
+        apply_origin_platform(&mut stops, Some("6"), Some("6"));
+
+        assert_eq!(stops[0].platform, None);
+    }
+
+    #[test]
+    fn apply_origin_platform_first_seen_platform_is_not_flagged_as_changed() {
+        // No history yet (`planned_platform: None`) -- must not read as
+        // "changed", same posture as
+        // `station_departure_json_platform_known_only_currently_is_not_flagged_as_changed`
+        // in `render.rs`.
+        use schedule_query::CallingPointKind::Origin;
+        let mut stops = vec![stop_at("WAT", Origin)];
+
+        apply_origin_platform(&mut stops, Some("6"), None);
+
+        assert_eq!(stops[0].platform, Some("6".to_string()));
+        assert_eq!(stops[0].planned_platform, None);
+        assert!(!stops[0].platform_changed);
     }
 
     /// The inverse, and the reason a "has it finished?" check can't just
@@ -2796,6 +2979,8 @@ mod db_tests {
             Some(&calling_points),
             None,
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -2908,6 +3093,8 @@ mod db_tests {
             Some(&calling_points),
             None,
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -2988,10 +3175,20 @@ mod db_tests {
         .await
         .expect("seed schedule_destination_departures");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-FB", service_date, None, None, &[])
-            .await
-            .expect("build_journey_stops")
-            .expect("Some stops from the fallback source");
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-FB",
+            service_date,
+            None,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from the fallback source");
 
         assert_eq!(stops.len(), 3, "RDG + SLO + synthetic WAT terminus");
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
@@ -3043,10 +3240,19 @@ mod db_tests {
         .await
         .ok();
 
-        let stops =
-            build_journey_stops(&pool, trains_id, "TEST-JRN-NONE", service_date, None, None, &[])
-                .await
-                .expect("build_journey_stops");
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-NONE",
+            service_date,
+            None,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops");
 
         assert!(stops.is_none());
 
@@ -3109,10 +3315,20 @@ mod db_tests {
         .await
         .expect("seed train_movement_events");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-OV", service_date, None, None, &[])
-            .await
-            .expect("build_journey_stops")
-            .expect("Some stops");
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-OV",
+            service_date,
+            None,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops");
 
         assert_eq!(
             stops.len(),
@@ -3246,6 +3462,8 @@ mod db_tests {
             Some(&calling_points),
             None,
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -3339,11 +3557,20 @@ mod db_tests {
         .await
         .expect("seed train_movement_events");
 
-        let stops =
-            build_journey_stops(&pool, trains_id, "TEST-JRN-PASS", service_date, None, None, &[])
-                .await
-                .expect("build_journey_stops")
-                .expect("Some stops");
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-PASS",
+            service_date,
+            None,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops");
 
         assert_eq!(stops.len(), 2, "RDG + synthetic WAT terminus");
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
@@ -3446,6 +3673,8 @@ mod db_tests {
             None,
             None,
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -3585,6 +3814,8 @@ mod db_tests {
             Some(&calling_points),
             None,
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -3713,6 +3944,8 @@ mod db_tests {
             Some(&calling_points),
             None,
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -3831,6 +4064,8 @@ mod db_tests {
             Some(&calling_points),
             None,
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -3947,6 +4182,8 @@ mod db_tests {
             Some(&calling_points),
             Some(6),
             &[],
+            None,
+            None,
         )
         .await
         .expect("build_journey_stops")

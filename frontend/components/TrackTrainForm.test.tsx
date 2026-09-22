@@ -569,6 +569,9 @@ describe('TrackTrainForm', () => {
         cancelReason: 'fleet issue',
         delayReason: null,
         skippedStations: [],
+        platform: null,
+        plannedPlatform: null,
+        platformChanged: false,
       },
       {
         serviceId: 'svc-on-time',
@@ -581,6 +584,9 @@ describe('TrackTrainForm', () => {
         cancelReason: null,
         delayReason: null,
         skippedStations: [],
+        platform: '4',
+        plannedPlatform: '4',
+        platformChanged: false,
       },
     ];
 
@@ -661,6 +667,36 @@ describe('TrackTrainForm', () => {
       expect(picker.value).toBe(`${today} 10:40:00`);
     });
 
+    it('renders the picked row\'s platform badge alongside its status badge', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+      // `departures[1]` ("svc-on-time") is fixture-seeded with platform "4"
+      // and no change -- see this describe block's own `departures` const.
+      expect(await screen.findByText('Platform 4')).toBeInTheDocument();
+      // The cancelled row has no platform in the fixture -- no badge at
+      // all for it, same "not known, don't fabricate" posture as
+      // `PlatformBadge` itself.
+      expect(screen.queryByText(/Platform \(?[^4]/)).not.toBeInTheDocument();
+    });
+
+    it('picking a row carries its platform snapshot through to the pin submission', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      fireEvent.click(await screen.findByRole('button', { name: /10:40/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
+
+      await waitFor(() => {
+        const body = trackCallBody(fetchMock);
+        expect(body.platform).toBe('4');
+        expect(body.planned_platform).toBe('4');
+      });
+    });
+
     // Regression coverage for the LDBWS sibling of the CIF post-midnight
     // day-offset bug (see the `pickCifDeparture`/`ScheduleDepartureRow`
     // tests further below): `DepartureRow.scheduled` is a bare "HH:MM" with
@@ -687,6 +723,9 @@ describe('TrackTrainForm', () => {
             cancelReason: null,
             delayReason: null,
             skippedStations: [],
+            platform: null,
+            plannedPlatform: null,
+            platformChanged: false,
           },
         ];
       }
@@ -1237,6 +1276,9 @@ describe('TrackTrainForm', () => {
         cancelReason: null,
         delayReason: null,
         skippedStations: [],
+        platform: null,
+        plannedPlatform: null,
+        platformChanged: false,
       }));
       const MANY_CIF = Array.from({ length: 10 }, (_, i) => ({
         uid: `C2000${i}`,

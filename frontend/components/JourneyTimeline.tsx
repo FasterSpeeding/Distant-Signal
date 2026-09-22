@@ -10,6 +10,7 @@ import {
   Text,
 } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
+import { PlatformBadge } from './PlatformBadge';
 import type { JourneyStop } from '@/lib/types';
 
 /** The tracked pin's origin/destination display names (Task 3.6.2) --
@@ -87,6 +88,7 @@ export function JourneyTimeline({
             <TableTh>Scheduled</TableTh>
             <TableTh>Actual / est.</TableTh>
             <TableTh>Delay</TableTh>
+            <TableTh>Platform</TableTh>
           </TableTr>
         </TableThead>
         <TableTbody>
@@ -265,6 +267,15 @@ function JourneyStopRow({
           this stop), so `delayBadge` naturally renders nothing extra here
           without this cell needing its own `skipped` check. */}
       <TableTd>{delayBadge(stop.delayMinutes)}</TableTd>
+      {/* `null` for every stop except (today) the ORIGIN -- see
+          `JourneyStop.platform`'s own doc comment in `lib/types.ts` for
+          why Darwin genuinely has no platform signal for the rest of the
+          route. `PlatformBadge` itself renders nothing for a `null`
+          platform, so this cell is simply empty for those stops -- no
+          placeholder text invented to fill it. */}
+      <TableTd>
+        <PlatformBadge platform={stop.platform} plannedPlatform={stop.plannedPlatform} platformChanged={stop.platformChanged} />
+      </TableTd>
     </TableTr>
   );
 }

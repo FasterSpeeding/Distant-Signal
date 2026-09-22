@@ -464,6 +464,8 @@ async fn post_track(
         pin.service_date,
         &app.schedule_crs_line_index,
         &pin.skipped_stations,
+        pin.platform.as_deref(),
+        pin.planned_platform.as_deref(),
     )
     .await
     {
@@ -695,10 +697,9 @@ async fn get_by_uid_and_date(
         .map_err(internal_error("read public train state"))?;
 
     if state.is_none() {
-        let known =
-            crate::data::trains::is_known_scheduled_train(&app.database, &train_uid, date)
-                .await
-                .map_err(internal_error("check schedule for train"))?;
+        let known = crate::data::trains::is_known_scheduled_train(&app.database, &train_uid, date)
+            .await
+            .map_err(internal_error("check schedule for train"))?;
         if known {
             crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
                 .await
@@ -942,6 +943,8 @@ async fn attach_journey_stops(
         state.schedule_calling_points.as_ref(),
         state.delay_minutes,
         &state.schedule_skipped_stations,
+        state.schedule_platform.as_deref(),
+        state.schedule_planned_platform.as_deref(),
     )
     .await
     {
@@ -1008,6 +1011,8 @@ async fn attach_journey_stops_public(
         state.calling_points.as_ref(),
         state.delay_minutes,
         &state.skipped_stations,
+        state.platform.as_deref(),
+        state.planned_platform.as_deref(),
     )
     .await
     {
@@ -1241,6 +1246,8 @@ mod tests {
             schedule_destination_name: None,
             schedule_calling_points: None,
             schedule_skipped_stations: vec![],
+            schedule_platform: None,
+            schedule_planned_platform: None,
             status: Some("late".to_string()),
             last_reported_location: Some("York".to_string()),
             last_event_type: Some("DEPARTURE".to_string()),
@@ -2401,6 +2408,8 @@ mod db_tests {
             "line-a",
             &calling_points,
             &[],
+            None,
+            None,
         )
         .await
         .expect("seed a schedule-matched trains row");
@@ -3001,7 +3010,10 @@ mod db_tests {
             StatusCode::OK,
             "a search-visible train must no longer 404: {body:?}"
         );
-        assert_eq!(body.get("trainUid").and_then(Value::as_str), Some(train_uid));
+        assert_eq!(
+            body.get("trainUid").and_then(Value::as_str),
+            Some(train_uid)
+        );
         assert!(
             body.get("trainsId").and_then(Value::as_i64).is_some(),
             "the read must have created and returned a real shared trains row: {body:?}"
@@ -3018,8 +3030,10 @@ mod db_tests {
             .get("journeyStops")
             .expect("journeyStops present")
             .as_array()
-            .expect("journeyStops must be a non-null array for a provably CIF-scheduled train, \
-                     even when found via the bare find_or_create_train path");
+            .expect(
+                "journeyStops must be a non-null array for a provably CIF-scheduled train, \
+                     even when found via the bare find_or_create_train path",
+            );
         assert_eq!(
             stops.len(),
             2,

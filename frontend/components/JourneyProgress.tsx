@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
+import { PlatformBadge } from './PlatformBadge';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
 /** The one place an Origin/Terminate node's diameter is defined --
@@ -547,6 +548,16 @@ function JourneyProgressNode({
         <Text size="xs" fw={700} ta="center" className="journeyProgressLabel">
           {label}
         </Text>
+        {/* Compact badge, not the full `ScheduleRow` list-row component --
+            this is a dense schematic diagram, not a list, so
+            `PlatformBadge` alone (already the smallest, colour+text unit
+            that convention has) fits without crowding the line. `null`
+            for every stop except (today) the ORIGIN -- see
+            `JourneyStop.platform`'s own doc comment -- and `PlatformBadge`
+            itself renders nothing for a `null` platform, so a Terminate
+            endpoint (which never has one yet) simply shows no badge, no
+            layout gap reserved for it. */}
+        <PlatformBadge platform={stop.platform} plannedPlatform={stop.plannedPlatform} platformChanged={stop.platformChanged} />
       </Box>
     );
   }

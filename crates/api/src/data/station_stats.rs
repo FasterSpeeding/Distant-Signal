@@ -205,6 +205,8 @@ mod tests {
             delay_reason: None,
             headcode: None,
             skipped_stations: skipped_stations.into_iter().map(str::to_string).collect(),
+            platform: None,
+            planned_platform: None,
         }
     }
 

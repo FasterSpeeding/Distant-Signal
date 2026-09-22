@@ -21,6 +21,9 @@ function stop(overrides: Partial<JourneyStop>): JourneyStop {
     delayMinutes: null,
     stopStatus: 'Unknown',
     skipSource: null,
+    platform: null,
+    plannedPlatform: null,
+    platformChanged: false,
     ...overrides,
   };
 }
@@ -97,6 +100,34 @@ describe('JourneyTimeline', () => {
       />,
     );
     expect(screen.getByText('On time')).toBeInTheDocument();
+  });
+
+  it('has a Platform column header', () => {
+    renderWithMantine(<JourneyTimeline stops={[stop({})]} />);
+    expect(screen.getByRole('columnheader', { name: 'Platform' })).toBeInTheDocument();
+  });
+
+  it('shows a platform badge for a stop with a known platform', () => {
+    renderWithMantine(
+      <JourneyTimeline stops={[stop({ kind: 'Origin', platform: '6', plannedPlatform: '6', platformChanged: false })]} />,
+    );
+    expect(screen.getByText('Platform 6')).toBeInTheDocument();
+  });
+
+  it('shows no platform badge for a stop with no known platform', () => {
+    renderWithMantine(<JourneyTimeline stops={[stop({ platform: null })]} />);
+    // The "Platform" column header itself still renders -- only the
+    // per-stop badge text ("Platform 6", etc.) must be absent.
+    expect(screen.queryByText(/Platform \S/)).not.toBeInTheDocument();
+  });
+
+  it('names both the current and originally planned platform in text when it has changed', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[stop({ kind: 'Origin', platform: '9', plannedPlatform: '6', platformChanged: true })]}
+      />,
+    );
+    expect(screen.getByText('Platform 9 (changed from 6)')).toBeInTheDocument();
   });
 
   it('renders as a table with a column for each fact shown', () => {
