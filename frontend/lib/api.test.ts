@@ -15,6 +15,7 @@ import {
   getAllTocs,
   getCustomLine,
   getLineDefinition,
+  getLineTrains,
   getDataFreshness,
   getHistoryRetention,
   getStationName,
@@ -606,6 +607,48 @@ describe('api client', () => {
     await getLineDefinition('swr-alton');
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.headers).toBeUndefined();
+  });
+
+  it('getLineTrains fetches the correct URL with no date and no caching', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getLineTrains('swr-alton');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/swr-alton/trains',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineTrains includes an explicit ?date= when given', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getLineTrains('swr-alton', '2026-09-22');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/swr-alton/trains?date=2026-09-22',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineTrains forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getLineTrains('swr-alton');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/swr-alton/trains',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getLineTrains throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getLineTrains('swr-alton')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
   it('getDataFreshness fetches the correct URL with no caching', async () => {
