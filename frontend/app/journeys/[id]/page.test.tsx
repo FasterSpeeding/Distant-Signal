@@ -364,3 +364,21 @@ describe('JourneyDetailPage "Add a leg" gating (M16)', () => {
     expect(screen.queryByRole('button', { name: 'Add a leg' })).not.toBeInTheDocument();
   });
 });
+
+describe('JourneyDetailPage "Track this journey again" button', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('renders for the owner', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: true }));
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Track this journey again' })).toBeInTheDocument();
+  });
+
+  it('renders for a non-owner shared-group viewer too', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: false }));
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Track this journey again' })).toBeInTheDocument();
+  });
+});
