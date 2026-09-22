@@ -6,8 +6,10 @@ import { Button, Card, Group, Stack, Text } from '@mantine/core';
 import { TrainJourney } from './TrainJourney';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
 import { TextLink } from './TextLink';
+import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
+import { legRouteAndTime } from '@/lib/journeyLegLabel';
 import { formatDate } from '@/lib/dateFormat';
-import { routeLabel, stationLabel } from '@/lib/stationLabel';
+import { routeLabel } from '@/lib/stationLabel';
 import type { JourneyLegDetail } from '@/lib/types';
 
 /** Decorative "needs attention" glyph for the open-leg card (review
@@ -37,39 +39,38 @@ function AlertIcon() {
   );
 }
 
-/** `"HH:MM:SS"` (the wire shape of a persisted `NaiveTime` bound) →
- * `"HH:MM"`, matching every other displayed time in this app
- * (`lib/dateFormat.ts`'s `formatTime`) rather than leaking the seconds
- * component into copy nobody asked for. */
-function formatBoundTime(value: string): string {
+/** `"HH:MM:SS"` -> `"HH:MM"` -- these are bare wall-clock bounds
+ * (`common::TimeWindow` on the wire), never full RFC3339 instants, so
+ * there is no timezone conversion to do (unlike `lib/dateFormat.ts`'s
+ * formatters, which all pin `Europe/London` for a real instant) -- just
+ * trimming the seconds a passenger never entered. */
+function formatWindowTime(value: string): string {
   return value.slice(0, 5);
 }
 
-/** "Departing York after 09:00, arriving Newcastle before 12:00." — the one
- * thing review §2.5/I18 found genuinely missing from the open-leg card: the
- * search criteria the user just typed, restated so they can tell why a
- * train they expected is absent (or spot a typo) without leaving the page.
- * `null` when the leg has no persisted window at all (shouldn't happen for
- * an open leg in practice — see this component's own doc comment — but
- * every `depart*`/`arrive*` field is nullable on the wire, so this stays
- * defensive rather than assuming). */
-function windowCriteriaSummary(leg: JourneyLegDetail): string | null {
-  const departClauses: string[] = [];
-  if (leg.departAfter) departClauses.push(`after ${formatBoundTime(leg.departAfter)}`);
-  if (leg.departBefore) departClauses.push(`before ${formatBoundTime(leg.departBefore)}`);
-  const arriveClauses: string[] = [];
-  if (leg.arriveAfter) arriveClauses.push(`after ${formatBoundTime(leg.arriveAfter)}`);
-  if (leg.arriveBefore) arriveClauses.push(`before ${formatBoundTime(leg.arriveBefore)}`);
-  if (departClauses.length === 0 && arriveClauses.length === 0) return null;
-
-  const originName = leg.originCrs ? stationLabel(leg.originCrs, leg.originName) : 'the origin';
-  const destinationName = leg.destinationCrs
-    ? stationLabel(leg.destinationCrs, leg.destinationName)
-    : 'the destination';
+/** "Departing at or after 18:00 · Arriving at or before 09:00"-shaped
+ * summary of an open leg's own search window -- 2026-09-22 UX review
+ * finding I18: "the window the user just typed is never shown back to
+ * them" (spec §4 explicitly asks the open-leg card to show "the search
+ * parameters (origin, destination, windows)"; only origin/destination
+ * were ever rendered). Phrased to match `AddJourneyLegButton.tsx`'s own
+ * field descriptions exactly ("Only trains departing at or after this
+ * time.", etc.) rather than inventing new wording for the same facts.
+ * `null` when the leg has no window at all (a `pin`/`knownTrain`-mode
+ * leg is never `trackedTrainState === null` in the first place, so this
+ * realistically never returns `null` at this call site, but it's a
+ * plain function of the four fields, not leg-mode-aware, so it stays
+ * honest for any future caller). */
+function windowSummary(leg: JourneyLegDetail): string | null {
   const parts: string[] = [];
-  if (departClauses.length > 0) parts.push(`departing ${originName} ${departClauses.join(' and ')}`);
-  if (arriveClauses.length > 0) parts.push(`arriving ${destinationName} ${arriveClauses.join(' and ')}`);
-  return `Looking for trains ${parts.join(', ')}.`;
+  if (leg.departAfter) parts.push(`departing at or after ${formatWindowTime(leg.departAfter)}`);
+  if (leg.departBefore) parts.push(`departing at or before ${formatWindowTime(leg.departBefore)}`);
+  if (leg.arriveAfter) parts.push(`arriving at or after ${formatWindowTime(leg.arriveAfter)}`);
+  if (leg.arriveBefore) parts.push(`arriving at or before ${formatWindowTime(leg.arriveBefore)}`);
+  if (parts.length === 0) return null;
+  const [first, ...rest] = parts;
+  const capitalised = first.charAt(0).toUpperCase() + first.slice(1);
+  return [capitalised, ...rest].join(' · ');
 }
 
 /** One leg's card on `/journeys/[id]` (design doc §4). Two branches:
@@ -91,15 +92,33 @@ function windowCriteriaSummary(leg: JourneyLegDetail): string | null {
  *   no window (a `pin`/`knownTrain`-mode leg) has no window to re-search
  *   and so gets no "Change train" action -- swapping it means
  *   delete-and-recreate, same as today's single-train tracking, per the
- *   design doc's own 2026-09-22 addendum. */
+ *   design doc's own 2026-09-22 addendum. It instead gets a "Remove leg"
+ *   action (2026-09-22 UX review finding I14/2.4) so a wrong pick is at
+ *   least recoverable, backed by `DELETE
+ *   /Journeys/{journeyId}/legs/{legId}` (`crates/api/src/routes/journeys.rs::delete_journey_leg`).
+ *
+ * Both the "Change train" toggle and "Remove leg" live in the card's OWN
+ * title row, top-right -- 2026-09-22 UX review finding I14/2.4's own
+ * recommendation: "actions live at the top-right of the thing they act
+ * on", the same rule `page.tsx`'s header already applies to "Add a leg".
+ * The previous placement (a plain `xs` button below the whole six-row
+ * timetable) had it as the very last thing on the card and zero visual
+ * weight. */
 export function JourneyLegCard({
   journeyId,
   leg,
   isOwner,
+  isOnlyLeg,
 }: {
   journeyId: number;
   leg: JourneyLegDetail;
   isOwner: boolean;
+  /** Whether this is the journey's only remaining leg -- threaded from
+   * `page.tsx`'s own `journey.legs.length`, and passed straight through to
+   * `RemoveJourneyLegButton` so it can warn (and, on success, redirect
+   * instead of refresh) when removing this leg also removes the whole
+   * journey. See that component's own doc comment. */
+  isOnlyLeg: boolean;
 }) {
   const router = useRouter();
   const [changingTrain, setChangingTrain] = useState(false);
@@ -110,20 +129,38 @@ export function JourneyLegCard({
     leg.arriveBefore !== null;
 
   if (leg.trackedTrainState === null) {
-    // Review §2.5/I27: use the same `routeLabel`/`formatDate` this leg's
-    // OWN matched-state sibling (`TrainJourney`) and `/track/mine` already
-    // render with, instead of interpolating raw CRS codes and an ISO
-    // `serviceDate` straight into the header.
+    // Review §2.5/I27 + review finding 2.9 (the two branches reached the
+    // same conclusion from opposite ends): this used to interpolate raw
+    // CRS codes and a raw ISO `serviceDate` ("YRK -> NCL, 2026-09-22")
+    // while the matched card one row down rendered "London Kings Cross
+    // (KGX) -> York (YRK), 22 Sept 2026" -- two date formats and two
+    // naming conventions on the same page. `routeLabel`/`formatDate` are
+    // the shared formatters both `TrainJourney` and `/track/mine` already
+    // use. Unlike the matched card there is no `journeyStops` to read
+    // names from, but the leg itself now carries `originName`/
+    // `destinationName` (resolved server-side from the `stations`
+    // reference table), so this degrades to bare codes only when the
+    // reference row genuinely doesn't exist.
     const header = `${routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}, ${formatDate(leg.serviceDate)}`;
-    const criteria = windowCriteriaSummary(leg);
+    // Review I18 (found independently by two reviewers): the window the
+    // traveller just typed was never shown back to them -- the only place
+    // it lived was inside `hasWindow`'s own boolean check below, never
+    // rendered. The copy deliberately mirrors `AddJourneyLegButton.tsx`'s
+    // own field descriptions ("Only trains departing at or after this
+    // time.") rather than inventing new wording for the same facts, and
+    // says "at or after" rather than "after" because that is what the
+    // bound actually means. It does NOT repeat the station names: the
+    // header directly above already carries the route.
+    const criteria = windowSummary(leg);
     return (
       // Review §2.3/I15: the matched card (below) is dense -- headcode,
       // route, summary lines, a badge, a diagram, a table -- while THIS
       // card, the one that actually needs the user to do something, used
-      // to be a plain white box with nothing in its border, background or
-      // icon saying "action required". A left accent border + a light blue
-      // surface + a leading icon borrow the same "needs attention" signal
-      // the app already reserves blue for elsewhere (`JourneyStatusBadge`'s
+      // to be a plain white box with nothing in its border, background,
+      // weight or icon saying "action required". Four non-colour-alone
+      // cues (WCAG 1.4.1): a left accent border, a tinted surface, a bold
+      // title, and a leading glyph -- all in the blue the app already
+      // reserves for "needs attention" (`JourneyStatusBadge`'s own
       // `unmatched` colour).
       <Card
         withBorder
@@ -138,11 +175,8 @@ export function JourneyLegCard({
             <span style={{ color: 'var(--mantine-color-blue-6)', flexShrink: 0, marginTop: 2 }}>
               <AlertIcon />
             </span>
-            <Text fw={500}>{header}</Text>
+            <Text fw={700}>{header}</Text>
           </Group>
-          {/* Review §2.5/I18: the window the user just entered was never
-              shown back to them -- the only place it lived was inside
-              `hasWindow`'s own boolean check above, never rendered. */}
           {criteria && (
             <Group justify="space-between" wrap="wrap" gap="xs">
               <Text size="sm" c="dimmed">
@@ -178,6 +212,8 @@ export function JourneyLegCard({
     );
   }
 
+  const state = leg.trackedTrainState;
+
   // Leg-scoped skip signal (§5.2) -- at most the leg's own origin/destination
   // CRS, sourced from Task 4's `legSkip` wire field. `TrainJourney`/
   // `JourneyTimeline` treat `undefined` and `[]` identically, but this is
@@ -188,32 +224,56 @@ export function JourneyLegCard({
     leg.legSkip?.destinationSkipped ? leg.destinationCrs : null,
   ].filter((crs): crs is string => crs !== null);
 
+  const title = legRouteAndTime(leg.originCrs, leg.destinationCrs, state.journeyStops, state);
+
   return (
     <Card withBorder>
       <Stack gap="sm">
-        <TrainJourney state={leg.trackedTrainState} skippedCrs={skippedCrs} />
-        {/* Two independent conditions, both required: `hasWindow` is the
-            Phase 2 "this leg is still an open window, so a train can be
-            picked for it" test, and `isOwner` is Phase 4's sharing gate --
-            a shared-group viewer sees the leg but must not be offered a
-            "Change train" action the API would reject anyway. */}
-        {hasWindow && isOwner && (
-          <>
-            <Button size="xs" variant="default" onClick={() => setChangingTrain((c) => !c)}>
-              {changingTrain ? 'Cancel' : 'Change train'}
-            </Button>
-            {changingTrain && (
-              <JourneyLegCandidates
-                journeyId={journeyId}
-                legId={leg.id}
-                serviceDate={leg.serviceDate}
-                onPicked={() => {
-                  setChangingTrain(false);
-                  router.refresh();
-                }}
-              />
+        <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
+          <Stack gap={2}>
+            <Text fw={600} size="lg">
+              {title}
+            </Text>
+            {state.trainUid && (
+              <Text size="xs" c="dimmed">
+                Train {state.trainUid}
+              </Text>
             )}
-          </>
+          </Stack>
+          {/* Two independent conditions, both required: `hasWindow` is the
+              Phase 2 "this leg is still an open window, so a train can be
+              picked for it" test, and `isOwner` is Phase 4's sharing gate --
+              a shared-group viewer sees the leg but must not be offered a
+              "Change train"/"Remove leg" action the API would reject
+              anyway. */}
+          {isOwner && (
+            <Group gap="xs">
+              {hasWindow ? (
+                <Button size="xs" variant="default" onClick={() => setChangingTrain((c) => !c)}>
+                  {changingTrain ? 'Cancel' : 'Change train'}
+                </Button>
+              ) : (
+                <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />
+              )}
+            </Group>
+          )}
+        </Group>
+        <TrainJourney
+          state={state}
+          skippedCrs={skippedCrs}
+          legDestinationCrs={leg.destinationCrs}
+          suppressTrainUidHeading
+        />
+        {hasWindow && isOwner && changingTrain && (
+          <JourneyLegCandidates
+            journeyId={journeyId}
+            legId={leg.id}
+            serviceDate={leg.serviceDate}
+            onPicked={() => {
+              setChangingTrain(false);
+              router.refresh();
+            }}
+          />
         )}
       </Stack>
     </Card>

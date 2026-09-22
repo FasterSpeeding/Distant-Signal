@@ -1189,6 +1189,29 @@ pub struct CallingPointDepartureRow {
     pub day_offset: i16,
     pub true_origin_crs: Option<String>,
     pub destination_crs: Option<String>,
+    /// The schedule's own booked arrival at ITS terminus (not this row's
+    /// calling point) -- same column `queries::CallingPointDepartureRow`'s
+    /// sibling rows in the departure-board/search paths already select
+    /// (e.g. `schedule_departures_between`, `search_journey_leg_candidates`).
+    /// Every row for the same `train_uid`/`service_date` carries the same
+    /// value (`schedule_destination_departures` denormalizes the terminus
+    /// arrival onto every one of the schedule's own departure rows), so any
+    /// row -- in practice `journey::build_journey_stops`'s fallback branch
+    /// reads it off the LAST one -- gives the same answer.
+    /// `journey::build_journey_stops`'s fallback branch (2026-09-22 UX
+    /// review finding I16/2.7) uses this to populate the synthetic
+    /// `Terminate` stop's `scheduled_arrival`, which was previously always
+    /// hardcoded to `None` -- the one time this table's own booked-terminus
+    /// arrival went uncollected. Genuinely `NULL` in real published CIF data
+    /// for the rare schedule whose public timetable has no booked arrival at
+    /// its own terminus (see this struct's sibling doc comments elsewhere in
+    /// this file) -- not a bug when it happens, just nothing to show.
+    pub destination_arrival: Option<chrono::NaiveTime>,
+    /// `destination_arrival`'s own day offset past `service_date` -- mirrors
+    /// `day_offset` above for the SAME overnight-service reason, but
+    /// computed independently: the terminus arrival can fall on a different
+    /// calendar day than this particular calling point's own departure.
+    pub destination_arrival_day_offset: i16,
 }
 
 /// Every departure-bearing calling point of `train_uid`'s schedule on
@@ -1211,7 +1234,8 @@ pub async fn list_calling_point_departures_for_train(
     service_date: chrono::NaiveDate,
 ) -> Result<Vec<CallingPointDepartureRow>> {
     let rows = sqlx::query_as::<_, CallingPointDepartureRow>(
-        "SELECT origin_crs, scheduled, day_offset, true_origin_crs, destination_crs \
+        "SELECT origin_crs, scheduled, day_offset, true_origin_crs, destination_crs, \
+                destination_arrival, destination_arrival_day_offset \
          FROM schedule_destination_departures \
          WHERE train_uid = $1 AND service_date = $2 \
          ORDER BY day_offset, scheduled",

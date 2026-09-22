@@ -449,6 +449,29 @@ pub async fn build_journey_stops(
                 })
                 .collect();
 
+            // The schedule's own booked terminus arrival (2026-09-22 UX
+            // review finding I16/2.7: this synthetic `Terminate` stop's
+            // `scheduled_arrival` was previously always hardcoded `None`,
+            // so this fallback path -- the one `list_calling_point_departures_for_train`
+            // takes, i.e. whenever `trains.calling_points` hasn't been
+            // populated by schedule-matching -- rendered a blank terminus
+            // arrival time even on real, non-seed data. Every row for this
+            // `train_uid`/`service_date` carries the same
+            // `destination_arrival`/`destination_arrival_day_offset` pair
+            // (`CallingPointDepartureRow`'s own doc comment), so reading it
+            // off the last row here is equivalent to reading it off any
+            // other. Genuinely `None` for a schedule whose public timetable
+            // has no booked arrival at its own terminus -- not a bug, see
+            // that struct's doc comment -- in which case this stop keeps its
+            // previous blank-arrival behaviour exactly.
+            let terminus_scheduled_arrival = rows.last().and_then(|r| {
+                let arrival = r.destination_arrival?;
+                london_to_utc(
+                    (service_date + Duration::days(r.destination_arrival_day_offset as i64))
+                        .and_time(arrival),
+                )
+            });
+
             if let Some(destination_crs) = rows.last().and_then(|r| r.destination_crs.clone())
                 && built
                     .last()
@@ -460,7 +483,7 @@ pub async fn build_journey_stops(
                     name: None,
                     tiploc: None,
                     kind: Some(schedule_query::CallingPointKind::Terminate),
-                    scheduled_arrival: None,
+                    scheduled_arrival: terminus_scheduled_arrival,
                     scheduled_departure: None,
                     actual_arrival: None,
                     actual_departure: None,
@@ -3212,6 +3235,102 @@ mod db_tests {
         );
 
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FB'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_fallback_terminus_uses_the_schedules_own_destination_arrival \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_fallback_terminus_uses_the_schedules_own_destination_arrival() {
+        // 2026-09-22 UX review finding I16/2.7 ("the terminus row has no
+        // times at all"): the synthetic `Terminate` stop
+        // `build_journey_stops`'s fallback branch appends used to hardcode
+        // `scheduled_arrival: None` unconditionally, even though
+        // `schedule_destination_departures` already stores the schedule's
+        // own booked terminus arrival on every one of its rows
+        // (`destination_arrival`) -- it just wasn't being selected. This is
+        // the companion to the test immediately above (which covers the
+        // genuinely-`None` case unchanged): here `destination_arrival` IS
+        // populated, and the terminus stop must pick it up.
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-FBA", service_date)
+                .await
+                .expect("find_or_create_train");
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FBA'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        crate::data::queries::upsert_schedule_destination_departures(
+            &pool,
+            &[
+                crate::data::queries::ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "WAT".to_string(),
+                    scheduled: "08:00:00".parse().unwrap(),
+                    day_offset: 0,
+                    train_uid: "TEST-JRN-FBA".to_string(),
+                    origin_crs: "RDG".to_string(),
+                    true_origin_crs: Some("RDG".to_string()),
+                    calling_point_arrival: None,
+                    destination_arrival: Some("09:15:00".parse().unwrap()),
+                    destination_arrival_day_offset: 0,
+                },
+                crate::data::queries::ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "WAT".to_string(),
+                    scheduled: "08:20:00".parse().unwrap(),
+                    day_offset: 0,
+                    train_uid: "TEST-JRN-FBA".to_string(),
+                    origin_crs: "SLO".to_string(),
+                    true_origin_crs: Some("RDG".to_string()),
+                    calling_point_arrival: None,
+                    destination_arrival: Some("09:15:00".parse().unwrap()),
+                    destination_arrival_day_offset: 0,
+                },
+            ],
+        )
+        .await
+        .expect("seed schedule_destination_departures");
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-FBA",
+            service_date,
+            None,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from the fallback source");
+
+        assert_eq!(stops.len(), 3, "RDG + SLO + synthetic WAT terminus");
+        assert_eq!(stops[2].crs.as_deref(), Some("WAT"));
+        assert_eq!(
+            stops[2].kind,
+            Some(schedule_query::CallingPointKind::Terminate)
+        );
+        assert_eq!(
+            stops[2].scheduled_arrival,
+            london_to_utc(service_date.and_time("09:15:00".parse().unwrap())),
+            "the terminus row's own booked arrival, not a blank cell"
+        );
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FBA'")
             .execute(&pool)
             .await
             .ok();

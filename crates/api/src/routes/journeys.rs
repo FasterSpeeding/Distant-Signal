@@ -38,6 +38,10 @@ pub fn router() -> Router {
             "/Journeys/{journey_id}/legs",
             axum::routing::post(post_journey_leg),
         )
+        .route(
+            "/Journeys/{journey_id}/legs/{leg_id}",
+            axum::routing::delete(delete_journey_leg),
+        )
 }
 
 /// Three mutually-exclusive leg-creation shapes, discriminated by an
@@ -999,11 +1003,13 @@ async fn post_leg_train(
             .map_err(internal_error("set journey leg train"))?;
     if !updated {
         // Lost a race against a concurrent deletion of the underlying leg
-        // between the read above and this write -- vanishingly unlikely
-        // (no delete-journey route exists in Phase 1 at all, per this
-        // plan's own Non-goals), but handled rather than silently ignored,
-        // matching `post_attach_ticket`'s own analogous race-handling
-        // posture in `routes/train.rs`.
+        // between the read above and this write -- vanishingly unlikely,
+        // but handled rather than silently ignored, matching
+        // `post_attach_ticket`'s own analogous race-handling posture in
+        // `routes/train.rs`. (`delete_journey_leg`, below, is that
+        // deletion route -- added by the 2026-09-22 UX review's I14/2.4
+        // fix, after this comment's original "no delete route exists"
+        // reasoning was written.)
         return Err((
             StatusCode::NOT_FOUND,
             "no journey leg with that id".to_string(),
@@ -1011,6 +1017,33 @@ async fn post_leg_train(
     }
 
     Ok(Json(MatchLegResponse { tracking_id }))
+}
+
+/// `DELETE /Journeys/{journeyId}/legs/{legId}` -- 2026-09-22 UX review
+/// finding I14/2.4: a `pin`/`knownTrain`-mode leg has no persisted window
+/// (`hasWindow` in `JourneyLegCard.tsx`), so it never offers "Change train",
+/// and until this route existed a wrong pick had no recovery path at all.
+/// Mirrors `routes::train::delete_tracked_train`'s own shape (same
+/// `AuthenticatedUser` + 404-for-unknown-or-not-yours + `204 No Content` on
+/// success) on the ownership check `journeys::delete_leg` folds into its own
+/// query -- see that function's doc comment for why deleting the journey's
+/// LAST leg deletes the whole journey too, and why the leg's underlying
+/// `train_subscriptions` row (if any) is left untouched either way.
+async fn delete_journey_leg(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((journey_id, leg_id)): Path<(i64, i64)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let deleted = journeys::delete_leg(&app.database, journey_id, leg_id, &user.id)
+        .await
+        .map_err(internal_error("delete journey leg"))?;
+    if deleted.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no journey leg with that id".to_string(),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Scaffolding copied verbatim from `routes::train::db_tests` (same
@@ -1242,6 +1275,37 @@ mod db_tests {
         let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
             Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
         });
+        (status, value)
+    }
+
+    /// Issues a `DELETE` against `router`, optionally with a session
+    /// cookie -- mirrors `routes::train::db_tests::delete_request` exactly
+    /// (same empty-body-becomes-`Value::Null` handling: a success here is
+    /// `204 No Content` with no body, so feeding that straight to
+    /// `serde_json::from_slice` would fail to parse and mask a real body on
+    /// any OTHER status).
+    async fn delete_request(
+        router: axum::Router,
+        uri: String,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method("DELETE").uri(uri);
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let req = builder.body(Body::empty()).expect("build request");
+        let response = router.oneshot(req).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+            })
+        };
         (status, value)
     }
 
@@ -1898,5 +1962,187 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER").await;
+    }
+
+    // --- delete_journey_leg (I14/2.4 recovery path) ---------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey_leg -- --ignored --test-threads=1`"]
+    async fn delete_journey_leg_a_leg_owned_by_someone_else_is_404_not_403_and_survives() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-OWNER").await;
+        let bystander_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-BYSTANDER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "D11111", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+
+        let (status, body) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}"),
+            Some(&bystander_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            serde_json::Value::String("no journey leg with that id".to_string())
+        );
+
+        // The leg -- and its journey -- must genuinely survive a
+        // non-owner's delete attempt, not just return 404 with the row
+        // quietly gone anyway.
+        let (status, _) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "owner's journey should still exist");
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-LEG-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-LEG-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey_leg -- --ignored --test-threads=1`"]
+    async fn delete_journey_leg_a_nonexistent_leg_is_404() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-NOTFOUND").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (status, body) = delete_request(
+            router,
+            "/Journeys/99999999/legs/99999999".to_string(),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            serde_json::Value::String("no journey leg with that id".to_string())
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-LEG-NOTFOUND").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey_leg -- --ignored --test-threads=1`"]
+    async fn delete_journey_leg_the_owner_can_remove_a_no_window_leg_and_the_journey_goes_with_it_when_it_was_the_last_one()
+     {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-LAST").await;
+        let router = test_router(test_app(pool.clone()));
+
+        // A `knownTrain`-mode leg: no persisted window, exactly I14/2.4's
+        // "wrong pick, no Change-train affordance" scenario.
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "D22222", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+
+        let (status, _) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // This was the journey's only leg -- the whole journey must be gone
+        // too (`journeys::delete_leg`'s own doc comment), not left behind
+        // as an empty, zero-leg row nothing else expects.
+        let (status, _) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the now-empty journey should be gone too"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-LEG-LAST").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey_leg -- --ignored --test-threads=1`"]
+    async fn delete_journey_leg_removing_one_of_two_legs_leaves_the_journey_and_the_other_leg_intact()
+     {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-MULTI").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "D33333", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let first_leg_id = created["legId"].as_i64().expect("legId present");
+
+        let (_, added) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&owner_token),
+            serde_json::json!({
+                "mode": "knownTrain",
+                "trainUid": "D44444",
+                "serviceDate": "2026-09-22"
+            }),
+        )
+        .await;
+        let second_leg_id = added["legId"].as_i64().expect("legId present");
+
+        let (status, _) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{first_leg_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, body) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "journey with a remaining leg should survive: {body:?}"
+        );
+        let legs = body["legs"].as_array().expect("legs array");
+        assert_eq!(legs.len(), 1, "only the deleted leg should be gone");
+        assert_eq!(legs[0]["id"].as_i64(), Some(second_leg_id));
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-LEG-MULTI").await;
     }
 }

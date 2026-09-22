@@ -61,7 +61,9 @@ function baseLeg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
 }
 
 describe('JourneyStatusBadge', () => {
-  it('shows "Needs a train picked" when any leg is unmatched', () => {
+  // 2026-09-22 UX review finding I15/2.3: the badge now says HOW MANY
+  // legs are unmatched, and is a same-page anchor to the FIRST one.
+  it('shows "1 leg needs a train" and links to that leg when exactly one is unmatched', () => {
     renderWithMantine(
       <JourneyStatusBadge
         legs={[
@@ -70,7 +72,22 @@ describe('JourneyStatusBadge', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Needs a train picked')).toBeInTheDocument();
+    const badge = screen.getByText('1 leg needs a train');
+    expect(badge).toBeInTheDocument();
+    expect(badge.closest('a')).toHaveAttribute('href', '#leg-2');
+  });
+
+  it('shows "N legs need a train" (plural) and links to the FIRST unmatched leg when several are', () => {
+    renderWithMantine(
+      <JourneyStatusBadge
+        legs={[
+          baseLeg({ id: 1, matchMode: 'unmatched', trackedTrainState: null }),
+          baseLeg({ id: 2, matchMode: 'unmatched', trackedTrainState: null }),
+        ]}
+      />,
+    );
+    const badge = screen.getByText('2 legs need a train');
+    expect(badge.closest('a')).toHaveAttribute('href', '#leg-1');
   });
 
   it('shows "Cancelled" when the worst leg is cancelled even if another is merely unmatched', () => {

@@ -102,9 +102,34 @@ describe('JourneyTimeline', () => {
     expect(screen.getByText('On time')).toBeInTheDocument();
   });
 
-  it('has a Platform column header', () => {
-    renderWithMantine(<JourneyTimeline stops={[stop({})]} />);
+  it('has a Platform column header when a stop has a known platform', () => {
+    renderWithMantine(<JourneyTimeline stops={[stop({ platform: '6' })]} />);
     expect(screen.getByRole('columnheader', { name: 'Platform' })).toBeInTheDocument();
+  });
+
+  // 2026-09-22 UX review finding I21/M21/2.10: a column that is empty on
+  // every row reads as broken, not as "nothing to report" -- hide it
+  // outright rather than rendering an always-blank header cell.
+  it('hides the Platform column entirely when no stop has a known platform', () => {
+    renderWithMantine(<JourneyTimeline stops={[stop({ platform: null }), stop({ platform: null })]} />);
+    expect(screen.queryByRole('columnheader', { name: 'Platform' })).not.toBeInTheDocument();
+  });
+
+  it('hides the Delay column entirely when no stop has a delay figure', () => {
+    renderWithMantine(<JourneyTimeline stops={[stop({ delayMinutes: null }), stop({ delayMinutes: null })]} />);
+    expect(screen.queryByRole('columnheader', { name: 'Delay' })).not.toBeInTheDocument();
+  });
+
+  it('shows the Delay column when at least one stop has a delay figure, even if others do not', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ delayMinutes: null }),
+          stop({ scheduledDeparture: '2026-09-08T08:00:00Z', actualDeparture: '2026-09-08T08:04:00Z', delayMinutes: 4 }),
+        ]}
+      />,
+    );
+    expect(screen.getByRole('columnheader', { name: 'Delay' })).toBeInTheDocument();
   });
 
   it('shows a platform badge for a stop with a known platform', () => {
@@ -114,11 +139,21 @@ describe('JourneyTimeline', () => {
     expect(screen.getByText('Platform 6')).toBeInTheDocument();
   });
 
-  it('shows no platform badge for a stop with no known platform', () => {
-    renderWithMantine(<JourneyTimeline stops={[stop({ platform: null })]} />);
-    // The "Platform" column header itself still renders -- only the
-    // per-stop badge text ("Platform 6", etc.) must be absent.
-    expect(screen.queryByText(/Platform \S/)).not.toBeInTheDocument();
+  it('shows no platform badge for a stop with no known platform, alongside one that does', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ kind: 'Origin', crs: 'RDG', platform: '6', plannedPlatform: '6', platformChanged: false }),
+          stop({ kind: 'Terminate', crs: 'WAT', platform: null }),
+        ]}
+      />,
+    );
+    // The "Platform" column itself renders (the origin row has one) -- only
+    // the per-stop badge text ("Platform 6", etc.) must be absent for the
+    // row with none.
+    expect(screen.getByRole('columnheader', { name: 'Platform' })).toBeInTheDocument();
+    expect(screen.getByText('Platform 6')).toBeInTheDocument();
+    expect(screen.queryAllByText(/Platform \S/)).toHaveLength(1);
   });
 
   it('names both the current and originally planned platform in text when it has changed', () => {
@@ -130,14 +165,21 @@ describe('JourneyTimeline', () => {
     expect(screen.getByText('Platform 9 (changed from 6)')).toBeInTheDocument();
   });
 
-  it('renders as a table with a column for each fact shown', () => {
+  it('renders as a table with a column for each fact shown, and hides the ones with no data', () => {
     renderWithMantine(<JourneyTimeline stops={[stop({})]} />);
     const table = screen.getByRole('table', { name: 'Journey timeline' });
     expect(table).toBeInTheDocument();
     expect(screen.getByText('Station')).toBeInTheDocument();
     expect(screen.getByText('Scheduled')).toBeInTheDocument();
-    expect(screen.getByText('Actual / est.')).toBeInTheDocument();
-    expect(screen.getByText('Delay')).toBeInTheDocument();
+    // "Actual", not "Actual / est." (2.8) -- the shorter header freed up
+    // the width that was pushing the table past 390px on its own.
+    expect(screen.getByText('Actual')).toBeInTheDocument();
+    expect(screen.queryByText('Actual / est.')).not.toBeInTheDocument();
+    // This single stop has neither a delay figure nor a platform, so both
+    // columns are hidden entirely (I21/M21/2.10) rather than rendered
+    // empty.
+    expect(screen.queryByText('Delay')).not.toBeInTheDocument();
+    expect(screen.queryByText('Platform')).not.toBeInTheDocument();
   });
 
   it('shows an estimated time, prefixed and visually distinguished, for a stop with no actual time yet', () => {
@@ -351,5 +393,78 @@ describe('JourneyTimeline', () => {
     );
     expect(screen.getByRole('table')).toBeInTheDocument();
     expect(screen.queryByText(/station names unavailable/)).not.toBeInTheDocument();
+  });
+
+  // 2026-09-22 UX review finding I16/2.7: "the traveller gets off at York,
+  // which is a plain-weight row indistinguishable from Peterborough."
+  describe('legDestinationCrs', () => {
+    it('bolds the leg destination row and marks it "You get off here", even for a plain intermediate stop', () => {
+      renderWithMantine(
+        <JourneyTimeline
+          stops={[
+            stop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin' }),
+            stop({ crs: 'YRK', name: 'York', kind: 'Intermediate' }),
+            stop({ crs: 'NCL', name: 'Newcastle', kind: 'Intermediate' }),
+            stop({ crs: 'EDB', name: 'Edinburgh', kind: 'Terminate' }),
+          ]}
+          legDestinationCrs="YRK"
+        />,
+      );
+      expect(screen.getByText('You get off here')).toBeInTheDocument();
+      expect(screen.getByText('York')).toHaveStyle({ fontWeight: '700' });
+    });
+
+    it('dims every row after the leg destination, but not the destination row itself or earlier rows', () => {
+      // Every stop given an `actualDeparture`/`actualArrival` (`reached`)
+      // so the ONLY thing dimming a row here is `isPastLegDestination` --
+      // isolated from the pre-existing "not yet reached" dimming, which
+      // would otherwise dim NCL/EDB for an unrelated reason and give this
+      // test a false pass.
+      renderWithMantine(
+        <JourneyTimeline
+          stops={[
+            stop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin', actualDeparture: '2026-09-22T16:00:00Z' }),
+            stop({ crs: 'YRK', name: 'York', kind: 'Intermediate', actualArrival: '2026-09-22T18:00:00Z' }),
+            stop({ crs: 'NCL', name: 'Newcastle', kind: 'Intermediate', actualArrival: '2026-09-22T19:00:00Z' }),
+            stop({ crs: 'EDB', name: 'Edinburgh', kind: 'Terminate', actualArrival: '2026-09-22T20:00:00Z' }),
+          ]}
+          legDestinationCrs="YRK"
+        />,
+      );
+      const origin = screen.getByText('London Kings Cross');
+      const destination = screen.getByText('York');
+      const pastFirst = screen.getByText('Newcastle');
+      const pastLast = screen.getByText('Edinburgh');
+      expect(origin).not.toHaveStyle({ color: 'var(--mantine-color-dimmed)' });
+      expect(destination).not.toHaveStyle({ color: 'var(--mantine-color-dimmed)' });
+      expect(pastFirst).toHaveStyle({ color: 'var(--mantine-color-dimmed)' });
+      expect(pastLast).toHaveStyle({ color: 'var(--mantine-color-dimmed)' });
+    });
+
+    it('renders no marker and dims nothing extra when legDestinationCrs is omitted', () => {
+      renderWithMantine(
+        <JourneyTimeline
+          stops={[
+            stop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin', actualDeparture: '2026-09-22T16:00:00Z' }),
+            stop({ crs: 'YRK', name: 'York', kind: 'Intermediate', actualArrival: '2026-09-22T18:00:00Z' }),
+          ]}
+        />,
+      );
+      expect(screen.queryByText('You get off here')).not.toBeInTheDocument();
+      expect(screen.getByText('York')).not.toHaveStyle({ color: 'var(--mantine-color-dimmed)' });
+    });
+
+    it('is a no-op when legDestinationCrs matches no stop in the list', () => {
+      renderWithMantine(
+        <JourneyTimeline
+          stops={[
+            stop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin' }),
+            stop({ crs: 'YRK', name: 'York', kind: 'Terminate' }),
+          ]}
+          legDestinationCrs="ZZZ"
+        />,
+      );
+      expect(screen.queryByText('You get off here')).not.toBeInTheDocument();
+    });
   });
 });
