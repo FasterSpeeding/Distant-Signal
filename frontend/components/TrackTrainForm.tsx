@@ -336,6 +336,18 @@ export function TrackTrainForm({
   // a new one for leg-window entry.
   const [mode, setMode] = useState<'pick' | 'window'>('pick');
   const [windowDestinationCrs, setWindowDestinationCrs] = useState('');
+  // A dedicated suggestions hook, not a reuse of the pin-mode Destination
+  // field's own `destinationSuggestions`/`destinationSuggestionsLoading`
+  // above -- the two Destination fields are separate state
+  // (`destinationCrs` vs `windowDestinationCrs`), so sharing one hook
+  // instance between them would leave the window-mode field's suggestions
+  // dropdown driven by whatever was last typed into the PIN-mode field
+  // (usually nothing, in window mode) rather than by what's actually typed
+  // here.
+  const { suggestions: windowDestinationSuggestions, loading: windowDestinationSuggestionsLoading } = useSuggestions(
+    windowDestinationCrs,
+    searchStations,
+  );
   const [windowServiceDate, setWindowServiceDate] = useState<string | null>(null);
   const [departFrom, setDepartFrom] = useState('');
   const [departTo, setDepartTo] = useState('');
@@ -995,9 +1007,9 @@ export function TrackTrainForm({
             value={windowDestinationCrs}
             onChange={setWindowDestinationCrs}
             data={withNoMatchPlaceholder(
-              destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
+              windowDestinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
               'No matching stations',
-              { active: windowDestinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
+              { active: windowDestinationCrs.trim().length > 0 && !windowDestinationSuggestionsLoading },
             )}
             filter={({ options }) => options}
             error={
