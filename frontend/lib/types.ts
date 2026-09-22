@@ -677,6 +677,66 @@ export interface TrackedTrainListItem {
   sharedGroupCount: number;
 }
 
+/** `common::TimeWindow` on the wire -- `crates/common/src/lib.rs`. Both
+ * fields `"HH:MM:SS" | null`. */
+export interface TimeWindow {
+  after: string | null;
+  before: string | null;
+}
+
+/** One row of `GET /Journeys/mine`
+ * (`crates/api/src/data/journeys.rs::JourneyListItem`, camelCase).
+ * Deliberately lighter than `JourneyDetail` below -- see that Rust
+ * struct's own doc comment for why. */
+export interface JourneyListItem {
+  id: number;
+  customName: string | null;
+  createdAt: string;
+  legId: number;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  matchMode: 'unmatched' | 'manual' | 'auto';
+  trainSubscriptionId: number | null;
+  resolutionStatus: string | null;
+  status: string | null;
+  delayMinutes: number | null;
+}
+
+/** One leg of `GET /Journeys/{id}`'s response
+ * (`crates/api/src/routes/journeys.rs::JourneyLegDetailResponse`).
+ * `trackedTrainState` is `null` for an unmatched leg, and otherwise the
+ * EXACT SAME shape `GET /Train/{trackingId}` returns -- `TrackedTrainState`
+ * is reused verbatim, not a narrower/different type. */
+export interface JourneyLegDetail {
+  id: number;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  serviceDate: string;
+  departAfter: string | null;
+  departBefore: string | null;
+  arriveAfter: string | null;
+  arriveBefore: string | null;
+  matchMode: 'unmatched' | 'manual' | 'auto';
+  trackedTrainState: TrackedTrainState | null;
+}
+
+/** `GET /Journeys/{id}`'s full response. */
+export interface JourneyDetail {
+  id: number;
+  customName: string | null;
+  createdAt: string;
+  legs: JourneyLegDetail[];
+}
+
+/** `POST /Journeys`'s response
+ * (`crates/api/src/routes/journeys.rs::CreateJourneyResponse`). */
+export interface CreateJourneyResponse {
+  journeyId: number;
+  legId: number;
+  trackingId: number | null;
+  resolutionStatus: string | null;
+}
+
 /** `POST /Train/track`'s request body (`common::TrackPinRequest`). Plain
  * snake_case on the wire -- unlike every other type in this file, which
  * mirrors `crates/api`'s camelCase public JSON, this one matches

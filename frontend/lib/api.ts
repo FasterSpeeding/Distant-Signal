@@ -33,6 +33,8 @@ import type {
   GroupCustomLine,
   SharedGroupCustomLine,
   GroupJoinPreview,
+  JourneyDetail,
+  JourneyListItem,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -492,6 +494,41 @@ export async function getMyTrackedTrains(): Promise<TrackedTrainListItem[] | nul
     throw errorForResponse(url, response);
   }
   return response.json() as Promise<TrackedTrainListItem[]>;
+}
+
+/** `GET /Journeys/{id}` -- same error-mapping contract as
+ * `getTrackedTrainById` immediately above: throws `ApiNotFoundError` on a
+ * 404 (doesn't exist, or isn't this caller's -- indistinguishable, per
+ * this app's 404-never-403 convention) and `ApiUnauthorizedError` on a
+ * 401 (not logged in at all) via `errorForResponse`, so
+ * `app/journeys/[id]/page.tsx` can render the same two distinct page
+ * states `app/train/by-id/[trackingId]/page.tsx` already does. */
+export async function getJourney(id: number): Promise<JourneyDetail> {
+  const url = `${baseUrl()}/Journeys/${id}`;
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<JourneyDetail>;
+}
+
+/** `GET /Journeys/mine` -- `null` on a `401`, same "not logged in" signal
+ * `getMyTrackedTrains` already uses (no id in this route's path to
+ * disambiguate a second way). Not consumed by any page in this plan (see
+ * this plan's own Non-goals: no `/journeys/mine` list page yet) --
+ * implemented now, independently testable, for a follow-up list page to
+ * consume later without a backend change. */
+export async function getMyJourneys(): Promise<JourneyListItem[] | null> {
+  const url = `${baseUrl()}/Journeys/mine`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (response.status === 401) return null;
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<JourneyListItem[]>;
 }
 
 /** Per-user, session-gated ticket list for one tracked train
