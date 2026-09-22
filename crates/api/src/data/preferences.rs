@@ -25,6 +25,18 @@ pub async fn list_pinned_station_crs(pool: &PgPool, user_id: &str) -> Result<Vec
         .collect()
 }
 
+pub async fn list_pinned_operator_codes(pool: &PgPool, user_id: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT operator_code FROM pinned_operators WHERE user_id = $1 ORDER BY pinned_at",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| Ok(row.try_get("operator_code")?))
+        .collect()
+}
+
 /// Filters `candidates` down to only those that exist in `stations` —
 /// used to drop stale pinned-station ids on read.
 pub async fn filter_existing_station_crs(
@@ -87,4 +99,91 @@ pub async fn replace_pinned_stations(
     }
     tx.commit().await?;
     Ok(())
+}
+
+/// Same replace-whole-set semantics as `replace_pinned_lines`/
+/// `replace_pinned_stations` -- delete-all-then-insert-all in one
+/// transaction, scoped to `user_id`.
+pub async fn replace_pinned_operators(
+    pool: &PgPool,
+    user_id: &str,
+    codes: &[String],
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM pinned_operators WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    for code in codes {
+        sqlx::query(
+            "INSERT INTO pinned_operators (user_id, operator_code, pinned_at) VALUES ($1, $2, NOW())",
+        )
+        .bind(user_id)
+        .bind(code)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn connect() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                replace_pinned_operators_then_list_pinned_operator_codes_round_trips \
+                -- --ignored`"]
+    async fn replace_pinned_operators_then_list_pinned_operator_codes_round_trips() {
+        let pool = connect().await;
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-PINNED-OPERATORS-USER', 'test@example.com', 'Test Rider') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        replace_pinned_operators(
+            &pool,
+            "TEST-PINNED-OPERATORS-USER",
+            &["SW".to_string(), "TfL".to_string()],
+        )
+        .await
+        .expect("pin operators");
+        let codes = list_pinned_operator_codes(&pool, "TEST-PINNED-OPERATORS-USER")
+            .await
+            .expect("list pinned operator codes");
+        assert_eq!(codes, vec!["SW".to_string(), "TfL".to_string()]);
+
+        // A second replace fully supersedes the first set (delete-then-
+        // insert, not merge).
+        replace_pinned_operators(&pool, "TEST-PINNED-OPERATORS-USER", &["VT".to_string()])
+            .await
+            .expect("replace pinned operators");
+        let codes = list_pinned_operator_codes(&pool, "TEST-PINNED-OPERATORS-USER")
+            .await
+            .expect("list pinned operator codes after replace");
+        assert_eq!(codes, vec!["VT".to_string()]);
+
+        sqlx::query("DELETE FROM pinned_operators WHERE user_id = 'TEST-PINNED-OPERATORS-USER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture pins");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-PINNED-OPERATORS-USER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user");
+    }
 }
