@@ -1405,6 +1405,200 @@ mod db_tests {
         cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG").await;
     }
 
+    /// End-to-end coverage for "Change train" (item 6 of the 2026-09-22 UX
+    /// review's fix-cycle follow-up): a leg that has BOTH a persisted
+    /// search window AND a currently-matched train -- the exact state
+    /// `JourneyLegCard.tsx` gates its "Change train" button on
+    /// (`hasWindow && isOwner`, rendered only in the MATCHED branch). No
+    /// existing test covered this combination: `post_leg_train_commits_a_first_pick_then_a_change_train_repick`
+    /// above re-picks a train but never calls `GET .../candidates` at all
+    /// (it re-posts a fabricated train UID directly, skipping the button's
+    /// own first step), and `get_leg_candidates_a_non_owner_gets_404`
+    /// calls `GET .../candidates` but on a leg that is never matched --
+    /// a different code path (an OPEN leg's card has no "Change train"
+    /// button at all, see that component's own doc comment). This test
+    /// walks the real sequence a click on the button performs: create a
+    /// windowed leg, commit a first pick (now matched AND windowed),
+    /// re-fetch candidates -- proving `get_leg_candidates` is NOT gated on
+    /// match state, only on the leg's own persisted origin/destination/
+    /// window -- then commit a second pick from that list and confirm
+    /// `train_subscription_id` actually moved in the database, not just in
+    /// the response body.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                change_train_end_to_end -- --ignored --test-threads=1`"]
+    async fn change_train_end_to_end_candidates_stay_window_scoped_on_an_already_matched_leg() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-CHANGE-TRAIN-E2E").await;
+        let router = test_router(test_app(pool.clone()));
+
+        // A deliberately far-future, deliberately unrealistic fixture date
+        // -- mirrors `data::queries::db_tests::fixture_date_feb`'s own 2099
+        // convention -- so this test's own `schedule_destination_departures`
+        // rows can never collide with real preview/production data sharing
+        // this database (this repository's own live preview instance and
+        // other agents' test runs included).
+        let service_date =
+            chrono::NaiveDate::from_ymd_opt(2099, 4, 17).expect("valid fixture date");
+        async fn delete_fixture_day(pool: &PgPool, service_date: chrono::NaiveDate) {
+            sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+                .bind(service_date)
+                .execute(pool)
+                .await
+                .expect("cleanup fixture schedule_destination_departures rows");
+        }
+        delete_fixture_day(&pool, service_date).await;
+
+        // Two real WAT -> RDG candidates within the leg's own persisted
+        // window (08:00-11:00): CT-CHANGE-1 (the first pick) and
+        // CT-CHANGE-2 (what "Change train" re-picks). This is the table
+        // `GET .../candidates` actually reads
+        // (`queries::search_journey_leg_candidates`) -- unlike
+        // `post_leg_train`, which never touches it, so the sibling test
+        // above (fabricated "A11111"/"A22222" UIDs) never exercises the
+        // candidates-list route at all. Each train needs two rows: its own
+        // departure from WAT, and its own arrival/departure record at its
+        // destination RDG -- same two-row-per-train shape
+        // `search_journey_leg_candidates_enforces_ordering_for_different_stations`
+        // (`data/queries.rs`) already establishes for this table.
+        fn candidate_rows(
+            train_uid: &str,
+            service_date: chrono::NaiveDate,
+            departs: chrono::NaiveTime,
+            arrives: chrono::NaiveTime,
+        ) -> Vec<crate::data::queries::ScheduleDestinationDeparturesRow> {
+            vec![
+                crate::data::queries::ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "RDG".to_string(),
+                    scheduled: departs,
+                    day_offset: 0,
+                    train_uid: train_uid.to_string(),
+                    origin_crs: "WAT".to_string(),
+                    true_origin_crs: None,
+                    calling_point_arrival: None,
+                    destination_arrival: Some(arrives),
+                    destination_arrival_day_offset: 0,
+                },
+                crate::data::queries::ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "RDG".to_string(),
+                    scheduled: arrives,
+                    day_offset: 0,
+                    train_uid: train_uid.to_string(),
+                    origin_crs: "RDG".to_string(),
+                    true_origin_crs: None,
+                    calling_point_arrival: None,
+                    destination_arrival: Some(arrives),
+                    destination_arrival_day_offset: 0,
+                },
+            ]
+        }
+        let mut rows = candidate_rows(
+            "CT-CHANGE-1",
+            service_date,
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("valid time"),
+            chrono::NaiveTime::from_hms_opt(9, 30, 0).expect("valid time"),
+        );
+        rows.extend(candidate_rows(
+            "CT-CHANGE-2",
+            service_date,
+            chrono::NaiveTime::from_hms_opt(10, 0, 0).expect("valid time"),
+            chrono::NaiveTime::from_hms_opt(10, 30, 0).expect("valid time"),
+        ));
+        crate::data::queries::upsert_schedule_destination_departures(&pool, &rows)
+            .await
+            .expect("seed fixture schedule_destination_departures rows");
+
+        // Create the window-mode leg -- the same persisted window
+        // (`departAfter`/`departBefore`) `JourneyLegCard.tsx`'s `hasWindow`
+        // check reads.
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": service_date.to_string(),
+                    "departWindow": { "after": "08:00:00", "before": "11:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+
+        // First pick -- the leg is now MATCHED (`trainSubscriptionId` set)
+        // while STILL carrying its window: exactly the combination
+        // `JourneyLegCard.tsx` renders a "Change train" button for, and the
+        // one gap this whole test exists to close.
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": "CT-CHANGE-1", "serviceDate": service_date.to_string() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "first pick: {body:?}");
+        let first_tracking_id = body["trackingId"].as_i64().expect("trackingId present");
+
+        // The button's own first step: `GET .../candidates` on this
+        // now-MATCHED, still-windowed leg. `get_leg_candidates` reads the
+        // leg's persisted origin/destination/window fields, never its
+        // match state -- this proves that in practice, not just by reading
+        // the handler.
+        let (status, body) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/candidates"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "candidates on a matched leg: {body:?}");
+        let uids: Vec<&str> = body["results"]
+            .as_array()
+            .expect("results is an array")
+            .iter()
+            .map(|r| r["uid"].as_str().expect("uid present"))
+            .collect();
+        assert!(
+            uids.contains(&"CT-CHANGE-1") && uids.contains(&"CT-CHANGE-2"),
+            "candidates must stay scoped to the leg's own persisted window on a matched leg too: {uids:?}"
+        );
+
+        // Picking a new candidate from that list -- the re-pick step
+        // "Change train" performs, through the exact same commit route as
+        // the first pick (`post_leg_train`'s own doc comment: "the SAME
+        // route handles a leg's first pick ... and any later 'Change
+        // train' re-pick").
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": "CT-CHANGE-2", "serviceDate": service_date.to_string() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "change train: {body:?}");
+        let second_tracking_id = body["trackingId"].as_i64().expect("trackingId present");
+        assert_ne!(first_tracking_id, second_tracking_id);
+
+        // The leg's own `train_subscription_id` actually moved to the new
+        // pick in the database, not just in the response body.
+        let (train_subscription_id,): (Option<i64>,) =
+            sqlx::query_as("SELECT train_subscription_id FROM journey_legs WHERE id = $1")
+                .bind(leg_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read leg train_subscription_id");
+        assert_eq!(train_subscription_id, Some(second_tracking_id));
+
+        delete_fixture_day(&pool, service_date).await;
+        cleanup_user(&pool, "TEST-ROUTE-CHANGE-TRAIN-E2E").await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
