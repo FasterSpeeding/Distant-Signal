@@ -31,6 +31,7 @@ export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   // docs/superpowers/specs/2026-09-07-train-listing-page-design.md §4.
   { href: '/trains', label: 'Find a Train' },
   { href: '/incidents', label: 'Incident Archive' },
+  { href: '/operators', label: 'Operators' },
 ];
 
 /** Reclassified from Tier 3 (hidden entirely when logged out) to
