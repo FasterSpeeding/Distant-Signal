@@ -48,7 +48,7 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
 // fallback below is typed as `Preferences` rather than inferred with
 // `never[]` members. Per-user data fails closed during an outage (design
 // spec Decision 5) instead of being stale-served.
-const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [] };
+const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [], pinnedOperators: [] };
 
 async function lookupStation(crs: string): Promise<StationLookup> {
   if (!CRS_PATTERN.test(crs)) return { outcome: 'unknown' };

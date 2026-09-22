@@ -1,5 +1,5 @@
-//! `/public/preferences`: which lines/stations are pinned to the home
-//! page. Fully session-gated, both read and write -- unlike `/public/lines`,
+//! `/public/preferences`: which lines/stations/operators are pinned to the
+//! home page. Fully session-gated, both read and write -- unlike `/public/lines`,
 //! whose *reads* stay unauthenticated (see
 //! `docs/superpowers/specs/2026-07-09-custom-lines-and-blended-stats-design.md`'s
 //! Non-goals), pinned lines/stations are per-user state with no useful
@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{custom_lines, preferences, queries};
+use crate::data::{custom_lines, preferences, queries, reference};
 
 pub fn router() -> Router {
     Router::new()
@@ -27,6 +27,10 @@ pub fn router() -> Router {
             "/preferences/pinned-stations",
             axum::routing::put(put_pinned_stations),
         )
+        .route(
+            "/preferences/pinned-operators",
+            axum::routing::put(put_pinned_operators),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -34,6 +38,7 @@ pub fn router() -> Router {
 struct PreferencesResponse {
     pinned_lines: Vec<String>,
     pinned_stations: Vec<String>,
+    pinned_operators: Vec<String>,
 }
 
 async fn get_preferences(
@@ -90,9 +95,29 @@ async fn get_preferences(
             .await
             .map_err(internal_error)?;
 
+    let pinned_operator_codes = preferences::list_pinned_operator_codes(&app.database, &user.id)
+        .await
+        .map_err(internal_error)?;
+    // Every real ATOC code plus the synthetic "TfL" row is "known" here --
+    // unlike `filter_known_pinned_lines`, there is no ownership/visibility
+    // distinction to make (an operator code is a public reference concept,
+    // not a private or group-scoped resource), so this filter exists purely
+    // to drop a stale/foreign code, the same hygiene role
+    // `filter_existing_station_crs` plays for stations.
+    let tocs = reference::get_all_tocs(&app.database)
+        .await
+        .map_err(internal_error)?;
+    let known_operator_codes = tocs
+        .into_iter()
+        .map(|t| t.code)
+        .chain(std::iter::once(common::TFL_OPERATOR.to_string()));
+    let pinned_operators =
+        filter_known_pinned_operators(pinned_operator_codes, known_operator_codes);
+
     Ok(Json(PreferencesResponse {
         pinned_lines,
         pinned_stations,
+        pinned_operators,
     }))
 }
 
@@ -120,6 +145,17 @@ async fn put_pinned_stations(
     }
 
     preferences::replace_pinned_stations(&app.database, &user.id, &crs_codes)
+        .await
+        .map_err(internal_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn put_pinned_operators(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Json(codes): Json<Vec<String>>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    preferences::replace_pinned_operators(&app.database, &user.id, &codes)
         .await
         .map_err(internal_error)?;
     Ok(StatusCode::NO_CONTENT)
@@ -164,6 +200,22 @@ fn filter_known_pinned_lines(
     pinned_line_ids
         .into_iter()
         .filter(|id| known_line_ids.contains(id))
+        .collect()
+}
+
+/// Filters `pinned_codes` down to ones that still resolve to a real
+/// operator -- a real `tocs` row's code, or the synthetic `"TfL"` row.
+/// Unlike `filter_known_pinned_lines`, there is no per-caller visibility
+/// distinction: every operator code is public reference data, so a single
+/// flat known-codes set (not a caller-scoped one) is correct here.
+fn filter_known_pinned_operators(
+    pinned_codes: Vec<String>,
+    known_codes: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let known: HashSet<String> = known_codes.into_iter().collect();
+    pinned_codes
+        .into_iter()
+        .filter(|code| known.contains(code))
         .collect()
 }
 
@@ -224,6 +276,28 @@ mod tests {
         // (`queries::upsert_tfl_line_status`).
         let pinned = vec!["long-gone-line".to_string()];
         let result = filter_known_pinned_lines(pinned, vec![], vec![], vec![]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn a_pinned_real_operator_code_survives_the_known_codes_filter() {
+        let pinned = vec!["SW".to_string()];
+        let result =
+            filter_known_pinned_operators(pinned, vec!["SW".to_string(), "VT".to_string()]);
+        assert_eq!(result, vec!["SW".to_string()]);
+    }
+
+    #[test]
+    fn a_pinned_tfl_code_survives_the_known_codes_filter() {
+        let pinned = vec!["TfL".to_string()];
+        let result = filter_known_pinned_operators(pinned, vec!["TfL".to_string()]);
+        assert_eq!(result, vec!["TfL".to_string()]);
+    }
+
+    #[test]
+    fn a_pinned_code_unknown_to_every_source_is_dropped() {
+        let pinned = vec!["ZZ".to_string()];
+        let result = filter_known_pinned_operators(pinned, vec!["SW".to_string()]);
         assert!(result.is_empty());
     }
 }
@@ -321,5 +395,83 @@ mod db_tests {
             !pinned_lines.contains(&"TEST-UNKNOWN-LINE".to_string()),
             "a pinned id with no matching line anywhere should still be dropped"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                a_pinned_operator_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip \
+                -- --ignored`"]
+    async fn a_pinned_operator_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip()
+     {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-PREFS-OPERATOR-USER', 'test@example.com', 'Test Rider') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        sqlx::query(
+            "INSERT INTO tocs (atoc_code, name, legal_name, fetched_at) VALUES ('ZP', 'Z Prefs Rail', 'Z Prefs Rail', NOW()) \
+             ON CONFLICT (atoc_code) DO UPDATE SET name = EXCLUDED.name",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture toc");
+
+        preferences::replace_pinned_operators(
+            &pool,
+            "TEST-PREFS-OPERATOR-USER",
+            &[
+                "ZP".to_string(),
+                "ZZ-UNKNOWN".to_string(),
+                "TfL".to_string(),
+            ],
+        )
+        .await
+        .expect("pin operators");
+
+        // This test's job is only the write/read round trip through the
+        // real table (replace_pinned_operators -> list_pinned_operator_codes),
+        // matching the scope
+        // a_pinned_tfl_line_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip
+        // has for pinned_lines. filter_known_pinned_operators (the "is this
+        // code still real" hygiene step get_preferences applies on top of
+        // this list) is deliberately NOT re-exercised here -- it needs no
+        // database at all and is already covered by this file's own pure
+        // unit tests in Step 7. So this list is expected to still contain
+        // the unknown code -- that filtering happens one layer up, in the
+        // route handler, not in list_pinned_operator_codes itself.
+        let pinned_operator_codes =
+            preferences::list_pinned_operator_codes(&pool, "TEST-PREFS-OPERATOR-USER")
+                .await
+                .expect("list pinned operator codes");
+
+        sqlx::query("DELETE FROM pinned_operators WHERE user_id = 'TEST-PREFS-OPERATOR-USER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture pins");
+        sqlx::query("DELETE FROM tocs WHERE atoc_code = 'ZP'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture toc");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-PREFS-OPERATOR-USER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user");
+
+        assert!(pinned_operator_codes.contains(&"ZP".to_string()));
+        assert!(pinned_operator_codes.contains(&"TfL".to_string()));
+        assert!(pinned_operator_codes.contains(&"ZZ-UNKNOWN".to_string()));
     }
 }

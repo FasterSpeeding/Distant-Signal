@@ -7,6 +7,7 @@ import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type {
   LineStatusReport,
+  OperatorSummary,
   SharedGroupCustomLine,
   SharedGroupTrain,
   TrackedTrainListItem,
@@ -23,8 +24,13 @@ vi.mock('next/headers', () => ({
 
 // The anonymous branch's login nudge is now LoginLink (Task 1), which calls
 // usePathname()/useSearchParams() -- same stub AuthStatus.test.tsx and
-// TicketPanel.test.tsx use for the same reason.
+// TicketPanel.test.tsx use for the same reason. `useRouter` is stubbed too,
+// as of the "Your Operators" section (Task 13): `OperatorStatusCard`
+// renders a `PinToggle` per card, which calls `useRouter()` -- same
+// workaround `app/operators/page.test.tsx` uses for the same reason (that
+// hook throws outside a real Next.js App Router tree).
 vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => '/',
   useSearchParams: () => new URLSearchParams(''),
 }));
@@ -62,6 +68,18 @@ function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListIt
   };
 }
 
+function operator(overrides: Partial<OperatorSummary> = {}): OperatorSummary {
+  return {
+    code: 'VT',
+    name: 'Avanti West Coast',
+    lineIds: ['wcml'],
+    worstSeverity: 1,
+    reason: 'Operational issues',
+    computedAt: '2026-09-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
 // One row of `GET /public/groups/shared-trains` -- a train another member
 // shared into a group this caller belongs to. Distinct origin/destination
 // from `item()` above so a shared row and an own row are never confusable
@@ -96,7 +114,7 @@ function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrai
 beforeEach(() => {
   __resetStaleCacheForTests();
   vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
-  vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+  vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
   vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
   vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
   // Every test that predates group sharing says nothing about it -- default
@@ -108,6 +126,12 @@ beforeEach(() => {
   vi.mocked(api.getStationName).mockResolvedValue(null);
   vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
   vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue(null);
+  // Every test that predates operator pinning (Task 13) says nothing about
+  // it -- default the new sixth fetch to "no operators in the catalogue"
+  // so each still describes exactly the scenario it was written for.
+  // Load-bearing mechanically too: `allOperators.filter(...)` below is
+  // unguarded, and an automocked `undefined` return has no `.filter`.
+  vi.mocked(api.getAllOperators).mockResolvedValue([]);
 });
 
 describe('DashboardPage', () => {
@@ -118,7 +142,7 @@ describe('DashboardPage', () => {
   // duplicates the brand name in its text.
   it('titles the anonymous h1 something other than the brand name the nav already carries', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('heading', { name: 'Live UK rail status', level: 1 })).toBeInTheDocument();
@@ -127,7 +151,7 @@ describe('DashboardPage', () => {
 
   it('anonymous, all lines good: shows the no-disruption message, not a raw empty state', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByText(/Every line is running a Good Service/)).toBeInTheDocument();
@@ -147,7 +171,7 @@ describe('DashboardPage', () => {
   // component's own behavior under a stubbed-supported browser.
   it('renders a disabled "Enable notifications" control under jsdom (no Push API support)', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
     expect(await screen.findByRole('button', { name: /enable notifications/i })).toBeDisabled();
@@ -155,7 +179,7 @@ describe('DashboardPage', () => {
 
   it('anonymous, a line disrupted: lists it, worst-first', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'central', name: 'Central', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
       report(),
@@ -167,7 +191,7 @@ describe('DashboardPage', () => {
 
   it('anonymous: merged TfL counterpart ids are excluded from the widget', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'tfl-elizabeth', name: 'Elizabeth line', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
     ]);
@@ -177,7 +201,7 @@ describe('DashboardPage', () => {
 
   it('logged in: renders the existing pinned-lines/pinned-stations behavior, not the anonymous branch', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('heading', { name: 'Your Lines' })).toBeInTheDocument();
@@ -190,7 +214,7 @@ describe('DashboardPage', () => {
 
   it('shows the live "Right now" module to a logged-in user with no pinned lines', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'central', name: 'Central', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
     ]);
@@ -204,7 +228,7 @@ describe('DashboardPage', () => {
     // Gated on pinned LINES only: a user with pinned stations but no
     // pinned lines still has a line-shaped hole on the dashboard.
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'], pinnedOperators: [] });
     vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
@@ -214,19 +238,19 @@ describe('DashboardPage', () => {
 
   it('hides it once they pin a line', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Right now' })).not.toBeInTheDocument();
   });
 
   it('renders the module at heading level 2 in the authenticated branch, no skip', async () => {
-    // Both pinned sections are empty here, so review §3.1.4 puts "Right
-    // now" first: h2 "Right now" -> h1 "Your Lines" -> h2 "Your Stations"
-    // -> ... . Its own level-2 heading never skips to h3 regardless of
-    // where in the page it renders.
+    // All three pinned sections are empty here, so review §3.1.4 puts
+    // "Right now" first: h2 "Right now" -> h1 "Your Lines" -> h2 "Your
+    // Stations" -> ... . Its own level-2 heading never skips to h3
+    // regardless of where in the page it renders.
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
@@ -239,7 +263,7 @@ describe('DashboardPage', () => {
   describe('empty-state link deduplication (review §3.1.4)', () => {
     it('keeps only the inline "Browse all lines" link when Your Lines is empty, not a second one beside the heading', async () => {
       vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'], pinnedOperators: [] });
       vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
       renderWithMantine(await DashboardPage());
       const heading = screen.getByRole('heading', { name: 'Your Lines', level: 1 });
@@ -252,7 +276,7 @@ describe('DashboardPage', () => {
 
     it('keeps only the inline "Look up a station" link when Your Stations is empty, not a second one beside the heading', async () => {
       vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [] });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [], pinnedOperators: [] });
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
       renderWithMantine(await DashboardPage());
       const heading = screen.getByRole('heading', { name: 'Your Stations', level: 2 });
@@ -262,7 +286,7 @@ describe('DashboardPage', () => {
 
     it('still shows the heading-level "Browse all lines" link once Your Lines has pinned rows', async () => {
       vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [] });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [], pinnedOperators: [] });
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
       renderWithMantine(await DashboardPage());
       const heading = screen.getByRole('heading', { name: 'Your Lines', level: 1 });
@@ -274,7 +298,7 @@ describe('DashboardPage', () => {
 
     it('still shows the heading-level "Look up a station" link once Your Stations has pinned rows', async () => {
       vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'], pinnedOperators: [] });
       vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
       renderWithMantine(await DashboardPage());
       const heading = screen.getByRole('heading', { name: 'Your Stations', level: 2 });
@@ -285,16 +309,19 @@ describe('DashboardPage', () => {
   });
 
   // Review §3.1.4: "order 'Right now' first when both pinned sections are
-  // empty" -- otherwise the module's usual position (after Your Stations,
-  // only when Lines specifically is empty) is unchanged.
-  describe('"Right now" ordering when both pinned sections are empty (review §3.1.4)', () => {
+  // empty" -- generalized by Task 13 to all THREE pinned sections, now that
+  // "Your Operators" exists (`allPinnedSectionsEmpty`, renamed from
+  // `bothPinnedSectionsEmpty`). Otherwise the module's usual position
+  // (after Your Operators, only when Lines specifically is empty) is
+  // unchanged.
+  describe('"Right now" ordering when all pinned sections are empty (review §3.1.4)', () => {
     function headingNames() {
       return screen.getAllByRole('heading').map((h) => h.textContent);
     }
 
-    it('puts "Right now" before "Your Lines" when both sections are empty', async () => {
+    it('puts "Right now" before "Your Lines" when all three sections are empty', async () => {
       vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
       renderWithMantine(await DashboardPage());
       const names = headingNames();
@@ -305,7 +332,7 @@ describe('DashboardPage', () => {
 
     it('keeps "Right now" after "Your Stations" (its ordinary spot) when only Lines is empty', async () => {
       vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'], pinnedOperators: [] });
       vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
       renderWithMantine(await DashboardPage());
@@ -313,11 +340,33 @@ describe('DashboardPage', () => {
       expect(names.indexOf('Your Stations')).toBeLessThan(names.indexOf('Right now'));
       expect(names.filter((n) => n === 'Right now')).toHaveLength(1);
     });
+
+    // Direct regression check for the `bothPinnedSectionsEmpty` ->
+    // `allPinnedSectionsEmpty` rename (Task 13): Lines and Stations are
+    // both empty here -- the exact input the OLD two-way flag would have
+    // called "both empty" and put "Right now" at the very top for -- but
+    // Operators has a pin, so the new three-way `&&` must keep it in its
+    // ordinary spot instead. A regressed rename (one that dropped the
+    // Operators leg, or used `||`) would put "Right now" first here.
+    it('keeps "Right now" in its ordinary spot, not at the top, when only Operators has something pinned', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({
+        pinnedLines: [],
+        pinnedStations: [],
+        pinnedOperators: ['VT'],
+      });
+      vi.mocked(api.getAllOperators).mockResolvedValue([operator({ code: 'VT' })]);
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+      renderWithMantine(await DashboardPage());
+      const names = headingNames();
+      expect(names.indexOf('Your Operators')).toBeLessThan(names.indexOf('Right now'));
+      expect(names.filter((n) => n === 'Right now')).toHaveLength(1);
+    });
   });
 
   it('anonymous branch still renders "Right now" identically after the RightNowModule extraction', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'central', name: 'Central', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
     ]);
@@ -452,7 +501,7 @@ describe('DashboardPage', () => {
 
     it('renders the overflow line in the authenticated zero-pinned-lines branch too', async () => {
       vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
       vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(7));
       renderWithMantine(await DashboardPage());
       expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
@@ -467,7 +516,7 @@ describe('DashboardPage', () => {
 
   it('logged in, an auth glitch (getSession rejects): degrades to the anonymous branch, not a crash', async () => {
     vi.mocked(api.getSession).mockRejectedValue(new Error('boom'));
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('link', { name: 'Log in to pin your lines and stations' })).toBeInTheDocument();
@@ -490,7 +539,7 @@ describe('DashboardPage', () => {
 describe('DashboardPage -- Your Tracked Trains section', () => {
   beforeEach(() => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
   });
 
@@ -632,7 +681,7 @@ describe('DashboardPage -- outage behaviour', () => {
 
   it('keeps the dashboard up when a pinned station\'s disruption fetch fails', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.c', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['KGX'] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['KGX'], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     vi.mocked(api.getStopPointDisruption).mockRejectedValue(new Error('connect ECONNREFUSED'));
 
@@ -655,7 +704,7 @@ describe('DashboardPage -- pinned station line-coverage distinction', () => {
   // detail page.
   beforeEach(() => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.c', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['RAY'] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['RAY'], pinnedOperators: [] });
     vi.mocked(api.getStationName).mockResolvedValue('Raynes Park');
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
   });
@@ -800,7 +849,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
     vi.mocked(api.getSession).mockResolvedValue(loggedIn);
     vi.mocked(api.getPreferences).mockResolvedValue({
       pinnedLines: ['custom-my-commute'],
-      pinnedStations: [],
+      pinnedStations: [], pinnedOperators: [],
     });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'custom-my-commute', name: 'My Commute' }),
@@ -821,7 +870,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
     vi.mocked(api.getSession).mockResolvedValue(loggedIn);
     vi.mocked(api.getPreferences).mockResolvedValue({
       pinnedLines: ['custom-my-commute'],
-      pinnedStations: [],
+      pinnedStations: [], pinnedOperators: [],
     });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
     vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
@@ -872,6 +921,127 @@ describe('DashboardPage -- Lines shared with you section', () => {
   });
 });
 
+// Task 13: the third pinned-collection section, alongside "Your Lines" and
+// "Your Stations" above -- same worst-first-then-alphabetical sort, same
+// "browse the full list"/"pin something" empty-state shape, filtered from
+// the same public, unauthenticated `getAllOperators()` catalogue fetched
+// unconditionally above (see the fetch's own comment in app/page.tsx).
+describe('DashboardPage -- Your Operators section', () => {
+  const loggedIn = { authenticated: true as const, id: 'u1', email: 'a@b.com', name: 'A' };
+
+  it('renders a pinned operator with a matching getAllOperators entry as a card under "Your Operators"', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: ['VT'],
+    });
+    vi.mocked(api.getAllOperators).mockResolvedValue([operator({ code: 'VT', name: 'Avanti West Coast' })]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByRole('heading', { name: 'Your Operators' })).toBeInTheDocument();
+    expect(screen.getByText('Avanti West Coast')).toBeInTheDocument();
+  });
+
+  it("filters allOperators down to the caller's own pins, not the whole catalogue", async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: ['VT'],
+    });
+    vi.mocked(api.getAllOperators).mockResolvedValue([
+      operator({ code: 'VT', name: 'Avanti West Coast' }),
+      operator({ code: 'GW', name: 'Great Western Railway' }),
+    ]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Avanti West Coast')).toBeInTheDocument();
+    expect(screen.queryByText('Great Western Railway')).not.toBeInTheDocument();
+  });
+
+  it('shows the empty-state sentence, linking to /operators, when nothing is pinned', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: [],
+    });
+    renderWithMantine(await DashboardPage());
+
+    expect(
+      screen.getByText(/haven't pinned any operators yet/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Browse all operators' })).toHaveAttribute('href', '/operators');
+  });
+
+  it('still shows the heading-level "Browse all operators" link once Your Operators has pinned rows', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: ['VT'],
+    });
+    vi.mocked(api.getAllOperators).mockResolvedValue([operator({ code: 'VT' })]);
+    renderWithMantine(await DashboardPage());
+
+    const heading = screen.getByRole('heading', { name: 'Your Operators' });
+    expect(
+      within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Browse all operators' }),
+    ).toHaveAttribute('href', '/operators');
+  });
+
+  // Final whole-branch review finding: the operators fetch used to be
+  // unconditional, even though the anonymous branch never renders anything
+  // pinned-operator-shaped -- pure wasted cost for that visitor.
+  it('never fetches the operators catalogue for an anonymous visitor', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    // This mock's call count accumulates across every earlier test in this
+    // file (nothing in this suite resets mocks between tests) -- cleared
+    // here so this assertion is about THIS render, not the file's history.
+    vi.mocked(api.getAllOperators).mockClear();
+    renderWithMantine(await DashboardPage());
+
+    expect(api.getAllOperators).not.toHaveBeenCalled();
+  });
+
+  // Final whole-branch review finding: a failed catalogue fetch used to be
+  // swallowed as `[]`, which read identically to "the catalogue is empty"
+  // once filtered against the caller's pins -- so a caller who HAD pinned
+  // operators was told, falsely, that they hadn't pinned any at all.
+  it('shows a "couldn\'t load" message, not the false empty-state sentence, when the operators fetch fails and the caller has pinned operators', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: ['VT'],
+    });
+    vi.mocked(api.getAllOperators).mockRejectedValue(new Error('network error'));
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText("Couldn't load operator status right now.")).toBeInTheDocument();
+    expect(screen.queryByText(/haven't pinned any operators yet/)).not.toBeInTheDocument();
+  });
+
+  // Counterpart of the test above: when the caller genuinely has nothing
+  // pinned, a failed fetch has nothing to have lost, so the ordinary
+  // empty-state sentence (not the "couldn't load" one) is still the right
+  // message.
+  it('still shows the ordinary empty-state sentence when the operators fetch fails but the caller has nothing pinned', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: [],
+    });
+    vi.mocked(api.getAllOperators).mockRejectedValue(new Error('network error'));
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText(/haven't pinned any operators yet/)).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load operator status right now.")).not.toBeInTheDocument();
+  });
+});
+
 // The home page's own copy of the /track/mine fix: a train another member
 // shared into a group the caller belongs to is one of "their" trains for
 // the purposes of this section, and before this it was invisible here --
@@ -881,7 +1051,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
 describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
   beforeEach(() => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
   });
 

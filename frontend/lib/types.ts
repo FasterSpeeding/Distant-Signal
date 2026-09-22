@@ -291,6 +291,21 @@ export interface LineSixHourlyStats {
   skipRate: number;
 }
 
+/** `GET /public/operators/{code}/stats/...` and `GET /public/network/stats/...`
+ * share the exact same per-bucket response shape the per-line routes
+ * already use -- `LineDailyStats` etc. carry no line-specific field, so
+ * these are plain aliases for readability at the new call sites, not new
+ * structural types. See
+ * docs/superpowers/plans/2026-09-22-operator-overview-phase4-historical-views-plan.md. */
+export type OperatorDailyStats = LineDailyStats;
+export type OperatorHalfHourlyStats = LineHalfHourlyStats;
+export type OperatorHourlyStats = LineHourlyStats;
+export type OperatorSixHourlyStats = LineSixHourlyStats;
+export type NetworkDailyStats = LineDailyStats;
+export type NetworkHalfHourlyStats = LineHalfHourlyStats;
+export type NetworkHourlyStats = LineHourlyStats;
+export type NetworkSixHourlyStats = LineSixHourlyStats;
+
 /** `GET /Line/{id}/Stats/Coverage/{from}/to/{to}`'s per-day response shape --
  * the full-coverage sibling of `LineDailyStats` (`resolvedWindows` in place
  * of `sampleCycles`). Rates shown cover every scheduled service on the
@@ -335,6 +350,7 @@ export interface LineHalfHourlyCoverageStats {
 export interface Preferences {
   pinnedLines: string[];
   pinnedStations: string[];
+  pinnedOperators: string[];
 }
 
 export interface LineSummary {
@@ -343,6 +359,34 @@ export interface LineSummary {
   category: string;
   operators: string[];
   source: 'catalogue' | 'custom' | 'tfl';
+}
+
+/** `GET /public/operators`'s per-item response shape (+ `GET
+ * /public/operators/{code}`'s single-item shape) --
+ * `crates/api/src/data/operators.rs`'s `OperatorRollup`, hand-serialized
+ * camelCase by `crates/api/src/routes/operators.rs`'s `operator_rollup_json`.
+ * `code` is either a real ATOC code (`tocs.atoc_code`) or the literal
+ * synthetic string `"TfL"`. `lineIds` is the exact "which lines does this
+ * operator run" set the rollup was computed from -- reusable by a future
+ * per-operator detail/history view without a second request. `sampleStats`
+ * is absent when no matching line had a representative status carrying
+ * stats yet (always the case for the `"TfL"` row, which never carries
+ * sample stats per-line either) -- render with
+ * `lib/operatorStats.ts`'s `formatOperatorSampleSummary`, not
+ * `lib/sampleStats.ts`'s `formatSampleSummary` (this type has no
+ * `sampleAvailability`/`dataQuality` to satisfy `SampleStatsCarrier` with —
+ * see docs/superpowers/plans/2026-09-22-operator-overview-phase3-operators-list-and-pinning-plan.md's
+ * Judgment Call 3 for why). `computedAt` is `null` only in the
+ * (never-constructed-in-practice) case of a rollup with zero matching
+ * lines. */
+export interface OperatorSummary {
+  code: string;
+  name: string;
+  lineIds: string[];
+  worstSeverity: number;
+  reason: string;
+  sampleStats?: SampleStats;
+  computedAt: string | null;
 }
 
 export interface CustomLineDetail {

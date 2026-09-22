@@ -10,7 +10,7 @@ describe('GranularityControl', () => {
   it('renders all four options when all four are available', () => {
     renderWithMantine(
       <GranularityControl
-        lineId="northern"
+        basePath="/lines/northern/history"
         preset="7d"
         from="2026-08-14T00:00:00Z"
         to="2026-08-21T00:00:00Z"
@@ -27,7 +27,7 @@ describe('GranularityControl', () => {
   it('omits unavailable tiers and names them in the dimmed note', () => {
     renderWithMantine(
       <GranularityControl
-        lineId="northern"
+        basePath="/lines/northern/history"
         preset={null}
         from="2026-07-01T00:00:00Z"
         to="2026-08-10T00:00:00Z"
@@ -44,7 +44,7 @@ describe('GranularityControl', () => {
   it('navigates with the preset and the new granularity when a preset range is active', () => {
     renderWithMantine(
       <GranularityControl
-        lineId="northern"
+        basePath="/lines/northern/history"
         preset="30d"
         from="2026-07-22T00:00:00Z"
         to="2026-08-21T00:00:00Z"
@@ -59,7 +59,7 @@ describe('GranularityControl', () => {
   it('navigates with the raw from/to when a custom range is active (no preset)', () => {
     renderWithMantine(
       <GranularityControl
-        lineId="northern"
+        basePath="/lines/northern/history"
         preset={null}
         from="2026-07-22T00:00:00Z"
         to="2026-08-21T00:00:00Z"

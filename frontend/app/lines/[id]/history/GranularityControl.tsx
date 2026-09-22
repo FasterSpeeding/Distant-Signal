@@ -33,14 +33,14 @@ const DISPLAY_ORDER: TrendGranularity[] = ['halfHour', 'hour', 'sixHour', 'day']
  * (`preset`, or `from`/`to`) plus a `?granularity=` param, never losing the
  * currently-viewed date range. */
 export function GranularityControl({
-  lineId,
+  basePath,
   preset,
   from,
   to,
   granularity,
   available,
 }: {
-  lineId: string;
+  basePath: string;
   preset: RangePreset | null;
   from: string;
   to: string;
@@ -52,7 +52,7 @@ export function GranularityControl({
 
   function handleChange(value: string) {
     const rangeParams = preset ? `range=${preset}` : `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-    router.push(`/lines/${lineId}/history?${rangeParams}&granularity=${value}`);
+    router.push(`${basePath}?${rangeParams}&granularity=${value}`);
   }
 
   return (

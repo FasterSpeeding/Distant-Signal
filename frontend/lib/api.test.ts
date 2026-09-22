@@ -12,6 +12,7 @@ import {
   getLineHalfHourlyCoverageStats,
   getPreferences,
   getAllLines,
+  getAllOperators,
   getAllTocs,
   getCustomLine,
   getLineDefinition,
@@ -383,7 +384,7 @@ describe('api client', () => {
   it('getPreferences fetches the correct URL with no caching', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: ['WOK'] }), { status: 200 })),
+      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: ['WOK'], pinnedOperators: [] }), { status: 200 })),
     );
     await getPreferences();
     expect(fetch).toHaveBeenCalledWith(
@@ -401,9 +402,9 @@ describe('api client', () => {
     incomingCookies.header = 'distant_signal_session=abc123; theme=dark';
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: [] }), { status: 200 })),
+      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: [], pinnedOperators: [] }), { status: 200 })),
     );
-    await expect(getPreferences()).resolves.toEqual({ pinnedLines: ['wcml'], pinnedStations: [] });
+    await expect(getPreferences()).resolves.toEqual({ pinnedLines: ['wcml'], pinnedStations: [], pinnedOperators: [] });
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/preferences',
       expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123; theme=dark' } }),
@@ -413,7 +414,7 @@ describe('api client', () => {
   it('getPreferences sends no Cookie header when the visitor has no cookies at all', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [] }), { status: 200 })),
+      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 })),
     );
     await getPreferences();
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
@@ -429,7 +430,7 @@ describe('api client', () => {
       'fetch',
       vi.fn(async () => new Response('no session', { status: 401 })),
     );
-    await expect(getPreferences()).resolves.toEqual({ pinnedLines: [], pinnedStations: [] });
+    await expect(getPreferences()).resolves.toEqual({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
   });
 
   // The 401 tolerance above is deliberately narrow: a backend that is down
@@ -477,6 +478,26 @@ describe('api client', () => {
       'http://test-api:8080/public/lines',
       expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
     );
+  });
+
+  // Final whole-branch review finding: every sibling fetch function here has
+  // its own URL/caching test -- getAllOperators had none. Unauthenticated
+  // and caller-identity-independent (see its own doc comment in lib/api.ts),
+  // so unlike getAllLines above it must NOT forward the incoming request's
+  // cookies.
+  it('getAllOperators fetches the correct URL with no caching and no cookie forwarding', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getAllOperators();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/operators',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect((init as RequestInit).headers).toBeUndefined();
   });
 
   it('getAllLines sends no Cookie header when the visitor has no cookies at all', async () => {

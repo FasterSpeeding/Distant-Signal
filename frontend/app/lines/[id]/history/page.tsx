@@ -109,7 +109,7 @@ export default async function LineHistoryPage({
         Back to line
       </TextLink>
       <Title order={1}>History: {name}</Title>
-      <HistoryRangePicker lineId={id} preset={range.preset} from={range.from} to={range.to} />
+      <HistoryRangePicker basePath={`/lines/${id}/history`} preset={range.preset} from={range.from} to={range.to} />
       {/* Timeline (the existing per-status-change history) and Trends (the
           Task 9 daily rollup) are split into tabs since they're different
           views over data with different retention windows — the 7-day
@@ -189,7 +189,7 @@ export default async function LineHistoryPage({
         <TabsPanel value="trends">
           <Stack gap="md" pt="md">
             <GranularityControl
-              lineId={id}
+              basePath={`/lines/${id}/history`}
               preset={range.preset}
               from={range.from}
               to={range.to}

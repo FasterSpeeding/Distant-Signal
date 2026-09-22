@@ -76,7 +76,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     __resetStaleCacheForTests();
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getStationAccessibility).mockResolvedValue({});
@@ -137,7 +137,7 @@ describe('StationDisruptionPage -- line-coverage distinction', () => {
     __resetStaleCacheForTests();
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(api.getStationName).mockResolvedValue('Raynes Park');
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getStationAccessibility).mockResolvedValue({});
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
@@ -180,7 +180,7 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     __resetStaleCacheForTests();
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
     vi.mocked(api.getStationAccessibility).mockResolvedValue({});
   });
@@ -268,7 +268,7 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     __resetStaleCacheForTests();
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getAllTocs).mockResolvedValue([]);

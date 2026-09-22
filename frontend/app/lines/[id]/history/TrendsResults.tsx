@@ -12,7 +12,7 @@ import type { ChartPoint } from './chartPoint';
 // in this file's and HalfHourlyTrendsResults.tsx's git history);
 // `hour`/`sixHour` are newly derived by the same "~third of the bucket's
 // max possible poll-cycle coverage" rule.
-const SPARSE_FLOOR: Record<TrendGranularity, number> = {
+export const SPARSE_FLOOR: Record<TrendGranularity, number> = {
   halfHour: 10,
   hour: 20,
   sixHour: 120,
@@ -23,7 +23,7 @@ const SPARSE_FLOOR: Record<TrendGranularity, number> = {
 // .superpowers/sdd/2026-08-31-line-history-graphics/progress.md, extended
 // to the two new tiers by the same template) -- must not be softened or
 // dropped, same as this file's pre-existing `day` copy.
-const HONESTY_COPY: Record<TrendGranularity, string> = {
+export const HONESTY_COPY: Record<TrendGranularity, string> = {
   day: 'Rates shown count each distinct train once per day, based on its status the first time it was seen that day -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Days with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for days too sparse to trust for a rate -- a low number there is exactly why a day may show as a gap above; it counts each train once, in the day it was first seen, not how many were simultaneously running.',
   halfHour: 'Rates shown count each distinct train once per half hour, based on its status the first time it was seen that half hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Half-hour periods with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for half hours too sparse to trust for a rate -- a low number there is exactly why a half hour may show as a gap above; it counts each train once, in the half hour it was first seen, not how many were simultaneously running.',
   hour: 'Rates shown count each distinct train once per hour, based on its status the first time it was seen that hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Hours with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for hours too sparse to trust for a rate -- a low number there is exactly why an hour may show as a gap above; it counts each train once, in the hour it was first seen, not how many were simultaneously running.',
