@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { HalfHourlyTrendsResults, toHalfHourlyChartPoints } from './HalfHourlyTrendsResults';
+import { HONESTY_COPY, HONESTY_COPY_DETAILS } from './TrendsResults';
 import * as api from '@/lib/api';
 import type { LineHalfHourlyStats } from '@/lib/types';
 
@@ -119,7 +120,7 @@ describe('HalfHourlyTrendsResults', () => {
     expect(sparseHalfHour.delayRate).not.toBe(0);
   });
 
-  it('a normal multi-bucket range renders without throwing and shows the "that half hour" honesty copy verbatim', async () => {
+  it('a normal multi-bucket range renders without throwing and shows the shared HONESTY_COPY.halfHour plain-language summary', async () => {
     vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([
       halfHourlyRow({ halfHourStart: '2026-08-31T12:00:00Z' }),
       halfHourlyRow({ halfHourStart: '2026-08-31T12:30:00Z' }),
@@ -129,12 +130,19 @@ describe('HalfHourlyTrendsResults', () => {
       await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
 
-    expect(
-      screen.getByText(
-        /Rates shown count each distinct train once per half hour, based on its status the first time it was seen that half hour -- not a share of poll cycles\./,
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(HONESTY_COPY.halfHour)).toBeInTheDocument();
     expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
+  });
+
+  it('puts the fuller mechanical explanation behind a collapsed "How these rates are calculated" disclosure, matching TrendsResults.tsx', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([halfHourlyRow({ halfHourStart: '2026-08-31T14:00:00Z' })]);
+    renderWithMantine(
+      await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
+    );
+
+    const summary = screen.getByText('How these rates are calculated');
+    expect(summary.closest('details')).not.toBeNull();
+    expect(screen.getByText(HONESTY_COPY_DETAILS.halfHour)).toBeInTheDocument();
   });
 
   it('passes granularity="halfHour" through to TrendsCharts, giving the x-axis a formatTime tickFormatter', async () => {
