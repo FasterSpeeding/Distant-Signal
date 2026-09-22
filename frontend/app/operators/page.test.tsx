@@ -95,6 +95,27 @@ describe('OperatorsPage', () => {
     expect(screen.getByText('No operator status data available right now.')).toBeInTheDocument();
   });
 
+  // Review M7/§2.6: alphabetical was fine at nine operators, but the
+  // homepage source describes a full catalogue of 25-40 -- worst-first
+  // matches every other status surface in the app (the dashboard's "Lines
+  // to watch", the homepage's own pinned sections).
+  it('orders cards worst-first, not alphabetically (review M7)', async () => {
+    await renderPage();
+
+    const headings = screen.getAllByText(/Avanti West Coast|Arriva Trains Wales/);
+    // Avanti (worstSeverity 1 = "Closed" -> severe group) must render
+    // before Arriva (worstSeverity 0 = "Special Service" -> informational
+    // group) even though "Arriva" sorts first alphabetically.
+    const names = headings.map((el) => el.textContent);
+    expect(names.indexOf('Avanti West Coast')).toBeLessThan(names.indexOf('Arriva Trains Wales'));
+  });
+
+  it('renders an intro sentence under the heading (review M7)', async () => {
+    await renderPage();
+
+    expect(screen.getByText(/Every operator this app tracks/)).toBeInTheDocument();
+  });
+
   it('still renders with nothing pinned when getPreferences fails', async () => {
     vi.mocked(api.getPreferences).mockRejectedValue(new Error('500'));
 
