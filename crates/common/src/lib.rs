@@ -1472,10 +1472,7 @@ mod merge_sample_stats_tests {
     #[test]
     fn a_single_input_is_returned_unchanged() {
         let s = stats(10, 2, 1, 0, 4.5);
-        assert_eq!(
-            merge_sample_stats(std::slice::from_ref(&s)),
-            Some(s)
-        );
+        assert_eq!(merge_sample_stats(std::slice::from_ref(&s)), Some(s));
     }
 
     #[test]
