@@ -12,7 +12,7 @@ interface CandidateRow {
   uid: string;
   scheduled: string;
   destinationCrs: string | null;
-  trueOriginCrs: string | null;
+  originCrs: string | null;
   destinationArrival: string | null;
 }
 
@@ -114,7 +114,7 @@ export function JourneyLegCandidates({
       {results.map((row) => (
         <Group key={row.uid} justify="space-between" wrap="wrap">
           <Text size="sm">
-            {row.scheduled} · {row.trueOriginCrs ?? '?'} → {row.destinationCrs ?? '?'}
+            {row.scheduled} · {row.originCrs ?? '?'} → {row.destinationCrs ?? '?'}
           </Text>
           <Button size="xs" loading={picking === row.uid} disabled={picking !== null} onClick={() => pick(row.uid)}>
             Track this train
