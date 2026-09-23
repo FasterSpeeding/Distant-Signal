@@ -1280,9 +1280,11 @@ pub async fn upsert_schedule_destination_departures(
 pub struct ScheduleCallingPointsFullRow {
     pub service_date: chrono::NaiveDate,
     pub uid: String,
-    /// 1-based position within this schedule's own calling-point sequence
-    /// -- the ORDER BY key that reconstructs stopping order; NOT a real CIF
-    /// field, assigned at publish time.
+    /// 0-based position within this schedule's own calling-point sequence
+    /// (from the publisher's own `.enumerate()`, `schedule-reference`'s
+    /// `publish_schedule_calling_points_full`) -- the ORDER BY key that
+    /// reconstructs stopping order; NOT a real CIF field, assigned at
+    /// publish time.
     pub seq: i16,
     pub tiploc: String,
     /// One of `"origin"`, `"intermediate"`, `"terminate"` -- mirrors

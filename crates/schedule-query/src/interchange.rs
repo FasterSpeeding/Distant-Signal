@@ -95,7 +95,15 @@ const NO_INTERCHANGE_SENTINELS: [i32; 2] = [98, 99];
 /// The shortest same-station change this app's own interchange data
 /// considers valid at `tiploc`. Defaults to [`DEFAULT_CHANGE_TIME`] when
 /// `tiploc` has no MSN record at all (a genuine gap, not a sentinel).
+///
+/// `tiploc` is normalized (via [`crate::normalize_tiploc`]) before the
+/// lookup -- defense-in-depth against a caller passing a still-padded,
+/// 7-character schedule-body TIPLOC while `change_time_by_tiploc` is keyed
+/// on the bare form (see [`InterchangeData::change_time_by_tiploc`]'s own
+/// doc comment). Callers should still normalize, and all of them do, but
+/// correctness must not depend on their remembering to.
 pub fn minimum_change_time(data: &InterchangeData, tiploc: &str) -> ChangeTime {
+    let tiploc = crate::normalize_tiploc(tiploc);
     match data.change_time_by_tiploc.get(tiploc) {
         None => ChangeTime::Finite(DEFAULT_CHANGE_TIME),
         Some(raw) if NO_INTERCHANGE_SENTINELS.contains(raw) => ChangeTime::NoInterchange,
@@ -107,7 +115,12 @@ pub fn minimum_change_time(data: &InterchangeData, tiploc: &str) -> ChangeTime {
 /// itself. Empty when `tiploc` has no CRS at all (a junction-only TIPLOC
 /// with no MSN record -- the same population [`minimum_change_time`]
 /// defaults for) or is the only TIPLOC recorded against its CRS.
+///
+/// `tiploc` is normalized (via [`crate::normalize_tiploc`]) before the
+/// lookup, for the same defense-in-depth reason [`minimum_change_time`]
+/// normalizes -- `tiploc_to_crs` is keyed on the bare form.
 pub fn sibling_tiplocs<'a>(data: &'a InterchangeData, tiploc: &str) -> Vec<&'a str> {
+    let tiploc = crate::normalize_tiploc(tiploc);
     let Some(crs) = data.tiploc_to_crs.get(tiploc) else {
         return Vec::new();
     };
@@ -155,6 +168,16 @@ fn to_hhmm(minutes: u32) -> String {
 /// callers must never be handed a slower option when a faster one is also
 /// timetabled at the same moment (the real Euston↔King's Cross
 /// tube-vs-transfer case, §0.4 of the design spec).
+///
+/// Both the candidate scan order and the returned `Vec`'s order are made
+/// deterministic by sorting on `(to_crs, minutes, mode)`: `candidates` is
+/// sorted before the shortest-per-destination scan so an exact-`minutes`
+/// tie always resolves the same way regardless of the order Postgres
+/// happened to return `fixed_links` rows in (that table's own `SELECT` has
+/// no `ORDER BY` -- see `crates/api/src/data/trip_planning.rs`'s
+/// `fetch_interchange_data`), and the final result is sorted again since
+/// `shortest_by_destination` is itself a `HashMap`, whose iteration order
+/// is otherwise randomized per-process.
 pub fn fixed_links_from<'a>(
     data: &'a InterchangeData,
     from_crs: &str,
@@ -168,8 +191,15 @@ pub fn fixed_links_from<'a>(
         return Vec::new();
     };
 
+    fn sort_key(link: &FixedLink) -> (&str, i32, &str) {
+        (link.to_crs.as_str(), link.minutes, link.mode.as_str())
+    }
+
+    let mut sorted_candidates: Vec<&FixedLink> = candidates.iter().collect();
+    sorted_candidates.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+
     let mut shortest_by_destination: HashMap<&str, &FixedLink> = HashMap::new();
-    for link in candidates {
+    for link in sorted_candidates {
         let Some(day_flag) = link.days_mask.as_bytes().get(day) else {
             continue;
         };
@@ -187,7 +217,9 @@ pub fn fixed_links_from<'a>(
             }
         }
     }
-    shortest_by_destination.into_values().collect()
+    let mut result: Vec<&FixedLink> = shortest_by_destination.into_values().collect();
+    result.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+    result
 }
 
 #[cfg(test)]

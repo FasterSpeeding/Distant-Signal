@@ -112,10 +112,18 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
             change_time_by_tiploc.insert(row.tiploc.clone(), minutes);
         }
         tiploc_to_crs.insert(row.tiploc.clone(), row.crs.clone());
-        crs_to_tiplocs
-            .entry(row.crs.clone())
-            .or_default()
-            .push(row.tiploc.clone());
+        // `stanox_crs.stanox` is the primary key, not `tiploc` -- multiple
+        // STANOX rows (different platforms/areas of one physical station,
+        // see `queries::crs_for_tiploc`'s own doc comment) can share one
+        // TIPLOC, so guard against pushing the same TIPLOC into the same
+        // CRS's list twice (harmless but wasteful: `sibling_tiplocs` would
+        // otherwise return the same sibling more than once). This table is
+        // small (~3,100 rows total), so an O(n) `contains` check per push
+        // is fine.
+        let siblings = crs_to_tiplocs.entry(row.crs.clone()).or_default();
+        if !siblings.contains(&row.tiploc) {
+            siblings.push(row.tiploc.clone());
+        }
     }
 
     let fixed_link_rows: Vec<FixedLinkRow> = sqlx::query_as(
@@ -237,6 +245,114 @@ mod db_tests {
             .await
             .ok();
         sqlx::query("DELETE FROM fixed_links WHERE from_crs = 'ZZZ'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Regression test for the final-review finding this Phase 2 fix round
+    /// exists for: `schedule_calling_points_full.tiploc` is now written
+    /// normalized (bare) at publish time
+    /// (`schedule-reference::publish_schedule_calling_points_full` now
+    /// calls `schedule_query::normalize_tiploc`, matching its two sibling
+    /// publish functions in the same file), which matches
+    /// `stanox_crs.tiploc`'s own bare storage form -- see
+    /// `crate::data::queries::crs_for_tiploc`'s own doc comment for the
+    /// real, already-hit "roughly a third of all real station TIPLOCs" /
+    /// 2026-09-16 "Unknown location" incident this exact mismatch caused
+    /// before.
+    ///
+    /// This test deliberately seeds a genuinely padded TIPLOC value
+    /// directly into `schedule_calling_points_full` (bypassing the fixed
+    /// publisher entirely, simulating any future regression that
+    /// reintroduces an unnormalized write), then walks the full three-hop
+    /// path -- `fetch_calling_points_for_date` ->
+    /// `fetch_interchange_data` -> `schedule_query::minimum_change_time`
+    /// -- to prove `minimum_change_time`'s own defense-in-depth
+    /// normalization (not just the publisher fix) makes the padded value
+    /// still resolve against the bare-keyed `stanox_crs` row, rather than
+    /// silently missing and falling back to the 5-minute default. None of
+    /// the three tasks' own individual tests spanned all three hops
+    /// together, which is exactly how the original bug went unnoticed.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                a_padded_tiploc_from_calling_points_full_still_matches_bare_stanox_crs_change_time \
+                -- --ignored --test-threads=1`"]
+    async fn a_padded_tiploc_from_calling_points_full_still_matches_bare_stanox_crs_change_time() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+
+        // A padded TIPLOC, exactly as a real CIF schedule-body TIPLOC field
+        // carries it (see `schedule_query::tiploc`'s own doc comment) -- 7
+        // characters, space-padded, shorter than 7 chars when trimmed.
+        let padded_tiploc = "EUSTON ";
+        assert_eq!(
+            padded_tiploc.len(),
+            7,
+            "must be genuinely padded, matching real CIF shape"
+        );
+
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTUID-PAD', 0, $2, 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTUID-PAD', 1, 'MKC', 'terminate', '08:50:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .bind(padded_tiploc)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+
+        // The matching interchange row is keyed on the BARE form -- real
+        // `stanox_crs` storage, per `crs_for_tiploc`'s own doc comment.
+        // `change_time_minutes = 9`, distinct from the 5-minute default, so
+        // the test can tell a real lookup apart from a silent miss.
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, change_time_minutes) \
+             VALUES ('TEST-PAD-STANOX', 'EUS', 'EUSTON', 'TEST EUSTON', 1, 9) \
+             ON CONFLICT (stanox) DO UPDATE SET change_time_minutes = EXCLUDED.change_time_minutes",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let by_uid = fetch_calling_points_for_date(&pool, date)
+            .await
+            .expect("query succeeds")
+            .expect("rows exist for this date");
+        let calling_points = by_uid.get("TESTUID-PAD").expect("seeded schedule present");
+        let the_tiploc_from_the_calling_point = calling_points
+            .iter()
+            .find(|cp| cp.tiploc.trim() == "EUSTON")
+            .expect("the seeded, still-padded EUSTON calling point is present")
+            .tiploc
+            .clone();
+        assert_eq!(
+            the_tiploc_from_the_calling_point, padded_tiploc,
+            "sanity check: the row read back must still be padded -- fetch_calling_points_for_date \
+             does no normalization of its own, by design"
+        );
+
+        let interchange_data = fetch_interchange_data(&pool).await.expect("query succeeds");
+
+        assert_eq!(
+            schedule_query::minimum_change_time(
+                &interchange_data,
+                &the_tiploc_from_the_calling_point
+            ),
+            schedule_query::ChangeTime::Finite(9),
+            "a padded TIPLOC read back from schedule_calling_points_full must still match its \
+             bare-keyed stanox_crs change-time row via minimum_change_time's own normalization, \
+             not silently miss and fall back to the 5-minute default"
+        );
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TESTUID-PAD'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-PAD-STANOX'")
             .execute(&pool)
             .await
             .ok();

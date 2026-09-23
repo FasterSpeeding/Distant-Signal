@@ -85,6 +85,18 @@ fn minutes_from_midnight(time: NaiveTime, day_offset: u8) -> u32 {
 /// has no departure; see [`crate::records::CallingPointKind`]) that simply
 /// produce no connection across that specific gap, never a fabricated one.
 /// A schedule with fewer than two calling points contributes nothing.
+///
+/// Sorted by `(departure_min, uid, from_tiploc)`, not `departure_min`
+/// alone: `schedules` is commonly driven by a `HashMap` at the call site
+/// (e.g. `crates/api/src/data/trip_planning.rs`'s `build_connections_for_date`,
+/// grouping by `uid`), whose iteration order is randomized per-process, and
+/// hundreds of connections can share the same `departure_min` at
+/// whole-network scale. `sort_by_key` is a stable sort, so without a fully
+/// deterministic key, same-minute connections would tie-break on whatever
+/// order the random `HashMap` walk happened to produce -- nondeterministic
+/// across runs. Both Connection Scan (Phase 3) and RAPTOR (Phase 4) must
+/// see the SAME array, including the same tie-break order, for their later
+/// agreement to be meaningful (see this module's own doc comment).
 pub fn build_connections<'a>(
     schedules: impl IntoIterator<Item = (&'a str, &'a [CallingPointForConnections])>,
 ) -> Vec<Connection> {
@@ -105,7 +117,9 @@ pub fn build_connections<'a>(
             });
         }
     }
-    connections.sort_by_key(|c| c.departure_min);
+    connections.sort_by(|a, b| {
+        (a.departure_min, &a.uid, &a.from_tiploc).cmp(&(b.departure_min, &b.uid, &b.from_tiploc))
+    });
     connections
 }
 

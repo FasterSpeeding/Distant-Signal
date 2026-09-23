@@ -24,11 +24,18 @@
 CREATE TABLE schedule_calling_points_full (
     service_date      DATE NOT NULL,
     uid               TEXT NOT NULL,
-    -- 1-based position within this schedule's own calling-point sequence --
-    -- the ORDER BY key that reconstructs stopping order; NOT a real CIF
-    -- field, assigned at publish time.
+    -- 0-based position within this schedule's own calling-point sequence
+    -- (from the publisher's own `.enumerate()`, schedule-reference's
+    -- publish_schedule_calling_points_full) -- the ORDER BY key that
+    -- reconstructs stopping order; NOT a real CIF field, assigned at
+    -- publish time. Only relative order matters for this column; there is
+    -- no significance to 0 itself beyond "first."
     seq               SMALLINT NOT NULL,
     tiploc            TEXT NOT NULL,
+    -- Persisted for Phase 3/4's future use (route-pattern grouping, real
+    -- CSA/RAPTOR boarding-vs-alighting logic) -- not read by this phase's
+    -- own code (`fetch_calling_points_for_date`'s SELECT omits it). Not
+    -- dead: a future reader should not assume it is safe to drop.
     kind              TEXT NOT NULL CHECK (kind IN ('origin', 'intermediate', 'terminate')),
     booked_arrival    TIME,
     booked_departure  TIME,

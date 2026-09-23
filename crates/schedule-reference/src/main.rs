@@ -810,7 +810,7 @@ async fn publish_schedule_calling_points_full(
                 "service_date": date,
                 "uid": resolved.uid,
                 "seq": seq as i32,
-                "tiploc": cp.tiploc,
+                "tiploc": schedule_query::normalize_tiploc(&cp.tiploc).to_string(),
                 "kind": kind,
                 "booked_arrival": cp.booked_arrival,
                 "booked_departure": cp.booked_departure,
