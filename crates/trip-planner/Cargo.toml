@@ -1,0 +1,8 @@
+[package]
+name = "trip-planner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+schedule-query = { path = "../schedule-query" }
+chrono = { version = "0.4.44", features = ["serde"] }
