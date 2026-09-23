@@ -8,11 +8,13 @@ import { LastUpdated } from '@/components/LastUpdated';
 import { LoginLink } from '@/components/LoginLink';
 import { SaveAsTemplateButton } from '@/components/SaveAsTemplateButton';
 import { ShareJourneyButton } from '@/components/ShareJourneyButton';
+import { ShareJourneyLinkButton } from '@/components/ShareJourneyLinkButton';
 import { TextLink } from '@/components/TextLink';
 import { TrackJourneyAgainButton } from '@/components/TrackJourneyAgainButton';
 import { formatDate } from '@/lib/dateFormat';
 import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
+import { getSiteOrigin } from '@/lib/siteOrigin';
 import { routeLabel } from '@/lib/stationLabel';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
 
@@ -105,10 +107,12 @@ function LegConnector({ leg }: { leg: JourneyLegDetail }) {
 /** `/journeys/[id]` -- design doc §4. One card per leg. No editable
  * header, no skip badge, no platform column -- all explicitly deferred,
  * see this plan's own Non-goals for the reasoning behind each. A
- * share-to-group button DOES exist (Task 8), but only for the journey's
- * owner (`journey.isOwner`) -- a non-owning group member reaches this
- * page via `journey_readable_by`'s group-shared read path and gets
- * neither that button nor the leg-level owner-only controls
+ * share-to-group button DOES exist (Task 8), and so does an unlisted
+ * share-LINK button (`ShareJourneyLinkButton`, docs/superpowers/sdd/
+ * 2026-09-23-unlisted-links-plan Task 4) -- but both only for the
+ * journey's owner (`journey.isOwner`) -- a non-owning group member
+ * reaches this page via `journey_readable_by`'s group-shared read path
+ * and gets neither button nor the leg-level owner-only controls
  * (`JourneyLegCard`'s own `isOwner` gating). */
 export default async function JourneyDetailPage({
   params,
@@ -162,6 +166,13 @@ export default async function JourneyDetailPage({
   // and a journey page is MORE time-critical than a single train page --
   // a stale leg-1 ETA silently invalidates a leg-2 pick.
   const fetchedAt = new Date().toISOString();
+  // Only actually used by `ShareJourneyLinkButton` below (owner-only), but
+  // resolved unconditionally rather than behind an `if (journey.isOwner)`
+  // -- same reasoning `app/groups/[id]/page.tsx` gives for its own
+  // identical unconditional `getSiteOrigin()` call: it's a cheap header/
+  // env read, and keeping it unconditional means this can't silently start
+  // passing a stale/undefined origin if a future edit reorders things.
+  const origin = await getSiteOrigin();
 
   return (
     <Stack p="lg" gap="md">
@@ -189,6 +200,9 @@ export default async function JourneyDetailPage({
             <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
+          {journey.isOwner && (
+            <ShareJourneyLinkButton journeyId={journey.id} shareLink={journey.shareLink} origin={origin} />
+          )}
           {journey.isOwner && <SaveAsTemplateButton journeyId={journey.id} />}
           {/* Deliberately NOT gated on journey.isOwner -- see
               docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md's
