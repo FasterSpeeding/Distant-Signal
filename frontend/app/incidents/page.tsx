@@ -53,13 +53,24 @@ export default async function IncidentsPage({
     line?: string | string[];
     from?: string | string[];
     to?: string | string[];
+    period?: string | string[];
+    planned?: string | string[];
+    cleared?: string | string[];
+    priority_min?: string | string[];
+    priority_max?: string | string[];
   }>;
 }) {
-  const { operator, line, from, to } = await searchParams;
+  const { operator, line, from, to, period, planned, cleared, priority_min, priority_max } =
+    await searchParams;
   const operatorParam = Array.isArray(operator) ? operator[0] : operator;
   const lineParam = Array.isArray(line) ? line[0] : line;
   const fromParam = Array.isArray(from) ? from[0] : from;
   const toParam = Array.isArray(to) ? to[0] : to;
+  const periodParam = Array.isArray(period) ? period[0] : period;
+  const plannedParam = Array.isArray(planned) ? planned[0] : planned;
+  const clearedParam = Array.isArray(cleared) ? cleared[0] : cleared;
+  const priorityMinParam = Array.isArray(priority_min) ? priority_min[0] : priority_min;
+  const priorityMaxParam = Array.isArray(priority_max) ? priority_max[0] : priority_max;
 
   const [lines, tocs] = await Promise.all([getAllLines().catch(() => []), getAllTocs().catch(() => [])]);
 
@@ -78,6 +89,11 @@ export default async function IncidentsPage({
         initialLine={lineParam}
         initialFrom={fromParam}
         initialTo={toParam}
+        initialPeriod={periodParam}
+        initialPlanned={plannedParam}
+        initialCleared={clearedParam}
+        initialPriorityMin={priorityMinParam}
+        initialPriorityMax={priorityMaxParam}
       />
     </Stack>
   );
