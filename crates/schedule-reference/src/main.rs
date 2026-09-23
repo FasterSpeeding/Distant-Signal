@@ -8,6 +8,7 @@
 //! `/private/stanox-crs`. See
 //! docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
 
+mod alf;
 mod config;
 mod discovery;
 mod parser;
