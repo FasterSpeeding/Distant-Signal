@@ -93,6 +93,20 @@ pub struct Config {
     )]
     pub fixed_links_url: String,
 
+    /// The `api` crate's ingestion endpoint for this service's sixth
+    /// responsibility (Phase 2 dynamic trip planning): the whole-network,
+    /// STP-resolved, un-bucketed calling-point publish -- see
+    /// docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase2-connections-array-plan.md
+    /// Task 1. POST-only, no GET pair -- same shape as `fixed_links_url`
+    /// above, and reusing the same `internal_oauth_group_schedule_reference`
+    /// writer credential.
+    #[arg(
+        env = "SCHEDULE_CALLING_POINTS_FULL_URL",
+        long,
+        default_value = "http://api:8080/private/schedule-calling-points-full"
+    )]
+    pub schedule_calling_points_full_url: String,
+
     /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
     /// value_parser pattern as `crates/aggregator/src/config.rs`'s own
     /// field of the same name. Used to build the per-line TIPLOC set this

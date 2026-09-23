@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::data::queries;
-use crate::data::queries::{ScheduleDestinationDeparturesRow, ScheduleNetworkDeparturesRow};
+use crate::data::queries::{
+    ScheduleCallingPointsFullRow, ScheduleDestinationDeparturesRow, ScheduleNetworkDeparturesRow,
+};
 use crate::data::train_tracking as queries_train_tracking;
 
 pub fn router() -> Router {
@@ -93,6 +95,10 @@ pub fn router() -> Router {
         .route(
             "/schedule-destination-departures",
             axum::routing::post(post_schedule_destination_departures),
+        )
+        .route(
+            "/schedule-calling-points-full",
+            axum::routing::post(post_schedule_calling_points_full),
         )
         .route(
             "/island-of-ireland-stations",
@@ -485,6 +491,22 @@ async fn post_schedule_destination_departures(
     Json(rows): Json<Vec<ScheduleDestinationDeparturesRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let upserted = queries::upsert_schedule_destination_departures(&app.database, &rows)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+/// Dynamic Trip Planning Phase 2's whole-network, un-bucketed
+/// calling-point publish -- POST-only, no GET pair, same shape as
+/// `/schedule-destination-departures` and `/fixed-links` directly above,
+/// reusing the same `schedule-reference` writer credential (see
+/// `app.rs`'s route-group table). See `queries::upsert_schedule_calling_points_full`
+/// for the DELETE+INSERT-array transaction shape.
+async fn post_schedule_calling_points_full(
+    State(app): State<App>,
+    Json(rows): Json<Vec<ScheduleCallingPointsFullRow>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_schedule_calling_points_full(&app.database, &rows)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
