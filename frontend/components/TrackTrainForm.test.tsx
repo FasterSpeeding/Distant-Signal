@@ -711,6 +711,65 @@ describe('TrackTrainForm', () => {
       expect(screen.queryByRole('combobox', { name: /Operator/ })).not.toBeInTheDocument();
     });
 
+    // 2026-09-23 state-persistence-across-mode-toggle fix: Destination used
+    // to be two independent `useState`s (`destinationCrs` for pin mode,
+    // `windowDestinationCrs` for window mode) that both happened to start
+    // from the same `initialDestination` prop -- so a value TYPED into one
+    // mode's field was silently gone the moment the toggle switched to the
+    // other, even though the toggle itself never calls any `setState` that
+    // clears anything. Origin (`originCrs`) never had this bug -- it was
+    // always one shared state, rendered once above the mode switch -- these
+    // two tests are Destination's counterpart of that, in both directions.
+    it('a destination typed in pin mode survives switching to window mode', () => {
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      fireEvent.change(screen.getByRole('combobox', { name: /Destination station \(optional\)/ }), {
+        target: { value: 'RDG' },
+      });
+
+      switchToWindowMode();
+
+      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
+    });
+
+    it('a destination typed in window mode survives switching back to pin mode', () => {
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'EDB' },
+      });
+
+      // Back to "I know the train".
+      fireEvent.click(screen.getByRole('radio', { name: 'I know the train' }));
+
+      expect(screen.getByRole('combobox', { name: /Destination station \(optional\)/ })).toHaveValue('EDB');
+    });
+
+    // The flip side of the two tests above: fields that only ever meant
+    // something in ONE mode (pick mode's Operator, window mode's own time
+    // bounds) are mode-scoped, not shared -- they were never reset by the
+    // toggle either (nothing in `handleSubmit`/the `SegmentedControl`'s
+    // `onChange` clears them), so round-tripping through the other mode
+    // and back must leave them exactly as typed, same as before this fix.
+    it('pin-mode Operator and window-mode time bounds each survive a round trip through the other mode, independently of Destination', () => {
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      fireEvent.change(screen.getByRole('combobox', { name: /Operator/ }), { target: { value: 'SW' } });
+
+      switchToWindowMode();
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+
+      // Back to pin mode: the window-mode-only Earliest departure field is
+      // gone from the DOM, but the Operator value typed before the first
+      // switch is still there, untouched by either toggle.
+      fireEvent.click(screen.getByRole('radio', { name: 'I know the train' }));
+      expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('SW');
+
+      // Forward to window mode again: its own Earliest departure value
+      // likewise survived the round trip, even though it briefly left the
+      // DOM while pin mode was showing.
+      switchToWindowMode();
+      expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('09:00');
+    });
+
     it('an all-blank window is blocked client-side, with no network call', async () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);

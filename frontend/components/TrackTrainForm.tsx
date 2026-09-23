@@ -309,12 +309,13 @@ export function TrackTrainForm({
 }: {
   initialOrigin?: string;
   // "Track this journey again" (docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md)
-  // is the first caller of these five props -- pre-fills BOTH the
-  // pin-mode Destination field and the window-mode Destination field from
-  // the same value (only one is ever visible at a time, driven by
-  // `initialMode`), and the window-mode time bounds. All five are inert,
-  // ordinary `useState` initial values, same as `initialOrigin` already
-  // is -- no new prop changes this component's submit behaviour.
+  // is the first caller of these five props -- pre-fills the Destination
+  // field (pin mode and window mode read/write the SAME `destinationCrs`
+  // state, see that state declaration's own comment -- only one mode's
+  // rendering of it is ever visible at a time, driven by `initialMode`),
+  // and the window-mode time bounds. All five are inert, ordinary
+  // `useState` initial values, same as `initialOrigin` already is -- no
+  // new prop changes this component's submit behaviour.
   initialDestination?: string;
   attachTicketId?: number;
   // Review §2.1/I21: the mode toggle used to live only in `useState`, so
@@ -410,19 +411,34 @@ export function TrackTrainForm({
   // a new one for leg-window entry.
   const [mode, setMode] = useState<'pick' | 'window'>(initialMode);
   const modeLabelId = useId();
-  const [windowDestinationCrs, setWindowDestinationCrs] = useState(initialDestination);
-  // A dedicated suggestions hook, not a reuse of the pin-mode Destination
-  // field's own `destinationSuggestions`/`destinationSuggestionsLoading`
-  // above -- the two Destination fields are separate state
-  // (`destinationCrs` vs `windowDestinationCrs`), so sharing one hook
-  // instance between them would leave the window-mode field's suggestions
-  // dropdown driven by whatever was last typed into the PIN-mode field
-  // (usually nothing, in window mode) rather than by what's actually typed
-  // here.
-  const { suggestions: windowDestinationSuggestions, loading: windowDestinationSuggestionsLoading } = useSuggestions(
-    windowDestinationCrs,
-    searchStations,
-  );
+  // Destination station is genuinely the SAME field in both modes -- one
+  // `destinationCrs` state (declared above, alongside `originCrs`), not a
+  // second `windowDestinationCrs` copy. It used to be a second copy: two
+  // independently-typed `useState`s that both happened to be seeded from
+  // `initialDestination`, so a value typed into one mode's Destination
+  // field silently vanished the moment the user switched to the other --
+  // toggling the `SegmentedControl` looks like "my typing got cleared"
+  // even though neither `setState` call is ever cleared by the toggle
+  // itself (2026-09-23 state-persistence-across-mode-toggle fix). Unifying
+  // the state is what makes the window-mode Autocomplete below able to
+  // reuse `destinationSuggestions`/`destinationSuggestionsLoading`
+  // (declared with `destinationCrs` above) instead of needing its own
+  // dedicated `useSuggestions` instance -- with one shared value there is
+  // only one thing for a suggestions dropdown to be driven by, so the
+  // reason a second hook instance existed (see this comment's own former
+  // text, in git blame) no longer applies.
+  //
+  // Origin (`originCrs`) already worked this way from the start -- see
+  // that field's own "Origin is the one field both modes share" comment
+  // just above the `SegmentedControl` in the JSX below -- this brings
+  // Destination in line with it. `scheduledDeparture`/window
+  // date-and-time-bounds/`operator` stay mode-scoped, deliberately NOT
+  // unified: they have no equivalent meaning in the other mode (window
+  // mode has no single scheduled-departure instant to fill, pick mode has
+  // no depart/arrive-window bounds, and `operator` only narrows pick
+  // mode's already-fetched departure-board picker -- window mode has no
+  // candidate list of its own to narrow at all, see `submitWindow`'s own
+  // doc comment).
   // Review §2.2/M13: seeded with today's real date, not `null` -- a `null`
   // value rendered the field as empty with "Today" as a grey PLACEHOLDER,
   // which reads as "nothing selected" even though `submitWindow` (below)
@@ -447,12 +463,18 @@ export function TrackTrainForm({
     arriveFrom: false,
     arriveTo: false,
   });
-  const windowDestinationValid = CRS_PATTERN.test(windowDestinationCrs.trim());
+  // Renamed from `windowDestinationValid` now that Destination is shared
+  // state (see the comment above `windowServiceDate`) -- this is no longer
+  // a window-mode-only computation, even though it is currently only
+  // CONSUMED by window mode's own validation/copy below (pin mode's
+  // Destination field stays optional with no equivalent validity gate,
+  // unchanged).
+  const destinationValid = CRS_PATTERN.test(destinationCrs.trim());
   const windowTimesComplete = !Object.values(windowIncompleteTimes).some(Boolean);
   const windowHasABound =
     departFrom.trim() !== '' || departTo.trim() !== '' || arriveFrom.trim() !== '' || arriveTo.trim() !== '';
   const canSubmitWindow =
-    originValid && windowDestinationValid && windowTimesComplete && windowHasABound && !submitting;
+    originValid && destinationValid && windowTimesComplete && windowHasABound && !submitting;
 
   // Fetch the live departures picker whenever the origin resolves to a
   // syntactically valid CRS -- same same-origin `/api/*` proxy pattern
@@ -709,7 +731,7 @@ export function TrackTrainForm({
         leg: {
           mode: 'window' as const,
           originCrs: originCrs.trim().toUpperCase(),
-          destinationCrs: windowDestinationCrs.trim().toUpperCase(),
+          destinationCrs: destinationCrs.trim().toUpperCase(),
           serviceDate: windowServiceDate ?? dayjs().format('YYYY-MM-DD'),
           departWindow: { after: departFrom || null, before: departTo || null },
           arriveWindow: { after: arriveFrom || null, before: arriveTo || null },
@@ -775,9 +797,9 @@ export function TrackTrainForm({
     event.preventDefault();
     if (submitting) return;
     if (mode === 'window') {
-      if (!originValid || !windowDestinationValid || !windowHasABound) {
+      if (!originValid || !destinationValid || !windowHasABound) {
         setFieldError(
-          !originValid || !windowDestinationValid
+          !originValid || !destinationValid
             ? 'Enter a valid origin and destination station before searching.'
             : 'Enter at least one earliest/latest departure or arrival time to search a window.',
         );
@@ -1156,16 +1178,22 @@ export function TrackTrainForm({
           <Autocomplete
             label="Destination station"
             placeholder="e.g. Reading or RDG"
-            value={windowDestinationCrs}
-            onChange={setWindowDestinationCrs}
+            // `destinationCrs`/`setDestinationCrs`/`destinationSuggestions`
+            // -- the SAME state and suggestions hook the pin-mode
+            // Destination field below uses, not a separate window-mode
+            // copy. See the state-declaration comment above
+            // `windowServiceDate` for why: a value typed here now survives
+            // switching back to "I know the train" mode, and vice versa.
+            value={destinationCrs}
+            onChange={setDestinationCrs}
             data={withNoMatchPlaceholder(
-              windowDestinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
+              destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
               'No matching stations',
-              { active: windowDestinationCrs.trim().length > 0 && !windowDestinationSuggestionsLoading },
+              { active: destinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
             )}
             filter={({ options }) => options}
             error={
-              windowDestinationCrs.length > 0 && !windowDestinationValid
+              destinationCrs.length > 0 && !destinationValid
                 ? 'Must be a 3-letter CRS code'
                 : null
             }
@@ -1176,7 +1204,7 @@ export function TrackTrainForm({
             // live -- jsdom enforces this too), silently replacing this
             // form's own explanatory `fieldError` message with (at best) a
             // native validation bubble instead. `handleSubmit`'s own
-            // `!windowDestinationValid` check already owns this
+            // `!destinationValid` check already owns this
             // validation.
           />
           <DatePickerInput
@@ -1224,7 +1252,7 @@ export function TrackTrainForm({
             <TimeFilterInput
               label="Earliest arrival (optional)"
               name="earliest arrival"
-              description={`Only trains reaching ${windowDestinationValid ? windowDestinationCrs.trim().toUpperCase() : 'the destination above'} at or after this time.`}
+              description={`Only trains reaching ${destinationValid ? destinationCrs.trim().toUpperCase() : 'the destination above'} at or after this time.`}
               value={arriveFrom}
               onChange={setArriveFrom}
               onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
@@ -1233,7 +1261,7 @@ export function TrackTrainForm({
             <TimeFilterInput
               label="Latest arrival (optional)"
               name="latest arrival"
-              description={`Only trains reaching ${windowDestinationValid ? windowDestinationCrs.trim().toUpperCase() : 'the destination above'} at or before this time.`}
+              description={`Only trains reaching ${destinationValid ? destinationCrs.trim().toUpperCase() : 'the destination above'} at or before this time.`}
               value={arriveTo}
               onChange={setArriveTo}
               onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
