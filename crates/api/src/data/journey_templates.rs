@@ -127,7 +127,7 @@ pub fn validate_template_recurrence(
         && rule != "nearest_to_now"
     {
         return Err(
-            "autoCommitRule must be either \"earliest\" or \"nearestToNow\", or left unset."
+            "autoCommitRule must be either \"earliest\" or \"nearest_to_now\", or left unset."
                 .to_string(),
         );
     }
