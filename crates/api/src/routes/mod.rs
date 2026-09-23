@@ -28,6 +28,7 @@ pub mod stanox_crs;
 pub mod station_stats;
 pub mod train;
 pub mod trains;
+pub mod trips;
 
 pub fn public_router() -> Router {
     // `health::router()` already declares its own `/health` route, so this

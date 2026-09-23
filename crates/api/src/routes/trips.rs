@@ -1,0 +1,515 @@
+//! `GET /Trips/plan` -- the read-only journey-planning endpoint. See
+//! docs/superpowers/specs/2026-09-22-dynamic-trip-planning-design.md §5.2
+//! and
+//! docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase5-planning-api-plan.md's
+//! own Judgment Call 1 for why this lives under a new `/Trips` prefix, not
+//! `/Journeys/*`. Unauthenticated, read-only -- computing a hypothetical
+//! itinerary commits nothing and belongs to no user, matching
+//! `reference::nearest_stations`'s own public/read-only posture, not
+//! `routes::journeys`'s authenticated-write one.
+
+use axum::Json;
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
+use chrono::{NaiveDate, NaiveTime};
+use serde::Deserialize;
+
+use crate::app::App;
+use crate::data::{trip_planning, trip_planning_itinerary};
+
+pub fn router() -> crate::app::Router {
+    crate::app::Router::new().route("/Trips/plan", axum::routing::get(get_trip_plan))
+}
+
+#[derive(Debug, Deserialize)]
+struct TripPlanParams {
+    origin: String,
+    destination: String,
+    /// Comma-separated ordered CRS codes, e.g. `?waypoints=YRK,NCL`. Absent
+    /// or empty means no waypoints -- a direct origin->destination plan.
+    #[serde(default)]
+    waypoints: Option<String>,
+    date: NaiveDate,
+    #[serde(default)]
+    depart_after: Option<NaiveTime>,
+    #[serde(default = "default_results")]
+    results: String,
+}
+
+fn default_results() -> String {
+    "fastest".to_string()
+}
+
+async fn get_trip_plan(
+    State(app): State<App>,
+    Query(params): Query<TripPlanParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if params.results != "fastest" && params.results != "options" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "results must be 'fastest' or 'options'".to_string(),
+        ));
+    }
+
+    let waypoints: Vec<String> = params
+        .waypoints
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_uppercase())
+        .collect();
+
+    let Some(connections) = trip_planning::build_connections_for_date(&app.database, params.date)
+        .await
+        .map_err(internal_error("build connections array"))?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!(
+                "no CIF-derived schedule data has been published for {} yet",
+                params.date
+            ),
+        ));
+    };
+
+    let interchange = trip_planning::fetch_interchange_data(&app.database)
+        .await
+        .map_err(internal_error("fetch interchange data"))?;
+
+    let segments = trip_planning_itinerary::plan_via_waypoints(
+        &connections,
+        &interchange,
+        params.date,
+        params.origin.trim(),
+        &waypoints,
+        params.destination.trim(),
+        params.depart_after.unwrap_or(NaiveTime::MIN),
+        &params.results,
+    )
+    .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    Ok(Json(serde_json::json!({
+        "results": params.results,
+        "segments": segments.iter().map(|segment| serde_json::json!({
+            "originCrs": segment.origin_crs,
+            "destinationCrs": segment.destination_crs,
+            "itineraries": segment.itineraries,
+            "cappedByMaxChanges": segment.capped_by_max_changes,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
+    move |err| {
+        tracing::error!(error = ?err, operation, "trip plan request failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to {operation}"),
+        )
+    }
+}
+
+/// Scaffolding copied verbatim from `routes::journeys::db_tests`'s own
+/// `test_app`/`test_router`/`connect` (that module's own comment notes it
+/// was itself copied from `routes::train::db_tests` -- the same
+/// cross-file-duplication convention this crate uses throughout
+/// `crates/api/src/routes/*.rs`'s own `db_tests` modules rather than a
+/// shared crate-visible fixture). `test_app`/`test_router`/`connect` below
+/// are that same fixture, trimmed to only what this file's tests actually
+/// use: no `seed_session`/`post_json` (this endpoint is unauthenticated
+/// and GET-only), no `cleanup_user` (this endpoint has no per-user state to
+/// clean up -- only the ad-hoc `schedule_calling_points_full`/`stanox_crs`
+/// rows the seeded-connection test inserts and deletes itself).
+#[cfg(test)]
+mod db_tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use serde_json::Value;
+    use sqlx::PgPool;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::app::AppState;
+    use crate::auth::oidc::{OidcClient, OidcConfig};
+    use crate::data::config::{LineCatalogue, ServiceArguments};
+
+    /// Every `ServiceArguments` field filled with an inert placeholder --
+    /// this route doesn't read `config.lines` (or any other config field)
+    /// at all. Copied from `routes::journeys::db_tests::test_app`'s own
+    /// empty-index default.
+    fn test_app(pool: PgPool) -> App {
+        let config = ServiceArguments {
+            bind_url: "0.0.0.0:0".to_string(),
+            database_url: String::new(),
+            redis_url: "redis://127.0.0.1:0".to_string(),
+            internal_oauth_issuer_url: "https://example.invalid".to_string(),
+            internal_oauth_client_id: "test-internal-oauth-client".to_string(),
+            internal_oauth_group_incidents: "svc-poller-incidents".to_string(),
+            internal_oauth_group_stations: "svc-poller-stations".to_string(),
+            internal_oauth_group_tocs: "svc-poller-tocs".to_string(),
+            internal_oauth_group_ldbws: "svc-poller-ldbws".to_string(),
+            internal_oauth_group_tfl: "svc-poller-tfl".to_string(),
+            internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
+            internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
+            internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
+            internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
+            internal_oauth_group_trust_backlog: "svc-trust-backlog-consumer".to_string(),
+            internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
+            internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
+            internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
+            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
+            sso_issuer_url: "https://example.invalid".to_string(),
+            sso_client_id: "test-client".to_string(),
+            sso_client_secret: "test-secret".to_string(),
+            sso_redirect_url: "https://example.invalid/callback".to_string(),
+            sso_post_login_redirect_url: "https://example.invalid/".to_string(),
+            session_ttl_days: 14,
+            history_retention_days: 7,
+            daily_stats_retention_days: 300,
+            half_hourly_stats_retention_hours: 840,
+            metrics_enabled: false,
+            defaults_file: None,
+            lines: LineCatalogue(vec![]),
+            vapid_public_key: "test-vapid-public-key".to_string(),
+            full_coverage_enabled_default: false,
+            schedule_match_interval_secs: 300,
+            reconciliation_sweep_interval_secs: 300,
+            schedule_enrichment_grace_minutes: 30,
+            backlog_match_sweep_interval_secs: 300,
+        };
+
+        std::sync::Arc::new(AppState {
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
+            config,
+            database: pool,
+            // `Client::open` only parses the URL, never opens a socket --
+            // this route never touches Redis at all.
+            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
+            oidc: OidcClient::new(OidcConfig {
+                issuer_url: "https://example.invalid".to_string(),
+                client_id: "test-client".to_string(),
+                client_secret: "test-secret".to_string(),
+                redirect_url: "https://example.invalid/callback".to_string(),
+            })
+            .expect("construct placeholder oidc client"),
+            internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
+                "https://example.invalid".to_string(),
+                "test-internal-oauth-client".to_string(),
+            )
+            .expect("construct placeholder internal-oauth verifier"),
+            internal_oauth_routes: Vec::new(),
+            schedule_crs_line_index: std::collections::HashMap::new(),
+        })
+    }
+
+    /// The real `trips::router()`, mounted unprefixed exactly as `main.rs`
+    /// does, turned into a `tower::Service` a test can drive with
+    /// `.oneshot(..)`.
+    fn test_router(app: App) -> axum::Router {
+        crate::app::Router::new()
+            .merge(super::router())
+            .with_state(app)
+    }
+
+    async fn connect() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    /// Issues a GET against `router` and returns `(status, parsed JSON
+    /// body)`. This route always returns either a JSON object body or a
+    /// plain-text `(StatusCode, String)` error body, so wrapping the latter
+    /// as a JSON string lets every case share one return shape -- same
+    /// convention as `routes::journeys::db_tests::request`.
+    async fn get(router: axum::Router, uri: String) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build request");
+        let response = router.oneshot(req).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, value)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn an_unresolvable_origin_crs_is_a_clear_error() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        // Seed at least one calling-point row for the date, so this fails
+        // on CRS resolution specifically, not on the "no schedule data
+        // published for this date" 404 path.
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTPLANZZZ', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANZZZ', 1, 'MILTNKC', 'terminate', '08:50:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = get(
+            router,
+            format!("/Trips/plan?origin=ZZZ&destination=MKC&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(
+            body.as_str().unwrap().contains("ZZZ"),
+            "error must name the unresolvable CRS: {body:?}"
+        );
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TESTPLANZZZ'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn a_date_with_no_published_schedule_data_is_a_clear_404() {
+        let pool = connect().await;
+        let router = test_router(test_app(pool));
+        let (status, body) = get(
+            router,
+            "/Trips/plan?origin=EUS&destination=MKC&date=2099-01-01".to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.as_str().unwrap().contains("2099-01-01"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn an_invalid_results_value_is_a_clear_400() {
+        let pool = connect().await;
+        let router = test_router(test_app(pool));
+        let (status, body) = get(
+            router,
+            "/Trips/plan?origin=EUS&destination=MKC&date=2026-09-23&results=quickest".to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let message = body.as_str().unwrap();
+        assert!(message.contains("fastest"));
+        assert!(message.contains("options"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn plan_via_waypoints_names_the_failing_segment() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTPLANWP', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANWP', 1, 'MILTNKC', 'terminate', '08:50:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPLANWP-EUS', 'EUS', 'EUSTON', 'LONDON EUSTON', 1), \
+                    ('TESTPLANWP-MKC', 'MKC', 'MILTNKC', 'MILTON KEYNES CENTRAL', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = get(
+            router,
+            format!("/Trips/plan?origin=EUS&destination=MKC&waypoints=ZZZ&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(
+            body.as_str().unwrap().contains("EUS -> ZZZ"),
+            "error must name the failing segment: {body:?}"
+        );
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TESTPLANWP'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANWP-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn a_real_seeded_connection_is_found_end_to_end() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTPLAN1', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLAN1', 1, 'MILTNKC', 'terminate', '08:50:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPLAN-EUS', 'EUS', 'EUSTON', 'LONDON EUSTON', 1), \
+                    ('TESTPLAN-MKC', 'MKC', 'MILTNKC', 'MILTON KEYNES CENTRAL', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = get(
+            router,
+            format!("/Trips/plan?origin=EUS&destination=MKC&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let segments = body["segments"].as_array().expect("segments array");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0]["originCrs"], "EUS");
+        assert_eq!(segments[0]["destinationCrs"], "MKC");
+        let itineraries = segments[0]["itineraries"]
+            .as_array()
+            .expect("itineraries array");
+        assert_eq!(itineraries.len(), 1);
+        assert_eq!(itineraries[0]["legs"][0]["trainUid"], "TESTPLAN1");
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TESTPLAN1'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLAN-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn options_mode_excludes_results_over_the_cap_but_flags_when_capped() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 25).unwrap();
+        // Within-cap route: 2 changes (3 legs), EUS -> A -> B -> MKC.
+        // Over-cap-but-faster route: 3 changes (4 legs), EUS -> P -> Q -> R -> MKC,
+        // arriving strictly before the within-cap route -- so `options`
+        // mode must exclude it from `itineraries` but flag
+        // `cappedByMaxChanges: true`.
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTPLANCAPA', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANCAPA', 1, 'TESTPLA', 'terminate', '08:15:00', NULL, 0), \
+                    ($1, 'TESTPLANCAPB', 0, 'TESTPLA', 'origin', NULL, '08:20:00', 0), \
+                    ($1, 'TESTPLANCAPB', 1, 'TESTPLB', 'terminate', '08:35:00', NULL, 0), \
+                    ($1, 'TESTPLANCAPC', 0, 'TESTPLB', 'origin', NULL, '08:40:00', 0), \
+                    ($1, 'TESTPLANCAPC', 1, 'MILTNKC', 'terminate', '09:00:00', NULL, 0), \
+                    ($1, 'TESTPLANFASTA', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANFASTA', 1, 'TESTPLP', 'terminate', '08:10:00', NULL, 0), \
+                    ($1, 'TESTPLANFASTB', 0, 'TESTPLP', 'origin', NULL, '08:15:00', 0), \
+                    ($1, 'TESTPLANFASTB', 1, 'TESTPLQ', 'terminate', '08:20:00', NULL, 0), \
+                    ($1, 'TESTPLANFASTC', 0, 'TESTPLQ', 'origin', NULL, '08:25:00', 0), \
+                    ($1, 'TESTPLANFASTC', 1, 'TESTPLR', 'terminate', '08:30:00', NULL, 0), \
+                    ($1, 'TESTPLANFASTD', 0, 'TESTPLR', 'origin', NULL, '08:35:00', 0), \
+                    ($1, 'TESTPLANFASTD', 1, 'MILTNKC', 'terminate', '08:45:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPLANCAP-EUS', 'EUS', 'EUSTON', 'LONDON EUSTON', 1), \
+                    ('TESTPLANCAP-MKC', 'MKC', 'MILTNKC', 'MILTON KEYNES CENTRAL', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        // No `stanox_crs` row (and so no `change_time_by_tiploc` entry) for
+        // any of the intermediate TIPLOCs (TESTPLA/B, TESTPLP/Q/R) --
+        // `minimum_change_time` falls back to its own
+        // `DEFAULT_CHANGE_TIME` (5 minutes,
+        // `schedule_query::interchange::DEFAULT_CHANGE_TIME`) for a TIPLOC
+        // with no MSN record at all, which every gap below is seeded to
+        // exactly meet.
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = get(
+            router,
+            format!("/Trips/plan?origin=EUS&destination=MKC&date={date}&results=options"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let segments = body["segments"].as_array().expect("segments array");
+        assert_eq!(segments.len(), 1);
+        let itineraries = segments[0]["itineraries"]
+            .as_array()
+            .expect("itineraries array");
+        for itinerary in itineraries {
+            assert!(
+                itinerary["changeCount"].as_u64().unwrap()
+                    <= u64::from(trip_planning_itinerary::MAX_CHANGES),
+                "{itinerary:?}"
+            );
+        }
+        assert_eq!(
+            segments[0]["cappedByMaxChanges"], true,
+            "a strictly faster, over-cap itinerary exists and must be flagged: {body:?}"
+        );
+
+        for uid in [
+            "TESTPLANCAPA",
+            "TESTPLANCAPB",
+            "TESTPLANCAPC",
+            "TESTPLANFASTA",
+            "TESTPLANFASTB",
+            "TESTPLANFASTC",
+            "TESTPLANFASTD",
+        ] {
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANCAP-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+}
