@@ -677,9 +677,10 @@ exists.
 
 This is a real, first-order architecture decision, not a detail — and it's
 where this document's recommendation cuts most directly against this
-codebase's own established, twice-restated precedent, and it remains
-**unresolved** (§7, Open Question 1) independent of the three 2026-09-22
-scope decisions.
+codebase's own established, twice-restated precedent. **RESOLVED
+2026-09-23** (§7, Open Question 1): start with option 2 below, the
+bounded-subgraph per-query search — this document's own v1
+recommendation, confirmed as-is by the product owner.
 
 **The tension, stated plainly**: every prior CIF-adjacent design in this
 app (§0.2's citations, and independently the whole-network-trip-search
@@ -1006,21 +1007,20 @@ feature integrates into is real, live on `main`, today.
 The three scope questions this document originally raised about network
 coverage, walking transfers, and multi-criteria ranking were all resolved
 by the product owner on 2026-09-22 and are reflected as final scope
-throughout this document (§4) — not re-listed here. Four more were
-resolved on 2026-09-23 (below); one remains genuinely open.
+throughout this document (§4) — not re-listed here. All five are now
+resolved.
 
-1. **Resident-index architecture commitment (§3)** — STILL OPEN, by
-   design: is the product owner willing to accept this app's first-ever
-   resident, whole-network, large-memory derived structure (option 1) if
-   the bounded-subgraph approach (option 2, this document's v1
-   recommendation) turns out to miss real routes too often in practice, or
-   if a measured build-and-discard approach (§3's "third possibility")
-   turns out not to be cheap enough against this app's own data path? Not
-   resolved here — flagged as the single biggest architecture decision
-   this feature raises, deliberately deferred until real usage data exists
-   per §3's own recommended sequencing. Nothing about Phases 2+ is blocked
-   on this: build the bounded-subgraph v1, revisit only if it proves
-   insufficient.
+1. **RESOLVED 2026-09-23 — Resident-index architecture commitment (§3).**
+   Confirmed: start with option 2, the bounded-subgraph, catalogue-prefiltered
+   per-query search (this document's own v1 recommendation) — not option 1
+   (a resident, whole-network, large-memory derived structure) and not a
+   measurement spike into option 3 (build-and-discard per query) first.
+   Reasoning given: cheapest, no new operational commitment, matches this
+   app's own "ship the honest partial thing, revisit with real data"
+   pattern. Revisit only if real usage data shows the prefilter missing
+   real routes often enough to matter — at that point, treat the choice
+   between option 1 and a measured option 3 as a fresh, separately-reviewed
+   decision, not a foregone conclusion in either direction.
 2. **RESOLVED 2026-09-23 — Naming.** New `/Trips/*` API prefix (§5.2),
    "Plan a trip" as the user-facing language. Reasoning: keeps a clean
    conceptual split from the existing journey-tracking feature — a
