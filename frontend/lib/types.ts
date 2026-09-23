@@ -845,6 +845,58 @@ export interface JourneyDetail {
   isOwner: boolean;
 }
 
+/** One leg of a `GET /Trips/plan` itinerary
+ * (`crates/api/src/data/trip_planning_itinerary.rs::PlannedLeg`,
+ * camelCase, discriminated by `kind`). A `transfer` leg has no train
+ * identity at all -- it is a walk/tube/bus/ferry hop with no
+ * corresponding `journey_legs` row ever created for it (see this plan's
+ * own Judgment Call 3). */
+export type TripPlanLeg =
+  | {
+      kind: 'train';
+      trainUid: string;
+      serviceDate: string; // "YYYY-MM-DD"
+      originCrs: string | null;
+      destinationCrs: string | null;
+      scheduledDeparture: string; // "HH:MM:SS"
+      scheduledArrival: string;
+      arrivalDayOffset: number;
+    }
+  | {
+      kind: 'transfer';
+      mode: string;
+      originCrs: string | null;
+      destinationCrs: string | null;
+      minutes: number;
+    };
+
+/** One candidate itinerary for one segment
+ * (`crates/api/src/data/trip_planning_itinerary.rs::PlannedItinerary`).
+ * `exceedsRecommendedChanges` is only ever present for `results=fastest`
+ * (CSA has no interchange-count cap of its own, see that Rust module's
+ * own doc comment) -- absent (not `false`) for a `results=options` entry. */
+export interface TripPlanItinerary {
+  legs: TripPlanLeg[];
+  changeCount: number;
+  totalDurationMinutes: number;
+  exceedsRecommendedChanges?: boolean;
+}
+
+/** One origin->destination hop of a (possibly multi-waypoint) plan
+ * (`routes::trips::get_trip_plan`'s own `"segments"` array entry). */
+export interface TripPlanSegment {
+  originCrs: string;
+  destinationCrs: string;
+  itineraries: TripPlanItinerary[];
+  cappedByMaxChanges: boolean;
+}
+
+/** `GET /Trips/plan`'s full response. */
+export interface TripPlanResponse {
+  results: 'fastest' | 'options';
+  segments: TripPlanSegment[];
+}
+
 /** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec
  * §3) -- two of the three shapes `POST /Journeys` already sends for a
  * journey's first leg (no `pin` mode -- spec §3 only offers a direct
