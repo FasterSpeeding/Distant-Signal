@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(routes::train::router())
         .merge(routes::journeys::router())
         .merge(routes::journey_templates::router())
+        .merge(routes::trips::router())
         .nest("/public", routes::public_router())
         .nest("/private", routes::private_router(app.clone()));
 
