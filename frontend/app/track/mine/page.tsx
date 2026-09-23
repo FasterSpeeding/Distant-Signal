@@ -188,6 +188,9 @@ export default async function MyTrackedTrainsPage() {
         </Group>
       </Group>
       {hasOwnContent && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
+      <TextLink href="/journeys/templates" underline="always">
+        Manage your journey templates
+      </TextLink>
       {nothingToShow ? (
         <Text c="dimmed">
           You haven&apos;t tracked any trains or added any tickets yet.{' '}

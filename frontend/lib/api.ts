@@ -47,6 +47,8 @@ import type {
   OperatorSummary,
   JourneyDetail,
   JourneyListItem,
+  JourneyTemplateListItem,
+  JourneyTemplateDetail,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -680,6 +682,36 @@ export async function getMyJourneys(): Promise<JourneyListItem[] | null> {
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<JourneyListItem[]>;
+}
+
+/** `GET /JourneyTemplates/mine` -- same `null`-on-401 "not logged in"
+ * contract as `getMyJourneys` (no id in this route's path to disambiguate
+ * a second way). */
+export async function getMyJourneyTemplates(): Promise<JourneyTemplateListItem[] | null> {
+  const url = `${baseUrl()}/JourneyTemplates/mine`;
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+  if (response.status === 401) return null;
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<JourneyTemplateListItem[]>;
+}
+
+/** `GET /JourneyTemplates/{id}` -- same error-mapping contract as
+ * `getJourney`: throws `ApiNotFoundError` on a 404 (doesn't exist, or
+ * isn't this caller's — templates have no group-shared read path in
+ * Phase B, unlike a journey) and `ApiUnauthorizedError` on a 401, so
+ * `app/journeys/templates/[id]/page.tsx` can render the same two distinct
+ * page states `app/journeys/[id]/page.tsx` already does. */
+export async function getJourneyTemplate(id: number): Promise<JourneyTemplateDetail> {
+  const url = `${baseUrl()}/JourneyTemplates/${id}`;
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<JourneyTemplateDetail>;
 }
 
 /** Per-user, session-gated ticket list for one tracked train

@@ -15,6 +15,7 @@ pub mod incidents;
 pub mod ingest;
 pub mod island_of_ireland;
 pub mod journeys;
+pub mod journey_templates;
 pub mod line_status;
 pub mod lines;
 pub mod notifications;

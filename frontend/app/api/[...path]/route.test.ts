@@ -99,6 +99,52 @@ describe('/api/[...path] proxy', () => {
     expect(calledUrl.toString()).toBe('http://test-api:8080/Journeys/1/legs/2/candidates');
   });
 
+  it('forwards a bare POST /api/JourneyTemplates (no trailing path) to the bare-root backend /JourneyTemplates path', async () => {
+    // Regression for the final-review Critical finding on
+    // docs/superpowers/plans/2026-09-22-reusable-journeys-phaseB-durable-templates-plan.md:
+    // ROOT_MOUNTED_PREFIXES was never widened for the new
+    // `routes::journey_templates::router()` (also `.merge`d onto the
+    // backend's root router, immediately after `routes::journeys::router()`
+    // in `crates/api/src/main.rs`, not nested under `/public`), so every
+    // browser-side write in the templates feature (save-as-template, edit,
+    // delete, run-now) resolved to the non-existent
+    // `/public/JourneyTemplates...` and 404ed. Like `POST /api/Journeys`,
+    // this resolves to the BARE `/JourneyTemplates` path with no trailing
+    // segment.
+    const req = makeRequest('/api/JourneyTemplates', {
+      method: 'POST',
+      headers: { cookie: 'nr_session=abc123' },
+      body: JSON.stringify({ customName: 'Commute', legs: [] }),
+    });
+    await POST(req, { params: Promise.resolve({ path: ['JourneyTemplates'] }) });
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    expect(calledUrl.toString()).toBe('http://test-api:8080/JourneyTemplates');
+    expect((init as RequestInit).method).toBe('POST');
+  });
+
+  it('forwards a PUT /api/JourneyTemplates/1 to the bare-root backend path', async () => {
+    const req = makeRequest('/api/JourneyTemplates/1', {
+      method: 'PUT',
+      headers: { cookie: 'nr_session=abc123' },
+      body: JSON.stringify({ customName: 'Commute', legs: [] }),
+    });
+    await PUT(req, { params: Promise.resolve({ path: ['JourneyTemplates', '1'] }) });
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    expect(calledUrl.toString()).toBe('http://test-api:8080/JourneyTemplates/1');
+    expect((init as RequestInit).method).toBe('PUT');
+  });
+
+  it('forwards a POST /api/JourneyTemplates/1/materialize to the bare-root backend path', async () => {
+    const req = makeRequest('/api/JourneyTemplates/1/materialize', {
+      method: 'POST',
+      headers: { cookie: 'nr_session=abc123' },
+      body: JSON.stringify({ serviceDate: '2026-09-23' }),
+    });
+    await POST(req, { params: Promise.resolve({ path: ['JourneyTemplates', '1', 'materialize'] }) });
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+    expect(calledUrl.toString()).toBe('http://test-api:8080/JourneyTemplates/1/materialize');
+  });
+
   it('forwards a multipart/form-data upload with its original Content-Type (boundary intact)', async () => {
     const boundary = '----testboundary123';
     const req = makeRequest('/api/Train/1/tickets/pkpass', {

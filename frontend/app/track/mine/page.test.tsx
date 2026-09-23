@@ -400,6 +400,17 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     );
   });
 
+  it('renders "Manage your journey templates" link even when nothingToShow is true (empty state)', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    // Verify the link is present even when no trains, tickets, shared trains, or journeys exist
+    expect(screen.getByRole('link', { name: 'Manage your journey templates' })).toHaveAttribute(
+      'href',
+      '/journeys/templates',
+    );
+  });
+
   // The reported bug: a train another member shared into a group the
   // caller belongs to never reached this page at all -- it only existed on
   // `/groups/{id}`. These cover it appearing here, and being tagged with
