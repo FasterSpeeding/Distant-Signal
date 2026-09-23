@@ -678,9 +678,14 @@ exists.
 This is a real, first-order architecture decision, not a detail — and it's
 where this document's recommendation cuts most directly against this
 codebase's own established, twice-restated precedent. **RESOLVED
-2026-09-23** (§7, Open Question 1): start with option 2 below, the
-bounded-subgraph per-query search — this document's own v1
-recommendation, confirmed as-is by the product owner.
+2026-09-23, final answer** (§7, Open Question 1 — see that section for the
+full history: an initial "option 2" answer was superseded same-day once
+the Phase 2 implementation plan surfaced a structural blocker): persist
+the full whole-network calling-point set (a new table, comparable in
+shape/scale to the existing `schedule_destination_departures` product),
+then build the connections array fresh per query from that store and
+discard it — a measured variant of option 3, not option 2. No resident
+index, no lossy geographic prefilter.
 
 **The tension, stated plainly**: every prior CIF-adjacent design in this
 app (§0.2's citations, and independently the whole-network-trip-search
@@ -1010,17 +1015,28 @@ by the product owner on 2026-09-22 and are reflected as final scope
 throughout this document (§4) — not re-listed here. All five are now
 resolved.
 
-1. **RESOLVED 2026-09-23 — Resident-index architecture commitment (§3).**
-   Confirmed: start with option 2, the bounded-subgraph, catalogue-prefiltered
-   per-query search (this document's own v1 recommendation) — not option 1
-   (a resident, whole-network, large-memory derived structure) and not a
-   measurement spike into option 3 (build-and-discard per query) first.
-   Reasoning given: cheapest, no new operational commitment, matches this
-   app's own "ship the honest partial thing, revisit with real data"
-   pattern. Revisit only if real usage data shows the prefilter missing
-   real routes often enough to matter — at that point, treat the choice
-   between option 1 and a measured option 3 as a fresh, separately-reviewed
-   decision, not a foregone conclusion in either direction.
+1. **RESOLVED 2026-09-23, then SUPERSEDED same day — Resident-index
+   architecture commitment (§3).** First confirmed as option 2 (bounded
+   per-query prefilter, this document's own original v1 recommendation).
+   That answer was given before the Phase 2 implementation plan
+   (`docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase2-connections-array-plan.md`,
+   Judgment Call 1) surfaced a structural fact this section's own analysis
+   didn't have available: `api` has no access to raw CIF text at all —
+   only `schedule-reference`'s container reads the PVC-mounted timetable
+   files — so a per-query prefilter can only narrow *which stations* are
+   considered, never avoid materializing one connections-array-shaped
+   structure for CSA/RAPTOR's single linear/round-based sweep. Once that
+   was raised, **the final, current answer is a variant of option 3
+   (build-and-discard), not option 2**: persist the full whole-network
+   calling-point set as a new table — the same shape/scale this app
+   already builds every cycle for `schedule_destination_departures`
+   (~377,000 rows, ~30MB/day, a real precedent, not a guess) — then build
+   the connections array fresh per query from that already-indexed store
+   and discard it. No resident index, no lossy geographic prefilter. See
+   the Phase 2 plan's own Judgment Call 1 for the full reasoning and the
+   capacity check against real numbers. Option 1 (a resident, in-memory,
+   long-uptime index) remains rejected; revisit only if real usage shows
+   this build-and-discard approach too expensive in practice.
 2. **RESOLVED 2026-09-23 — Naming.** New `/Trips/*` API prefix (§5.2),
    "Plan a trip" as the user-facing language. Reasoning: keeps a clean
    conceptual split from the existing journey-tracking feature — a
