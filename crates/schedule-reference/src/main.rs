@@ -150,6 +150,7 @@ async fn poll_once(
             tiploc: row.tiploc,
             station_name: row.station_name,
             source_sequence,
+            change_time_minutes: row.change_time_minutes,
         })
         .collect();
 
@@ -918,6 +919,7 @@ mod poll_once_tests {
                 tiploc: "ZNOTIPLOC".to_string(),
                 station_name: "TEST STATION".to_string(),
                 source_sequence: 1,
+                change_time_minutes: None,
             },
             common::StanoxCrsRecord {
                 stanox: "S2".to_string(),
@@ -925,6 +927,7 @@ mod poll_once_tests {
                 tiploc: "ZNOTIPLOC2".to_string(),
                 station_name: "TEST STATION".to_string(),
                 source_sequence: 1,
+                change_time_minutes: None,
             },
         ];
         let map = crs_to_tiploc_map(&records);

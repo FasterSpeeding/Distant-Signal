@@ -267,6 +267,16 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
+        // POST-only, same as /schedule-network-departures and
+        // /schedule-destination-departures above, and reusing
+        // schedule-reference's EXISTING writer credential -- no new config
+        // field needed. No GET pair: a GET-by-CRS read route for
+        // `fixed_links` belongs to Phase 2, not this ingestion task.
+        (
+            "/fixed-links",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
         // Same group, both methods -- this producer reading back its own
         // last write, not a second caller (see Correction 2).
         (

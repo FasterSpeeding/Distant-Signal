@@ -2962,6 +2962,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-EUSTON".to_string(),
                     station_name: "EUSTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JRN-2".to_string(),
@@ -2969,6 +2970,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-CREWE".to_string(),
                     station_name: "CREWE".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -3071,6 +3073,7 @@ mod db_tests {
                     tiploc: "WATRLMN".to_string(),
                     station_name: "LONDON WATERLOO".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JRN-PAD-2".to_string(),
@@ -3080,6 +3083,7 @@ mod db_tests {
                     tiploc: "PUTNEY".to_string(),
                     station_name: "PUTNEY".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -3521,6 +3525,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-ARR-ORIGIN".to_string(),
                     station_name: "PADDINGTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JRN-ARR-2".to_string(),
@@ -3528,6 +3533,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-ARR-MID".to_string(),
                     station_name: "TEST STATION A".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -3866,6 +3872,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-SKEW-ORIGIN".to_string(),
                     station_name: "PADDINGTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JRN-SKEW-2".to_string(),
@@ -3873,6 +3880,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-SKEW-MID".to_string(),
                     station_name: "TEST STATION B".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -4002,6 +4010,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-NOSKEW-ORIGIN".to_string(),
                     station_name: "PADDINGTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JRN-NOSKEW-2".to_string(),
@@ -4009,6 +4018,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-NOSKEW-MID".to_string(),
                     station_name: "TEST STATION C".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -4124,6 +4134,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-NOPLAN-ORIGIN".to_string(),
                     station_name: "PADDINGTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JRN-NOPLAN-2".to_string(),
@@ -4131,6 +4142,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-NOPLAN-MID".to_string(),
                     station_name: "TEST STATION D".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -4241,6 +4253,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-EST-EUSTON".to_string(),
                     station_name: "EUSTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JRN-EST-2".to_string(),
@@ -4248,6 +4261,7 @@ mod db_tests {
                     tiploc: "TEST-JRN-EST-CREWE".to_string(),
                     station_name: "CREWE".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )

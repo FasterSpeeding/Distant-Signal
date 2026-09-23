@@ -59,6 +59,7 @@ mod tests {
             tiploc: "WATRLMN".to_string(),
             station_name: "London Waterloo".to_string(),
             source_sequence: 7,
+            change_time_minutes: None,
         };
         let value = serde_json::to_value(&record).expect("serialize StanoxCrsRecord");
         assert_eq!(
@@ -68,7 +69,8 @@ mod tests {
                 "crs": "WAT",
                 "tiploc": "WATRLMN",
                 "station_name": "London Waterloo",
-                "source_sequence": 7
+                "source_sequence": 7,
+                "change_time_minutes": null
             })
         );
     }

@@ -679,14 +679,15 @@ pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord
     for record in records {
         sqlx::query(
             r#"
-            INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NOW())
+            INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, change_time_minutes, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
             ON CONFLICT (stanox) DO UPDATE SET
-                crs             = EXCLUDED.crs,
-                tiploc          = EXCLUDED.tiploc,
-                station_name    = EXCLUDED.station_name,
-                source_sequence = EXCLUDED.source_sequence,
-                updated_at      = NOW()
+                crs                 = EXCLUDED.crs,
+                tiploc              = EXCLUDED.tiploc,
+                station_name        = EXCLUDED.station_name,
+                source_sequence     = EXCLUDED.source_sequence,
+                change_time_minutes = EXCLUDED.change_time_minutes,
+                updated_at          = NOW()
             "#,
         )
         .bind(&record.stanox)
@@ -694,6 +695,7 @@ pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord
         .bind(&record.tiploc)
         .bind(&record.station_name)
         .bind(record.source_sequence)
+        .bind(record.change_time_minutes)
         .execute(&mut *tx)
         .await?;
 
@@ -717,6 +719,7 @@ struct StanoxCrsRow {
     tiploc: String,
     station_name: String,
     source_sequence: i32,
+    change_time_minutes: Option<i32>,
 }
 
 impl From<StanoxCrsRow> for common::StanoxCrsRecord {
@@ -727,6 +730,7 @@ impl From<StanoxCrsRow> for common::StanoxCrsRecord {
             tiploc: row.tiploc,
             station_name: row.station_name,
             source_sequence: row.source_sequence,
+            change_time_minutes: row.change_time_minutes,
         }
     }
 }
@@ -738,7 +742,7 @@ impl From<StanoxCrsRow> for common::StanoxCrsRecord {
 /// timestamp.
 pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecord>> {
     let rows = sqlx::query_as::<_, StanoxCrsRow>(
-        "SELECT stanox, crs, tiploc, station_name, source_sequence FROM stanox_crs ORDER BY stanox",
+        "SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes FROM stanox_crs ORDER BY stanox",
     )
     .fetch_all(pool)
     .await?;
@@ -764,7 +768,7 @@ pub async fn list_stanox_crs_for_crs(
     crs: &str,
 ) -> Result<Vec<common::StanoxCrsRecord>> {
     let rows = sqlx::query_as::<_, StanoxCrsRow>(
-        "SELECT stanox, crs, tiploc, station_name, source_sequence FROM stanox_crs \
+        "SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes FROM stanox_crs \
          WHERE UPPER(crs) = UPPER($1)",
     )
     .bind(crs)
@@ -775,6 +779,98 @@ pub async fn list_stanox_crs_for_crs(
         .into_iter()
         .map(common::StanoxCrsRecord::from)
         .collect())
+}
+
+/// Wholesale-replaces `fixed_links` with `records` in one transaction --
+/// see this plan's Judgment Call 4 for why this is a full replace, not a
+/// per-row `ON CONFLICT` upsert like `upsert_stanox_crs`: a real ALF row
+/// has no natural stable per-row key. At ~4,222 real rows (confirmed
+/// against the sibling `Distant-Signal-MCP` project's own measurement,
+/// see this plan's header), this is cheap on every ~30-minute publish
+/// cycle. Called only when `schedule-reference` actually found an ALF
+/// file this cycle (`routes::ingest::post_fixed_links`'s own caller,
+/// `main.rs`'s `publish_fixed_links`) -- an absent ALF file means this
+/// function is simply never called that cycle, leaving the previous
+/// cycle's rows in place rather than deleting them with nothing to
+/// replace them (this plan's Judgment Call 1's "degrade this one product,
+/// never wipe it for no reason" posture).
+pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecord]) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM fixed_links")
+        .execute(&mut *tx)
+        .await?;
+
+    let mut count = 0u64;
+    for record in records {
+        sqlx::query(
+            r#"
+            INSERT INTO fixed_links (mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, source_sequence, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            "#,
+        )
+        .bind(&record.mode)
+        .bind(&record.from_crs)
+        .bind(&record.to_crs)
+        .bind(record.minutes)
+        .bind(&record.valid_from)
+        .bind(&record.valid_to)
+        .bind(&record.days_mask)
+        .bind(record.source_sequence)
+        .execute(&mut *tx)
+        .await?;
+        count += 1;
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Every `fixed_links` row whose `from_crs` matches `crs` -- Phase 2's own
+/// read-side lookup shape (mirrors `list_stanox_crs_for_crs`'s own
+/// `WHERE crs = $1` pattern). Case-insensitive, matching that function's
+/// own `UPPER(...)` convention.
+pub async fn list_fixed_links_from_crs(
+    pool: &PgPool,
+    crs: &str,
+) -> Result<Vec<common::FixedLinkRecord>> {
+    let rows = sqlx::query_as::<_, FixedLinkRow>(
+        "SELECT mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, source_sequence \
+         FROM fixed_links WHERE UPPER(from_crs) = UPPER($1)",
+    )
+    .bind(crs)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(common::FixedLinkRecord::from)
+        .collect())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct FixedLinkRow {
+    mode: String,
+    from_crs: String,
+    to_crs: String,
+    minutes: i32,
+    valid_from: String,
+    valid_to: String,
+    days_mask: String,
+    source_sequence: i32,
+}
+
+impl From<FixedLinkRow> for common::FixedLinkRecord {
+    fn from(row: FixedLinkRow) -> Self {
+        Self {
+            mode: row.mode,
+            from_crs: row.from_crs,
+            to_crs: row.to_crs,
+            minutes: row.minutes,
+            valid_from: row.valid_from,
+            valid_to: row.valid_to,
+            days_mask: row.days_mask,
+            source_sequence: row.source_sequence,
+        }
+    }
 }
 
 /// Reverse of the above: one CRS for a TIPLOC, or `None` if unmapped.
@@ -4226,6 +4322,7 @@ mod tests {
             tiploc: "TESTLOC".to_string(),
             station_name: "TEST STATION".to_string(),
             source_sequence: 942,
+            change_time_minutes: None,
         };
         upsert_stanox_crs(&pool, &[first])
             .await
@@ -4237,6 +4334,7 @@ mod tests {
             tiploc: "TESTLOC".to_string(),
             station_name: "TEST STATION".to_string(),
             source_sequence: 943,
+            change_time_minutes: None,
         };
         upsert_stanox_crs(&pool, &[second])
             .await
@@ -5014,6 +5112,7 @@ mod stanox_crs_lookup_query_tests {
                     tiploc: "EUSTON".to_string(),
                     station_name: "LONDON EUSTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-WAT".to_string(),
@@ -5021,6 +5120,7 @@ mod stanox_crs_lookup_query_tests {
                     tiploc: "WATRLMN".to_string(),
                     station_name: "LONDON WATERLOO".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -5051,6 +5151,7 @@ mod stanox_crs_lookup_query_tests {
                 tiploc: "CREWE".to_string(),
                 station_name: "CREWE".to_string(),
                 source_sequence: 1,
+                change_time_minutes: None,
             }],
         )
         .await
@@ -5083,6 +5184,7 @@ mod stanox_crs_lookup_query_tests {
                     tiploc: "TEST-JS-CREWE".to_string(),
                     station_name: "CREWE".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
                 common::StanoxCrsRecord {
                     stanox: "TEST-JS-EUS".to_string(),
@@ -5090,6 +5192,7 @@ mod stanox_crs_lookup_query_tests {
                     tiploc: "TEST-JS-EUSTON".to_string(),
                     station_name: "EUSTON".to_string(),
                     source_sequence: 1,
+                    change_time_minutes: None,
                 },
             ],
         )
@@ -5113,6 +5216,101 @@ mod stanox_crs_lookup_query_tests {
         assert_eq!(result.len(), 2);
 
         sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JS-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                upsert_fixed_links -- --ignored --test-threads=1`"]
+    async fn upsert_fixed_links_replaces_the_whole_table_each_call() {
+        let pool = test_pool().await;
+        let first = vec![common::FixedLinkRecord {
+            mode: "TUBE".to_string(),
+            from_crs: "EUS".to_string(),
+            to_crs: "KGX".to_string(),
+            minutes: 5,
+            valid_from: "0500".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111100".to_string(),
+            source_sequence: 1,
+        }];
+        upsert_fixed_links(&pool, &first)
+            .await
+            .expect("first publish");
+        let after_first = list_fixed_links_from_crs(&pool, "EUS")
+            .await
+            .expect("read back");
+        assert_eq!(after_first.len(), 1);
+
+        let second = vec![common::FixedLinkRecord {
+            mode: "TRANSFER".to_string(),
+            from_crs: "EUS".to_string(),
+            to_crs: "STP".to_string(),
+            minutes: 15,
+            valid_from: "0000".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111111".to_string(),
+            source_sequence: 2,
+        }];
+        upsert_fixed_links(&pool, &second)
+            .await
+            .expect("second publish replaces");
+        let after_second = list_fixed_links_from_crs(&pool, "EUS")
+            .await
+            .expect("read back");
+        assert_eq!(
+            after_second.len(),
+            1,
+            "the first cycle's EUS->KGX row must be gone -- this is a full replace, not an upsert"
+        );
+        assert_eq!(after_second[0].to_crs, "STP");
+
+        sqlx::query("DELETE FROM fixed_links")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                upsert_stanox_crs_change_time -- --ignored --test-threads=1`"]
+    async fn upsert_stanox_crs_change_time_minutes_round_trips_including_none() {
+        let pool = test_pool().await;
+        let records = vec![
+            common::StanoxCrsRecord {
+                stanox: "TEST-STANOX-WITH-CHANGE-TIME".to_string(),
+                crs: "ZZZ".to_string(),
+                tiploc: "ZZZTPL".to_string(),
+                station_name: "TEST STATION".to_string(),
+                source_sequence: 1,
+                change_time_minutes: Some(5),
+            },
+            common::StanoxCrsRecord {
+                stanox: "TEST-STANOX-NO-CHANGE-TIME".to_string(),
+                crs: "YYY".to_string(),
+                tiploc: "YYYTPL".to_string(),
+                station_name: "TEST STATION 2".to_string(),
+                source_sequence: 1,
+                change_time_minutes: None,
+            },
+        ];
+        upsert_stanox_crs(&pool, &records).await.expect("upsert");
+
+        let all = list_stanox_crs(&pool).await.expect("read back");
+        let with_time = all
+            .iter()
+            .find(|r| r.stanox == "TEST-STANOX-WITH-CHANGE-TIME")
+            .expect("row present");
+        assert_eq!(with_time.change_time_minutes, Some(5));
+        let without_time = all
+            .iter()
+            .find(|r| r.stanox == "TEST-STANOX-NO-CHANGE-TIME")
+            .expect("row present");
+        assert_eq!(without_time.change_time_minutes, None);
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-STANOX-%'")
             .execute(&pool)
             .await
             .ok();
