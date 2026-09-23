@@ -121,8 +121,16 @@ test.describe('desktop nav bar (1440x900)', () => {
   test('shows the primary links inline, and no burger', async ({ page }) => {
     await page.goto('/lines');
     const nav = page.locator('nav');
+    // `exact: true` matters here specifically for 'Trains': Playwright's
+    // default accessible-name match is substring-based, and 'Trains' is
+    // also a substring of the separate 'My Trains & Tickets' destination
+    // rendered in this same bar for an anonymous visitor -- non-exact
+    // matching makes that one locator resolve to two elements (a real
+    // strict-mode violation seen in CI), even though the two links read as
+    // clearly distinct text to an actual reader/screen reader. This is a
+    // test-matcher precision issue only, not a real accessibility gap.
     for (const label of ['Track a Journey', 'Status', 'Lines', 'Stations', 'Trains', 'Incidents']) {
-      await expect(nav.getByRole('link', { name: label })).toBeVisible();
+      await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
   });
@@ -193,6 +201,8 @@ test.describe('phone nav bar (390x844)', () => {
 
     await nav.getByRole('button', { name: 'Navigation menu' }).click();
     const drawer = page.getByRole('dialog', { name: 'Menu' });
+    // `exact: true` for the same reason as the desktop-bar test above:
+    // 'Trains' is a substring of 'My Trains & Tickets', both present here.
     for (const label of [
       'Track a Journey',
       'Status',
@@ -202,7 +212,7 @@ test.describe('phone nav bar (390x844)', () => {
       'Incidents',
       'My Trains & Tickets',
     ]) {
-      await expect(drawer.getByRole('link', { name: label })).toBeVisible();
+      await expect(drawer.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
   });
 
