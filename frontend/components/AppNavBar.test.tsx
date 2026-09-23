@@ -61,9 +61,9 @@ describe('AppNavBar', () => {
    * survive it. */
   it('keeps the lines, stations and train-search entry points together', () => {
     renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-    expect(screen.getByRole('link', { name: 'All Lines' })).toHaveAttribute('href', '/lines');
-    expect(screen.getByRole('link', { name: 'Station Lookup' })).toHaveAttribute('href', '/stations');
-    expect(screen.getByRole('link', { name: 'Find a Train' })).toHaveAttribute('href', '/trains');
+    expect(screen.getByRole('link', { name: 'Lines' })).toHaveAttribute('href', '/lines');
+    expect(screen.getByRole('link', { name: 'Stations' })).toHaveAttribute('href', '/stations');
+    expect(screen.getByRole('link', { name: 'Trains' })).toHaveAttribute('href', '/trains');
   });
 
   it('offers "My Trains & Tickets" inline to an anonymous visitor, who has no account menu to find it in', () => {
