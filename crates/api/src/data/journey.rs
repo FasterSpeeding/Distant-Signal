@@ -1,8 +1,10 @@
 //! Merges a train's scheduled timetable (from `trains.calling_points` when
 //! schedule-matching has populated it, else reconstructed from
-//! `schedule_destination_departures`) with the latest reported movement
-//! event per location, into one ordered `JourneyStop[]` -- the primary
-//! data source for the train detail page's timeline. See
+//! `schedule_calling_points_full`, see `queries::list_calling_point_departures_for_train`'s
+//! own doc comment for why this replaced `schedule_destination_departures`
+//! here 2026-09-23) with the latest reported movement event per location,
+//! into one ordered `JourneyStop[]` -- the primary data source for the
+//! train detail page's timeline. See
 //! docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md.
 
 use std::collections::{BTreeMap, HashMap};
@@ -301,6 +303,43 @@ impl JourneyStop {
     }
 }
 
+/// Whether `crs` is a genuine, bookable National Rail station code rather
+/// than one of Network Rail's own `X`-prefixed pseudo-codes for a
+/// non-passenger location (a junction, siding, or depot that still needs a
+/// STANOX->CRS entry for TRUST tracking purposes but was never sold a
+/// ticket to) -- see `reference-data/stanox-crs.md`'s own "Extraction and
+/// exclusion policy" section and `schedule_reference::parser::resolve`'s
+/// doc comment, which both independently document this exact convention.
+///
+/// **Real evidence this matters, not a hypothetical.** `schedule_query::
+/// parser::resolve`'s STANOX-disambiguation policy accepts an X-prefixed
+/// CRS as a STANOX's row whenever it is the SOLE candidate for that STANOX
+/// (only excluding a STANOX outright when 2+ non-X or 2+ X candidates tie) --
+/// so a plain junction with no real passenger identity can still come back
+/// from `queries::crs_for_tiplocs_batch` with a resolved, non-`None` `crs`.
+/// Confirmed against live production data for train `Y80908` on
+/// 2026-09-23 (Birmingham New Street to London Euston): `HANSLPJ` (Hanslope
+/// Junction) resolved to CRS `XHN`, `PROOFHJ` (Proof House Junction) to
+/// `XOZ`, `LEDBRNJ` (Ledburn Junction) to `XOD`, `BONENDJ` (Bourne End
+/// Junction) to `XOE`, and `WLSDWLJ` (Willesden Junction) to `XWI` -- none
+/// of them a real station, none of them present in `stations` (so `name`
+/// stayed `None` regardless), yet before this filter each one still carried
+/// a non-`None` `crs`. That `crs` was enough for `assign_events_to_stops`
+/// to treat it as a genuine calling point CRS worth matching TRUST
+/// movement events against, and for `frontend/components/JourneyTimeline.tsx`'s
+/// `resolvedStopLabel` (`stop.name` -> `stop.crs` -> ...) to fall through to
+/// displaying the bare pseudo-code as if it were a terse but real station
+/// name -- rendering a genuinely non-existent "XHN" stop, complete with a
+/// live-looking reported departure time, on the journey timeline. Blanking
+/// `crs` here instead makes such a calling point behave exactly like the
+/// module's own already-documented, already-correct "case 2" (a genuine
+/// non-station timing point whose TIPLOC has no CRS at all) -- both end up
+/// with `crs: None`, `name: None`, no TRUST overlay, and the frontend's
+/// honest by-index "Stop N" fallback instead of a fabricated identity.
+fn is_bookable_crs(crs: &str) -> bool {
+    !crs.starts_with('X')
+}
+
 /// Resolves a deserialized `trains.calling_points` blob into the base
 /// `JourneyStop` list, given an already-fetched TIPLOC->CRS map.
 ///
@@ -316,7 +355,14 @@ fn stops_from_calling_points(
 ) -> Vec<JourneyStop> {
     raw.iter()
         .map(|cp| {
-            let crs = tiploc_to_crs.get(&tiploc_key(&cp.tiploc)).cloned();
+            let crs = tiploc_to_crs
+                .get(&tiploc_key(&cp.tiploc))
+                // See `is_bookable_crs`'s own doc comment: an X-prefixed
+                // pseudo-CRS is not a real, displayable station identity,
+                // so a stop that only resolves to one of those is treated
+                // exactly like one that didn't resolve at all.
+                .filter(|crs| is_bookable_crs(crs))
+                .cloned();
             JourneyStop::from_calling_point(cp, crs, service_date)
         })
         .collect()
@@ -346,11 +392,49 @@ fn apply_station_names(stops: &mut [JourneyStop], names: &HashMap<String, String
     }
 }
 
+/// Converts one `schedule_calling_points_full` row into the same
+/// `RawCallingPoint` shape `trains.calling_points_json` deserializes into
+/// (via `serde_json::from_value` in [`build_journey_stops`], below), so
+/// both of that function's sources resolve through the exact same
+/// TIPLOC->CRS->name pipeline from here on -- see
+/// `queries::list_schedule_calling_points_full_for_train`'s own doc
+/// comment (in `queries.rs`) for why this replaced the previous, bespoke
+/// `schedule_destination_departures`-based fallback construction.
+///
+/// `None` for a `kind` this table's own `CHECK (kind IN (...))` constraint
+/// should never actually let through -- defensive, not expected to fire on
+/// real data, same "tolerate an unexpected shape rather than panic" posture
+/// every other pass in this module already has.
+fn raw_calling_point_from_full_row(
+    row: &queries::ScheduleCallingPointFullRowForTrain,
+) -> Option<RawCallingPoint> {
+    let kind = match row.kind.as_str() {
+        "origin" => schedule_query::CallingPointKind::Origin,
+        "intermediate" => schedule_query::CallingPointKind::Intermediate,
+        "terminate" => schedule_query::CallingPointKind::Terminate,
+        _ => return None,
+    };
+    Some(RawCallingPoint {
+        tiploc: row.tiploc.clone(),
+        kind,
+        booked_arrival: row.booked_arrival,
+        booked_departure: row.booked_departure,
+        // `schedule_calling_points_full.day_offset` is a Postgres
+        // `SMALLINT` (`i16`); `RawCallingPoint::day_offset` is `u8`. Always
+        // a small non-negative value on real data (see
+        // `schedule_query::records::CallingPoint::day_offset`'s own doc
+        // comment) -- `unwrap_or(0)` degrades a genuinely-impossible
+        // negative or oversized value to "same day" rather than panicking.
+        day_offset: u8::try_from(row.day_offset).unwrap_or(0),
+    })
+}
+
 /// Builds the ordered stop list for `(train_uid, service_date)`, or `None`
 /// if neither the primary (`calling_points_json`) nor fallback
-/// (`schedule_destination_departures`) source has anything -- see the
-/// design doc §1 for when this is/isn't called, and §0.2/§3.2 for the
-/// fallback's synthetic-terminus construction.
+/// (`schedule_calling_points_full`, since the 2026-09-23 fix described on
+/// `queries::list_calling_point_departures_for_train`'s own doc comment)
+/// source has anything -- see the design doc §1 for when this is/isn't
+/// called.
 ///
 /// `current_delay_minutes` is the train's current overall delay --
 /// `train_current_state.delay_minutes`, the same corrected, TRUST-own-
@@ -391,117 +475,34 @@ pub async fn build_journey_stops(
     platform: Option<&str>,
     planned_platform: Option<&str>,
 ) -> anyhow::Result<Option<Vec<JourneyStop>>> {
-    let mut stops: Vec<JourneyStop> = match calling_points_json {
-        Some(json) => {
-            let raw: Vec<RawCallingPoint> = serde_json::from_value(json.clone())?;
-            // `tiploc_key`, not the raw stored value, on BOTH sides -- see
-            // that function's own doc comment for the padding bug this
-            // closes.
-            let tiplocs: Vec<String> = raw.iter().map(|cp| tiploc_key(&cp.tiploc)).collect();
-            let tiploc_to_crs = queries::crs_for_tiplocs_batch(pool, &tiplocs).await?;
-            stops_from_calling_points(&raw, &tiploc_to_crs, service_date)
-        }
+    let raw: Vec<RawCallingPoint> = match calling_points_json {
+        Some(json) => serde_json::from_value(json.clone())?,
         None => {
             let rows =
-                queries::list_calling_point_departures_for_train(pool, train_uid, service_date)
+                queries::list_schedule_calling_points_full_for_train(pool, train_uid, service_date)
                     .await?;
             if rows.is_empty() {
                 return Ok(None);
             }
-            let mut built: Vec<JourneyStop> = rows
-                .iter()
-                .map(|row| JourneyStop {
-                    crs: Some(row.origin_crs.clone()),
-                    name: None,
-                    tiploc: None,
-                    kind: Some(
-                        if row.true_origin_crs.as_deref().is_some_and(|true_origin| {
-                            true_origin.eq_ignore_ascii_case(&row.origin_crs)
-                        }) {
-                            schedule_query::CallingPointKind::Origin
-                        } else {
-                            schedule_query::CallingPointKind::Intermediate
-                        },
-                    ),
-                    scheduled_arrival: None,
-                    // `row.day_offset` -- see `queries::CallingPointDepartureRow::day_offset`'s
-                    // own doc comment -- shifts the base date forward for a
-                    // calling point that falls on a calendar day AFTER
-                    // `service_date` (a real overnight service). Same fix as
-                    // the `calling_points_json` branch above, for this
-                    // fallback source.
-                    scheduled_departure: london_to_utc(
-                        (service_date + Duration::days(row.day_offset as i64))
-                            .and_time(row.scheduled),
-                    ),
-                    actual_arrival: None,
-                    actual_departure: None,
-                    estimated_arrival: None,
-                    estimated_departure: None,
-                    last_event_type: None,
-                    variation_status: None,
-                    delay_minutes: None,
-                    stop_status: StopStatus::Unknown,
-                    skip_source: None,
-                    platform: None,
-                    planned_platform: None,
-                    platform_changed: false,
-                })
-                .collect();
-
-            // The schedule's own booked terminus arrival (2026-09-22 UX
-            // review finding I16/2.7: this synthetic `Terminate` stop's
-            // `scheduled_arrival` was previously always hardcoded `None`,
-            // so this fallback path -- the one `list_calling_point_departures_for_train`
-            // takes, i.e. whenever `trains.calling_points` hasn't been
-            // populated by schedule-matching -- rendered a blank terminus
-            // arrival time even on real, non-seed data. Every row for this
-            // `train_uid`/`service_date` carries the same
-            // `destination_arrival`/`destination_arrival_day_offset` pair
-            // (`CallingPointDepartureRow`'s own doc comment), so reading it
-            // off the last row here is equivalent to reading it off any
-            // other. Genuinely `None` for a schedule whose public timetable
-            // has no booked arrival at its own terminus -- not a bug, see
-            // that struct's doc comment -- in which case this stop keeps its
-            // previous blank-arrival behaviour exactly.
-            let terminus_scheduled_arrival = rows.last().and_then(|r| {
-                let arrival = r.destination_arrival?;
-                london_to_utc(
-                    (service_date + Duration::days(r.destination_arrival_day_offset as i64))
-                        .and_time(arrival),
-                )
-            });
-
-            if let Some(destination_crs) = rows.last().and_then(|r| r.destination_crs.clone())
-                && built
-                    .last()
-                    .and_then(|s| s.crs.as_deref())
-                    .is_none_or(|last_crs| !last_crs.eq_ignore_ascii_case(&destination_crs))
-            {
-                built.push(JourneyStop {
-                    crs: Some(destination_crs),
-                    name: None,
-                    tiploc: None,
-                    kind: Some(schedule_query::CallingPointKind::Terminate),
-                    scheduled_arrival: terminus_scheduled_arrival,
-                    scheduled_departure: None,
-                    actual_arrival: None,
-                    actual_departure: None,
-                    estimated_arrival: None,
-                    estimated_departure: None,
-                    last_event_type: None,
-                    variation_status: None,
-                    delay_minutes: None,
-                    stop_status: StopStatus::Unknown,
-                    skip_source: None,
-                    platform: None,
-                    planned_platform: None,
-                    platform_changed: false,
-                });
-            }
-            built
+            rows.iter()
+                .filter_map(raw_calling_point_from_full_row)
+                .collect()
         }
     };
+
+    // `tiploc_key`, not the raw stored value, on BOTH sides -- see that
+    // function's own doc comment for the padding bug this closes. Shared
+    // by both sources above (`trains.calling_points_json`'s own
+    // `RawCallingPoint` shape, and `schedule_calling_points_full`'s,
+    // converted to the identical shape by `raw_calling_point_from_full_row`)
+    // -- the two now resolve through the exact same TIPLOC->CRS->name
+    // pipeline, which is the whole point of the 2026-09-23 fallback-source
+    // fix (see `queries::list_calling_point_departures_for_train`'s own
+    // doc comment for the "missing" vs "unresolved" inconsistency this
+    // closes).
+    let tiplocs: Vec<String> = raw.iter().map(|cp| tiploc_key(&cp.tiploc)).collect();
+    let tiploc_to_crs = queries::crs_for_tiplocs_batch(pool, &tiplocs).await?;
+    let mut stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
 
     if stops.is_empty() {
         return Ok(None);
@@ -1677,6 +1678,146 @@ mod tests {
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].crs, None);
         assert_eq!(stops[0].tiploc.as_deref(), Some("SHCKLGJ"));
+    }
+
+    /// Regression test for the "spurious non-station rows" symptom,
+    /// confirmed against live production data for train `Y80908` on
+    /// 2026-09-23 (Birmingham New Street to London Euston): `HANSLPJ`
+    /// (Hanslope Junction), a genuine non-station timing point with no
+    /// booked public arrival or departure, resolved to CRS `XHN` --
+    /// `schedule_query::parser::resolve`'s STANOX-disambiguation policy
+    /// accepts an X-prefixed pseudo-CRS whenever it is the sole candidate
+    /// for its STANOX (see `is_bookable_crs`'s own doc comment). Before
+    /// this fix that `crs` survived into the stop and
+    /// `frontend/components/JourneyTimeline.tsx`'s `resolvedStopLabel`
+    /// (`stop.name` -> `stop.crs` -> ...) rendered the bare pseudo-code
+    /// "XHN" as if it were a real, if terse, station name. This asserts the
+    /// fix: such a stop's `crs` is blanked to `None`, exactly as if the
+    /// TIPLOC had never resolved at all.
+    #[test]
+    fn an_x_prefixed_pseudo_crs_is_blanked_rather_than_displayed_as_a_real_station() {
+        let service_date: NaiveDate = "2026-09-23".parse().unwrap();
+        let tiploc_to_crs: HashMap<String, String> = [("HANSLPJ".to_string(), "XHN".to_string())]
+            .into_iter()
+            .collect();
+        let cp = RawCallingPoint {
+            tiploc: "HANSLPJ".to_string(),
+            kind: schedule_query::CallingPointKind::Intermediate,
+            booked_arrival: None,
+            booked_departure: None,
+            day_offset: 0,
+        };
+
+        let stops = stops_from_calling_points(&[cp], &tiploc_to_crs, service_date);
+
+        assert_eq!(
+            stops[0].crs, None,
+            "an X-prefixed pseudo-CRS is not a real, displayable station identity"
+        );
+    }
+
+    /// The mirror of the test directly above: a genuine, non-X-prefixed
+    /// CRS (Wolverhampton, `WOL`, also on train `Y80908`'s real route)
+    /// must NOT be caught by the same filter -- `is_bookable_crs` only
+    /// excludes the `X`-prefixed convention, never a real station code.
+    #[test]
+    fn a_genuine_non_x_crs_still_resolves_normally() {
+        let service_date: NaiveDate = "2026-09-23".parse().unwrap();
+        let tiploc_to_crs: HashMap<String, String> = [("WLVR".to_string(), "WOL".to_string())]
+            .into_iter()
+            .collect();
+
+        let stops = stops_from_calling_points(&[raw_cp("WLVR")], &tiploc_to_crs, service_date);
+
+        assert_eq!(stops[0].crs.as_deref(), Some("WOL"));
+    }
+
+    #[test]
+    fn is_bookable_crs_rejects_only_the_x_prefixed_convention() {
+        assert!(is_bookable_crs("WAT"));
+        assert!(is_bookable_crs("EUS"));
+        assert!(!is_bookable_crs("XHN"));
+        assert!(!is_bookable_crs("XOZ"));
+        // A real CRS beginning with a letter that merely contains an "X"
+        // elsewhere must not be caught -- only a LEADING `X` is the
+        // pseudo-code convention.
+        assert!(is_bookable_crs("BOX"));
+    }
+
+    /// Real evidence for the `raw_calling_point_from_full_row` conversion
+    /// (the 2026-09-23 fallback-source fix): a `schedule_calling_points_full`
+    /// row shaped exactly like the real Northampton (`NMPTN`) calling point
+    /// on train `Y80908` -- a genuine, booked `Intermediate` stop, unlike
+    /// this file's junction fixtures above -- converts to the same
+    /// `RawCallingPoint` shape the primary `trains.calling_points_json`
+    /// path already produces, so both sources resolve through the exact
+    /// same TIPLOC->CRS->name pipeline from there on.
+    #[test]
+    fn raw_calling_point_from_full_row_converts_a_real_booked_intermediate_stop() {
+        let row = queries::ScheduleCallingPointFullRowForTrain {
+            tiploc: "NMPTN".to_string(),
+            kind: "intermediate".to_string(),
+            booked_arrival: "17:08:00".parse().ok(),
+            booked_departure: "17:18:00".parse().ok(),
+            day_offset: 0,
+        };
+
+        let cp = raw_calling_point_from_full_row(&row).expect("a valid kind converts");
+
+        assert_eq!(cp.tiploc, "NMPTN");
+        assert_eq!(cp.kind, schedule_query::CallingPointKind::Intermediate);
+        assert_eq!(cp.booked_arrival, "17:08:00".parse().ok());
+        assert_eq!(cp.booked_departure, "17:18:00".parse().ok());
+        assert_eq!(cp.day_offset, 0);
+    }
+
+    #[test]
+    fn raw_calling_point_from_full_row_parses_origin_and_terminate_kinds() {
+        let origin = queries::ScheduleCallingPointFullRowForTrain {
+            tiploc: "BHAMNWS".to_string(),
+            kind: "origin".to_string(),
+            booked_arrival: None,
+            booked_departure: "16:06:00".parse().ok(),
+            day_offset: 0,
+        };
+        let terminate = queries::ScheduleCallingPointFullRowForTrain {
+            tiploc: "EUSTON".to_string(),
+            kind: "terminate".to_string(),
+            booked_arrival: "18:18:00".parse().ok(),
+            booked_departure: None,
+            day_offset: 0,
+        };
+
+        assert_eq!(
+            raw_calling_point_from_full_row(&origin)
+                .expect("origin converts")
+                .kind,
+            schedule_query::CallingPointKind::Origin
+        );
+        assert_eq!(
+            raw_calling_point_from_full_row(&terminate)
+                .expect("terminate converts")
+                .kind,
+            schedule_query::CallingPointKind::Terminate
+        );
+    }
+
+    /// Defensive: this table's own `CHECK (kind IN (...))` constraint
+    /// should make this unreachable on real data, but the conversion still
+    /// must not panic on an unexpected value -- same "tolerate an
+    /// unexpected shape rather than panic" posture as every other pass in
+    /// this module.
+    #[test]
+    fn raw_calling_point_from_full_row_returns_none_for_an_unrecognised_kind() {
+        let row = queries::ScheduleCallingPointFullRowForTrain {
+            tiploc: "TEST".to_string(),
+            kind: "bogus".to_string(),
+            booked_arrival: None,
+            booked_departure: None,
+            day_offset: 0,
+        };
+
+        assert!(raw_calling_point_from_full_row(&row).is_none());
     }
 
     #[test]
@@ -3153,54 +3294,89 @@ mod db_tests {
             .ok();
     }
 
+    /// Seeds `stanox_crs` for a fallback-source test's calling points (real
+    /// TIPLOC->CRS resolution is now part of this path -- see
+    /// `queries::list_schedule_calling_points_full_for_train`'s own doc
+    /// comment) and returns the same pool so callers can chain further
+    /// setup. TIPLOCs are just the given CRS prefixed with `tiploc_prefix`
+    /// so each test's own fixture rows stay visually paired with their
+    /// resolved CRS.
+    async fn seed_fallback_stanox_crs(
+        pool: &sqlx::PgPool,
+        tiploc_prefix: &str,
+        crs_codes: &[&str],
+    ) {
+        let records: Vec<common::StanoxCrsRecord> = crs_codes
+            .iter()
+            .enumerate()
+            .map(|(i, crs)| common::StanoxCrsRecord {
+                stanox: format!("{tiploc_prefix}-{i}"),
+                crs: crs.to_string(),
+                tiploc: format!("{tiploc_prefix}-{crs}"),
+                station_name: crs.to_string(),
+                source_sequence: 1,
+                change_time_minutes: None,
+            })
+            .collect();
+        crate::data::queries::upsert_stanox_crs(pool, &records)
+            .await
+            .expect("seed stanox_crs for fallback source test");
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                build_journey_stops_falls_back_to_schedule_destination_departures_and_appends_terminus \
+                build_journey_stops_falls_back_to_schedule_calling_points_full \
                 -- --ignored --test-threads=1`"]
-    async fn build_journey_stops_falls_back_to_schedule_destination_departures_and_appends_terminus()
-     {
+    async fn build_journey_stops_falls_back_to_schedule_calling_points_full() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-FB", service_date)
                 .await
                 .expect("find_or_create_train");
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FB'")
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-FB'")
             .execute(&pool)
             .await
             .ok();
+        seed_fallback_stanox_crs(&pool, "TEST-JRN-FB", &["RDG", "SLO", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_destination_departures(
+        crate::data::queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleDestinationDeparturesRow {
+                crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
-                    destination_crs: "WAT".to_string(),
-                    scheduled: "08:00:00".parse().unwrap(),
+                    uid: "TEST-JRN-FB".to_string(),
+                    seq: 0,
+                    tiploc: "TEST-JRN-FB-RDG".to_string(),
+                    kind: "origin".to_string(),
+                    booked_arrival: None,
+                    booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
-                    train_uid: "TEST-JRN-FB".to_string(),
-                    origin_crs: "RDG".to_string(),
-                    true_origin_crs: Some("RDG".to_string()),
-                    calling_point_arrival: None,
-                    destination_arrival: None,
-                    destination_arrival_day_offset: 0,
                 },
-                crate::data::queries::ScheduleDestinationDeparturesRow {
+                crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
-                    destination_crs: "WAT".to_string(),
-                    scheduled: "08:20:00".parse().unwrap(),
+                    uid: "TEST-JRN-FB".to_string(),
+                    seq: 1,
+                    tiploc: "TEST-JRN-FB-SLO".to_string(),
+                    kind: "intermediate".to_string(),
+                    booked_arrival: Some("08:19:00".parse().unwrap()),
+                    booked_departure: Some("08:20:00".parse().unwrap()),
                     day_offset: 0,
-                    train_uid: "TEST-JRN-FB".to_string(),
-                    origin_crs: "SLO".to_string(),
-                    true_origin_crs: Some("RDG".to_string()),
-                    calling_point_arrival: None,
-                    destination_arrival: None,
-                    destination_arrival_day_offset: 0,
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-FB".to_string(),
+                    seq: 2,
+                    tiploc: "TEST-JRN-FB-WAT".to_string(),
+                    kind: "terminate".to_string(),
+                    booked_arrival: None,
+                    booked_departure: None,
+                    day_offset: 0,
                 },
             ],
         )
         .await
-        .expect("seed schedule_destination_departures");
+        .expect("seed schedule_calling_points_full");
 
         let stops = build_journey_stops(
             &pool,
@@ -3217,7 +3393,11 @@ mod db_tests {
         .expect("build_journey_stops")
         .expect("Some stops from the fallback source");
 
-        assert_eq!(stops.len(), 3, "RDG + SLO + synthetic WAT terminus");
+        assert_eq!(
+            stops.len(),
+            3,
+            "RDG + SLO + WAT terminus, straight off the schedule's own rows"
+        );
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
         assert_eq!(
             stops[0].kind,
@@ -3238,7 +3418,11 @@ mod db_tests {
             "no arrival time known from this source yet"
         );
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FB'")
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-FB'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-FB-%'")
             .execute(&pool)
             .await
             .ok();
@@ -3255,57 +3439,62 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_fallback_terminus_uses_the_schedules_own_destination_arrival() {
         // 2026-09-22 UX review finding I16/2.7 ("the terminus row has no
-        // times at all"): the synthetic `Terminate` stop
-        // `build_journey_stops`'s fallback branch appends used to hardcode
-        // `scheduled_arrival: None` unconditionally, even though
-        // `schedule_destination_departures` already stores the schedule's
-        // own booked terminus arrival on every one of its rows
-        // (`destination_arrival`) -- it just wasn't being selected. This is
-        // the companion to the test immediately above (which covers the
-        // genuinely-`None` case unchanged): here `destination_arrival` IS
-        // populated, and the terminus stop must pick it up.
+        // times at all"): the terminating stop this fallback source
+        // produces must carry the schedule's own booked terminus arrival,
+        // not a blank cell, whenever the real schedule has one. This is the
+        // companion to the test immediately above (which covers the
+        // genuinely-`None` case unchanged): here `booked_arrival` on the
+        // `terminate` row IS populated, and the resulting stop must pick it
+        // up.
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-FBA", service_date)
                 .await
                 .expect("find_or_create_train");
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FBA'")
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-FBA'")
             .execute(&pool)
             .await
             .ok();
+        seed_fallback_stanox_crs(&pool, "TEST-JRN-FBA", &["RDG", "SLO", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_destination_departures(
+        crate::data::queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleDestinationDeparturesRow {
+                crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
-                    destination_crs: "WAT".to_string(),
-                    scheduled: "08:00:00".parse().unwrap(),
+                    uid: "TEST-JRN-FBA".to_string(),
+                    seq: 0,
+                    tiploc: "TEST-JRN-FBA-RDG".to_string(),
+                    kind: "origin".to_string(),
+                    booked_arrival: None,
+                    booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
-                    train_uid: "TEST-JRN-FBA".to_string(),
-                    origin_crs: "RDG".to_string(),
-                    true_origin_crs: Some("RDG".to_string()),
-                    calling_point_arrival: None,
-                    destination_arrival: Some("09:15:00".parse().unwrap()),
-                    destination_arrival_day_offset: 0,
                 },
-                crate::data::queries::ScheduleDestinationDeparturesRow {
+                crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
-                    destination_crs: "WAT".to_string(),
-                    scheduled: "08:20:00".parse().unwrap(),
+                    uid: "TEST-JRN-FBA".to_string(),
+                    seq: 1,
+                    tiploc: "TEST-JRN-FBA-SLO".to_string(),
+                    kind: "intermediate".to_string(),
+                    booked_arrival: Some("08:19:00".parse().unwrap()),
+                    booked_departure: Some("08:20:00".parse().unwrap()),
                     day_offset: 0,
-                    train_uid: "TEST-JRN-FBA".to_string(),
-                    origin_crs: "SLO".to_string(),
-                    true_origin_crs: Some("RDG".to_string()),
-                    calling_point_arrival: None,
-                    destination_arrival: Some("09:15:00".parse().unwrap()),
-                    destination_arrival_day_offset: 0,
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-FBA".to_string(),
+                    seq: 2,
+                    tiploc: "TEST-JRN-FBA-WAT".to_string(),
+                    kind: "terminate".to_string(),
+                    booked_arrival: Some("09:15:00".parse().unwrap()),
+                    booked_departure: None,
+                    day_offset: 0,
                 },
             ],
         )
         .await
-        .expect("seed schedule_destination_departures");
+        .expect("seed schedule_calling_points_full");
 
         let stops = build_journey_stops(
             &pool,
@@ -3322,7 +3511,7 @@ mod db_tests {
         .expect("build_journey_stops")
         .expect("Some stops from the fallback source");
 
-        assert_eq!(stops.len(), 3, "RDG + SLO + synthetic WAT terminus");
+        assert_eq!(stops.len(), 3, "RDG + SLO + WAT terminus");
         assert_eq!(stops[2].crs.as_deref(), Some("WAT"));
         assert_eq!(
             stops[2].kind,
@@ -3334,7 +3523,11 @@ mod db_tests {
             "the terminus row's own booked arrival, not a blank cell"
         );
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FBA'")
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-FBA'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-FBA-%'")
             .execute(&pool)
             .await
             .ok();
@@ -3356,12 +3549,10 @@ mod db_tests {
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NONE", service_date)
                 .await
                 .expect("find_or_create_train");
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NONE'",
-        )
-        .execute(&pool)
-        .await
-        .ok();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-NONE'")
+            .execute(&pool)
+            .await
+            .ok();
 
         let stops = build_journey_stops(
             &pool,
@@ -3397,28 +3588,39 @@ mod db_tests {
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-OV", service_date)
                 .await
                 .expect("find_or_create_train");
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-OV'")
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-OV'")
             .execute(&pool)
             .await
             .ok();
+        seed_fallback_stanox_crs(&pool, "TEST-JRN-OV", &["RDG", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_destination_departures(
+        crate::data::queries::upsert_schedule_calling_points_full(
             &pool,
-            &[crate::data::queries::ScheduleDestinationDeparturesRow {
-                service_date,
-                destination_crs: "WAT".to_string(),
-                scheduled: "08:00:00".parse().unwrap(),
-                day_offset: 0,
-                train_uid: "TEST-JRN-OV".to_string(),
-                origin_crs: "RDG".to_string(),
-                true_origin_crs: Some("RDG".to_string()),
-                calling_point_arrival: None,
-                destination_arrival: None,
-                destination_arrival_day_offset: 0,
-            }],
+            &[
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-OV".to_string(),
+                    seq: 0,
+                    tiploc: "TEST-JRN-OV-RDG".to_string(),
+                    kind: "origin".to_string(),
+                    booked_arrival: None,
+                    booked_departure: Some("08:00:00".parse().unwrap()),
+                    day_offset: 0,
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-OV".to_string(),
+                    seq: 1,
+                    tiploc: "TEST-JRN-OV-WAT".to_string(),
+                    kind: "terminate".to_string(),
+                    booked_arrival: None,
+                    booked_departure: None,
+                    day_offset: 0,
+                },
+            ],
         )
         .await
-        .expect("seed schedule_destination_departures");
+        .expect("seed schedule_calling_points_full");
 
         sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
             .bind(trains_id)
@@ -3453,11 +3655,7 @@ mod db_tests {
         .expect("build_journey_stops")
         .expect("Some stops");
 
-        assert_eq!(
-            stops.len(),
-            2,
-            "RDG + synthetic WAT terminus (destination_crs differs from last row)"
-        );
+        assert_eq!(stops.len(), 2, "RDG + WAT terminus");
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
         assert_eq!(
             stops[0].actual_departure,
@@ -3480,7 +3678,11 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-OV'")
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-OV'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-OV-%'")
             .execute(&pool)
             .await
             .ok();
@@ -3639,30 +3841,39 @@ mod db_tests {
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PASS", service_date)
                 .await
                 .expect("find_or_create_train");
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'",
-        )
-        .execute(&pool)
-        .await
-        .ok();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-PASS'")
+            .execute(&pool)
+            .await
+            .ok();
+        seed_fallback_stanox_crs(&pool, "TEST-JRN-PASS", &["RDG", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_destination_departures(
+        crate::data::queries::upsert_schedule_calling_points_full(
             &pool,
-            &[crate::data::queries::ScheduleDestinationDeparturesRow {
-                service_date,
-                destination_crs: "WAT".to_string(),
-                scheduled: "08:00:00".parse().unwrap(),
-                day_offset: 0,
-                train_uid: "TEST-JRN-PASS".to_string(),
-                origin_crs: "RDG".to_string(),
-                true_origin_crs: Some("RDG".to_string()),
-                calling_point_arrival: None,
-                destination_arrival: None,
-                destination_arrival_day_offset: 0,
-            }],
+            &[
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-PASS".to_string(),
+                    seq: 0,
+                    tiploc: "TEST-JRN-PASS-RDG".to_string(),
+                    kind: "origin".to_string(),
+                    booked_arrival: None,
+                    booked_departure: Some("08:00:00".parse().unwrap()),
+                    day_offset: 0,
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-PASS".to_string(),
+                    seq: 1,
+                    tiploc: "TEST-JRN-PASS-WAT".to_string(),
+                    kind: "terminate".to_string(),
+                    booked_arrival: None,
+                    booked_departure: None,
+                    day_offset: 0,
+                },
+            ],
         )
         .await
-        .expect("seed schedule_destination_departures");
+        .expect("seed schedule_calling_points_full");
 
         sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
             .bind(trains_id)
@@ -3697,7 +3908,7 @@ mod db_tests {
         .expect("build_journey_stops")
         .expect("Some stops");
 
-        assert_eq!(stops.len(), 2, "RDG + synthetic WAT terminus");
+        assert_eq!(stops.len(), 2, "RDG + WAT terminus");
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
         assert_eq!(stops[0].last_event_type.as_deref(), Some("PASS"));
         let expected_instant: Option<DateTime<Utc>> = "2026-09-08T07:02:00Z".parse().ok();
@@ -3715,12 +3926,14 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'",
-        )
-        .execute(&pool)
-        .await
-        .ok();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-PASS'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-PASS-%'")
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
             .execute(&pool)
@@ -3743,30 +3956,39 @@ mod db_tests {
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOMATCH", service_date)
                 .await
                 .expect("find_or_create_train");
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'",
-        )
-        .execute(&pool)
-        .await
-        .ok();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-NOMATCH'")
+            .execute(&pool)
+            .await
+            .ok();
+        seed_fallback_stanox_crs(&pool, "TEST-JRN-NOMATCH", &["RDG", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_destination_departures(
+        crate::data::queries::upsert_schedule_calling_points_full(
             &pool,
-            &[crate::data::queries::ScheduleDestinationDeparturesRow {
-                service_date,
-                destination_crs: "WAT".to_string(),
-                scheduled: "08:00:00".parse().unwrap(),
-                day_offset: 0,
-                train_uid: "TEST-JRN-NOMATCH".to_string(),
-                origin_crs: "RDG".to_string(),
-                true_origin_crs: Some("RDG".to_string()),
-                calling_point_arrival: None,
-                destination_arrival: None,
-                destination_arrival_day_offset: 0,
-            }],
+            &[
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-NOMATCH".to_string(),
+                    seq: 0,
+                    tiploc: "TEST-JRN-NOMATCH-RDG".to_string(),
+                    kind: "origin".to_string(),
+                    booked_arrival: None,
+                    booked_departure: Some("08:00:00".parse().unwrap()),
+                    day_offset: 0,
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JRN-NOMATCH".to_string(),
+                    seq: 1,
+                    tiploc: "TEST-JRN-NOMATCH-WAT".to_string(),
+                    kind: "terminate".to_string(),
+                    booked_arrival: None,
+                    booked_departure: None,
+                    day_offset: 0,
+                },
+            ],
         )
         .await
-        .expect("seed schedule_destination_departures");
+        .expect("seed schedule_calling_points_full");
 
         sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
             .bind(trains_id)
@@ -3808,7 +4030,7 @@ mod db_tests {
         assert_eq!(
             stops.len(),
             2,
-            "RDG + synthetic WAT terminus, no stray 'ZZZ' stop appended"
+            "RDG + WAT terminus, no stray 'ZZZ' stop appended"
         );
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
         assert_eq!(stops[0].actual_arrival, None);
@@ -3826,12 +4048,14 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'",
-        )
-        .execute(&pool)
-        .await
-        .ok();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-NOMATCH'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-NOMATCH-%'")
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
             .execute(&pool)
