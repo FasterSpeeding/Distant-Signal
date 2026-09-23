@@ -82,9 +82,9 @@ async fn get_trip_plan(
         &connections,
         &interchange,
         params.date,
-        params.origin.trim(),
+        &params.origin.trim().to_ascii_uppercase(),
         &waypoints,
-        params.destination.trim(),
+        &params.destination.trim().to_ascii_uppercase(),
         params.depart_after.unwrap_or(NaiveTime::MIN),
         &params.results,
     )
@@ -363,6 +363,70 @@ mod db_tests {
             .ok();
     }
 
+    /// The sibling of `plan_via_waypoints_names_the_failing_segment` above:
+    /// that test's failing segment happens to be the FIRST one
+    /// (`EUS -> ZZZ`), so it doesn't exercise "an earlier segment resolved
+    /// fine, and the error names the LATER one that didn't" -- a distinct
+    /// case (`plan_via_waypoints`'s per-segment loop must keep going past
+    /// a successful segment and still attribute the eventual failure
+    /// correctly, not just report failure-at-index-0 correctly). Here
+    /// `origin=EUS, waypoints=MKC, destination=ZZZ` makes the FIRST
+    /// segment `EUS -> MKC` (both resolve -- no error), and the SECOND
+    /// `MKC -> ZZZ` the one that fails.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn plan_via_waypoints_names_the_failing_segment_when_an_earlier_one_succeeded() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTPLANWP2', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANWP2', 1, 'MILTNKC', 'terminate', '08:50:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPLANWP2-EUS', 'EUS', 'EUSTON', 'LONDON EUSTON', 1), \
+                    ('TESTPLANWP2-MKC', 'MKC', 'MILTNKC', 'MILTON KEYNES CENTRAL', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = get(
+            router,
+            format!("/Trips/plan?origin=EUS&waypoints=MKC&destination=ZZZ&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        let message = body.as_str().unwrap();
+        assert!(
+            message.contains("MKC -> ZZZ"),
+            "error must name the SECOND, failing segment, not the first (which resolved fine): {message:?}"
+        );
+        assert!(
+            !message.contains("EUS -> MKC"),
+            "the first segment resolved fine and must not be reported as the failure: {message:?}"
+        );
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TESTPLANWP2'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANWP2-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
@@ -487,6 +551,18 @@ mod db_tests {
                 "{itinerary:?}"
             );
         }
+        // The genuinely-within-cap 2-change route must actually be found
+        // and returned -- `capped` is computed independently of
+        // `within_cap` in `plan_segment`, so a regression that wrongly
+        // drops the within-cap route would still leave `cappedByMaxChanges`
+        // true and pass the loop above with an empty `itineraries` unless
+        // this is asserted explicitly.
+        assert_eq!(
+            itineraries.len(),
+            1,
+            "the within-cap 2-change route must be found: {body:?}"
+        );
+        assert_eq!(itineraries[0]["changeCount"], 2, "{body:?}");
         assert_eq!(
             segments[0]["cappedByMaxChanges"], true,
             "a strictly faster, over-cap itinerary exists and must be flagged: {body:?}"
