@@ -45,13 +45,18 @@ import { NextRequest, NextResponse } from 'next/server';
 // docs/superpowers/plans/2026-09-22-reusable-journeys-phaseB-durable-templates-plan.md)
 // -- `routes::journey_templates::router()` is `.merge`d onto the backend's
 // root router in `crates/api/src/main.rs` immediately after
-// `routes::journeys::router()`, not nested under `/public`. Each prefix
+// `routes::journeys::router()`, not nested under `/public`. `/Trips/...` was
+// added the same way for dynamic trip planning (`GET /Trips/plan`,
+// docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase6-frontend-integration-plan.md)
+// -- `routes::trips::router()` is `.merge`d onto the backend's root router in
+// `crates/api/src/main.rs` immediately after `routes::journey_templates::router()`,
+// not nested under `/public`. Each prefix
 // maps to how the *backend* path is actually built: everything else still
 // gets `/public/` prepended (unchanged from before this list existed); a
 // `Train/...`, `Journeys/...`, or `JourneyTemplates/...` request is passed
 // straight through with no prefix inserted, since the backend already
 // expects it bare.
-const ROOT_MOUNTED_PREFIXES = new Set(['Train', 'Journeys', 'JourneyTemplates']);
+const ROOT_MOUNTED_PREFIXES = new Set(['Train', 'Journeys', 'JourneyTemplates', 'Trips']);
 
 function resolveTargetPath(path: string[]): string {
   return ROOT_MOUNTED_PREFIXES.has(path[0]) ? `/${path.join('/')}` : `/public/${path.join('/')}`;
@@ -82,7 +87,8 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     target.pathname === '/Journeys' ||
     target.pathname.startsWith('/Journeys/') ||
     target.pathname === '/JourneyTemplates' ||
-    target.pathname.startsWith('/JourneyTemplates/');
+    target.pathname.startsWith('/JourneyTemplates/') ||
+    target.pathname.startsWith('/Trips/');
   if (!isAllowed) {
     return new NextResponse('invalid path', { status: 400 });
   }

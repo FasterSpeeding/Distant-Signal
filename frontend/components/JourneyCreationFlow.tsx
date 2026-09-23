@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import Link from 'next/link';
-import { Alert, Button, Card, Group, Stack, Text } from '@mantine/core';
+import { Alert, Button, Card, Group, SegmentedControl, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { AddJourneyLegButton } from './AddJourneyLegButton';
+import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
 import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { routeLabel } from '@/lib/stationLabel';
@@ -51,6 +52,8 @@ export function JourneyCreationFlow() {
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
+  const [entryMode, setEntryMode] = useState<'known' | 'plan'>('known');
+  const entryModeLabelId = useId();
 
   async function refreshJourney(id: number) {
     setLoadingJourney(true);
@@ -80,7 +83,41 @@ export function JourneyCreationFlow() {
   }
 
   if (journeyId === null) {
-    return <TrackTrainForm onCreated={handleLegOneCreated} />;
+    return (
+      <Stack gap="md">
+        {/* I3: mirrors `TrackTrainForm.tsx`'s own `modeLabelId` +
+            `aria-labelledby` fix (2026-09-22 UX review) for its own mode
+            toggle -- without a visible `Text` label wired as the name, a
+            screen reader announces an unnamed "radiogroup". This toggle's
+            swap is arguably more significant than that one: it swaps the
+            ENTIRE form beneath it (`TrackTrainForm` for `PlanTripFlow`, or
+            back), not just a sub-section of one form. */}
+        <Text id={entryModeLabelId} size="xs" fw={600} c="dimmed">
+          How do you want to start this journey?
+        </Text>
+        <SegmentedControl
+          aria-labelledby={entryModeLabelId}
+          value={entryMode}
+          onChange={value => setEntryMode(value as 'known' | 'plan')}
+          data={[
+            { label: 'I know my route', value: 'known' },
+            { label: 'Plan a route for me', value: 'plan' },
+          ]}
+        />
+        {/* Same `VisuallyHidden`/`aria-live="polite"` swap announcement as
+            `TrackTrainForm.tsx`'s own mode toggle -- sighted users see the
+            whole form change, screen-reader users otherwise get nothing
+            until they tab forward into different fields. */}
+        <VisuallyHidden role="status" aria-live="polite">
+          {entryMode === 'plan' ? 'Showing the plan-a-route-for-me form.' : 'Showing the I-know-my-route form.'}
+        </VisuallyHidden>
+        {entryMode === 'known' ? (
+          <TrackTrainForm onCreated={handleLegOneCreated} />
+        ) : (
+          <PlanTripFlow onCreated={handleLegOneCreated} />
+        )}
+      </Stack>
+    );
   }
 
   const priorDestinationCrs = journey ? journeyPriorDestinationCrs(journey) : null;
