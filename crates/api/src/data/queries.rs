@@ -1429,6 +1429,31 @@ pub struct CallingPointDepartureRow {
 /// as the leading sort key restores true chronological order; this table's
 /// per-train row count is small enough (one schedule's worth of calling
 /// points) that no index change is needed for it.
+///
+/// **No longer `journey::build_journey_stops`'s own fallback source** (see
+/// [`list_schedule_calling_points_full_for_train`], below, which replaced it
+/// there 2026-09-23) -- `schedule_destination_departures` is built by
+/// `schedule_query::resolve::departures_by_destination_crs`, which silently
+/// `continue`s (drops the row entirely) whenever a calling point's own
+/// TIPLOC doesn't resolve to a CRS via that cycle's `tiploc_to_crs` map.
+/// That is the right call for THIS table's actual job (the calling-point
+/// search index needs a real CRS to search by, and a station nobody can
+/// name can't be searched for), but it made a real, booked calling point
+/// whose TIPLOC happened not to resolve vanish ENTIRELY from a single
+/// train's pre-tracking calling-point list, while the exact same
+/// resolution gap on the post-tracking path (`journey::stops_from_calling_points`,
+/// fed from `trains.calling_points`) instead kept the row with a blank
+/// identity -- one symptom read as "a real stop is missing", the other as
+/// "the same stop shows up unresolved", for what was really one shared
+/// root cause. Confirmed against live production data for train `Y80908`
+/// on 2026-09-23: its calling point at Northampton (`NMPTN`, booked
+/// 17:08/17:18) has both a real booked arrival AND departure -- unlike this
+/// function's own `WHERE`-clause siblings, a genuine passenger stop, not a
+/// junction -- yet came back with `crs: None`/`name: None` on the
+/// post-tracking path. This function is kept (and still exercised by its
+/// own tests below) purely because `schedule_destination_departures` still
+/// backs `GET /public/trains/search`'s calling-point index, which is
+/// unrelated to and unaffected by this change.
 pub async fn list_calling_point_departures_for_train(
     pool: &PgPool,
     train_uid: &str,
@@ -1443,6 +1468,69 @@ pub async fn list_calling_point_departures_for_train(
     )
     .bind(train_uid)
     .bind(service_date)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// One `schedule_calling_points_full` row as read back for a single train's
+/// journey view -- deliberately narrower than `ScheduleCallingPointsFullRow`
+/// above (no `service_date`/`uid`/`seq`: the caller already knows the first
+/// two, having supplied them as the query's own `WHERE` filter, and `seq` is
+/// consumed entirely by the `ORDER BY` below, never read back into Rust --
+/// same "ordering is SQL's job, not re-sorted in Rust" posture
+/// `trip_planning::CallingPointRow` already has for the identical column).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ScheduleCallingPointFullRowForTrain {
+    pub tiploc: String,
+    /// `"origin"`/`"intermediate"`/`"terminate"` -- see
+    /// `ScheduleCallingPointsFullRow::kind`'s own doc comment; the caller
+    /// (`journey::build_journey_stops`) parses this back into
+    /// `schedule_query::CallingPointKind`.
+    pub kind: String,
+    pub booked_arrival: Option<chrono::NaiveTime>,
+    pub booked_departure: Option<chrono::NaiveTime>,
+    pub day_offset: i16,
+}
+
+/// Every calling point of `train_uid`'s resolved (non-cancelled) schedule on
+/// `service_date`, in true schedule order, straight off
+/// `schedule_calling_points_full` -- `journey::build_journey_stops`'s
+/// fallback source when `trains.calling_points` hasn't been populated by
+/// schedule-matching yet (see `list_calling_point_departures_for_train`'s
+/// own doc comment, above, for why this replaced
+/// `schedule_destination_departures` there). Unlike that predecessor:
+///
+/// * every calling point comes back, INCLUDING one whose TIPLOC never
+///   resolves to a CRS -- resolution happens later, in
+///   `journey::stops_from_calling_points`, via the same
+///   `crs_for_tiplocs_batch` batch join the primary (`trains.calling_points`)
+///   path already uses, so a resolution gap now degrades identically on
+///   both paths instead of "missing" on one and "unresolved" on the other;
+/// * the schedule's own terminating calling point is already one of these
+///   rows (`kind = 'terminate'`), so the caller no longer needs to
+///   separately reconstruct a synthetic `Terminate` stop from a
+///   denormalized `destination_crs`/`destination_arrival` pair.
+///
+/// `ORDER BY seq` alone (not `day_offset, scheduled` like its predecessor):
+/// `seq` is assigned at publish time by walking the schedule's own resolved
+/// `calling_points` in order (`schedule-reference`'s
+/// `publish_schedule_calling_points_full`), so it is already true
+/// chronological order -- including across a midnight crossing -- with no
+/// separate day-offset leading key needed to recover it.
+pub async fn list_schedule_calling_points_full_for_train(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: chrono::NaiveDate,
+) -> Result<Vec<ScheduleCallingPointFullRowForTrain>> {
+    let rows = sqlx::query_as::<_, ScheduleCallingPointFullRowForTrain>(
+        "SELECT tiploc, kind, booked_arrival, booked_departure, day_offset \
+         FROM schedule_calling_points_full \
+         WHERE service_date = $1 AND uid = $2 \
+         ORDER BY seq",
+    )
+    .bind(service_date)
+    .bind(train_uid)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -7103,6 +7191,90 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(rows[1].origin_crs, "SLO");
 
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JS-CPD'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_schedule_calling_points_full_for_train_returns_every_row_in_seq_order \
+                -- --ignored --test-threads=1`"]
+    async fn list_schedule_calling_points_full_for_train_returns_every_row_in_seq_order() {
+        // `journey::build_journey_stops`'s fallback source since the
+        // 2026-09-23 fix (see `list_calling_point_departures_for_train`'s
+        // own doc comment) -- unlike that predecessor, EVERY calling point
+        // comes back regardless of whether its TIPLOC resolves to a CRS
+        // (there is no CRS column on this table at all), and the
+        // terminating calling point is one of these rows too, not appended
+        // separately.
+        let pool = test_pool().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JS-SCPF'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        upsert_schedule_calling_points_full(
+            &pool,
+            &[
+                ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JS-SCPF".to_string(),
+                    seq: 0,
+                    tiploc: "RDG    ".to_string(),
+                    kind: "origin".to_string(),
+                    booked_arrival: None,
+                    booked_departure: "10:15:00".parse().ok(),
+                    day_offset: 0,
+                },
+                ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JS-SCPF".to_string(),
+                    seq: 1,
+                    // A TIPLOC with no CRS at all -- unlike
+                    // `schedule_destination_departures`, this table has no
+                    // CRS column to fail to resolve, so a genuine junction
+                    // still comes back as a real row.
+                    tiploc: "TESTJCTJ".to_string(),
+                    kind: "intermediate".to_string(),
+                    booked_arrival: None,
+                    booked_departure: None,
+                    day_offset: 0,
+                },
+                ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: "TEST-JS-SCPF".to_string(),
+                    seq: 2,
+                    tiploc: "WAT    ".to_string(),
+                    kind: "terminate".to_string(),
+                    booked_arrival: "10:32:00".parse().ok(),
+                    booked_departure: None,
+                    day_offset: 0,
+                },
+            ],
+        )
+        .await
+        .expect("seed schedule_calling_points_full");
+
+        let rows = list_schedule_calling_points_full_for_train(&pool, "TEST-JS-SCPF", service_date)
+            .await
+            .expect("list_schedule_calling_points_full_for_train");
+
+        assert_eq!(
+            rows.len(),
+            3,
+            "every calling point, including the junction and the terminus"
+        );
+        assert_eq!(rows[0].tiploc, "RDG    ");
+        assert_eq!(rows[0].kind, "origin");
+        assert_eq!(rows[1].tiploc, "TESTJCTJ");
+        assert_eq!(rows[1].kind, "intermediate");
+        assert_eq!(rows[2].tiploc, "WAT    ");
+        assert_eq!(rows[2].kind, "terminate");
+        assert_eq!(rows[2].booked_arrival, "10:32:00".parse().ok());
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JS-SCPF'")
             .execute(&pool)
             .await
             .ok();

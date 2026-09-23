@@ -2982,7 +2982,7 @@ mod db_tests {
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         let train_uid = "TEST-SEARCH-VISIBLE-UID";
 
-        // Seed ONLY `schedule_destination_departures` (what the search page
+        // Seed `schedule_destination_departures` (what the search page
         // reads) -- deliberately no `trains` row, no `tracked_trains` row,
         // nothing else. This is the fixture the bug report describes: "a
         // real, valid search result" with no prior tracking/TRUST activity.
@@ -2996,6 +2996,64 @@ mod db_tests {
         .execute(&pool)
         .await
         .expect("seed fixture schedule_destination_departures row");
+
+        // Also seed `schedule_calling_points_full` -- `journey::build_journey_stops`'s
+        // own fallback source since the 2026-09-23 fix (see
+        // `queries::list_calling_point_departures_for_train`'s own doc
+        // comment): a real, non-cancelled CIF schedule that is
+        // search-visible is published to BOTH tables by the same daily
+        // `schedule-reference` cycle, so a real fixture has both, exactly
+        // like this one now does.
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-SVUID-1".to_string(),
+                    crs: "KGX".to_string(),
+                    tiploc: "TEST-SVUID-KGX".to_string(),
+                    station_name: "KINGS CROSS".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-SVUID-2".to_string(),
+                    crs: "EDB".to_string(),
+                    tiploc: "TEST-SVUID-EDB".to_string(),
+                    station_name: "EDINBURGH".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+        crate::data::queries::upsert_schedule_calling_points_full(
+            &pool,
+            &[
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: train_uid.to_string(),
+                    seq: 0,
+                    tiploc: "TEST-SVUID-KGX".to_string(),
+                    kind: "origin".to_string(),
+                    booked_arrival: None,
+                    booked_departure: Some("12:00:00".parse().unwrap()),
+                    day_offset: 0,
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    service_date,
+                    uid: train_uid.to_string(),
+                    seq: 1,
+                    tiploc: "TEST-SVUID-EDB".to_string(),
+                    kind: "terminate".to_string(),
+                    booked_arrival: Some("16:00:00".parse().unwrap()),
+                    booked_departure: None,
+                    day_offset: 0,
+                },
+            ],
+        )
+        .await
+        .expect("seed schedule_calling_points_full");
 
         let router = test_router(test_app(pool.clone()));
         let (status, body) = request(
@@ -3066,6 +3124,15 @@ mod db_tests {
             .ok();
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
             .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-SVUID-%'")
             .execute(&pool)
             .await
             .ok();
