@@ -9,14 +9,23 @@ import { LoginLink } from './LoginLink';
 
 /** 2026-09-22 UX review finding I14/2.4: a leg created WITHOUT a search
  * window (a direct `pin`/`knownTrain` pick) has no persisted window to
- * re-search, so `JourneyLegCard.tsx`'s `hasWindow` gate never offers
- * "Change train" for it -- and until `DELETE /Journeys/{journeyId}/legs/{legId}`
+ * re-search, so `JourneyLegCard.tsx` never offers "Change train" for it --
+ * and until `DELETE /Journeys/{journeyId}/legs/{legId}`
  * (`crates/api/src/routes/journeys.rs::delete_journey_leg`) existed, there
  * was no way to remove it either. A traveller who picked the wrong train
- * on this path had no exit from the page at all. This is that exit --
- * `JourneyLegCard` renders it ONLY for a matched, no-window,
- * owner-viewed leg (a windowed leg gets "Change train" instead, which is
- * the more useful recovery for that case).
+ * on this path had no exit from the page at all. This is that exit.
+ *
+ * `JourneyLegCard` renders this for EVERY owner-viewed leg -- open
+ * (unmatched), matched-with-a-window, and matched-without-a-window alike
+ * -- alongside "Change train" (offered additionally whenever the leg has
+ * a window) rather than instead of it. It used to render this ONLY for a
+ * matched, no-window leg, on the theory that a windowed leg's "Change
+ * train" was a sufficient substitute for removal; in practice that left
+ * most legs on most journeys (anything created via the time-window search
+ * flow) with no way to be deleted outright, only re-picked -- the backend
+ * route this calls has never cared what created the leg or whether it
+ * carries a window, so restricting the button that way was a
+ * frontend-only gap with no backend reason behind it.
  *
  * Mirrors `DeleteTrainButton.tsx`'s confirm-modal shape closely (same
  * `Modal` + `useDisclosure` + `useNeedsLogin` pattern, same

@@ -616,6 +616,62 @@ pub async fn delete_leg(
     Ok(Some(journey_also_deleted))
 }
 
+/// Deletes an ENTIRE journey the caller owns, in one step -- the direct
+/// "delete this journey" action [`delete_leg`]'s own doc comment names as
+/// a deliberate non-goal ("Deliberately still not a general 'delete a
+/// journey' route ... this only ever removes ONE leg"). Until this
+/// function existed, the only way to remove a whole journey was to call
+/// [`delete_leg`] once per leg until none remained, which only
+/// incidentally deleted the `journeys` row on the LAST call -- a
+/// traveller who wanted to abandon a whole multi-leg journey in one step
+/// had no such action.
+///
+/// A single `DELETE FROM journeys WHERE id = $1 AND user_id = $2` is
+/// sufficient on its own -- no explicit `journey_legs`/other cleanup
+/// needed. Verified against every migration that adds a `REFERENCES
+/// journeys(id)` foreign key (there are exactly two):
+/// `journey_legs.journey_id ... ON DELETE CASCADE`
+/// (`20260922090000_journeys.sql`) removes every leg of this journey, and
+/// `journey_leg_notification_state.journey_leg_id ... ON DELETE CASCADE`
+/// (`20260922130000_journey_leg_notification_state.sql`) transitively
+/// removes any per-leg notification-dedup rows through THAT cascade in
+/// turn -- Postgres walks a multi-hop `ON DELETE CASCADE` chain in one
+/// statement, no second cascade needed on this table's own FK. `group_journeys.journey_id
+/// ... ON DELETE CASCADE` (`20260922110000_group_journeys.sql`) removes
+/// any group-sharing grants for this journey too, so a deleted journey
+/// never lingers as a dangling entry in a group's shared list. The one FK
+/// pointing the OTHER way, `journeys.source_template_id ... ON DELETE SET
+/// NULL` (`20260922140000_journey_templates.sql`), is irrelevant to this
+/// function -- that column describes what happens to a journey when its
+/// SOURCE TEMPLATE is deleted, not the reverse; deleting a journey never
+/// touches `journey_templates` at all (a template is a saved, independent
+/// SHAPE, not owned by any journey it once produced).
+///
+/// The leg(s)' own `train_subscriptions` rows, if matched, are left
+/// completely untouched -- same orphan-not-cascade posture [`delete_leg`]'s
+/// own doc comment already documents for a single leg, extended here to
+/// every leg of the journey at once: a user's personal tracked-train
+/// subscription must survive deleting the JOURNEY that happened to
+/// reference it, exactly as it already survives deleting one of that
+/// journey's LEGS. `train_subscription_id ... ON DELETE SET NULL` runs in
+/// the other direction only (deleting the SUBSCRIPTION orphans the leg,
+/// not the reverse), so this delete never cascades into that table at
+/// all.
+///
+/// Ownership-scoped via the same folded-in `WHERE ... AND user_id = $N`
+/// convention as every other write in this file (never a separate
+/// read-then-check race). Returns `true` if a row was deleted, `false`
+/// for "no such journey, or not this caller's" (the route maps this to
+/// `404`, never `403`, matching [`delete_leg`]'s own convention).
+pub async fn delete_journey(pool: &PgPool, journey_id: i64, user_id: &str) -> anyhow::Result<bool> {
+    let result = sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
+        .bind(journey_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// One row of `GET /Journeys/mine` -- deliberately lighter than the full
 /// `GET /Journeys/{id}` detail (`routes::journeys::JourneyDetailResponse`),
 /// mirroring `TrackedTrainListItem`'s own "list is lighter than detail"
@@ -1793,5 +1849,218 @@ mod db_tests {
             ],
         )
         .await;
+    }
+
+    // --- delete_journey (direct whole-journey delete) -------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_removes_a_single_leg_journey_and_every_referencing_row() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-DELETE-SINGLE";
+        seed_user(&pool, user_id).await;
+        let journey_id = insert_journey(&pool, user_id, Some("Cascade test"))
+            .await
+            .expect("insert journey");
+        let leg_id = insert_leg(
+            &pool,
+            journey_id,
+            1,
+            Some("WAT"),
+            Some("RDG"),
+            "2026-09-22".parse().unwrap(),
+            None,
+            "unmatched",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("insert leg");
+
+        // Seeds a `journey_leg_notification_state` row -- this table has no
+        // direct FK to `journeys`, only a two-hop one via `journey_legs`
+        // (`journey_leg_id ... ON DELETE CASCADE`), so this row is the one
+        // that proves the CASCADE keeps walking past the immediate
+        // `journey_legs` row, not just deleting that one table.
+        sqlx::query(
+            "INSERT INTO journey_leg_notification_state \
+                (user_id, journey_leg_id, last_notified_skipped, last_notified_at) \
+             VALUES ($1, $2, false, NOW())",
+        )
+        .bind(user_id)
+        .bind(leg_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture notification state");
+
+        // Shares the journey into a group -- proves `group_journeys.journey_id
+        // ... ON DELETE CASCADE` fires too, not just the leg-side cascades.
+        let group_id =
+            crate::data::groups::create_group(&pool, "Delete Journey Cascade Test", user_id)
+                .await
+                .expect("create group");
+        let shared =
+            crate::data::groups::add_journey_to_group(&pool, &group_id, journey_id, user_id)
+                .await
+                .expect("share journey into group");
+        assert!(shared);
+
+        let deleted = delete_journey(&pool, journey_id, user_id)
+            .await
+            .expect("delete journey");
+        assert!(deleted);
+
+        let (journeys_left,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM journeys WHERE id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count journeys");
+        assert_eq!(journeys_left, 0, "the journeys row itself must be gone");
+
+        let (legs_left,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM journey_legs WHERE journey_id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count journey_legs");
+        assert_eq!(legs_left, 0, "every leg must be gone via ON DELETE CASCADE");
+
+        let (notification_state_left,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM journey_leg_notification_state WHERE journey_leg_id = $1",
+        )
+        .bind(leg_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count journey_leg_notification_state");
+        assert_eq!(
+            notification_state_left, 0,
+            "notification-dedup rows must be gone via the transitive cascade through journey_legs"
+        );
+
+        let (group_journeys_left,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM group_journeys WHERE journey_id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count group_journeys");
+        assert_eq!(
+            group_journeys_left, 0,
+            "the group-sharing grant must be gone via ON DELETE CASCADE"
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_removes_a_multi_leg_journey_in_one_call() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-DELETE-MULTI";
+        seed_user(&pool, user_id).await;
+        let journey_id = insert_journey(&pool, user_id, None)
+            .await
+            .expect("insert journey");
+        insert_leg(
+            &pool,
+            journey_id,
+            1,
+            Some("WAT"),
+            Some("RDG"),
+            "2026-09-22".parse().unwrap(),
+            None,
+            "unmatched",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("insert leg 1");
+        insert_leg(
+            &pool,
+            journey_id,
+            2,
+            Some("RDG"),
+            Some("BRI"),
+            "2026-09-22".parse().unwrap(),
+            None,
+            "unmatched",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("insert leg 2");
+
+        let deleted = delete_journey(&pool, journey_id, user_id)
+            .await
+            .expect("delete journey");
+        assert!(deleted);
+
+        let (legs_left,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM journey_legs WHERE journey_id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count journey_legs");
+        assert_eq!(legs_left, 0, "both legs must be gone, not just one");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_a_non_owner_cannot_delete_and_it_survives() {
+        let pool = connect().await;
+        let owner_id = "TEST-JOURNEY-DELETE-OWNER";
+        let bystander_id = "TEST-JOURNEY-DELETE-BYSTANDER";
+        seed_user(&pool, owner_id).await;
+        seed_user(&pool, bystander_id).await;
+        let journey_id = seed_journey(&pool, owner_id).await;
+
+        let deleted = delete_journey(&pool, journey_id, bystander_id)
+            .await
+            .expect("attempt delete as non-owner");
+        assert!(!deleted);
+
+        let (journeys_left,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM journeys WHERE id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count journeys");
+        assert_eq!(
+            journeys_left, 1,
+            "the owner's journey must genuinely survive a non-owner's delete attempt"
+        );
+
+        cleanup_journey(&pool, journey_id, &[owner_id, bystander_id]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_a_nonexistent_journey_returns_false() {
+        let pool = connect().await;
+        let deleted = delete_journey(&pool, 99999999, "TEST-JOURNEY-DELETE-NOBODY")
+            .await
+            .expect("attempt delete of a nonexistent journey");
+        assert!(!deleted);
     }
 }

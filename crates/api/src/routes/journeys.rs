@@ -25,7 +25,16 @@ pub fn router() -> Router {
     Router::new()
         .route("/Journeys", axum::routing::post(post_journey))
         .route("/Journeys/mine", axum::routing::get(get_my_journeys))
-        .route("/Journeys/{journey_id}", axum::routing::get(get_journey))
+        // `.delete(delete_journey)` chained onto the SAME `MethodRouter`,
+        // not a second `.route("/Journeys/{journey_id}", ...)` call --
+        // axum panics at router-build time ("Overlapping method route") on
+        // two separate `.route()` registrations for one identical path;
+        // `router_builds_without_panicking` (this file's own `db_tests`)
+        // is the regression test that would have caught this.
+        .route(
+            "/Journeys/{journey_id}",
+            axum::routing::get(get_journey).delete(delete_journey),
+        )
         .route(
             "/Journeys/{journey_id}/legs/{leg_id}/candidates",
             axum::routing::get(get_leg_candidates),
@@ -1089,6 +1098,35 @@ async fn delete_journey_leg(
             StatusCode::NOT_FOUND,
             "no journey leg with that id".to_string(),
         ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /Journeys/{journeyId}` -- the direct "delete this journey"
+/// action `delete_journey_leg`'s own doc comment (and
+/// `journeys::delete_leg`'s, in even more detail) explicitly named as a
+/// deliberate non-goal when the leg-delete route shipped: until now, the
+/// only way to remove a whole journey was `delete_journey_leg` once per
+/// leg, which only incidentally took the `journeys` row with it on the
+/// LAST call. A traveller who wanted to abandon an entire multi-leg
+/// journey in one step -- not walk it down leg by leg -- had no such
+/// action.
+///
+/// Same shape as every other write route in this file: `AuthenticatedUser`
+/// required, ownership folded directly into `journeys::delete_journey`'s
+/// own `WHERE ... AND user_id = $N`, 404-never-403 for "doesn't exist" or
+/// "isn't yours" (see that function's own doc comment for the full
+/// cascade/no-orphan-rows reasoning), `204 No Content` on success.
+async fn delete_journey(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let deleted = journeys::delete_journey(&app.database, journey_id, &user.id)
+        .await
+        .map_err(internal_error("delete journey"))?;
+    if !deleted {
+        return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2407,5 +2445,174 @@ mod db_tests {
         assert_eq!(legs[0]["id"].as_i64(), Some(second_leg_id));
 
         cleanup_user(&pool, "TEST-ROUTE-DELETE-LEG-MULTI").await;
+    }
+
+    // --- delete_journey (direct whole-journey delete) -------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_a_journey_owned_by_someone_else_is_404_not_403_and_survives() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-OWNER").await;
+        let bystander_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-BYSTANDER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "E11111", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&bystander_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            serde_json::Value::String("no journey with that id".to_string())
+        );
+
+        // Must genuinely survive a non-owner's delete attempt, not just
+        // return 404 with the row quietly gone anyway.
+        let (status, _) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "owner's journey should still exist");
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-JOURNEY-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-JOURNEY-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_a_nonexistent_journey_is_404() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-NOTFOUND").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (status, body) =
+            delete_request(router, "/Journeys/99999999".to_string(), Some(&token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            serde_json::Value::String("no journey with that id".to_string())
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-JOURNEY-NOTFOUND").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_the_owner_can_delete_a_single_leg_journey_in_one_call() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-SINGLE").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "E22222", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, _) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, _) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the whole journey should be gone"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-JOURNEY-SINGLE").await;
+    }
+
+    /// The headline behaviour this route exists for: unlike
+    /// `delete_journey_leg`, which only ever removes the journey
+    /// INCIDENTALLY (when it happened to be called on the last remaining
+    /// leg), this route removes a MULTI-leg journey -- and every one of
+    /// its legs -- in exactly one call, no walking legs down to zero first.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                delete_journey -- --ignored --test-threads=1`"]
+    async fn delete_journey_the_owner_can_delete_a_multi_leg_journey_in_one_call() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-MULTI").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "E33333", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (_, added) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&owner_token),
+            serde_json::json!({
+                "mode": "knownTrain",
+                "trainUid": "E44444",
+                "serviceDate": "2026-09-22"
+            }),
+        )
+        .await;
+        assert!(added["legId"].as_i64().is_some(), "second leg created");
+
+        let (status, _) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, _) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the whole multi-leg journey should be gone in one call, not just its last leg"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-DELETE-JOURNEY-MULTI").await;
     }
 }
