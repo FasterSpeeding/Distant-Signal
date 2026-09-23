@@ -2,6 +2,7 @@ import { Group, Stack, Text, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getJourney, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { AddJourneyLegButton } from '@/components/AddJourneyLegButton';
+import { DeleteJourneyButton } from '@/components/DeleteJourneyButton';
 import { JourneyLegCard } from '@/components/JourneyLegCard';
 import { JourneyStatusBadge } from '@/components/JourneyStatusBadge';
 import { LastUpdated } from '@/components/LastUpdated';
@@ -190,6 +191,17 @@ export default async function JourneyDetailPage({
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
           {journey.isOwner && <SaveAsTemplateButton journeyId={journey.id} />}
+          {/* Feature request: "journeys should be mutable ... you should
+              be able to ... delete parts or even the whole journey."
+              Owner-only, same reasoning as every other action above --
+              `DELETE /Journeys/{id}` 404s a non-owner identically to a
+              nonexistent journey, so offering this to a shared-group
+              viewer would only be a dead end. Placed last among the
+              owner-only controls, immediately before the always-visible
+              `TrackJourneyAgainButton`, so the one destructive action on
+              this page sits at the end of the owner-only run rather than
+              between two non-destructive ones. */}
+          {journey.isOwner && <DeleteJourneyButton journeyId={journey.id} />}
           {/* Deliberately NOT gated on journey.isOwner -- see
               docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md's
               Judgment Call 7. Placed last so the owner-only controls

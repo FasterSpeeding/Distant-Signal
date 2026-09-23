@@ -151,19 +151,22 @@ describe('JourneyLegCard', () => {
     expect(screen.getByText('Train P9E010')).toBeInTheDocument();
   });
 
-  // 2026-09-22 UX review finding I14/2.4: "Change train" moved to the top
-  // of the card, alongside the title, for a windowed leg.
-  it('shows "Change train" top-of-card for a matched, windowed, owner-viewed leg', () => {
+  // 2026-09-22 UX review finding I14/2.4, later corrected: "Change train"
+  // and "Remove leg" are INDEPENDENT actions, not a ternary. A matched,
+  // windowed leg must get BOTH -- before this fix it only ever got
+  // "Change train", leaving most legs on most journeys (anything created
+  // via the time-window search flow) with no way to be removed outright.
+  it('shows both "Change train" AND "Remove leg" for a matched, windowed, owner-viewed leg', () => {
     renderWithMantine(
       <JourneyLegCard journeyId={167} leg={baseLeg({ departAfter: '18:00:00' })} isOwner isOnlyLeg={false} />,
     );
     expect(screen.getByRole('button', { name: 'Change train' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Remove leg' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove leg' })).toBeInTheDocument();
   });
 
-  // The headline fix: a no-window leg (a direct pin/known-train pick) had
-  // NO recovery action at all before this. It now gets "Remove leg".
-  it('shows "Remove leg" instead of "Change train" for a matched, no-window, owner-viewed leg', () => {
+  // A no-window leg (a direct pin/known-train pick) has nothing to
+  // re-search, so it gets "Remove leg" only -- never "Change train".
+  it('shows "Remove leg" but not "Change train" for a matched, no-window, owner-viewed leg', () => {
     renderWithMantine(<JourneyLegCard journeyId={167} leg={baseLeg()} isOwner isOnlyLeg={false} />);
     expect(screen.getByRole('button', { name: 'Remove leg' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Change train' })).not.toBeInTheDocument();
@@ -418,6 +421,41 @@ describe('JourneyLegCard (open leg)', () => {
     await settleCandidates();
 
     expect(screen.queryByText('Searching for a train to track — pick one below.')).not.toBeInTheDocument();
+  });
+
+  // The other half of the ternary-gap fix: an open (never-yet-matched)
+  // leg previously had NO delete affordance at all -- only the matched
+  // branch ever rendered `RemoveJourneyLegButton`. The backend route
+  // never cared whether the leg was matched, so this was a frontend-only
+  // gap.
+  it('offers "Remove leg" to the owner on an open leg too', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
+    await settleCandidates();
+
+    expect(screen.getByRole('button', { name: 'Remove leg' })).toBeInTheDocument();
+  });
+
+  it('does not offer "Remove leg" to a non-owning group member on an open leg', () => {
+    renderWithMantine(<JourneyLegCard journeyId={1} isOwner={false} isOnlyLeg={false} leg={openLeg()} />);
+
+    expect(screen.queryByRole('button', { name: 'Remove leg' })).not.toBeInTheDocument();
+  });
+
+  it('removing an open leg calls DELETE, same as a matched leg', async () => {
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"results":[],"nextCursor":null}', { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg({ id: 9 })} />);
+    await settleCandidates();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove leg' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm remove leg' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm remove leg' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/1/legs/9', { method: 'DELETE' }));
   });
 
   // Review §2.3/I15: the open-leg card is the one that needs the user to

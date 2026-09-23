@@ -365,6 +365,24 @@ describe('JourneyDetailPage "Add a leg" gating (M16)', () => {
   });
 });
 
+describe('JourneyDetailPage "Delete journey" button', () => {
+  // Feature request: "journeys should be mutable ... delete parts or even
+  // the whole journey" -- owner-only, same gating as every other
+  // owner-only action on this page (`DELETE /Journeys/{id}` 404s a
+  // non-owner identically to a nonexistent journey).
+  it('renders for the owner', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: true }));
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Delete journey' })).toBeInTheDocument();
+  });
+
+  it('does not render for a non-owner shared-group viewer', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: false }));
+    await renderPage();
+    expect(screen.queryByRole('button', { name: 'Delete journey' })).not.toBeInTheDocument();
+  });
+});
+
 describe('JourneyDetailPage "Track this journey again" button', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

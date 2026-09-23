@@ -94,29 +94,45 @@ function windowSummary(leg: JourneyLegDetail): string | null {
  *   group-shared read path, see this plan's I1 final-review finding) sees
  *   a plain "waiting for the owner" message instead, since picking a train
  *   for someone else's leg is a 404 the backend correctly refuses.
+ * - **Open** (`trackedTrainState === null`): the search parameters plus,
+ *   for the journey's OWNER only, a "Remove leg" action (top-right of the
+ *   card, same convention as the matched branch below) and a
+ *   `JourneyLegCandidates` picker -- a non-owning group member (reachable
+ *   here via `journey_readable_by`'s group-shared read path, see this
+ *   plan's I1 final-review finding) sees a plain "waiting for the owner"
+ *   message instead of the picker, since picking a train for someone
+ *   else's leg is a 404 the backend correctly refuses; it never sees
+ *   "Remove leg" either, for the same reason.
  * - **Matched**: `TrainJourney` (reused unmodified, per the design doc's
- *   own explicit direction) plus, ONLY when the leg has a persisted window
+ *   own explicit direction) plus, for the journey's OWNER only, up to two
+ *   INDEPENDENT actions, not a mutually-exclusive either/or: "Remove leg"
+ *   is always offered (backed by `DELETE
+ *   /Journeys/{journeyId}/legs/{legId}`,
+ *   `crates/api/src/routes/journeys.rs::delete_journey_leg` -- that route
+ *   has never cared what created the leg or whether it carries a window,
+ *   so gating the BUTTON on `hasWindow` was a frontend-only restriction
+ *   with no backend reason behind it), and "Change train" is offered
+ *   ADDITIONALLY whenever the leg has a persisted window
  *   (`departAfter`/`departBefore`/`arriveAfter`/`arriveBefore` -- any
- *   non-null) AND the viewer is the journey's owner, a "Change train"
- *   toggle that reveals the SAME `JourneyLegCandidates` component,
+ *   non-null), revealing the SAME `JourneyLegCandidates` component,
  *   re-scoped to this leg (its own persisted window drives what the
  *   backend searches -- see
- *   `crates/api/src/routes/journeys.rs::get_leg_candidates`). A leg with
- *   no window (a `pin`/`knownTrain`-mode leg) has no window to re-search
- *   and so gets no "Change train" action -- swapping it means
- *   delete-and-recreate, same as today's single-train tracking, per the
- *   design doc's own 2026-09-22 addendum. It instead gets a "Remove leg"
- *   action (2026-09-22 UX review finding I14/2.4) so a wrong pick is at
- *   least recoverable, backed by `DELETE
- *   /Journeys/{journeyId}/legs/{legId}` (`crates/api/src/routes/journeys.rs::delete_journey_leg`).
+ *   `crates/api/src/routes/journeys.rs::get_leg_candidates`).
  *
- * Both the "Change train" toggle and "Remove leg" live in the card's OWN
- * title row, top-right -- 2026-09-22 UX review finding I14/2.4's own
- * recommendation: "actions live at the top-right of the thing they act
- * on", the same rule `page.tsx`'s header already applies to "Add a leg".
- * The previous placement (a plain `xs` button below the whole six-row
- * timetable) had it as the very last thing on the card and zero visual
- * weight. */
+ *   Before this fix, the two actions were rendered as a ternary
+ *   (`hasWindow ? <ChangeTrain> : <RemoveLeg>`): a leg with NO window got
+ *   "Remove leg" but no way to swap its train, and -- the common case,
+ *   since most legs are created via the time-window search flow -- a leg
+ *   WITH a window got "Change train" but no way to remove it outright,
+ *   leaving most legs on most journeys with no delete affordance at all.
+ *   Both actions are now independently gated on their own real
+ *   precondition (owner; `hasWindow` for "Change train" only), never on
+ *   each other.
+ *
+ * Every action lives in the card's OWN title row, top-right -- 2026-09-22
+ * UX review finding I14/2.4's own recommendation: "actions live at the
+ * top-right of the thing they act on", the same rule `page.tsx`'s header
+ * already applies to "Add a leg". */
 export function JourneyLegCard({
   journeyId,
   leg,
@@ -184,11 +200,20 @@ export function JourneyLegCard({
         }}
       >
         <Stack gap="sm">
-          <Group gap="xs" wrap="nowrap" align="flex-start">
-            <span style={{ color: 'var(--mantine-color-blue-6)', flexShrink: 0, marginTop: 2 }}>
-              <AlertIcon />
-            </span>
-            <Text fw={700}>{header}</Text>
+          <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
+            <Group gap="xs" wrap="nowrap" align="flex-start">
+              <span style={{ color: 'var(--mantine-color-blue-6)', flexShrink: 0, marginTop: 2 }}>
+                <AlertIcon />
+              </span>
+              <Text fw={700}>{header}</Text>
+            </Group>
+            {/* An open leg is just as removable as a matched one -- the
+                backend's `delete_journey_leg` never cared whether the leg
+                had a train bound yet, only who owns the journey. This was
+                previously offered only on the matched branch, leaving an
+                open (never-yet-matched) leg with no delete affordance at
+                all. */}
+            {isOwner && <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />}
           </Group>
           {criteria && (
             <Group justify="space-between" wrap="wrap" gap="xs">
@@ -253,21 +278,23 @@ export function JourneyLegCard({
               </Text>
             )}
           </Stack>
-          {/* Two independent conditions, both required: `hasWindow` is the
-              Phase 2 "this leg is still an open window, so a train can be
-              picked for it" test, and `isOwner` is Phase 4's sharing gate --
-              a shared-group viewer sees the leg but must not be offered a
-              "Change train"/"Remove leg" action the API would reject
-              anyway. */}
+          {/* `isOwner` is Phase 4's sharing gate -- a shared-group viewer
+              sees the leg but must not be offered "Change train"/"Remove
+              leg", either of which the API would reject anyway. Below
+              that, the two actions are INDEPENDENT, not an either/or:
+              "Remove leg" is always available to the owner, and "Change
+              train" is available ADDITIONALLY whenever `hasWindow` (the
+              leg has something to re-search). See this component's own
+              doc comment for why this used to be a `hasWindow ? ... : ...`
+              ternary, and why that was a real gap. */}
           {isOwner && (
             <Group gap="xs">
-              {hasWindow ? (
+              {hasWindow && (
                 <Button size="xs" variant="default" onClick={() => setChangingTrain((c) => !c)}>
                   {changingTrain ? 'Cancel' : 'Change train'}
                 </Button>
-              ) : (
-                <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />
               )}
+              <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />
             </Group>
           )}
         </Group>
