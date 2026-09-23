@@ -340,6 +340,86 @@ fn is_bookable_crs(crs: &str) -> bool {
     !crs.starts_with('X')
 }
 
+/// This process's own "log this TIPLOC at least once" dedup set for
+/// [`log_if_unresolved_booked_stop`] -- see `common::log_once::LogOnceSet`'s
+/// own doc comment for why a plain, in-memory, process-lifetime set (not a
+/// DB table) is the right posture here.
+static UNRESOLVED_STATION_TIPLOC_LOG: std::sync::LazyLock<common::log_once::LogOnceSet> =
+    std::sync::LazyLock::new(common::log_once::LogOnceSet::new);
+
+/// The query-time half of this codebase's "a calling point that looks like
+/// it should be a real station never silently vanishes from production
+/// logs" observability story -- added for the 2026-09-23 production
+/// incident (train `Y80908`) this whole module's Northampton/`NMPTN` fix
+/// addressed. The parse-time half,
+/// `schedule_query::unresolved_booked_tiplocs`, catches the same class of
+/// gap once per whole-network CIF publish in `schedule-reference`; this one
+/// catches it again wherever a single train's journey is actually rendered
+/// (belt and braces across two different processes/views of the same
+/// underlying data, not redundant).
+///
+/// Fires exactly when `cp` carries a genuine booked time of its own (an
+/// `Origin`'s `booked_departure`, a `Terminate`'s `booked_arrival`, or
+/// either side of an `Intermediate`'s pair -- "a real, timed stop, not a
+/// bare pass-through", the same signal
+/// `schedule_query::unresolved_booked_tiplocs` uses) AND `resolved_crs` is
+/// `None`. `None` here means this TIPLOC has NO `stanox_crs` row at all --
+/// not merely a non-bookable one. A resolved-but-X-prefixed pseudo-CRS
+/// (Some, then filtered out by [`is_bookable_crs`] at this function's own
+/// call site) is the OTHER, legitimate-non-station case and is deliberately
+/// silent here; see `is_bookable_crs`'s own doc comment for the real
+/// examples (`HANSLPJ`/`XHN` etc.) this codebase already knows are not
+/// stations. A completely unresolved TIPLOC is this codebase's strongest
+/// available "this might genuinely be a real, unmapped station" signal --
+/// this app's own CIF pipeline doesn't decode the Activity/public-time
+/// fields that would let it do any better (see
+/// `schedule_query::records`'s own module doc "Non-goals" list).
+///
+/// Logged at `warn`, deduplicated by TIPLOC for this process's whole
+/// lifetime via `UNRESOLVED_STATION_TIPLOC_LOG` -- a real, actionable
+/// data-quality signal, but not urgent enough to page anyone, and this
+/// query path runs on every journey-view request for as long as the gap
+/// remains unfixed, so anything less than real deduplication would flood
+/// the logs for an already-known gap.
+/// The pure "looks like a station" heuristic itself, split out of
+/// [`log_if_unresolved_booked_stop`] purely so it is exercisable by a plain
+/// `cargo test -p api --lib` unit test with no static/dedup state involved
+/// -- same "split pure logic from the I/O/dedup wrapper" convention this
+/// module already applies elsewhere (see [`stops_from_calling_points`]'s
+/// own doc comment).
+///
+/// `true` exactly when `cp` carries a genuine booked time of its own AND
+/// `resolved_crs` is `None` (not merely non-bookable) -- see
+/// [`log_if_unresolved_booked_stop`]'s own doc comment for the full
+/// reasoning.
+fn is_unresolved_booked_stop(cp: &RawCallingPoint, resolved_crs: Option<&String>) -> bool {
+    resolved_crs.is_none() && (cp.booked_arrival.is_some() || cp.booked_departure.is_some())
+}
+
+fn log_if_unresolved_booked_stop(
+    cp: &RawCallingPoint,
+    tiploc: &str,
+    resolved_crs: Option<&String>,
+    service_date: NaiveDate,
+) {
+    if !is_unresolved_booked_stop(cp, resolved_crs) {
+        return;
+    }
+    if !UNRESOLVED_STATION_TIPLOC_LOG.should_log(tiploc) {
+        return;
+    }
+    tracing::warn!(
+        tiploc = %tiploc,
+        raw_tiploc = %cp.tiploc,
+        kind = ?cp.kind,
+        service_date = %service_date,
+        "journey calling point has a booked time but no stanox_crs row at all (not even an \
+         X-prefixed Network Rail pseudo-CRS) -- looks like it could be a real, unmapped \
+         station rather than a legitimate non-station junction/timing point; logged once per \
+         process"
+    );
+}
+
 /// Resolves a deserialized `trains.calling_points` blob into the base
 /// `JourneyStop` list, given an already-fetched TIPLOC->CRS map.
 ///
@@ -355,8 +435,10 @@ fn stops_from_calling_points(
 ) -> Vec<JourneyStop> {
     raw.iter()
         .map(|cp| {
-            let crs = tiploc_to_crs
-                .get(&tiploc_key(&cp.tiploc))
+            let key = tiploc_key(&cp.tiploc);
+            let resolved = tiploc_to_crs.get(&key);
+            log_if_unresolved_booked_stop(cp, &key, resolved, service_date);
+            let crs = resolved
                 // See `is_bookable_crs`'s own doc comment: an X-prefixed
                 // pseudo-CRS is not a real, displayable station identity,
                 // so a stop that only resolves to one of those is treated
@@ -1742,6 +1824,135 @@ mod tests {
         // elsewhere must not be caught -- only a LEADING `X` is the
         // pseudo-code convention.
         assert!(is_bookable_crs("BOX"));
+    }
+
+    // This module's own "looks like a station, log it at least once"
+    // observability tests -- the query-time half of the fix the real
+    // 2026-09-23 Northampton (`NMPTN`) production incident was closed with.
+    // See `is_unresolved_booked_stop`/`log_if_unresolved_booked_stop`'s own
+    // doc comments for the full reasoning.
+    mod unresolved_station_logging_tests {
+        use super::*;
+
+        #[test]
+        fn a_tiploc_resolved_to_a_real_bookable_crs_is_not_flagged() {
+            let cp = raw_cp("OKAYSTN");
+            let crs = "EUS".to_string();
+            assert!(
+                !is_unresolved_booked_stop(&cp, Some(&crs)),
+                "a genuinely resolved station is not a gap"
+            );
+        }
+
+        #[test]
+        fn a_tiploc_resolved_to_an_x_prefixed_pseudo_crs_is_not_flagged() {
+            // Junctions/timing points like HANSLPJ (Hanslope Junction,
+            // resolved to XHN) are the legitimate-non-station case:
+            // resolved_crs is Some here (the X-filter happens later, in
+            // stops_from_calling_points, at is_bookable_crs), so this must
+            // NOT be flagged -- flagging it would defeat the whole point of
+            // logging only genuine gaps.
+            let cp = raw_cp("PSEUDOJ");
+            let crs = "XHN".to_string();
+            assert!(!is_unresolved_booked_stop(&cp, Some(&crs)));
+        }
+
+        #[test]
+        fn a_tiploc_with_no_crs_row_at_all_and_a_booked_time_is_flagged() {
+            let cp = raw_cp("GAPTEST"); // has both booked_arrival and booked_departure
+            assert!(is_unresolved_booked_stop(&cp, None));
+        }
+
+        #[test]
+        fn a_tiploc_with_no_crs_row_and_no_booked_time_at_all_is_not_flagged() {
+            // A bare pass-through location (neither field set) is not a
+            // genuine timed stop, even though it also has no stanox_crs
+            // row -- must not be mistaken for a "looks like a station" gap.
+            let cp = RawCallingPoint {
+                tiploc: "PUREPASS".to_string(),
+                kind: schedule_query::CallingPointKind::Intermediate,
+                booked_arrival: None,
+                booked_departure: None,
+                day_offset: 0,
+            };
+            assert!(!is_unresolved_booked_stop(&cp, None));
+        }
+
+        #[test]
+        fn a_bookable_crs_fixture_never_marks_its_tiploc_as_logged() {
+            // A fixture with a TIPLOC that resolves to a bookable CRS: no
+            // log expected, proven through the REAL stops_from_calling_points
+            // call path (not just the pure predicate above) by checking that
+            // this dedicated, never-elsewhere-used TIPLOC is still
+            // "unseen" by the shared process-lifetime dedup set afterwards.
+            let service_date: NaiveDate = "2026-09-23".parse().unwrap();
+            let tiploc_to_crs: HashMap<String, String> =
+                [("OKAYSTN2".to_string(), "EUS".to_string())]
+                    .into_iter()
+                    .collect();
+
+            let stops =
+                stops_from_calling_points(&[raw_cp("OKAYSTN2")], &tiploc_to_crs, service_date);
+            assert_eq!(stops[0].crs.as_deref(), Some("EUS"));
+            assert!(
+                UNRESOLVED_STATION_TIPLOC_LOG.should_log("OKAYSTN2"),
+                "a resolved, bookable station must never be marked as a logged gap"
+            );
+        }
+
+        #[test]
+        fn an_x_prefixed_pseudo_crs_fixture_never_marks_its_tiploc_as_logged() {
+            // A fixture with a TIPLOC that resolves to an X-prefixed
+            // pseudo-CRS: no log expected -- a legitimate non-station.
+            let service_date: NaiveDate = "2026-09-23".parse().unwrap();
+            let tiploc_to_crs: HashMap<String, String> =
+                [("PSEUDOJ2".to_string(), "XOZ".to_string())]
+                    .into_iter()
+                    .collect();
+
+            let stops =
+                stops_from_calling_points(&[raw_cp("PSEUDOJ2")], &tiploc_to_crs, service_date);
+            assert_eq!(
+                stops[0].crs, None,
+                "an X-prefixed pseudo-CRS is still blanked, as is_bookable_crs already covers"
+            );
+            assert!(
+                UNRESOLVED_STATION_TIPLOC_LOG.should_log("PSEUDOJ2"),
+                "a legitimate non-station (X-prefixed) must never be marked as a logged gap"
+            );
+        }
+
+        #[test]
+        fn an_unresolved_booked_tiploc_is_logged_exactly_once_across_repeated_calls() {
+            // A fixture with a TIPLOC that fails to resolve at all: log
+            // expected, exactly once even across repeated calls with the
+            // same TIPLOC -- proven through the REAL stops_from_calling_points
+            // call path, twice, using a TIPLOC dedicated to this one test
+            // (never used elsewhere in this file) so no other test's own
+            // logging can pollute this assertion.
+            let service_date: NaiveDate = "2026-09-23".parse().unwrap();
+            let tiploc_to_crs: HashMap<String, String> = HashMap::new(); // GAPTEST2 never resolves
+            let cp = raw_cp("GAPTEST2");
+
+            let first =
+                stops_from_calling_points(std::slice::from_ref(&cp), &tiploc_to_crs, service_date);
+            assert_eq!(first[0].crs, None);
+            assert!(
+                !UNRESOLVED_STATION_TIPLOC_LOG.should_log("GAPTEST2"),
+                "the first call must already have marked this never-before-seen unresolved, \
+                 booked TIPLOC as logged"
+            );
+
+            // A second call with the exact same TIPLOC must not log again --
+            // still marked seen, proving the dedup holds across repeated
+            // calls, not just within one.
+            let second = stops_from_calling_points(&[cp], &tiploc_to_crs, service_date);
+            assert_eq!(second[0].crs, None);
+            assert!(
+                !UNRESOLVED_STATION_TIPLOC_LOG.should_log("GAPTEST2"),
+                "still marked seen after a second occurrence -- dedup, not a one-shot flag"
+            );
+        }
     }
 
     /// Real evidence for the `raw_calling_point_from_full_row` conversion

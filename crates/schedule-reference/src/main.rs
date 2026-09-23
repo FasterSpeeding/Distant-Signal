@@ -377,6 +377,72 @@ fn forward_publish_dates(today: chrono::NaiveDate, forward_days: i64) -> Vec<chr
         .collect()
 }
 
+/// This process's own "log this TIPLOC at least once" dedup set for
+/// [`log_new_unresolved_booked_tiplocs`] -- see
+/// `common::log_once::LogOnceSet`'s own doc comment for why a plain,
+/// in-memory, process-lifetime set (not a DB table) is the right posture
+/// here: `schedule-reference` restarts rarely and a real CIF full-timetable
+/// delivery lands roughly once a day, so this publish step runs at most a
+/// handful of times between restarts -- nowhere near often enough for even
+/// "one extra log line per already-known gap after a restart" to matter.
+static UNRESOLVED_TIPLOC_LOG: std::sync::LazyLock<common::log_once::LogOnceSet> =
+    std::sync::LazyLock::new(common::log_once::LogOnceSet::new);
+
+/// The parse-time half of this codebase's "a CIF calling point that looks
+/// like it should be a real station never silently vanishes from
+/// production logs" observability story -- added for the 2026-09-23
+/// production incident (train `Y80908`) where a real, booked station
+/// (Northampton, TIPLOC `NMPTN`) had no `stanox_crs` row at all and nothing
+/// alerted anyone until a live forensic investigation was needed. See
+/// `crates/api/src/data/journey.rs`'s `log_if_unresolved_booked_stop` for
+/// the query-time half (the same class of gap, caught again wherever a
+/// single train's journey is actually rendered, in case a gap appears in
+/// scheduling data that this whole-network publish step somehow didn't
+/// catch -- belt and braces, not redundant, since the two run in different
+/// processes against slightly different views of the same underlying
+/// data).
+///
+/// Delegates the actual "which TIPLOCs" decision entirely to
+/// `schedule_query::unresolved_booked_tiplocs` (this crate has `tracing`;
+/// that one deliberately does not -- see that function's own doc comment),
+/// deduplicates via `UNRESOLVED_TIPLOC_LOG`, and logs each newly-seen one at
+/// `warn`: a real, actionable data-quality signal worth a human eventually
+/// reading and fixing the reference data for, but not urgent enough to page
+/// anyone at 3am, and this publish step runs on every new CIF delivery for
+/// as long as this process stays up -- without the dedup, a station whose
+/// gap is already known and simply not yet fixed would re-log every single
+/// delivery, forever.
+fn log_new_unresolved_booked_tiplocs(
+    index: &schedule_query::ScheduleIndex,
+    today: chrono::NaiveDate,
+    stanox_crs_records: &[common::StanoxCrsRecord],
+) {
+    let tiploc_to_crs: std::collections::HashMap<String, String> = stanox_crs_records
+        .iter()
+        .map(|r| {
+            (
+                schedule_query::normalize_tiploc(&r.tiploc).to_string(),
+                r.crs.clone(),
+            )
+        })
+        .collect();
+
+    for tiploc in schedule_query::unresolved_booked_tiplocs(index, today, &tiploc_to_crs) {
+        if !UNRESOLVED_TIPLOC_LOG.should_log(&tiploc) {
+            continue;
+        }
+        tracing::warn!(
+            tiploc = %tiploc,
+            service_date = %today,
+            "CIF schedule calling point has a booked time but no stanox_crs row at all (not \
+             even an X-prefixed Network Rail pseudo-CRS) -- looks like it could be a real, \
+             unmapped station rather than a legitimate non-station junction/timing point; \
+             logged once per process, see reference-data/stanox-crs.md and this delivery's own \
+             TI/A records for this TIPLOC to investigate"
+        );
+    }
+}
+
 /// Task 3's (whole-network-trip-search plan) shared wrapper: builds the
 /// whole-network `ScheduleIndex` ONCE from this delivery's `BS`/`BX`/`LO`/
 /// `LI`/`CR`/`LT` records, then runs BOTH CIF-derived publishes off that
@@ -414,6 +480,8 @@ async fn publish_cif_derived_products(
     // rail-day gating is what decides Pending/Available for the line
     // population, not this publish step.
     let today = chrono::Utc::now().date_naive();
+
+    log_new_unresolved_booked_tiplocs(&index, today, stanox_crs_records);
 
     publish_schedule_line_population(
         client,
