@@ -5,5 +5,7 @@
 //! docs/superpowers/specs/2026-09-22-dynamic-trip-planning-design.md §1.
 
 pub mod csa;
+pub mod raptor;
 
 pub use csa::{Journey, JourneyLeg, ScanOptions, TrainLeg, TransferLeg, scan_connections};
+pub use raptor::{RaptorJourney, RaptorOptions, raptor_search};
