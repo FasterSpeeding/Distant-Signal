@@ -8,6 +8,7 @@
 //! `/private/stanox-crs`. See
 //! docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
 
+mod alf;
 mod config;
 mod discovery;
 mod parser;
@@ -121,7 +122,8 @@ async fn poll_once(
 
     let ti_records = parser::parse_ti_lines(&ti_text);
     let msn_crs = parser::parse_msn_a_lines(&a_text);
-    let rows = parser::resolve(&ti_records, &msn_crs);
+    let msn_change_time = parser::parse_msn_change_time_by_tiploc(&a_text);
+    let rows = parser::resolve(&ti_records, &msn_crs, &msn_change_time);
 
     tracing::info!(
         delivery = %delivery.dir_name,
@@ -148,6 +150,7 @@ async fn poll_once(
             tiploc: row.tiploc,
             station_name: row.station_name,
             source_sequence,
+            change_time_minutes: row.change_time_minutes,
         })
         .collect();
 
@@ -167,10 +170,100 @@ async fn poll_once(
     // computed in-memory table is discarded and rebuilt... next cycle".
     *last_processed_delivery = Some(delivery.dir_name.clone());
 
+    if let Some(alf_path) = &delivery.alf_path {
+        publish_fixed_links(client, config, alf_path, internal_oauth, source_sequence).await;
+    } else {
+        tracing::warn!(
+            delivery = %delivery.dir_name,
+            "this delivery has no ALF file; fixed-links data was not refreshed this cycle \
+             (previous cycle's rows, if any, remain in place)"
+        );
+    }
+
     publish_cif_derived_products(client, config, &delivery.mca_path, internal_oauth, &records)
         .await;
 
     Ok(())
+}
+
+/// Reads and parses `alf_path`'s already-local, read-only-mounted ALF
+/// member, and POSTs the result as one full-replace batch (see
+/// `queries::upsert_fixed_links`'s own doc comment). Best-effort: a read or
+/// parse failure here logs and returns, exactly like every other
+/// `publish_*` function's own log-and-continue posture (`main.rs`'s
+/// existing convention throughout) -- it never propagates as a hard
+/// `poll_once` failure, since fixed-links data degrading for one cycle
+/// must never take down the STANOX/CRS or schedule-population publishes
+/// that already succeeded this same cycle.
+///
+/// Also guards a THIRD failure shape, distinct from an unreadable file
+/// (handled above) or an absent ALF file entirely (guarded by this
+/// function's caller in `poll_once`, which simply never calls this function
+/// when `delivery.alf_path` is `None`): a file that reads fine but parses to
+/// zero links (`alf::parse_alf_lines` returns an empty `Vec` -- a zero-byte,
+/// truncated, or format-changed ALF member). Without this guard, an empty
+/// batch would flow straight through to `post_batch` and `api`'s
+/// `upsert_fixed_links` (a full `DELETE` + zero `INSERT`s) would wipe the
+/// table -- and recovery would NOT be next-cycle, since
+/// `last_processed_delivery` is already advanced by the time this function
+/// runs (`poll_once`, above), so the next poll cycle short-circuits on "no
+/// new delivery" and won't retry until a genuinely new delivery directory
+/// appears (up to a full day for the CIF full timetable). So a zero-parsed
+/// batch is logged at `error` and this cycle's publish is skipped entirely,
+/// leaving the previous cycle's rows in place -- the same "leave the old
+/// rows rather than delete them with nothing to replace them" posture the
+/// absent-file case above already gets, just extended to cover this
+/// distinct, file-present-but-empty shape too.
+async fn publish_fixed_links(
+    client: &Client,
+    config: &Config,
+    alf_path: &std::path::Path,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+    source_sequence: i32,
+) {
+    let text = match std::fs::read_to_string(alf_path) {
+        Ok(text) => text,
+        Err(err) => {
+            tracing::error!(error = ?err, path = ?alf_path, "failed to read ALF file; skipping fixed-links publish this cycle");
+            return;
+        }
+    };
+
+    let records = alf::parse_alf_lines(&text);
+
+    if records.is_empty() {
+        tracing::error!(path = ?alf_path, "ALF file parsed to zero fixed links; \
+            skipping publish rather than wiping the table");
+        return;
+    }
+
+    tracing::info!(count = records.len(), "parsed ALF fixed links");
+
+    let records: Vec<common::FixedLinkRecord> = records
+        .into_iter()
+        .map(|link| common::FixedLinkRecord {
+            mode: link.mode,
+            from_crs: link.from_crs,
+            to_crs: link.to_crs,
+            minutes: link.minutes,
+            valid_from: link.valid_from,
+            valid_to: link.valid_to,
+            days_mask: link.days_mask,
+            source_sequence,
+        })
+        .collect();
+
+    if let Err(err) = common::ingest::post_batch(
+        client,
+        &config.fixed_links_url,
+        internal_oauth,
+        &records,
+        "fixed-link rows",
+    )
+    .await
+    {
+        tracing::error!(error = ?err, "failed to publish fixed links; will retry next cycle");
+    }
 }
 
 /// Renders `delivered_at` in the exact directory-name shape
@@ -916,6 +1009,7 @@ mod poll_once_tests {
                 tiploc: "ZNOTIPLOC".to_string(),
                 station_name: "TEST STATION".to_string(),
                 source_sequence: 1,
+                change_time_minutes: None,
             },
             common::StanoxCrsRecord {
                 stanox: "S2".to_string(),
@@ -923,6 +1017,7 @@ mod poll_once_tests {
                 tiploc: "ZNOTIPLOC2".to_string(),
                 station_name: "TEST STATION".to_string(),
                 source_sequence: 1,
+                change_time_minutes: None,
             },
         ];
         let map = crs_to_tiploc_map(&records);
@@ -1348,6 +1443,7 @@ mod poll_once_tests {
                 .to_string(),
             schedule_destination_departures_url:
                 "http://127.0.0.1:1/schedule-destination-departures".to_string(),
+            fixed_links_url: "http://127.0.0.1:1/fixed-links".to_string(),
             schedule_feed_ingests_url: schedule_feed_ingests_url.to_string(),
             lines: common::config::LineCatalogue(vec![]),
             internal_oauth: common::oauth_client::InternalOAuthArgs {
