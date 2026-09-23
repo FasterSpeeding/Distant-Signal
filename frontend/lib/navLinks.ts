@@ -43,19 +43,55 @@ export interface NavDestination {
 export const TRACK_JOURNEY_DESTINATION: NavDestination = { href: '/journeys/new', label: 'Track a Journey' };
 
 /** Always visible to everyone, logged in or not. Rendered inline in the
- * bar at `md` and up, and in the drawer below it. */
+ * bar at `md` and up, and in the drawer below it.
+ *
+ * Four of these labels ("Lines", "Stations", "Trains", "Incidents") are
+ * deliberately terser than the page headings they point at ("All Lines",
+ * "Station Disruption Lookup", "Find a Train", "Incident Archive" --
+ * unchanged, see each page's own `<Title>`), matching the precedent
+ * "Station Lookup" already set for this exact bar: a nav label is a short
+ * pointer, not a restatement of the destination's own heading, and a
+ * visitor landing on a fuller/differently-worded `<h1>` after a short nav
+ * label is a pattern this bar already used before this rename, not one
+ * invented for it.
+ *
+ * They were shortened from "All Lines"/"Station Lookup"/"Find a
+ * Train"/"Incident Archive" specifically to buy back width for
+ * `TRACK_JOURNEY_DESTINATION` below: added as a NEW, always-inline primary
+ * destination, it broke `AppNavBar.tsx`'s single-row-at-`md`-and-`lg`
+ * invariant (confirmed against a real rendered bar, both Chromium and
+ * Firefox -- the anonymous bar, the widest arrangement per
+ * `AppNavBar.tsx`'s own comment, wrapped at BOTH 992px and 1440px, not just
+ * the narrower one). Combined with `AppNavBar.tsx`'s own gap reduction,
+ * these four renames restore a real (not hairline) margin at 992px: ~30px
+ * in both engines, in the same ballpark as the ~42px this file's history
+ * already treated as an acceptable working margin -- see
+ * `AppNavBar.tsx`'s own comment for the up-to-date figures.
+ *
+ * "Track a Journey", "Status", "Operators" and "My Trains & Tickets"
+ * (below) were deliberately left untouched: the first because
+ * `TRACK_JOURNEY_DESTINATION`'s own doc comment is unambiguous that its
+ * wording and prominence are the point, not incidental; "Status" is
+ * already minimal; "Operators" only just landed at this length and
+ * position per review M7/§2.7; and "My Trains & Tickets" is deliberately
+ * NOT renamed for a documented, layout-unrelated scope reason (see
+ * `TRACKED_TRAINS_DESTINATION`'s own comment) despite being the single
+ * widest item on the anonymous bar -- renaming it would have been the
+ * cheapest width fix available, and was rejected for that reason. */
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   // First, ahead of "Status" -- see `TRACK_JOURNEY_DESTINATION`'s own doc
   // comment for why creation, not browsing, now leads the primary nav.
   TRACK_JOURNEY_DESTINATION,
   { href: '/status', label: 'Status' },
-  { href: '/lines', label: 'All Lines' },
-  // Moved beside "All Lines" and "Station Lookup" (review M7/§2.7): three
-  // ways to browse status, previously split apart by having this one sit
-  // last, after "Incident Archive" -- reading as an afterthought rather
-  // than a sibling of the other two catalogue-browsing destinations.
+  { href: '/lines', label: 'Lines' },
+  // Moved beside "Lines" and "Stations" (review M7/§2.7 -- named "All
+  // Lines"/"Station Lookup" at the time, since renamed, see this array's
+  // own doc comment): three ways to browse status, previously split apart
+  // by having this one sit last, after "Incidents" -- reading as an
+  // afterthought rather than a sibling of the other two
+  // catalogue-browsing destinations.
   { href: '/operators', label: 'Operators' },
-  { href: '/stations', label: 'Station Lookup' },
+  { href: '/stations', label: 'Stations' },
   // The primary train-discovery surface. `/track` is still reachable
   // (from here via /trains' own manual fallback link, from
   // /stations/[crs], and from TicketEntryForm) but is no longer the first
@@ -63,8 +99,8 @@ export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   // docs/superpowers/specs/2026-09-07-train-listing-page-design.md §4, and
   // `TRACK_JOURNEY_DESTINATION`'s own doc comment for what replaced it as
   // the primary entry point for tracking specifically.
-  { href: '/trains', label: 'Find a Train' },
-  { href: '/incidents', label: 'Incident Archive' },
+  { href: '/trains', label: 'Trains' },
+  { href: '/incidents', label: 'Incidents' },
 ];
 
 /** Reclassified from Tier 3 (hidden entirely when logged out) to

@@ -121,7 +121,7 @@ test.describe('desktop nav bar (1440x900)', () => {
   test('shows the primary links inline, and no burger', async ({ page }) => {
     await page.goto('/lines');
     const nav = page.locator('nav');
-    for (const label of ['Status', 'All Lines', 'Station Lookup', 'Find a Train', 'Incident Archive']) {
+    for (const label of ['Track a Journey', 'Status', 'Lines', 'Stations', 'Trains', 'Incidents']) {
       await expect(nav.getByRole('link', { name: label })).toBeVisible();
     }
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
@@ -189,16 +189,17 @@ test.describe('phone nav bar (390x844)', () => {
   test('moves the destinations into a burger-opened drawer', async ({ page }) => {
     await page.goto('/lines');
     const nav = page.locator('nav');
-    await expect(nav.getByRole('link', { name: 'All Lines' })).toBeHidden();
+    await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
 
     await nav.getByRole('button', { name: 'Navigation menu' }).click();
     const drawer = page.getByRole('dialog', { name: 'Menu' });
     for (const label of [
+      'Track a Journey',
       'Status',
-      'All Lines',
-      'Station Lookup',
-      'Find a Train',
-      'Incident Archive',
+      'Lines',
+      'Stations',
+      'Trains',
+      'Incidents',
       'My Trains & Tickets',
     ]) {
       await expect(drawer.getByRole('link', { name: label })).toBeVisible();
@@ -211,7 +212,7 @@ test.describe('phone nav bar (390x844)', () => {
     await page.goto('/lines');
     await page.locator('nav').getByRole('button', { name: 'Navigation menu' }).click();
     const drawer = page.getByRole('dialog', { name: 'Menu' });
-    await drawer.getByRole('link', { name: 'Station Lookup' }).click();
+    await drawer.getByRole('link', { name: 'Stations' }).click();
 
     await expect(page).toHaveURL(/\/stations$/);
     await expect(drawer).toBeHidden();
@@ -240,7 +241,7 @@ test.describe('the md breakpoint the bar pivots on', () => {
     await page.setViewportSize({ width: 992, height: 900 });
     await page.goto('/lines');
     const nav = page.locator('nav');
-    await expect(nav.getByRole('link', { name: 'All Lines' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Lines' })).toBeVisible();
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);
     expect(await hasHorizontalOverflow(page)).toBe(false);
@@ -251,7 +252,7 @@ test.describe('the md breakpoint the bar pivots on', () => {
     await page.goto('/lines');
     const nav = page.locator('nav');
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeVisible();
-    await expect(nav.getByRole('link', { name: 'All Lines' })).toBeHidden();
+    await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);
   });
 });

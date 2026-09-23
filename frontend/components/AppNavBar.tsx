@@ -111,8 +111,25 @@ const NAV_BREAKPOINT = 'md';
 // here.)
 //
 // So the gaps are flat, and the SHAPE carries the responsiveness
-// instead: the icon cluster is its own tight group. The links keep the
-// 20px they have always had.
+// instead: the icon cluster is its own tight group.
+//
+// The links no longer keep the 20px ("lg") they originally had -- see the
+// next paragraph for why that changed.
+//
+// `TRACK_JOURNEY_DESTINATION` (lib/navLinks.ts), added as a new, always-
+// inline primary destination, broke the single-row invariant this whole
+// component exists to hold: measured against a real rendered bar in BOTH
+// engines, the anonymous bar (the binding case -- see below) wrapped at
+// BOTH 992px and 1440px, not just the narrower one, and at 992px it wrapped
+// badly enough that individual multi-word labels' own text broke onto two
+// lines (flex-shrink squeezing each TextLink below its natural width)
+// rather than the cleaner "whole bar splits into two rows" failure mode
+// this file's history otherwise describes. Fixing it took two changes
+// together, neither sufficient alone (verified by re-measuring after each):
+// both link-cluster `gap`s below dropped from "lg"/"md" to "xs" (this
+// component), and four of `PRIMARY_NAV_DESTINATIONS`' labels were shortened
+// (lib/navLinks.ts's own comment on that array has the full rationale for
+// which ones and why the rest were left alone).
 //
 // THE slack figures for this layout, measured in one pass against a live
 // backend in Chromium (the wider-measuring engine), quoted here and
@@ -122,9 +139,16 @@ const NAV_BREAKPOINT = 'md';
 // through the account menu.
 //
 //   viewport   available   used (anon)   slack (anon)   slack (logged in)
-//   390px          350px        325px           25px                43px
-//   992px          952px        910px           42px               224px
-//   1440px        1100px        910px          190px               372px
+//   992px          952px        922px           30px               189px
+//   1440px        1100px        922px          178px               337px
+//
+// (Firefox's narrower text metrics measured a slightly larger slack at
+// both widths -- 34px/182px at 992px/1440px -- consistent with this file's
+// long-standing "Chromium is the tighter engine" pattern; not reproduced
+// here to avoid a second table nobody will remember to update.) Below
+// `md` the primary links are hidden in favour of the burger/drawer, so the
+// figures above -- not a 390px row -- are the ones this change touched;
+// the phone bar's own slack is unaffected by any of it.
 //
 // Every row is a single row -- that is asserted, not assumed, by
 // e2e/nav.spec.ts in both engines.
@@ -200,8 +224,23 @@ export function AppNavBar({
               </Text>
             </Link>
           </Group>
-          <Group gap="md" wrap="nowrap">
-            <Group gap="lg" wrap="nowrap" visibleFrom={NAV_BREAKPOINT}>
+          {/* Both `gap="xs"` here (this Group, between its three
+              clusters, and the primary-links Group nested inside it,
+              between each link) were "md"/"lg" respectively until
+              `TRACK_JOURNEY_DESTINATION` was added to
+              `PRIMARY_NAV_DESTINATIONS`: seven flat "lg" (20px) gaps
+              between eight links was real, visible breathing room this
+              bar could afford while it had 40-190px of slack to spare, but
+              an eighth primary destination cost more width than that
+              slack could cover -- see the gap note above this component
+              for the before/after measurements. Tightening these two gaps
+              to "xs" (10px) recovers real width without touching any
+              label; it was combined with (not a substitute for)
+              shortening four of `PRIMARY_NAV_DESTINATIONS`' own labels,
+              which recovers more width than gaps alone could -- see that
+              array's own comment. */}
+          <Group gap="xs" wrap="nowrap">
+            <Group gap="xs" wrap="nowrap" visibleFrom={NAV_BREAKPOINT}>
               {PRIMARY_NAV_DESTINATIONS.map((destination) => (
                 <TextLink key={destination.href} href={destination.href}>
                   {destination.label}
