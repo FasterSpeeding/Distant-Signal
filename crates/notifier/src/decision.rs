@@ -124,7 +124,6 @@ pub fn weekday_bit(date: chrono::NaiveDate) -> i16 {
 /// of that leg's `service_date` (Judgment Call 3 -- the caller's own
 /// `service_date = today` query scoping is what eventually stops this
 /// from being consulted forever, not this function).
-#[allow(dead_code)]
 pub fn is_due_for_commit_check(
     now: DateTime<Utc>,
     earliest_bound_utc: DateTime<Utc>,
@@ -141,7 +140,6 @@ pub fn is_due_for_commit_check(
 /// identical minute for the same origin/destination pair in practice).
 /// `None` only for an empty slice -- callers already filter to a leg with
 /// >= 1 candidate before calling this.
-#[allow(dead_code)]
 pub fn pick_nearest_to_now_candidate(
     candidate_scheduled_times: &[chrono::NaiveTime],
     now_local: chrono::NaiveTime,
@@ -161,7 +159,6 @@ pub fn pick_nearest_to_now_candidate(
 /// Fires once, the first time an `'auto'`-mode leg's commit-check finds
 /// zero candidates for today; never re-fires for the same leg (§4.2,
 /// narrowly scoped per this plan's own Judgment Call 4).
-#[allow(dead_code)]
 pub fn decide_unmatched_notification(already_notified: bool) -> NotifyDecision {
     if already_notified {
         NotifyDecision::Skip

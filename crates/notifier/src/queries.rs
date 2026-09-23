@@ -593,11 +593,8 @@ pub async fn upsert_skip_notification_state(
 /// be unreachable given Phase B's own validation, but defensively a no-op
 /// rather than a partially-minted journey).
 ///
-/// `#[allow(dead_code)]`: not yet called by any production code path --
-/// Task 5 (not this task) wires this into `main.rs`'s sweep loop, same
-/// posture as Task 1's `decision.rs` functions. Exercised directly by this
-/// module's own `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 1) --
+/// also exercised directly by this module's own `sweep_tests`.
 pub async fn materialize_due_template_occurrence(
     pool: &PgPool,
     template_id: i64,
@@ -688,11 +685,9 @@ pub async fn materialize_due_template_occurrence(
 /// template, spec §2.2) is correctly excluded by the AND below (NULL &
 /// anything is NULL, never non-zero).
 ///
-/// `#[allow(dead_code)]` on this struct and `due_templates_for` below: not
-/// yet called by any production code path -- Task 5 wires this into
-/// `main.rs`'s sweep loop. Exercised directly by this module's own
-/// `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// This struct and `due_templates_for` below are called from `main.rs`'s
+/// `run_template_sweep_cycle` (Task 5, stage 1) -- also exercised directly
+/// by this module's own `sweep_tests`.
 #[derive(Debug, sqlx::FromRow)]
 pub struct DueTemplate {
     pub id: i64,
@@ -700,7 +695,6 @@ pub struct DueTemplate {
     pub custom_name: Option<String>,
 }
 
-#[allow(dead_code)]
 pub async fn due_templates_for(
     pool: &PgPool,
     today: chrono::NaiveDate,
@@ -727,11 +721,9 @@ pub async fn due_templates_for(
 /// Task 5) -- keeping that check in Rust, not SQL, keeps it unit-testable
 /// in isolation (Task 1) without a DB.
 ///
-/// `#[allow(dead_code)]` on this struct and `unmatched_auto_legs_for_commit_check`
-/// below: not yet called by any production code path -- Task 5 wires this
-/// into `main.rs`'s sweep loop. Exercised directly by this module's own
-/// `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// This struct and `unmatched_auto_legs_for_commit_check` below are called
+/// from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) -- also
+/// exercised directly by this module's own `sweep_tests`.
 #[derive(Debug, sqlx::FromRow)]
 pub struct CommitCheckLeg {
     pub journey_leg_id: i64,
@@ -746,7 +738,6 @@ pub struct CommitCheckLeg {
     pub arrive_before: Option<chrono::NaiveTime>,
 }
 
-#[allow(dead_code)]
 pub async fn unmatched_auto_legs_for_commit_check(
     pool: &PgPool,
     today: chrono::NaiveDate,
@@ -787,10 +778,9 @@ pub async fn unmatched_auto_legs_for_commit_check(
 /// the real `search_journey_leg_candidates` this duplicates (that
 /// function carries the same allow, plus `clippy::type_complexity` for
 /// its wider return type, which this slimmed version doesn't need).
-/// `#[allow(dead_code)]`: not yet called by any production code path --
-/// Task 5 wires this into `main.rs`'s sweep loop. Exercised directly by
-/// this module's own `sweep_tests` in the meantime.
-#[allow(clippy::too_many_arguments, dead_code)]
+/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
+/// also exercised directly by this module's own `sweep_tests`.
+#[allow(clippy::too_many_arguments)]
 pub async fn schedule_candidates_for_leg(
     pool: &PgPool,
     origin_crs: &str,
@@ -852,10 +842,8 @@ pub async fn schedule_candidates_for_leg(
 /// necessarily, per this crate's crate-boundary constraint. Keep this in
 /// sync with that function's exact ON CONFLICT shape if it ever changes.
 ///
-/// `#[allow(dead_code)]`: not yet called by any production code path --
-/// Task 5 wires this into `main.rs`'s sweep loop. Exercised directly by
-/// this module's own `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
+/// also exercised directly by this module's own `sweep_tests`.
 pub async fn find_or_create_train(
     pool: &PgPool,
     train_uid: &str,
@@ -877,10 +865,8 @@ pub async fn find_or_create_train(
 /// -- same CTE idempotency idiom, same accepted "ordinary repeat case
 /// only" concurrency caveat as the original's own doc comment states.
 ///
-/// `#[allow(dead_code)]`: not yet called by any production code path --
-/// Task 5 wires this into `main.rs`'s sweep loop. Exercised directly by
-/// this module's own `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
+/// also exercised directly by this module's own `sweep_tests`.
 pub async fn create_subscription_for_train(
     pool: &PgPool,
     trains_id: i64,
@@ -912,10 +898,8 @@ pub async fn create_subscription_for_train(
 /// match_mode = 'unmatched'` so a leg already committed by a concurrent
 /// tick (or since raced-and-lost) is a silent no-op, not a double write.
 ///
-/// `#[allow(dead_code)]`: not yet called by any production code path --
-/// Task 5 wires this into `main.rs`'s sweep loop. Exercised directly by
-/// this module's own `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
+/// also exercised directly by this module's own `sweep_tests`.
 pub async fn commit_leg_to_train(
     pool: &PgPool,
     journey_leg_id: i64,
@@ -932,10 +916,8 @@ pub async fn commit_leg_to_train(
     Ok(result.rows_affected() > 0)
 }
 
-/// `#[allow(dead_code)]`: not yet called by any production code path --
-/// Task 5 wires this into `main.rs`'s sweep loop. Exercised directly by
-/// this module's own `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
+/// also exercised directly by this module's own `sweep_tests`.
 pub async fn unmatched_notification_state(
     pool: &PgPool,
     user_id: &str,
@@ -959,10 +941,8 @@ pub async fn unmatched_notification_state(
 /// FALSE` -- not a placeholder but the literally correct value: a still-
 /// unmatched leg has no bound train to be "skipped" against yet.
 ///
-/// `#[allow(dead_code)]`: not yet called by any production code path --
-/// Task 5 wires this into `main.rs`'s sweep loop. Exercised directly by
-/// this module's own `sweep_tests` in the meantime.
-#[allow(dead_code)]
+/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
+/// also exercised directly by this module's own `sweep_tests`.
 pub async fn upsert_unmatched_notification_state(
     pool: &PgPool,
     user_id: &str,
