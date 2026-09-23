@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Alert, Button, Card, Group, Stack, Text } from '@mantine/core';
+import { Alert, Button, Card, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import { AddJourneyLegButton } from './AddJourneyLegButton';
+import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
 import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { routeLabel } from '@/lib/stationLabel';
@@ -51,6 +52,7 @@ export function JourneyCreationFlow() {
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
+  const [entryMode, setEntryMode] = useState<'known' | 'plan'>('known');
 
   async function refreshJourney(id: number) {
     setLoadingJourney(true);
@@ -80,7 +82,23 @@ export function JourneyCreationFlow() {
   }
 
   if (journeyId === null) {
-    return <TrackTrainForm onCreated={handleLegOneCreated} />;
+    return (
+      <Stack gap="md">
+        <SegmentedControl
+          value={entryMode}
+          onChange={value => setEntryMode(value as 'known' | 'plan')}
+          data={[
+            { label: 'I know my route', value: 'known' },
+            { label: 'Plan a route for me', value: 'plan' },
+          ]}
+        />
+        {entryMode === 'known' ? (
+          <TrackTrainForm onCreated={handleLegOneCreated} />
+        ) : (
+          <PlanTripFlow onCreated={handleLegOneCreated} />
+        )}
+      </Stack>
+    );
   }
 
   const priorDestinationCrs = journey ? journeyPriorDestinationCrs(journey) : null;
