@@ -7304,6 +7304,178 @@ mod schedule_destination_departures_query_tests {
 
         delete_day(&pool, date).await;
     }
+
+    /// Real-world regression: EUS -> MKC window search silently missing one
+    /// operator's real services (the reported bug this test exists for).
+    ///
+    /// Runs the FULL production ingestion pipeline this function's own doc
+    /// comment says `schedule-reference` performs each CIF delivery --
+    /// `schedule_query::ScheduleIndex::from_text` -> `departures_by_destination_crs`
+    /// -- against two REAL CIF schedules, not hand-typed `row()` fixtures,
+    /// to rule the parser/resolver layer in or out as the root cause, not
+    /// just the SQL:
+    ///
+    /// * `C17798` (Avanti West Coast, WCML): real byte-for-byte block
+    ///   already quoted verbatim in
+    ///   `crates/schedule-query/tests/real_cif_fixtures.rs`'s
+    ///   `WCML_MULTI_STATION_SCHEDULES` -- `EUS@0756 -> MKC@0837`
+    ///   (terminus), reconstructed from
+    ///   docs/superpowers/specs/2026-08-29-trust-schedule-delay-validation-findings.md
+    ///   line 515's real quote.
+    /// * `C18017` (a real `lnwr-birmingham-crewe` UID -- London Northwestern
+    ///   Railway's own EUS-Crewe corridor line in this app's own monitoring,
+    ///   same doc, "Pin 46 -- `C18017`, Euston->Crewe" section, lines
+    ///   1890-1899): real UID/TIPLOC/time values quoted directly --
+    ///   `EUSTON dep 14:46 -> MILTON KEYNES CENTRAL arr/dep 15:18/15:19 ->
+    ///   STAFFORD arr 16:30`. The real schedule continues past Stafford to
+    ///   Crewe per the quote's own "Euston->Crewe" label, but no further
+    ///   real time is quoted anywhere in that doc, so this reconstruction
+    ///   stops at Stafford (STA) -- same "leave it open, don't fabricate a
+    ///   terminus" posture `real_cif_fixtures.rs`'s own `F26094_BANK_HOLIDAY_BODY`
+    ///   documents for an identical gap. Critically, MKC here is a genuine
+    ///   `LI` (Intermediate) calling point with its own booked arrival AND
+    ///   departure -- MKC is NOT this schedule's terminus, so
+    ///   `search_journey_leg_candidates`'s `EXISTS` branch (not its
+    ///   `main.destination_crs = $5` branch) is what must find it, exactly
+    ///   the branch the general-purpose sibling function historically
+    ///   didn't check unconditionally (see this function's own doc comment,
+    ///   point 1).
+    ///
+    /// Both real UIDs run a real WCML corridor through the real MKNSCEN
+    /// TIPLOC (Milton Keynes Central's real TIPLOC, confirmed by
+    /// `WCML_MULTI_STATION_SCHEDULES`'s own doc comment) -- two different,
+    /// real operators' schedules calling at the exact same real station,
+    /// the precondition the reported bug needed and every other fixture in
+    /// this file (synthetic CRS codes like "ZRD"/"RDG") never exercised.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_journey_leg_candidates_eus_mkc -- --ignored --test-threads=1`"]
+    async fn search_journey_leg_candidates_includes_every_real_operator_calling_at_a_shared_station()
+     {
+        // Real byte-verbatim BS/LO/LT block, quoted directly from
+        // `crates/schedule-query/tests/real_cif_fixtures.rs`'s own
+        // `WCML_MULTI_STATION_SCHEDULES` -- Avanti West Coast's C17798,
+        // EUS@0756 terminating at MKC@0837. `date_from`/`date_to` are the
+        // ONE deliberate deviation from that real quote (real range
+        // 260523..261212): this module's own doc comment requires every DB
+        // fixture to own a distant-future `service_date`, uncontaminated by
+        // real production data -- but real CIF `YYMMDD` is a genuinely
+        // 2-digit year, and `chrono`'s own `%y` pivot (verified directly:
+        // `"68" -> 2068`, `"69" -> 1969`) caps how far "distant future" can
+        // go through this crate's own real parser at 2068-12-31, short of
+        // this file's usual 2099 sentinel. `670101..671231` (2067) is used
+        // here instead -- still decades past any real delivery this app
+        // will ever ingest, just inside the format's own real ceiling.
+        const AVANTI_EUS_MKC: &str = "\
+BSNC177986701016712311111111           P
+LOEUSTON  0756         TB
+LTMKNSCEN 0837         TF";
+
+        // Reconstructed from the real, directly-quoted UID/TIPLOC/time
+        // values in docs/superpowers/specs/2026-08-29-trust-schedule-delay-validation-findings.md's
+        // "Pin 46 -- `C18017`, Euston->Crewe (`lnwr-birmingham-crewe`)"
+        // section (lines 1890-1899) -- a real London Northwestern Railway
+        // EUS-Crewe-corridor working. date_from/date_to/days_of_week are
+        // not given by that quote (only that it ran on 2026-09-11), so
+        // this reconstruction runs it daily across a wide real-shaped
+        // range (2067, same "%y`-ceiling" reasoning as `AVANTI_EUS_MKC`
+        // above).
+        const LNR_EUS_MKC_INTERMEDIATE: &str = "\
+BSNC180176701016712311111111           P
+LOEUSTON  1446         TB
+LIMKNSCEN 1518 1519         T
+LTSTAFFRD 1630         TF";
+
+        let index = schedule_query::ScheduleIndex::from_text(&format!(
+            "{AVANTI_EUS_MKC}\n{LNR_EUS_MKC_INTERMEDIATE}"
+        ));
+
+        let tiploc_to_crs: std::collections::HashMap<String, String> =
+            [("EUSTON", "EUS"), ("MKNSCEN", "MKC"), ("STAFFRD", "STA")]
+                .into_iter()
+                .map(|(tiploc, crs)| (tiploc.to_string(), crs.to_string()))
+                .collect();
+
+        // 2067, not this module's usual 2099 sentinel -- see
+        // `AVANTI_EUS_MKC`'s own doc comment for why real CIF's 2-digit
+        // year caps how far into the future a date parsed by the real
+        // parser under test can go. Still decades clear of any real
+        // service date this app will ever ingest.
+        let date = chrono::NaiveDate::from_ymd_opt(2067, 2, 15).expect("valid fixture date");
+        // Midnight -- the real `now` `publish_schedule_destination_departures`
+        // uses (see that function's own doc comment, point 1): publishes
+        // the whole rail day, uncapped, exactly like production.
+        let by_destination = schedule_query::departures_by_destination_crs(
+            &index,
+            date,
+            chrono::NaiveTime::MIN,
+            &tiploc_to_crs,
+        );
+
+        // The exact same one-row-per-departure flatten
+        // `crates/schedule-reference/src/main.rs::schedule_destination_departures_rows`
+        // performs, rebuilt here as `ScheduleDestinationDeparturesRow`
+        // instead of `serde_json::Value` purely so it can go straight into
+        // `upsert_schedule_destination_departures` without a
+        // serialize/deserialize round trip -- the ingest route
+        // (`routes::ingest::post_schedule_destination_departures`)
+        // deserializes the wire JSON into this exact same struct, so this
+        // is a faithful stand-in for "the batch `schedule-reference` would
+        // have POSTed this cycle."
+        let rows: Vec<ScheduleDestinationDeparturesRow> = by_destination
+            .into_iter()
+            .flat_map(|(destination_crs, departures)| {
+                departures
+                    .into_iter()
+                    .map(move |d| ScheduleDestinationDeparturesRow {
+                        service_date: date,
+                        destination_crs: destination_crs.clone(),
+                        scheduled: d.scheduled,
+                        day_offset: d.day_offset as i16,
+                        train_uid: d.uid,
+                        origin_crs: d.origin_crs,
+                        true_origin_crs: d.true_origin_crs,
+                        calling_point_arrival: d.calling_point_arrival,
+                        destination_arrival: d.destination_arrival,
+                        destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
+                    })
+            })
+            .collect();
+
+        assert!(
+            !rows.is_empty(),
+            "the real ingestion pipeline must have produced at least one row from two real, \
+             non-cancelled, correctly-TIPLOC-resolved schedules"
+        );
+
+        let pool = test_pool().await;
+        delete_day(&pool, date).await;
+        upsert_schedule_destination_departures(&pool, &rows)
+            .await
+            .expect("seed real-pipeline-derived fixture rows");
+
+        let page = search_journey_leg_candidates(
+            &pool, "EUS", "MKC", date, None, None, None, None, None, 50,
+        )
+        .await
+        .expect("search candidates")
+        .expect("service date is published");
+
+        let uids: std::collections::BTreeSet<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uids,
+            std::collections::BTreeSet::from(["C17798", "C18017"]),
+            "both real operators' EUS -> MKC services must appear in the candidate list -- \
+             C17798 (Avanti, MKC as its terminus) AND C18017 (London Northwestern, MKC as a \
+             genuine intermediate calling point on the way to Crewe). Got: {uids:?}"
+        );
+
+        delete_day(&pool, date).await;
+    }
 }
 
 #[cfg(test)]
