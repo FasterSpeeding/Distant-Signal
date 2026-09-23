@@ -70,6 +70,7 @@ export function ShareJourneyLinkButton({
   function handleOpen() {
     setError(null);
     setCopied(false);
+    setBusy(false);
     needsLoginState.reset();
     open();
   }
@@ -109,6 +110,7 @@ export function ShareJourneyLinkButton({
         return;
       }
       router.refresh();
+      setBusy(false);
     } catch {
       setError(shareLink ? 'Could not create a new share link.' : 'Could not create a share link.');
       setBusy(false);
@@ -131,6 +133,7 @@ export function ShareJourneyLinkButton({
         return;
       }
       router.refresh();
+      setBusy(false);
     } catch {
       setError('Could not revoke the share link.');
       setBusy(false);

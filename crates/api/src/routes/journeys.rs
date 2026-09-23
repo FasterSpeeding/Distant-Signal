@@ -4,11 +4,16 @@
 //! docs/superpowers/plans/2026-09-22-journey-tracking-phase1-single-leg-migration-plan.md.
 //! Every route here requires an authenticated session
 //! (`AuthenticatedUser`) -- journeys have no anonymous/service-token path,
-//! matching `routes::train`'s own posture for its write routes. Unlike
-//! `routes::train::get_by_uid_and_date`, there is no public/unscoped
-//! journey read in Phase 1 at all -- group sharing (design doc §6) is what
-//! eventually opens a journey to anyone other than its own owner, and that
-//! is Phase 4's job, not this file's.
+//! matching `routes::train`'s own posture for its write routes -- with
+//! exactly one deliberate exception: `GET /Journeys/shared/{token}`
+//! (`get_journey_by_share_token`, see that handler's own doc comment) is
+//! genuinely public, with NO `AuthenticatedUser` extractor at all, same
+//! posture as `routes::groups::get_join_preview`. That one route is the
+//! unlisted-links feature's read path
+//! (docs/superpowers/specs/2026-09-23-unlisted-links-design.md), not group
+//! sharing -- group sharing (design doc §6) is a separate, still-future
+//! mechanism for opening a journey to anyone other than its own owner, and
+//! remains Phase 4's job, not this file's.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

@@ -93,6 +93,14 @@ describe('ShareJourneyLinkButton', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/167/share-link', { method: 'POST' });
     });
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+
+    // Regression for the review finding: `busy` must be reset on the
+    // success path too, not only on failure -- otherwise `loading={busy}`
+    // (which Mantine's `Button` treats as `disabled`) leaves this button
+    // permanently unclickable once a link has been created, since
+    // `router.refresh()` reconciles this client component in place rather
+    // than remounting it.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create link' })).toBeEnabled());
   });
 
   it('Regenerate POSTs and refreshes', async () => {
@@ -115,6 +123,12 @@ describe('ShareJourneyLinkButton', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/167/share-link', { method: 'POST' });
     });
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+
+    // Same regression as the "Create link" test above, but for Regenerate:
+    // a successful regenerate must not leave Regenerate/Revoke stuck
+    // disabled forever.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Regenerate' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Revoke' })).toBeEnabled();
   });
 
   it('Revoke DELETEs and refreshes', async () => {
@@ -135,6 +149,12 @@ describe('ShareJourneyLinkButton', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/167/share-link', { method: 'DELETE' });
     });
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+
+    // Same regression as the "Create link" test above, but for Revoke:
+    // a successful revoke must not leave Regenerate/Revoke stuck disabled
+    // forever.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Revoke' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Regenerate' })).toBeEnabled();
   });
 
   it('a 401 on Create/Regenerate shows a login prompt, not the generic error', async () => {
