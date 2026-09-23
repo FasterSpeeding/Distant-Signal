@@ -976,10 +976,20 @@ export type CreateJourneyTemplateRequest =
     };
 
 /** `PUT /JourneyTemplates/{id}`'s request body — full-resource replace,
- * not a per-field patch (see the Phase B plan's Judgment Calls 1/4). */
+ * not a per-field patch (see the Phase B plan's Judgment Calls 1/4).
+ * `daysOfWeek`/`active`/`startsOn`/`endsOn`/`defaultMatchMode`/
+ * `autoCommitRule` are REQUIRED on every request (Phase C's backend task
+ * made them non-optional, with no server-side default) — mirror
+ * `JourneyTemplateDetail`'s own field types exactly. */
 export interface PutJourneyTemplateRequest {
   customName?: string;
   legs: TemplateLegRequest[];
+  daysOfWeek: number | null;
+  active: boolean;
+  startsOn: string | null;
+  endsOn: string | null;
+  defaultMatchMode: 'manual' | 'auto';
+  autoCommitRule: 'earliest' | 'nearest_to_now' | null;
 }
 
 /** `POST /JourneyTemplates`'s response
