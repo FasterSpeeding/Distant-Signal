@@ -127,6 +127,12 @@ describe('EditJourneyTemplateForm', () => {
                 arriveWindow: { after: null, before: null },
               },
             ],
+            daysOfWeek: null,
+            active: true,
+            startsOn: null,
+            endsOn: null,
+            defaultMatchMode: 'manual',
+            autoCommitRule: null,
           }),
         }),
       );
@@ -158,5 +164,119 @@ describe('EditJourneyTemplateForm', () => {
 
     expect(await screen.findByText('destination must differ from origin')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
+  });
+
+  describe('recurrence controls', () => {
+    function sentBody(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
+      const call = fetchMock.mock.calls[0];
+      return JSON.parse(call[1]?.body as string);
+    }
+
+    it('toggling Monday sends daysOfWeek: 1 (bit 0)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Mon' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(sentBody(fetchMock).daysOfWeek).toBe(1);
+    });
+
+    it('toggling Wednesday sends daysOfWeek: 4 (bit 2)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Wed' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(sentBody(fetchMock).daysOfWeek).toBe(4);
+    });
+
+    it('combines multiple selected days into one bitmask', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Mon' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Wed' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Sun' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      // Mon (1) | Wed (4) | Sun (64) = 69.
+      expect(sentBody(fetchMock).daysOfWeek).toBe(69);
+    });
+
+    it('deselecting every day sends daysOfWeek: null, not 0 or []', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      // Start from a template that already recurs on Monday, then deselect it.
+      renderWithMantine(<EditJourneyTemplateForm template={template({ daysOfWeek: 1 })} />);
+      expect(screen.getByRole('checkbox', { name: 'Mon' })).toBeChecked();
+
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Mon' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(sentBody(fetchMock).daysOfWeek).toBeNull();
+    });
+
+    it('shows "Not recurring" when no day is selected, and switches away once one is', () => {
+      renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+      expect(screen.getByText('Not recurring')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Fri' }));
+
+      expect(screen.queryByText('Not recurring')).not.toBeInTheDocument();
+    });
+
+    it('switching to "auto" always sends autoCommitRule: nearest_to_now', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+      fireEvent.click(screen.getByRole('radio', { name: 'Auto-commit for me' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      const body = sentBody(fetchMock);
+      expect(body.defaultMatchMode).toBe('auto');
+      expect(body.autoCommitRule).toBe('nearest_to_now');
+    });
+
+    it('switching back to "manual" sends autoCommitRule: null', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      renderWithMantine(
+        <EditJourneyTemplateForm
+          template={template({ defaultMatchMode: 'auto', autoCommitRule: 'nearest_to_now' })}
+        />,
+      );
+      fireEvent.click(screen.getByRole('radio', { name: "Remind me, don't guess" }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      const body = sentBody(fetchMock);
+      expect(body.defaultMatchMode).toBe('manual');
+      expect(body.autoCommitRule).toBeNull();
+    });
+
+    it('the Paused switch sends the real active boolean, inverted', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      renderWithMantine(<EditJourneyTemplateForm template={template({ active: true })} />);
+      fireEvent.click(screen.getByRole('switch', { name: /^Paused/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(sentBody(fetchMock).active).toBe(false);
+    });
   });
 });
