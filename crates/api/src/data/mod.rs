@@ -28,6 +28,7 @@ pub mod trip_planning;
 pub mod trip_planning_itinerary;
 pub mod trust_event_backlog;
 pub mod trust_event_backlog_match;
+pub mod unlisted_links;
 pub mod users;
 
 pub use common::{LineDefinition, Station};
