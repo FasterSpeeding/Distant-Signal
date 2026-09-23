@@ -1,8 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import dayjs from 'dayjs';
-import { Autocomplete, Button, Group, SegmentedControl, Stack, TextInput, ActionIcon } from '@mantine/core';
+import {
+  Autocomplete,
+  Button,
+  Group,
+  SegmentedControl,
+  Stack,
+  Text,
+  TextInput,
+  ActionIcon,
+  VisuallyHidden,
+} from '@mantine/core';
 import { DateInput, TimeInput } from '@mantine/dates';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
@@ -60,8 +70,25 @@ function XIcon() {
  * ready-to-fetch [`TripPlanQuery`] to its caller (`PlanTripFlow`, Task 5).
  * Mirrors `TrackTrainForm.tsx`'s own station-autocomplete and
  * `SegmentedControl` conventions rather than reinventing them -- see this
- * task's own Step 1. */
-export function PlanTripForm({ onSubmit }: { onSubmit: (query: TripPlanQuery) => void }) {
+ * task's own Step 1.
+ *
+ * `searching` (final-review fix I2): `GET /Trips/plan` can take several
+ * seconds (a full day of schedule connections, run through pathfinding),
+ * so the submit button needs real in-flight feedback -- `PlanTripFlow`
+ * (the only caller) passes its own `searching` state through, and this
+ * component just reflects it in the button's label. Deliberately NOT also
+ * disabled by `searching` (only by `canSubmit`, form validity, as
+ * before): `PlanTripFlow`'s own monotonic request-id guard is what makes
+ * a second, overlapping search harmless, so hard-blocking the button here
+ * would only prevent a specific, already-safe interaction -- not fix a
+ * real correctness gap. */
+export function PlanTripForm({
+  onSubmit,
+  searching = false,
+}: {
+  onSubmit: (query: TripPlanQuery) => void;
+  searching?: boolean;
+}) {
   const [originCrs, setOriginCrs] = useState('');
   const [destinationCrs, setDestinationCrs] = useState('');
   const [waypoints, setWaypoints] = useState<string[]>([]);
@@ -78,6 +105,7 @@ export function PlanTripForm({ onSubmit }: { onSubmit: (query: TripPlanQuery) =>
   const [date, setDate] = useState<string | null>(() => dayjs().format('YYYY-MM-DD'));
   const [departAfter, setDepartAfter] = useState('');
   const [results, setResults] = useState<'fastest' | 'options'>('fastest');
+  const resultsLabelId = useId();
 
   const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
     originCrs,
@@ -177,7 +205,15 @@ export function PlanTripForm({ onSubmit }: { onSubmit: (query: TripPlanQuery) =>
       </Button>
       <DateInput label="Date" value={date} onChange={setDate} minDate={new Date()} />
       <TimeInput label="Depart after (optional)" value={departAfter} onChange={event => setDepartAfter(event.currentTarget.value)} />
+      {/* I3: mirrors `TrackTrainForm.tsx`'s own `modeLabelId` +
+          `aria-labelledby` fix for its mode toggle (2026-09-22 UX review) --
+          without a visible `Text` label wired as the name, a screen reader
+          announced this as an unnamed "radiogroup". */}
+      <Text id={resultsLabelId} size="xs" fw={600} c="dimmed">
+        Results
+      </Text>
       <SegmentedControl
+        aria-labelledby={resultsLabelId}
         value={results}
         onChange={value => setResults(value as 'fastest' | 'options')}
         data={[
@@ -185,8 +221,15 @@ export function PlanTripForm({ onSubmit }: { onSubmit: (query: TripPlanQuery) =>
           { label: 'Compare options', value: 'options' },
         ]}
       />
+      {/* Same `VisuallyHidden`/`aria-live="polite"` swap announcement as
+          `TrackTrainForm.tsx`'s own mode toggle -- this preference doesn't
+          change anything visible until the NEXT search, but a screen
+          reader user should still hear that the choice registered. */}
+      <VisuallyHidden role="status" aria-live="polite">
+        {results === 'options' ? 'Will compare route options.' : 'Will show the fastest route only.'}
+      </VisuallyHidden>
       <Button disabled={!canSubmit} onClick={handleSubmit}>
-        Find routes
+        {searching ? 'Searching…' : 'Find routes'}
       </Button>
     </Stack>
   );

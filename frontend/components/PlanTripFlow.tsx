@@ -1,9 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert, Button, Stack, Text } from '@mantine/core';
 import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
+import { useNeedsLogin } from './useNeedsLogin';
+import { LoginPromptModal } from './LoginPromptModal';
 import { fetchTripPlan, TripPlanError, type TripPlanQuery } from '@/lib/tripPlan';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
@@ -17,23 +19,56 @@ interface SegmentSelection {
  * `handleLegOneCreated`-driven view via `onCreated`, called EXACTLY ONCE
  * after this component's own creation sequence finishes -- see this
  * plan's own Judgment Call 2 for why the sequence lives here, not spread
- * across `JourneyCreationFlow`'s incremental "Add a leg" flow. */
+ * across `JourneyCreationFlow`'s incremental "Add a leg" flow.
+ *
+ * Final-review fix (C1): a FULL success calls `onCreated` immediately --
+ * there's nothing left for the visitor to read first. A PARTIAL failure
+ * (leg 1..i committed, leg i+1 didn't) instead stores the already-created
+ * journey in `pendingResult` and renders a "Continue to your journey"
+ * button rather than calling `onCreated` right away. `onCreated` is
+ * `JourneyCreationFlow`'s `handleLegOneCreated`, which flips `journeyId`
+ * from `null` to a real id in the SAME state-update batch that would have
+ * set `creationError` here -- calling it immediately unmounted this
+ * component (and its about-to-render error Alert) before the visitor
+ * could ever see which leg failed, landing them instead on
+ * `JourneyCreationFlow`'s single-leg "success" view with legs 2+ silently
+ * gone. Deferring the call until the visitor acknowledges the message
+ * keeps `onCreated` called exactly once overall, per Judgment Call 2 --
+ * just later. */
 export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyResponse) => void }) {
   const [plan, setPlan] = useState<TripPlanResponse | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [selections, setSelections] = useState<SegmentSelection[]>([]);
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
+  const [pendingResult, setPendingResult] = useState<CreateJourneyResponse | null>(null);
+  const [searching, setSearching] = useState(false);
+  const needsLoginState = useNeedsLogin();
+  // Monotonic guard against a stale `GET /Trips/plan` response landing
+  // after a newer search was already issued (I2) -- `GET /Trips/plan` can
+  // take several seconds (a full day of schedule connections, run through
+  // pathfinding), and nothing here hard-blocks re-issuing `handleSearch`
+  // while an earlier one is still in flight. Each call captures its own
+  // id; a response is only applied if it's still the most recent one by
+  // the time it resolves, so an older, slower response can never clobber
+  // a newer one that happened to finish first.
+  const searchRequestId = useRef(0);
 
   async function handleSearch(query: TripPlanQuery) {
+    const requestId = (searchRequestId.current += 1);
+    setSearching(true);
     setPlanError(null);
     setPlan(null);
     try {
       const result = await fetchTripPlan(query);
+      if (searchRequestId.current !== requestId) return; // superseded by a newer search
       setPlan(result);
       setSelections(result.segments.map(() => ({ itinerary: null })));
     } catch (error) {
+      if (searchRequestId.current !== requestId) return;
       setPlanError(error instanceof TripPlanError ? error.message : 'Could not plan this trip. Please try again.');
+    } finally {
+      if (searchRequestId.current === requestId) setSearching(false);
     }
   }
 
@@ -48,6 +83,7 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
     if (!allSegmentsSelected) return;
     setCreating(true);
     setCreationError(null);
+    needsLoginState.reset();
 
     // Every TRAIN leg across every selected segment, in order -- a
     // TransferLeg never becomes a journey_legs row (this plan's own
@@ -95,6 +131,17 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
           leg: { mode: 'knownTrain', trainUid: firstLeg.trainUid, serviceDate: firstLeg.serviceDate },
         }),
       });
+      // I1: `GET /Trips/plan` is deliberately unauthenticated, so an
+      // anonymous visitor can plan a full route with no friction -- but
+      // `POST /Journeys` requires a session, and returns a plain-text
+      // `401`/"no session" a raw-error Alert would render verbatim and
+      // confusingly. Mirrors `TrackTrainForm.tsx`'s `submitTrack`/
+      // `submitWindow` -- detect the 401 before the generic `!ok` branch
+      // below and show the same login-prompt UI they already use instead.
+      if (createResponse.status === 401) {
+        needsLoginState.markNeedsLogin();
+        return;
+      }
       if (!createResponse.ok) {
         throw new Error(await createResponse.text());
       }
@@ -130,6 +177,21 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mode: 'knownTrain', trainUid: leg.trainUid, serviceDate: leg.serviceDate }),
           });
+          // I1: a session can in principle expire mid-sequence too -- same
+          // 401 handling as the initial `POST /Journeys` call above, but
+          // leg 1..i already exist server-side by this point, so this
+          // still tells the visitor which leg failed (same partial-failure
+          // treatment as any other add-leg failure) AND prompts login,
+          // rather than losing that context behind a login-only message.
+          if (addResponse.status === 401) {
+            needsLoginState.markNeedsLogin();
+            setCreationError(
+              `Tracked ${i} of ${trainLegs.length} legs. Your session expired before leg ${i + 1} could be added. ` +
+                'Log in, then add it manually from the journey page.'
+            );
+            setPendingResult(created);
+            return;
+          }
           if (!addResponse.ok) {
             throw new Error(await addResponse.text());
           }
@@ -147,7 +209,12 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
             `Tracked ${i} of ${trainLegs.length} legs. Adding leg ${i + 1} failed: ${reason}. ` +
               'You can add it manually from the journey page.'
           );
-          onCreated(created);
+          // C1: do NOT call `onCreated` here -- see this component's own
+          // doc comment. Store the already-created journey so the
+          // "Continue to your journey" button (rendered below once
+          // `creationError`/`pendingResult` are both set) can hand off
+          // once the visitor has actually seen which leg failed.
+          setPendingResult(created);
           return;
         }
       }
@@ -162,7 +229,7 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
 
   return (
     <Stack gap="md">
-      <PlanTripForm onSubmit={handleSearch} />
+      <PlanTripForm onSubmit={handleSearch} searching={searching} />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
           {planError}
@@ -197,11 +264,27 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
           {creationError}
         </Alert>
       )}
-      {plan && (
-        <Button disabled={!allSegmentsSelected || creating} loading={creating} onClick={() => void handleTrackJourney()}>
-          Track this journey
-        </Button>
+      {/* C1: once a partial failure has happened, `pendingResult` holds
+          the journey that DOES already exist server-side. This button is
+          the visitor's own deliberate acknowledgement of the message
+          above -- `onCreated` fires only when they click it, never
+          automatically, so it's never called in the same tick as (and
+          before) the error message could render. Replaces "Track this
+          journey" entirely rather than sitting alongside it: re-running
+          `handleTrackJourney` from here would re-POST leg 1 as a second,
+          duplicate journey. */}
+      {pendingResult ? (
+        <Button onClick={() => onCreated(pendingResult)}>Continue to your journey</Button>
+      ) : (
+        plan && (
+          <Button disabled={!allSegmentsSelected || creating} loading={creating} onClick={() => void handleTrackJourney()}>
+            Track this journey
+          </Button>
+        )
       )}
+      <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
+        Log in to track this journey.
+      </LoginPromptModal>
     </Stack>
   );
 }

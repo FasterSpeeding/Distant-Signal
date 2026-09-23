@@ -1,8 +1,18 @@
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripFlow } from './PlanTripFlow';
 import type { TripPlanResponse } from '@/lib/types';
+
+// `LoginPromptModal` (rendered unconditionally, per its own doc comment)
+// pulls in `useLoginHref`, which calls `usePathname`/`useSearchParams` --
+// real Next.js navigation hooks that throw outside a router context. Same
+// mock `TrackTrainForm.test.tsx` already needs for the exact same reason.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => '/journeys/new',
+  useSearchParams: () => new URLSearchParams(''),
+}));
 
 const singleSegmentPlan: TripPlanResponse = {
   results: 'fastest',
@@ -51,9 +61,26 @@ const singleSegmentPlan: TripPlanResponse = {
 // approach because IT depends on real timers advancing through
 // `vi.advanceTimersByTimeAsync` for its own suggestion-dropdown
 // assertions -- this file has no such need).
+//
+// Final-review fix (C2): plain `async` functions, NOT `vi.fn().
+// mockResolvedValue(...)`. This file's own `afterEach(() =>
+// vi.restoreAllMocks())` below strips a `vi.fn()`'s mock IMPLEMENTATION
+// after the first test runs, while leaving the `vi.fn()` itself in place
+// as the module's export -- from the second test onward `searchStations`/
+// `searchTocs` returned `undefined` instead of a promise. `useSuggestions`'
+// 250ms debounce timer from an EARLIER test's field interaction can still
+// be pending when it fires during a LATER test (test bodies run faster
+// than 250ms, but real time keeps advancing across tests since none of
+// them use fake timers), calling `.then()` on that `undefined` and
+// throwing an uncaught `TypeError` that doesn't fail the individual `it()`
+// but crashes the whole `npm test` process (reproduced ~1-in-3 runs when
+// running multiple test files together). A plain `async () => []` has no
+// mock-implementation state for `restoreAllMocks` to strip, so it keeps
+// returning a real, resolved promise for the lifetime of this module,
+// across every test in this file.
 vi.mock('@/lib/suggestions', () => ({
-  searchStations: vi.fn().mockResolvedValue([]),
-  searchTocs: vi.fn().mockResolvedValue([]),
+  searchStations: async () => [],
+  searchTocs: async () => [],
 }));
 
 describe('PlanTripFlow', () => {
@@ -323,8 +350,19 @@ describe('PlanTripFlow', () => {
     await screen.findByText(
       'Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.'
     );
-    // The journey that DOES exist (leg 1 already tracked) must not be
-    // withheld from the caller just because leg 2 failed to attach.
+    // C1 (final-review fix): `onCreated` must NOT fire yet -- calling it
+    // here, before the visitor has had a chance to actually read the
+    // message above, is exactly the unmountable-by-construction bug this
+    // fixes (see `PlanTripFlow.tsx`'s own doc comment). The message and
+    // the hand-off button must coexist on screen first.
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(screen.getByText('Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.')).toBeInTheDocument();
+    expect(screen.queryByText('Track this journey')).not.toBeInTheDocument();
+
+    // Only once the visitor clicks through does the already-created
+    // journey (leg 1 already tracked) get handed off -- never withheld,
+    // just deferred.
+    fireEvent.click(screen.getByText('Continue to your journey'));
     expect(onCreated).toHaveBeenCalledTimes(1);
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 }));
     // No retry, and no third leg was ever attempted.
@@ -373,5 +411,170 @@ describe('PlanTripFlow', () => {
     fireEvent.click(screen.getByText('Find routes'));
 
     await screen.findByText('A faster route exists with more changes than shown below.');
+  });
+
+  it('shows the login prompt (not a raw error) on a 401 from the initial POST /Journeys, and never calls onCreated', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response)
+      .mockResolvedValueOnce(new Response('no session', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onCreated = vi.fn();
+    renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    await screen.findByText('08:00 EUS → MKC 08:50');
+    const radios = screen.getAllByRole('radio');
+    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(screen.getByText('Track this journey'));
+
+    // Same `LoginPromptModal` copy/pattern `TrackTrainForm.tsx` already
+    // uses for its own `POST /Journeys` 401 -- not the raw "no session"
+    // body text.
+    expect(await screen.findByText('Log in to track this journey.')).toBeInTheDocument();
+    expect(screen.queryByText('no session')).not.toBeInTheDocument();
+    expect(onCreated).not.toHaveBeenCalled();
+  });
+
+  it('shows the login prompt and still offers a hand-off when a later leg’s add-leg call 401s', async () => {
+    const twoSegmentPlan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        singleSegmentPlan.segments[0],
+        {
+          originCrs: 'MKC',
+          destinationCrs: 'EDB',
+          cappedByMaxChanges: false,
+          itineraries: [
+            {
+              legs: [
+                {
+                  kind: 'train',
+                  trainUid: 'C22000',
+                  serviceDate: '2026-09-23',
+                  originCrs: 'MKC',
+                  destinationCrs: 'EDB',
+                  scheduledDeparture: '09:10:00',
+                  scheduledArrival: '13:00:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 0,
+              totalDurationMinutes: 230,
+            },
+          ],
+        },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoSegmentPlan) } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
+      } as Response)
+      .mockResolvedValueOnce(new Response('no session', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onCreated = vi.fn();
+    renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    await screen.findByText('08:00 EUS → MKC 08:50');
+    await screen.findByText('09:10 MKC → EDB 13:00');
+    const radios = screen.getAllByRole('radio');
+    fireEvent.click(radios[radios.length - 2]);
+    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(screen.getByText('Track this journey'));
+
+    expect(await screen.findByText('Log in to track this journey.')).toBeInTheDocument();
+    await screen.findByText(/Tracked 1 of 2 legs\. Your session expired before leg 2 could be added\./);
+    expect(onCreated).not.toHaveBeenCalled();
+
+    // The already-created journey (leg 1) must still be reachable, exactly
+    // like any other partial-failure -- a 401 mid-sequence is one more
+    // reason a leg can fail to attach, not a special dead end.
+    fireEvent.click(screen.getByText('Continue to your journey'));
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 }));
+  });
+
+  it('shows a loading label on the search button while a plan search is pending, then clears it', async () => {
+    let resolveFetch: (value: Response) => void = () => {};
+    const pending = new Promise<Response>(resolve => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValueOnce(pending);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+
+    expect(screen.queryByText('Searching…')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Find routes'));
+
+    await screen.findByText('Searching…');
+
+    resolveFetch({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response);
+
+    await screen.findByText('Find routes');
+    expect(screen.queryByText('Searching…')).not.toBeInTheDocument();
+    await screen.findByText('08:00 EUS → MKC 08:50');
+  });
+
+  it('discards a stale plan response that resolves after a newer one', async () => {
+    const firstPlan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [{ originCrs: 'AAA', destinationCrs: 'BBB', cappedByMaxChanges: false, itineraries: [] }],
+    };
+    const secondPlan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [{ originCrs: 'CCC', destinationCrs: 'DDD', cappedByMaxChanges: false, itineraries: [] }],
+    };
+
+    let resolveFirst: (value: Response) => void = () => {};
+    let resolveSecond: (value: Response) => void = () => {};
+    const firstResponse = new Promise<Response>(resolve => {
+      resolveFirst = resolve;
+    });
+    const secondResponse = new Promise<Response>(resolve => {
+      resolveSecond = resolve;
+    });
+
+    const fetchMock = vi.fn().mockReturnValueOnce(firstResponse).mockReturnValueOnce(secondResponse);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'AAA' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'BBB' } });
+    // Not hard-disabled while searching (see `PlanTripForm.tsx`'s own
+    // `searching` doc comment) -- clicking again mid-search is exactly the
+    // overlapping-request scenario this test proves is harmless.
+    fireEvent.click(screen.getByText('Find routes'));
+    fireEvent.click(await screen.findByText('Searching…'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Resolve the NEWER (second) request first, then the STALE (first,
+    // slower) one -- the stale one must not clobber the newer result once
+    // it finally resolves.
+    resolveSecond({ ok: true, json: () => Promise.resolve(secondPlan) } as Response);
+    await screen.findByText('CCC → DDD');
+
+    // Flush the stale response's own `.then()`/`.finally()` chain (a real
+    // `setTimeout(0)`, not `waitFor` -- there's nothing to poll for since
+    // the CORRECT outcome is that nothing further changes).
+    await act(async () => {
+      resolveFirst({ ok: true, json: () => Promise.resolve(firstPlan) } as Response);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(screen.queryByText('AAA → BBB')).not.toBeInTheDocument();
+    expect(screen.getByText('CCC → DDD')).toBeInTheDocument();
   });
 });
