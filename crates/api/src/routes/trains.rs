@@ -602,7 +602,17 @@ mod db_tests {
             .expect("cleanup today's schedule_destination_departures rows");
     }
 
-    fn relative_times() -> (chrono::NaiveTime, chrono::NaiveTime, chrono::NaiveTime) {
+    /// Returns `None` (after printing why) instead of the usual triple when
+    /// `now` sits inside the roughly-hour-long window around Europe/London
+    /// midnight where these tests' assumptions about "today" don't hold --
+    /// see the comment below. Callers are expected to bail out of the test
+    /// they're running (`let Some(...) = relative_times() else { return };`)
+    /// rather than treat `None` as a real result: a CI run that happens to
+    /// land in this window should report these tests as an inapplicable
+    /// no-op, not a hard, unrelated-looking failure. This used to be a bare
+    /// `assert!`/panic here, which turned an unlucky CI schedule into 17
+    /// simultaneous red tests with no actual bug behind them.
+    fn relative_times() -> Option<(chrono::NaiveTime, chrono::NaiveTime, chrono::NaiveTime)> {
         use chrono::Timelike;
 
         let now = chrono::Utc::now()
@@ -613,12 +623,15 @@ mod db_tests {
         let past = chrono::NaiveTime::MIN;
         let (soon, soon_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(30));
         let (later, later_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(60));
-        assert!(
-            soon_wrapped == 0 && later_wrapped == 0 && now > past,
-            "these tests need at least an hour before midnight and a moment after it; \
-             re-run outside 23:00-00:01 Europe/London"
-        );
-        (past, soon, later)
+        if soon_wrapped == 0 && later_wrapped == 0 && now > past {
+            Some((past, soon, later))
+        } else {
+            println!(
+                "skipping: these tests need at least an hour before midnight and a moment \
+                 after it; re-run outside 23:00-00:01 Europe/London"
+            );
+            None
+        }
     }
 
     /// Seeds today with rows all sharing ONE `origin_crs` (`station_crs`,
@@ -626,10 +639,18 @@ mod db_tests {
     /// `true_origin_crs`, so the two optional filters can be exercised
     /// independently of the fixed station. One already-departed row (which
     /// the route must hide), and two future rows.
-    async fn seed_today(pool: &PgPool, station_crs: &str) {
+    ///
+    /// Returns `false` (having seeded nothing) when `relative_times` reports
+    /// we're too close to Europe/London midnight for these fixtures to be
+    /// meaningful; callers must check this and bail out of the test rather
+    /// than run assertions against an empty/absent seed.
+    #[must_use]
+    async fn seed_today(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
-        let (past, soon, later) = relative_times();
+        let Some((past, soon, later)) = relative_times() else {
+            return false;
+        };
         for (scheduled, train_uid, destination_crs, true_origin_crs) in [
             (past, "C10000", "WAT", Some("PAD")),
             (soon, "C10001", "WAT", Some("PAD")),
@@ -650,6 +671,7 @@ mod db_tests {
             .await
             .expect("seed fixture row");
         }
+        true
     }
 
     async fn get(pool: &PgPool, uri: &str) -> (StatusCode, String) {
@@ -764,7 +786,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_after_cursor_is_a_400() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&after=!!!not-base64!!!").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -784,7 +808,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_rejects_a_zero_or_unparseable_limit_but_clamps_an_over_large_one() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
 
         let (status, _) = get(&pool, "/trains/search?station=ZRB&limit=0").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -829,7 +855,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_unknown_station_on_a_published_day_is_200_and_empty() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=ZRF").await;
         assert_eq!(status, StatusCode::OK);
         assert!(results(&body).is_empty());
@@ -842,7 +870,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_published_day_with_no_matches_is_200_with_an_empty_results_array() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=ZRB&origin=ZZZ").await;
         assert_eq!(
             status,
@@ -859,11 +889,15 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_renders_camel_case_rows_with_trimmed_time_and_station_attached() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=zrb").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
-        let (_, soon, _) = relative_times();
+        let Some((_, soon, _)) = relative_times() else {
+            return;
+        };
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["uid"], "C10001");
@@ -891,7 +925,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_hides_a_departure_that_has_already_gone() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
@@ -917,7 +953,9 @@ mod db_tests {
         // near-midnight assertion), so an explicit `from=00:00&to=00:00`
         // window can only return it if the floor is gone.
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=ZRB&from=00:00&to=00:00").await;
         assert_eq!(status, StatusCode::OK);
         let uids: Vec<String> = results(&body)
@@ -945,7 +983,9 @@ mod db_tests {
         // (`C10001`, `C10002`); with no `from` supplied, only the future
         // two must come back.
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         let mut uids: Vec<String> = results(&body)
@@ -977,10 +1017,13 @@ mod db_tests {
     /// bearing fact `trains_search_stops_at_matches_regardless_of_true_destination`
     /// exists to exploit: the deleted `destination` filter could never have
     /// matched any of these trains on `AAA`, but `stops_at` does.
-    async fn seed_stops_at(pool: &PgPool, station_crs: &str) {
+    #[must_use]
+    async fn seed_stops_at(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
-        let (_, soon, later) = relative_times();
+        let Some((_, soon, later)) = relative_times() else {
+            return false;
+        };
         let five = chrono::Duration::minutes(5);
         for (train_uid, true_origin_crs, calling_points) in [
             (
@@ -1025,6 +1068,7 @@ mod db_tests {
                 .expect("seed stops_at fixture row");
             }
         }
+        true
     }
 
     #[tokio::test]
@@ -1032,7 +1076,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_stops_at_matches_regardless_of_true_destination() {
         let pool = connect().await;
-        seed_stops_at(&pool, "ZRB").await;
+        if !seed_stops_at(&pool, "ZRB").await {
+            return;
+        }
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=AAA").await;
         assert_eq!(status, StatusCode::OK);
@@ -1063,8 +1109,12 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_combines_origin_stops_at_and_time_filters_together() {
         let pool = connect().await;
-        seed_stops_at(&pool, "ZRB").await;
-        let (_, soon, later) = relative_times();
+        if !seed_stops_at(&pool, "ZRB").await {
+            return;
+        }
+        let Some((_, soon, later)) = relative_times() else {
+            return;
+        };
         let five = chrono::Duration::minutes(5);
         // T51001 (SWA, scheduled `soon`) and T51002 (SWA, scheduled
         // `soon + 4*5m`) both call AAA and share true_origin SWA; the
@@ -1096,10 +1146,13 @@ mod db_tests {
     /// * `T53003` -- the through-loop. Departs `station_crs` at +20, calls
     ///   `KNG`, departs `station_crs` AGAIN at +30 and terminates at
     ///   `EEE`. Only the FIRST of its two departures comes back.
-    async fn seed_loop(pool: &PgPool, station_crs: &str) {
+    #[must_use]
+    async fn seed_loop(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
-        let (_, soon, _) = relative_times();
+        let Some((_, soon, _)) = relative_times() else {
+            return false;
+        };
         let five = chrono::Duration::minutes(5);
         for (train_uid, destination_crs, calls) in [
             ("T53001", station_crs, vec![(station_crs, 0), ("KNG", 2)]),
@@ -1127,6 +1180,7 @@ mod db_tests {
                 .expect("seed loop fixture row");
             }
         }
+        true
     }
 
     #[tokio::test]
@@ -1138,7 +1192,9 @@ mod db_tests {
         // matched, because a row is a member of its own calling-point
         // list) and now asks "does this working come back here".
         let pool = connect().await;
-        seed_loop(&pool, "ZRB").await;
+        if !seed_loop(&pool, "ZRB").await {
+            return;
+        }
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=ZRB").await;
         assert_eq!(status, StatusCode::OK);
@@ -1198,10 +1254,13 @@ mod db_tests {
     /// ever reaching the search origin; `T54002` calls `station_crs` first
     /// and `FOO` after, so it remains reachable from there. Neither
     /// train's true destination is `FOO`.
-    async fn seed_stops_at_ordering(pool: &PgPool, station_crs: &str) {
+    #[must_use]
+    async fn seed_stops_at_ordering(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
-        let (_, soon, _) = relative_times();
+        let Some((_, soon, _)) = relative_times() else {
+            return false;
+        };
         let five = chrono::Duration::minutes(5);
         for (train_uid, calling_points) in [
             ("T54001", vec![("FOO", 0), (station_crs, 1)]),
@@ -1224,6 +1283,7 @@ mod db_tests {
                 .expect("seed stops_at ordering fixture row");
             }
         }
+        true
     }
 
     #[tokio::test]
@@ -1237,7 +1297,9 @@ mod db_tests {
         // "stops at X" means you can actually get there from where you
         // searched, not that the train passed through X at some point.
         let pool = connect().await;
-        seed_stops_at_ordering(&pool, "ZRB").await;
+        if !seed_stops_at_ordering(&pool, "ZRB").await {
+            return;
+        }
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=FOO").await;
         assert_eq!(status, StatusCode::OK);
@@ -1268,10 +1330,13 @@ mod db_tests {
     /// instant never happens in real CIF timetables, and the `stops_at`
     /// ordering rule (`(day_offset, scheduled) >`) requires OXF's row to
     /// genuinely follow ZRB's to be reachable from it at all.
-    async fn seed_stops_at_arrival(pool: &PgPool, station_crs: &str) {
+    #[must_use]
+    async fn seed_stops_at_arrival(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
-        let (_, soon, later) = relative_times();
+        let Some((_, soon, later)) = relative_times() else {
+            return false;
+        };
         let dwell = chrono::Duration::minutes(2);
         for (train_uid, oxf_arrival) in [("T52001", soon), ("T52002", later)] {
             let oxf_scheduled = oxf_arrival + dwell;
@@ -1306,6 +1371,7 @@ mod db_tests {
             .await
             .expect("seed the OXF row");
         }
+        true
     }
 
     #[tokio::test]
@@ -1314,8 +1380,12 @@ mod db_tests {
     async fn trains_search_stop_arrival_filters_by_the_named_intermediate_calling_points_own_arrival()
      {
         let pool = connect().await;
-        seed_stops_at_arrival(&pool, "ZRB").await;
-        let (_, _, later) = relative_times();
+        if !seed_stops_at_arrival(&pool, "ZRB").await {
+            return;
+        }
+        let Some((_, _, later)) = relative_times() else {
+            return;
+        };
 
         let uri = format!(
             "/trains/search?station=ZRB&stops_at=OXF&arrival_from={}&arrival_to={}",
@@ -1341,7 +1411,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_returns_a_null_next_cursor_when_the_page_is_the_last_one() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(results(&body).len(), 2);
@@ -1359,7 +1431,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_paginates_with_a_cursor_and_after_continues_from_it() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
 
         let (status, first) = get(&pool, "/trains/search?station=ZRB&limit=1").await;
         assert_eq!(status, StatusCode::OK);
@@ -1716,7 +1790,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_omitting_date_still_defaults_to_today() {
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
@@ -1749,8 +1825,12 @@ mod db_tests {
         // 400 above) -- this test extends the same posture to malformed
         // (unrecognized) parameter NAMES.
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
-        let (_, _, later) = relative_times();
+        if !seed_today(&pool, "ZRB").await {
+            return;
+        }
+        let Some((_, _, later)) = relative_times() else {
+            return;
+        };
 
         let uri = format!(
             "/trains/search?station=ZRB&arrivalFrom={}&arrivalTo={}",
