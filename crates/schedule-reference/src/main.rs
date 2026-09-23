@@ -121,7 +121,8 @@ async fn poll_once(
 
     let ti_records = parser::parse_ti_lines(&ti_text);
     let msn_crs = parser::parse_msn_a_lines(&a_text);
-    let rows = parser::resolve(&ti_records, &msn_crs);
+    let msn_change_time = parser::parse_msn_change_time_by_tiploc(&a_text);
+    let rows = parser::resolve(&ti_records, &msn_crs, &msn_change_time);
 
     tracing::info!(
         delivery = %delivery.dir_name,

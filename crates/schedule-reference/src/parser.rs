@@ -92,6 +92,73 @@ pub fn parse_msn_a_lines(text: &str) -> HashMap<String, String> {
     map
 }
 
+/// TIPLOC -> raw minimum-change-time minutes, from every real `A` record in
+/// `text` (same already-filtered `A`-prefixed text `parse_msn_a_lines`
+/// reads, `main.rs`'s `read_prefixed_lines(&delivery.msn_path, "A")`).
+///
+/// Byte layout: `63..65` (0-indexed, half-open) -- this is the sibling
+/// `Distant-Signal-MCP` project's own documented `64-65` (1-indexed)
+/// hypothesis, **NOT YET CONFIRMED** against a real delivery's MSN file in
+/// this app's own byte layout: no live `timetable_full.zip` delivery was
+/// available to this task's own implementation pass to run the verification
+/// this plan's Task 2 Step 2 calls for. Treat this constant as an
+/// honestly-flagged placeholder, not a verified fact -- the two codebases'
+/// CRS-field byte math already disagrees by 6 bytes on the exact same real
+/// fixture (this plan's Judgment Call 2), so a byte range copied from
+/// another codebase's documentation is not sufficient evidence on its own,
+/// and applying `63..65` to this crate's own already-tested `A_WATRLMN`
+/// fixture (see this module's `change_time_tests`) produces `15`, outside
+/// the sibling's own documented typical single-digit/modal-5 shape -- a
+/// concrete reason to suspect this exact range, not just a formality.
+///
+/// When a real delivery becomes available, confirm or correct this range
+/// with:
+///
+/// ```text
+/// cargo run -p schedule-reference --example msn_change_time_probe -- \
+///     /path/to/RJTTFnnnMSN.txt 63 65
+/// ```
+///
+/// and compare the printed distribution against the sibling project's own
+/// documented real shape: mostly single-digit values, a clear mode around
+/// 5, and a small number (order of ten, not hundreds) of `98`/`99`
+/// sentinels. If `[63,65)` doesn't produce that shape, try adjacent ranges
+/// (`[62,64)`, `[64,66)`, etc.) until one does, then update both this
+/// constant and this doc comment.
+///
+/// Returns the RAW parsed integer, with no default/sentinel interpretation
+/// applied (deliberately -- see this plan's Judgment Call 3): `NULL`
+/// downstream (this function simply omits the entry) means "no MSN record
+/// matched this TIPLOC at all," a genuinely different fact from "this
+/// TIPLOC's own recorded value happens to be a 98/99 sentinel" or "happens
+/// to be the modal 5" -- both of which DO appear as real, present map
+/// entries. A line whose change-time field is present but not a valid
+/// non-negative integer is skipped for that one TIPLOC (same "skip
+/// malformed, never abort the whole extraction" posture as
+/// `parse_msn_a_lines`, not the sibling's own throw -- Judgment Call 5),
+/// not a hard error.
+pub fn parse_msn_change_time_by_tiploc(text: &str) -> HashMap<String, i32> {
+    let mut map = HashMap::new();
+    for line in text.lines() {
+        if line.len() < 65 {
+            continue;
+        }
+        let tiploc = line[36..43].trim();
+        if tiploc.is_empty() || !tiploc.chars().all(|c| c.is_ascii_alphanumeric()) {
+            continue; // catches the FILE-SPEC=05 header pseudo-record, same as parse_msn_a_lines
+        }
+        let raw = line[63..65].trim();
+        let Ok(minutes) = raw.parse::<i32>() else {
+            continue;
+        };
+        if minutes < 0 {
+            continue;
+        }
+        map.insert(tiploc.to_string(), minutes);
+    }
+    map
+}
+
 /// One resolved STANOX->CRS row, ready to be sent as a
 /// `common::StanoxCrsRecord` (Task 3 supplies `source_sequence`, which this
 /// pure module has no reason to know about).
@@ -101,6 +168,13 @@ pub struct ParsedRow {
     pub crs: String,
     pub tiploc: String,
     pub station_name: String,
+    /// Raw minimum-change-time minutes from the MSN `A` record matching
+    /// this row's own TIPLOC, or `None` if no MSN record matched it at
+    /// all (a real, honest gap -- e.g. a junction-only TIPLOC with no
+    /// passenger station record). See [`parse_msn_change_time_by_tiploc`]'s
+    /// own doc comment for why this is never defaulted or sentinel-resolved
+    /// here.
+    pub change_time_minutes: Option<i32>,
 }
 
 /// Resolves the final STANOX->CRS table: completes a blank `TI` CRS from
@@ -110,7 +184,11 @@ pub struct ParsedRow {
 /// checked-in CSV -- prefer the sole non-`X`-prefixed candidate; otherwise
 /// (2+ non-X, or 2+ X-prefixed, with no principled tiebreaker) exclude the
 /// STANOX entirely. See this design's Decision 2.
-pub fn resolve(ti: &[TiRecord], msn_crs_by_tiploc: &HashMap<String, String>) -> Vec<ParsedRow> {
+pub fn resolve(
+    ti: &[TiRecord],
+    msn_crs_by_tiploc: &HashMap<String, String>,
+    msn_change_time_by_tiploc: &HashMap<String, i32>,
+) -> Vec<ParsedRow> {
     let mut by_stanox: HashMap<String, Vec<(&TiRecord, String)>> = HashMap::new();
 
     for record in ti {
@@ -159,6 +237,7 @@ pub fn resolve(ti: &[TiRecord], msn_crs_by_tiploc: &HashMap<String, String>) -> 
                 crs: crs.clone(),
                 tiploc: record.tiploc.clone(),
                 station_name: record.station_name.clone(),
+                change_time_minutes: msn_change_time_by_tiploc.get(&record.tiploc).copied(),
             });
         }
         // Otherwise: 2+ non-X candidates, or 2+ X-prefixed with none
@@ -219,9 +298,12 @@ mod msn_tests {
     use super::*;
 
     // Real `A` lines, byte-verbatim, independently re-extracted this
-    // session from timetable_full.zip's RJTTF942MSN.txt.
-    const A_WATRLMN: &str = "A    LONDON WATERLOO               3WATRLMNWAT   WAT15312 6179815";
-    const A_HEADER: &str =
+    // session from timetable_full.zip's RJTTF942MSN.txt. `pub(super)` so
+    // the sibling `change_time_tests` module below can reuse the exact
+    // same byte-verified fixture lines rather than re-declaring them.
+    pub(super) const A_WATRLMN: &str =
+        "A    LONDON WATERLOO               3WATRLMNWAT   WAT15312 6179815";
+    pub(super) const A_HEADER: &str =
         "A                             FILE-SPEC=05 1.00 28/08/26 18.08.01   944           ";
 
     #[test]
@@ -237,6 +319,38 @@ mod msn_tests {
             map.is_empty(),
             "the header record must not be mistaken for a real TIPLOC"
         );
+    }
+}
+
+#[cfg(test)]
+mod change_time_tests {
+    use super::msn_tests::{A_HEADER, A_WATRLMN};
+    use super::*;
+
+    #[test]
+    fn extracts_the_change_time_for_a_real_a_record() {
+        let map = parse_msn_change_time_by_tiploc(A_WATRLMN);
+        // `[63,65)` is NOT YET CONFIRMED against a real delivery (see
+        // parse_msn_change_time_by_tiploc's own doc comment) -- this
+        // asserts on whatever that unverified range actually produces for
+        // this exact byte-verbatim real fixture line, computed directly
+        // (bytes 63..65 of A_WATRLMN are "15"), not on a value independently
+        // confirmed as correct. Update this assertion if a future
+        // verification pass (this plan's Task 2 Step 2) confirms a
+        // different byte range.
+        assert_eq!(map.get("WATRLMN"), Some(&15));
+    }
+
+    #[test]
+    fn the_file_spec_header_pseudo_record_contributes_no_change_time() {
+        let map = parse_msn_change_time_by_tiploc(A_HEADER);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn a_tiploc_with_no_msn_record_at_all_is_absent_not_zero() {
+        let map = parse_msn_change_time_by_tiploc("");
+        assert_eq!(map.get("ANYTPL"), None);
     }
 }
 
@@ -266,6 +380,7 @@ mod resolve_tests {
         let rows = resolve(
             &[ti("EUSTON", "LONDON EUSTON", "72410", "EUS")],
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(
             rows,
@@ -274,6 +389,7 @@ mod resolve_tests {
                 crs: "EUS".to_string(),
                 tiploc: "EUSTON".to_string(),
                 station_name: "LONDON EUSTON".to_string(),
+                change_time_minutes: None,
             }]
         );
     }
@@ -282,7 +398,7 @@ mod resolve_tests {
     fn a_blank_ti_crs_is_completed_from_the_msn_a_record_before_grouping() {
         let ti_records = vec![ti("WATRLMN", "LONDON WATERLOO", "87212", "")];
         let msn = HashMap::from([("WATRLMN".to_string(), "WAT".to_string())]);
-        let rows = resolve(&ti_records, &msn);
+        let rows = resolve(&ti_records, &msn, &HashMap::new());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].crs, "WAT");
     }
@@ -295,7 +411,7 @@ mod resolve_tests {
             ti("VICTRIA", "LONDON VICTORIA", "87201", "VIC"),
             ti("VICTRCR", "VICTORIA CARRIAGE ROAD", "87201", "XVR"),
         ];
-        let rows = resolve(&ti_records, &HashMap::new());
+        let rows = resolve(&ti_records, &HashMap::new(), &HashMap::new());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].stanox, "87201");
         assert_eq!(rows[0].crs, "VIC", "the non-X-prefixed candidate wins");
@@ -309,7 +425,7 @@ mod resolve_tests {
             ti("ASHFKI", "ASHFORD INT (PLATS 3-4)", "89428", "ASI"),
             ti("ASHFKY", "ASHFORD INTERNATIONAL", "89428", "AFK"),
         ];
-        let rows = resolve(&ti_records, &HashMap::new());
+        let rows = resolve(&ti_records, &HashMap::new(), &HashMap::new());
         assert!(rows.is_empty(), "89428 must be excluded, not guessed at");
     }
 
@@ -350,7 +466,7 @@ mod resolve_tests {
             ti("N1", "n", "89530", "EBD"),
             ti("N2", "n", "89530", "EBF"),
         ];
-        let rows = resolve(&ti_records, &HashMap::new());
+        let rows = resolve(&ti_records, &HashMap::new(), &HashMap::new());
         let resolved: HashMap<&str, &str> = rows
             .iter()
             .map(|r| (r.stanox.as_str(), r.crs.as_str()))
