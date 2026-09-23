@@ -96,12 +96,27 @@ enum CreateJourneyTemplateRequest {
 /// `PUT /JourneyTemplates/{id}`'s body -- full-resource replace (Judgment
 /// Calls 1 and 4). Same `TemplateLegRequest` shape as the `Manual` create
 /// variant; no `mode` tag needed since there's only one shape for an edit.
+///
+/// The six recurrence fields (`days_of_week` through `auto_commit_rule`)
+/// are deliberately REQUIRED here, unlike `custom_name`'s
+/// `#[serde(default)]` -- this is a full-resource-replace endpoint (every
+/// save resends the whole `legs` list too), so making these required means
+/// a caller can never accidentally wipe out a template's recurrence config
+/// by omitting them from a plain name/leg edit. The frontend always
+/// populates every field from the currently-loaded template before
+/// submitting.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PutJourneyTemplateRequest {
     #[serde(default)]
     custom_name: Option<String>,
     legs: Vec<TemplateLegRequest>,
+    days_of_week: Option<i16>,
+    active: bool,
+    starts_on: Option<NaiveDate>,
+    ends_on: Option<NaiveDate>,
+    default_match_mode: String,
+    auto_commit_rule: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -343,6 +358,11 @@ async fn put_journey_template(
             "A template needs at least one leg.".to_string(),
         ));
     }
+    journey_templates::validate_template_recurrence(
+        &body.default_match_mode,
+        body.auto_commit_rule.as_deref(),
+    )
+    .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     let leg_inputs = body
         .legs
         .into_iter()
@@ -354,6 +374,12 @@ async fn put_journey_template(
         &user.id,
         body.custom_name.as_deref(),
         &leg_inputs,
+        body.days_of_week,
+        body.active,
+        body.starts_on,
+        body.ends_on,
+        &body.default_match_mode,
+        body.auto_commit_rule.as_deref(),
     )
     .await
     .map_err(internal_error("replace journey template"))?;
@@ -451,7 +477,14 @@ mod wire_format_tests {
     #[test]
     fn put_request_deserializes_its_camel_case_fields() {
         let request: PutJourneyTemplateRequest = serde_json::from_str(
-            r#"{"customName": "Renamed", "legs": [{"originCrs": "WAT", "destinationCrs": "RDG"}]}"#,
+            r#"{"customName": "Renamed",
+                "legs": [{"originCrs": "WAT", "destinationCrs": "RDG"}],
+                "daysOfWeek": null,
+                "active": true,
+                "startsOn": null,
+                "endsOn": null,
+                "defaultMatchMode": "manual",
+                "autoCommitRule": null}"#,
         )
         .expect("valid PUT request should deserialize");
         assert_eq!(request.legs.len(), 1);
@@ -1002,7 +1035,13 @@ mod db_tests {
             Some(&token),
             serde_json::json!({
                 "customName": "Renamed",
-                "legs": [{"originCrs": "EUS", "destinationCrs": "MAN"}]
+                "legs": [{"originCrs": "EUS", "destinationCrs": "MAN"}],
+                "daysOfWeek": null,
+                "active": true,
+                "startsOn": null,
+                "endsOn": null,
+                "defaultMatchMode": "manual",
+                "autoCommitRule": null
             }),
         )
         .await;
@@ -1020,6 +1059,106 @@ mod db_tests {
         assert_eq!(legs.len(), 1);
         assert_eq!(legs[0]["originCrs"], "EUS");
         assert_eq!(legs[0]["destinationCrs"], "MAN");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                put_journey_template_round_trips_every_recurrence_field -- --ignored --test-threads=1`"]
+    async fn put_journey_template_round_trips_every_recurrence_field() {
+        let pool = connect().await;
+        let user_id = "TEST-ROUTE-TEMPLATE-PUT-RECURRENCE";
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_status, created) = post_json(
+            router.clone(),
+            "/JourneyTemplates".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "mode": "manual",
+                "customName": "Original",
+                "legs": [{"originCrs": "WAT", "destinationCrs": "RDG"}]
+            }),
+        )
+        .await;
+        let template_id = created["templateId"].as_i64().expect("templateId present");
+
+        let (status, _body) = put_json(
+            router.clone(),
+            format!("/JourneyTemplates/{template_id}"),
+            Some(&token),
+            serde_json::json!({
+                "customName": "Weekday commute",
+                "legs": [{"originCrs": "EUS", "destinationCrs": "MAN"}],
+                "daysOfWeek": 31,
+                "active": false,
+                "startsOn": "2026-10-01",
+                "endsOn": "2026-12-31",
+                "defaultMatchMode": "auto",
+                "autoCommitRule": "nearest_to_now"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, body) = request(
+            router,
+            format!("/JourneyTemplates/{template_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["daysOfWeek"], 31);
+        assert_eq!(body["active"], false);
+        assert_eq!(body["startsOn"], "2026-10-01");
+        assert_eq!(body["endsOn"], "2026-12-31");
+        assert_eq!(body["defaultMatchMode"], "auto");
+        assert_eq!(body["autoCommitRule"], "nearest_to_now");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                put_journey_template_an_invalid_default_match_mode_is_400 -- --ignored --test-threads=1`"]
+    async fn put_journey_template_an_invalid_default_match_mode_is_400() {
+        let pool = connect().await;
+        let user_id = "TEST-ROUTE-TEMPLATE-PUT-BAD-MODE";
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_status, created) = post_json(
+            router.clone(),
+            "/JourneyTemplates".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "mode": "manual",
+                "legs": [{"originCrs": "WAT", "destinationCrs": "RDG"}]
+            }),
+        )
+        .await;
+        let template_id = created["templateId"].as_i64().expect("templateId present");
+
+        let (status, _body) = put_json(
+            router,
+            format!("/JourneyTemplates/{template_id}"),
+            Some(&token),
+            serde_json::json!({
+                "legs": [{"originCrs": "WAT", "destinationCrs": "RDG"}],
+                "daysOfWeek": null,
+                "active": true,
+                "startsOn": null,
+                "endsOn": null,
+                "defaultMatchMode": "sometimes",
+                "autoCommitRule": null
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
 
         cleanup_user(&pool, user_id).await;
     }

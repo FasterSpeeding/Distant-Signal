@@ -108,6 +108,32 @@ pub fn validate_template_leg(origin_crs: &str, destination_crs: &str) -> Result<
     Ok(())
 }
 
+/// User-facing validation for a template's recurrence fields
+/// (`default_match_mode`/`auto_commit_rule`) -- same pure-validator pattern
+/// as [`validate_template_leg`], called from the PUT route before
+/// persisting so an invalid value comes back as a friendly 400 instead of
+/// a raw Postgres CHECK-constraint 500 from the `journey_templates` table's
+/// own `default_match_mode`/`auto_commit_rule` constraints (Task 1's
+/// migration).
+pub fn validate_template_recurrence(
+    default_match_mode: &str,
+    auto_commit_rule: Option<&str>,
+) -> Result<(), String> {
+    if default_match_mode != "manual" && default_match_mode != "auto" {
+        return Err("defaultMatchMode must be either \"manual\" or \"auto\".".to_string());
+    }
+    if let Some(rule) = auto_commit_rule
+        && rule != "earliest"
+        && rule != "nearest_to_now"
+    {
+        return Err(
+            "autoCommitRule must be either \"earliest\" or \"nearestToNow\", or left unset."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// A template leg's writable fields, already validated/CRS-normalized by
 /// the caller (route layer for `manual` mode via [`validate_template_leg`];
 /// the promote-from-journey route handler for `fromJourney` mode, which
@@ -265,26 +291,45 @@ pub async fn list_templates_for_user(
     Ok(rows)
 }
 
-/// Full-resource replace: updates `custom_name` and wholesale replaces
-/// every leg, ownership-scoped, one transaction. `Ok(false)` for "no such
-/// template, or not this caller's" (route maps to 404) -- checked via the
-/// `UPDATE ... WHERE id = $1 AND user_id = $2` itself, same
-/// fold-ownership-into-the-write convention as
+/// Full-resource replace: updates `custom_name`, the six recurrence
+/// fields, and wholesale replaces every leg, ownership-scoped, one
+/// transaction. `Ok(false)` for "no such template, or not this caller's"
+/// (route maps to 404) -- checked via the `UPDATE ... WHERE id = $1 AND
+/// user_id = $2` itself, same fold-ownership-into-the-write convention as
 /// `journeys::set_leg_train_subscription`. `legs` must be non-empty --
 /// same route-level guard as [`create_template`]'s own contract.
+/// `default_match_mode`/`auto_commit_rule` must already have passed
+/// [`validate_template_recurrence`] -- this function trusts its caller and
+/// otherwise relies on the table's own CHECK constraints (Task 1's
+/// migration) as a last-resort guard.
+#[allow(clippy::too_many_arguments)]
 pub async fn replace_template(
     pool: &PgPool,
     template_id: i64,
     user_id: &str,
     custom_name: Option<&str>,
     legs: &[TemplateLegInput],
+    days_of_week: Option<i16>,
+    active: bool,
+    starts_on: Option<NaiveDate>,
+    ends_on: Option<NaiveDate>,
+    default_match_mode: &str,
+    auto_commit_rule: Option<&str>,
 ) -> anyhow::Result<bool> {
     let mut tx = pool.begin().await?;
     let result = sqlx::query(
-        "UPDATE journey_templates SET custom_name = $1, updated_at = NOW() \
-         WHERE id = $2 AND user_id = $3",
+        "UPDATE journey_templates SET custom_name = $1, days_of_week = $2, active = $3, \
+                starts_on = $4, ends_on = $5, default_match_mode = $6, auto_commit_rule = $7, \
+                updated_at = NOW() \
+         WHERE id = $8 AND user_id = $9",
     )
     .bind(custom_name)
+    .bind(days_of_week)
+    .bind(active)
+    .bind(starts_on)
+    .bind(ends_on)
+    .bind(default_match_mode)
+    .bind(auto_commit_rule)
     .bind(template_id)
     .bind(user_id)
     .execute(&mut *tx)
@@ -468,6 +513,32 @@ mod validate_template_leg_tests {
 }
 
 #[cfg(test)]
+mod validate_template_recurrence_tests {
+    use super::*;
+
+    #[test]
+    fn manual_mode_with_no_auto_commit_rule_is_accepted() {
+        assert!(validate_template_recurrence("manual", None).is_ok());
+    }
+
+    #[test]
+    fn auto_mode_with_either_valid_auto_commit_rule_is_accepted() {
+        assert!(validate_template_recurrence("auto", Some("earliest")).is_ok());
+        assert!(validate_template_recurrence("auto", Some("nearest_to_now")).is_ok());
+    }
+
+    #[test]
+    fn an_unrecognized_default_match_mode_is_rejected() {
+        assert!(validate_template_recurrence("sometimes", None).is_err());
+    }
+
+    #[test]
+    fn an_unrecognized_auto_commit_rule_is_rejected() {
+        assert!(validate_template_recurrence("auto", Some("whenever")).is_err());
+    }
+}
+
+#[cfg(test)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -620,9 +691,21 @@ mod db_tests {
             .expect("create template");
 
         let new_legs = vec![fixture_leg("EUS", "MAN")];
-        let replaced = replace_template(&pool, template_id, user_id, Some("Renamed"), &new_legs)
-            .await
-            .expect("replace template");
+        let replaced = replace_template(
+            &pool,
+            template_id,
+            user_id,
+            Some("Renamed"),
+            &new_legs,
+            None,
+            true,
+            None,
+            None,
+            "manual",
+            None,
+        )
+        .await
+        .expect("replace template");
         assert!(replaced);
 
         let stored_legs = list_template_legs(&pool, template_id)
@@ -653,9 +736,21 @@ mod db_tests {
             .expect("create template");
 
         let new_legs = vec![fixture_leg("EUS", "MAN")];
-        let replaced = replace_template(&pool, template_id, other_id, Some("Hijacked"), &new_legs)
-            .await
-            .expect("attempt replace as non-owner");
+        let replaced = replace_template(
+            &pool,
+            template_id,
+            other_id,
+            Some("Hijacked"),
+            &new_legs,
+            None,
+            true,
+            None,
+            None,
+            "manual",
+            None,
+        )
+        .await
+        .expect("attempt replace as non-owner");
         assert!(!replaced);
 
         let template = get_owned_template(&pool, template_id, owner_id)
