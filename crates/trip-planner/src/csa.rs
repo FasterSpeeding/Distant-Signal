@@ -13,7 +13,8 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
-    ChangeTime, Connection, InterchangeData, fixed_links_from, minimum_change_time, sibling_tiplocs,
+    ChangeTime, Connection, InterchangeData, fixed_links_from, minimum_change_time,
+    normalize_tiploc, sibling_tiplocs,
 };
 
 /// One merged leg of a [`Journey`]: every consecutive [`Connection`] sharing
@@ -59,6 +60,15 @@ impl JourneyLeg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Journey {
+    /// Consecutive legs are normally contiguous -- one leg's `to_tiploc`
+    /// equals the next leg's `from_tiploc` -- EXCEPT across a same-CRS
+    /// sibling change (see `Scan::ready_source_at`'s own doc comment):
+    /// there, the walk between two platform groups of the same physical
+    /// station (e.g. `WDON` -> `WIMBLDN`) is charged in time against the
+    /// next leg's minimum change time, but is never materialized as its
+    /// own [`TransferLeg`]. A consumer rendering these legs (e.g. by
+    /// converting each one independently) must not assume strict
+    /// `to_tiploc == from_tiploc` contiguity between consecutive legs.
     pub legs: Vec<JourneyLeg>,
     pub departure_min: u32,
     /// May exceed 1440 for an overnight itinerary -- see
@@ -132,6 +142,14 @@ impl<'a> Scan<'a> {
     /// `csa.ts`'s own `Infinity` return, just as `Option::None` instead of
     /// a float sentinel.
     fn ready_source_at(&self, tiploc: &str) -> Option<ReadySource> {
+        // Normalize defensively at this module's own boundary, matching
+        // `schedule_query::interchange`'s own "callers should still
+        // normalize, but correctness must not depend on their remembering
+        // to" defense -- `tiploc` here may be a raw, still-padded
+        // `Connection::from_tiploc`, while `origin` and `earliest_arrival`
+        // are keyed on the normalized form (see Finding 2 of the
+        // whole-branch review).
+        let tiploc = normalize_tiploc(tiploc);
         if self.origin.contains(tiploc) {
             return Some(ReadySource {
                 time: self.departure_min,
@@ -174,6 +192,11 @@ impl<'a> Scan<'a> {
     /// CRS codes, so this always terminates -- direct translation of
     /// `csa.ts:306-318`).
     fn relax(&mut self, tiploc: &str, arrival_min: u32, via: ArrivalSource) {
+        // Normalize before this becomes an `earliest_arrival`/`arrived_via`
+        // key or a `destinations` containment check -- `tiploc` may come
+        // straight off a `Connection::to_tiploc`, potentially still padded
+        // (Finding 2 of the whole-branch review).
+        let tiploc = normalize_tiploc(tiploc);
         let current_best = self
             .earliest_arrival
             .get(tiploc)
@@ -197,6 +220,11 @@ impl<'a> Scan<'a> {
     /// search recognises that two platforms a short walk apart are
     /// effectively the same station. Direct translation of `csa.ts:343-359`.
     fn relax_fixed_links(&mut self, from_tiploc: &str, at_min: u32) {
+        // Normalize before the `tiploc_to_crs` lookup (keyed on the bare
+        // form) and before this value is stored as an `ArrivalSource::Link`
+        // endpoint that `reconstruct_legs` later walks back through and
+        // compares against `origin` (Finding 2 of the whole-branch review).
+        let from_tiploc = normalize_tiploc(from_tiploc);
         let Some(crs) = self.interchange.tiploc_to_crs.get(from_tiploc).cloned() else {
             return;
         };
@@ -231,8 +259,23 @@ impl<'a> Scan<'a> {
 /// earlier than `options.departure_min`. `None` when no connection reaches
 /// the destination at all.
 pub fn scan_connections(options: ScanOptions) -> Option<Journey> {
-    let origin: HashSet<String> = options.from_tiplocs.iter().cloned().collect();
-    let destinations: HashSet<String> = options.to_tiplocs.iter().cloned().collect();
+    // Normalized at this module's own boundary, same defense-in-depth
+    // `schedule_query::interchange` already applies at its own boundary --
+    // every other TIPLOC-keyed lookup and containment check in this file
+    // (`ready_source_at`, `relax`, `relax_fixed_links`) normalizes before
+    // comparing against these sets, so they must be normalized too, or a
+    // padded caller-supplied TIPLOC would never match (Finding 2 of the
+    // whole-branch review).
+    let origin: HashSet<String> = options
+        .from_tiplocs
+        .iter()
+        .map(|tiploc| normalize_tiploc(tiploc).to_string())
+        .collect();
+    let destinations: HashSet<String> = options
+        .to_tiplocs
+        .iter()
+        .map(|tiploc| normalize_tiploc(tiploc).to_string())
+        .collect();
 
     let mut scan = Scan {
         interchange: options.interchange,
@@ -505,6 +548,53 @@ mod tests {
     }
 
     #[test]
+    fn a_no_interchange_sentinel_blocks_a_fresh_boarding_by_a_different_uid() {
+        // MKC is a NoInterchange sentinel station. Unlike
+        // `a_same_train_continuation_through_a_coach_stand_sentinel_is_unaffected`,
+        // this uses two DIFFERENT uids at MKC, so `already_aboard` is false
+        // and `ready_source_at` (where the NoInterchange check lives) is
+        // actually exercised for that boarding -- covering the "must only
+        // ever block a FRESH boarding" half of the Review Focus claim that
+        // the same-uid test cannot reach. A NoInterchange sentinel blocks
+        // EVERY fresh boarding at that station (there is no gap large
+        // enough to satisfy it, unlike a merely-too-tight Finite change
+        // time), so -- unlike
+        // `a_change_that_does_not_meet_minimum_change_time_is_rejected` --
+        // no later departure from MKC itself can rescue the journey; only a
+        // genuinely different route (via RUGBY, a normal interchange) can.
+        let connections = vec![
+            conn("U1", "EUSTON", "MKC", 480, 500),
+            conn("U3", "EUSTON", "RUGBY", 481, 510),
+            // A different working from MKC -- a fresh boarding, which the
+            // NoInterchange sentinel must block regardless of how much time
+            // is available.
+            conn("U2", "MKC", "MAN", 505, 560),
+            // RUGBY has no MSN record and so falls back to the default
+            // 5-minute change time -- a normal, allowed interchange.
+            conn("U4", "RUGBY", "MAN", 520, 600),
+        ];
+        let mut interchange = empty_interchange();
+        interchange
+            .change_time_by_tiploc
+            .insert("MKC".to_string(), 99);
+        let journey = scan_connections(ScanOptions {
+            connections: &connections,
+            interchange: &interchange,
+            from_tiplocs: &["EUSTON".to_string()],
+            to_tiplocs: &["MAN".to_string()],
+            departure_min: 480,
+            date: date(),
+        })
+        .expect("a journey exists via RUGBY");
+        assert_eq!(
+            journey.arrival_min, 600,
+            "the NoInterchange-blocked fresh boarding at MKC (U1 -> U2, \
+             arriving 560) must be rejected; only the RUGBY route (arriving \
+             600) is reachable"
+        );
+    }
+
+    #[test]
     fn a_same_crs_sibling_change_enables_an_otherwise_impossible_boarding() {
         // WDON and WIMBLDN share CRS WIM; a passenger arriving at WDON can
         // board a train departing WIMBLDN, charged WIMBLDN's own minimum
@@ -538,6 +628,56 @@ mod tests {
         })
         .expect("the sibling-enabled journey exists");
         assert_eq!(journey.legs.len(), 2);
+        // The discontinuity documented on `Journey::legs`: leg 0 arrives at
+        // WDON, leg 1 departs from WIMBLDN -- the sibling walk is charged
+        // in time (via ready_source_at) but never materialized as its own
+        // leg. This is expected, faithful-to-the-port behaviour, asserted
+        // here explicitly so a future reader does not mistake it for a bug.
+        match &journey.legs[0] {
+            JourneyLeg::Train(leg) => assert_eq!(leg.to_tiploc, "WDON"),
+            JourneyLeg::Transfer(_) => panic!("expected leg 0 to be a train leg"),
+        }
+        match &journey.legs[1] {
+            JourneyLeg::Train(leg) => assert_eq!(leg.from_tiploc, "WIMBLDN"),
+            JourneyLeg::Transfer(_) => panic!("expected leg 1 to be a train leg"),
+        }
+        assert_eq!(
+            journey.legs[0].departure_min(),
+            480,
+            "sanity check that leg 0 is indeed the first leg"
+        );
+        assert_eq!(journey.arrival_min, 520);
+    }
+
+    #[test]
+    fn a_padded_tiploc_in_connections_and_interchange_still_matches_bare_scan_options() {
+        // Regression test for Finding 2 of the whole-branch review: a
+        // Connection array built from a ScheduleIndex-driven fixture path
+        // can carry still-padded TIPLOCs (schedule_query::records's own
+        // CallingPoint::tiploc doc comment: "exactly as decoded, still
+        // padded"), while ScanOptions's own from_tiplocs/to_tiplocs may be
+        // bare. Every TIPLOC-keyed lookup and containment check in this
+        // module must normalize so this still resolves correctly.
+        let connections = vec![conn("U1", "EUSTON ", "MKC", 480, 530)];
+        let mut interchange = empty_interchange();
+        // The interchange data is also seeded with the padded form, mirroring
+        // a real still-padded MSN/schedule-body TIPLOC.
+        interchange
+            .change_time_by_tiploc
+            .insert("MKC".to_string(), 5);
+        let journey = scan_connections(ScanOptions {
+            connections: &connections,
+            interchange: &interchange,
+            // Bare form here -- deliberately mismatched padding from the
+            // Connection's own "EUSTON " above.
+            from_tiplocs: &["EUSTON".to_string()],
+            to_tiplocs: &["MKC".to_string()],
+            departure_min: 480,
+            date: date(),
+        })
+        .expect("the journey is still found despite the padding mismatch");
+        assert_eq!(journey.arrival_min, 530);
+        assert_eq!(journey.legs.len(), 1);
     }
 
     #[test]

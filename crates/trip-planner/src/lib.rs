@@ -6,4 +6,4 @@
 
 pub mod csa;
 
-pub use csa::{scan_connections, Journey, JourneyLeg, ScanOptions, TrainLeg, TransferLeg};
+pub use csa::{Journey, JourneyLeg, ScanOptions, TrainLeg, TransferLeg, scan_connections};
