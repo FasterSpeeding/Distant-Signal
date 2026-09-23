@@ -1006,40 +1006,44 @@ feature integrates into is real, live on `main`, today.
 The three scope questions this document originally raised about network
 coverage, walking transfers, and multi-criteria ranking were all resolved
 by the product owner on 2026-09-22 and are reflected as final scope
-throughout this document (§4) — not re-listed here. What remains open:
+throughout this document (§4) — not re-listed here. Four more were
+resolved on 2026-09-23 (below); one remains genuinely open.
 
-1. **Resident-index architecture commitment (§3)** — is the product owner
-   willing to accept this app's first-ever resident, whole-network,
-   large-memory derived structure (option 1) if the bounded-subgraph
-   approach (option 2, this document's v1 recommendation) turns out to
-   miss real routes too often in practice, or if a measured
-   build-and-discard approach (§3's "third possibility") turns out not to
-   be cheap enough against this app's own data path? Not resolved here —
-   flagged as the single biggest architecture decision this feature
-   raises, deferred until real usage data exists per §3's own recommended
-   sequencing.
-2. **Naming** — "Plan a trip" / "Route planner," or different
-   product-facing language, and does the API surface live under a new
-   `/Trips/*` prefix (§5.2) or somewhere under the existing `/Journeys/*`
-   namespace? No existing precedent settles this; flagged the same way
-   adjacent specs have flagged their own "Journey" naming collisions
-   (§0.7).
-3. **Live-disruption honesty in the UI** — confirm the recommended framing
-   ("this is a scheduled plan, not live-confirmed," mirroring the existing
-   CIF-fallback picker's own disclosed-staleness copy) is acceptable,
-   rather than users expecting the planner to already account for today's
-   actual delays/cancellations.
-4. **Composition with reusable/recurring journeys (§0.9)** — should a
-   planner-computed itinerary be save-able as a `journey_template` (so a
-   regular commute found once via the planner doesn't need re-planning
-   every day)? Real future value, explicitly not designed in this
-   document — flagged for a later, separate pass once both features
-   individually exist.
-5. **Walking-transfer leg representation (§5.1 point 5)** — does a
-   cross-station walk get its own minimal `journey_legs`-adjacent record,
-   or stay presentation-only with no corresponding database row? Not
-   resolved here; a real design decision for the implementation-planning
-   stage.
+1. **Resident-index architecture commitment (§3)** — STILL OPEN, by
+   design: is the product owner willing to accept this app's first-ever
+   resident, whole-network, large-memory derived structure (option 1) if
+   the bounded-subgraph approach (option 2, this document's v1
+   recommendation) turns out to miss real routes too often in practice, or
+   if a measured build-and-discard approach (§3's "third possibility")
+   turns out not to be cheap enough against this app's own data path? Not
+   resolved here — flagged as the single biggest architecture decision
+   this feature raises, deliberately deferred until real usage data exists
+   per §3's own recommended sequencing. Nothing about Phases 2+ is blocked
+   on this: build the bounded-subgraph v1, revisit only if it proves
+   insufficient.
+2. **RESOLVED 2026-09-23 — Naming.** New `/Trips/*` API prefix (§5.2),
+   "Plan a trip" as the user-facing language. Reasoning: keeps a clean
+   conceptual split from the existing journey-tracking feature — a
+   "journey" in this app already means a real, tracked trip, and reusing
+   that word for a hypothetical planned one would overload it the same way
+   other specs have already flagged as a naming collision to avoid (§0.7).
+3. **RESOLVED 2026-09-23 — Live-disruption honesty in the UI.** Confirmed:
+   the recommended framing ("this is a scheduled plan, not live-confirmed,"
+   mirroring the existing CIF-fallback picker's own disclosed-staleness
+   copy) is acceptable as-is. Implement it verbatim in the frontend
+   phase — no different wording requested.
+4. **RESOLVED 2026-09-23 — Composition with reusable/recurring journeys
+   (§0.9).** Out of scope for now. Saving a planner-computed itinerary as a
+   `journey_template` is real future value but stays undesigned and
+   undispatched — trip planning is already a six-phase build; keep it
+   decoupled from the templates feature until the planner itself is live
+   and proven useful, then revisit as a separate follow-up pass.
+5. **RESOLVED 2026-09-23 — Walking-transfer leg representation (§5.1 point
+   5).** Presentation-only: a walking transfer does NOT get its own
+   `journey_legs`-adjacent database row. Reasoning: a walk isn't a train
+   service, so it needs no independent tracking or notification state —
+   compute and render it between two real legs at response time, nothing
+   persisted.
 
 ---
 
