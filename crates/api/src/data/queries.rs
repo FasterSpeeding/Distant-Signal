@@ -1267,6 +1267,109 @@ pub async fn upsert_schedule_destination_departures(
     Ok(result.rows_affected())
 }
 
+/// One `schedule_calling_points_full` row -- the literal, un-bucketed
+/// "ordered stop_times per trip" shape, one row per calling point of one
+/// resolved (non-cancelled) schedule on one service date. Mirrors
+/// `schedule_query::CallingPoint` plus the schedule-level `uid` and the
+/// publish-time-assigned `seq` ordering key, exactly as
+/// `schedule-reference::publish_schedule_calling_points_full` emits them.
+/// See docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase2-connections-array-plan.md
+/// Task 1 and the migration's own doc comment
+/// (`20260923100000_schedule_calling_points_full.sql`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScheduleCallingPointsFullRow {
+    pub service_date: chrono::NaiveDate,
+    pub uid: String,
+    /// 1-based position within this schedule's own calling-point sequence
+    /// -- the ORDER BY key that reconstructs stopping order; NOT a real CIF
+    /// field, assigned at publish time.
+    pub seq: i16,
+    pub tiploc: String,
+    /// One of `"origin"`, `"intermediate"`, `"terminate"` -- mirrors
+    /// `schedule_query::CallingPointKind`'s three variants verbatim, kept
+    /// as a plain string here (not a Rust enum) since this row's only job
+    /// is to pass straight through to the `CHECK (kind IN (...))` column
+    /// the migration defines.
+    pub kind: String,
+    pub booked_arrival: Option<chrono::NaiveTime>,
+    pub booked_departure: Option<chrono::NaiveTime>,
+    pub day_offset: i16,
+}
+
+/// Replaces one service date's worth of whole-network resolved calling
+/// points. Same shape as `upsert_schedule_destination_departures` directly
+/// above -- one transaction, `DELETE ... WHERE service_date = ANY(...)`
+/// over the batch's distinct service dates followed by one multi-row
+/// `INSERT ... SELECT * FROM UNNEST(...)` -- for the identical reason: a
+/// per-row `ON CONFLICT` loop would be one round trip per calling point,
+/// and this product is every calling point of every non-cancelled schedule
+/// for the day.
+///
+/// **An empty `rows` is a no-op, and that is load-bearing**, same posture
+/// and same reason as `upsert_schedule_destination_departures`: a publish
+/// that produced nothing must not be allowed to delete a service date's
+/// real data.
+///
+/// `ON CONFLICT DO NOTHING` on the insert: the primary key
+/// (`service_date, uid, seq`) covers every row this publisher can produce
+/// once per cycle, so a conflict can only mean a byte-identical duplicate
+/// within the same batch -- dropping it silently is strictly better than
+/// failing the whole batch over one pathological schedule.
+pub async fn upsert_schedule_calling_points_full(
+    pool: &PgPool,
+    rows: &[ScheduleCallingPointsFullRow],
+) -> Result<u64> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
+    let uids: Vec<&str> = rows.iter().map(|r| r.uid.as_str()).collect();
+    let seqs: Vec<i16> = rows.iter().map(|r| r.seq).collect();
+    let tiplocs: Vec<&str> = rows.iter().map(|r| r.tiploc.as_str()).collect();
+    let kinds: Vec<&str> = rows.iter().map(|r| r.kind.as_str()).collect();
+    let booked_arrivals: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.booked_arrival).collect();
+    let booked_departures: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.booked_departure).collect();
+    let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
+
+    // Normally exactly one date. Handled as a set anyway so a batch that
+    // straddles a rail-day boundary replaces both days rather than half of
+    // one -- and so the DELETE can never be wider than what is being
+    // written. Same convention as `upsert_schedule_destination_departures`.
+    let mut distinct_dates = service_dates.clone();
+    distinct_dates.sort_unstable();
+    distinct_dates.dedup();
+
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = ANY($1::date[])")
+        .bind(&distinct_dates)
+        .execute(&mut *tx)
+        .await?;
+
+    let result = sqlx::query(
+        "INSERT INTO schedule_calling_points_full \
+            (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::smallint[], $4::text[], $5::text[], $6::time[], $7::time[], $8::smallint[]) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&service_dates)
+    .bind(&uids)
+    .bind(&seqs)
+    .bind(&tiplocs)
+    .bind(&kinds)
+    .bind(&booked_arrivals)
+    .bind(&booked_departures)
+    .bind(&day_offsets)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(result.rows_affected())
+}
+
 /// One `schedule_destination_departures` row for one train_uid/service_date,
 /// used to reconstruct a scheduled stop list when `trains.calling_points`
 /// hasn't been populated by schedule-matching (`crates/api/src/data/journey.rs`'s

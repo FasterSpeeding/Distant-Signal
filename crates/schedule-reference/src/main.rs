@@ -346,6 +346,13 @@ async fn seed_last_processed_delivery(
 /// `MAX_DEPARTURES_PER_STATION` here vs. `MAX_SEARCH_LIMIT` in `api`).
 const DESTINATION_DEPARTURES_FORWARD_DAYS: i64 = 7;
 
+/// Forward publish window for `schedule_calling_points_full` -- same value
+/// as DESTINATION_DEPARTURES_FORWARD_DAYS (both are whole-network,
+/// full-day products published on the same cycle for the same reason: a
+/// trip-planning query needs the query date, which may be up to a week
+/// ahead, immediately queryable without waiting for a same-day publish).
+const TRIP_PLANNING_FORWARD_DAYS: i64 = 7;
+
 /// `today..=today+forward_days`, inclusive, today first. Pure and
 /// unit-testable without a mock HTTP server or a `ScheduleIndex`, same
 /// convention as `lines_to_publish` just below it in this file.
@@ -419,6 +426,20 @@ async fn publish_cif_derived_products(
     // §1/§2. `publish_schedule_destination_departures` itself is
     // unmodified -- it already accepts an arbitrary date; only the number
     // of times it's called per cycle changes.
+    // `TRIP_PLANNING_FORWARD_DAYS` is a separate, independently-documented
+    // constant from `DESTINATION_DEPARTURES_FORWARD_DAYS` -- the two answer
+    // different design questions and could legitimately diverge later --
+    // but this loop reuses the SAME `forward_publish_dates` call for both
+    // per-date publishes below (this file's own "one pass, multiple
+    // outputs" precedent, Task 1 Step 4), so the assertion below is what
+    // actually keeps the reused bound honest if either constant changes.
+    debug_assert_eq!(
+        TRIP_PLANNING_FORWARD_DAYS, DESTINATION_DEPARTURES_FORWARD_DAYS,
+        "this loop publishes both schedule_destination_departures and \
+         schedule_calling_points_full over the SAME per-date window; if \
+         these two constants ever need different values, split this back \
+         into two loops rather than silently reusing one bound for both"
+    );
     for date in forward_publish_dates(today, DESTINATION_DEPARTURES_FORWARD_DAYS) {
         publish_schedule_destination_departures(
             client,
@@ -429,6 +450,11 @@ async fn publish_cif_derived_products(
             internal_oauth,
         )
         .await;
+        // Fourth CIF-derived product off the SAME one-per-cycle
+        // ScheduleIndex and the SAME per-date loop as the sibling call
+        // directly above -- one pass, multiple outputs, this file's own
+        // established precedent.
+        publish_schedule_calling_points_full(client, config, &index, date, internal_oauth).await;
     }
 }
 
@@ -726,6 +752,74 @@ async fn publish_schedule_destination_departures(
     .await
     {
         tracing::error!(error = ?err, "failed to publish schedule-derived destination departures; will retry next cycle");
+    }
+}
+
+/// Publishes this cycle's whole-network resolved calling points for `date`
+/// -- the literal, un-bucketed persistence Phase 2 of the dynamic
+/// trip-planning plan adds (see that plan's Task 1). Unlike
+/// `publish_schedule_destination_departures`'s own bucketed/flattened
+/// shape, this emits every calling point of every non-cancelled schedule,
+/// in order, with no `now`-forward filter at all (a trip-planning query
+/// needs the WHOLE day, including departures already in the past relative
+/// to publish time, since the traveller picks their own date/time at query
+/// time, not at publish time -- same reasoning as
+/// `publish_schedule_destination_departures`'s own `NaiveTime::MIN`, see
+/// that function's doc comment, point 1).
+///
+/// Real-delivery body-size measurement (Task 1 Step 5) is a documented
+/// follow-up, not done here -- there is no live CIF delivery reachable in
+/// this development environment. If a future measurement against a real
+/// delivery pushes this past a comfortable fraction of
+/// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`),
+/// apply the same `for chunk in rows.chunks(50_000)` fallback
+/// `schedule_destination_departures`'s own doc comment already documents,
+/// teaching `post_schedule_calling_points_full` "the first chunk clears
+/// the date" the same way that route's own doc comment already teaches it.
+async fn publish_schedule_calling_points_full(
+    client: &Client,
+    config: &Config,
+    index: &schedule_query::ScheduleIndex,
+    date: chrono::NaiveDate,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+) {
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for uid in index.uids() {
+        let Some(resolved) = index.schedule_for_uid(uid, date) else {
+            continue;
+        };
+        if resolved.cancelled {
+            continue;
+        }
+        for (seq, cp) in resolved.calling_points.iter().enumerate() {
+            let kind = match cp.kind {
+                schedule_query::CallingPointKind::Origin => "origin",
+                schedule_query::CallingPointKind::Intermediate => "intermediate",
+                schedule_query::CallingPointKind::Terminate => "terminate",
+            };
+            rows.push(serde_json::json!({
+                "service_date": date,
+                "uid": resolved.uid,
+                "seq": seq as i32,
+                "tiploc": cp.tiploc,
+                "kind": kind,
+                "booked_arrival": cp.booked_arrival,
+                "booked_departure": cp.booked_departure,
+                "day_offset": cp.day_offset,
+            }));
+        }
+    }
+
+    if let Err(err) = common::ingest::post_batch(
+        client,
+        &config.schedule_calling_points_full_url,
+        internal_oauth,
+        &rows,
+        "schedule-derived full calling-point rows",
+    )
+    .await
+    {
+        tracing::error!(error = ?err, %date, "failed to publish schedule calling points; will retry next cycle");
     }
 }
 
@@ -1444,6 +1538,8 @@ mod poll_once_tests {
             schedule_destination_departures_url:
                 "http://127.0.0.1:1/schedule-destination-departures".to_string(),
             fixed_links_url: "http://127.0.0.1:1/fixed-links".to_string(),
+            schedule_calling_points_full_url: "http://127.0.0.1:1/schedule-calling-points-full"
+                .to_string(),
             schedule_feed_ingests_url: schedule_feed_ingests_url.to_string(),
             lines: common::config::LineCatalogue(vec![]),
             internal_oauth: common::oauth_client::InternalOAuthArgs {
