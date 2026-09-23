@@ -843,6 +843,11 @@ export interface JourneyDetail {
    * three regardless for a non-owner, but showing them at all to a fellow
    * group member who can only ever get a 404 is its own bug. */
   isOwner: boolean;
+  /** The journey's currently active unlisted share link, owner-view only
+   * -- always `null` for a non-owner (a group member, or a viewer who
+   * reached this journey via the share link itself). See `JourneyShareLink`
+   * and `ShareJourneyLinkButton.tsx`. */
+  shareLink: JourneyShareLink | null;
 }
 
 /** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec
@@ -1264,6 +1269,17 @@ export type GroupRole = 'owner' | 'admin' | 'member';
 export interface GroupInviteLink {
   token: string;
   expiresAt: string; // RFC3339
+}
+
+/** `POST /Journeys/{id}/share-link`'s response, and the `shareLink` field
+ * embedded on `JourneyDetail` for the owner only. `expiresAt` is always
+ * `null` today -- journeys choose no forced TTL (design doc
+ * docs/superpowers/specs/2026-09-23-unlisted-links-design.md §5) -- kept
+ * as `string | null` rather than always-`null` so the type doesn't lie if
+ * that choice is ever revisited. */
+export interface JourneyShareLink {
+  token: string;
+  expiresAt: string | null;
 }
 
 export interface GroupSummary {
