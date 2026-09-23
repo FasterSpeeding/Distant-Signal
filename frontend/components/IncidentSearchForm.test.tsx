@@ -670,16 +670,27 @@ describe('IncidentSearchForm', () => {
       expect(replaceMock).not.toHaveBeenCalled();
 
       // "All time" drops the 30-day default `from` floor, so the query this
-      // search sends -- and the URL it's replaced with -- is just this one
-      // filter, made deterministic for the exact-match assertion below.
+      // search SENDS is just this one filter -- but the URL it's replaced
+      // with also carries the `period=all` marker (fix round 1), since a
+      // dropped `from` alone is indistinguishable from "no filter was ever
+      // set" on Back-navigation (see the dedicated test below).
       fireEvent.click(screen.getByRole('radio', { name: 'All time' }));
       fireEvent.change(screen.getByLabelText('Minimum'), { target: { value: '2' } });
       await clickSearch();
 
       await waitFor(() =>
-        expect(replaceMock).toHaveBeenCalledWith('/incidents?priority_min=2', { scroll: false }),
+        expect(replaceMock).toHaveBeenCalledWith('/incidents?priority_min=2&period=all', {
+          scroll: false,
+        }),
       );
       expect(replaceMock).toHaveBeenCalledTimes(1);
+      // The `period` marker must never reach the actual API request --
+      // it's a URL-only disambiguator, not part of the wire query.
+      const lastFetchUrl = new URL(
+        String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0]),
+        'http://localhost',
+      );
+      expect(lastFetchUrl.searchParams.has('period')).toBe(false);
       // `replace`, not `push`: this should keep /incidents a single history
       // entry whose URL stays current, not add a new Back-button stop on
       // every search.
@@ -735,6 +746,30 @@ describe('IncidentSearchForm', () => {
       expect(screen.queryByText('Search failed')).not.toBeInTheDocument();
     });
 
+    // Fix round 1, Minor: `Number('')` is `0`, not `NaN`, and `Number
+    // .isNaN` alone lets the literal string `'Infinity'` straight through
+    // as a "valid" number -- both would otherwise turn a URL that never
+    // meant to set a filter (`?priority_min=`, distinct from the param
+    // being absent) or a nonsense one (`?priority_min=Infinity`) into a
+    // real, active priority bound.
+    it('falls back to blank on a present-but-empty initialPriorityMin, rather than treating it as zero', async () => {
+      fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMin="" />);
+      await awaitMountSettled();
+
+      expect((screen.getByLabelText('Minimum') as HTMLInputElement).value).toBe('');
+    });
+
+    it('falls back to blank on an initialPriorityMax of "Infinity", rather than treating it as a real bound', async () => {
+      fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+      renderWithMantine(
+        <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMax="Infinity" />,
+      );
+      await awaitMountSettled();
+
+      expect((screen.getByLabelText('Maximum') as HTMLInputElement).value).toBe('');
+    });
+
     it('auto-runs the search on mount exactly once, with all four newly-restored filters in the query string', async () => {
       fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
       renderWithMantine(
@@ -760,6 +795,51 @@ describe('IncidentSearchForm', () => {
       // The mount effect itself must not touch the URL -- only an explicit
       // Search press does (see the `router.replace` test above).
       expect(replaceMock).not.toHaveBeenCalled();
+    });
+
+    // Fix round 1, Important: a restored URL with no `from` at all used to
+    // be indistinguishable from "no filter was ever set", so Back-
+    // navigation after an "All time" search silently fell back to the
+    // 30-day default instead -- a materially different, narrower search,
+    // with nothing on screen to say so. `initialPeriod="all"` is the new
+    // marker that breaks the tie.
+    it('restores "All time" (not the 30-day default) from initialPeriod="all", with both date fields cleared', async () => {
+      fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+      // Paired with `initialOperator` so the mount effect's `query` guard
+      // (empty query -> no auto-search, see its own comment) doesn't skip
+      // the search entirely: a bare "All time" with nothing else set is a
+      // genuinely empty filter set, not something this test needs to prove
+      // separately.
+      renderWithMantine(
+        <IncidentSearchForm
+          lines={TEST_LINES}
+          tocs={TEST_TOCS}
+          initialOperator="SW"
+          initialPeriod="all"
+        />,
+      );
+      await awaitMountSettled();
+
+      expect(screen.getByRole('radio', { name: 'All time' })).toBeChecked();
+      // The date pickers only render once "Custom…" is selected -- "All
+      // time" being checked and NOT "Custom…" is itself proof both dates
+      // are unset, but this also confirms the mount-time auto-search (which
+      // already ran by the time `awaitMountSettled` resolves) went out with
+      // no lower/upper bound at all.
+      expect(screen.queryByLabelText('From (optional)')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('To (optional)')).not.toBeInTheDocument();
+      const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
+      expect(requestedUrl.searchParams.get('operator')).toBe('SW');
+      expect(requestedUrl.searchParams.has('from')).toBe(false);
+      expect(requestedUrl.searchParams.has('to')).toBe(false);
+    });
+
+    it('does not let a plain, unfiltered first visit fall through initialPeriod into "All time" -- it still gets the 30-day default', async () => {
+      fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
+
+      expect(screen.getByRole('radio', { name: '30 days' })).toBeChecked();
     });
   });
 });

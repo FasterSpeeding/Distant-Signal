@@ -37,17 +37,22 @@ function calendarDaysAgo(days: number): string {
 }
 
 /** Parses `priority_min`/`priority_max`'s raw URL string into the numeric
- * value `priorityMin`/`priorityMax` state expects, folding "absent" and
- * "not a number at all" into the same `''` (blank) result `NumberInput`
- * already treats as "no filter" -- same "malformed means absent" posture
+ * value `priorityMin`/`priorityMax` state expects, folding "absent",
+ * "present but blank" (a literal `?priority_min=`) and "not a real, finite
+ * number at all" into the same `''` (blank) result `NumberInput` already
+ * treats as "no filter" -- same "malformed means absent" posture
  * `app/track/page.tsx`'s `validTimeParam`/`ticketIdParam` already take
  * elsewhere in this codebase, just applied inside the component rather than
  * the page since these two params aren't pre-validated by their caller.
+ * `Number.isFinite` rather than `!Number.isNaN`: `Number('')` is `0` (not
+ * `NaN`), which the blank-string check above already intercepts, but
+ * `Number('Infinity')` is a real, finite-looking `NaN`-free number the
+ * NaN-only check would have let straight through as a filter value.
  * Never throws on a garbage value in the URL. */
 function parsePriorityParam(value: string | undefined): number | '' {
-  if (value === undefined) return '';
+  if (value === undefined || value.trim() === '') return '';
   const parsed = Number(value);
-  return Number.isNaN(parsed) ? '' : parsed;
+  return Number.isFinite(parsed) ? parsed : '';
 }
 
 /** A `nothingFoundMessage` node, not a plain string: Mantine's own
@@ -124,6 +129,7 @@ export function IncidentSearchForm({
   initialLine = '',
   initialFrom = '',
   initialTo = '',
+  initialPeriod,
   initialPlanned,
   initialCleared,
   initialPriorityMin,
@@ -135,6 +141,7 @@ export function IncidentSearchForm({
   initialLine?: string;
   initialFrom?: string;
   initialTo?: string;
+  initialPeriod?: string;
   initialPlanned?: string;
   initialCleared?: string;
   initialPriorityMin?: string;
@@ -156,11 +163,24 @@ export function IncidentSearchForm({
     initialOperator ? initialOperator.split(',').filter(Boolean) : [],
   );
   const [lineId, setLineId] = useState<string | null>(initialLine || null);
+  /** `initialPeriod === 'all'` takes priority over `initialFrom`/
+   * `initialTo` for exactly the same reason `applyPreset('all')` clears
+   * both when a caller picks "All time" live: restoring "All time" means
+   * restoring NO lower/upper bound, full stop, matching what a real
+   * `?period=all` URL only ever gets written alongside (see `handleSubmit`'s
+   * own comment on why `period` exists at all). A plain, unfiltered first
+   * visit -- no `initialFrom`, no `initialPeriod` -- must still fall
+   * through to the existing 30-day floor exactly as before this prop
+   * existed. */
   const [fromDate, setFromDate] = useState<string | null>(
-    initialFrom ? initialFrom.slice(0, 10) : calendarDaysAgo(30),
+    initialPeriod === 'all' ? null : initialFrom ? initialFrom.slice(0, 10) : calendarDaysAgo(30),
   );
-  const [toDate, setToDate] = useState<string | null>(initialTo ? initialTo.slice(0, 10) : null);
-  const [preset, setPreset] = useState<DatePreset | null>(initialFrom ? null : '30d');
+  const [toDate, setToDate] = useState<string | null>(
+    initialPeriod === 'all' ? null : initialTo ? initialTo.slice(0, 10) : null,
+  );
+  const [preset, setPreset] = useState<DatePreset | null>(
+    initialPeriod === 'all' ? 'all' : initialFrom ? null : '30d',
+  );
   const [plannedFilter, setPlannedFilter] = useState<'all' | 'planned' | 'realtime'>(
     initialPlanned === 'true' ? 'planned' : initialPlanned === 'false' ? 'realtime' : 'all',
   );
@@ -280,11 +300,37 @@ export function IncidentSearchForm({
     // search -- mirrors `TrainSearchForm.tsx`'s own identical use.
     // Deliberately NOT done from the mount effect below (§3.3) -- only an
     // explicit Search press writes to the URL. The same query string that
-    // is written to the URL is what actually gets searched, for the same
-    // reason `runSearch`'s `query` argument is captured by the caller
-    // rather than rebuilt inside it (see `runSearch`'s own comment).
+    // is what actually gets searched (`query`, handed to `runSearch`
+    // unmodified) is not always exactly what gets written to the URL,
+    // though -- see `urlParams` below.
     const query = searchParamsFor().toString();
-    router.replace(`${pathname}?${query}`, { scroll: false });
+    // Final whole-branch review fix round 1: `searchParamsFor()` omits
+    // `from` entirely whenever `fromDate` is falsy, and that is true for
+    // BOTH "no lower bound was ever set" (a plain first visit, before the
+    // 30-day floor's own `useState` seeds it) and "All time" was explicitly
+    // chosen (`applyPreset('all')` nulls `fromDate` on purpose) -- the two
+    // are indistinguishable on the wire, which is exactly correct for the
+    // API (it has no "explicitly no bound" wire value to send) but wrong
+    // for the URL: restoring a URL with no `from` at all falls back to the
+    // 30-day floor (see the `fromDate` `useState` above), silently turning
+    // an "All time" search into a materially different, narrower one on
+    // Back-navigation, with no signal anything changed. `period=all` is a
+    // URL-only marker with no equivalent on the wire (`searchParamsFor()`
+    // itself never emits it, and the backend never sees it) -- purely so
+    // `initialPeriod` above can tell "All time was explicitly chosen" apart
+    // from "no filter was ever set" the same way `preset` already can in
+    // memory. Built as a COPY of `query` (`new URLSearchParams(query)`)
+    // rather than folded into `searchParamsFor()` itself, precisely so it
+    // stays absent from the string `runSearch`/`fetch` actually send.
+    const urlParams = new URLSearchParams(query);
+    if (!fromDate) urlParams.set('period', 'all');
+    // A literal empty form (no filters, all pickers cleared) must not
+    // leave a dangling `?` on the URL -- same idiom
+    // `AllLinesTable.tsx`'s own `router.replace` already uses for the
+    // identical "possibly-empty query string" case.
+    router.replace(urlParams.size > 0 ? `${pathname}?${urlParams.toString()}` : pathname, {
+      scroll: false,
+    });
     await runSearch(query);
   }
 
