@@ -118,6 +118,7 @@ function baseJourney(overrides: Partial<JourneyDetail> = {}): JourneyDetail {
     createdAt: '2026-09-22T00:00:00Z',
     legs: [matchedLeg()],
     isOwner: false,
+    shareLink: null,
     ...overrides,
   };
 }
@@ -264,6 +265,7 @@ function openSuiteJourney(overrides: Partial<JourneyDetail> = {}): JourneyDetail
     createdAt: '2026-09-22T10:00:00Z',
     legs: [openLeg()],
     isOwner: true,
+    shareLink: null,
     ...overrides,
   };
 }
