@@ -610,6 +610,22 @@ async fn publish_schedule_network_departures(
 /// without a mock HTTP server -- same "pure logic separated from I/O"
 /// convention `lines_to_publish`/`read_prefixed_lines_multi` already
 /// establish in this file.
+///
+/// Sorts by `(day_offset, scheduled)`, NOT bare `scheduled` -- a bucket
+/// here holds every departure-bearing calling point at one CRS across
+/// EVERY train for the day, so it routinely mixes an ordinary same-day
+/// departure (`day_offset: 0`, e.g. `23:50`) with a genuine overnight
+/// service's post-midnight calling point at the same station (`day_offset:
+/// 1`, e.g. `00:07`) -- the exact live-confirmed c2c UID F49687 Barking
+/// case `schedule_query::resolve`'s own `f49687_raw` fixture documents. A
+/// bare `NaiveTime` sort put the `00:07` entry BEFORE the `23:50` one,
+/// inverting true chronological order, and then `truncate` could drop a
+/// genuinely-earlier same-day departure to make room for it -- this is the
+/// exact bug class `CallingPoint::day_offset`/`assign_day_offsets` exist to
+/// prevent everywhere else in this codebase (see
+/// `crates/schedule-query/src/resolve.rs`'s own doc comment), just missed
+/// here at publish time. Backs `GET /public/stations/{crs}/schedule-departures`,
+/// the CIF fallback picker `TrackTrainForm.tsx::pickCifDeparture` reads.
 fn schedule_network_departures_rows(
     mut by_crs: std::collections::HashMap<String, Vec<schedule_query::ScheduleDeparture>>,
     today: chrono::NaiveDate,
@@ -617,7 +633,7 @@ fn schedule_network_departures_rows(
     by_crs
         .drain()
         .map(|(crs, mut departures)| {
-            departures.sort_by_key(|d| d.scheduled);
+            departures.sort_by_key(|d| (d.day_offset, d.scheduled));
             departures.truncate(MAX_DEPARTURES_PER_STATION);
             serde_json::json!({ "crs": crs, "service_date": today, "departures": departures })
         })
@@ -1179,6 +1195,110 @@ mod poll_once_tests {
         assert_eq!(
             row_departures[9]["uid"], "U00009",
             "capped at 10, entries 10 and 11 dropped"
+        );
+    }
+
+    #[test]
+    fn schedule_network_departures_rows_sorts_by_day_offset_before_scheduled_time() {
+        // The real live-confirmed regression this fix targets (see
+        // `schedule_network_departures_rows`'s own doc comment and
+        // `schedule_query::resolve`'s `f49687_raw` fixture): a bucket at one
+        // CRS mixes an ordinary same-day departure with a genuine overnight
+        // service's post-midnight calling point at the SAME station. A bare
+        // `scheduled`-only sort would put F49687's `00:07` (day_offset 1)
+        // BEFORE the other train's `23:50` (day_offset 0), even though
+        // `00:07` is really the NEXT calendar day and so chronologically
+        // LATER.
+        let mut by_crs = std::collections::HashMap::new();
+        by_crs.insert(
+            "BKG".to_string(),
+            vec![
+                schedule_query::ScheduleDeparture {
+                    uid: "F49687".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap(),
+                    day_offset: 1,
+                    destination_crs: Some("SNF".to_string()),
+                },
+                schedule_query::ScheduleDeparture {
+                    uid: "C11052".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(23, 50, 0).unwrap(),
+                    day_offset: 0,
+                    destination_crs: Some("CRE".to_string()),
+                },
+            ],
+        );
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+        let rows = schedule_network_departures_rows(by_crs, today);
+
+        assert_eq!(rows.len(), 1);
+        let departures = rows[0]["departures"].as_array().unwrap();
+        assert_eq!(
+            departures[0]["uid"], "C11052",
+            "23:50 on day_offset 0 is chronologically FIRST, even though its bare clock time is \
+             larger than the other entry's"
+        );
+        assert_eq!(
+            departures[1]["uid"], "F49687",
+            "00:07 on day_offset 1 is really the next calendar day, so it must sort LAST here"
+        );
+    }
+
+    #[test]
+    fn schedule_network_departures_rows_truncation_never_drops_an_earlier_same_day_departure_for_an_overnight_one()
+     {
+        // The truncation half of the same bug, at the REAL
+        // `MAX_DEPARTURES_PER_STATION` cap (10): ten ordinary same-day
+        // departures plus one genuine overnight (day_offset 1) calling
+        // point at the same station, one entry over the cap. Under the old
+        // bare-`scheduled` sort, the day_offset-1 entry's small clock value
+        // (`00:07`) sorted FIRST, so `truncate(10)` kept it and dropped the
+        // truly-latest same-day departure (`08:09`) instead of the entry
+        // that is genuinely latest in real chronological order.
+        let mut departures: Vec<schedule_query::ScheduleDeparture> = (0..10)
+            .map(|hour| schedule_query::ScheduleDeparture {
+                uid: format!("SAME-DAY-{hour:02}"),
+                scheduled: chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
+                day_offset: 0,
+                destination_crs: None,
+            })
+            .collect();
+        departures.push(schedule_query::ScheduleDeparture {
+            uid: "OVERNIGHT".to_string(),
+            scheduled: chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap(),
+            day_offset: 1,
+            destination_crs: None,
+        });
+        let mut by_crs = std::collections::HashMap::new();
+        by_crs.insert("BKG".to_string(), departures);
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+        let rows = schedule_network_departures_rows(by_crs, today);
+        let kept: Vec<&str> = rows[0]["departures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+
+        assert_eq!(kept.len(), MAX_DEPARTURES_PER_STATION);
+        assert_eq!(
+            kept,
+            vec![
+                "SAME-DAY-00",
+                "SAME-DAY-01",
+                "SAME-DAY-02",
+                "SAME-DAY-03",
+                "SAME-DAY-04",
+                "SAME-DAY-05",
+                "SAME-DAY-06",
+                "SAME-DAY-07",
+                "SAME-DAY-08",
+                "SAME-DAY-09",
+            ],
+            "the ten same-day departures, in true chronological order, must all survive the cap \
+             -- the day_offset-1 OVERNIGHT entry (really the day AFTER every one of them) is the \
+             one that is genuinely latest and correctly the one truncated away"
         );
     }
 
