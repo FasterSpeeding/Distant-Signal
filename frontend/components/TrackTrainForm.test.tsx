@@ -711,6 +711,62 @@ describe('TrackTrainForm', () => {
       expect(screen.queryByRole('combobox', { name: /Operator/ })).not.toBeInTheDocument();
     });
 
+    // Regression for the reported bug: the window-mode Destination field's
+    // `Autocomplete` used to omit `renderOption` entirely (every other
+    // CRS/TOC-code `Autocomplete` in this app -- including this form's own
+    // pin-mode Destination/Operator fields, right below this one in the
+    // JSX -- has one), so it fell back to Mantine's default rendering,
+    // which shows `data`'s `label` -- the bare CRS code -- with no station
+    // name at all. Now routed through the shared
+    // `lib/suggestionAutocomplete.ts` helper, which the pin-mode fields
+    // already use, so it can't drift out of sync with them again.
+    it('shows both the code and the full station name in the window-mode Destination dropdown, not just the code', async () => {
+      // Real timers: the debounced suggestion fetch inside `useSuggestions`
+      // needs its `setTimeout` -> `fetch` -> `.then` chain to actually
+      // flush, which fake timers (even with `shouldAdvanceTime`) don't
+      // reliably drive end to end -- same reasoning as the "selecting a
+      // real operator suggestion" test above.
+      vi.useRealTimers();
+      // Only answers a query that actually matches "Reading" -- WAT (the
+      // Origin field's own query, still live in the background) must NOT
+      // also resolve to Reading, or its dropdown would contribute a
+      // second, identically-labelled "RDG — Reading" option and make the
+      // one this test cares about ambiguous to query for.
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/stations?')) {
+          const q = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
+          const matches = 'reading'.includes(q.toLowerCase()) || 'rdg'.includes(q.toLowerCase());
+          return Promise.resolve(
+            new Response(JSON.stringify(matches ? [{ code: 'RDG', name: 'Reading' }] : []), { status: 200 }),
+          );
+        }
+        if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+        }
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'Rea' },
+      });
+
+      // `hidden: true`: jsdom-only workaround for the stubbed
+      // `ResizeObserver` -- see the "selecting a real operator suggestion"
+      // test's own comment on this exact pattern.
+      const option = await screen.findByRole('option', { name: 'RDG — Reading', hidden: true });
+      expect(option).toBeInTheDocument();
+
+      fireEvent.click(option);
+      // Selecting the option still writes just the bare code into the
+      // field -- `Autocomplete` writes `data`'s `label`, not the
+      // dropdown-only `renderOption` text, into the input.
+      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
+    });
+
     it('an all-blank window is blocked client-side, with no network call', async () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);

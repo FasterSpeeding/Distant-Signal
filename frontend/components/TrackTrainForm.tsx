@@ -25,7 +25,7 @@ import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
-import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
+import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse } from '@/lib/types';
 
@@ -1084,21 +1084,11 @@ export function TrackTrainForm({
         value={originCrs}
         onChange={setOriginCrs}
         onBlur={() => setOriginTouched(true)}
-        // `withNoMatchPlaceholder`: `Autocomplete` has no
-        // `nothingFoundMessage` prop in this Mantine version -- see
-        // `lib/autocompleteNoMatch.ts`.
-        data={withNoMatchPlaceholder(
-          originSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching stations',
-          { active: originCrs.trim().length > 0 && !originSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-          if (placeholder) return placeholder;
-          const match = originSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
+        {...suggestionAutocompleteProps(originSuggestions, {
+          query: originCrs,
+          loading: originSuggestionsLoading,
+          noMatchMessage: 'No matching stations',
+        })}
         error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
         // NOT the native `required` attribute (Task 3.6.14): an empty
         // origin is now validated by `handleSubmit` itself, which sets
@@ -1158,12 +1148,11 @@ export function TrackTrainForm({
             placeholder="e.g. Reading or RDG"
             value={windowDestinationCrs}
             onChange={setWindowDestinationCrs}
-            data={withNoMatchPlaceholder(
-              windowDestinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
-              'No matching stations',
-              { active: windowDestinationCrs.trim().length > 0 && !windowDestinationSuggestionsLoading },
-            )}
-            filter={({ options }) => options}
+            {...suggestionAutocompleteProps(windowDestinationSuggestions, {
+              query: windowDestinationCrs,
+              loading: windowDestinationSuggestionsLoading,
+              noMatchMessage: 'No matching stations',
+            })}
             error={
               windowDestinationCrs.length > 0 && !windowDestinationValid
                 ? 'Must be a 3-letter CRS code'
@@ -1288,36 +1277,22 @@ export function TrackTrainForm({
             placeholder="e.g. Woking or WOK"
             value={destinationCrs}
             onChange={setDestinationCrs}
-            data={withNoMatchPlaceholder(
-              destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
-              'No matching stations',
-              { active: destinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
-            )}
-            filter={({ options }) => options}
-            renderOption={({ option }) => {
-              const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-              if (placeholder) return placeholder;
-              const match = destinationSuggestions.find((s) => s.code === option.value);
-              return match ? `${match.code} — ${match.name}` : option.value;
-            }}
+            {...suggestionAutocompleteProps(destinationSuggestions, {
+              query: destinationCrs,
+              loading: destinationSuggestionsLoading,
+              noMatchMessage: 'No matching stations',
+            })}
           />
           <Autocomplete
             label="Operator (optional)"
             placeholder="e.g. SW"
             value={operator}
             onChange={setOperator}
-            data={withNoMatchPlaceholder(
-              operatorSuggestions.map((s) => ({ value: s.code, label: s.code })),
-              'No matching operators',
-              { active: operator.trim().length > 0 && !operatorSuggestionsLoading },
-            )}
-            filter={({ options }) => options}
-            renderOption={({ option }) => {
-              const placeholder = noMatchOptionContent(option.value, 'No matching operators');
-              if (placeholder) return placeholder;
-              const match = operatorSuggestions.find((s) => s.code === option.value);
-              return match ? `${match.code} — ${match.name}` : option.value;
-            }}
+            {...suggestionAutocompleteProps(operatorSuggestions, {
+              query: operator,
+              loading: operatorSuggestionsLoading,
+              noMatchMessage: 'No matching operators',
+            })}
           />
           {/* Always present -- never absent from the DOM, per
               docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md

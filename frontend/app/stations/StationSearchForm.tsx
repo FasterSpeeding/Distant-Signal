@@ -6,7 +6,7 @@ import { Alert, Autocomplete, Button, Group, Skeleton, Stack, Text, UnstyledButt
 import { useMounted } from '@mantine/hooks';
 import { searchNearbyStations, searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
-import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
+import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { NearbyStation } from '@/lib/types';
 
 /** The "near me" lookup's own state machine -- mirrors the shape
@@ -106,40 +106,11 @@ export function StationSearchForm() {
           placeholder="e.g. Woking or WOK"
           value={crs}
           onChange={setCrs}
-          // `data`'s `label` — not `value` — is what Mantine's Autocomplete
-          // writes into the field on selection (confirmed by reading its
-          // source: `handleValueChange(optionsLockup[val].label)`), the
-          // opposite of Select/TagsInput. So `label` is set to the code
-          // itself here, and the friendlier "code — name" text is rendered
-          // dropdown-only via `renderOption`, which doesn't affect what
-          // gets written into the field.
-          // `withNoMatchPlaceholder`: `Autocomplete` has no
-          // `nothingFoundMessage` prop in this Mantine version -- see
-          // `lib/autocompleteNoMatch.ts` for why a single inert
-          // placeholder option, not an empty array, is this component's
-          // own available fix for the same "open combobox, zero-child
-          // listbox" gap `components/IncidentSearchForm.tsx` first found.
-          // `active` gates the placeholder on a real, settled search --
-          // otherwise it falsely reads "No matching stations" on focus of
-          // a blank field, or while a search is still in flight.
-          data={withNoMatchPlaceholder(
-            suggestions.map((s) => ({ value: s.code, label: s.code })),
-            'No matching stations',
-            { active: crs.trim().length > 0 && !loading },
-          )}
-          // `suggestions` is already server-side filtered (the API matches
-          // the search term against both CRS code and station name), so
-          // Mantine's default client-side re-filtering -- which only checks
-          // `label` (the code) -- would hide correct matches when the user
-          // searched by station name instead of code. Disable it: show
-          // whatever `suggestions` already contains, unfiltered further.
-          filter={({ options }) => options}
-          renderOption={({ option }) => {
-            const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-            if (placeholder) return placeholder;
-            const match = suggestions.find((s) => s.code === option.value);
-            return match ? `${match.code} — ${match.name}` : option.value;
-          }}
+          {...suggestionAutocompleteProps(suggestions, {
+            query: crs,
+            loading,
+            noMatchMessage: 'No matching stations',
+          })}
         />
         <Button onClick={handleSearch} disabled={isPending || crs.trim().length === 0}>
           {isPending ? 'Looking up…' : 'Look up'}
