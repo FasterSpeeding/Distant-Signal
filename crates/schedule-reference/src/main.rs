@@ -353,6 +353,21 @@ const DESTINATION_DEPARTURES_FORWARD_DAYS: i64 = 7;
 /// ahead, immediately queryable without waiting for a same-day publish).
 const TRIP_PLANNING_FORWARD_DAYS: i64 = 7;
 
+/// Enforced at COMPILE time, not merely asserted at runtime (a
+/// `debug_assert_eq!` would compile to nothing in a release build, giving
+/// no real guarantee): `publish_cif_derived_products`'s per-date loop
+/// deliberately reuses ONE `forward_publish_dates` call, bounded by
+/// `DESTINATION_DEPARTURES_FORWARD_DAYS`, for both
+/// `publish_schedule_destination_departures` and
+/// `publish_schedule_calling_points_full` -- see that loop's own comment.
+/// The two constants above are kept separate and independently documented
+/// (they answer different design questions and could legitimately diverge
+/// later), so this is what actually keeps the reused bound honest: if
+/// either constant ever changes without the other, this fails the BUILD,
+/// not just a debug-mode assertion, forcing whoever changes one to either
+/// change both back into sync or split the loop into two.
+const _: () = assert!(TRIP_PLANNING_FORWARD_DAYS == DESTINATION_DEPARTURES_FORWARD_DAYS);
+
 /// `today..=today+forward_days`, inclusive, today first. Pure and
 /// unit-testable without a mock HTTP server or a `ScheduleIndex`, same
 /// convention as `lines_to_publish` just below it in this file.
@@ -431,15 +446,9 @@ async fn publish_cif_derived_products(
     // different design questions and could legitimately diverge later --
     // but this loop reuses the SAME `forward_publish_dates` call for both
     // per-date publishes below (this file's own "one pass, multiple
-    // outputs" precedent, Task 1 Step 4), so the assertion below is what
-    // actually keeps the reused bound honest if either constant changes.
-    debug_assert_eq!(
-        TRIP_PLANNING_FORWARD_DAYS, DESTINATION_DEPARTURES_FORWARD_DAYS,
-        "this loop publishes both schedule_destination_departures and \
-         schedule_calling_points_full over the SAME per-date window; if \
-         these two constants ever need different values, split this back \
-         into two loops rather than silently reusing one bound for both"
-    );
+    // outputs" precedent, Task 1 Step 4). The compile-time `const _: ()`
+    // assertion next to both constants' declarations, above, is what keeps
+    // this reused bound honest if either constant ever changes.
     for date in forward_publish_dates(today, DESTINATION_DEPARTURES_FORWARD_DAYS) {
         publish_schedule_destination_departures(
             client,

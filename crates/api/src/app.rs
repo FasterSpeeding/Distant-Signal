@@ -277,12 +277,20 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
-        // POST-only, Dynamic Trip Planning Phase 2's fifth CIF-derived
-        // product from this same producer -- reuses schedule-reference's
-        // EXISTING writer credential, same as every publish above. No GET
-        // pair: Task 3's `trip_planning::fetch_calling_points_for_date`
-        // reads this table directly from `api`'s own database, not via a
-        // private ingest route.
+        // POST-only, Dynamic Trip Planning Phase 2's newest publish from
+        // this same producer -- the fifth route this producer's table
+        // wires overall (line-population, network-departures,
+        // destination-departures, fixed-links, and now this), though the
+        // FOURTH product built off the shared per-cycle `ScheduleIndex`
+        // specifically -- `fixed-links` above is ALF-derived and published
+        // via its own separate call, not through
+        // `publish_cif_derived_products`'s loop; see that function's own
+        // per-product ordinal comments in `schedule-reference/src/main.rs`.
+        // Reuses schedule-reference's EXISTING writer credential, same as
+        // every publish above. No GET pair: Task 3's
+        // `trip_planning::fetch_calling_points_for_date` reads this table
+        // directly from `api`'s own database, not via a private ingest
+        // route.
         (
             "/schedule-calling-points-full",
             Method::POST,
