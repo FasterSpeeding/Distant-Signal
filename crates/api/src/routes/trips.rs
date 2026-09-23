@@ -22,6 +22,7 @@ pub fn router() -> crate::app::Router {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TripPlanParams {
     origin: String,
     destination: String,
@@ -108,6 +109,59 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to {operation}"),
         )
+    }
+}
+
+/// Pure, DB-free tests for this route's own query-param parsing -- no
+/// `db_tests`-style `#[ignore]`/live-database dependency needed, since
+/// `Query<TripPlanParams>::try_from_uri` is exactly the same deserialization
+/// path axum's `FromRequestParts` impl for `Query` uses at request time (see
+/// `axum::extract::query::Query::try_from_uri`, which
+/// `from_request_parts` calls directly).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for a final-whole-branch-review finding: without
+    /// `#[serde(rename_all = "camelCase")]` on `TripPlanParams`, this
+    /// route's own documented wire contract (`?departAfter=17:00`, matching
+    /// every other route in this crate) silently failed to populate
+    /// `depart_after` at all -- `serde_urlencoded`'s `Query` extractor
+    /// ignores unknown query keys rather than erroring, so the caller got
+    /// no error and a plan silently searched from `00:00` instead of the
+    /// requested time.
+    #[test]
+    fn depart_after_is_read_from_its_camel_case_wire_name() {
+        let uri: axum::http::Uri = "http://example.com/Trips/plan?origin=EUS&destination=MKC&\
+                                     date=2026-09-23&departAfter=17:00"
+            .parse()
+            .expect("parse uri");
+        let Query(params) =
+            Query::<TripPlanParams>::try_from_uri(&uri).expect("valid query string");
+        assert_eq!(
+            params.depart_after,
+            Some(NaiveTime::from_hms_opt(17, 0, 0).unwrap()),
+            "departAfter=17:00 must populate depart_after, not silently leave it None \
+             (which the handler then defaults to NaiveTime::MIN, searching from 00:00)"
+        );
+    }
+
+    /// The old, non-wire key must NOT work -- otherwise this test would
+    /// pass for the wrong reason (e.g. some other default) rather than
+    /// proving the camelCase rename is what did it.
+    #[test]
+    fn the_old_snake_case_key_no_longer_matches() {
+        let uri: axum::http::Uri = "http://example.com/Trips/plan?origin=EUS&destination=MKC&\
+                                     date=2026-09-23&depart_after=17:00"
+            .parse()
+            .expect("parse uri");
+        let Query(params) =
+            Query::<TripPlanParams>::try_from_uri(&uri).expect("valid query string");
+        assert_eq!(
+            params.depart_after, None,
+            "depart_after (snake_case) is not this route's documented wire key; it must be \
+             silently ignored just like any other unknown query key, not accidentally accepted"
+        );
     }
 }
 
@@ -431,13 +485,24 @@ mod db_tests {
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
     async fn a_real_seeded_connection_is_found_end_to_end() {
+        // Regression test for a final-whole-branch-review finding: the
+        // origin/destination CRS codes here (and their underlying TIPLOCs)
+        // must be entirely synthetic, not real ones like EUS/MKC. On any
+        // database that already has real EUS/MKC reference data (i.e. any
+        // real deployment), a search keyed on the real EUSTON/MILTNKC
+        // TIPLOCs would match every real service touching them on this
+        // date too, not just the one seeded below -- and a real, faster
+        // service could easily beat the seeded one, breaking the
+        // `trainUid == "TESTPLAN1"` assertion. Using synthetic TIPLOCs that
+        // no real schedule data could ever reference keeps the search
+        // space provably isolated.
         let pool = connect().await;
         let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
-             VALUES ($1, 'TESTPLAN1', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
-                    ($1, 'TESTPLAN1', 1, 'MILTNKC', 'terminate', '08:50:00', NULL, 0) \
+             VALUES ($1, 'TESTPLAN1', 0, 'TESTPL1O', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLAN1', 1, 'TESTPL1D', 'terminate', '08:50:00', NULL, 0) \
              ON CONFLICT DO NOTHING",
         )
         .bind(date)
@@ -446,8 +511,8 @@ mod db_tests {
         .expect("seed calling points");
         sqlx::query(
             "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
-             VALUES ('TESTPLAN-EUS', 'EUS', 'EUSTON', 'LONDON EUSTON', 1), \
-                    ('TESTPLAN-MKC', 'MKC', 'MILTNKC', 'MILTON KEYNES CENTRAL', 1) \
+             VALUES ('TESTPLAN-ZZA', 'ZZA', 'TESTPL1O', 'TEST PLAN ORIGIN', 1), \
+                    ('TESTPLAN-ZZB', 'ZZB', 'TESTPL1D', 'TEST PLAN DESTINATION', 1) \
              ON CONFLICT (stanox) DO NOTHING",
         )
         .execute(&pool)
@@ -457,14 +522,14 @@ mod db_tests {
         let router = test_router(test_app(pool.clone()));
         let (status, body) = get(
             router,
-            format!("/Trips/plan?origin=EUS&destination=MKC&date={date}"),
+            format!("/Trips/plan?origin=ZZA&destination=ZZB&date={date}"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body:?}");
         let segments = body["segments"].as_array().expect("segments array");
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0]["originCrs"], "EUS");
-        assert_eq!(segments[0]["destinationCrs"], "MKC");
+        assert_eq!(segments[0]["originCrs"], "ZZA");
+        assert_eq!(segments[0]["destinationCrs"], "ZZB");
         let itineraries = segments[0]["itineraries"]
             .as_array()
             .expect("itineraries array");
@@ -475,7 +540,7 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLAN-%'")
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLAN-ZZ%'")
             .execute(&pool)
             .await
             .ok();
@@ -487,28 +552,36 @@ mod db_tests {
     async fn options_mode_excludes_results_over_the_cap_but_flags_when_capped() {
         let pool = connect().await;
         let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 25).unwrap();
-        // Within-cap route: 2 changes (3 legs), EUS -> A -> B -> MKC.
-        // Over-cap-but-faster route: 3 changes (4 legs), EUS -> P -> Q -> R -> MKC,
-        // arriving strictly before the within-cap route -- so `options`
-        // mode must exclude it from `itineraries` but flag
-        // `cappedByMaxChanges: true`.
+        // Within-cap route: 2 changes (3 legs), ORIGIN -> A -> B -> DEST.
+        // Over-cap-but-faster route: 3 changes (4 legs),
+        // ORIGIN -> P -> Q -> R -> DEST, arriving strictly before the
+        // within-cap route -- so `options` mode must exclude it from
+        // `itineraries` but flag `cappedByMaxChanges: true`.
+        //
+        // Regression test for a final-whole-branch-review finding: ORIGIN
+        // and DEST here are entirely synthetic CRS codes/TIPLOCs, not real
+        // ones like EUS/MKC -- same reasoning as
+        // `a_real_seeded_connection_is_found_end_to_end` above: real
+        // background data for a real CRS/TIPLOC could add extra
+        // within-cap routes and break the `itineraries.len() == 1`
+        // assertion below.
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
-             VALUES ($1, 'TESTPLANCAPA', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+             VALUES ($1, 'TESTPLANCAPA', 0, 'TESTPCEO', 'origin', NULL, '08:00:00', 0), \
                     ($1, 'TESTPLANCAPA', 1, 'TESTPLA', 'terminate', '08:15:00', NULL, 0), \
                     ($1, 'TESTPLANCAPB', 0, 'TESTPLA', 'origin', NULL, '08:20:00', 0), \
                     ($1, 'TESTPLANCAPB', 1, 'TESTPLB', 'terminate', '08:35:00', NULL, 0), \
                     ($1, 'TESTPLANCAPC', 0, 'TESTPLB', 'origin', NULL, '08:40:00', 0), \
-                    ($1, 'TESTPLANCAPC', 1, 'MILTNKC', 'terminate', '09:00:00', NULL, 0), \
-                    ($1, 'TESTPLANFASTA', 0, 'EUSTON', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANCAPC', 1, 'TESTPCMD', 'terminate', '09:00:00', NULL, 0), \
+                    ($1, 'TESTPLANFASTA', 0, 'TESTPCEO', 'origin', NULL, '08:00:00', 0), \
                     ($1, 'TESTPLANFASTA', 1, 'TESTPLP', 'terminate', '08:10:00', NULL, 0), \
                     ($1, 'TESTPLANFASTB', 0, 'TESTPLP', 'origin', NULL, '08:15:00', 0), \
                     ($1, 'TESTPLANFASTB', 1, 'TESTPLQ', 'terminate', '08:20:00', NULL, 0), \
                     ($1, 'TESTPLANFASTC', 0, 'TESTPLQ', 'origin', NULL, '08:25:00', 0), \
                     ($1, 'TESTPLANFASTC', 1, 'TESTPLR', 'terminate', '08:30:00', NULL, 0), \
                     ($1, 'TESTPLANFASTD', 0, 'TESTPLR', 'origin', NULL, '08:35:00', 0), \
-                    ($1, 'TESTPLANFASTD', 1, 'MILTNKC', 'terminate', '08:45:00', NULL, 0) \
+                    ($1, 'TESTPLANFASTD', 1, 'TESTPCMD', 'terminate', '08:45:00', NULL, 0) \
              ON CONFLICT DO NOTHING",
         )
         .bind(date)
@@ -517,8 +590,8 @@ mod db_tests {
         .expect("seed calling points");
         sqlx::query(
             "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
-             VALUES ('TESTPLANCAP-EUS', 'EUS', 'EUSTON', 'LONDON EUSTON', 1), \
-                    ('TESTPLANCAP-MKC', 'MKC', 'MILTNKC', 'MILTON KEYNES CENTRAL', 1) \
+             VALUES ('TESTPLANCAP-ZZC', 'ZZC', 'TESTPCEO', 'TEST CAP ORIGIN', 1), \
+                    ('TESTPLANCAP-ZZD', 'ZZD', 'TESTPCMD', 'TEST CAP DESTINATION', 1) \
              ON CONFLICT (stanox) DO NOTHING",
         )
         .execute(&pool)
@@ -535,7 +608,7 @@ mod db_tests {
         let router = test_router(test_app(pool.clone()));
         let (status, body) = get(
             router,
-            format!("/Trips/plan?origin=EUS&destination=MKC&date={date}&results=options"),
+            format!("/Trips/plan?origin=ZZC&destination=ZZD&date={date}&results=options"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body:?}");

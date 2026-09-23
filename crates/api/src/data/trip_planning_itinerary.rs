@@ -64,8 +64,23 @@ pub struct PlannedItinerary {
     pub exceeds_recommended_changes: Option<bool>,
 }
 
+/// Normalizes `tiploc` before the lookup -- every other TIPLOC-keyed lookup
+/// in this codebase does the same, at its own point of use, because a real
+/// production incident (2026-09-16, "Unknown location" -- see
+/// `data::trip_planning`'s own doc comments and its
+/// `a_padded_tiploc_from_calling_points_full_still_matches_bare_stanox_crs_change_time`
+/// test) was caused by exactly this bug: a padded/un-normalized TIPLOC
+/// (as flows through this whole system, straight off
+/// `schedule_calling_points_full.tiploc`) failing to match a bare-keyed
+/// lookup table. `tiploc_to_crs` is built from `stanox_crs`, which is
+/// bare-keyed just like `change_time_by_tiploc` -- see
+/// `trip_planner::csa`'s `ready_source_at`/`relax`/`relax_fixed_links`,
+/// which normalize for the same reason.
 fn crs_for_tiploc(interchange: &InterchangeData, tiploc: &str) -> Option<String> {
-    interchange.tiploc_to_crs.get(tiploc).cloned()
+    interchange
+        .tiploc_to_crs
+        .get(schedule_query::normalize_tiploc(tiploc))
+        .cloned()
 }
 
 fn minutes_to_clock(total_minutes: u32) -> (NaiveTime, u8) {
@@ -429,6 +444,102 @@ mod tests {
         assert!(
             capped,
             "a strictly faster, over-cap itinerary exists and must be flagged"
+        );
+    }
+
+    #[test]
+    fn planned_leg_normalizes_a_padded_tiploc_before_resolving_its_crs() {
+        // Regression test for a final-whole-branch-review finding:
+        // `TrainLeg::from_tiploc`/`to_tiploc` come straight off
+        // `Connection` (`reconstruct_legs`'s own `boarded.from_tiploc.clone()`
+        // in `trip_planner::csa`), which itself comes straight off
+        // `schedule_calling_points_full.tiploc` -- still padded, per
+        // `data::trip_planning`'s own 2026-09-16 "Unknown location"
+        // incident doc comments. `tiploc_to_crs` is bare-keyed (built from
+        // `stanox_crs`), so `crs_for_tiploc` must normalize the TIPLOC
+        // before the lookup or a padded TIPLOC silently resolves to `None`
+        // -- exactly the class of bug that incident was.
+        let connections = vec![conn("U1", "EUSTON ", "MKC", 480, 530)];
+        let interchange = interchange_with_change_times(
+            // Bare-keyed, matching how `tiploc_to_crs`/`crs_to_tiplocs` are
+            // really built from `stanox_crs`.
+            &[("EUS", "EUSTON"), ("MKC", "MKC")],
+            &[("EUSTON", 0), ("MKC", 0)],
+        );
+        let (itineraries, _) = plan_segment(
+            &connections,
+            &interchange,
+            date(),
+            "EUS",
+            "MKC",
+            NaiveTime::MIN,
+            "fastest",
+        )
+        .unwrap();
+        assert_eq!(itineraries.len(), 1);
+        let PlannedLeg::Train {
+            origin_crs,
+            destination_crs,
+            ..
+        } = &itineraries[0].legs[0]
+        else {
+            panic!("expected a train leg, got {:?}", itineraries[0].legs[0]);
+        };
+        assert_eq!(
+            origin_crs.as_deref(),
+            Some("EUS"),
+            "a padded TIPLOC ('EUSTON ') must still resolve to its CRS against a \
+             bare-keyed tiploc_to_crs map"
+        );
+        assert_eq!(destination_crs.as_deref(), Some("MKC"));
+    }
+
+    #[test]
+    fn plan_via_waypoints_returns_one_segment_result_per_hop_in_order() {
+        // Every existing waypoint test only exercises the FAILURE path.
+        // This proves the happy path: a two-segment (one intermediate
+        // waypoint) request returns one `SegmentResult` per hop, in order,
+        // each with the right origin/destination CRS pair and at least one
+        // real itinerary.
+        let connections = vec![
+            // EUS -> MKC (first hop).
+            conn("U1", "EUSTON", "MILTNKC", 480, 530),
+            // MKC -> MAN (second hop) -- departs after the first hop
+            // arrives, though `plan_via_waypoints` solves each hop
+            // independently and doesn't require this ordering.
+            conn("U2", "MILTNKC", "MANCPIC", 600, 660),
+        ];
+        let interchange = interchange_with_change_times(
+            &[("EUS", "EUSTON"), ("MKC", "MILTNKC"), ("MAN", "MANCPIC")],
+            &[("EUSTON", 0), ("MILTNKC", 0), ("MANCPIC", 0)],
+        );
+
+        let segments = plan_via_waypoints(
+            &connections,
+            &interchange,
+            date(),
+            "EUS",
+            &["MKC".to_string()],
+            "MAN",
+            NaiveTime::MIN,
+            "fastest",
+        )
+        .unwrap();
+
+        assert_eq!(segments.len(), 2, "one SegmentResult per hop: {segments:?}");
+
+        assert_eq!(segments[0].origin_crs, "EUS");
+        assert_eq!(segments[0].destination_crs, "MKC");
+        assert!(
+            !segments[0].itineraries.is_empty(),
+            "the first hop has a real, findable route and must return at least one itinerary"
+        );
+
+        assert_eq!(segments[1].origin_crs, "MKC");
+        assert_eq!(segments[1].destination_crs, "MAN");
+        assert!(
+            !segments[1].itineraries.is_empty(),
+            "the second hop has a real, findable route and must return at least one itinerary"
         );
     }
 
