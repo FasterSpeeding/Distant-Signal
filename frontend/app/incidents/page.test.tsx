@@ -5,6 +5,17 @@ import IncidentsPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import type { LineSummary, Suggestion } from '@/lib/types';
 
+// `IncidentSearchForm` now calls `useRouter`/`usePathname` (train-search-
+// state-persistence-design task 5) to keep this page's URL in sync with the
+// last search that ran -- outside a real Next.js app router tree (which
+// this unit test doesn't mount), those hooks throw ("invariant expected app
+// router to be mounted") the instant the form renders. Same fix, same mock
+// shape, as `app/trains/page.test.tsx`'s identical mock for `TrainSearchForm`.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => '/incidents',
+}));
+
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>();
   return { ...actual, getAllLines: vi.fn(), getAllTocs: vi.fn() };

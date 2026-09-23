@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useId, useState, type FormEvent } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   Alert,
   Badge,
@@ -33,6 +34,20 @@ const MAX_LINE_BADGES = 4;
 
 function calendarDaysAgo(days: number): string {
   return dayjs().subtract(days, 'day').format('YYYY-MM-DD');
+}
+
+/** Parses `priority_min`/`priority_max`'s raw URL string into the numeric
+ * value `priorityMin`/`priorityMax` state expects, folding "absent" and
+ * "not a number at all" into the same `''` (blank) result `NumberInput`
+ * already treats as "no filter" -- same "malformed means absent" posture
+ * `app/track/page.tsx`'s `validTimeParam`/`ticketIdParam` already take
+ * elsewhere in this codebase, just applied inside the component rather than
+ * the page since these two params aren't pre-validated by their caller.
+ * Never throws on a garbage value in the URL. */
+function parsePriorityParam(value: string | undefined): number | '' {
+  if (value === undefined) return '';
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? '' : parsed;
 }
 
 /** A `nothingFoundMessage` node, not a plain string: Mantine's own
@@ -109,6 +124,10 @@ export function IncidentSearchForm({
   initialLine = '',
   initialFrom = '',
   initialTo = '',
+  initialPlanned,
+  initialCleared,
+  initialPriorityMin,
+  initialPriorityMax,
 }: {
   lines: LineSummary[];
   tocs: Suggestion[];
@@ -116,7 +135,13 @@ export function IncidentSearchForm({
   initialLine?: string;
   initialFrom?: string;
   initialTo?: string;
+  initialPlanned?: string;
+  initialCleared?: string;
+  initialPriorityMin?: string;
+  initialPriorityMax?: string;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const periodLabelId = useId();
   const typeLabelId = useId();
   const statusLabelId = useId();
@@ -136,10 +161,14 @@ export function IncidentSearchForm({
   );
   const [toDate, setToDate] = useState<string | null>(initialTo ? initialTo.slice(0, 10) : null);
   const [preset, setPreset] = useState<DatePreset | null>(initialFrom ? null : '30d');
-  const [plannedFilter, setPlannedFilter] = useState<'all' | 'planned' | 'realtime'>('all');
-  const [clearedFilter, setClearedFilter] = useState<'all' | 'active' | 'cleared'>('all');
-  const [priorityMin, setPriorityMin] = useState<number | ''>('');
-  const [priorityMax, setPriorityMax] = useState<number | ''>('');
+  const [plannedFilter, setPlannedFilter] = useState<'all' | 'planned' | 'realtime'>(
+    initialPlanned === 'true' ? 'planned' : initialPlanned === 'false' ? 'realtime' : 'all',
+  );
+  const [clearedFilter, setClearedFilter] = useState<'all' | 'active' | 'cleared'>(
+    initialCleared === 'false' ? 'active' : initialCleared === 'true' ? 'cleared' : 'all',
+  );
+  const [priorityMin, setPriorityMin] = useState<number | ''>(parsePriorityParam(initialPriorityMin));
+  const [priorityMax, setPriorityMax] = useState<number | ''>(parsePriorityParam(initialPriorityMax));
   const [results, setResults] = useState<Results>(null);
   const [searching, setSearching] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -240,7 +269,23 @@ export function IncidentSearchForm({
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (!priorityValid || searching) return;
-    await runSearch(searchParamsFor().toString());
+    // Keep this /incidents history entry's URL in sync with the last search
+    // that actually ran, so following a result to
+    // `/incidents/[incidentId]` and pressing Back can restore both the form
+    // and the results, rather than re-delivering the stale URL /incidents
+    // first loaded with (see
+    // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
+    // §3.1). `replace`, not `push`: this keeps /incidents a single history
+    // entry whose URL stays current, not a new Back-button stop on every
+    // search -- mirrors `TrainSearchForm.tsx`'s own identical use.
+    // Deliberately NOT done from the mount effect below (§3.3) -- only an
+    // explicit Search press writes to the URL. The same query string that
+    // is written to the URL is what actually gets searched, for the same
+    // reason `runSearch`'s `query` argument is captured by the caller
+    // rather than rebuilt inside it (see `runSearch`'s own comment).
+    const query = searchParamsFor().toString();
+    router.replace(`${pathname}?${query}`, { scroll: false });
+    await runSearch(query);
   }
 
   /** Review §3.3: the archive used to land on an empty "Press Search to
@@ -254,7 +299,27 @@ export function IncidentSearchForm({
    * Search button's own job (`handleSubmit`). The `query` guard is mostly
    * defensive: today it is always non-empty because of the 30-day floor,
    * but a future change removing that default must not turn this into an
-   * unasked-for "search everything" on every page load. */
+   * unasked-for "search everything" on every page load.
+   *
+   * Also restores `plannedFilter`/`clearedFilter`/`priorityMin`/
+   * `priorityMax` from the URL now, not just the default 30-day-floor
+   * search this comment originally described: once those four fields'
+   * own `initialX` props seed the `useState`s above, this same
+   * `searchParamsFor()` call picks them up for free, with no logic change
+   * needed here. That is what lets a Back-navigation after visiting
+   * `/incidents/[incidentId]` restore the RESULTS too, not just the form
+   * fields -- see
+   * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
+   * §3.3.
+   *
+   * Known, accepted limitation (§3.4): if the visitor had pressed "Load
+   * more" one or more times before leaving, only PAGE 1 of that result set
+   * is reconstructed here -- `results.nextCursor` is server-issued opaque
+   * pagination state with no representation in `searchParamsFor()`/the URL
+   * at all, so there is nothing for this effect to resume from. This
+   * re-runs the FIRST page of the same search, not a resume of exactly
+   * where "Load more" had gotten to -- a correct, if smaller, restoration
+   * rather than a wrong one, and not a bug to fix in this pass. */
   useEffect(() => {
     const query = searchParamsFor().toString();
     if (query) void runSearch(query);
