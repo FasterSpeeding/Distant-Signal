@@ -15,6 +15,14 @@ pub struct CompleteDelivery {
     pub dir_name: String,
     pub mca_path: PathBuf,
     pub msn_path: PathBuf,
+    /// `None` when this delivery directory has no `RJTTF*ALF.txt`-shaped
+    /// file -- deliberately NOT a completeness requirement (see this
+    /// plan's Judgment Call 1): a delivery missing MCA or MSN is still
+    /// skipped entirely (unchanged below), but a delivery missing ONLY
+    /// ALF is still `Some(CompleteDelivery)`, with fixed-links publishing
+    /// degrading gracefully for that one cycle (Task 6) rather than
+    /// stalling the whole pipeline.
+    pub alf_path: Option<PathBuf>,
 }
 
 /// The most-recent (by directory name, which sorts lexicographically ==
@@ -62,10 +70,12 @@ pub fn latest_complete_delivery(storage_dir: &Path) -> anyhow::Result<Option<Com
         let mca_path = find_file_matching(&dir, "RJTTF", "MCA.txt")?;
         let msn_path = find_file_matching(&dir, "RJTTF", "MSN.txt")?;
         if let (Some(mca_path), Some(msn_path)) = (mca_path, msn_path) {
+            let alf_path = find_file_matching(&dir, "RJTTF", "ALF.txt")?;
             return Ok(Some(CompleteDelivery {
                 dir_name: name,
                 mca_path,
                 msn_path,
+                alf_path,
             }));
         }
     }
@@ -120,6 +130,10 @@ mod tests {
             delivery.msn_path,
             dir.path().join("20260902T090000Z/RJTTF941MSN.txt")
         );
+        assert_eq!(
+            delivery.alf_path, None,
+            "no ALF file was created in this fixture -- completeness must not depend on it"
+        );
     }
 
     #[test]
@@ -153,5 +167,40 @@ mod tests {
 
         let delivery = latest_complete_delivery(dir.path()).unwrap().unwrap();
         assert_eq!(delivery.dir_name, "20260902T090000Z");
+        assert_eq!(
+            delivery.alf_path, None,
+            "no ALF file was created in this fixture -- completeness must not depend on it"
+        );
+    }
+
+    #[test]
+    fn a_delivery_with_all_three_files_resolves_the_alf_path_too() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("20260903T090000Z")).unwrap();
+        touch(dir.path(), "20260903T090000Z", "RJTTF942MCA.txt");
+        touch(dir.path(), "20260903T090000Z", "RJTTF942MSN.txt");
+        touch(dir.path(), "20260903T090000Z", "RJTTF942ALF.txt");
+
+        let delivery = latest_complete_delivery(dir.path()).unwrap().unwrap();
+        assert_eq!(
+            delivery.alf_path,
+            Some(dir.path().join("20260903T090000Z/RJTTF942ALF.txt"))
+        );
+    }
+
+    #[test]
+    fn a_delivery_missing_only_alf_is_still_a_complete_delivery() {
+        // The exact risk Judgment Call 1 exists to prevent: a real
+        // delivery whose zip has no ALF member at all must not stall the
+        // whole pipeline.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("20260903T090000Z")).unwrap();
+        touch(dir.path(), "20260903T090000Z", "RJTTF942MCA.txt");
+        touch(dir.path(), "20260903T090000Z", "RJTTF942MSN.txt");
+        // No ALF file at all.
+
+        let delivery = latest_complete_delivery(dir.path()).unwrap().unwrap();
+        assert_eq!(delivery.dir_name, "20260903T090000Z");
+        assert_eq!(delivery.alf_path, None);
     }
 }
