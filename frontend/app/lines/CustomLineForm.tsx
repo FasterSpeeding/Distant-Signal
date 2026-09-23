@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { Alert, Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
-import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
+import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { useNeedsLogin } from '@/components/useNeedsLogin';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
@@ -192,41 +192,11 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           placeholder="e.g. Woking or WOK"
           value={stationInput}
           onChange={setStationInput}
-          // `data`'s `label` — not `value` — is what Mantine's Autocomplete
-          // writes into the field on selection (confirmed by reading its
-          // source: `handleValueChange(optionsLockup[val].label)`), the
-          // opposite of TagsInput below. So `label` is set to the code
-          // itself here, and the friendlier "code — name" text is rendered
-          // dropdown-only via `renderOption`, which doesn't affect what
-          // gets written into the field.
-          // `withNoMatchPlaceholder`: `Autocomplete` (unlike Select/
-          // MultiSelect) has no `nothingFoundMessage` prop at all in this
-          // Mantine version -- it hides its whole dropdown outright
-          // whenever `data` is empty, which is exactly the gap this form's
-          // own Operator/Line fields hit before this app's very first fix
-          // for it (`components/IncidentSearchForm.tsx`). See
-          // `lib/autocompleteNoMatch.ts` for why swapping in a single
-          // inert placeholder option, rather than an empty array, is the
-          // available workaround here.
-          data={withNoMatchPlaceholder(
-            stationSuggestions.map((s) => ({ value: s.code, label: s.code })),
-            'No matching stations',
-            { active: stationInput.trim().length > 0 && !stationSuggestionsLoading },
-          )}
-          // `stationSuggestions` is already server-side filtered (the API
-          // matches the search term against both CRS code and station
-          // name), so Mantine's default client-side re-filtering -- which
-          // only checks `label` (the code) -- would hide correct matches
-          // when the user searched by station name instead of code.
-          // Disable it: show whatever `stationSuggestions` already
-          // contains, unfiltered further. Same fix as `StationSearchForm`.
-          filter={({ options }) => options}
-          renderOption={({ option }) => {
-            const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-            if (placeholder) return placeholder;
-            const match = stationSuggestions.find((s) => s.code === option.value);
-            return match ? `${match.code} — ${match.name}` : option.value;
-          }}
+          {...suggestionAutocompleteProps(stationSuggestions, {
+            query: stationInput,
+            loading: stationSuggestionsLoading,
+            noMatchMessage: 'No matching stations',
+          })}
         />
         {/* Not gated on `.length === 3` any more -- a typed station name
          * (e.g. "Woking") is longer than 3 characters but still resolves

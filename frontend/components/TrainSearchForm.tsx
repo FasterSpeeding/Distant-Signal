@@ -11,7 +11,7 @@ import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
-import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
+import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 /** The exact `"HH:MM"` shape the four time filters put on the wire
@@ -659,21 +659,11 @@ export function TrainSearchForm({
         description="Any station this train calls at along its route."
         value={stationCrs}
         onChange={setStationCrs}
-        // `withNoMatchPlaceholder`: `Autocomplete` has no
-        // `nothingFoundMessage` prop in this Mantine version -- see
-        // `lib/autocompleteNoMatch.ts`.
-        data={withNoMatchPlaceholder(
-          stationSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching stations',
-          { active: stationCrs.trim().length > 0 && !stationSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-          if (placeholder) return placeholder;
-          const match = stationSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
+        {...suggestionAutocompleteProps(stationSuggestions, {
+          query: stationCrs,
+          loading: stationSuggestionsLoading,
+          noMatchMessage: 'No matching stations',
+        })}
         error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter CRS code' : null}
         required
       />
@@ -698,18 +688,11 @@ export function TrainSearchForm({
         description="Where the journey actually begins."
         value={originCrs}
         onChange={setOriginCrs}
-        data={withNoMatchPlaceholder(
-          originSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching stations',
-          { active: originCrs.trim().length > 0 && !originSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-          if (placeholder) return placeholder;
-          const match = originSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
+        {...suggestionAutocompleteProps(originSuggestions, {
+          query: originCrs,
+          loading: originSuggestionsLoading,
+          noMatchMessage: 'No matching stations',
+        })}
         error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
       />
       <Autocomplete
@@ -718,18 +701,11 @@ export function TrainSearchForm({
         description="A station this train reaches later in its journey than Station, its destination included."
         value={stopsAt}
         onChange={setStopsAt}
-        data={withNoMatchPlaceholder(
-          stopsAtSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching stations',
-          { active: stopsAt.trim().length > 0 && !stopsAtSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-          if (placeholder) return placeholder;
-          const match = stopsAtSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
+        {...suggestionAutocompleteProps(stopsAtSuggestions, {
+          query: stopsAt,
+          loading: stopsAtSuggestionsLoading,
+          noMatchMessage: 'No matching stations',
+        })}
         error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter CRS code' : null}
       />
       {/* All four time filters are `TimeFilterInput` -- a native

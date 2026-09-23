@@ -9,7 +9,7 @@ import { LoginPromptModal } from './LoginPromptModal';
 import { TextLink } from './TextLink';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
-import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
+import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -419,21 +419,11 @@ export function TicketEntryForm({
                 setOperator(value);
                 clearAutoFilled('operator');
               }}
-              // `withNoMatchPlaceholder`: `Autocomplete` has no
-              // `nothingFoundMessage` prop in this Mantine version -- see
-              // `lib/autocompleteNoMatch.ts`.
-              data={withNoMatchPlaceholder(
-                operatorSuggestions.map((s) => ({ value: s.code, label: s.code })),
-                'No matching operators',
-                { active: operator.trim().length > 0 && !operatorSuggestionsLoading },
-              )}
-              filter={({ options }) => options}
-              renderOption={({ option }) => {
-                const placeholder = noMatchOptionContent(option.value, 'No matching operators');
-                if (placeholder) return placeholder;
-                const match = operatorSuggestions.find((s) => s.code === option.value);
-                return match ? `${match.code} — ${match.name}` : option.value;
-              }}
+              {...suggestionAutocompleteProps(operatorSuggestions, {
+                query: operator,
+                loading: operatorSuggestionsLoading,
+                noMatchMessage: 'No matching operators',
+              })}
               description={autoFilled.has('operator') ? 'Auto-filled — please check this value' : undefined}
             />
             <TextInput
@@ -454,18 +444,11 @@ export function TicketEntryForm({
                 setOriginCrs(value);
                 clearAutoFilled('originCrs');
               }}
-              data={withNoMatchPlaceholder(
-                originSuggestions.map((s) => ({ value: s.code, label: s.code })),
-                'No matching stations',
-                { active: originCrs.trim().length > 0 && !originSuggestionsLoading },
-              )}
-              filter={({ options }) => options}
-              renderOption={({ option }) => {
-                const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-                if (placeholder) return placeholder;
-                const match = originSuggestions.find((s) => s.code === option.value);
-                return match ? `${match.code} — ${match.name}` : option.value;
-              }}
+              {...suggestionAutocompleteProps(originSuggestions, {
+                query: originCrs,
+                loading: originSuggestionsLoading,
+                noMatchMessage: 'No matching stations',
+              })}
               error={!originValid ? 'Must be a 3-letter CRS code' : null}
               description={
                 autoFilled.has('originCrs') ? 'Auto-filled — please check this is a real 3-letter CRS code' : undefined
@@ -479,18 +462,11 @@ export function TicketEntryForm({
                 setDestinationCrs(value);
                 clearAutoFilled('destinationCrs');
               }}
-              data={withNoMatchPlaceholder(
-                destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
-                'No matching stations',
-                { active: destinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
-              )}
-              filter={({ options }) => options}
-              renderOption={({ option }) => {
-                const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-                if (placeholder) return placeholder;
-                const match = destinationSuggestions.find((s) => s.code === option.value);
-                return match ? `${match.code} — ${match.name}` : option.value;
-              }}
+              {...suggestionAutocompleteProps(destinationSuggestions, {
+                query: destinationCrs,
+                loading: destinationSuggestionsLoading,
+                noMatchMessage: 'No matching stations',
+              })}
               error={!destinationValid ? 'Must be a 3-letter CRS code' : null}
               description={
                 autoFilled.has('destinationCrs')
