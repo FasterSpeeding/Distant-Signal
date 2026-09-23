@@ -327,6 +327,19 @@ mod change_time_tests {
     use super::msn_tests::{A_HEADER, A_WATRLMN};
     use super::*;
 
+    // Clearly-labeled SYNTHETIC-but-byte-layout-correct line: a real 98/99
+    // sentinel station's exact byte-for-byte `A` line was not available to
+    // this task's implementation pass (no live delivery -- see
+    // parse_msn_change_time_by_tiploc's own doc comment), so this is built
+    // at the same real-byte-verified TIPLOC (`36..43`) and change-time
+    // (`63..65`) offsets, per this crate's own "quote real bytes when
+    // available, clearly mark anything else synthetic" convention
+    // (`crates/schedule-query/src/records.rs:130-136`'s sibling
+    // precedent). Every other byte is blank filler -- only the two fields
+    // this parser reads are meaningful.
+    const A_SENTINEL_SYNTHETIC: &str =
+        "A                                   SENTNL                     98";
+
     #[test]
     fn extracts_the_change_time_for_a_real_a_record() {
         let map = parse_msn_change_time_by_tiploc(A_WATRLMN);
@@ -351,6 +364,17 @@ mod change_time_tests {
     fn a_tiploc_with_no_msn_record_at_all_is_absent_not_zero() {
         let map = parse_msn_change_time_by_tiploc("");
         assert_eq!(map.get("ANYTPL"), None);
+    }
+
+    #[test]
+    fn a_98_99_sentinel_is_stored_as_a_real_present_value_not_confused_with_absence() {
+        // A sentinel (98/99) is a genuinely present, real recorded value --
+        // distinct from `None` ("no MSN record matched this TIPLOC at
+        // all", see the a_tiploc_with_no_msn_record_at_all_is_absent_not_zero
+        // case above). This function must not special-case or filter it
+        // out (Judgment Call 3: no default/sentinel interpretation here).
+        let map = parse_msn_change_time_by_tiploc(A_SENTINEL_SYNTHETIC);
+        assert_eq!(map.get("SENTNL"), Some(&98));
     }
 }
 
@@ -392,6 +416,20 @@ mod resolve_tests {
                 change_time_minutes: None,
             }]
         );
+    }
+
+    #[test]
+    fn a_matched_change_time_wires_through_as_some_not_just_the_empty_map_path() {
+        // Every other resolve_tests case passes &HashMap::new() for the
+        // change-time map, which only exercises the "absent" branch of
+        // msn_change_time_by_tiploc.get(&record.tiploc).copied() in
+        // resolve(). This case passes a real entry to confirm the
+        // Some(...) branch actually wires the value onto the resolved row.
+        let ti_records = vec![ti("EUSTON", "LONDON EUSTON", "72410", "EUS")];
+        let change_time = HashMap::from([("EUSTON".to_string(), 5)]);
+        let rows = resolve(&ti_records, &HashMap::new(), &change_time);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].change_time_minutes, Some(5));
     }
 
     #[test]
