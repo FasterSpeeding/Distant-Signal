@@ -109,19 +109,42 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
         // has nowhere to accept them either, so the committed row's
         // origin/destination will again reflect this train's own full
         // route rather than this leg's.
-        const addResponse = await fetch(`/api/Journeys/${created.journeyId}/legs`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'knownTrain', trainUid: leg.trainUid, serviceDate: leg.serviceDate }),
-        });
-        if (!addResponse.ok) {
+        //
+        // This inner try/catch (not just an `if (!addResponse.ok)` check)
+        // is load-bearing: `fetch` itself can reject -- a genuine network
+        // exception (a dropped connection, an aborted request), distinct
+        // from an HTTP error status, which resolves normally -- and by the
+        // time we're in this loop `created` already names a REAL journey
+        // that exists server-side (leg 1 already succeeded). Funnelling
+        // both failure shapes into the same partial-failure branch below
+        // means a network blip here gets the exact same "tell them which
+        // leg failed, still hand off the journey that DOES exist" treatment
+        // an HTTP error already got -- review finding: the previous version
+        // let a thrown exception here escape to the OUTER catch, which
+        // reports a generic failure and never calls `onCreated`, stranding
+        // the visitor even though their journey (with leg 1 already
+        // tracked) is sitting right there.
+        try {
+          const addResponse = await fetch(`/api/Journeys/${created.journeyId}/legs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'knownTrain', trainUid: leg.trainUid, serviceDate: leg.serviceDate }),
+          });
+          if (!addResponse.ok) {
+            throw new Error(await addResponse.text());
+          }
+        } catch (legError) {
           // Partial success: leg 1..i already exist. Tell the visitor
           // exactly which leg failed, then still hand off -- the journey
           // that DOES exist must not strand them (this plan's own Review
           // Focus, matching JourneyCreationFlow's own established
-          // refetch-failure posture).
+          // refetch-failure posture). Covers both an HTTP-error response
+          // (the `throw` above, whose `.message` is the backend's own
+          // plain-text body) and a genuine network exception (whose
+          // `.message` is the browser's own, e.g. "Failed to fetch").
+          const reason = legError instanceof Error ? legError.message : 'a network error';
           setCreationError(
-            `Tracked ${i} of ${trainLegs.length} legs. Adding leg ${i + 1} failed: ${await addResponse.text()}. ` +
+            `Tracked ${i} of ${trainLegs.length} legs. Adding leg ${i + 1} failed: ${reason}. ` +
               'You can add it manually from the journey page.'
           );
           onCreated(created);
