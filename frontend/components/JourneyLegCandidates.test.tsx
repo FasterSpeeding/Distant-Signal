@@ -308,4 +308,147 @@ describe('JourneyLegCandidates', () => {
 
     expect(await screen.findByText('Search failed')).toBeInTheDocument();
   });
+
+  // Regression: EUS-MKC is a high-frequency corridor with two operators'
+  // services interleaved by departure time. The backend's default 50-row
+  // page can genuinely fill up on a moderately wide window, and this
+  // component used to throw `nextCursor` away entirely -- no "Load more",
+  // no indication more results existed, so whichever operator's services
+  // sorted past the cutoff silently vanished. These tests pin the fix:
+  // `TrainSearchForm.test.tsx`'s own "Load more" tests are the pattern
+  // mirrored here.
+  describe('pagination', () => {
+    const PAGE_ONE = [CANDIDATES_FIXTURE.results[0]];
+    const PAGE_TWO = [CANDIDATES_FIXTURE.results[1]];
+
+    function candidatesFetchMock(
+      options: {
+        page1?: () => Response | Promise<Response>;
+        page2?: (url: string) => Response | Promise<Response>;
+      } = {},
+    ) {
+      const {
+        page1 = () => new Response(JSON.stringify({ results: PAGE_ONE, nextCursor: 'CURSOR1' }), { status: 200 }),
+        page2 = () => new Response(JSON.stringify({ results: PAGE_TWO, nextCursor: null }), { status: 200 }),
+      } = options;
+      return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (/\/api\/Journeys\/\d+\/legs\/\d+\/train$/.test(url) && init?.method === 'POST') {
+          return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        }
+        if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates\?/.test(url)) {
+          return Promise.resolve(page2(url));
+        }
+        if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates$/.test(url)) {
+          return Promise.resolve(page1());
+        }
+        throw new Error(`unexpected fetch for ${url}`);
+      });
+    }
+
+    it('does not offer Load more when the response has no nextCursor', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(
+        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+      );
+
+      await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08');
+      expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    });
+
+    it('offers Load more when the first page carries a nextCursor', async () => {
+      vi.stubGlobal('fetch', candidatesFetchMock());
+      renderWithMantine(
+        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+      );
+
+      expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
+    });
+
+    it('appends the second page to the first rather than replacing it, sending after=', async () => {
+      const fetchMock = candidatesFetchMock();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(
+        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+      );
+
+      await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08');
+      fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+      expect(await screen.findByText('dep. BTH 11:02 → arr. SWI 11:38')).toBeInTheDocument();
+      expect(
+        screen.getByText('dep. BTH 10:32 → arr. SWI 11:08'),
+        'page 1 must still be on screen -- Load more appends, it does not replace',
+      ).toBeInTheDocument();
+
+      const candidateCalls = fetchMock.mock.calls
+        .map((call) => String(call[0]))
+        .filter((url) => url.includes('/candidates'));
+      expect(candidateCalls).toEqual([
+        '/api/Journeys/1/legs/2/candidates',
+        '/api/Journeys/1/legs/2/candidates?after=CURSOR1',
+      ]);
+
+      // The control disappears once nextCursor comes back null.
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.getByText("You've reached the end — no more candidate trains match this window."),
+      ).toBeInTheDocument();
+    });
+
+    it('updates the match count to include appended rows', async () => {
+      vi.stubGlobal('fetch', candidatesFetchMock());
+      renderWithMantine(
+        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+      );
+
+      await screen.findByText(/1 train matches your search/);
+      fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+      expect(await screen.findByText(/2 trains match your search/)).toBeInTheDocument();
+    });
+
+    it('reports a failed Load more and keeps the cursor for a retry, without losing page 1', async () => {
+      vi.stubGlobal(
+        'fetch',
+        candidatesFetchMock({ page2: () => new Response('boom', { status: 500 }) }),
+      );
+      renderWithMantine(
+        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+      expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
+      expect(screen.getByText('dep. BTH 10:32 → arr. SWI 11:08')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
+    });
+
+    it('does not double-fetch page 2 when Load more is clicked rapidly', async () => {
+      let resolvePageTwo!: (response: Response) => void;
+      const pageTwo = new Promise<Response>((resolve) => {
+        resolvePageTwo = resolve;
+      });
+      const fetchMock = candidatesFetchMock({ page2: () => pageTwo });
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(
+        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+      );
+
+      const button = await screen.findByRole('button', { name: 'Load more' });
+      fireEvent.click(button);
+      fireEvent.click(button);
+      fireEvent.click(button);
+
+      resolvePageTwo(new Response(JSON.stringify({ results: PAGE_TWO, nextCursor: null }), { status: 200 }));
+      await screen.findByText('dep. BTH 11:02 → arr. SWI 11:38');
+
+      const candidateCalls = fetchMock.mock.calls
+        .map((call) => String(call[0]))
+        .filter((url) => url.includes('after=CURSOR1'));
+      expect(candidateCalls).toHaveLength(1);
+    });
+  });
 });

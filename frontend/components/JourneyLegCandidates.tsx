@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Alert, Button, Group, Stack, Text } from '@mantine/core';
+import { LoadMoreControl } from './LoadMoreControl';
 import { StatusRow } from './StatusRow';
 import { TextLink } from './TextLink';
 
@@ -44,16 +45,42 @@ interface CandidatesResponse {
   nextCursor: string | null;
 }
 
+/** Exactly one of three mutually-exclusive states, mirroring
+ * `TrainSearchForm.tsx`'s own `Results` type for the same reason: `hasRows`
+ * below narrows to the success variant, and `nextCursor`/`loadMoreFailed`
+ * live INSIDE it so a fresh fetch (a `journeyId`/`legId` change) or an error
+ * discard them automatically rather than needing a separate `useState` each
+ * that could survive a state transition it doesn't belong to. */
+type Results =
+  | { rows: CandidateRow[]; nextCursor: string | null; loadMoreFailed: boolean }
+  | 'loading'
+  | 'error'
+  | null;
+
+/** Narrows `Results` to the "has rows" branch -- see `TrainSearchForm.tsx`'s
+ * identical helper. `handleLoadMore`'s early-return guard plus each of its
+ * functional `setResults` updaters need this exact check. */
+function hasRows(
+  results: Results,
+): results is { rows: CandidateRow[]; nextCursor: string | null; loadMoreFailed: boolean } {
+  return results !== null && results !== 'loading' && results !== 'error';
+}
+
 /** The open-leg candidate list + pick action -- design doc §2.2/§2.3/§4.
  * `onPicked` is called after a successful commit; the caller (a
  * `JourneyLegCard`, `frontend/components/JourneyLegCard.tsx`) decides what
- * to do next (typically `router.refresh()`). Pagination (`nextCursor`) is
- * deliberately not implemented in this first pass -- the backend route
- * supports it (same shape `TrainSearchForm.tsx`'s own "Load more" already
- * consumes), but a journey leg's candidate list is expected to be short
- * (a bounded time window, not a whole day's unfiltered search); add a
- * `LoadMoreControl` here, mirroring `TrainSearchForm.tsx`'s own, if that
- * assumption proves wrong in practice. */
+ * to do next (typically `router.refresh()`). Paginates with `nextCursor`
+ * exactly like `TrainSearchForm.tsx`'s own "Load more" does, against the
+ * same `after=`-cursor query param the backend route already accepts
+ * (`crates/api/src/routes/journeys.rs::get_leg_candidates`'s
+ * `CandidatesParams::after`) -- this component used to leave `nextCursor`
+ * on the floor entirely, which on a high-frequency corridor with more than
+ * one operator's services interleaved by departure time (EUS-MKC is the
+ * reported case) silently dropped whichever operator's trains happened to
+ * sort past the default 50-row page, with no indication more results
+ * existed. `LoadMoreControl` is shared with `TrainSearchForm.tsx` and
+ * `IncidentSearchForm.tsx`, so this list gets the same three-state footer
+ * (button / end-of-results line / failed-with-retry) for free. */
 export function JourneyLegCandidates({
   journeyId,
   legId,
@@ -65,9 +92,13 @@ export function JourneyLegCandidates({
   serviceDate: string;
   onPicked: () => void;
 }) {
-  const [results, setResults] = useState<CandidateRow[] | 'loading' | 'error' | null>(null);
+  const [results, setResults] = useState<Results>(null);
   const [picking, setPicking] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
+  // Separate from the initial fetch's own 'loading' state on purpose, same
+  // as TrainSearchForm.tsx's `loadingMore`/`searching` split: a "Load more"
+  // in flight must not blank the rows already on screen.
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,7 +106,7 @@ export function JourneyLegCandidates({
     fetch(`/api/Journeys/${journeyId}/legs/${legId}/candidates`)
       .then((res) => (res.ok ? res.json() : Promise.reject(res)))
       .then((body: CandidatesResponse) => {
-        if (!cancelled) setResults(body.results);
+        if (!cancelled) setResults({ rows: body.results, nextCursor: body.nextCursor, loadMoreFailed: false });
       })
       .catch(() => {
         if (!cancelled) setResults('error');
@@ -84,6 +115,40 @@ export function JourneyLegCandidates({
       cancelled = true;
     };
   }, [journeyId, legId]);
+
+  // Mirrors `TrainSearchForm.tsx`'s own `handleLoadMore` almost verbatim:
+  // the `pagedFrom` identity check guards against a page 2 response landing
+  // after `journeyId`/`legId` has already changed underneath it (this
+  // component's fetch effect above has no analogue of a "fresh search"
+  // button, but a caller can still re-mount this with new props while a
+  // "Load more" is in flight), and a failed page keeps its cursor rather
+  // than nulling it, so the footer's retry is a real one.
+  async function handleLoadMore() {
+    if (!hasRows(results)) return;
+    if (results.nextCursor === null || loadingMore) return;
+    const pagedFrom = results;
+    setLoadingMore(true);
+    try {
+      const params = new URLSearchParams({ after: results.nextCursor });
+      const response = await fetch(
+        `/api/Journeys/${journeyId}/legs/${legId}/candidates?${params.toString()}`,
+      );
+      if (!response.ok) {
+        setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
+        return;
+      }
+      const body: CandidatesResponse = await response.json();
+      setResults((current) =>
+        current === pagedFrom
+          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor, loadMoreFailed: false }
+          : current,
+      );
+    } catch {
+      setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function pick(uid: string) {
     setPicking(uid);
@@ -120,7 +185,7 @@ export function JourneyLegCandidates({
       </Alert>
     );
   }
-  if (results.length === 0) {
+  if (results.rows.length === 0) {
     return (
       <Text size="sm" c="dimmed">
         No scheduled trains match this window.{' '}
@@ -140,13 +205,20 @@ export function JourneyLegCandidates({
           already finished and is just waiting to be picked from. Also
           answers "what happens when I click", which used to be invisible
           until after the (irreversible-looking) click: a picked leg can
-          still be changed later via "Change train" (`JourneyLegCard.tsx`). */}
+          still be changed later via "Change train" (`JourneyLegCard.tsx`).
+          Counts rows LOADED so far, same as the count would read on a
+          single-page result before pagination existed -- on a window with
+          more than one page this undercounts the true total until "Load
+          more" is pressed, which reads as "at least this many", never as a
+          wrong number, the same posture `TrainSearchForm.tsx` takes by
+          simply not stating a total at all. */}
       <Text size="sm" c="dimmed">
-        {results.length} train{results.length === 1 ? '' : 's'} {results.length === 1 ? 'matches' : 'match'} your
-        search — pick the one you&apos;ll be on. You can change it later.
+        {results.rows.length} train{results.rows.length === 1 ? '' : 's'}{' '}
+        {results.rows.length === 1 ? 'matches' : 'match'} your search — pick the one you&apos;ll be on. You can
+        change it later.
       </Text>
       {pickError && <Alert color="red">{pickError}</Alert>}
-      {results.map((row) => (
+      {results.rows.map((row) => (
         <CandidateRowView
           key={`${row.uid}-${row.scheduled}`}
           row={row}
@@ -155,6 +227,13 @@ export function JourneyLegCandidates({
           onPick={() => pick(row.uid)}
         />
       ))}
+      <LoadMoreControl
+        hasMore={results.nextCursor !== null}
+        loading={loadingMore}
+        failed={results.loadMoreFailed}
+        onLoadMore={handleLoadMore}
+        endMessage="You've reached the end — no more candidate trains match this window."
+      />
     </Stack>
   );
 }
