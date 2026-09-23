@@ -23,11 +23,7 @@
 /// this crate parses, and a real source of join bugs if the two are
 /// confused when Phase 2 consumes this data against a TIPLOC-keyed
 /// connections array).
-// Staged for Phase 2 (Task 6) wiring — not yet called by this Task 3
-// (the bin target has no direct consumer). Allowed rather than deleted:
-// the interchange-logic tests in Phase 2 will validate it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct ParsedFixedLink {
     pub mode: String,
     pub from_crs: String,
@@ -57,10 +53,6 @@ pub struct ParsedFixedLink {
 /// extraction -- this crate's own established "skip malformed, never abort"
 /// convention (this plan's Judgment Call 5), diverging deliberately from
 /// the sibling project's own `throw`-on-missing-field posture.
-// Staged for Phase 2 (Task 6) wiring — not yet called by this crate.
-// Allowed rather than deleted: the line-parsing tests in this module
-// validate it.
-#[allow(dead_code)]
 pub fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
     let text = line.trim();
     if text.is_empty() || text.starts_with("/!!") {
@@ -100,10 +92,6 @@ pub fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
 /// ALF file (mirrors `parser::parse_ti_lines`'s own "whole file as one
 /// `&str` in, `Vec` out" shape). A malformed line simply contributes
 /// nothing to the result -- see [`parse_alf_line`]'s own doc comment.
-// Staged for Phase 2 (Task 6) wiring — not yet called by this crate.
-// Allowed rather than deleted: the integration test in this module
-// validates it.
-#[allow(dead_code)]
 pub fn parse_alf_lines(text: &str) -> Vec<ParsedFixedLink> {
     text.lines().filter_map(parse_alf_line).collect()
 }
