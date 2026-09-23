@@ -32,12 +32,16 @@ fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
 /// MKC->MAN service too tight to make the change, and an
 /// EUSTON<->KINGX fixed link with no train involved.
 fn network() -> (Vec<Connection>, InterchangeData) {
+    // Sorted by departure_min ascending, per ScanOptions::connections's and
+    // RaptorOptions::connections's own doc comments -- both algorithms
+    // rely on this order without re-sorting. DIRECT-EARLY and LEG1 tie at
+    // 480; their relative order doesn't matter.
     let connections = vec![
         conn("DIRECT-EARLY", "EUSTON", "MKC", 480, 530),
-        conn("DIRECT-LATE", "EUSTON", "MKC", 600, 650),
         conn("LEG1", "EUSTON", "MKC", 480, 530),
         conn("TOO-TIGHT", "MKC", "MAN", 531, 590),
         conn("LEG2", "MKC", "MAN", 536, 600),
+        conn("DIRECT-LATE", "EUSTON", "MKC", 600, 650),
     ];
     let mut interchange = InterchangeData {
         change_time_by_tiploc: HashMap::new(),
@@ -99,6 +103,10 @@ fn assert_agreement(
         to_tiplocs: &to_tiplocs,
         departure_min,
         date: date(),
+        // Test-only literal, appropriate for this fixture's shallow depth
+        // (at most one change) -- NOT a value to copy elsewhere; see
+        // RaptorOptions::max_rounds's own doc comment against relying on
+        // an unreasoned default.
         max_rounds: 8,
     });
     let raptor_best = raptor_results.iter().map(|j| j.arrival_min).min();
@@ -157,6 +165,12 @@ fn a_fixed_link_only_query_agrees() {
     let (csa, raptor) = assert_agreement(&connections, &interchange, "EUSTON", "KINGX", 480);
     let csa = csa.expect("a fixed-link journey exists");
     assert_eq!(csa.arrival_min, 485);
+    assert_eq!(
+        raptor.len(),
+        1,
+        "exactly one Pareto entry is expected for this fixture -- a future fixture change \
+         adding a second path to KINGX must fail loudly here, not silently index the wrong entry"
+    );
     assert_eq!(raptor[0].changes, 0);
 }
 
