@@ -126,6 +126,37 @@ pub fn parse_msn_a_lines(text: &str) -> HashMap<String, String> {
 /// (`[62,64)`, `[64,66)`, etc.) until one does, then update both this
 /// constant and this doc comment.
 ///
+/// **Supporting evidence for `[63,65)`, beyond the sibling project's own
+/// documentation (still not a substitute for live-delivery confirmation --
+/// see above):** decomposing this crate's own real, already byte-verified
+/// `A_WATRLMN` fixture (`change_time_tests`/`msn_tests`) field-by-field
+/// shows `[63,65)` falls out deterministically once anchored on this
+/// crate's own already-production-verified TIPLOC (`36..43`) and CRS
+/// (`49..52`) offsets -- it is not an independent guess:
+///
+/// ```text
+/// [35]      "3"        CATE interchange status
+/// [36..43]  "WATRLMN"  TIPLOC          (this app's verified offset)
+/// [43..46]  "WAT"      subsidiary 3-alpha
+/// [46..49]  "   "      filler
+/// [49..52]  "WAT"      CRS             (this app's verified, production offset)
+/// [52..57]  "15312"    easting   (5)
+/// [57]      " "        estimated-coords flag (1)
+/// [58..63]  "61798"    northing  (5)
+/// [63..65]  "15"       change time (2)   <- falls out deterministically
+/// ```
+///
+/// This also likely explains Judgment Call 2's worry about this app's and
+/// the sibling project's CRS byte-offsets disagreeing by 6 bytes: the
+/// sibling's documented `44-46` (1-indexed) corresponds to a
+/// 25-character-station-name MSN variant, while this app's real data (the
+/// 30 characters of padded station name visible in `[5..35]` above) uses a
+/// 30-character-station-name variant -- the two are not contradicting each
+/// other, they are describing two different real layout variants of the
+/// same record type. `[63,65)` is the offset that falls out of THIS app's
+/// own 30-character variant, consistently with its own already-verified
+/// TIPLOC/CRS offsets.
+///
 /// Returns the RAW parsed integer, with no default/sentinel interpretation
 /// applied (deliberately -- see this plan's Judgment Call 3): `NULL`
 /// downstream (this function simply omits the entry) means "no MSN record
@@ -340,6 +371,17 @@ mod change_time_tests {
     const A_SENTINEL_SYNTHETIC: &str =
         "A                                   SENTNL                     98";
 
+    // Clearly-labeled SYNTHETIC-but-byte-layout-correct line, same
+    // convention as `A_SENTINEL_SYNTHETIC` directly above: a real,
+    // otherwise-valid-shaped `A` record (>=65 bytes, valid alphanumeric
+    // TIPLOC at `36..43`) whose change-time field (`63..65`) is PRESENT but
+    // BLANK (two spaces) -- distinct from `a_tiploc_with_no_msn_record_at_all_is_absent_not_zero`
+    // below, which tests no `A` record matching the TIPLOC at all. This
+    // tests the field being present-but-empty within a record that DOES
+    // match, the specific risk this plan's own Review Focus section named.
+    const A_BLANK_CHANGE_TIME_SYNTHETIC: &str =
+        "A                                   BLANKTP                      ";
+
     #[test]
     fn extracts_the_change_time_for_a_real_a_record() {
         let map = parse_msn_change_time_by_tiploc(A_WATRLMN);
@@ -364,6 +406,19 @@ mod change_time_tests {
     fn a_tiploc_with_no_msn_record_at_all_is_absent_not_zero() {
         let map = parse_msn_change_time_by_tiploc("");
         assert_eq!(map.get("ANYTPL"), None);
+    }
+
+    #[test]
+    fn a_present_but_blank_change_time_field_is_absent_not_zero_or_a_panic() {
+        // A record that DOES match the TIPLOC, but whose change-time bytes
+        // are blank (not a valid integer), must behave the same as "no MSN
+        // record matched this TIPLOC at all" (see
+        // a_tiploc_with_no_msn_record_at_all_is_absent_not_zero above) --
+        // the TIPLOC is simply absent from the returned map, proven here via
+        // a different, more specific input shape: a present-but-blank
+        // field, not an absent-entirely record.
+        let map = parse_msn_change_time_by_tiploc(A_BLANK_CHANGE_TIME_SYNTHETIC);
+        assert_eq!(map.get("BLANKTP"), None);
     }
 
     #[test]

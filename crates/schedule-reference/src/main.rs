@@ -195,6 +195,25 @@ async fn poll_once(
 /// `poll_once` failure, since fixed-links data degrading for one cycle
 /// must never take down the STANOX/CRS or schedule-population publishes
 /// that already succeeded this same cycle.
+///
+/// Also guards a THIRD failure shape, distinct from an unreadable file
+/// (handled above) or an absent ALF file entirely (guarded by this
+/// function's caller in `poll_once`, which simply never calls this function
+/// when `delivery.alf_path` is `None`): a file that reads fine but parses to
+/// zero links (`alf::parse_alf_lines` returns an empty `Vec` -- a zero-byte,
+/// truncated, or format-changed ALF member). Without this guard, an empty
+/// batch would flow straight through to `post_batch` and `api`'s
+/// `upsert_fixed_links` (a full `DELETE` + zero `INSERT`s) would wipe the
+/// table -- and recovery would NOT be next-cycle, since
+/// `last_processed_delivery` is already advanced by the time this function
+/// runs (`poll_once`, above), so the next poll cycle short-circuits on "no
+/// new delivery" and won't retry until a genuinely new delivery directory
+/// appears (up to a full day for the CIF full timetable). So a zero-parsed
+/// batch is logged at `error` and this cycle's publish is skipped entirely,
+/// leaving the previous cycle's rows in place -- the same "leave the old
+/// rows rather than delete them with nothing to replace them" posture the
+/// absent-file case above already gets, just extended to cover this
+/// distinct, file-present-but-empty shape too.
 async fn publish_fixed_links(
     client: &Client,
     config: &Config,
@@ -210,7 +229,17 @@ async fn publish_fixed_links(
         }
     };
 
-    let records: Vec<common::FixedLinkRecord> = alf::parse_alf_lines(&text)
+    let records = alf::parse_alf_lines(&text);
+
+    if records.is_empty() {
+        tracing::error!(path = ?alf_path, "ALF file parsed to zero fixed links; \
+            skipping publish rather than wiping the table");
+        return;
+    }
+
+    tracing::info!(count = records.len(), "parsed ALF fixed links");
+
+    let records: Vec<common::FixedLinkRecord> = records
         .into_iter()
         .map(|link| common::FixedLinkRecord {
             mode: link.mode,
@@ -223,8 +252,6 @@ async fn publish_fixed_links(
             source_sequence,
         })
         .collect();
-
-    tracing::info!(count = records.len(), "parsed ALF fixed links");
 
     if let Err(err) = common::ingest::post_batch(
         client,

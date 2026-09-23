@@ -66,16 +66,31 @@ pub fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
         }
     }
 
-    let mode = values.get("M")?.to_string();
-    let from_crs = values.get("O")?.to_string();
-    let to_crs = values.get("D")?.to_string();
+    // A key present with an empty value (e.g. `M=,O=AFK,...`) is treated the
+    // same as the key being missing entirely -- both are "not a usable
+    // value" for a required string field. This matches this module's own
+    // "skip malformed, never abort" posture (Judgment Call 5): rather than
+    // let an empty string flow through into a `NOT NULL` column as silent
+    // junk, a blank required field simply fails this line's parse, exactly
+    // like a genuinely absent key already does.
+    fn non_empty(values: &std::collections::HashMap<&str, &str>, key: &str) -> Option<String> {
+        let value = *values.get(key)?;
+        if value.is_empty() {
+            return None;
+        }
+        Some(value.to_string())
+    }
+
+    let mode = non_empty(&values, "M")?;
+    let from_crs = non_empty(&values, "O")?;
+    let to_crs = non_empty(&values, "D")?;
     let minutes: i32 = values.get("T")?.parse().ok()?;
     if minutes < 0 {
         return None;
     }
-    let valid_from = values.get("S")?.to_string();
-    let valid_to = values.get("E")?.to_string();
-    let days_mask = values.get("R")?.to_string();
+    let valid_from = non_empty(&values, "S")?;
+    let valid_to = non_empty(&values, "E")?;
+    let days_mask = non_empty(&values, "R")?;
 
     Some(ParsedFixedLink {
         mode,
@@ -135,6 +150,20 @@ mod tests {
     fn a_line_missing_a_required_field_is_skipped_not_a_panic() {
         assert_eq!(
             parse_alf_line("M=WALK,O=AFK,D=ASI,S=0001,E=2359,R=0000001"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_line_with_a_present_but_blank_required_field_is_skipped_not_stored_as_empty_string() {
+        // Distinct from the MISSING-key case above: here every required key
+        // is present, but `M`'s value is the empty string -- e.g. a
+        // truncated or malformed real line. Without the `non_empty` guard,
+        // this would have parsed successfully into a `ParsedFixedLink` with
+        // `mode: String::new()`, landing as `NOT NULL` empty-string junk in
+        // the `fixed_links` table.
+        assert_eq!(
+            parse_alf_line("M=,O=AFK,D=ASI,T=5,S=0001,E=2359,R=0000001"),
             None
         );
     }
