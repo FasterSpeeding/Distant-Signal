@@ -109,27 +109,55 @@ pub fn validate_template_leg(origin_crs: &str, destination_crs: &str) -> Result<
 }
 
 /// User-facing validation for a template's recurrence fields
-/// (`default_match_mode`/`auto_commit_rule`) -- same pure-validator pattern
-/// as [`validate_template_leg`], called from the PUT route before
-/// persisting so an invalid value comes back as a friendly 400 instead of
-/// a raw Postgres CHECK-constraint 500 from the `journey_templates` table's
-/// own `default_match_mode`/`auto_commit_rule` constraints (Task 1's
-/// migration).
+/// (`default_match_mode`/`auto_commit_rule`/`days_of_week`/`starts_on`/
+/// `ends_on`) -- same pure-validator pattern as [`validate_template_leg`],
+/// called from the PUT route before persisting so an invalid value comes
+/// back as a friendly 400 instead of a raw Postgres CHECK-constraint 500
+/// from the `journey_templates` table's own `default_match_mode`/
+/// `auto_commit_rule` constraints (Task 1's migration).
+///
+/// `auto_commit_rule = Some("earliest")` is rejected here even though the
+/// DB's own CHECK constraint still permits it: per this plan's Judgment
+/// Call 2, `'earliest'` is schema-legal but implementation-unreachable --
+/// no code path ever acts on it, the sweep always uses nearest-to-now
+/// regardless. Accepting it via the API would be a client-facing lie (set
+/// it, read it back, but it's silently never honored), so only `None` and
+/// `Some("nearest_to_now")` are valid going forward. The migration's CHECK
+/// constraint itself deliberately stays as-is, permitting `'earliest'` at
+/// the schema level as the plan's own reserved-value marker -- only this
+/// API-level validator is tightened.
+///
+/// `days_of_week`, when `Some`, must be in `1..=127` -- the full range of
+/// non-empty Mon-Sun bitmask combinations; `None` means "not recurring"
+/// and is always accepted. `starts_on`/`ends_on`, when both `Some`, must
+/// satisfy `starts_on <= ends_on` -- a template whose window starts after
+/// it ends would silently never fire.
 pub fn validate_template_recurrence(
     default_match_mode: &str,
     auto_commit_rule: Option<&str>,
+    days_of_week: Option<i16>,
+    starts_on: Option<NaiveDate>,
+    ends_on: Option<NaiveDate>,
 ) -> Result<(), String> {
     if default_match_mode != "manual" && default_match_mode != "auto" {
         return Err("defaultMatchMode must be either \"manual\" or \"auto\".".to_string());
     }
     if let Some(rule) = auto_commit_rule
-        && rule != "earliest"
         && rule != "nearest_to_now"
     {
+        return Err("autoCommitRule must be \"nearest_to_now\", or left unset.".to_string());
+    }
+    if let Some(days) = days_of_week
+        && !(1..=127).contains(&days)
+    {
         return Err(
-            "autoCommitRule must be either \"earliest\" or \"nearest_to_now\", or left unset."
-                .to_string(),
+            "daysOfWeek must select at least one day and no more than all seven.".to_string(),
         );
+    }
+    if let (Some(starts_on), Some(ends_on)) = (starts_on, ends_on)
+        && starts_on > ends_on
+    {
+        return Err("startsOn must be on or before endsOn.".to_string());
     }
     Ok(())
 }
@@ -518,23 +546,90 @@ mod validate_template_recurrence_tests {
 
     #[test]
     fn manual_mode_with_no_auto_commit_rule_is_accepted() {
-        assert!(validate_template_recurrence("manual", None).is_ok());
+        assert!(validate_template_recurrence("manual", None, None, None, None).is_ok());
     }
 
     #[test]
-    fn auto_mode_with_either_valid_auto_commit_rule_is_accepted() {
-        assert!(validate_template_recurrence("auto", Some("earliest")).is_ok());
-        assert!(validate_template_recurrence("auto", Some("nearest_to_now")).is_ok());
+    fn auto_mode_with_nearest_to_now_is_accepted() {
+        assert!(
+            validate_template_recurrence("auto", Some("nearest_to_now"), None, None, None).is_ok()
+        );
+    }
+
+    #[test]
+    fn auto_mode_with_earliest_is_now_rejected() {
+        // Final-review Finding 3.1 -- 'earliest' is schema-legal (the DB's
+        // own CHECK constraint still allows it, deliberately, as a
+        // reserved marker) but implementation-unreachable: no code path
+        // ever acts on it, so the API-level validator must reject it.
+        assert!(validate_template_recurrence("auto", Some("earliest"), None, None, None).is_err());
     }
 
     #[test]
     fn an_unrecognized_default_match_mode_is_rejected() {
-        assert!(validate_template_recurrence("sometimes", None).is_err());
+        assert!(validate_template_recurrence("sometimes", None, None, None, None).is_err());
     }
 
     #[test]
     fn an_unrecognized_auto_commit_rule_is_rejected() {
-        assert!(validate_template_recurrence("auto", Some("whenever")).is_err());
+        assert!(validate_template_recurrence("auto", Some("whenever"), None, None, None).is_err());
+    }
+
+    #[test]
+    fn days_of_week_out_of_range_is_rejected() {
+        for days in [-1_i16, 0, 128] {
+            assert!(
+                validate_template_recurrence("manual", None, Some(days), None, None).is_err(),
+                "daysOfWeek = {days} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn days_of_week_in_range_is_accepted() {
+        for days in [1_i16, 64, 127] {
+            assert!(
+                validate_template_recurrence("manual", None, Some(days), None, None).is_ok(),
+                "daysOfWeek = {days} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn days_of_week_none_is_accepted() {
+        assert!(validate_template_recurrence("manual", None, None, None, None).is_ok());
+    }
+
+    #[test]
+    fn starts_on_after_ends_on_is_rejected() {
+        let starts_on: NaiveDate = "2026-12-31".parse().unwrap();
+        let ends_on: NaiveDate = "2026-10-01".parse().unwrap();
+        assert!(
+            validate_template_recurrence("manual", None, None, Some(starts_on), Some(ends_on))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn starts_on_on_or_before_ends_on_is_accepted() {
+        let starts_on: NaiveDate = "2026-10-01".parse().unwrap();
+        let ends_on: NaiveDate = "2026-12-31".parse().unwrap();
+        assert!(
+            validate_template_recurrence("manual", None, None, Some(starts_on), Some(ends_on))
+                .is_ok()
+        );
+        assert!(
+            validate_template_recurrence("manual", None, None, Some(starts_on), Some(starts_on))
+                .is_ok(),
+            "equal starts_on/ends_on must be accepted"
+        );
+    }
+
+    #[test]
+    fn either_bound_missing_is_accepted() {
+        let some_date: NaiveDate = "2026-10-01".parse().unwrap();
+        assert!(validate_template_recurrence("manual", None, None, Some(some_date), None).is_ok());
+        assert!(validate_template_recurrence("manual", None, None, None, Some(some_date)).is_ok());
     }
 }
 

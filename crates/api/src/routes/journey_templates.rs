@@ -361,6 +361,9 @@ async fn put_journey_template(
     journey_templates::validate_template_recurrence(
         &body.default_match_mode,
         body.auto_commit_rule.as_deref(),
+        body.days_of_week,
+        body.starts_on,
+        body.ends_on,
     )
     .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     let leg_inputs = body

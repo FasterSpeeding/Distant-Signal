@@ -566,12 +566,25 @@ pub async fn upsert_skip_notification_state(
 }
 
 /// One due template's `journeys`/`journey_legs` row(s), minted idempotently.
-/// Mirrors the ASSUMED shape of Phase B's own
-/// `crates/api/src/data/journey_templates.rs::materialize_template` (see
-/// this plan's own "Assumptions about Phase B" section) -- deliberately
-/// duplicated, not imported, per `crates/notifier`'s hard "never depend on
-/// crates/api" constraint. A human integrator must diff this function's SQL
-/// against Phase B's real implementation once it exists.
+/// Deliberately duplicates the shape of Phase B's own
+/// `crates/api/src/data/journey_templates.rs::materialize_template` --
+/// per `crates/notifier`'s hard "never depend on crates/api" constraint,
+/// this crate cannot import that function and must keep its own copy of
+/// the same INSERT shapes instead. This function's SQL has since been
+/// diffed against Phase B's real `materialize_template` (once by the
+/// controller running this branch's SDD process, again independently by
+/// the final-review reviewer): no divergence was found in the INSERT
+/// column shapes.
+///
+/// One deliberate difference IS worth stating explicitly rather than
+/// leaving implicit: the real `materialize_template` has NO idempotency
+/// guard at all -- it mints unconditionally every time it's called,
+/// because a human pressing "Run now" twice for the same date is a
+/// legitimate, supported case there. THIS function's own `WHERE NOT
+/// EXISTS` guard below is a deliberate, necessary addition on top of that
+/// shared shape -- the sweep calling this on an hourly, unattended timer
+/// needs the guard that the manual, attended "Run now" route intentionally
+/// does not have.
 ///
 /// Every leg is minted `'unmatched'` regardless of the template's
 /// `default_match_mode` -- `'auto'`-vs-`'manual'` behavior is entirely this
@@ -715,11 +728,15 @@ pub async fn due_templates_for(
 
 /// A leg eligible for this cycle's commit-check -- `'unmatched'`,
 /// `service_date = today`, belonging to a journey whose source template
-/// has `default_match_mode = 'auto'`. Does NOT itself apply the
-/// `auto_commit_lead_minutes` lead-time gate (see
-/// `decision::is_due_for_commit_check`, applied per-row by the caller in
-/// Task 5) -- keeping that check in Rust, not SQL, keeps it unit-testable
-/// in isolation (Task 1) without a DB.
+/// has `default_match_mode = 'auto'` AND is still `active` -- a paused
+/// template (`active = false`) must not have its already-minted legs
+/// auto-committed just because the user paused it after today's occurrence
+/// was already stamped; see this module's own
+/// `unmatched_auto_legs_for_commit_check_excludes_paused_templates` test.
+/// Does NOT itself apply the `auto_commit_lead_minutes` lead-time gate
+/// (see `decision::is_due_for_commit_check`, applied per-row by the caller
+/// in Task 5) -- keeping that check in Rust, not SQL, keeps it
+/// unit-testable in isolation (Task 1) without a DB.
 ///
 /// This struct and `unmatched_auto_legs_for_commit_check` below are called
 /// from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) -- also
@@ -752,6 +769,7 @@ pub async fn unmatched_auto_legs_for_commit_check(
          WHERE jl.match_mode = 'unmatched' \
            AND jl.service_date = $1 \
            AND jt.default_match_mode = 'auto' \
+           AND jt.active \
            AND jl.origin_crs IS NOT NULL \
            AND jl.destination_crs IS NOT NULL \
            AND (jl.depart_after IS NOT NULL OR jl.arrive_after IS NOT NULL)",
@@ -1938,6 +1956,85 @@ mod sweep_tests {
         sqlx::query("DELETE FROM journey_templates WHERE id IN ($1, $2)")
             .bind(auto_template_id)
             .bind(manual_template_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database with this plan's Task 3 migration already applied; \
+                run with `DATABASE_URL=... cargo test -p notifier \
+                unmatched_auto_legs_for_commit_check_excludes_paused_templates \
+                -- --ignored --test-threads=1`"]
+    async fn unmatched_auto_legs_for_commit_check_excludes_paused_templates() {
+        // Final-review Finding 1: a paused template's ('active = false')
+        // already-minted 'unmatched' leg must NOT be a commit-check
+        // candidate -- otherwise flipping the Pause toggle after today's
+        // occurrence was already stamped is silently ignored by the sweep
+        // and the leg gets auto-committed to a real train anyway. The
+        // sibling `unmatched_auto_legs_for_commit_check_excludes_manual_mode_templates`
+        // test above already covers the `active = true` (default) case
+        // returning a row, so this test only adds the negative `active =
+        // false` case.
+        let pool = connect().await;
+        let user_id = "TEST-SWEEP-PAUSED-COMMIT-CHECK-USER";
+        seed_user(&pool, user_id).await;
+        let today: chrono::NaiveDate = "2026-09-23".parse().unwrap();
+
+        let paused_template_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journey_templates (user_id, custom_name, default_match_mode, active) \
+             VALUES ($1, 'Paused Auto Template', 'auto', FALSE) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed paused auto template");
+
+        let paused_journey_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journeys (user_id, custom_name, source_template_id) \
+             VALUES ($1, NULL, $2) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(paused_template_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed paused journey");
+
+        let paused_leg_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, depart_after, match_mode) \
+             VALUES ($1, 1, 'RDG', 'WOK', $2, '09:00:00', 'unmatched') RETURNING id",
+        )
+        .bind(paused_journey_id)
+        .bind(today)
+        .fetch_one(&pool)
+        .await
+        .expect("seed paused leg");
+
+        let legs = unmatched_auto_legs_for_commit_check(&pool, today)
+            .await
+            .expect("unmatched_auto_legs_for_commit_check");
+        let leg_ids: Vec<i64> = legs.iter().map(|l| l.journey_leg_id).collect();
+        assert!(
+            !leg_ids.contains(&paused_leg_id),
+            "a paused ('active = false') template's already-minted leg must be excluded \
+             from the commit-check, even though it is still 'unmatched' and under an \
+             'auto'-mode template"
+        );
+
+        sqlx::query("DELETE FROM journey_legs WHERE id = $1")
+            .bind(paused_leg_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(paused_journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM journey_templates WHERE id = $1")
+            .bind(paused_template_id)
             .execute(&pool)
             .await
             .ok();
