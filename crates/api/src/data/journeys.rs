@@ -261,7 +261,7 @@ pub async fn create_journey_with_pin_leg(
 /// `TrackThisTrainButton.tsx`'s direct
 /// `POST /Train/by-uid/{uid}/{date}/track` call.
 ///
-/// `origin_crs`/`destination_crs` are read back off the RESULTING
+/// `origin_crs`/`destination_crs` default to a read-back off the RESULTING
 /// `train_subscriptions` row's own `pin_origin_crs`/`pin_destination_crs`
 /// -- populated live from the `trains` row by
 /// `create_subscription_for_train` itself, `NULL` if that row has no
@@ -269,8 +269,25 @@ pub async fn create_journey_with_pin_leg(
 /// `TrackedTrainState::pin_origin_crs`'s own doc comment,
 /// `crates/api/src/data/train_tracking.rs`, and the reason Task 1's
 /// migration made these two columns nullable -- see this plan's own
-/// Judgment Call 1). Never independently supplied by the caller: the
-/// caller only ever has a bare `(trainUid, serviceDate)` for this mode.
+/// Judgment Call 1).
+///
+/// `origin_crs_override`/`destination_crs_override` let the caller supply
+/// the leg's OWN boarding/alighting point instead, independently per end --
+/// a traveller can board a train partway through its real working, or
+/// alight before its final stop, and that leg-specific point can legitimately
+/// differ from the train's own full route (see this plan's own "Why"
+/// section's Birmingham→Glasgow/Crewe→Preston example). Either field alone
+/// may be `Some` while the other stays `None`: a `Some` override wins
+/// outright for that end, a `None` end falls back to the pin-derived value
+/// exactly as before. Passing `None, None` reproduces today's exact
+/// pin-derived behavior byte-for-byte -- every existing caller of this
+/// function does exactly that. Caller must have already run both through
+/// [`validate_known_train_overrides`] -- this function does no validation of
+/// its own (this file's established "route validates, data layer writes"
+/// split), and per that validator's own doc comment (this plan's Judgment
+/// Call 3), a supplied override is never checked against the train's real
+/// calling points here.
+///
 /// `match_mode = 'manual'`, `depart_*`/`arrive_*` `NULL` -- same reasoning
 /// as [`create_journey_with_pin_leg`].
 pub async fn create_journey_with_known_train_leg(
@@ -279,6 +296,8 @@ pub async fn create_journey_with_known_train_leg(
     custom_name: Option<&str>,
     trains_id: i64,
     service_date: NaiveDate,
+    origin_crs_override: Option<&str>,
+    destination_crs_override: Option<&str>,
 ) -> anyhow::Result<(i64, i64, i64)> {
     let journey_id = insert_journey(pool, user_id, custom_name).await?;
     let tracking_id =
@@ -290,7 +309,11 @@ pub async fn create_journey_with_known_train_leg(
     .bind(tracking_id)
     .fetch_optional(pool)
     .await?;
-    let (origin_crs, destination_crs) = pins.unwrap_or((None, None));
+    let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
+    let origin_crs = origin_crs_override.map(str::to_string).or(pin_origin_crs);
+    let destination_crs = destination_crs_override
+        .map(str::to_string)
+        .or(pin_destination_crs);
     let leg_id = insert_leg(
         pool,
         journey_id,
@@ -314,7 +337,15 @@ pub async fn create_journey_with_known_train_leg(
 /// [`create_journey_with_known_train_leg`], minus the `insert_journey`
 /// call (the journey already exists). Same
 /// `train_tracking::create_subscription_for_train` + read-back-the-pin-CRS
-/// logic as that function, unchanged.
+/// logic as that function, unchanged -- including the identical
+/// `origin_crs_override`/`destination_crs_override` behavior: both
+/// optional, either overridable independently of the other, `None, None`
+/// reproducing today's exact pin-derived behavior, and (this plan's
+/// Judgment Call 3) no validation here against the train's real calling
+/// points -- caller must have already run both through
+/// [`validate_known_train_overrides`]. See that function's sibling doc
+/// comment on [`create_journey_with_known_train_leg`] for the full
+/// reasoning; this function's override-selection logic is byte-identical.
 ///
 /// Returns `Ok(None)` for "no such journey, or not this caller's" (route
 /// maps to 404). Returns `Ok(Some((leg_id, tracking_id)))` on success --
@@ -328,6 +359,8 @@ pub async fn add_known_train_leg_to_journey(
     user_id: &str,
     trains_id: i64,
     service_date: NaiveDate,
+    origin_crs_override: Option<&str>,
+    destination_crs_override: Option<&str>,
 ) -> anyhow::Result<Option<(i64, i64)>> {
     let Some(next_leg_order) = owned_next_leg_order(pool, journey_id, user_id).await? else {
         return Ok(None);
@@ -341,7 +374,11 @@ pub async fn add_known_train_leg_to_journey(
     .bind(tracking_id)
     .fetch_optional(pool)
     .await?;
-    let (origin_crs, destination_crs) = pins.unwrap_or((None, None));
+    let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
+    let origin_crs = origin_crs_override.map(str::to_string).or(pin_origin_crs);
+    let destination_crs = destination_crs_override
+        .map(str::to_string)
+        .or(pin_destination_crs);
     let leg_id = insert_leg(
         pool,
         journey_id,
@@ -401,6 +438,49 @@ pub fn validate_window_leg(
         return Err(
             "Enter at least one earliest/latest departure or arrival time to search a window \
              — or pick a specific known departure instead."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// User-facing validation for a `knownTrain`-mode leg's OPTIONAL
+/// origin/destination overrides -- same check-and-message posture as
+/// [`validate_window_leg`]/`journey_templates::validate_template_leg`
+/// already take for a manually-typed CRS field (a real 3-letter CRS code
+/// once trimmed), just applied to two `Option<&str>` fields instead of two
+/// required `&str` fields: either, both, or neither may be `Some`, and each
+/// supplied one is checked independently.
+///
+/// Deliberately does NOT check a supplied override against the underlying
+/// train's real calling points -- not an oversight, a scoped decision (this
+/// plan's own Judgment Call 3). Both routes resolve `trains_id` via
+/// `trains::find_or_create_train`, a bare `(train_uid, service_date)`
+/// identity upsert that does not populate `calling_points` (or even
+/// `origin_crs`/`destination_crs`) for a brand-new `trains` row -- that data
+/// arrives later, best-effort, via `routes::train::enrich_shared_train`,
+/// which both routes call only AFTER they've already built and returned
+/// their response. There is no real schedule data to validate an override
+/// against synchronously, for a train identity seen for the first time, at
+/// the point either route would need to run this check -- fetching it
+/// synchronously just for this validation would add a new schedule lookup
+/// neither route makes today, for every caller, not just the ones supplying
+/// an override. This function therefore only confirms a *supplied* override
+/// is well-formed, and defers real calling-point validation to a future
+/// plan if it turns out to matter in practice.
+pub fn validate_known_train_overrides(
+    origin_crs: Option<&str>,
+    destination_crs: Option<&str>,
+) -> Result<(), String> {
+    if origin_crs.is_some_and(|origin_crs| origin_crs.trim().len() != 3) {
+        return Err(
+            "Enter a valid origin station — CRS codes are three letters, like WOK or EUS."
+                .to_string(),
+        );
+    }
+    if destination_crs.is_some_and(|destination_crs| destination_crs.trim().len() != 3) {
+        return Err(
+            "Enter a valid destination station — CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
@@ -1095,6 +1175,39 @@ mod db_tests {
         }
     }
 
+    #[test]
+    fn validate_known_train_overrides_accepts_both_omitted() {
+        assert!(validate_known_train_overrides(None, None).is_ok());
+    }
+
+    #[test]
+    fn validate_known_train_overrides_accepts_one_valid_override_with_the_other_omitted() {
+        assert!(validate_known_train_overrides(Some("CRE"), None).is_ok());
+    }
+
+    #[test]
+    fn validate_known_train_overrides_rejects_a_malformed_destination_and_names_it() {
+        let err = validate_known_train_overrides(None, Some("PR")).unwrap_err();
+        assert!(
+            err.contains("destination"),
+            "message should name the destination, not the origin: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_known_train_overrides_checks_origin_before_destination() {
+        // Both ends are malformed here -- the origin's message must win,
+        // matching the sequential-check order in the function body (origin
+        // checked first, an early `return` before destination is ever
+        // examined). This pins that ordering down as intentional, not
+        // incidental.
+        let err = validate_known_train_overrides(Some("X"), Some("Y")).unwrap_err();
+        assert!(
+            err.contains("origin"),
+            "origin's message should take priority when both ends are malformed: {err}"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
@@ -1586,11 +1699,18 @@ mod db_tests {
                 .await
                 .expect("seed fixture train");
 
-        let (leg_id, tracking_id) =
-            add_known_train_leg_to_journey(&pool, journey_id, user_id, trains_id, service_date)
-                .await
-                .expect("add known-train leg")
-                .expect("journey is owned");
+        let (leg_id, tracking_id) = add_known_train_leg_to_journey(
+            &pool,
+            journey_id,
+            user_id,
+            trains_id,
+            service_date,
+            None,
+            None,
+        )
+        .await
+        .expect("add known-train leg")
+        .expect("journey is owned");
         assert_eq!(leg_order_of(&pool, leg_id).await, 2);
 
         let leg = get_owned_leg(&pool, journey_id, leg_id, user_id)
@@ -1600,6 +1720,171 @@ mod db_tests {
         assert_eq!(leg.train_subscription_id, Some(tracking_id));
         assert_eq!(leg.match_mode, "manual");
 
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                create_journey_with_known_train_leg_overrides_both_ends_when_given -- \
+                --ignored --test-threads=1`"]
+    async fn create_journey_with_known_train_leg_overrides_both_ends_when_given() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-KNOWN-OVERRIDE-BOTH";
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        // A bare `find_or_create_train` upsert carries no schedule data at
+        // all, so `pin_origin_crs`/`pin_destination_crs` are both `None`
+        // off the resulting subscription -- whatever lands on the leg here
+        // can only be the override, never a coincidental pin value.
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-TRAIN-KNOWN-OVERRIDE-BOTH",
+            service_date,
+        )
+        .await
+        .expect("seed fixture train");
+
+        let (journey_id, leg_id, _tracking_id) = create_journey_with_known_train_leg(
+            &pool,
+            user_id,
+            None,
+            trains_id,
+            service_date,
+            Some("CRE"),
+            Some("PRE"),
+        )
+        .await
+        .expect("create journey with known-train leg and both overrides");
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, user_id)
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(leg.origin_crs.as_deref(), Some("CRE"));
+        assert_eq!(leg.destination_crs.as_deref(), Some("PRE"));
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                create_journey_with_known_train_leg_overrides_one_end_and_falls_back_to_the_pin_for_the_other \
+                -- --ignored --test-threads=1`"]
+    async fn create_journey_with_known_train_leg_overrides_one_end_and_falls_back_to_the_pin_for_the_other()
+     {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-KNOWN-OVERRIDE-PARTIAL";
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        // Seed a `trains` row WITH real origin/destination set directly --
+        // same raw-SQL fixture pattern
+        // `list_journeys_for_user_picks_the_earliest_non_completed_leg`
+        // already uses -- so `create_subscription_for_train`'s pin
+        // read-back is non-`None` for both ends, and the destination end
+        // (left un-overridden below) has a real pin value to fall back to.
+        let trains_id: i64 = sqlx::query_scalar(
+            "INSERT INTO trains (train_uid, service_date, origin_crs, destination_crs) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind("TEST-TRAIN-KNOWN-OVERRIDE-PARTIAL")
+        .bind(service_date)
+        .bind("BHM")
+        .bind("GLC")
+        .fetch_one(&pool)
+        .await
+        .expect("seed fixture train with real origin/destination");
+
+        let (journey_id, leg_id, _tracking_id) = create_journey_with_known_train_leg(
+            &pool,
+            user_id,
+            None,
+            trains_id,
+            service_date,
+            Some("CRE"),
+            None,
+        )
+        .await
+        .expect("create journey with known-train leg and a partial override");
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, user_id)
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(
+            leg.origin_crs.as_deref(),
+            Some("CRE"),
+            "origin should be the supplied override"
+        );
+        assert_eq!(
+            leg.destination_crs.as_deref(),
+            Some("GLC"),
+            "destination should fall back to the pin-derived value"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture train");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                create_journey_with_known_train_leg_omitting_both_overrides_reproduces_the_pin_derived_behavior \
+                -- --ignored --test-threads=1`"]
+    async fn create_journey_with_known_train_leg_omitting_both_overrides_reproduces_the_pin_derived_behavior()
+     {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-KNOWN-OVERRIDE-NONE";
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        // Same seeded-`trains`-row fixture as the partial-override test
+        // above -- this is the explicit regression test for Judgment Call
+        // 1's backward-compatibility claim: `None, None` must reproduce
+        // today's exact pin-derived behavior.
+        let trains_id: i64 = sqlx::query_scalar(
+            "INSERT INTO trains (train_uid, service_date, origin_crs, destination_crs) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind("TEST-TRAIN-KNOWN-OVERRIDE-NONE")
+        .bind(service_date)
+        .bind("BHM")
+        .bind("GLC")
+        .fetch_one(&pool)
+        .await
+        .expect("seed fixture train with real origin/destination");
+
+        let (journey_id, leg_id, _tracking_id) = create_journey_with_known_train_leg(
+            &pool,
+            user_id,
+            None,
+            trains_id,
+            service_date,
+            None,
+            None,
+        )
+        .await
+        .expect("create journey with known-train leg and no overrides");
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, user_id)
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(leg.origin_crs.as_deref(), Some("BHM"));
+        assert_eq!(leg.destination_crs.as_deref(), Some("GLC"));
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture train");
         cleanup_user(&pool, user_id).await;
     }
 
@@ -1655,6 +1940,8 @@ mod db_tests {
             other_id,
             i64::MAX,
             "2026-09-22".parse().unwrap(),
+            None,
+            None,
         )
         .await
         .expect("attempt add known-train leg as non-owner");
