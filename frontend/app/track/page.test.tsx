@@ -27,8 +27,10 @@ describe('TrackPage', () => {
     renderWithMantine(await TrackPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('heading', { name: 'Track a Train', level: 1 })).toBeInTheDocument();
-    expect(screen.getByText(/Pin a specific train to see its live position/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+    // Product decision (2026-09-24): "Search a time window" is now the
+    // default mode -- most visitors don't already know a train's UID.
+    expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+    expect(screen.getByText(/Not sure which train yet\?/)).toBeInTheDocument();
   });
 
   // Review §2.16: the "Track this train" button above is shown to every
@@ -54,8 +56,14 @@ describe('TrackPage', () => {
     expect(screen.getByText(/Not sure which train yet\?/)).toBeInTheDocument();
   });
 
-  it('falls back to pick mode for an unrecognised ?mode=', async () => {
+  it('falls back to window mode (the new default) for an unrecognised ?mode=', async () => {
     renderWithMantine(await TrackPage({ searchParams: Promise.resolve({ mode: 'bogus' }) }));
+
+    expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+  });
+
+  it('starts the form in pick mode for the explicit ?mode=pick opt-out', async () => {
+    renderWithMantine(await TrackPage({ searchParams: Promise.resolve({ mode: 'pick' }) }));
 
     expect(screen.getByRole('radio', { name: 'I know the train' })).toBeChecked();
   });

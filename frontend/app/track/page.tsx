@@ -81,11 +81,21 @@ export default async function TrackPage({
   // window mode -- it lived only in `TrackTrainForm`'s own `useState`, not
   // URL-addressable at all (unlike `?origin=` just above, which already had
   // this exact pattern). `JourneyLegCard`'s "Edit search" link
-  // (`components/JourneyLegCard.tsx`) is the first real caller. Anything
-  // other than the literal string falls back to pick mode, the same
-  // "malformed means absent" posture `ticketIdParam` takes above.
+  // (`components/JourneyLegCard.tsx`) is one real caller of `?mode=window`,
+  // now redundant with the default below but left working unchanged for
+  // any existing link/bookmark relying on it explicitly.
+  //
+  // Product decision (2026-09-24): "Search a time window" is now the
+  // DEFAULT mode for this page -- most visitors don't already know a
+  // specific train's UID, so time-window search is the more useful first
+  // screen. `?mode=pick` is the explicit opt-out for a caller that
+  // specifically wants "I know the train" up front (none exist in this
+  // app today, but the query-param contract stays symmetric with the
+  // pre-existing `?mode=window` one rather than becoming write-only).
+  // Same "malformed means absent" posture `ticketIdParam` takes above --
+  // "absent" now resolves to the new default, window, not the old one.
   const modeParam = Array.isArray(mode) ? mode[0] : mode;
-  const initialMode = modeParam === 'window' ? 'window' : 'pick';
+  const initialMode = modeParam === 'pick' ? 'pick' : 'window';
   // Same "repeated query param -> first value" unwrapping `origin`/
   // `ticketId`/`mode` already use just above -- applied uniformly to the
   // five new params `TrackJourneyAgainButton`/`trackAgainHref`
