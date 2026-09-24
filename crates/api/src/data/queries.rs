@@ -1081,6 +1081,75 @@ pub async fn crs_for_tiplocs_batch(
     Ok(rows.into_iter().collect())
 }
 
+/// Whether `crs` is a genuine, bookable National Rail station code rather
+/// than one of Network Rail's own `X`-prefixed pseudo-codes for a
+/// non-passenger location (a junction, siding, or depot that still needs a
+/// STANOX->CRS entry for TRUST tracking purposes but was never sold a
+/// ticket to) -- see `reference-data/stanox-crs.md`'s own "Extraction and
+/// exclusion policy" section and `schedule_reference::parser::resolve`'s
+/// doc comment, which both independently document this exact convention.
+///
+/// Lives here, in `queries` -- rather than staying private to
+/// `data::journey` (where it was first added, for the single-train journey
+/// timeline) or moving out to `crates/common` -- because every one of its
+/// real call sites is a display-bound CRS resolution inside THIS crate, and
+/// `queries` is already the one module all four of them import for their
+/// own TIPLOC->CRS lookups (`crs_for_tiploc`/`crs_for_tiplocs_batch`,
+/// directly above): [`crate::data::journey::stops_from_calling_points`]
+/// (the journey timeline's per-calling-point CRS, the original call site),
+/// [`crate::data::schedule_matching::find_schedule_match`]'s
+/// `destination_crs` (flows into `trains.destination_crs`, rendered as
+/// `train.destinationName ?? train.destinationCrs` on the single-train
+/// page), `crate::routes::lines::get_line_trains`'s schedule-side
+/// origin/destination resolution (`ScheduleRouteEndpoints`), and
+/// `crate::render::schedule_departure_json`'s `destinationCrs` field. A
+/// cross-crate `common` helper would be the wrong call: no crate outside
+/// `api` resolves a CRS for DISPLAY this way today, and `schedule_query`'s
+/// own STANOX-disambiguation policy (`resolve.rs`) deliberately still
+/// ACCEPTS a sole X-prefixed candidate for a STANOX -- the opposite
+/// question this function answers -- so sharing one helper across that
+/// boundary would invite exactly the confusion this doc comment is
+/// disambiguating.
+///
+/// **Real evidence this matters, not a hypothetical.** `schedule_query::
+/// resolve`'s STANOX-disambiguation policy accepts an X-prefixed CRS as a
+/// STANOX's row whenever it is the SOLE candidate for that STANOX (only
+/// excluding a STANOX outright when 2+ non-X or 2+ X candidates tie) -- so
+/// a plain junction with no real passenger identity can still come back
+/// from [`crs_for_tiplocs_batch`]/[`crs_for_tiploc`] with a resolved,
+/// non-`None` `crs`. Confirmed against live production data for train
+/// `Y80908` on 2026-09-23 (Birmingham New Street to London Euston):
+/// `HANSLPJ` (Hanslope Junction) resolved to CRS `XHN`, `PROOFHJ` (Proof
+/// House Junction) to `XOZ`, `LEDBRNJ` (Ledburn Junction) to `XOD`,
+/// `BONENDJ` (Bourne End Junction) to `XOE`, and `WLSDWLJ` (Willesden
+/// Junction) to `XWI` -- none of them a real station, none of them present
+/// in `stations`, yet before this filter each one still carried a
+/// non-`None` `crs` that was enough to render as if it were a real, terse
+/// station identity wherever a caller displayed it unfiltered.
+///
+/// **A second, independent case the 2026-09-24 `tiploc_crs` crosswalk
+/// widened.** That change (Task 3/4 of
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) made
+/// [`crs_for_tiploc`]/[`crs_for_tiplocs_batch`] resolve roughly a dozen
+/// TIPLOCs that previously returned `None` (no STANOX-level
+/// disambiguation possible) via the new TIPLOC-keyed `tiploc_crs` table
+/// instead -- e.g. `VICTRCR` (a common empty-coaching-stock terminus) now
+/// resolves to the X-prefixed pseudo-CRS `XVR` rather than `None`. Any
+/// call site that resolves a display-bound CRS without this filter would,
+/// as of that change, newly start showing a tracked ECS working's
+/// destination as "XVR" instead of correctly showing nothing -- the exact
+/// same bug class the `HANSLPJ`/`XHN` case above already documents, just
+/// reachable through a second, newly-widened path.
+///
+/// A stop/row that only resolves to an X-prefixed pseudo-CRS should be
+/// treated exactly like one that didn't resolve at all: blank the `crs`
+/// (or `destination_crs`) out to `None`/absent rather than passing the
+/// pseudo-code through, same degrade every call site above already applies
+/// consistently.
+pub fn is_bookable_crs(crs: &str) -> bool {
+    !crs.starts_with('X')
+}
+
 /// Upserts one line's population for one service date -- wholesale
 /// replaces any existing row for that `(line_id, service_date)` (a fresh
 /// CIF read supersedes the prior one entirely, never merged). `population`
@@ -4475,6 +4544,21 @@ mod tests {
             "description",
             &serde_json::json!([])
         ));
+    }
+
+    // `is_bookable_crs`'s own tests -- real TIPLOC/CRS pairs reused from
+    // that function's own doc comment (the `Y80908`/Hanslope Junction
+    // incident this filter exists for).
+    #[test]
+    fn is_bookable_crs_rejects_only_the_x_prefixed_convention() {
+        assert!(is_bookable_crs("WAT"));
+        assert!(is_bookable_crs("EUS"));
+        assert!(!is_bookable_crs("XHN"));
+        assert!(!is_bookable_crs("XOZ"));
+        assert!(!is_bookable_crs("XVR"));
+        // A real CRS that merely happens to CONTAIN an 'X' is unaffected --
+        // only a LEADING 'X' is Network Rail's pseudo-code convention.
+        assert!(is_bookable_crs("BOX"));
     }
 
     #[test]

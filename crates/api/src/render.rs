@@ -13,6 +13,8 @@ use chrono::{DateTime, Utc};
 use common::{LineStatus, LineStatusReport, Severity};
 use serde_json::{Value, json};
 
+use crate::data::queries;
+
 pub fn to_tfl_shape(report: &LineStatusReport, computed_at: DateTime<Utc>, detail: bool) -> Value {
     json!({
         "$type": "DistantSignal.LineStatusReport",
@@ -237,10 +239,22 @@ pub(crate) fn schedule_departure_json(
         .and_then(Value::as_str)
         .map(|s| s.chars().take(5).collect::<String>());
     let day_offset = d.get("day_offset").and_then(Value::as_u64).unwrap_or(0);
+    // `.filter(...)`: `schedule_network_departures` is published by
+    // `schedule-reference` (`crates/schedule-query::resolve`'s
+    // `departures_by_crs`), which resolves a destination TIPLOC to
+    // whatever CRS it has -- X-prefixed Network Rail pseudo-codes for a
+    // junction/depot included, see `queries::is_bookable_crs`'s own doc
+    // comment. `api` never re-checks that at write time (this table is
+    // stored opaquely, see this function's own doc comment), so this read
+    // site is where it must be filtered before it reaches the wire --
+    // otherwise a service whose true destination is really a non-station
+    // pseudo-CRS (e.g. `VICTRCR` -> `XVR`) would render `destinationCrs`
+    // as if it were a real station.
     let destination_crs = d
         .get("destination_crs")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .filter(|crs| queries::is_bookable_crs(crs));
     let destination_name = destination_crs
         .as_deref()
         .and_then(|crs| destination_names.get(&crs.to_uppercase()));
@@ -1145,6 +1159,56 @@ mod tests {
         });
         let json = schedule_departure_json(&raw, &HashMap::new());
         assert!(json["destinationCrs"].is_null());
+    }
+
+    /// Regression test for the `schedule_departure_json` half of the
+    /// shared `queries::is_bookable_crs` filter -- see that function's own
+    /// doc comment. `schedule_network_departures` is published by
+    /// `schedule-reference` from `schedule_query::resolve::departures_by_crs`,
+    /// which resolves a destination TIPLOC to whatever CRS it has,
+    /// X-prefixed Network Rail pseudo-codes included -- this function is
+    /// where `api` reads that opaque stored row back out for the wire, so
+    /// it's the one place left to filter before an X-prefixed pseudo-CRS
+    /// (e.g. `XHN`, Hanslope Junction -- the same real fixture
+    /// `journey::stops_from_calling_points`'s own regression test uses)
+    /// reaches `GET /public/stations/{crs}/schedule-departures` as if it
+    /// were a real station.
+    #[test]
+    fn schedule_departure_json_blanks_an_x_prefixed_pseudo_crs_destination() {
+        let raw = serde_json::json!({
+            "uid": "Y80908",
+            "scheduled": "14:05:00",
+            "day_offset": 0,
+            "destination_crs": "XHN",
+        });
+        let names = HashMap::from([("XHN".to_string(), "Hanslope Junction".to_string())]);
+        let json = schedule_departure_json(&raw, &names);
+        assert!(
+            json["destinationCrs"].is_null(),
+            "an X-prefixed pseudo-CRS is not a real, displayable station identity: {json:?}"
+        );
+        assert!(
+            json["destinationName"].is_null(),
+            "no name should be resolved for a blanked-out destination: {json:?}"
+        );
+    }
+
+    /// The mirror of the test directly above: a genuine, non-X-prefixed
+    /// destination CRS must still resolve normally -- `queries::
+    /// is_bookable_crs` only excludes the `X`-prefixed convention, never a
+    /// real station code.
+    #[test]
+    fn schedule_departure_json_keeps_a_genuine_non_x_crs_destination() {
+        let raw = serde_json::json!({
+            "uid": "Y80908",
+            "scheduled": "14:05:00",
+            "day_offset": 0,
+            "destination_crs": "WOL",
+        });
+        let names = HashMap::from([("WOL".to_string(), "Wolverhampton".to_string())]);
+        let json = schedule_departure_json(&raw, &names);
+        assert_eq!(json["destinationCrs"], "WOL");
+        assert_eq!(json["destinationName"], "Wolverhampton");
     }
 
     #[test]

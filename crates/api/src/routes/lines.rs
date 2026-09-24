@@ -341,10 +341,20 @@ async fn get_line_trains(
     let tiploc_to_crs = queries::crs_for_tiplocs_batch(&app.database, &all_tiplocs)
         .await
         .map_err(internal_error)?;
+    // `.filter(queries::is_bookable_crs)` -- see that function's own doc
+    // comment: `tiploc_to_crs` (built above from `crs_for_tiplocs_batch`)
+    // resolves an X-prefixed Network Rail pseudo-CRS just like a real one,
+    // so without this an origin/destination that's really a junction or
+    // depot (e.g. `VICTRCR` -> `XVR`) would render as if it were a genuine
+    // station on this line's "Trains running today" panel
+    // (`ScheduleRouteEndpoints`, below). Blanked to `None` here, the same
+    // "treat like unresolved" degrade `journey::stops_from_calling_points`
+    // already applies for the single-train journey timeline.
     let crs_of = |tiploc: &Option<String>| -> Option<String> {
         tiploc
             .as_deref()
             .and_then(|t| tiploc_to_crs.get(&t.trim().to_uppercase()).cloned())
+            .filter(|crs| queries::is_bookable_crs(crs))
     };
     let endpoint_crs: Vec<(Option<String>, Option<String>)> = endpoint_tiplocs
         .iter()
@@ -2444,5 +2454,138 @@ mod db_tests {
             .await
             .ok();
         delete_schedule_population_fixture(&pool, "test-trains-3-live").await;
+    }
+
+    /// Regression test for the `ScheduleRouteEndpoints` half of the shared
+    /// `queries::is_bookable_crs` filter -- see that function's own doc
+    /// comment. `VICTRCR` resolves to the X-prefixed pseudo-CRS `XVR` via
+    /// the `tiploc_crs` crosswalk (the same real fixture
+    /// `find_schedule_match_blanks_an_x_prefixed_pseudo_crs_destination`,
+    /// in `data::schedule_matching`, uses). Before this fix,
+    /// `get_line_trains`'s `crs_of` closure resolved `tiploc_to_crs`
+    /// unfiltered, so a population entry terminating at `VICTRCR` would
+    /// have rendered `scheduleDestinationCrs: "XVR"` on the line's "Trains
+    /// running today" panel, as if it were a real station.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                trains_blanks_an_x_prefixed_pseudo_crs_schedule_destination -- --ignored`"]
+    async fn trains_blanks_an_x_prefixed_pseudo_crs_schedule_destination() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-trains-3-xvr").await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-TRAINS-3-XVR'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query(
+            "INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence) \
+             VALUES ('VICTRCR', 'XVR', 'VICTORIA C.S.', 'TEST-VICTRCR2-STANOX', 1) \
+             ON CONFLICT (tiploc) DO UPDATE SET crs = EXCLUDED.crs",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed tiploc_crs");
+
+        let today = chrono::Utc::now().date_naive();
+        let population = serde_json::json!([{
+            "uid": "TEST-TRAINS-3-XVR",
+            "calling_points": [
+                {"tiploc": "ECSORIG", "kind": "Origin", "booked_arrival": null, "booked_departure": "23:10:00", "is_half_minute_arrival": false, "is_half_minute_departure": false},
+                {"tiploc": "VICTRCR", "kind": "Terminate", "booked_arrival": "23:40:00", "booked_departure": null, "is_half_minute_arrival": false, "is_half_minute_departure": false},
+            ],
+        }]);
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind("test-trains-3-xvr")
+        .bind(today)
+        .bind(&population)
+        .execute(&pool)
+        .await
+        .expect("seed fixture population row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_trains(router, "test-trains-3-xvr", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let entries = body.as_array().expect("body is a JSON array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["uid"], "TEST-TRAINS-3-XVR");
+        assert!(
+            entries[0]["scheduleDestinationCrs"].is_null(),
+            "VICTRCR resolves to the X-prefixed pseudo-CRS XVR, which must blank to null \
+             rather than render as a real station's code: entry: {:?}",
+            entries[0]
+        );
+        assert!(entries[0]["scheduleDestinationName"].is_null());
+
+        sqlx::query("DELETE FROM tiploc_crs WHERE tiploc = 'VICTRCR'")
+            .execute(&pool)
+            .await
+            .ok();
+        delete_schedule_population_fixture(&pool, "test-trains-3-xvr").await;
+    }
+
+    /// The mirror of the test directly above: a genuine, non-X-prefixed
+    /// schedule destination must still resolve normally through the same
+    /// `get_line_trains` route -- `queries::is_bookable_crs` only excludes
+    /// the `X`-prefixed convention, never a real station code.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                trains_keeps_a_genuine_non_x_crs_schedule_destination -- --ignored`"]
+    async fn trains_keeps_a_genuine_non_x_crs_schedule_destination() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-trains-3-real-dest").await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-TRAINS-3-REALDEST'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TEST-TRAINS3-BSK-STANOX', 'BSK', 'BSKDEST', 'BASINGSTOKE', 1) \
+             ON CONFLICT (stanox) DO UPDATE SET crs = EXCLUDED.crs",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let today = chrono::Utc::now().date_naive();
+        let population = serde_json::json!([{
+            "uid": "TEST-TRAINS-3-REALDEST",
+            "calling_points": [
+                {"tiploc": "PADTON", "kind": "Origin", "booked_arrival": null, "booked_departure": "12:00:00", "is_half_minute_arrival": false, "is_half_minute_departure": false},
+                {"tiploc": "BSKDEST", "kind": "Terminate", "booked_arrival": "12:30:00", "booked_departure": null, "is_half_minute_arrival": false, "is_half_minute_departure": false},
+            ],
+        }]);
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind("test-trains-3-real-dest")
+        .bind(today)
+        .bind(&population)
+        .execute(&pool)
+        .await
+        .expect("seed fixture population row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_trains(router, "test-trains-3-real-dest", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let entries = body.as_array().expect("body is a JSON array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]["scheduleDestinationCrs"], "BSK",
+            "a genuine, non-X-prefixed destination CRS must still resolve: entry: {:?}",
+            entries[0]
+        );
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-TRAINS3-BSK-STANOX'")
+            .execute(&pool)
+            .await
+            .ok();
+        delete_schedule_population_fixture(&pool, "test-trains-3-real-dest").await;
     }
 }

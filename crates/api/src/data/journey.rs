@@ -327,43 +327,6 @@ impl JourneyStop {
     }
 }
 
-/// Whether `crs` is a genuine, bookable National Rail station code rather
-/// than one of Network Rail's own `X`-prefixed pseudo-codes for a
-/// non-passenger location (a junction, siding, or depot that still needs a
-/// STANOX->CRS entry for TRUST tracking purposes but was never sold a
-/// ticket to) -- see `reference-data/stanox-crs.md`'s own "Extraction and
-/// exclusion policy" section and `schedule_reference::parser::resolve`'s
-/// doc comment, which both independently document this exact convention.
-///
-/// **Real evidence this matters, not a hypothetical.** `schedule_query::
-/// parser::resolve`'s STANOX-disambiguation policy accepts an X-prefixed
-/// CRS as a STANOX's row whenever it is the SOLE candidate for that STANOX
-/// (only excluding a STANOX outright when 2+ non-X or 2+ X candidates tie) --
-/// so a plain junction with no real passenger identity can still come back
-/// from `queries::crs_for_tiplocs_batch` with a resolved, non-`None` `crs`.
-/// Confirmed against live production data for train `Y80908` on
-/// 2026-09-23 (Birmingham New Street to London Euston): `HANSLPJ` (Hanslope
-/// Junction) resolved to CRS `XHN`, `PROOFHJ` (Proof House Junction) to
-/// `XOZ`, `LEDBRNJ` (Ledburn Junction) to `XOD`, `BONENDJ` (Bourne End
-/// Junction) to `XOE`, and `WLSDWLJ` (Willesden Junction) to `XWI` -- none
-/// of them a real station, none of them present in `stations` (so `name`
-/// stayed `None` regardless), yet before this filter each one still carried
-/// a non-`None` `crs`. That `crs` was enough for `assign_events_to_stops`
-/// to treat it as a genuine calling point CRS worth matching TRUST
-/// movement events against, and for `frontend/components/JourneyTimeline.tsx`'s
-/// `resolvedStopLabel` (`stop.name` -> `stop.crs` -> ...) to fall through to
-/// displaying the bare pseudo-code as if it were a terse but real station
-/// name -- rendering a genuinely non-existent "XHN" stop, complete with a
-/// live-looking reported departure time, on the journey timeline. Blanking
-/// `crs` here instead makes such a calling point behave exactly like the
-/// module's own already-documented, already-correct "case 2" (a genuine
-/// non-station timing point whose TIPLOC has no CRS at all) -- both end up
-/// with `crs: None`, `name: None`, no TRUST overlay, and the frontend's
-/// honest by-index "Stop N" fallback instead of a fabricated identity.
-fn is_bookable_crs(crs: &str) -> bool {
-    !crs.starts_with('X')
-}
-
 /// This process's own "log this TIPLOC at least once" dedup set for
 /// [`log_if_unresolved_booked_stop`] -- see `common::log_once::LogOnceSet`'s
 /// own doc comment for why a plain, in-memory, process-lifetime set (not a
@@ -393,11 +356,12 @@ static UNRESOLVED_STATION_TIPLOC_LOG: std::sync::LazyLock<common::log_once::LogO
 /// Task 3 of
 /// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md -- not
 /// merely a non-bookable one. A resolved-but-X-prefixed pseudo-CRS
-/// (Some, then filtered out by [`is_bookable_crs`] at this function's own
-/// call site) is the OTHER, legitimate-non-station case and is deliberately
-/// silent here; see `is_bookable_crs`'s own doc comment for the real
-/// examples (`HANSLPJ`/`XHN` etc.) this codebase already knows are not
-/// stations. A completely unresolved TIPLOC is this codebase's strongest
+/// (Some, then filtered out by [`queries::is_bookable_crs`] at
+/// [`stops_from_calling_points`]'s own call site) is the OTHER,
+/// legitimate-non-station case and is deliberately silent here; see
+/// `queries::is_bookable_crs`'s own doc comment for the real examples
+/// (`HANSLPJ`/`XHN` etc.) this codebase already knows are not stations. A
+/// completely unresolved TIPLOC is this codebase's strongest
 /// available "this might genuinely be a real, unmapped station" signal --
 /// this app's own CIF pipeline doesn't decode the Activity/public-time
 /// fields that would let it do any better (see
@@ -467,11 +431,16 @@ fn stops_from_calling_points(
             let resolved = tiploc_to_crs.get(&key);
             log_if_unresolved_booked_stop(cp, &key, resolved, service_date);
             let crs = resolved
-                // See `is_bookable_crs`'s own doc comment: an X-prefixed
-                // pseudo-CRS is not a real, displayable station identity,
-                // so a stop that only resolves to one of those is treated
-                // exactly like one that didn't resolve at all.
-                .filter(|crs| is_bookable_crs(crs))
+                // See `queries::is_bookable_crs`'s own doc comment: an
+                // X-prefixed pseudo-CRS is not a real, displayable station
+                // identity, so a stop that only resolves to one of those is
+                // treated exactly like one that didn't resolve at all.
+                // Shared with `schedule_matching::find_schedule_match`,
+                // `routes::lines::get_line_trains`, and
+                // `render::schedule_departure_json` -- see that function's
+                // own doc comment for why it lives in `queries` now, not
+                // here.
+                .filter(|crs| queries::is_bookable_crs(crs))
                 .cloned();
             JourneyStop::from_calling_point(cp, crs, service_date)
         })
@@ -1822,7 +1791,7 @@ mod tests {
     /// booked public arrival or departure, resolved to CRS `XHN` --
     /// `schedule_query::parser::resolve`'s STANOX-disambiguation policy
     /// accepts an X-prefixed pseudo-CRS whenever it is the sole candidate
-    /// for its STANOX (see `is_bookable_crs`'s own doc comment). Before
+    /// for its STANOX (see `queries::is_bookable_crs`'s own doc comment). Before
     /// this fix that `crs` survived into the stop and
     /// `frontend/components/JourneyTimeline.tsx`'s `resolvedStopLabel`
     /// (`stop.name` -> `stop.crs` -> ...) rendered the bare pseudo-code
@@ -1853,8 +1822,8 @@ mod tests {
 
     /// The mirror of the test directly above: a genuine, non-X-prefixed
     /// CRS (Wolverhampton, `WOL`, also on train `Y80908`'s real route)
-    /// must NOT be caught by the same filter -- `is_bookable_crs` only
-    /// excludes the `X`-prefixed convention, never a real station code.
+    /// must NOT be caught by the same filter -- `queries::is_bookable_crs`
+    /// only excludes the `X`-prefixed convention, never a real station code.
     #[test]
     fn a_genuine_non_x_crs_still_resolves_normally() {
         let service_date: NaiveDate = "2026-09-23".parse().unwrap();
@@ -1867,17 +1836,11 @@ mod tests {
         assert_eq!(stops[0].crs.as_deref(), Some("WOL"));
     }
 
-    #[test]
-    fn is_bookable_crs_rejects_only_the_x_prefixed_convention() {
-        assert!(is_bookable_crs("WAT"));
-        assert!(is_bookable_crs("EUS"));
-        assert!(!is_bookable_crs("XHN"));
-        assert!(!is_bookable_crs("XOZ"));
-        // A real CRS beginning with a letter that merely contains an "X"
-        // elsewhere must not be caught -- only a LEADING `X` is the
-        // pseudo-code convention.
-        assert!(is_bookable_crs("BOX"));
-    }
+    // `is_bookable_crs` itself moved to `queries` (Task: shared display-CRS
+    // filter, 2026-09-24) -- its own pure-function tests moved with it, to
+    // `queries::tests::is_bookable_crs_rejects_only_the_x_prefixed_convention`.
+    // The two tests directly above still exercise it end-to-end through
+    // `stops_from_calling_points`, this module's own real call site.
 
     // This module's own "looks like a station, log it at least once"
     // observability tests -- the query-time half of the fix the real
@@ -1902,7 +1865,7 @@ mod tests {
             // Junctions/timing points like HANSLPJ (Hanslope Junction,
             // resolved to XHN) are the legitimate-non-station case:
             // resolved_crs is Some here (the X-filter happens later, in
-            // stops_from_calling_points, at is_bookable_crs), so this must
+            // stops_from_calling_points, via queries::is_bookable_crs), so this must
             // NOT be flagged -- flagging it would defeat the whole point of
             // logging only genuine gaps.
             let cp = raw_cp("PSEUDOJ");
@@ -1967,7 +1930,7 @@ mod tests {
                 stops_from_calling_points(&[raw_cp("PSEUDOJ2")], &tiploc_to_crs, service_date);
             assert_eq!(
                 stops[0].crs, None,
-                "an X-prefixed pseudo-CRS is still blanked, as is_bookable_crs already covers"
+                "an X-prefixed pseudo-CRS is still blanked, as queries::is_bookable_crs already covers"
             );
             assert!(
                 UNRESOLVED_STATION_TIPLOC_LOG.should_log("PSEUDOJ2"),
