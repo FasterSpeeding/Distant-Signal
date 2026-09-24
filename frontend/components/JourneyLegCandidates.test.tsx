@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
 
@@ -7,6 +7,12 @@ import { JourneyLegCandidates } from './JourneyLegCandidates';
 // leg's own two ends (`legOriginCrs`/`legDestinationCrs`) are neither of
 // the train's (`originCrs`/`destinationCrs`), which is exactly the shape
 // that made every row read identically before the 2026-09-22 review's C4.
+// `operator` is deliberately split `null`/real across the two fixture rows
+// (rather than both the same), so a single render of this fixture already
+// covers "renders when present" and "omits when absent" without needing a
+// dedicated one-off response -- `null` on the first row also keeps every
+// pre-existing test below that asserts row 1's exact subtitle text
+// ('Train C11052 · BRI → PAD') true unchanged.
 const CANDIDATES_FIXTURE = {
   results: [
     {
@@ -19,6 +25,7 @@ const CANDIDATES_FIXTURE = {
       legDestinationCrs: 'SWI',
       legDestinationArrival: '11:08',
       legDestinationArrivalDayOffset: 0,
+      operator: null,
     },
     {
       uid: 'C11099',
@@ -30,10 +37,19 @@ const CANDIDATES_FIXTURE = {
       legDestinationCrs: 'SWI',
       legDestinationArrival: '11:38',
       legDestinationArrivalDayOffset: 0,
+      operator: 'GW',
     },
   ],
   nextCursor: null,
 };
+
+// A small, fixed TOC dataset backing the Operator field's own suggestion
+// dropdown -- real `searchTocs`/`useSuggestions` plumbing is exercised here
+// (not mocked away), since the point of the (c) tests below is to prove
+// THIS component wires that shared plumbing correctly, not to re-test
+// `searchTocs`'s own server-side matching (that's `TrackTrainForm.test.tsx`'s
+// job, per its own `matchesOperator`/suggestion tests).
+const TEST_TOCS = [{ code: 'GW', name: 'Great Western Railway' }];
 
 /** Routes a mocked `fetch` by URL/method, the same shape
  * `TrackThisTrainButton.test.tsx`'s own `mockFetchByUrl` helper uses: the
@@ -54,8 +70,24 @@ function mockFetchByUrl(
     if (/\/api\/Journeys\/\d+\/legs\/\d+\/train$/.test(url) && init?.method === 'POST') {
       return Promise.resolve(train());
     }
-    if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates$/.test(url)) {
+    // Matches with OR without a `?operator=...` query string -- every test
+    // in this file that doesn't type into the Operator field never commits
+    // a non-empty `committedOperator`, so its fetch stays queryless exactly
+    // as before this task; the ones that do type are the only callers that
+    // ever hit the `?` branch.
+    if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates(\?.*)?$/.test(url)) {
       return Promise.resolve(candidates());
+    }
+    // The Operator field's own suggestion lookup (`useSuggestions` ->
+    // `searchTocs`) -- only ever called once a test actually types into
+    // that field; every other test's `operator` state stays empty, which
+    // `useSuggestions` itself short-circuits before ever calling `fetch`.
+    if (url.startsWith('/api/tocs?')) {
+      const q = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
+      const matches = TEST_TOCS.filter(
+        (t) => t.code.toLowerCase().includes(q.toLowerCase()) || t.name.toLowerCase().includes(q.toLowerCase()),
+      );
+      return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
     }
     throw new Error(`unexpected fetch for ${url}`);
   });
@@ -307,6 +339,176 @@ describe('JourneyLegCandidates', () => {
     );
 
     expect(await screen.findByText('Search failed')).toBeInTheDocument();
+  });
+
+  // Task 6, journey-leg-operator-filter plan: the backend now filters
+  // candidates by operator/TOC and echoes each row's own operator back --
+  // these tests cover the row-rendering half, the debounced-refetch half,
+  // and (separately) that the Operator field's own suggestion dropdown is
+  // wired through the same shared plumbing every other CRS/TOC-code field
+  // in this app uses.
+  describe('operator filter', () => {
+    it('renders the operator on a row that has one and omits it on a row that does not', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(
+        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+      );
+
+      // Row 1 (`operator: null`) keeps its pre-existing exact subtitle --
+      // no operator suffix appended.
+      expect(await screen.findByText('Train C11052 · BRI → PAD')).toBeInTheDocument();
+      // Row 2 (`operator: 'GW'`) gets the suffix.
+      expect(screen.getByText('Train C11099 · BRI → PAD · GW')).toBeInTheDocument();
+    });
+
+    it('debounces typing into the Operator field, then re-fetches with the uppercased value', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        renderWithMantine(
+          <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+        );
+        await screen.findByText('Train C11052 · BRI → PAD');
+        fetchMock.mockClear();
+
+        fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
+          target: { value: 'gw' },
+        });
+        // A fast typist mustn't fire one request per keystroke -- nothing
+        // has re-fetched yet, immediately after the keystroke.
+        expect(
+          fetchMock.mock.calls.some((call) => String(call[0]).includes('/candidates')),
+        ).toBe(false);
+
+        // Settles both this component's own `committedOperator` debounce
+        // AND `useSuggestions`' independent 250ms debounce together (same
+        // `FILTER_DEBOUNCE_MS`/`DEBOUNCE_MS` value, `JourneyLegCandidates.tsx`
+        // and `lib/useSuggestions.ts` respectively).
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(250);
+        });
+
+        const candidateCalls = fetchMock.mock.calls
+          .map((call) => String(call[0]))
+          .filter((url) => url.includes('/candidates'));
+        // Lower-case as typed, but sent upper-case -- real ATOC codes are
+        // always upper-case, and the backend's `operator_atoc = ANY($N)`
+        // match is case-sensitive.
+        expect(candidateCalls).toEqual(['/api/Journeys/1/legs/2/candidates?operator=GW']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resets pagination (drops existing rows and nextCursor) when the operator filter changes', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      // Unfiltered: page 1 is row 1 with a `nextCursor`, so "Load more"
+      // appends row 2 -- same two-page shape the `pagination` describe
+      // block below already exercises. Once `?operator=GW` is committed,
+      // the (simulated) filtered result is row 2 ALONE with no
+      // `nextCursor` -- deliberately different from a mere continuation of
+      // the unfiltered pages, so "row 1 is gone and Load more disappears"
+      // can only be explained by a real reset, not by page-2 arriving late
+      // or being appended on top.
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (/\/api\/Journeys\/\d+\/legs\/\d+\/train$/.test(url) && init?.method === 'POST') {
+          return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        }
+        if (url.includes('operator=GW')) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ results: [CANDIDATES_FIXTURE.results[1]], nextCursor: null }), {
+              status: 200,
+            }),
+          );
+        }
+        if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates(\?.*)?$/.test(url)) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ results: [CANDIDATES_FIXTURE.results[0]], nextCursor: 'CURSOR1' }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (url.startsWith('/api/tocs?')) {
+          return Promise.resolve(new Response(JSON.stringify(TEST_TOCS), { status: 200 }));
+        }
+        throw new Error(`unexpected fetch for ${url}`);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        renderWithMantine(
+          <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+        );
+        await screen.findByText('Train C11052 · BRI → PAD');
+        expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
+
+        fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
+          target: { value: 'gw' },
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(250);
+        });
+
+        // Row 1 (the unfiltered page 1) is gone, replaced by row 2 (the
+        // filtered response) -- not appended alongside it.
+        await screen.findByText('Train C11099 · BRI → PAD · GW');
+        expect(screen.queryByText('Train C11052 · BRI → PAD')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+
+        const candidateCalls = fetchMock.mock.calls
+          .map((call) => String(call[0]))
+          .filter((url) => url.includes('/candidates'));
+        // No `after=` on the filtered call -- a fresh page-1 search, not a
+        // "load more" continuation of the old cursor.
+        expect(candidateCalls).toEqual([
+          '/api/Journeys/1/legs/2/candidates',
+          '/api/Journeys/1/legs/2/candidates?operator=GW',
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // (c): proves this component wires the Operator field through the SAME
+    // shared `useSuggestions(..., searchTocs)` + `suggestionAutocompleteProps`
+    // plumbing every other CRS/TOC-code field in this app uses -- not a
+    // re-test of `searchTocs`'s own server-side matching logic
+    // (`TrackTrainForm.test.tsx` already covers that), just that selecting a
+    // suggestion here behaves identically: the dropdown shows `CODE — Name`,
+    // and picking an option writes the bare code into the field.
+    it("uses the shared suggestion plumbing for the Operator field's own dropdown", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      try {
+        renderWithMantine(
+          <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+        );
+        await screen.findByText('Train C11052 · BRI → PAD');
+
+        const input = screen.getByRole('combobox', { name: 'Operator (optional)' });
+        fireEvent.focus(input);
+        fireEvent.change(input, { target: { value: 'g' } });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(250);
+        });
+
+        // `hidden: true`: jsdom-only workaround for the stubbed
+        // `ResizeObserver` -- see `TrackTrainForm.test.tsx`'s identical
+        // comment on this exact pattern.
+        const option = await screen.findByRole('option', { name: 'GW — Great Western Railway', hidden: true });
+        fireEvent.click(option);
+
+        // Selecting the option writes just the bare code into the field --
+        // `Autocomplete` writes `data`'s `label`, not the dropdown-only
+        // `renderOption` text, into the input. Same assertion
+        // `TrackTrainForm.test.tsx`'s analogous test makes.
+        expect(input).toHaveValue('GW');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // Regression: EUS-MKC is a high-frequency corridor with two operators'
