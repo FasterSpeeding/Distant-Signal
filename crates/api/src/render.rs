@@ -216,6 +216,18 @@ pub(crate) fn station_departure_json(
 /// "absent from the map renders `null`" contract as
 /// `station_departure_json`'s identical parameter; see its own doc
 /// comment.
+///
+/// No `operator` field here, unlike `calling_point_departure_json` below
+/// (added by the 2026-09-24 journey-leg-operator-filter plan). It is no
+/// longer accurate to say the CIF SCHEDULE feed genuinely has none of
+/// that -- a schedule's `BX` record now decodes an ATOC operator code
+/// (`schedule_query::records::BasicSchedule::operator_atoc`) -- but
+/// `schedule_network_departures`, the product this function reads, was
+/// never extended to carry it through the resolution/ingest pipeline that
+/// populates it; doing so was out of scope for that plan (only
+/// `schedule_destination_departures`-backed products gained an `operator`
+/// field). This function's own behavior is unchanged; this paragraph only
+/// corrects that stale claim.
 pub(crate) fn schedule_departure_json(
     d: &Value,
     destination_names: &HashMap<String, String>,
@@ -301,6 +313,7 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
         "destinationCrs": d.get("destination_crs").cloned().unwrap_or(Value::Null),
         "destinationArrival": destination_arrival,
         "destinationArrivalDayOffset": destination_arrival_day_offset,
+        "operator": d.get("operator_atoc").cloned().unwrap_or(Value::Null),
     })
 }
 

@@ -1061,6 +1061,11 @@ async fn build_journey_detail_response(
 struct CandidatesParams {
     limit: Option<String>,
     after: Option<String>,
+    /// Optional. Comma-separated ATOC codes, e.g. `operator=SW,VT` -- same
+    /// multi-value convention and "any of" overlap semantics as
+    /// `routes::incidents::IncidentSearchParams::operator`; see its own
+    /// doc comment.
+    operator: Option<String>,
 }
 
 /// `GET /Journeys/{journeyId}/legs/{legId}/candidates` -- design doc §2.2.
@@ -1104,6 +1109,20 @@ async fn get_leg_candidates(
         .filter(|s| !s.trim().is_empty())
         .map(crate::routes::trains::decode_cursor)
         .transpose()?;
+    // Same comma-split/trim/drop-empty/empty-list-becomes-None logic as
+    // `routes::incidents::search_incidents`'s own `operators` parsing --
+    // deliberately duplicated, not factored into a shared helper, per this
+    // repo's established per-route convention (see `line_status.rs`/
+    // `trips.rs` doing the same independently).
+    let operators: Option<Vec<String>> = params.operator.as_deref().and_then(|raw| {
+        let list: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if list.is_empty() { None } else { Some(list) }
+    });
 
     let Some(page) = crate::data::queries::search_journey_leg_candidates(
         &app.database,
@@ -1114,6 +1133,7 @@ async fn get_leg_candidates(
         leg.depart_before,
         leg.arrive_after,
         leg.arrive_before,
+        operators,
         after.as_ref(),
         limit,
     )

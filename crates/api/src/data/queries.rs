@@ -1762,7 +1762,7 @@ pub async fn search_schedule_calling_point_departures(
     let fetch = limit.saturating_add(1);
 
     // train_uid, destination_crs, true_origin_crs, scheduled,
-    // destination_arrival, destination_arrival_day_offset.
+    // destination_arrival, destination_arrival_day_offset, operator_atoc.
     type CallingPointDepartureRow = (
         String,
         String,
@@ -1770,11 +1770,12 @@ pub async fn search_schedule_calling_point_departures(
         chrono::NaiveTime,
         Option<chrono::NaiveTime>,
         i16,
+        Option<String>,
     );
 
     let rows: Vec<CallingPointDepartureRow> = sqlx::query_as(
         r#"
-            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset
+            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
@@ -1864,7 +1865,7 @@ pub async fn search_schedule_calling_point_departures(
 
     let next_cursor = if has_more {
         page_rows.last().map(
-            |(train_uid, _, _, scheduled, _, _)| CallingPointDepartureCursor {
+            |(train_uid, _, _, scheduled, _, _, _)| CallingPointDepartureCursor {
                 scheduled: *scheduled,
                 train_uid: train_uid.clone(),
             },
@@ -1883,6 +1884,7 @@ pub async fn search_schedule_calling_point_departures(
                 scheduled,
                 destination_arrival,
                 destination_arrival_day_offset,
+                operator_atoc,
             )| {
                 serde_json::json!({
                     "uid": train_uid,
@@ -1891,6 +1893,7 @@ pub async fn search_schedule_calling_point_departures(
                     "scheduled": scheduled.format("%H:%M:%S").to_string(),
                     "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                     "destination_arrival_day_offset": destination_arrival_day_offset,
+                    "operator_atoc": operator_atoc,
                 })
             },
         )
@@ -1963,6 +1966,11 @@ pub async fn search_journey_leg_candidates(
     depart_before: Option<chrono::NaiveTime>,
     arrive_after: Option<chrono::NaiveTime>,
     arrive_before: Option<chrono::NaiveTime>,
+    // Optional ATOC-code allowlist, same "comma-split, empty means no
+    // filter" shape `search_incidents`'s own `operators` param establishes
+    // (`routes::incidents::search_incidents`) -- an "any of" filter, NULL
+    // (never satisfied vacuously) when the caller passes no codes at all.
+    operators: Option<Vec<String>>,
     after: Option<&CallingPointDepartureCursor>,
     limit: i64,
 ) -> Result<Option<CallingPointDeparturePage>> {
@@ -1975,11 +1983,12 @@ pub async fn search_journey_leg_candidates(
         chrono::NaiveTime,
         Option<chrono::NaiveTime>,
         i16,
+        Option<String>,
         Option<chrono::NaiveTime>,
         Option<i16>,
     )> = sqlx::query_as(
         r#"
-            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset,
+            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
                    -- The arrival at the LEG's own destination, which is
                    -- what the traveller is actually choosing between --
                    -- NOT `destination_arrival`, the arrival at the
@@ -2061,10 +2070,11 @@ pub async fn search_journey_leg_candidates(
                           AND ($7::time IS NULL OR stop.calling_point_arrival <= $7)
                     )
               )
-              AND ($8::time IS NULL
-                   OR (main.scheduled, main.train_uid) > ($8, $9))
+              AND ($8::text[] IS NULL OR main.operator_atoc = ANY($8))
+              AND ($9::time IS NULL
+                   OR (main.scheduled, main.train_uid) > ($9, $10))
             ORDER BY main.scheduled, main.train_uid
-            LIMIT $10
+            LIMIT $11
             "#,
     )
     .bind(service_date)
@@ -2074,6 +2084,7 @@ pub async fn search_journey_leg_candidates(
     .bind(destination_crs)
     .bind(arrive_after)
     .bind(arrive_before)
+    .bind(operators)
     .bind(after.map(|c| c.scheduled))
     .bind(after.map(|c| c.train_uid.as_str()))
     .bind(fetch)
@@ -2101,7 +2112,7 @@ pub async fn search_journey_leg_candidates(
         page_rows
             .last()
             .map(
-                |(train_uid, _, _, scheduled, _, _, _, _)| CallingPointDepartureCursor {
+                |(train_uid, _, _, scheduled, _, _, _, _, _)| CallingPointDepartureCursor {
                     scheduled: *scheduled,
                     train_uid: train_uid.clone(),
                 },
@@ -2120,6 +2131,7 @@ pub async fn search_journey_leg_candidates(
                 scheduled,
                 destination_arrival,
                 destination_arrival_day_offset,
+                operator_atoc,
                 leg_destination_arrival,
                 leg_destination_arrival_day_offset,
             )| {
@@ -2130,6 +2142,7 @@ pub async fn search_journey_leg_candidates(
                     "scheduled": scheduled.format("%H:%M:%S").to_string(),
                     "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                     "destination_arrival_day_offset": destination_arrival_day_offset,
+                    "operator_atoc": operator_atoc,
                     // Two EXTRA keys this sibling emits and
                     // `search_schedule_calling_point_departures` does not:
                     // the arrival at the LEG's own destination. Carried on
@@ -6010,6 +6023,7 @@ mod schedule_destination_departures_query_tests {
                 "scheduled": "08:22:00",
                 "destination_arrival": null,
                 "destination_arrival_day_offset": 0,
+                "operator_atoc": null,
             }),
             "element shape is exactly what render::calling_point_departure_json reads"
         );
@@ -7461,7 +7475,7 @@ mod schedule_destination_departures_query_tests {
         .expect("seed fixture rows");
 
         let page = search_journey_leg_candidates(
-            &pool, "WAT", "RDG", date, None, None, None, None, None, 50,
+            &pool, "WAT", "RDG", date, None, None, None, None, None, None, 50,
         )
         .await
         .expect("search candidates")
@@ -7542,6 +7556,7 @@ mod schedule_destination_departures_query_tests {
             None,
             None,
             Some(time(9, 35)),
+            None,
             None,
             50,
         )
@@ -7710,7 +7725,7 @@ LTSTAFFRD 1630         TF";
             .expect("seed real-pipeline-derived fixture rows");
 
         let page = search_journey_leg_candidates(
-            &pool, "EUS", "MKC", date, None, None, None, None, None, 50,
+            &pool, "EUS", "MKC", date, None, None, None, None, None, None, 50,
         )
         .await
         .expect("search candidates")
@@ -7727,6 +7742,145 @@ LTSTAFFRD 1630         TF";
             "both real operators' EUS -> MKC services must appear in the candidate list -- \
              C17798 (Avanti, MKC as its terminus) AND C18017 (London Northwestern, MKC as a \
              genuine intermediate calling point on the way to Crewe). Got: {uids:?}"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    /// Sibling of
+    /// `search_journey_leg_candidates_includes_every_real_operator_calling_at_a_shared_station`
+    /// above -- proves the NEW `operators` filter parameter this task
+    /// adds, not the already-fixed ordering bug that test exists for. Not
+    /// a mutation of that test: the two are proving two different things,
+    /// and that test's own two fixture blocks deliberately carry no `BX`
+    /// line at all (both currently resolve to `operator_atoc: None`),
+    /// which would make them useless for this.
+    ///
+    /// Same real byte-verbatim `BS`/`LO`/`LI`/`LT` bodies as the sibling
+    /// test above, with one addition: a `BX` line inserted between each
+    /// `BS` line and its first `LO` line (the real CIF record order -- a
+    /// `BX` line always immediately follows its own `BS`), following this
+    /// crate's own established "synthetic value, real byte layout" fixture
+    /// convention -- see
+    /// `crates/schedule-query/tests/real_cif_fixtures.rs`'s own
+    /// `SYNTHETIC_MINIMAL_BLOCK`'s `BX         SRYSR000000` line for the
+    /// precedent of exactly this shape (the ATOC Code is decoded from the
+    /// real, parser-verified `11..13` byte offset -- see
+    /// `schedule_query::parse::parse_bx_operator`'s own doc comment).
+    /// `"XX"`/`"ZZ"` are fully synthetic two-letter codes here -- just
+    /// structurally valid and clearly distinct from each other, no
+    /// real-world ATOC meaning claimed for either.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_journey_leg_candidates_operator_filter -- --ignored --test-threads=1`"]
+    async fn search_journey_leg_candidates_operator_filter_matches_only_the_requested_atoc_code() {
+        const AVANTI_EUS_MKC_XX: &str = "\
+BSNC177986701016712311111111           P
+BX         XXY000000
+LOEUSTON  0756         TB
+LTMKNSCEN 0837         TF";
+
+        const LNR_EUS_MKC_INTERMEDIATE_ZZ: &str = "\
+BSNC180176701016712311111111           P
+BX         ZZY000000
+LOEUSTON  1446         TB
+LIMKNSCEN 1518 1519         T
+LTSTAFFRD 1630         TF";
+
+        let index = schedule_query::ScheduleIndex::from_text(&format!(
+            "{AVANTI_EUS_MKC_XX}\n{LNR_EUS_MKC_INTERMEDIATE_ZZ}"
+        ));
+
+        let tiploc_to_crs: std::collections::HashMap<String, String> =
+            [("EUSTON", "EUS"), ("MKNSCEN", "MKC"), ("STAFFRD", "STA")]
+                .into_iter()
+                .map(|(tiploc, crs)| (tiploc.to_string(), crs.to_string()))
+                .collect();
+
+        // A different day than the sibling test above -- not load-bearing
+        // (each test's own `delete_day` bracket makes reuse safe even
+        // under `--test-threads=1`), just avoids any doubt about
+        // cross-test interference.
+        let date = chrono::NaiveDate::from_ymd_opt(2067, 2, 16).expect("valid fixture date");
+        let by_destination = schedule_query::departures_by_destination_crs(
+            &index,
+            date,
+            chrono::NaiveTime::MIN,
+            &tiploc_to_crs,
+        );
+
+        let rows: Vec<ScheduleDestinationDeparturesRow> = by_destination
+            .into_iter()
+            .flat_map(|(destination_crs, departures)| {
+                departures
+                    .into_iter()
+                    .map(move |d| ScheduleDestinationDeparturesRow {
+                        service_date: date,
+                        destination_crs: destination_crs.clone(),
+                        scheduled: d.scheduled,
+                        day_offset: d.day_offset as i16,
+                        train_uid: d.uid,
+                        origin_crs: d.origin_crs,
+                        true_origin_crs: d.true_origin_crs,
+                        calling_point_arrival: d.calling_point_arrival,
+                        destination_arrival: d.destination_arrival,
+                        destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
+                        operator_atoc: d.operator_atoc,
+                    })
+            })
+            .collect();
+
+        assert!(
+            rows.iter()
+                .any(|r| r.operator_atoc.as_deref() == Some("XX")),
+            "C17798's synthetic BX line must have decoded to operator_atoc \"XX\" -- got: {:?}",
+            rows.iter()
+                .map(|r| (&r.train_uid, &r.operator_atoc))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.operator_atoc.as_deref() == Some("ZZ")),
+            "C18017's synthetic BX line must have decoded to operator_atoc \"ZZ\" -- got: {:?}",
+            rows.iter()
+                .map(|r| (&r.train_uid, &r.operator_atoc))
+                .collect::<Vec<_>>()
+        );
+
+        let pool = test_pool().await;
+        delete_day(&pool, date).await;
+        upsert_schedule_destination_departures(&pool, &rows)
+            .await
+            .expect("seed real-pipeline-derived fixture rows");
+
+        let page = search_journey_leg_candidates(
+            &pool,
+            "EUS",
+            "MKC",
+            date,
+            None,
+            None,
+            None,
+            None,
+            Some(vec!["XX".to_string()]),
+            None,
+            50,
+        )
+        .await
+        .expect("search candidates")
+        .expect("service date is published");
+
+        let uids: std::collections::BTreeSet<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uids,
+            std::collections::BTreeSet::from(["C17798"]),
+            "operators: Some([\"XX\"]) must match only C17798 (operator_atoc \"XX\"), \
+             excluding C18017 (operator_atoc \"ZZ\") even though both call at EUS/MKC in the \
+             requested window. Got: {uids:?}"
         );
 
         delete_day(&pool, date).await;
