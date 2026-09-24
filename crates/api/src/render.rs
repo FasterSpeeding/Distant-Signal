@@ -1107,6 +1107,36 @@ mod tests {
     }
 
     #[test]
+    fn calling_point_departure_json_renders_the_operator_atoc_code_as_operator() {
+        let row = serde_json::json!({
+            "uid": "C10001",
+            "destination_crs": "WAT",
+            "true_origin_crs": "PAD",
+            "scheduled": "08:22:00",
+            "operator_atoc": "SW",
+        });
+        let json = calling_point_departure_json(&row, "RDG");
+        assert_eq!(json["operator"], "SW");
+    }
+
+    #[test]
+    fn calling_point_departure_json_renders_a_null_operator_as_json_null_not_a_missing_key() {
+        let row = serde_json::json!({
+            "uid": "C10002",
+            "destination_crs": "WAT",
+            "true_origin_crs": "PAD",
+            "scheduled": "10:05:00",
+            "operator_atoc": null,
+        });
+        let json = calling_point_departure_json(&row, "RDG");
+        assert!(json["operator"].is_null());
+        assert!(
+            json.get("operator").is_some(),
+            "must be explicit null, not omitted"
+        );
+    }
+
+    #[test]
     fn schedule_departure_json_null_destination_crs_stays_null() {
         let raw = serde_json::json!({
             "uid": "C99999",

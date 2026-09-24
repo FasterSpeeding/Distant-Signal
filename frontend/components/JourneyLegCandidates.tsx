@@ -253,7 +253,9 @@ export function JourneyLegCandidates({
     if (results.rows.length === 0) {
       return (
         <Text size="sm" c="dimmed">
-          No scheduled trains match this window.{' '}
+          {committedOperator
+            ? `No scheduled trains from operator ${committedOperator} match this window.`
+            : 'No scheduled trains match this window.'}{' '}
           <TextLink href="/track" inline underline="always">
             Search manually
           </TextLink>{' '}

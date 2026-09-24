@@ -509,6 +509,60 @@ describe('JourneyLegCandidates', () => {
         vi.useRealTimers();
       }
     });
+
+    // Finding 4 of the final review pass: an empty result set while an
+    // operator filter is committed used to render the SAME "No scheduled
+    // trains match this window" text as a genuinely empty unfiltered
+    // window, wrongly blaming the time window rather than the filter the
+    // user just set. Paired with
+    // 'renders the "Search manually" fallback link when there are no
+    // candidates' above, which pins the unchanged, no-filter wording.
+    it('blames the operator filter, not the window, when a committed operator filter matches nothing', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (/\/api\/Journeys\/\d+\/legs\/\d+\/train$/.test(url) && init?.method === 'POST') {
+          return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        }
+        if (url.includes('operator=GW')) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }),
+          );
+        }
+        if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates(\?.*)?$/.test(url)) {
+          return Promise.resolve(
+            new Response(JSON.stringify(CANDIDATES_FIXTURE), { status: 200 }),
+          );
+        }
+        if (url.startsWith('/api/tocs?')) {
+          return Promise.resolve(new Response(JSON.stringify(TEST_TOCS), { status: 200 }));
+        }
+        throw new Error(`unexpected fetch for ${url}`);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        renderWithMantine(
+          <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+        );
+        await screen.findByText('Train C11052 · BRI → PAD');
+
+        fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
+          target: { value: 'gw' },
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(250);
+        });
+
+        expect(
+          await screen.findByText(/No scheduled trains from operator GW match this window\./),
+        ).toBeInTheDocument();
+        expect(screen.queryByText(/^No scheduled trains match this window\./)).not.toBeInTheDocument();
+        const link = screen.getByRole('link', { name: 'Search manually' });
+        expect(link).toHaveAttribute('href', '/track');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // Regression: EUS-MKC is a high-frequency corridor with two operators'

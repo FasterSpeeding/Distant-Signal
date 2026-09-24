@@ -1968,8 +1968,17 @@ pub async fn search_journey_leg_candidates(
     arrive_before: Option<chrono::NaiveTime>,
     // Optional ATOC-code allowlist, same "comma-split, empty means no
     // filter" shape `search_incidents`'s own `operators` param establishes
-    // (`routes::incidents::search_incidents`) -- an "any of" filter, NULL
-    // (never satisfied vacuously) when the caller passes no codes at all.
+    // (`routes::incidents::search_incidents`) -- an "any of" filter. `None`
+    // correctly means "no filter": the bound SQL parameter is NULL and the
+    // `$8::text[] IS NULL OR ...` predicate below short-circuits to true
+    // for every row. `Some(vec![])` does NOT also mean "no filter", though
+    // -- an empty-but-present list still binds an empty array, and
+    // `operator_atoc = ANY('{}')` is false for every row, so it would
+    // filter out everything. The current caller
+    // (`routes::journeys::get_leg_candidates`) can never actually produce
+    // `Some(vec![])` (its own comma-split collapses an empty result back
+    // to `None`), so this distinction has no live effect today -- but it
+    // is load-bearing for any future caller that skips that step.
     operators: Option<Vec<String>>,
     after: Option<&CallingPointDepartureCursor>,
     limit: i64,

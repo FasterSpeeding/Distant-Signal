@@ -21,9 +21,12 @@ ALTER TABLE schedule_destination_departures ADD COLUMN operator_atoc TEXT;
 -- it, `operator_atoc` is designed to be evaluated as another optional
 -- equality predicate against rows already narrowed by the existing
 -- schedule_destination_departures_calling_point_idx
--- (service_date, origin_crs, scheduled, train_uid) and
--- schedule_destination_departures_train_uid_service_date_scheduled_idx
--- (train_uid, service_date, scheduled) scans -- a full row is fetched by
--- one of those two, and operator_atoc compared in-place, not scanned for
--- on its own. Do not add a speculative index; revisit only with a
--- measured reason, same convention as this table's prior additions.
+-- (service_date, origin_crs, scheduled, train_uid) and the
+-- (train_uid, service_date, scheduled) index -- named
+-- schedule_destination_departures_train_uid_service_date_schedule in the
+-- real database, Postgres's own 63-byte-identifier truncation of the
+-- longer name this repo's migration/index-creation code asked for -- scans.
+-- A full row is fetched by one of those two, and operator_atoc compared
+-- in-place, not scanned for on its own. Do not add a speculative index;
+-- revisit only with a measured reason, same convention as this table's
+-- prior additions.
