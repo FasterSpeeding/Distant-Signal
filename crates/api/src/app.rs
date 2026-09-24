@@ -223,6 +223,19 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
+        // POST-only, no GET pair -- same shape as
+        // /schedule-network-departures below, reusing schedule-reference's
+        // EXISTING writer credential (the same one /stanox-crs's own POST
+        // above already uses). Task 3's `trip_planning.rs` reads
+        // `tiploc_crs` straight off `api`'s own database via
+        // `queries::list_tiploc_crs`, not via a private ingest route, so
+        // there is no reader here needing its own GET entry -- see
+        // docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md.
+        (
+            "/tiploc-crs",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
         (
             "/station-full-coverage-samples",
             Method::GET,

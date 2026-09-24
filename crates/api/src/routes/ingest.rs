@@ -79,6 +79,7 @@ pub fn router() -> Router {
             "/stanox-crs",
             axum::routing::get(get_stanox_crs).post(post_stanox_crs),
         )
+        .route("/tiploc-crs", axum::routing::post(post_tiploc_crs))
         .route("/fixed-links", axum::routing::post(post_fixed_links))
         .route(
             "/schedule-line-population",
@@ -375,6 +376,18 @@ async fn post_stanox_crs(
     Json(records): Json<Vec<common::StanoxCrsRecord>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let upserted = queries::upsert_stanox_crs(&app.database, &records)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+/// `crates/schedule-reference`'s per-sequence batch of directly-resolved
+/// TIPLOC->CRS rows -- see `queries::upsert_tiploc_crs`.
+async fn post_tiploc_crs(
+    State(app): State<App>,
+    Json(records): Json<Vec<common::TiplocCrsRecord>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_tiploc_crs(&app.database, &records)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))

@@ -931,6 +931,62 @@ mod route_scoping_tests {
     }
 
     #[tokio::test]
+    async fn schedule_references_token_is_accepted_on_post_tiploc_crs() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-schedule-reference-1",
+            &["svc-schedule-reference"],
+        );
+
+        assert_eq!(
+            send(&router, Method::POST, "/tiploc-crs", Some(&token)).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn every_other_services_token_is_rejected_on_post_tiploc_crs() {
+        // /tiploc-crs is POST-only with exactly one legitimate caller
+        // (schedule-reference, reusing its existing writer credential --
+        // see app.rs's route-scoping table). Every OTHER service's own
+        // token, each individually valid for its own routes, must still be
+        // rejected here -- mirrors /stanox-crs POST's own
+        // trust_consumers_token_is_rejected_on_post_stanox_crs /
+        // full_coverage_consumers_token_is_rejected_on_post_stanox_crs /
+        // trust_backlog_consumers_token_is_rejected_on_post_stanox_crs
+        // tests above, generalized to every other caller group at once
+        // since there is no GET pair here splitting the boundary in two.
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let config = test_config();
+        let other_groups = [
+            &config.internal_oauth_group_incidents,
+            &config.internal_oauth_group_stations,
+            &config.internal_oauth_group_tocs,
+            &config.internal_oauth_group_ldbws,
+            &config.internal_oauth_group_tfl,
+            &config.internal_oauth_group_trust_consumer,
+            &config.internal_oauth_group_schedule_ingest,
+            &config.internal_oauth_group_full_coverage,
+            &config.internal_oauth_group_trust_backlog,
+            &config.internal_oauth_group_irish_rail_gtfs,
+            &config.internal_oauth_group_irish_rail_live,
+            &config.internal_oauth_group_nir_stations,
+        ];
+
+        for group in other_groups {
+            let token = token_for(&server.uri(), "svc-under-test", &[group.as_str()]);
+            assert_eq!(
+                send(&router, Method::POST, "/tiploc-crs", Some(&token)).await,
+                StatusCode::FORBIDDEN,
+                "expected group {group} to be rejected on POST /tiploc-crs"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_token_with_no_matching_group_at_all_is_rejected_on_stanox_crs() {
         let (server, app, _routes) = test_app().await;
         let router = test_router(app.clone());
