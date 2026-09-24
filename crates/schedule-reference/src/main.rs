@@ -512,9 +512,11 @@ fn log_new_unresolved_booked_tiplocs(
 /// richer, TIPLOC-primary crosswalk `parser::resolve_tiploc_crs` produces,
 /// see
 /// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) --
-/// `stanox_crs_records` stays as a parameter too (unchanged, still used by
-/// `publish_schedule_line_population`'s `crs_to_tiploc_map` inversion,
-/// which is out of this task's scope) rather than being removed.
+/// `stanox_crs_records` stays as a parameter too (unchanged) rather than
+/// being removed. Both are now passed through to
+/// `publish_schedule_line_population`, which unions them via
+/// `crs_to_tiploc_map` (see that function's own doc comment for the
+/// `AFK`/`EBD`/`SFA`/`POO`-class gap this closes).
 async fn publish_cif_derived_products(
     client: &Client,
     config: &Config,
@@ -552,6 +554,7 @@ async fn publish_cif_derived_products(
         &index,
         today,
         stanox_crs_records,
+        tiploc_crs_records,
         internal_oauth,
     )
     .await;
@@ -615,6 +618,13 @@ async fn publish_cif_derived_products(
 /// for why: the TOML field is documentation/display metadata only and was
 /// never a reliable proxy for "does this station appear in real CIF data."
 ///
+/// As of the 2026-09-24 tiploc-crs-crosswalk gap fix, this also takes
+/// `tiploc_crs_records` and passes both crosswalks through to
+/// `crs_to_tiploc_map`, which now unions them -- see that function's own
+/// doc comment for why `stanox_crs_records` alone permanently excluded a
+/// real, checked-in set of CRS codes (`AFK`/`ASI`, `EBD`/`EBF`, `SDI`/`SFA`,
+/// `POO`/`PFT`) that `tiploc_crs_records` resolves unambiguously.
+///
 /// The lint suppression below predates this fix (Task 3 Step 5's own
 /// byte-for-byte constraint on this loop, since relaxed by this change):
 /// `index` is `&ScheduleIndex` (caller-supplied) rather than an owned
@@ -627,9 +637,10 @@ async fn publish_schedule_line_population(
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
     stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) {
-    let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records);
+    let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
     for line in lines_to_publish(&config.lines, &crs_to_tiploc) {
         let tiplocs = line_tiplocs(line, &crs_to_tiploc);
         let resolved = schedule_query::schedules_touching(&index, &tiplocs, today);
@@ -653,22 +664,69 @@ async fn publish_schedule_line_population(
     }
 }
 
-/// Real, CIF-derived CRS -> TIPLOC(s) map, inverted from
-/// `stanox_crs_records` -- the mirror image of the `tiploc_to_crs` map
-/// `publish_schedule_network_departures`/`publish_schedule_destination_departures`
-/// already build from the same data, just keyed the other way round. A CRS
-/// can resolve to more than one TIPLOC in practice (multiple STANOX rows
-/// can share a CRS, e.g. different platforms/areas of one physical
-/// location -- see `queries::list_stanox_crs_for_crs`'s own doc in
-/// `crates/api`), so this is `Vec<String>`-valued, not a single TIPLOC.
+/// Real, CIF-derived CRS -> TIPLOC(s) map, inverted from the UNION of
+/// `stanox_crs_records` and `tiploc_crs_records` -- the mirror image of the
+/// `tiploc_to_crs` map `publish_schedule_network_departures`/
+/// `publish_schedule_destination_departures` already build from the same
+/// data, just keyed the other way round. A CRS can resolve to more than one
+/// TIPLOC in practice (multiple STANOX rows can share a CRS, e.g. different
+/// platforms/areas of one physical location -- see
+/// `queries::list_stanox_crs_for_crs`'s own doc in `crates/api`), so this
+/// is `Vec<String>`-valued, not a single TIPLOC.
+///
+/// As of the 2026-09-24 tiploc-crs-crosswalk gap fix, `tiploc_crs_records`
+/// is unioned in alongside `stanox_crs_records` rather than this map being
+/// built from `stanox_crs_records` alone. `stanox_crs` permanently
+/// EXCLUDES 5 STANOX values (`89428`, `52215`, `89530`, `86935`, `87981`
+/// -- see reference-data/stanox-crs.md) that each cover two TIPLOCs with
+/// two genuinely different, non-`X`-prefixed real CRS: an ambiguity that is
+/// unresolvable at the STANOX level, so `stanox_crs` drops both rows rather
+/// than guess. That silently meant `crs_to_tiploc_map` had ZERO entries for
+/// `AFK`/`ASI` (Ashford (Kent)/Ashford International), `EBD`/`EBF`
+/// (Ebbsfleet International domestic/international), `SDI`/`SFA` (Stratford
+/// International/its domestic platforms) and `POO`/`PFT` (Poole/Poole Ferry
+/// Terminal) -- real stations several checked-in `lines/*.toml` files list
+/// (e.g. `lines/southeastern-highspeed.toml`'s `AFK`/`EBD`/`SFA`,
+/// `lines/swr-south-west-main.toml`'s `POO`), so any real schedule touching
+/// ONLY one of these stations was silently excluded from
+/// `schedule_line_population`.
+///
+/// `tiploc_crs` (`PRIMARY KEY (tiploc)`, see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) carries
+/// every one of these TIPLOCs as its own independently-resolvable row --
+/// unlike `stanox_crs`, there is nothing to disambiguate when the grouping
+/// key IS the TIPLOC already, so inverting `tiploc_crs` (this direction)
+/// is structurally unambiguous, unlike inverting `stanox_crs` (which is
+/// exactly the STANOX-keyed direction that motivated excluding those 5
+/// STANOX values in the first place). This function merges TIPLOC->CRS
+/// from both sources FIRST (preferring `tiploc_crs_records` on any TIPLOC
+/// present in both, the same deterministic convention
+/// `queries::crs_for_tiploc`/`queries::list_stanox_crs_for_crs` in
+/// `crates/api` already use for the same union), then inverts the merged
+/// map once -- so a TIPLOC that resolves via `stanox_crs_records` alone
+/// still resolves exactly as before, and one that resolves via
+/// `tiploc_crs_records` only (or with a different CRS in each source) now
+/// also resolves, deterministically.
 fn crs_to_tiploc_map(
     stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
 ) -> std::collections::HashMap<String, Vec<String>> {
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut tiploc_to_crs: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for record in stanox_crs_records {
-        map.entry(record.crs.to_uppercase())
-            .or_default()
-            .push(record.tiploc.clone());
+        tiploc_to_crs.insert(record.tiploc.clone(), record.crs.clone());
+    }
+    // Inserted second so it overwrites any `stanox_crs_records`-derived
+    // entry for the same TIPLOC key -- `tiploc_crs_records` wins on
+    // conflict, matching `crates/api/src/data/queries.rs`'s own
+    // `tiploc_crs`-preferred union convention.
+    for record in tiploc_crs_records {
+        tiploc_to_crs.insert(record.tiploc.clone(), record.crs.clone());
+    }
+
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (tiploc, crs) in tiploc_to_crs {
+        map.entry(crs.to_uppercase()).or_default().push(tiploc);
     }
     map
 }
@@ -1161,6 +1219,21 @@ mod poll_once_tests {
         map
     }
 
+    /// A minimal, real-shaped `TiplocCrsRecord` for `crs_to_tiploc_map`
+    /// tests -- `stanox`/`station_name` are filled with placeholder values
+    /// since those two fields don't participate in `crs_to_tiploc_map`'s
+    /// own logic at all.
+    fn fixture_tiploc_crs_record(tiploc: &str, crs: &str) -> common::TiplocCrsRecord {
+        common::TiplocCrsRecord {
+            tiploc: tiploc.to_string(),
+            crs: crs.to_string(),
+            station_name: format!("{crs} TEST STATION"),
+            stanox: "00000".to_string(),
+            source_sequence: 1,
+            change_time_minutes: None,
+        }
+    }
+
     #[test]
     fn forward_publish_dates_returns_today_through_today_plus_n_inclusive() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
@@ -1284,13 +1357,166 @@ mod poll_once_tests {
                 change_time_minutes: None,
             },
         ];
-        let map = crs_to_tiploc_map(&records);
+        let map = crs_to_tiploc_map(&records, &[]);
         let mut tiplocs = map.get("ZNT").cloned().unwrap_or_default();
         tiplocs.sort_unstable();
         assert_eq!(
             tiplocs,
             vec!["ZNOTIPLOC".to_string(), "ZNOTIPLOC2".to_string()]
         );
+    }
+
+    /// The real regression test for the 2026-09-24 tiploc-crs-crosswalk gap
+    /// this fix closes: before it, `crs_to_tiploc_map` inverted
+    /// `stanox_crs_records` alone, which -- per
+    /// reference-data/stanox-crs.md's own documented exclusion policy --
+    /// permanently has ZERO rows for `AFK`/`ASI` (STANOX `89428`),
+    /// `EBD`/`EBF` (STANOX `89530`), `SDI`/`SFA` (STANOX `52215`) and
+    /// `POO`/`PFT` (STANOX `86935`): each of these STANOX covers two
+    /// TIPLOCs with two genuinely different, non-`X`-prefixed real CRS, an
+    /// ambiguity `stanox_crs` leaves unresolved by excluding both rows
+    /// entirely rather than guessing. Real TIPLOC codes, from
+    /// reference-data/crs-tiploc.csv: `ASHFKY`/`ASHFKI`, `EBSFDOM`/
+    /// `EBSFLTI`, `STFODOM`/`STFORDI`, `POOLE`/`POLEFT`.
+    #[test]
+    fn crs_to_tiploc_map_resolves_the_four_real_stanox_excluded_crs_pairs_via_tiploc_crs() {
+        // stanox_crs_records deliberately empty -- exactly like the real,
+        // permanent exclusion of these STANOX values from stanox_crs.
+        let stanox_crs_records: Vec<common::StanoxCrsRecord> = vec![];
+        let tiploc_crs_records = vec![
+            fixture_tiploc_crs_record("ASHFKY", "AFK"),
+            fixture_tiploc_crs_record("ASHFKI", "ASI"),
+            fixture_tiploc_crs_record("EBSFDOM", "EBD"),
+            fixture_tiploc_crs_record("EBSFLTI", "EBF"),
+            fixture_tiploc_crs_record("STFODOM", "SFA"),
+            fixture_tiploc_crs_record("STFORDI", "SDI"),
+            fixture_tiploc_crs_record("POOLE", "POO"),
+            fixture_tiploc_crs_record("POLEFT", "PFT"),
+        ];
+
+        let map = crs_to_tiploc_map(&stanox_crs_records, &tiploc_crs_records);
+
+        assert_eq!(map.get("AFK"), Some(&vec!["ASHFKY".to_string()]));
+        assert_eq!(map.get("ASI"), Some(&vec!["ASHFKI".to_string()]));
+        assert_eq!(map.get("EBD"), Some(&vec!["EBSFDOM".to_string()]));
+        assert_eq!(map.get("EBF"), Some(&vec!["EBSFLTI".to_string()]));
+        assert_eq!(map.get("SFA"), Some(&vec!["STFODOM".to_string()]));
+        assert_eq!(map.get("SDI"), Some(&vec!["STFORDI".to_string()]));
+        assert_eq!(map.get("POO"), Some(&vec!["POOLE".to_string()]));
+        assert_eq!(map.get("PFT"), Some(&vec!["POLEFT".to_string()]));
+    }
+
+    /// Non-regression half of the fix above: a CRS resolvable via
+    /// `stanox_crs_records` alone (no `tiploc_crs_records` row at all) must
+    /// keep resolving exactly as before this fix.
+    #[test]
+    fn crs_to_tiploc_map_still_resolves_a_crs_that_only_stanox_crs_carries() {
+        let stanox_crs_records = vec![common::StanoxCrsRecord {
+            stanox: "72410".to_string(),
+            crs: "EUS".to_string(),
+            tiploc: "EUSTON".to_string(),
+            station_name: "LONDON EUSTON".to_string(),
+            source_sequence: 1,
+            change_time_minutes: None,
+        }];
+        let map = crs_to_tiploc_map(&stanox_crs_records, &[]);
+        assert_eq!(map.get("EUS"), Some(&vec!["EUSTON".to_string()]));
+    }
+
+    /// Deterministic preference convention: when the SAME TIPLOC appears in
+    /// both sources with a DIFFERENT CRS, `tiploc_crs_records` wins --
+    /// mirroring `crates/api/src/data/queries.rs`'s own `tiploc_crs`-
+    /// preferred union for the TIPLOC->CRS direction (`crs_for_tiploc`/
+    /// `list_stanox_crs_for_crs`).
+    #[test]
+    fn crs_to_tiploc_map_prefers_tiploc_crs_over_stanox_crs_on_a_conflicting_same_tiploc() {
+        let stanox_crs_records = vec![common::StanoxCrsRecord {
+            stanox: "S1".to_string(),
+            crs: "OLD".to_string(),
+            tiploc: "ZZCONFLICT".to_string(),
+            station_name: "TEST STATION".to_string(),
+            source_sequence: 1,
+            change_time_minutes: None,
+        }];
+        let tiploc_crs_records = vec![fixture_tiploc_crs_record("ZZCONFLICT", "NEW")];
+
+        let map = crs_to_tiploc_map(&stanox_crs_records, &tiploc_crs_records);
+
+        assert_eq!(map.get("NEW"), Some(&vec!["ZZCONFLICT".to_string()]));
+        assert!(
+            !map.contains_key("OLD"),
+            "the stale stanox_crs CRS for this TIPLOC must not also appear"
+        );
+    }
+
+    /// The end-to-end regression test this gap fix was reviewed against: a
+    /// line whose ONLY real CIF-resolvable station is one of these
+    /// previously-unresolvable CRS codes must now be published by
+    /// `lines_to_publish`, and `line_tiplocs`'s filter list for it must
+    /// include the real TIPLOC -- where before this fix (`crs_to_tiploc_map`
+    /// built from `stanox_crs_records` alone) it would have been silently
+    /// dropped, exactly like `lines/southeastern-highspeed.toml`'s real
+    /// `AFK`/`EBD`/`SFA` stations and `lines/swr-south-west-main.toml`'s
+    /// real `POO`.
+    #[test]
+    fn lines_to_publish_includes_a_line_whose_only_station_is_afk_ebd_sfa_or_poo_class_via_tiploc_crs()
+     {
+        let stanox_crs_records: Vec<common::StanoxCrsRecord> = vec![]; // permanently excluded, real-world
+        let tiploc_crs_records = vec![
+            fixture_tiploc_crs_record("ASHFKY", "AFK"),
+            fixture_tiploc_crs_record("EBSFDOM", "EBD"),
+            fixture_tiploc_crs_record("STFODOM", "SFA"),
+            fixture_tiploc_crs_record("POOLE", "POO"),
+        ];
+        let crs_to_tiploc = crs_to_tiploc_map(&stanox_crs_records, &tiploc_crs_records);
+
+        let lines = vec![
+            fixture_line(
+                "southeastern-highspeed-like",
+                vec![fixture_station("AFK", None)],
+            ),
+            fixture_line(
+                "southeastern-ebbsfleet-like",
+                vec![fixture_station("EBD", None)],
+            ),
+            fixture_line(
+                "southeastern-stratford-like",
+                vec![fixture_station("SFA", None)],
+            ),
+            fixture_line(
+                "swr-south-west-main-like",
+                vec![fixture_station("POO", None)],
+            ),
+        ];
+
+        let published: Vec<&str> = lines_to_publish(&lines, &crs_to_tiploc)
+            .map(|l| l.id.as_str())
+            .collect();
+        assert_eq!(
+            published,
+            vec![
+                "southeastern-highspeed-like",
+                "southeastern-ebbsfleet-like",
+                "southeastern-stratford-like",
+                "swr-south-west-main-like",
+            ]
+        );
+
+        // Before this fix, crs_to_tiploc_map built from stanox_crs_records
+        // alone would have had zero entries for any of these 4 CRS codes,
+        // so this exact lines_to_publish call would have returned nothing.
+        let crs_to_tiploc_before_fix = crs_to_tiploc_map(&stanox_crs_records, &[]);
+        let published_before_fix: Vec<&str> = lines_to_publish(&lines, &crs_to_tiploc_before_fix)
+            .map(|l| l.id.as_str())
+            .collect();
+        assert!(
+            published_before_fix.is_empty(),
+            "sanity check: without tiploc_crs_records, none of these AFK/EBD/SFA/POO-only lines \
+             resolve, confirming the fixture actually exercises this fix"
+        );
+
+        let afk_tiplocs = line_tiplocs(&lines[0], &crs_to_tiploc);
+        assert_eq!(afk_tiplocs, vec!["ASHFKY"]);
     }
 
     #[test]
