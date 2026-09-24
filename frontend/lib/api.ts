@@ -666,6 +666,19 @@ export async function getJourney(id: number): Promise<JourneyDetail> {
   return response.json() as Promise<JourneyDetail>;
 }
 
+/** `GET /Journeys/shared/{token}` -- genuinely unauthenticated (no cookie
+ * needed, though harmless if sent): resolves an unlisted share-link
+ * token to the same `JourneyDetail` shape `getJourney` returns, with
+ * `isOwner: false` and `shareLink: null` always. Throws `ApiNotFoundError`
+ * for an unknown, expired, or revoked token -- same contract
+ * `getGroupJoinPreview` already uses for its own token-not-found case. */
+export async function getJourneyByShareToken(token: string): Promise<JourneyDetail> {
+  const url = `${baseUrl()}/Journeys/shared/${token}`;
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<JourneyDetail>;
+}
+
 /** `GET /Journeys/mine` -- `null` on a `401`, same "not logged in" signal
  * `getMyTrackedTrains` already uses (no id in this route's path to
  * disambiguate a second way). Not consumed by any page in this plan (see

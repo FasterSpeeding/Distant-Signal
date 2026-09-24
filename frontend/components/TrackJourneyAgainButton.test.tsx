@@ -31,7 +31,7 @@ function leg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
 }
 
 function journey(legs: JourneyLegDetail[], isOwner = true): JourneyDetail {
-  return { id: 167, customName: null, createdAt: '2026-09-22T00:00:00Z', legs, isOwner };
+  return { id: 167, customName: null, createdAt: '2026-09-22T00:00:00Z', legs, isOwner, shareLink: null };
 }
 
 describe('TrackJourneyAgainButton', () => {

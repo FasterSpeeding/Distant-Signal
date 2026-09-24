@@ -51,7 +51,7 @@ function trackedState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainS
 }
 
 function journey(legs: JourneyLegDetail[]): JourneyDetail {
-  return { id: 1, customName: null, createdAt: '2026-09-22T00:00:00Z', legs, isOwner: true };
+  return { id: 1, customName: null, createdAt: '2026-09-22T00:00:00Z', legs, isOwner: true, shareLink: null };
 }
 
 describe('journeyPriorDestinationCrs', () => {

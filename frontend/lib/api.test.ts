@@ -33,6 +33,7 @@ import {
   getSharedGroupTrains,
   getGroupCustomLines,
   getSharedGroupCustomLines,
+  getJourneyByShareToken,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -1085,5 +1086,10 @@ describe('api client', () => {
       'http://test-api:8080/public/chatbot/access',
       expect.objectContaining({ cache: 'no-store', headers: { Cookie: 'distant_signal_session=abc123' } }),
     );
+  });
+
+  it('getJourneyByShareToken throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getJourneyByShareToken('invalid-token')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 });

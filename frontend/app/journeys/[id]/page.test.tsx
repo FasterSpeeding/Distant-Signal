@@ -22,6 +22,15 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+// `getSiteOrigin()` (lib/siteOrigin.ts), called unconditionally by this
+// page to build `ShareJourneyLinkButton`'s `origin` prop, reads
+// `next/headers` when `NEXT_PUBLIC_SITE_URL` isn't set -- there is no Next
+// request context in a unit test. Same stub shape
+// `app/groups/[id]/page.test.tsx` uses for the same reason.
+vi.mock('next/headers', () => ({
+  headers: async () => ({ get: () => null }),
+}));
+
 function trackedState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainState {
   return {
     id: 1,
@@ -118,6 +127,7 @@ function baseJourney(overrides: Partial<JourneyDetail> = {}): JourneyDetail {
     createdAt: '2026-09-22T00:00:00Z',
     legs: [matchedLeg()],
     isOwner: false,
+    shareLink: null,
     ...overrides,
   };
 }
@@ -264,6 +274,7 @@ function openSuiteJourney(overrides: Partial<JourneyDetail> = {}): JourneyDetail
     createdAt: '2026-09-22T10:00:00Z',
     legs: [openLeg()],
     isOwner: true,
+    shareLink: null,
     ...overrides,
   };
 }

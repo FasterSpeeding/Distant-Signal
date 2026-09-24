@@ -4,11 +4,16 @@
 //! docs/superpowers/plans/2026-09-22-journey-tracking-phase1-single-leg-migration-plan.md.
 //! Every route here requires an authenticated session
 //! (`AuthenticatedUser`) -- journeys have no anonymous/service-token path,
-//! matching `routes::train`'s own posture for its write routes. Unlike
-//! `routes::train::get_by_uid_and_date`, there is no public/unscoped
-//! journey read in Phase 1 at all -- group sharing (design doc §6) is what
-//! eventually opens a journey to anyone other than its own owner, and that
-//! is Phase 4's job, not this file's.
+//! matching `routes::train`'s own posture for its write routes -- with
+//! exactly one deliberate exception: `GET /Journeys/shared/{token}`
+//! (`get_journey_by_share_token`, see that handler's own doc comment) is
+//! genuinely public, with NO `AuthenticatedUser` extractor at all, same
+//! posture as `routes::groups::get_join_preview`. That one route is the
+//! unlisted-links feature's read path
+//! (docs/superpowers/specs/2026-09-23-unlisted-links-design.md), not group
+//! sharing -- group sharing (design doc §6) is a separate, still-future
+//! mechanism for opening a journey to anyone other than its own owner, and
+//! remains Phase 4's job, not this file's.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -19,12 +24,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{journeys, schedule_matching, train_tracking};
+use crate::data::{journeys, schedule_matching, train_tracking, unlisted_links};
+
+/// The `resource_type` discriminator this file passes to every
+/// `crate::data::unlisted_links` call -- routing-layer wiring only, kept out
+/// of `data/journeys.rs` on purpose (see this plan's Global Constraints):
+/// the generic `unlisted_links` module knows nothing about journeys at all,
+/// and never will.
+const JOURNEY_RESOURCE_TYPE: &str = "journey";
 
 pub fn router() -> Router {
     Router::new()
         .route("/Journeys", axum::routing::post(post_journey))
         .route("/Journeys/mine", axum::routing::get(get_my_journeys))
+        // Ahead of `/Journeys/{journey_id}` -- pure documentation, since
+        // `matchit` already resolves a literal segment ahead of a
+        // same-position dynamic one regardless of registration order (see
+        // `routes::train`'s own `literal_route_wins_over_same_position_dynamic_route`
+        // precedent, and `/groups/join/{token}`'s identical shape). A real
+        // journey id is always digits (`Path<i64>` extraction), so the
+        // literal `shared` segment can never collide with one.
+        .route(
+            "/Journeys/shared/{token}",
+            axum::routing::get(get_journey_by_share_token),
+        )
         // `.delete(delete_journey)` chained onto the SAME `MethodRouter`,
         // not a second `.route("/Journeys/{journey_id}", ...)` call --
         // axum panics at router-build time ("Overlapping method route") on
@@ -50,6 +73,10 @@ pub fn router() -> Router {
         .route(
             "/Journeys/{journey_id}/legs/{leg_id}",
             axum::routing::delete(delete_journey_leg),
+        )
+        .route(
+            "/Journeys/{journey_id}/share-link",
+            axum::routing::post(create_journey_share_link).delete(revoke_journey_share_link),
         )
 }
 
@@ -691,6 +718,23 @@ struct JourneyDetailResponse {
     /// showing them at all to a fellow group member who can only ever get a
     /// 404 is its own bug. See this plan's final-review findings (I1).
     is_owner: bool,
+    /// The journey's currently-active unlisted share link, if any --
+    /// `Some` only when `is_owner` is `true` (see `build_journey_detail_response`).
+    /// A non-owner (a fellow group member, or a visitor who reached this
+    /// journey via the share link itself) never sees a live, usable token
+    /// this way -- design doc §4.
+    share_link: Option<ShareLinkResponse>,
+}
+
+/// The unlisted share link `unlisted_links::UnlistedLink` mapped onto the
+/// wire -- deliberately its own type rather than reusing `UnlistedLink`
+/// directly, so this route's response shape doesn't change if that
+/// module's internal shape ever does.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareLinkResponse {
+    token: String,
+    expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -768,6 +812,149 @@ async fn get_journey(
         .ok_or((StatusCode::NOT_FOUND, "no journey with that id".to_string()))?;
     let is_owner = summary.user_id == user.id;
 
+    Ok(Json(
+        build_journey_detail_response(&app, journey_id, is_owner).await?,
+    ))
+}
+
+/// `POST /Journeys/{journeyId}/share-link` -- owner-only (folds `AND
+/// journeys.user_id = $caller` into its own lookup, the same
+/// ownership-only convention every OTHER write route in this file uses --
+/// `get_journey` above is the one deliberate exception, not the rule; this
+/// route does NOT call `journey_readable_by`). `404` (not `403`) for a
+/// non-owner, matching every other write route's own 404-never-403
+/// posture. Used for both the first "Share" click and a later
+/// "Regenerate" -- `unlisted_links::rotate_link` already has this dual
+/// role built in. The `None` TTL is the journeys-specific choice from
+/// design doc §5: no forced expiry, explicit revoke/regenerate are the
+/// owner's only two levers.
+async fn create_journey_share_link(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+) -> Result<Json<ShareLinkResponse>, (StatusCode, String)> {
+    require_journey_ownership(&app, journey_id, &user.id).await?;
+
+    let link = unlisted_links::rotate_link(
+        &app.database,
+        JOURNEY_RESOURCE_TYPE,
+        &journey_id.to_string(),
+        &user.id,
+        None,
+    )
+    .await
+    .map_err(internal_error("create journey share link"))?;
+
+    Ok(Json(ShareLinkResponse {
+        token: link.token,
+        expires_at: link.expires_at,
+    }))
+}
+
+/// `DELETE /Journeys/{journeyId}/share-link` -- same ownership check as
+/// `create_journey_share_link`, then `unlisted_links::revoke_link`. `204`
+/// either way (idempotent, matching `revoke_invite_link`'s own route-level
+/// posture) -- whether a row was actually revoked is not reported to the
+/// caller.
+async fn revoke_journey_share_link(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_journey_ownership(&app, journey_id, &user.id).await?;
+
+    unlisted_links::revoke_link(
+        &app.database,
+        JOURNEY_RESOURCE_TYPE,
+        &journey_id.to_string(),
+    )
+    .await
+    .map_err(internal_error("revoke journey share link"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Direct, ownership-scoped existence check -- the same folded-in-`WHERE`
+/// convention every write route in this file other than `get_journey`
+/// uses, deliberately NOT `journey_readable_by` (which also admits a
+/// group-shared reader -- read-only authorization only, never a write
+/// gate, per that function's own doc comment).
+async fn require_journey_ownership(
+    app: &App,
+    journey_id: i64,
+    user_id: &str,
+) -> Result<(), (StatusCode, String)> {
+    let owned: (bool,) =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM journeys WHERE id = $1 AND user_id = $2)")
+            .bind(journey_id)
+            .bind(user_id)
+            .fetch_one(&app.database)
+            .await
+            .map_err(|err| internal_error("check journey ownership")(err.into()))?;
+    if !owned.0 {
+        return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
+    }
+    Ok(())
+}
+
+/// `GET /Journeys/shared/{token}` -- genuinely public: NO
+/// `AuthenticatedUser` extractor at all, same posture as
+/// `routes::groups::get_join_preview`. Resolves the token via
+/// `unlisted_links::resolve_link`, confirms `resource_type == "journey"`,
+/// parses `resource_id` as an `i64`, then returns the exact same
+/// `JourneyDetailResponse` shape `get_journey` returns -- with `is_owner`
+/// hardcoded `false`, never derived from the token or any caller identity
+/// (this route has no caller identity to derive it from in the first
+/// place). An invalid, expired, revoked, or wrong-resource-type token gets
+/// a terse `404`, matching this codebase's existing
+/// don't-distinguish-not-found-from-not-allowed posture.
+async fn get_journey_by_share_token(
+    State(app): State<App>,
+    Path(token): Path<String>,
+) -> Result<Json<JourneyDetailResponse>, (StatusCode, String)> {
+    let resolved = unlisted_links::resolve_link(&app.database, &token)
+        .await
+        .map_err(internal_error("resolve journey share link"))?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no journey with that link".to_string(),
+        ))?;
+    if resolved.resource_type != JOURNEY_RESOURCE_TYPE {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no journey with that link".to_string(),
+        ));
+    }
+    let journey_id: i64 = resolved.resource_id.parse().map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            "no journey with that link".to_string(),
+        )
+    })?;
+
+    Ok(Json(
+        build_journey_detail_response(&app, journey_id, false).await?,
+    ))
+}
+
+/// The body of `GET /Journeys/{journeyId}` and `GET /Journeys/shared/{token}`
+/// alike, extracted so both handlers -- one authenticated and
+/// ownership/readability-checked, one genuinely public -- share one
+/// implementation once the caller has already been let in (or, for the
+/// share-token route, is never checked against caller identity at all).
+/// `is_owner` is the caller's decision, not this function's: `get_journey`
+/// passes whatever it computed from `journey_readable_by`/`get_journey_summary`;
+/// `get_journey_by_share_token` always passes `false`.
+async fn build_journey_detail_response(
+    app: &App,
+    journey_id: i64,
+    is_owner: bool,
+) -> Result<JourneyDetailResponse, (StatusCode, String)> {
+    let summary = journeys::get_journey_summary(&app.database, journey_id)
+        .await
+        .map_err(internal_error("read journey"))?
+        .ok_or((StatusCode::NOT_FOUND, "no journey with that id".to_string()))?;
+
     let leg_rows = journeys::list_legs_for_journey(&app.database, journey_id)
         .await
         .map_err(internal_error("list journey legs"))?;
@@ -782,8 +969,8 @@ async fn get_journey(
                 {
                     Some(state) => Some(
                         crate::routes::train::attach_journey_stops(
-                            &app,
-                            crate::routes::train::blend_darwin_eta(&app, state).await,
+                            app,
+                            crate::routes::train::blend_darwin_eta(app, state).await,
                         )
                         .await,
                     ),
@@ -841,13 +1028,33 @@ async fn get_journey(
         });
     }
 
-    Ok(Json(JourneyDetailResponse {
+    // Only an owner ever sees a live, usable token here -- a non-owner
+    // (including a group member, and including a share-token viewer)
+    // always gets `None`, regardless of whether an active link exists.
+    let share_link = if is_owner {
+        unlisted_links::get_active_link(
+            &app.database,
+            JOURNEY_RESOURCE_TYPE,
+            &journey_id.to_string(),
+        )
+        .await
+        .map_err(internal_error("read journey share link"))?
+        .map(|link| ShareLinkResponse {
+            token: link.token,
+            expires_at: link.expires_at,
+        })
+    } else {
+        None
+    };
+
+    Ok(JourneyDetailResponse {
         id: summary.id,
         custom_name: summary.custom_name,
         created_at: summary.created_at,
         legs,
         is_owner,
-    }))
+        share_link,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1287,6 +1494,17 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture tracked_trains rows");
+        // `unlisted_links.created_by REFERENCES users(id)` has no `ON
+        // DELETE CASCADE` either (same no-cleanup-sweep posture the design
+        // doc's §3 accepts for this table generally) -- same problem this
+        // function already solves for `journeys`/`journey_legs`/
+        // `train_subscriptions` above, extended for Task 2's new share-link
+        // tests.
+        sqlx::query("DELETE FROM unlisted_links WHERE created_by = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture unlisted_links rows");
         sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(user_id)
             .execute(pool)
@@ -2614,5 +2832,343 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-ROUTE-DELETE-JOURNEY-MULTI").await;
+    }
+
+    // --- unlisted journey share links (Task 2) --------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                create_journey_share_link_then_resolve_it_via_the_public_token_route \
+                -- --ignored --test-threads=1`"]
+    async fn create_journey_share_link_then_resolve_it_via_the_public_token_route() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-RESOLVE-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE-1", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create share link: {body:?}");
+        let token = body["token"].as_str().expect("token present").to_string();
+        assert!(!token.is_empty());
+        assert!(body["expiresAt"].is_null());
+
+        // No cookie at all -- the whole point of the public token route.
+        let (status, body) = request(router, format!("/Journeys/shared/{token}"), None).await;
+        assert_eq!(status, StatusCode::OK, "resolve share token: {body:?}");
+        assert_eq!(body["isOwner"], false);
+        assert_eq!(body["shareLink"], serde_json::Value::Null);
+        let legs = body["legs"].as_array().expect("legs array");
+        assert_eq!(legs.len(), 1);
+        assert_eq!(legs[0]["matchMode"], "manual");
+        assert!(legs[0]["trackedTrainState"].is_object());
+        assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "SHARE-1");
+
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-RESOLVE-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                create_journey_share_link_is_404_for_a_non_owner -- --ignored --test-threads=1`"]
+    async fn create_journey_share_link_is_404_for_a_non_owner() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-OWNER").await;
+        let bystander_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-BYSTANDER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE-2", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, body) = post_json(
+            router,
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&bystander_token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            serde_json::Value::String("no journey with that id".to_string())
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_by_share_token_is_404_for_an_unknown_token -- --ignored \
+                --test-threads=1`"]
+    async fn get_journey_by_share_token_is_404_for_an_unknown_token() {
+        let pool = connect().await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (status, _) = request(
+            router,
+            "/Journeys/shared/not-a-real-token".to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_by_share_token_is_404_after_revoke -- --ignored --test-threads=1`"]
+    async fn get_journey_by_share_token_is_404_after_revoke() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-REVOKE-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE-3", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (_, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        let token = body["token"].as_str().expect("token present").to_string();
+
+        let (status, body) =
+            request(router.clone(), format!("/Journeys/shared/{token}"), None).await;
+        assert_eq!(status, StatusCode::OK, "resolve before revoke: {body:?}");
+
+        let (status, _) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, _) = request(router, format!("/Journeys/shared/{token}"), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "revoked token must 404");
+
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-REVOKE-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_by_share_token_a_token_viewer_sees_no_owner_actions -- --ignored \
+                --test-threads=1`"]
+    async fn get_journey_by_share_token_a_token_viewer_sees_no_owner_actions() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-VIEWER-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE-4", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (_, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        let token = body["token"].as_str().expect("token present").to_string();
+
+        // A token-only viewer never gets to see or manage the very token
+        // that let them in -- design doc §4.
+        let (status, body) = request(router, format!("/Journeys/shared/{token}"), None).await;
+        assert_eq!(status, StatusCode::OK, "resolve share token: {body:?}");
+        assert_eq!(body["isOwner"], false);
+        assert_eq!(body["shareLink"], serde_json::Value::Null);
+
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-VIEWER-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                regenerating_a_share_link_invalidates_the_old_token -- --ignored \
+                --test-threads=1`"]
+    async fn regenerating_a_share_link_invalidates_the_old_token() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-REGEN-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE-5", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (_, first_body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        let first_token = first_body["token"]
+            .as_str()
+            .expect("token present")
+            .to_string();
+
+        let (_, second_body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        let second_token = second_body["token"]
+            .as_str()
+            .expect("token present")
+            .to_string();
+        assert_ne!(first_token, second_token);
+
+        let (status, _) = request(
+            router.clone(),
+            format!("/Journeys/shared/{first_token}"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "old token must 404 after regenerate"
+        );
+
+        let (status, _) = request(router, format!("/Journeys/shared/{second_token}"), None).await;
+        assert_eq!(status, StatusCode::OK, "new token must still resolve");
+
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-REGEN-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_embeds_the_active_share_link_for_the_owner_only -- --ignored \
+                --test-threads=1`"]
+    async fn get_journey_embeds_the_active_share_link_for_the_owner_only() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-OWNER").await;
+        let member_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-MEMBER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE-6", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (_, share_body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        let token = share_body["token"]
+            .as_str()
+            .expect("token present")
+            .to_string();
+
+        let (status, body) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "owner get journey: {body:?}");
+        assert_eq!(body["shareLink"]["token"], token);
+
+        // Share the journey into a group both the owner and the member are
+        // in -- same seeding as
+        // `get_journey_a_group_member_can_read_a_shared_journey_the_owner_never_authorized`.
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Get Journey Share Link Embed Test",
+            "TEST-ROUTE-SHARE-LINK-EMBED-OWNER",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-ROUTE-SHARE-LINK-EMBED-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        crate::data::groups::add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-ROUTE-SHARE-LINK-EMBED-OWNER",
+        )
+        .await
+        .expect("share journey");
+
+        let (status, body) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&member_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "member get journey: {body:?}");
+        assert_eq!(body["isOwner"], false);
+        assert_eq!(
+            body["shareLink"],
+            serde_json::Value::Null,
+            "a group member can read the journey but must never see its owner's share token"
+        );
+
+        cleanup_group(&pool, &group_id).await;
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-OWNER").await;
+        cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-MEMBER").await;
     }
 }
