@@ -1057,10 +1057,32 @@ async fn build_journey_detail_response(
     })
 }
 
+/// `#[serde(deny_unknown_fields)]` is load-bearing here, not decorative --
+/// see `routes::trains::TrainSearchParams`'s own doc comment for the full
+/// rationale: without it, axum's `Query` extractor silently drops any
+/// query parameter whose name doesn't match a field below, producing a
+/// `200` whose filter simply never applied. That matters especially for
+/// `operator` below: `?operators=SW` (plural -- matching this struct's own
+/// Rust field name and the `incidents` table's column name, a genuinely
+/// likely typo) would otherwise silently return every candidate
+/// unfiltered instead of a 400 naming the mistake. See
+/// `get_leg_candidates_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it`
+/// below for the regression coverage.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CandidatesParams {
     limit: Option<String>,
     after: Option<String>,
+    /// Optional. Comma-separated ATOC codes, e.g. `operator=SW,VT` -- same
+    /// multi-value parsing convention as
+    /// `routes::incidents::IncidentSearchParams::operator`; see its own
+    /// doc comment. The underlying match is NOT the same "any of"
+    /// array-overlap (`&&`) semantics though -- `incidents` matches
+    /// against a multi-valued array column, whereas this filter's DB
+    /// predicate is `= ANY(...)` against `operator_atoc`, a single-valued
+    /// column, so it reads as "this schedule's one operator is one of the
+    /// codes given", not an overlap between two sets.
+    operator: Option<String>,
 }
 
 /// `GET /Journeys/{journeyId}/legs/{legId}/candidates` -- design doc §2.2.
@@ -1104,6 +1126,20 @@ async fn get_leg_candidates(
         .filter(|s| !s.trim().is_empty())
         .map(crate::routes::trains::decode_cursor)
         .transpose()?;
+    // Same comma-split/trim/drop-empty/empty-list-becomes-None logic as
+    // `routes::incidents::search_incidents`'s own `operators` parsing --
+    // deliberately duplicated, not factored into a shared helper, per this
+    // repo's established per-route convention (see `line_status.rs`/
+    // `trips.rs` doing the same independently).
+    let operators: Option<Vec<String>> = params.operator.as_deref().and_then(|raw| {
+        let list: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if list.is_empty() { None } else { Some(list) }
+    });
 
     let Some(page) = crate::data::queries::search_journey_leg_candidates(
         &app.database,
@@ -1114,6 +1150,7 @@ async fn get_leg_candidates(
         leg.depart_before,
         leg.arrive_after,
         leg.arrive_before,
+        operators,
         after.as_ref(),
         limit,
     )
@@ -1660,6 +1697,62 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
+                get_leg_candidates -- --ignored --test-threads=1`"]
+    async fn get_leg_candidates_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it()
+     {
+        // Mirrors `routes::trains::trains_search_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it`
+        // exactly, for `CandidatesParams`'s own `#[serde(deny_unknown_fields)]`:
+        // without it, axum's `Query` extractor would silently drop a
+        // parameter name it doesn't recognize -- most plausibly
+        // `?operators=SW` (plural), a genuinely likely typo against this
+        // struct's own `operator` field name and the `incidents` table's
+        // `operators` column name -- producing a 200 with every candidate
+        // unfiltered instead of a 400 naming the mistake.
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-BAD-PARAM").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+
+        let (status, body) = request(
+            router,
+            format!("/Journeys/{journey_id}/legs/{leg_id}/candidates?bogus_param=1"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "an unrecognized query parameter name must 400, not silently no-op: {body:?}"
+        );
+        assert!(
+            body.as_str()
+                .is_some_and(|body| body.contains("bogus_param")),
+            "the 400 body should name the offending parameter: {body:?}"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-CANDIDATES-BAD-PARAM").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
                 post_leg_train -- --ignored --test-threads=1`"]
     async fn post_leg_train_commits_a_first_pick_then_a_change_train_repick() {
         let pool = connect().await;
@@ -1783,6 +1876,7 @@ mod db_tests {
                     calling_point_arrival: None,
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -1795,6 +1889,7 @@ mod db_tests {
                     calling_point_arrival: None,
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
             ]
         }
@@ -1904,6 +1999,170 @@ mod db_tests {
 
         delete_fixture_day(&pool, service_date).await;
         cleanup_user(&pool, "TEST-ROUTE-CHANGE-TRAIN-E2E").await;
+    }
+
+    /// End-to-end coverage for the `?operator=` query parameter on
+    /// `GET .../candidates` (2026-09-24 journey-leg-operator-filter plan,
+    /// Task 6): two real candidates in the same window, on two different
+    /// operators, and a request naming only one of them must return only
+    /// that one -- proving the filter is actually wired from the route's
+    /// query string through `search_journey_leg_candidates`'s `operators`
+    /// parameter to the real `operator_atoc` column over real HTTP, not
+    /// just at the unit level (`render.rs`'s own
+    /// `calling_point_departure_json_renders_the_operator_atoc_code_as_operator`
+    /// covers the JSON shape in isolation; this test covers the filter
+    /// itself). Reuses the same two-row-per-train
+    /// `schedule_destination_departures` fixture shape as
+    /// `change_train_end_to_end_candidates_stay_window_scoped_on_an_already_matched_leg`
+    /// above, with `operator_atoc` now set per train instead of `None`.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_leg_candidates -- --ignored --test-threads=1`"]
+    async fn get_leg_candidates_operator_filter_narrows_results_over_http() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-OPERATOR").await;
+        let router = test_router(test_app(pool.clone()));
+
+        // A deliberately far-future, deliberately unrealistic fixture date
+        // -- same convention as the `change_train_end_to_end` test above --
+        // so this test's own rows can never collide with real data sharing
+        // this database.
+        let service_date =
+            chrono::NaiveDate::from_ymd_opt(2099, 5, 21).expect("valid fixture date");
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(service_date)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture schedule_destination_departures rows");
+
+        fn candidate_rows(
+            train_uid: &str,
+            operator_atoc: Option<&str>,
+            service_date: chrono::NaiveDate,
+            departs: chrono::NaiveTime,
+            arrives: chrono::NaiveTime,
+        ) -> Vec<crate::data::queries::ScheduleDestinationDeparturesRow> {
+            vec![
+                crate::data::queries::ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "RDG".to_string(),
+                    scheduled: departs,
+                    day_offset: 0,
+                    train_uid: train_uid.to_string(),
+                    origin_crs: "WAT".to_string(),
+                    true_origin_crs: None,
+                    calling_point_arrival: None,
+                    destination_arrival: Some(arrives),
+                    destination_arrival_day_offset: 0,
+                    operator_atoc: operator_atoc.map(str::to_string),
+                },
+                crate::data::queries::ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "RDG".to_string(),
+                    scheduled: arrives,
+                    day_offset: 0,
+                    train_uid: train_uid.to_string(),
+                    origin_crs: "RDG".to_string(),
+                    true_origin_crs: None,
+                    calling_point_arrival: None,
+                    destination_arrival: Some(arrives),
+                    destination_arrival_day_offset: 0,
+                    operator_atoc: operator_atoc.map(str::to_string),
+                },
+            ]
+        }
+        let mut rows = candidate_rows(
+            "OP-FILTER-SW",
+            Some("SW"),
+            service_date,
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("valid time"),
+            chrono::NaiveTime::from_hms_opt(9, 30, 0).expect("valid time"),
+        );
+        rows.extend(candidate_rows(
+            "OP-FILTER-VT",
+            Some("VT"),
+            service_date,
+            chrono::NaiveTime::from_hms_opt(10, 0, 0).expect("valid time"),
+            chrono::NaiveTime::from_hms_opt(10, 30, 0).expect("valid time"),
+        ));
+        crate::data::queries::upsert_schedule_destination_departures(&pool, &rows)
+            .await
+            .expect("seed fixture schedule_destination_departures rows");
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": service_date.to_string(),
+                    "departWindow": { "after": "08:00:00", "before": "11:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+
+        // Unfiltered first: both operators' candidates are in the window,
+        // so both must appear -- otherwise a narrowed result below would
+        // be meaningless (it could just as easily mean the fixture is
+        // broken rather than the filter working).
+        let (status, body) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/candidates"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "unfiltered candidates: {body:?}");
+        let uids: Vec<&str> = body["results"]
+            .as_array()
+            .expect("results is an array")
+            .iter()
+            .map(|r| r["uid"].as_str().expect("uid present"))
+            .collect();
+        assert!(
+            uids.contains(&"OP-FILTER-SW") && uids.contains(&"OP-FILTER-VT"),
+            "fixture sanity check: both operators' candidates must appear unfiltered: {uids:?}"
+        );
+
+        // Filtered: `?operator=SW` must return ONLY the SW train, and its
+        // rendered `operator` field must actually say `"SW"` -- proving
+        // the filter reaches the real `operator_atoc` column, not just
+        // that it drops the other row for some unrelated reason.
+        let (status, body) = request(
+            router,
+            format!("/Journeys/{journey_id}/legs/{leg_id}/candidates?operator=SW"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "operator-filtered candidates: {body:?}"
+        );
+        let results = body["results"].as_array().expect("results is an array");
+        let uids: Vec<&str> = results
+            .iter()
+            .map(|r| r["uid"].as_str().expect("uid present"))
+            .collect();
+        assert_eq!(
+            uids,
+            vec!["OP-FILTER-SW"],
+            "?operator=SW must narrow to only the SW-operated candidate: {uids:?}"
+        );
+        assert_eq!(results[0]["operator"], "SW");
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(service_date)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture schedule_destination_departures rows");
+        cleanup_user(&pool, "TEST-ROUTE-CANDIDATES-OPERATOR").await;
     }
 
     #[tokio::test]

@@ -28,9 +28,16 @@
 //! require `stops_at` to be set at all (a `400` otherwise -- see
 //! `TrainSearchParams::arrival_from`'s own doc comment and
 //! docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md).
-//! There is deliberately NO operator filter: the
-//! CIF SCHEDULE feed's operator field is parsed-but-undecoded everywhere in
-//! this codebase, so a CIF-derived row has no operator to filter on at all.
+//! There is deliberately NO operator filter here: a row now genuinely
+//! carries an operator when its schedule has one (a schedule's `BX`
+//! record's ATOC code is decoded into `operator_atoc` -- see
+//! `schedule_query::records::BasicSchedule::operator_atoc` -- and read
+//! through onto every row this query emits, `render::calling_point_departure_json`'s
+//! `"operator"` key), but this route doesn't offer a query-param filter on
+//! it, unlike `GET /Journeys/{journeyId}/legs/{legId}/candidates`
+//! (`routes::journeys::get_leg_candidates`), which does -- see this plan's
+//! own Scope Boundaries (2026-09-24 journey-leg-operator-filter plan) for
+//! why a filter was added there and not here.
 //!
 //! **`stops_at` replaced the earlier single-valued `destination` filter**
 //! (the schedule's TRUE final calling point) -- see

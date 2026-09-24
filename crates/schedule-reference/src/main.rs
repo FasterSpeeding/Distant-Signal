@@ -745,7 +745,8 @@ fn schedule_network_departures_rows(
 /// field and the ~10-byte `destination_arrival` field added alongside it,
 /// see
 /// docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md),
-/// not ~55 or ~80.
+/// not ~55 or ~80. The later `operator_atoc` field is a nullable 2-char
+/// string and does not move that estimate.
 fn schedule_destination_departures_rows(
     mut by_destination: std::collections::HashMap<
         String,
@@ -768,6 +769,7 @@ fn schedule_destination_departures_rows(
                     "calling_point_arrival": d.calling_point_arrival,
                     "destination_arrival": d.destination_arrival,
                     "destination_arrival_day_offset": d.destination_arrival_day_offset,
+                    "operator_atoc": d.operator_atoc,
                 })
             })
         })
@@ -1455,6 +1457,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
@@ -1465,6 +1468,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
             ],
         );
@@ -1479,6 +1483,7 @@ mod poll_once_tests {
                 calling_point_arrival: None,
                 destination_arrival: None,
                 destination_arrival_day_offset: 0,
+                operator_atoc: Some("SR".to_string()),
             }],
         );
 
@@ -1507,8 +1512,10 @@ mod poll_once_tests {
                 "calling_point_arrival": null,
                 "destination_arrival": null,
                 "destination_arrival_day_offset": 0,
+                "operator_atoc": "SR",
             }),
-            "exactly ten keys, named exactly as the table's columns are"
+            "exactly eleven keys, named exactly as the table's columns are, \
+             with a Some(\"SR\") operator_atoc round-tripping to the JSON string \"SR\""
         );
 
         // The same UID appears twice under MAN, once per departure-bearing
@@ -1553,6 +1560,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C11052".to_string(),
@@ -1563,6 +1571,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
             ],
         );
@@ -1604,6 +1613,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: Some(chrono::NaiveTime::from_hms_opt(11, 30, 0).unwrap()),
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C99999".to_string(),
@@ -1614,6 +1624,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
             ],
         );
@@ -1657,6 +1668,7 @@ mod poll_once_tests {
                 calling_point_arrival: None,
                 destination_arrival: None,
                 destination_arrival_day_offset: 0,
+                operator_atoc: None,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -1693,6 +1705,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
@@ -1703,6 +1716,7 @@ mod poll_once_tests {
                     calling_point_arrival: None,
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
             ],
         );
