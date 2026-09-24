@@ -1401,7 +1401,6 @@ mod db_tests {
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
-    use crate::data::users::insert_session;
 
     /// Every `ServiceArguments` field filled with an inert placeholder --
     /// this file's routes don't read `config.lines` at all. Copied from
@@ -1491,6 +1490,22 @@ mod db_tests {
     /// it doesn't already exist) and returns the *raw* token -- send it as
     /// `Cookie: distant_signal_session=<raw>`, never the hash `sessions`
     /// actually stores.
+    ///
+    /// The session row is seeded with a raw, in-line `ON CONFLICT (id) DO
+    /// UPDATE` upsert rather than `crate::data::users::insert_session`'s
+    /// plain (non-upserting) `INSERT`, mirroring the `users` upsert
+    /// immediately above -- deliberately, not by oversight: this helper's
+    /// `raw_token` is deterministic per `user_id`
+    /// (`test-raw-session-token-for-{user_id}`), unlike a real login's
+    /// cryptographically random one, so `insert_session`'s plain `INSERT`
+    /// is the right call there (a `sessions.id` primary-key collision on a
+    /// random SHA-256 hash is not a real scenario to guard against) but
+    /// the wrong one here: a test using this helper that panics before its
+    /// own cleanup runs leaves this exact `sessions` row behind, and the
+    /// next run's plain `INSERT` then fails with a duplicate-key error on
+    /// that same deterministic id, poisoning every subsequent run until
+    /// someone truncates the table by hand. Upserting makes this helper
+    /// idempotent the same way the `users` insert already is.
     async fn seed_session(pool: &PgPool, user_id: &str) -> String {
         sqlx::query(
             "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
@@ -1503,9 +1518,18 @@ mod db_tests {
         .expect("seed fixture user");
 
         let raw_token = format!("test-raw-session-token-for-{user_id}");
-        insert_session(pool, &hash_session_token(&raw_token), user_id, 14)
-            .await
-            .expect("seed fixture session");
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at) \
+             VALUES ($1, $2, NULL, NOW(), NOW() + make_interval(days => 14)) \
+             ON CONFLICT (id) DO UPDATE SET \
+                user_id = EXCLUDED.user_id, created_at = EXCLUDED.created_at, \
+                expires_at = EXCLUDED.expires_at",
+        )
+        .bind(hash_session_token(&raw_token))
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("seed fixture session");
         raw_token
     }
 
@@ -1652,6 +1676,52 @@ mod db_tests {
     #[test]
     fn router_builds_without_panicking() {
         let _ = super::router();
+    }
+
+    /// Regression coverage for the flakiness this module's `seed_session`
+    /// used to have: a plain, non-upserting `INSERT` into `sessions` on a
+    /// deterministic (`user_id`-derived) token. If a test using this helper
+    /// panicked before its own `cleanup_user` ran, the next run reusing the
+    /// same `user_id` -- same real scenario as re-running this test suite
+    /// locally after an earlier failure -- hit a duplicate-key error on
+    /// `sessions`' `id` primary key. Simulated directly here rather than
+    /// actually panicking a test: call `seed_session` twice back-to-back
+    /// for the SAME `user_id` with no `cleanup_user` in between, exactly
+    /// the leftover-row state a panicked prior run would leave. Before the
+    /// upsert fix, the second call panicked (`.expect("seed fixture
+    /// session")` on the duplicate-key error); with it, both calls succeed.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                seed_session_survives_a_stale_row_left_by_a_panicked_prior_run \
+                -- --ignored --test-threads=1`"]
+    async fn seed_session_survives_a_stale_row_left_by_a_panicked_prior_run() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEYS-SEED-SESSION-STALE-ROW-PROBE";
+
+        // First "run": seeds the user and session rows, then -- unlike
+        // every other test in this module -- deliberately skips
+        // `cleanup_user`, standing in for a test that panicked mid-run
+        // before its own cleanup executed.
+        let first_token = seed_session(&pool, user_id).await;
+
+        // Second "run" reusing the exact same `user_id`: must succeed, not
+        // panic on a duplicate-key violation against the row the "first
+        // run" left behind.
+        let second_token = seed_session(&pool, user_id).await;
+        assert_eq!(
+            first_token, second_token,
+            "the raw token is derived deterministically from user_id, so both calls must \
+             produce the identical raw token"
+        );
+
+        // Confirms the upsert didn't just silently swallow the row: the
+        // session this second call wrote is still genuinely resolvable.
+        let router = test_router(test_app(pool.clone()));
+        let (status, _) = request(router, "/Journeys/mine".to_string(), Some(&second_token)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]
