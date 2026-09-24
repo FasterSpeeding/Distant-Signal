@@ -387,8 +387,12 @@ static UNRESOLVED_STATION_TIPLOC_LOG: std::sync::LazyLock<common::log_once::LogO
 /// either side of an `Intermediate`'s pair -- "a real, timed stop, not a
 /// bare pass-through", the same signal
 /// `schedule_query::unresolved_booked_tiplocs` uses) AND `resolved_crs` is
-/// `None`. `None` here means this TIPLOC has NO `stanox_crs` row at all --
-/// not merely a non-bookable one. A resolved-but-X-prefixed pseudo-CRS
+/// `None`. `None` here means this TIPLOC has NO crosswalk row at all -- in
+/// NEITHER `tiploc_crs` NOR `stanox_crs`, since `resolved_crs` comes from
+/// [`queries::crs_for_tiplocs_batch`], which reads the UNION of both as of
+/// Task 3 of
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md -- not
+/// merely a non-bookable one. A resolved-but-X-prefixed pseudo-CRS
 /// (Some, then filtered out by [`is_bookable_crs`] at this function's own
 /// call site) is the OTHER, legitimate-non-station case and is deliberately
 /// silent here; see `is_bookable_crs`'s own doc comment for the real
@@ -437,10 +441,10 @@ fn log_if_unresolved_booked_stop(
         raw_tiploc = %cp.tiploc,
         kind = ?cp.kind,
         service_date = %service_date,
-        "journey calling point has a booked time but no stanox_crs row at all (not even an \
-         X-prefixed Network Rail pseudo-CRS) -- looks like it could be a real, unmapped \
-         station rather than a legitimate non-station junction/timing point; logged once per \
-         process"
+        "journey calling point has a booked time but no tiploc_crs or stanox_crs row at all \
+         (not even an X-prefixed Network Rail pseudo-CRS) -- looks like it could be a real, \
+         unmapped station rather than a legitimate non-station junction/timing point; logged \
+         once per process"
     );
 }
 

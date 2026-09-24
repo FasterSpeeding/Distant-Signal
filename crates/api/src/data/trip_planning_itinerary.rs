@@ -72,8 +72,11 @@ pub struct PlannedItinerary {
 /// test) was caused by exactly this bug: a padded/un-normalized TIPLOC
 /// (as flows through this whole system, straight off
 /// `schedule_calling_points_full.tiploc`) failing to match a bare-keyed
-/// lookup table. `tiploc_to_crs` is built from `stanox_crs`, which is
-/// bare-keyed just like `change_time_by_tiploc` -- see
+/// lookup table. `tiploc_to_crs` is built from the UNION of `tiploc_crs`
+/// and `stanox_crs` (`trip_planning::fetch_interchange_data`'s two passes,
+/// as of Task 3 of
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md), both of
+/// which are bare-keyed just like `change_time_by_tiploc` -- see
 /// `trip_planner::csa`'s `ready_source_at`/`relax`/`relax_fixed_links`,
 /// which normalize for the same reason.
 fn crs_for_tiploc(interchange: &InterchangeData, tiploc: &str) -> Option<String> {
