@@ -47,14 +47,35 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
   // Monotonic guard against a stale `GET /Trips/plan` response landing
   // after a newer search was already issued (I2) -- `GET /Trips/plan` can
   // take several seconds (a full day of schedule connections, run through
-  // pathfinding), and nothing here hard-blocks re-issuing `handleSearch`
-  // while an earlier one is still in flight. Each call captures its own
-  // id; a response is only applied if it's still the most recent one by
-  // the time it resolves, so an older, slower response can never clobber
-  // a newer one that happened to finish first.
+  // pathfinding). Each call captures its own id; a response is only
+  // applied if it's still the most recent one by the time it resolves, so
+  // an older, slower response can never clobber a newer one that happened
+  // to finish first. Kept as defense-in-depth even now that `handleSearch`
+  // itself (below) and `PlanTripForm`'s own `disabled` (see its `searching`
+  // doc comment) both refuse to START a second search while one is already
+  // in flight: this is what still protects data correctness if either of
+  // those guards is ever bypassed (e.g. a future caller invoking
+  // `handleSearch` directly), exactly the layered-guard posture
+  // `TrainSearchForm.tsx`'s `handleLoadMore` already uses (its own
+  // `loadingMore` in-flight check PLUS its `pagedFrom` stale-response
+  // identity check, together, not either alone).
   const searchRequestId = useRef(0);
 
   async function handleSearch(query: TripPlanQuery) {
+    // Whole-branch final-review finding: data correctness was already
+    // covered by the `searchRequestId` guard below (a stale response can
+    // never overwrite a newer one), but nothing stopped a second click
+    // while a search was already in flight from firing another real
+    // `GET /Trips/plan` -- wasted backend pathfinding work on every extra
+    // click, not a correctness bug, but real, redundant work all the same.
+    // `PlanTripForm`'s submit button is now also disabled on `searching`
+    // (see its own doc comment), which is what makes a rapid re-click a
+    // no-op in practice; this early return mirrors `TrainSearchForm.tsx`'s
+    // `handleLoadMore` guarding itself on `loadingMore` in addition to
+    // `LoadMoreControl`'s own `disabled`/`loading` prop, so the no-op holds
+    // even if `handleSearch` is ever reachable some other way than that
+    // one button.
+    if (searching) return;
     const requestId = (searchRequestId.current += 1);
     setSearching(true);
     setPlanError(null);

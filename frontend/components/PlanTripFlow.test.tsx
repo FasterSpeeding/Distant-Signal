@@ -530,6 +530,17 @@ describe('PlanTripFlow', () => {
   });
 
   it('discards a stale plan response that resolves after a newer one', async () => {
+    // Regression coverage for the `searchRequestId` guard itself
+    // (`PlanTripFlow.tsx`'s own doc comment) -- kept as defense-in-depth
+    // even though the search button is now disabled while `searching`
+    // (see the "does not double-fetch" test below for that), by driving
+    // TWO overlapping searches the way the guard is actually built to
+    // survive: each call captures its own request id, and only the most
+    // recent one is allowed to apply its result, regardless of resolution
+    // order. Simulated here via two full render passes (`unmount` + a
+    // fresh `render`) rather than two rapid clicks on the same button,
+    // since the latter is now a genuine no-op by design (`PlanTripForm`'s
+    // `disabled` prop) and can no longer produce two in-flight requests.
     const firstPlan: TripPlanResponse = {
       results: 'fastest',
       segments: [{ originCrs: 'AAA', destinationCrs: 'BBB', cappedByMaxChanges: false, itineraries: [] }],
@@ -551,14 +562,20 @@ describe('PlanTripFlow', () => {
     const fetchMock = vi.fn().mockReturnValueOnce(firstResponse).mockReturnValueOnce(secondResponse);
     vi.stubGlobal('fetch', fetchMock);
 
-    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    const { unmount } = renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'AAA' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'BBB' } });
-    // Not hard-disabled while searching (see `PlanTripForm.tsx`'s own
-    // `searching` doc comment) -- clicking again mid-search is exactly the
-    // overlapping-request scenario this test proves is harmless.
     fireEvent.click(screen.getByText('Find routes'));
-    fireEvent.click(await screen.findByText('Searching…'));
+    await screen.findByText('Searching…');
+    // Unmounting mid-search does not cancel the in-flight `fetch` -- the
+    // stale first request is still going to resolve later, same as it
+    // would if a second, later click had issued it instead.
+    unmount();
+
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'CCC' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'DDD' } });
+    fireEvent.click(screen.getByText('Find routes'));
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Resolve the NEWER (second) request first, then the STALE (first,
@@ -576,5 +593,38 @@ describe('PlanTripFlow', () => {
     });
     expect(screen.queryByText('AAA → BBB')).not.toBeInTheDocument();
     expect(screen.getByText('CCC → DDD')).toBeInTheDocument();
+  });
+
+  it('does not double-fetch GET /Trips/plan when the search button is clicked rapidly twice', async () => {
+    // Final-review follow-up: the request-id guard above already made an
+    // overlapping response harmless, but nothing stopped a second click
+    // while a search was in flight from firing another real
+    // `GET /Trips/plan` -- wasted backend pathfinding work per extra
+    // click. Mirrors `JourneyLegCandidates.test.tsx`'s own "does not
+    // double-fetch page 2 when Load more is clicked rapidly" test:
+    // several synchronous clicks on the SAME button reference before the
+    // in-flight request resolves, then assert only one fetch actually went
+    // out.
+    let resolveFetch: (value: Response) => void = () => {};
+    const pending = new Promise<Response>(resolve => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValueOnce(pending);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+
+    const button = screen.getByText('Find routes');
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await screen.findByText('Searching…');
+    resolveFetch({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response);
+
+    await screen.findByText('08:00 EUS → MKC 08:50');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

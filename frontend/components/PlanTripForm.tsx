@@ -72,16 +72,25 @@ function XIcon() {
  * `SegmentedControl` conventions rather than reinventing them -- see this
  * task's own Step 1.
  *
- * `searching` (final-review fix I2): `GET /Trips/plan` can take several
- * seconds (a full day of schedule connections, run through pathfinding),
- * so the submit button needs real in-flight feedback -- `PlanTripFlow`
- * (the only caller) passes its own `searching` state through, and this
- * component just reflects it in the button's label. Deliberately NOT also
- * disabled by `searching` (only by `canSubmit`, form validity, as
- * before): `PlanTripFlow`'s own monotonic request-id guard is what makes
- * a second, overlapping search harmless, so hard-blocking the button here
- * would only prevent a specific, already-safe interaction -- not fix a
- * real correctness gap. */
+ * `searching` (final-review fix I2, later closed by the whole-branch
+ * review's own deferred double-submit-guard finding): `GET /Trips/plan`
+ * can take several seconds (a full day of schedule connections, run
+ * through pathfinding), so the submit button needs real in-flight
+ * feedback -- `PlanTripFlow` (the only caller) passes its own `searching`
+ * state through, and this component reflects it in both the button's
+ * label AND, now, its `disabled` state. `PlanTripFlow`'s own monotonic
+ * request-id guard already made a second, overlapping search harmless
+ * data-correctness-wise (a stale response can never clobber a newer one),
+ * but left the button clickable while a search was in flight, so rapid
+ * re-clicking still fired one real `GET /Trips/plan` per click -- wasted
+ * backend pathfinding work, not a correctness bug, but real work all the
+ * same. Disabling on `searching` too closes that gap the same way
+ * `TrainSearchForm.tsx`'s own `canSearch` (gated on `!searching`) and
+ * `JourneyLegCandidates.tsx`'s per-row `disabled={picking !== null}`
+ * button already do for their own in-flight actions: a second click while
+ * one is outstanding is a genuine no-op, not a state update the
+ * request-id guard just discards after the backend has already done the
+ * work. */
 export function PlanTripForm({
   onSubmit,
   searching = false,
@@ -228,7 +237,7 @@ export function PlanTripForm({
       <VisuallyHidden role="status" aria-live="polite">
         {results === 'options' ? 'Will compare route options.' : 'Will show the fastest route only.'}
       </VisuallyHidden>
-      <Button disabled={!canSubmit} onClick={handleSubmit}>
+      <Button disabled={!canSubmit || searching} onClick={handleSubmit}>
         {searching ? 'Searching…' : 'Find routes'}
       </Button>
     </Stack>
