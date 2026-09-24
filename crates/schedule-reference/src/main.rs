@@ -488,7 +488,7 @@ fn log_new_unresolved_booked_tiplocs(
         tracing::warn!(
             tiploc = %tiploc,
             service_date = %today,
-            "CIF schedule calling point has a booked time but no stanox_crs row at all (not \
+            "CIF schedule calling point has a booked time but no tiploc_crs row at all (not \
              even an X-prefixed Network Rail pseudo-CRS) -- looks like it could be a real, \
              unmapped station rather than a legitimate non-station junction/timing point; \
              logged once per process, see reference-data/stanox-crs.md and this delivery's own \
