@@ -216,6 +216,11 @@ struct CreateJourneyRequest {
     rename_all_fields = "camelCase"
 )]
 enum AddJourneyLegRequest {
+    /// An already-known identity for an EXISTING journey's next leg -- what
+    /// `AddJourneyLegButton.tsx`'s "I know the train" mode submits, and what
+    /// `PlanTripFlow.tsx`'s multi-leg commit loop sends for every train leg
+    /// after the first (`POST /Journeys/{journeyId}/legs`).
+    ///
     /// `origin_crs`/`destination_crs` are OPTIONAL overrides for this leg's
     /// OWN boarding/alighting point -- distinct from the train's real full
     /// route (a traveller can board partway through a service's working, or

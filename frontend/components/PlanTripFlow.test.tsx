@@ -136,6 +136,82 @@ describe('PlanTripFlow', () => {
     );
   });
 
+  it('omits originCrs/destinationCrs entirely (not null) when the itinerary leg has no CRS for either end', async () => {
+    // `TripPlanLeg`'s train variant types `originCrs`/`destinationCrs` as
+    // `string | null` -- a real `GET /Trips/plan` response can carry `null`
+    // for a TIPLOC with no CRS mapping (`crs_for_tiploc`,
+    // `crates/api/src/data/trip_planning_itinerary.rs`). The conditional
+    // spread in `PlanTripFlow.tsx` must omit the key entirely on that
+    // `null` branch, not send an explicit `null` -- every other test in
+    // this file only ever exercises the non-null branch, since their
+    // fixtures always carry real CRS strings.
+    const nullOverridesPlan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'MKC',
+          cappedByMaxChanges: false,
+          itineraries: [
+            {
+              legs: [
+                {
+                  kind: 'train',
+                  trainUid: 'C11052',
+                  serviceDate: '2026-09-23',
+                  originCrs: null,
+                  destinationCrs: null,
+                  scheduledDeparture: '08:00:00',
+                  scheduledArrival: '08:50:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 0,
+              totalDurationMinutes: 50,
+            },
+          ],
+        },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(nullOverridesPlan) } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
+      } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onCreated = vi.fn();
+    renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    // `ItineraryOption.tsx` renders `leg.originCrs ?? '?'`/`leg.destinationCrs
+    // ?? '?'` for its own summary line -- a `null` leg CRS shows as `?`, not
+    // the segment's own `EUS`/`MKC` heading (that's a separate `<Text>` line
+    // above, from `TripPlanSegment.originCrs`/`destinationCrs`, which are
+    // always non-null strings).
+    await screen.findByText('08:00 ? → ? 08:50');
+    const radios = screen.getAllByRole('radio');
+    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(screen.getByText('Track this journey'));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
+    // No `originCrs`/`destinationCrs` keys at all -- not present as `null`.
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/Journeys',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23' },
+        }),
+      })
+    );
+  });
+
   it('shows a plain-text error and does not offer the button when the plan request fails', async () => {
     vi.stubGlobal(
       'fetch',

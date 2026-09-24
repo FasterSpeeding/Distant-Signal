@@ -920,7 +920,8 @@ export interface TripPlanResponse {
  * sets them today, using the real per-leg origin/destination already on
  * each `TripPlanLeg` (e.g. boarding a Birmingham->Glasgow service at
  * Crewe, alighting at Preston). `AddJourneyLegButton.tsx` deliberately
- * never sets them -- this plan's Judgment Call 2: its `knownTrain` mode
+ * never sets them -- the origin/destination-override plan's Judgment Call 2:
+ * its `knownTrain` mode
  * only ever asks for a train UID + service date, so it has no real
  * per-leg origin/destination of its own to send that would differ from
  * the pin-derived value it's always relied on. */

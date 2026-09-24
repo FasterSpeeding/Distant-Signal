@@ -275,17 +275,18 @@ pub async fn create_journey_with_pin_leg(
 /// the leg's OWN boarding/alighting point instead, independently per end --
 /// a traveller can board a train partway through its real working, or
 /// alight before its final stop, and that leg-specific point can legitimately
-/// differ from the train's own full route (see this plan's own "Why"
-/// section's Birmingham→Glasgow/Crewe→Preston example). Either field alone
-/// may be `Some` while the other stays `None`: a `Some` override wins
-/// outright for that end, a `None` end falls back to the pin-derived value
-/// exactly as before. Passing `None, None` reproduces today's exact
-/// pin-derived behavior byte-for-byte -- every existing caller of this
-/// function does exactly that. Caller must have already run both through
-/// [`validate_known_train_overrides`] -- this function does no validation of
-/// its own (this file's established "route validates, data layer writes"
-/// split), and per that validator's own doc comment (this plan's Judgment
-/// Call 3), a supplied override is never checked against the train's real
+/// differ from the train's own full route (see the origin/destination-override
+/// plan's own "Why" section's Birmingham→Glasgow/Crewe→Preston example).
+/// Either field alone may be `Some` while the other stays `None`: a `Some`
+/// override wins outright for that end, a `None` end falls back to the
+/// pin-derived value exactly as before. Passing `None, None` reproduces
+/// today's exact pin-derived behavior byte-for-byte -- every existing caller
+/// of this function does exactly that. Caller must have already run both
+/// through [`validate_known_train_overrides`] -- this function does no
+/// validation of its own (this file's established "route validates, data
+/// layer writes" split), and per that validator's own doc comment (the
+/// origin/destination-override plan's Judgment Call 3), a supplied override
+/// is never checked against the train's real
 /// calling points here.
 ///
 /// `match_mode = 'manual'`, `depart_*`/`arrive_*` `NULL` -- same reasoning
@@ -340,8 +341,9 @@ pub async fn create_journey_with_known_train_leg(
 /// logic as that function, unchanged -- including the identical
 /// `origin_crs_override`/`destination_crs_override` behavior: both
 /// optional, either overridable independently of the other, `None, None`
-/// reproducing today's exact pin-derived behavior, and (this plan's
-/// Judgment Call 3) no validation here against the train's real calling
+/// reproducing today's exact pin-derived behavior, and (the
+/// origin/destination-override plan's Judgment Call 3) no validation here
+/// against the train's real calling
 /// points -- caller must have already run both through
 /// [`validate_known_train_overrides`]. See that function's sibling doc
 /// comment on [`create_journey_with_known_train_leg`] for the full
@@ -453,9 +455,10 @@ pub fn validate_window_leg(
 /// supplied one is checked independently.
 ///
 /// Deliberately does NOT check a supplied override against the underlying
-/// train's real calling points -- not an oversight, a scoped decision (this
-/// plan's own Judgment Call 3). Both routes resolve `trains_id` via
-/// `trains::find_or_create_train`, a bare `(train_uid, service_date)`
+/// train's real calling points -- not an oversight, a scoped decision (the
+/// origin/destination-override plan's own Judgment Call 3). Both routes
+/// resolve `trains_id` via `trains::find_or_create_train`, a bare
+/// `(train_uid, service_date)`
 /// identity upsert that does not populate `calling_points` (or even
 /// `origin_crs`/`destination_crs`) for a brand-new `trains` row -- that data
 /// arrives later, best-effort, via `routes::train::enrich_shared_train`,
@@ -1165,6 +1168,21 @@ mod db_tests {
                 &common::TimeWindow::default(),
             )
             .unwrap_err(),
+        ];
+        for message in messages {
+            assert!(!message.is_empty());
+            assert!(
+                !message.contains('_'),
+                "user-facing copy leaked an identifier: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_known_train_overrides_messages_carry_no_internal_field_names() {
+        let messages = [
+            validate_known_train_overrides(Some("X"), None).unwrap_err(),
+            validate_known_train_overrides(None, Some("Y")).unwrap_err(),
         ];
         for message in messages {
             assert!(!message.is_empty());
