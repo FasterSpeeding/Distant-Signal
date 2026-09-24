@@ -2,7 +2,31 @@ import { describe, it, expect } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainJourney } from './TrainJourney';
-import type { TrackedTrainState } from '@/lib/types';
+import type { JourneyStop, TrackedTrainState } from '@/lib/types';
+
+function journeyStop(overrides: Partial<JourneyStop>): JourneyStop {
+  return {
+    crs: 'RDG',
+    name: 'Reading',
+    tiploc: null,
+    kind: 'Intermediate',
+    scheduledArrival: null,
+    scheduledDeparture: null,
+    actualArrival: null,
+    actualDeparture: null,
+    estimatedArrival: null,
+    estimatedDeparture: null,
+    lastEventType: null,
+    variationStatus: null,
+    delayMinutes: null,
+    stopStatus: 'Unknown',
+    skipSource: null,
+    platform: null,
+    plannedPlatform: null,
+    platformChanged: false,
+    ...overrides,
+  };
+}
 
 function baseState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainState {
   return {
@@ -673,6 +697,145 @@ describe('TrainJourney', () => {
       />,
     );
     expect(screen.getByText('Cancelled — last confirmed at Surbiton.')).toBeInTheDocument();
+  });
+});
+
+// Real bug report, 2026-09-24: train `L81634` served three `journeyStops`
+// entries for genuine non-station junction passes (`HCRTJN`, `BRLANJN`,
+// `WATRLWC`) -- `crs: null, name: null, scheduledArrival: null,
+// scheduledDeparture: null`, i.e. no identity AND no booked time at all --
+// which rendered as noisy, anonymous "Stop N" rows. Product decision: those
+// rows should not render at all, while a stop with no identity but a REAL
+// booked time (a name/CRS join failure, not a junction pass) must keep
+// rendering exactly as before, with its "Stop N" fallback. The filter lives
+// once in `TrainJourney.tsx` (`isGenuineCallingPoint`, applied before
+// `journeyStops` reaches either child), so these tests exercise the full
+// `TrainJourney` tree -- the only place both `JourneyProgress` and
+// `JourneyTimeline` actually receive the SAME filtered array -- rather than
+// either component in isolation.
+describe('TrainJourney journeyStops filtering (genuine calling points only)', () => {
+  it('filters out a genuine junction pass entirely, but keeps a booked stop whose name/CRS never resolved', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'L81634',
+          status: 'en_route',
+          journeyStops: [
+            journeyStop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin', scheduledDeparture: '2026-09-24T08:00:00Z' }),
+            // HCRTJN -- a genuine, unbooked junction pass. Must render no row.
+            journeyStop({ crs: null, name: null, tiploc: 'HCRTJN', kind: 'Intermediate' }),
+            // A real booked stop whose TIPLOC/CRS join failed -- still a real
+            // row, still gets the "Stop N" fallback.
+            journeyStop({
+              crs: null,
+              name: null,
+              kind: 'Intermediate',
+              scheduledArrival: '2026-09-24T08:30:00Z',
+            }),
+            // BRLANJN -- another genuine, unbooked junction pass.
+            journeyStop({ crs: null, name: null, tiploc: 'BRLANJN', kind: 'Intermediate' }),
+            journeyStop({ crs: 'SUR', name: 'Surbiton', kind: 'Terminate', scheduledArrival: '2026-09-24T09:00:00Z' }),
+          ],
+        })}
+      />,
+    );
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    // Header row + exactly 3 genuine calling points -- the two junction
+    // passes contribute no row at all.
+    expect(within(table).getAllByRole('row')).toHaveLength(4);
+    expect(within(table).getByText('London Waterloo')).toBeInTheDocument();
+    // Index 1 of the FILTERED (3-stop) list, not index 2 of the raw one.
+    expect(within(table).getByText('Stop 2')).toBeInTheDocument();
+    expect(within(table).getByText('Surbiton')).toBeInTheDocument();
+    expect(within(table).queryByText(/Stop 3/)).not.toBeInTheDocument();
+
+    // JourneyProgress, reading the exact same filtered array, must show the
+    // same stop count -- no separate/independent filtering to drift out of
+    // sync with the table above.
+    const group = screen.getByRole('group', { name: /Journey progress/ });
+    expect(group.querySelectorAll('[data-journey-node]')).toHaveLength(3);
+  });
+
+  it('keeps JourneyProgress and JourneyTimeline reporting the same total/position once junction passes are filtered out', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'L81634',
+          status: 'en_route',
+          journeyStops: [
+            journeyStop({
+              crs: 'WAT',
+              name: 'London Waterloo',
+              kind: 'Origin',
+              scheduledDeparture: '2026-09-24T08:00:00Z',
+              actualDeparture: '2026-09-24T08:00:00Z',
+            }),
+            // Genuine junction pass -- filtered out of both views' counts.
+            journeyStop({ crs: null, name: null, tiploc: 'HCRTJN', kind: 'Intermediate' }),
+            // A real, booked, unresolved stop -- the one that actually
+            // reported. Becomes index 1 of 3 once the junction pass above is
+            // filtered out.
+            journeyStop({
+              crs: null,
+              name: null,
+              kind: 'Intermediate',
+              scheduledArrival: '2026-09-24T08:30:00Z',
+              actualArrival: '2026-09-24T08:31:00Z',
+            }),
+            journeyStop({ crs: 'SUR', name: 'Surbiton', kind: 'Terminate', scheduledArrival: '2026-09-24T09:00:00Z' }),
+          ],
+        })}
+      />,
+    );
+    // `progressCopy`'s `stopNumber` is `lastIndex + 1` against `total` --
+    // both computed from the SAME filtered 3-stop array `JourneyTimeline`
+    // renders, so "stop 2 of 3" here must agree with the table's "Stop 2"
+    // fallback and its 3 (not 5) data rows.
+    expect(
+      screen.getByRole('group', { name: /Journey progress: currently at Stop 2, stop 2 of 3/ }),
+    ).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(within(table).getAllByRole('row')).toHaveLength(4);
+    expect(within(table).getByText('Stop 2')).toBeInTheDocument();
+  });
+
+  it('the "station names unavailable" collapse counts only genuine calling points, excluding filtered-out junction passes', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'L81634',
+          status: 'en_route',
+          // `baseState`'s own defaults (`pinOriginCrs: 'WAT'`,
+          // `pinDestinationCrs: 'WOK'`) would otherwise seed the first/last
+          // FILTERED row from the tracked pin (Task 3.6.2's own fallback),
+          // resolving a label there and defeating the "genuinely nothing
+          // resolved" collapse this test is pinning -- override both to
+          // `null` so this fixture is actually the fully-degenerate case.
+          pinOriginCrs: null,
+          pinDestinationCrs: null,
+          journeyStops: [
+            // Three genuine junction passes -- must not count toward the
+            // "N stops" total below.
+            journeyStop({ crs: null, name: null, tiploc: 'HCRTJN', kind: 'Intermediate' }),
+            journeyStop({ crs: null, name: null, tiploc: 'BRLANJN', kind: 'Intermediate' }),
+            journeyStop({ crs: null, name: null, tiploc: 'WATRLWC', kind: 'Intermediate' }),
+            // Two real, booked stops whose name/CRS never resolved -- these
+            // are the ones the degenerate "all unnamed" collapse is
+            // actually about.
+            journeyStop({ crs: null, name: null, kind: 'Origin', scheduledDeparture: '2026-09-24T08:00:00Z' }),
+            journeyStop({ crs: null, name: null, kind: 'Terminate', scheduledArrival: '2026-09-24T09:00:00Z' }),
+          ],
+        })}
+      />,
+    );
+    // Not "5 stops" -- the three junction passes were already filtered out
+    // before `JourneyTimeline` ever computed `total`/`allUnnamed`.
+    expect(screen.getByText('2 stops — station names unavailable')).toBeInTheDocument();
+    expect(screen.queryByText(/5 stops/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });
 

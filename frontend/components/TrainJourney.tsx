@@ -1,7 +1,7 @@
 import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
 import { JourneyProgress } from './JourneyProgress';
-import { JourneyTimeline, type JourneyEndpointNames } from './JourneyTimeline';
+import { JourneyTimeline, isGenuineCallingPoint, type JourneyEndpointNames } from './JourneyTimeline';
 import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrainJourneyState } from '@/lib/types';
@@ -68,13 +68,25 @@ export function TrainJourney({
     destinationName: state.pinDestinationName ?? state.pinDestinationCrs,
   };
 
+  // Filtered ONCE, here, rather than inside `JourneyProgress`/`JourneyTimeline`
+  // independently -- see `isGenuineCallingPoint`'s own doc comment. Both
+  // components derive their own index/total/marker-position entirely from
+  // whatever `stops` array they're handed, so passing them the SAME filtered
+  // array is what keeps their stop counts and positions from ever being able
+  // to drift apart -- there is no separate filter step in either component
+  // to fall out of sync with this one. `null` (no journeyStops at all) stays
+  // `null`, preserving the exact guard semantics both `{... && (...)}` checks
+  // below already relied on; filtering a non-null array can only ever shrink
+  // it, never turn it back into `null`.
+  const visibleJourneyStops = state.journeyStops?.filter(isGenuineCallingPoint) ?? null;
+
   return (
     <Stack gap="sm">
       <StatusMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
       {state.resolutionStatus === 'resolved' && <JourneyDetails state={state} />}
-      {state.journeyStops && (
+      {visibleJourneyStops && (
         <JourneyProgress
-          stops={state.journeyStops}
+          stops={visibleJourneyStops}
           resolutionStatus={state.resolutionStatus}
           status={state.status}
           trainUid={state.trainUid}
@@ -83,9 +95,9 @@ export function TrainJourney({
           endpointNames={endpointNames}
         />
       )}
-      {state.journeyStops && (
+      {visibleJourneyStops && (
         <JourneyTimeline
-          stops={state.journeyStops}
+          stops={visibleJourneyStops}
           endpointNames={endpointNames}
           skippedCrs={skippedCrs}
           legDestinationCrs={legDestinationCrs}
