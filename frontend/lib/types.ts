@@ -907,12 +907,31 @@ export interface TripPlanResponse {
  * journey's first leg (no `pin` mode -- spec §3 only offers a direct
  * known-train pick or an open time-window search for "add a leg"),
  * discriminated by `mode` exactly like the backend's own
- * `AddJourneyLegRequest` (`crates/api/src/routes/journeys.rs`). */
+ * `AddJourneyLegRequest` (`crates/api/src/routes/journeys.rs`).
+ *
+ * `knownTrain`'s `originCrs`/`destinationCrs` are OPTIONAL overrides for
+ * this leg's own boarding/alighting point -- distinct from the matched
+ * train's own full route. Omitting both reproduces the historical
+ * pin-derived backend behavior (`origin_crs`/`destination_crs` read back
+ * off `train_subscriptions.pin_origin_crs`/`pin_destination_crs`, which is
+ * itself copied from the train's own full working, start to end);
+ * supplying either overrides just that one field, the other still falls
+ * back to the pin. `PlanTripFlow.tsx`'s commit step is the one caller that
+ * sets them today, using the real per-leg origin/destination already on
+ * each `TripPlanLeg` (e.g. boarding a Birmingham->Glasgow service at
+ * Crewe, alighting at Preston). `AddJourneyLegButton.tsx` deliberately
+ * never sets them -- the origin/destination-override plan's Judgment Call 2:
+ * its `knownTrain` mode
+ * only ever asks for a train UID + service date, so it has no real
+ * per-leg origin/destination of its own to send that would differ from
+ * the pin-derived value it's always relied on. */
 export type NewJourneyLegRequest =
   | {
       mode: 'knownTrain';
       trainUid: string;
       serviceDate: string; // "YYYY-MM-DD"
+      originCrs?: string;
+      destinationCrs?: string;
     }
   | {
       mode: 'window';

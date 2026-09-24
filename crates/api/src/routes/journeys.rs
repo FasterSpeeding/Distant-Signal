@@ -155,9 +155,27 @@ enum CreateJourneyLegRequest {
     },
     /// An already-known identity -- what `TrackThisTrainButton.tsx` submits
     /// (Task 14).
+    ///
+    /// `origin_crs`/`destination_crs` are OPTIONAL overrides for this leg's
+    /// OWN boarding/alighting point -- distinct from the train's real full
+    /// route (a traveller can board partway through a service's working, or
+    /// alight before its final stop; see the origin/destination-override
+    /// plan's "Why" section's Birmingham→Glasgow/Crewe→Preston example).
+    /// Omitting both reproduces the historical behavior byte-for-byte: the
+    /// data layer reads the leg's origin/destination back off the matched
+    /// train's own pin-derived values instead (that plan's Judgment Call 1).
+    /// Neither field is validated against the train's real calling points --
+    /// only checked for being a well-formed CRS code, if supplied at all
+    /// (that plan's Judgment Call 3; see
+    /// `data::journeys::validate_known_train_overrides`'s own doc comment
+    /// for the full reasoning).
     KnownTrain {
         train_uid: String,
         service_date: NaiveDate,
+        #[serde(default)]
+        origin_crs: Option<String>,
+        #[serde(default)]
+        destination_crs: Option<String>,
     },
     /// An open time-window search -- no train chosen yet. Design doc §2.1;
     /// creates an `'unmatched'` leg the caller browses via
@@ -198,9 +216,31 @@ struct CreateJourneyRequest {
     rename_all_fields = "camelCase"
 )]
 enum AddJourneyLegRequest {
+    /// An already-known identity for an EXISTING journey's next leg -- what
+    /// `AddJourneyLegButton.tsx`'s "I know the train" mode submits, and what
+    /// `PlanTripFlow.tsx`'s multi-leg commit loop sends for every train leg
+    /// after the first (`POST /Journeys/{journeyId}/legs`).
+    ///
+    /// `origin_crs`/`destination_crs` are OPTIONAL overrides for this leg's
+    /// OWN boarding/alighting point -- distinct from the train's real full
+    /// route (a traveller can board partway through a service's working, or
+    /// alight before its final stop; see the origin/destination-override
+    /// plan's "Why" section's Birmingham→Glasgow/Crewe→Preston example).
+    /// Omitting both reproduces the historical behavior byte-for-byte: the
+    /// data layer reads the leg's origin/destination back off the matched
+    /// train's own pin-derived values instead (that plan's Judgment Call 1).
+    /// Neither field is validated against the train's real calling points --
+    /// only checked for being a well-formed CRS code, if supplied at all
+    /// (that plan's Judgment Call 3; see
+    /// `data::journeys::validate_known_train_overrides`'s own doc comment
+    /// for the full reasoning).
     KnownTrain {
         train_uid: String,
         service_date: NaiveDate,
+        #[serde(default)]
+        origin_crs: Option<String>,
+        #[serde(default)]
+        destination_crs: Option<String>,
     },
     Window {
         origin_crs: String,
@@ -358,10 +398,16 @@ mod wire_format_tests {
             r#"{"mode": "knownTrain", "trainUid": "A11111", "serviceDate": "2026-09-22"}"#,
         )
         .expect("valid knownTrain-mode leg JSON should deserialize");
-        assert!(matches!(
-            known_train,
-            CreateJourneyLegRequest::KnownTrain { .. }
-        ));
+        let CreateJourneyLegRequest::KnownTrain {
+            origin_crs,
+            destination_crs,
+            ..
+        } = known_train
+        else {
+            panic!("expected a KnownTrain-mode leg, got {known_train:?}");
+        };
+        assert_eq!(origin_crs, None);
+        assert_eq!(destination_crs, None);
 
         let window: CreateJourneyLegRequest = serde_json::from_str(
             r#"{
@@ -382,10 +428,16 @@ mod wire_format_tests {
             r#"{"mode": "knownTrain", "trainUid": "A11111", "serviceDate": "2026-09-22"}"#,
         )
         .expect("valid knownTrain-mode leg JSON should deserialize");
-        assert!(matches!(
-            known_train,
-            AddJourneyLegRequest::KnownTrain { .. }
-        ));
+        let AddJourneyLegRequest::KnownTrain {
+            origin_crs,
+            destination_crs,
+            ..
+        } = known_train
+        else {
+            panic!("expected a KnownTrain-mode leg, got {known_train:?}");
+        };
+        assert_eq!(origin_crs, None);
+        assert_eq!(destination_crs, None);
 
         let window: AddJourneyLegRequest = serde_json::from_str(
             r#"{
@@ -398,6 +450,56 @@ mod wire_format_tests {
         )
         .expect("valid window-mode leg JSON should deserialize");
         assert!(matches!(window, AddJourneyLegRequest::Window { .. }));
+    }
+
+    /// The point of the origin/destination-override plan: a `knownTrain`
+    /// body that DOES set `originCrs`/`destinationCrs` deserializes both as
+    /// `Some(...)`, for both request shapes -- the counterpart to the two
+    /// tests above, which only ever exercise the omitted (`None`, `None`)
+    /// case.
+    #[test]
+    fn known_train_mode_leg_deserializes_its_optional_origin_and_destination_overrides() {
+        let create: CreateJourneyLegRequest = serde_json::from_str(
+            r#"{
+                "mode": "knownTrain",
+                "trainUid": "A11111",
+                "serviceDate": "2026-09-22",
+                "originCrs": "CRE",
+                "destinationCrs": "PRE"
+            }"#,
+        )
+        .expect("valid knownTrain-mode leg JSON with overrides should deserialize");
+        let CreateJourneyLegRequest::KnownTrain {
+            origin_crs,
+            destination_crs,
+            ..
+        } = create
+        else {
+            panic!("expected a KnownTrain-mode leg, got {create:?}");
+        };
+        assert_eq!(origin_crs, Some("CRE".to_string()));
+        assert_eq!(destination_crs, Some("PRE".to_string()));
+
+        let add: AddJourneyLegRequest = serde_json::from_str(
+            r#"{
+                "mode": "knownTrain",
+                "trainUid": "A11111",
+                "serviceDate": "2026-09-22",
+                "originCrs": "CRE",
+                "destinationCrs": "PRE"
+            }"#,
+        )
+        .expect("valid knownTrain-mode leg JSON with overrides should deserialize");
+        let AddJourneyLegRequest::KnownTrain {
+            origin_crs,
+            destination_crs,
+            ..
+        } = add
+        else {
+            panic!("expected a KnownTrain-mode leg, got {add:?}");
+        };
+        assert_eq!(origin_crs, Some("CRE".to_string()));
+        assert_eq!(destination_crs, Some("PRE".to_string()));
     }
 }
 
@@ -520,17 +622,37 @@ async fn post_journey(
         CreateJourneyLegRequest::KnownTrain {
             train_uid,
             service_date,
+            origin_crs,
+            destination_crs,
         } => {
+            journeys::validate_known_train_overrides(
+                origin_crs.as_deref(),
+                destination_crs.as_deref(),
+            )
+            .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
                     .await
                     .map_err(internal_error("find or create train"))?;
+            // Same trim+uppercase normalization `Window`-mode's own
+            // `origin_crs`/`destination_crs` get below -- a `knownTrain`
+            // override is structurally the same caller-typed CRS string as
+            // a `window`-mode field, not `pin`-mode's separate legacy
+            // as-is convention (origin/destination-override plan's
+            // Judgment Call 4).
+            let origin_override = origin_crs.as_deref().map(|s| s.trim().to_ascii_uppercase());
+            let destination_override = destination_crs
+                .as_deref()
+                .map(|s| s.trim().to_ascii_uppercase());
             let (journey_id, leg_id, tracking_id) = journeys::create_journey_with_known_train_leg(
                 &app.database,
                 &user.id,
                 body.custom_name.as_deref(),
                 trains_id,
                 service_date,
+                origin_override.as_deref(),
+                destination_override.as_deref(),
             )
             .await
             .map_err(internal_error("create journey (known-train leg)"))?;
@@ -609,17 +731,37 @@ async fn post_journey_leg(
         AddJourneyLegRequest::KnownTrain {
             train_uid,
             service_date,
+            origin_crs,
+            destination_crs,
         } => {
+            journeys::validate_known_train_overrides(
+                origin_crs.as_deref(),
+                destination_crs.as_deref(),
+            )
+            .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
                     .await
                     .map_err(internal_error("find or create train"))?;
+            // Same trim+uppercase normalization `Window`-mode's own
+            // `origin_crs`/`destination_crs` get below -- a `knownTrain`
+            // override is structurally the same caller-typed CRS string as
+            // a `window`-mode field, not `pin`-mode's separate legacy
+            // as-is convention (origin/destination-override plan's
+            // Judgment Call 4).
+            let origin_override = origin_crs.as_deref().map(|s| s.trim().to_ascii_uppercase());
+            let destination_override = destination_crs
+                .as_deref()
+                .map(|s| s.trim().to_ascii_uppercase());
             let added = journeys::add_known_train_leg_to_journey(
                 &app.database,
                 journey_id,
                 &user.id,
                 trains_id,
                 service_date,
+                origin_override.as_deref(),
+                destination_override.as_deref(),
             )
             .await
             .map_err(internal_error("add leg to journey (known-train)"))?;

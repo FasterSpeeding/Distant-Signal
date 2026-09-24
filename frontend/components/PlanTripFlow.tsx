@@ -121,35 +121,32 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
 
     try {
       const firstLeg = trainLegs[0];
-      // Known, pre-existing backend limitation (not introduced or fixed by
-      // this task -- see `KnownTrain` in `CreateJourneyLegRequest`,
-      // `crates/api/src/routes/journeys.rs`, and
-      // `crates/api/src/data/journeys.rs`'s `create_subscription_for_train`/
-      // `add_known_train_leg_to_journey`): a `knownTrain`-mode leg request
-      // only ever carries `trainUid`/`serviceDate`, never an origin/
-      // destination of its own. The backend derives the committed leg's
-      // `origin_crs`/`destination_crs` from the matched train's OWN full
-      // schedule (`trains.origin_crs`/`destination_crs` -- the whole
-      // working's start/end), not from wherever this traveller actually
-      // boards or alights. `firstLeg.originCrs`/`firstLeg.destinationCrs`
-      // (from `GET /Trips/plan`) are this leg's real boarding/alighting
-      // points and can legitimately differ -- e.g. boarding a
-      // London->Edinburgh service at York and alighting at Newcastle -- but
-      // there is no field on this request to send them, so they are
-      // silently discarded here. The train UID + service date (the only
-      // fields that matter for live delay/cancellation tracking) ARE
-      // committed correctly; only display/station-skip-detection metadata
-      // on the resulting `journey_legs` row can end up describing the
-      // train's full route instead of this leg's own. Same gap
-      // `AddJourneyLegButton.tsx`'s existing `knownTrain` submission has
-      // always had -- not new or specific to trip planning, and out of
-      // scope for this task to fix (would require changing the
-      // `KnownTrain` request shape itself).
+      // `firstLeg.originCrs`/`firstLeg.destinationCrs` (from `GET
+      // /Trips/plan`) are this leg's real boarding/alighting points, which
+      // can legitimately differ from the matched train's own full route --
+      // e.g. boarding a Birmingham->Glasgow service at Crewe and alighting
+      // at Preston. They're now sent as the optional `originCrs`/
+      // `destinationCrs` override fields `CreateJourneyLegRequest::
+      // KnownTrain` (`crates/api/src/routes/journeys.rs`) gained for
+      // exactly this purpose -- without them, the backend falls back to
+      // deriving `origin_crs`/`destination_crs` from the matched train's
+      // OWN full schedule, which is what silently happened here before.
+      // `TripPlanLeg`'s train variant types both fields as `string | null`;
+      // a `null` means "no override for this end," so the key is omitted
+      // entirely rather than sending an explicit `null` -- same
+      // conditional-spread convention `TrackTrainForm.tsx`'s optional
+      // `destinationCrs` field already uses.
       const createResponse = await fetch('/api/Journeys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          leg: { mode: 'knownTrain', trainUid: firstLeg.trainUid, serviceDate: firstLeg.serviceDate },
+          leg: {
+            mode: 'knownTrain',
+            trainUid: firstLeg.trainUid,
+            serviceDate: firstLeg.serviceDate,
+            ...(firstLeg.originCrs ? { originCrs: firstLeg.originCrs } : {}),
+            ...(firstLeg.destinationCrs ? { destinationCrs: firstLeg.destinationCrs } : {}),
+          },
         }),
       });
       // I1: `GET /Trips/plan` is deliberately unauthenticated, so an
@@ -170,13 +167,14 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
 
       for (let i = 1; i < trainLegs.length; i += 1) {
         const leg = trainLegs[i];
-        // Same pre-existing `knownTrain` CRS-derivation gap as the initial
-        // `POST /Journeys` call above -- `leg.originCrs`/`leg.destinationCrs`
-        // are this subsequent leg's own real boarding/alighting points, but
-        // `POST /Journeys/{id}/legs` (`AddJourneyLegRequest::KnownTrain`)
-        // has nowhere to accept them either, so the committed row's
-        // origin/destination will again reflect this train's own full
-        // route rather than this leg's.
+        // Same real-origin/destination handling as the initial `POST
+        // /Journeys` call above -- `leg.originCrs`/`leg.destinationCrs` are
+        // this subsequent leg's own real boarding/alighting points, sent as
+        // the optional `originCrs`/`destinationCrs` override fields
+        // `AddJourneyLegRequest::KnownTrain`
+        // (`crates/api/src/routes/journeys.rs`) gained alongside
+        // `CreateJourneyLegRequest::KnownTrain`, omitted (never sent as an
+        // explicit `null`) whenever this end has no override.
         //
         // This inner try/catch (not just an `if (!addResponse.ok)` check)
         // is load-bearing: `fetch` itself can reject -- a genuine network
@@ -196,7 +194,13 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
           const addResponse = await fetch(`/api/Journeys/${created.journeyId}/legs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode: 'knownTrain', trainUid: leg.trainUid, serviceDate: leg.serviceDate }),
+            body: JSON.stringify({
+              mode: 'knownTrain',
+              trainUid: leg.trainUid,
+              serviceDate: leg.serviceDate,
+              ...(leg.originCrs ? { originCrs: leg.originCrs } : {}),
+              ...(leg.destinationCrs ? { destinationCrs: leg.destinationCrs } : {}),
+            }),
           });
           // I1: a session can in principle expire mid-sequence too -- same
           // 401 handling as the initial `POST /Journeys` call above, but
