@@ -107,6 +107,23 @@ pub struct Config {
     )]
     pub schedule_calling_points_full_url: String,
 
+    /// The `api` crate's ingestion endpoint for this service's seventh
+    /// responsibility (Task 4 of the TIPLOC-primary CRS crosswalk plan): the
+    /// richer, TIPLOC-primary CRS crosswalk publish, run alongside (not
+    /// instead of) the existing `api_ingest_url`/`stanox_crs` publish above
+    /// -- see
+    /// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md's
+    /// "Design decision" section. POST-only, no GET pair -- same shape as
+    /// `schedule_network_departures_url` and `schedule_destination_departures_url`
+    /// above, and reusing the same `internal_oauth_group_schedule_reference`
+    /// writer credential.
+    #[arg(
+        env = "TIPLOC_CRS_URL",
+        long,
+        default_value = "http://api:8080/private/tiploc-crs"
+    )]
+    pub tiploc_crs_url: String,
+
     /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
     /// value_parser pattern as `crates/aggregator/src/config.rs`'s own
     /// field of the same name. Used to build the per-line TIPLOC set this

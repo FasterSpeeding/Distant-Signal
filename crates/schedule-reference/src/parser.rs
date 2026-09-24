@@ -285,14 +285,10 @@ pub fn resolve(
 /// `stanox`'s role as a grouping key (it is still carried through, just
 /// never grouped/deduplicated on).
 ///
-/// `#[allow(dead_code)]`: not yet constructed outside this module's own
-/// tests -- this plan's Task 4 wires `resolve_tiploc_crs`'s output into
-/// `main.rs`'s `poll_once` (the `POST /private/tiploc-crs` publish and the
-/// three `tiploc_to_crs` map-construction sites). Task 1 (this) is
-/// deliberately pure groundwork with no I/O, same posture as
-/// `crates/notifier/src/decision.rs::weekday_bit`'s own precedent for a
-/// groundwork function awaiting a later wiring task.
-#[allow(dead_code)]
+/// Wired into `main.rs`'s `poll_once` by this plan's Task 4 (the `POST
+/// /private/tiploc-crs` publish and the `tiploc_to_crs` map-construction
+/// sites) -- see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TiplocCrsRow {
     pub tiploc: String,
@@ -321,9 +317,6 @@ pub struct TiplocCrsRow {
 /// (STANOX `87219`, both CRS `CLJ`) each get their own row here, unlike
 /// `resolve`, which keeps only one TIPLOC per STANOX.
 ///
-/// `#[allow(dead_code)]`: not yet called outside this module's own tests --
-/// see [`TiplocCrsRow`]'s doc comment for why (Task 4 wires this in).
-#[allow(dead_code)]
 pub fn resolve_tiploc_crs(
     ti: &[TiRecord],
     msn_crs_by_tiploc: &HashMap<String, String>,
