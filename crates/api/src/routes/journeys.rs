@@ -1783,6 +1783,7 @@ mod db_tests {
                     calling_point_arrival: None,
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -1795,6 +1796,7 @@ mod db_tests {
                     calling_point_arrival: None,
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
+                    operator_atoc: None,
                 },
             ]
         }

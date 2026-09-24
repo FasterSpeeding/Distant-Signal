@@ -1134,6 +1134,17 @@ pub struct ScheduleDestinationDeparturesRow {
     /// deserializes, as `0` ("assume same day as the departure").
     #[serde(default)]
     pub destination_arrival_day_offset: i16,
+    /// The schedule's `BX` ATOC Code, mirroring
+    /// `schedule_query::records::DestinationDeparture::operator_atoc`'s own
+    /// doc comment exactly: computed once per schedule and copied
+    /// unchanged onto every departure row it contributes, `None` when no
+    /// `BX` line follows the schedule's `BS` line (or its ATOC Code field
+    /// was blank/undecodable). `#[serde(default)]` for the same
+    /// rolling-deploy-safety reason `day_offset`/`destination_arrival_day_offset`
+    /// above tolerate a missing key -- a row published before this field
+    /// existed still deserializes, as `None`.
+    #[serde(default)]
+    pub operator_atoc: Option<String>,
 }
 
 /// An opaque-to-the-caller position in one station's ordered results: the
@@ -1228,6 +1239,8 @@ pub async fn upsert_schedule_destination_departures(
         .iter()
         .map(|r| r.destination_arrival_day_offset)
         .collect();
+    let operator_atoc: Vec<Option<&str>> =
+        rows.iter().map(|r| r.operator_atoc.as_deref()).collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1246,8 +1259,8 @@ pub async fn upsert_schedule_destination_departures(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[]) \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1260,6 +1273,7 @@ pub async fn upsert_schedule_destination_departures(
     .bind(&calling_point_arrival)
     .bind(&destination_arrival)
     .bind(&destination_arrival_day_offsets)
+    .bind(&operator_atoc)
     .execute(&mut *tx)
     .await?;
 
@@ -5614,6 +5628,7 @@ mod schedule_destination_departures_query_tests {
             destination_arrival_day_offset: 0,
             true_origin_crs: true_origin_crs.map(str::to_string),
             calling_point_arrival,
+            operator_atoc: None,
         }
     }
 
@@ -5821,6 +5836,68 @@ mod schedule_destination_departures_query_tests {
             stored[1],
             ("C70002".to_string(), None),
             "an absent destination_arrival must round-trip as SQL NULL, not a fabricated time"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn upsert_round_trips_operator_atoc_including_a_null_value() {
+        let pool = test_pool().await;
+        let date = fixture_date(25);
+        delete_day(&pool, date).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                ScheduleDestinationDeparturesRow {
+                    service_date: date,
+                    destination_crs: "ZRD".to_string(),
+                    scheduled: time(8, 0),
+                    day_offset: 0,
+                    train_uid: "C80001".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    true_origin_crs: Some("EUS".to_string()),
+                    calling_point_arrival: None,
+                    destination_arrival: None,
+                    destination_arrival_day_offset: 0,
+                    operator_atoc: Some("SR".to_string()),
+                },
+                ScheduleDestinationDeparturesRow {
+                    service_date: date,
+                    destination_crs: "ZRD".to_string(),
+                    scheduled: time(9, 0),
+                    day_offset: 0,
+                    train_uid: "C80002".to_string(),
+                    origin_crs: "CRE".to_string(),
+                    true_origin_crs: None,
+                    calling_point_arrival: None,
+                    destination_arrival: None,
+                    destination_arrival_day_offset: 0,
+                    operator_atoc: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed rows");
+
+        let stored: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT train_uid, operator_atoc FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0], ("C80001".to_string(), Some("SR".to_string())));
+        assert_eq!(
+            stored[1],
+            ("C80002".to_string(), None),
+            "an absent operator_atoc must round-trip as SQL NULL, not an empty string"
         );
 
         delete_day(&pool, date).await;
@@ -6317,6 +6394,7 @@ mod schedule_destination_departures_query_tests {
                             destination_arrival_day_offset: i16::from(*train_uid == "O11111"),
                             true_origin_crs: Some("WAT".to_string()),
                             calling_point_arrival: calling_point_arrival.map(|(h, m)| time(h, m)),
+                            operator_atoc: None,
                         }
                     },
                 )
@@ -7162,6 +7240,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
+                    operator_atoc: None,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -7174,6 +7253,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
+                    operator_atoc: None,
                 },
             ],
         )
@@ -7314,6 +7394,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
+                    operator_atoc: None,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -7326,6 +7407,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
+                    operator_atoc: None,
                 },
             ],
         )
@@ -7610,6 +7692,7 @@ LTSTAFFRD 1630         TF";
                         calling_point_arrival: d.calling_point_arrival,
                         destination_arrival: d.destination_arrival,
                         destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
+                        operator_atoc: d.operator_atoc,
                     })
             })
             .collect();
