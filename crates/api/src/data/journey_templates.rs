@@ -991,6 +991,78 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
+                materialize_template_with_no_window_bounds_produces_a_fully_open_leg \
+                -- --ignored --test-threads=1`"]
+    async fn materialize_template_with_no_window_bounds_produces_a_fully_open_leg() {
+        // Regression test for this plan's Judgment Call 2
+        // (`validate_template_leg`'s own doc comment, and this module's
+        // sibling `no_window_bound_is_required_unlike_validate_window_leg`
+        // test): a template leg is allowed to carry NO time window at
+        // all, and `materialize_template` must copy that verbatim onto
+        // the minted `journey_legs` row -- all four of
+        // `depart_after`/`depart_before`/`arrive_after`/`arrive_before`
+        // stay `NULL`, not defaulted to anything.
+        let pool = connect().await;
+        let user_id = "TEST-TEMPLATE-MATERIALIZE-OPEN-WINDOW";
+        seed_user(&pool, user_id).await;
+
+        let legs = vec![TemplateLegInput {
+            origin_crs: Some("WAT".to_string()),
+            destination_crs: Some("RDG".to_string()),
+            depart_after: None,
+            depart_before: None,
+            arrive_after: None,
+            arrive_before: None,
+        }];
+        let template_id = create_template(&pool, user_id, None, &legs)
+            .await
+            .expect("create template");
+
+        let target_date: NaiveDate = "2026-10-01".parse().unwrap();
+        let materialized = materialize_template(&pool, template_id, user_id, target_date)
+            .await
+            .expect("materialize template")
+            .expect("template exists to materialize");
+        assert_eq!(materialized.leg_ids.len(), 1);
+
+        #[derive(sqlx::FromRow)]
+        struct LegWindowRow {
+            depart_after: Option<NaiveTime>,
+            depart_before: Option<NaiveTime>,
+            arrive_after: Option<NaiveTime>,
+            arrive_before: Option<NaiveTime>,
+            match_mode: String,
+        }
+        let row: LegWindowRow = sqlx::query_as(
+            "SELECT depart_after, depart_before, arrive_after, arrive_before, match_mode \
+             FROM journey_legs WHERE id = $1",
+        )
+        .bind(materialized.leg_ids[0])
+        .fetch_one(&pool)
+        .await
+        .expect("read materialized leg");
+        assert_eq!(row.depart_after, None);
+        assert_eq!(row.depart_before, None);
+        assert_eq!(row.arrive_after, None);
+        assert_eq!(row.arrive_before, None);
+        assert_eq!(row.match_mode, "unmatched");
+
+        sqlx::query("DELETE FROM journey_legs WHERE journey_id = $1")
+            .bind(materialized.journey_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup materialized journey_legs");
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(materialized.journey_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup materialized journey");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
                 materialize_template_a_non_owner_gets_none -- --ignored --test-threads=1`"]
     async fn materialize_template_a_non_owner_gets_none() {
         let pool = connect().await;
