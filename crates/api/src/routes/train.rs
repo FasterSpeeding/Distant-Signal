@@ -710,6 +710,24 @@ async fn get_by_uid_and_date(
         }
     }
 
+    // Best-effort CIF-only schedule enrichment for a train nobody has ever
+    // tracked -- see `enrich_public_train_schedule`'s own doc comment for
+    // the real, confirmed gap this closes (a shared row can carry full
+    // live TRUST movement data, from `trust-backlog-consumer`'s
+    // subscription-independent broad ingestion, and still never acquire a
+    // schedule at all otherwise). Only attempted when a row exists but
+    // `origin_crs` is still unset -- a fast, no-op-shaped check for the
+    // overwhelmingly common case of an already-matched or already-known-
+    // unmatchable row.
+    if let Some(current) = &state
+        && current.origin_crs.is_none()
+    {
+        enrich_public_train_schedule(&app, &train_uid, date).await;
+        state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
+            .await
+            .map_err(internal_error("read public train state"))?;
+    }
+
     match state {
         Some(state) => Ok(Json(attach_journey_stops_public(&app, state).await)),
         None => Err((
@@ -866,6 +884,112 @@ pub(crate) async fn enrich_shared_train(
         ),
         Err(err) => {
             tracing::warn!(error = ?err, train_uid, "schedule match failed for a shared train row")
+        }
+    }
+}
+
+/// Best-effort CIF-only schedule enrichment for a `trains` row NOBODY has
+/// ever tracked -- the untracked counterpart to `enrich_shared_train`
+/// above, called from `get_by_uid_and_date` (the public, unauthenticated
+/// `GET /Train/by-uid/{uid}/{date}` route) rather than from a tracking
+/// action.
+///
+/// Real, confirmed gap this closes: `trust-backlog-consumer` is a
+/// national, subscription-independent consumer -- its
+/// `POST /internal/trust-event-backlog` -> `ingest_shared_movements_batch`
+/// path calls the BARE `find_or_create_train` (not the schedule-match
+/// variant) for every movement event with a known `train_uid`, so a
+/// `trains` row can acquire full live TRUST data (`train_id`, `status`,
+/// `last_reported_location`, ...) for ANY real service on the network,
+/// tracked or not. But every schedule-matching path in this codebase is
+/// gated on a `train_subscriptions` row existing:
+/// * `enrich_shared_train` above only runs from `post_track_by_uid`, i.e.
+///   only once a user has actually clicked Track.
+/// * `reconciliation::retry_schedule_enrichment_for_nr_primary_trains`
+///   (the periodic sweep) explicitly scopes its candidate set to
+///   subscriber-referenced rows only -- see that function's own doc
+///   comment for why ("not backfilling schedule data for the whole
+///   network").
+///
+/// So a train nobody has tracked -- exactly the case `/trains` search
+/// results and shared links surface, per `get_by_uid_and_date`'s own
+/// "READ-TRIGGERED UPSERT" doc comment above -- could show real live
+/// tracking (`status: "en_route"`, a real headcode) alongside a
+/// permanently empty schedule (`originCrs`/`destinationCrs`/
+/// `callingPoints`/`scheduledDeparture` all `null`), forever: nothing ever
+/// retried the match for it. This closes that gap the same way the
+/// existing read-triggered `find_or_create_train` upsert closed the 404 on
+/// this same route: attempt the match once, on read, best-effort.
+///
+/// Deliberately does NOT reuse `enrich_shared_train`'s
+/// `attempt_backlog_match_by_uid` path: that function writes
+/// `train_subscriptions` by `tracking_id` (`UPDATE train_subscriptions SET
+/// trains_id = $2 WHERE id = $1`, plus `replay_backlog_history`'s own
+/// writes keyed the same way) -- there is no subscription row here to
+/// write through, since this route is reachable by anyone, unauthenticated,
+/// for a train nobody has ever tracked. This instead goes straight from
+/// CIF's own `schedule_destination_departures` (via
+/// `reconciliation::true_origin_departure`, the exact lookup the
+/// reconciliation sweep already uses) to
+/// `schedule_matching::attempt_schedule_match_for_shared_train`, which
+/// never touches `train_subscriptions` and `COALESCE`s every column
+/// against whatever is already there -- safe to call for an
+/// already-matched row (fast no-op) or in a race with the tracked-train
+/// paths above (never clobbers, per that function's own doc comment).
+async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDate) {
+    let origin =
+        match crate::data::reconciliation::true_origin_departure(&app.database, train_uid, date)
+            .await
+        {
+            Ok(Some(origin)) => origin,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!(
+                    error = ?err,
+                    train_uid,
+                    "true-origin-departure lookup failed for public schedule enrichment"
+                );
+                return;
+            }
+        };
+    let (origin_crs, scheduled) = origin;
+
+    let Some(scheduled_departure) = crate::data::eta_blend::london_to_utc(date.and_time(scheduled))
+    else {
+        tracing::warn!(
+            train_uid,
+            "scheduled departure did not resolve to a real London local time; skipping public \
+             schedule enrichment"
+        );
+        return;
+    };
+
+    match schedule_matching::attempt_schedule_match_for_shared_train(
+        &app.database,
+        train_uid,
+        &origin_crs,
+        scheduled_departure,
+        date,
+        &app.schedule_crs_line_index,
+    )
+    .await
+    {
+        Ok(true) => tracing::info!(
+            train_uid,
+            origin_crs,
+            "schedule-matched a previously-untracked shared train row from a public read"
+        ),
+        Ok(false) => tracing::debug!(
+            train_uid,
+            origin_crs,
+            "no schedule match for this untracked train's true origin departure"
+        ),
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                train_uid,
+                "public schedule enrichment failed for an untracked shared train row"
+            )
         }
     }
 }
@@ -3133,6 +3257,146 @@ mod db_tests {
             .await
             .ok();
         sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-SVUID-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Regression test for the real production bug this closes
+    /// (`https://ds.cursed.solutions/train/Y80908/2026-09-24` showing no
+    /// schedule at all): a `trains` row that already has real live TRUST
+    /// data -- `train_id` set via `mark_train_resolved`, exactly what
+    /// `trust-backlog-consumer`'s subscription-independent national
+    /// ingestion (`data::trust_event_backlog::ingest_shared_movements_batch`)
+    /// does for ANY real service on the network -- but was never
+    /// schedule-matched, because nobody has ever tracked it (no
+    /// `train_subscriptions` row exists at all). Before this fix, calling
+    /// `GET /Train/by-uid/{uid}/{date}` (the exact public route the
+    /// production URL above hits) returned this row completely bare of
+    /// schedule data forever: `origin_crs`/`destination_crs`/
+    /// `calling_points`/`scheduled_departure` all stayed `NULL` on every
+    /// read, since neither `enrich_shared_train` (gated on a tracking
+    /// action) nor the reconciliation sweep's own
+    /// `retry_schedule_enrichment_for_nr_primary_trains` (deliberately
+    /// scoped to subscriber-referenced rows only) ever ran for it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_schedule_matches_a_previously_untracked_row_with_live_data \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_schedule_matches_a_previously_untracked_row_with_live_data() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let train_uid = "TEST-PUBLIC-SCHEDMATCH-UID";
+
+        // Simulates `trust-backlog-consumer`'s bare `find_or_create_train`
+        // + `mark_train_resolved` -- real live TRUST identity, no
+        // `train_subscriptions` row anywhere, no schedule match attempted
+        // by anything yet.
+        let trains_id = crate::data::trains::find_or_create_train(&pool, train_uid, service_date)
+            .await
+            .expect("find_or_create_train for fixture");
+        crate::data::trains::mark_train_resolved(&pool, trains_id, "TESTHC01")
+            .await
+            .expect("mark_train_resolved for fixture");
+
+        // The real CIF schedule this train's true origin departure should
+        // resolve to -- `true_origin_crs = origin_crs` is what makes this
+        // row `reconciliation::true_origin_departure`'s match, same as the
+        // real `schedule-reference` publish cycle sets for a schedule's own
+        // origin row.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, 'EDB', '12:00:00', $2, 'KGX', 'KGX')",
+        )
+        .bind(service_date)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed fixture schedule_destination_departures row");
+
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TEST-PUBSM-KGX', 'KGX', 'TEST-PUBSM-KGX-TP', 'KINGS CROSS', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ('east-coast-main-line', $1, $2) \
+             ON CONFLICT (line_id, service_date) DO UPDATE SET population = EXCLUDED.population",
+        )
+        .bind(service_date)
+        .bind(serde_json::json!([{
+            "uid": train_uid,
+            "calling_points": [{
+                "tiploc": "TEST-PUBSM-KGX-TP",
+                "kind": "Origin",
+                "booked_arrival": null,
+                "booked_departure": "12:00",
+                "is_half_minute_arrival": false,
+                "is_half_minute_departure": false
+            }]
+        }]))
+        .execute(&pool)
+        .await
+        .expect("seed schedule_line_population");
+
+        let app = test_app_with_schedule_index(
+            pool.clone(),
+            std::collections::HashMap::from([(
+                "KGX".to_string(),
+                vec!["east-coast-main-line".to_string()],
+            )]),
+        );
+        let router = test_router(app);
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/{train_uid}/{service_date}"),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert_eq!(
+            body.get("originCrs").and_then(Value::as_str),
+            Some("KGX"),
+            "the public read must schedule-match this previously-untracked row, not leave it \
+             bare forever: {body:?}"
+        );
+        assert!(
+            body.get("callingPoints").is_some_and(|v| !v.is_null()),
+            "callingPoints must now be populated: {body:?}"
+        );
+        assert_eq!(
+            body.get("trainId").and_then(Value::as_str),
+            Some("TESTHC01"),
+            "the pre-existing live TRUST identity must survive the schedule-match write \
+             untouched (COALESCE, never clobbered): {body:?}"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query(
+            "DELETE FROM schedule_line_population WHERE line_id = 'east-coast-main-line' AND \
+             service_date = $1",
+        )
+        .bind(service_date)
+        .execute(&pool)
+        .await
+        .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-PUBSM-KGX'")
             .execute(&pool)
             .await
             .ok();
