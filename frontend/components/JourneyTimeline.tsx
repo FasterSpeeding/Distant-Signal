@@ -162,6 +162,47 @@ export function JourneyTimeline({
   );
 }
 
+/** Whether a `JourneyStop` is a genuine calling point a passenger would
+ * recognize, as opposed to a bare CIF timing point the train runs through
+ * with no booked call at all -- a running junction, points, or similar
+ * marker with no timetabled arrival/departure whatsoever. Real example
+ * (2026-09-24 bug report, train `L81634`): `HCRTJN` (Hampton Court
+ * Junction), `BRLANJN` (Berrylands Junction), and `WATRLWC` (the
+ * Windsor-lines approach into Waterloo) each arrive with `crs: null`,
+ * `name: null`, `scheduledArrival: null`, `scheduledDeparture: null` --
+ * confirmed against the raw `callingPoints` relay too
+ * (`bookedArrival`/`bookedDeparture` both `null` there as well). This is
+ * exactly the case `crates/api/src/data/journey.rs`'s `tiploc_key` doc
+ * comment (point 2, "a genuine non-station timing point") flags as
+ * correctly unresolvable and explicitly leaves as an open product
+ * question -- "how (or whether) they should appear in a passenger-facing
+ * calling-point list". Product decision, 2026-09-24: they should not --
+ * they get no row/node at all, rather than rendering as a noisy, anonymous
+ * "Stop N".
+ *
+ * The signal here is deliberately narrow: `crs === null` ALONE is NOT
+ * enough. A stop can have a real, non-null `scheduledArrival`/
+ * `scheduledDeparture` -- a genuine booked calling point -- whose name/CRS
+ * simply failed to resolve server-side (the Vauxhall/Northampton class of
+ * gap `journeyStopLabel`'s own doc comment below describes). That row is
+ * real and must still render, with the "Stop N" fallback label, exactly as
+ * today. Only a stop with NEITHER an identity NOR any booked time at all
+ * (`crs`, `scheduledArrival`, AND `scheduledDeparture` all `null`) is the
+ * reliable "never a real calling point a passenger would recognize"
+ * signal -- a genuine timing point like the three above has no booked
+ * public time in the raw CIF data to begin with, so this can never
+ * misfire against a stop whose booked time is merely still pending overlay
+ * (that field is populated straight from the schedule, not live data).
+ *
+ * Applied ONCE, in `TrainJourney.tsx`, to filter `state.journeyStops`
+ * before it's handed down to `JourneyProgress` and `JourneyTimeline` --
+ * never reimplemented inside either of those components independently --
+ * so the two views can never disagree about which stops exist, or about
+ * their indices/counts/positions. */
+export function isGenuineCallingPoint(stop: JourneyStop): boolean {
+  return stop.crs !== null || stop.scheduledArrival !== null || stop.scheduledDeparture !== null;
+}
+
 /** The calling-point display name for a `JourneyStop` if one can be
  * resolved without falling back to a generic by-index placeholder --
  * `null` means "nothing to show here", which is exactly the signal

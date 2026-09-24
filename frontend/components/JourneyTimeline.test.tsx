@@ -1,7 +1,7 @@
 import { screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { renderWithMantine } from '@/test/render';
-import { JourneyTimeline } from './JourneyTimeline';
+import { JourneyTimeline, isGenuineCallingPoint } from './JourneyTimeline';
 import type { JourneyStop } from '@/lib/types';
 
 function stop(overrides: Partial<JourneyStop>): JourneyStop {
@@ -27,6 +27,46 @@ function stop(overrides: Partial<JourneyStop>): JourneyStop {
     ...overrides,
   };
 }
+
+// Real bug report, 2026-09-24: train `L81634` served three `journeyStops`
+// with `crs: null, name: null, scheduledArrival: null, scheduledDeparture:
+// null` for genuine non-station junctions (`HCRTJN`, `BRLANJN`, `WATRLWC`)
+// -- no identity AND no booked time at all, confirmed unresolvable rather
+// than a name/CRS join gap. `isGenuineCallingPoint` is the shared predicate
+// `TrainJourney.tsx` filters `journeyStops` through, ONCE, before handing
+// the result to both `JourneyProgress` and `JourneyTimeline` -- these cases
+// pin its exact boundary so neither component needs (or risks
+// reimplementing) this logic itself.
+describe('isGenuineCallingPoint', () => {
+  it('is false for a stop with no identity and no booked time at all (a genuine junction pass)', () => {
+    expect(
+      isGenuineCallingPoint(
+        stop({ crs: null, name: null, scheduledArrival: null, scheduledDeparture: null }),
+      ),
+    ).toBe(false);
+  });
+
+  it('is true for a stop with a real booked time even when its name/CRS never resolved (a join-failure gap, still a real row)', () => {
+    expect(
+      isGenuineCallingPoint(
+        stop({ crs: null, name: null, scheduledArrival: '2026-09-24T08:00:00Z', scheduledDeparture: null }),
+      ),
+    ).toBe(true);
+    expect(
+      isGenuineCallingPoint(
+        stop({ crs: null, name: null, scheduledArrival: null, scheduledDeparture: '2026-09-24T08:00:00Z' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('is true for a stop with a resolved identity even when it has no booked time', () => {
+    expect(
+      isGenuineCallingPoint(
+        stop({ crs: 'RDG', name: 'Reading', scheduledArrival: null, scheduledDeparture: null }),
+      ),
+    ).toBe(true);
+  });
+});
 
 describe('JourneyTimeline', () => {
   it('renders a station name for every stop, in order', () => {
