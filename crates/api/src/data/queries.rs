@@ -753,7 +753,7 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
         .collect())
 }
 
-/// Every `stanox_crs` row for one CRS -- the "which TIPLOCs does this
+/// Every TIPLOC->CRS row for one CRS -- the "which TIPLOCs does this
 /// station's code cover" lookup Decision 3 step 3 of
 /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md
 /// calls for (`list_stanox_crs`'s existing `WHERE`-less shape returns
@@ -763,13 +763,35 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
 /// case-normalized at write time (`validate_pin` doesn't uppercase it),
 /// so a case-insensitive compare here is load-bearing, not defensive
 /// tidiness.
+///
+/// As of docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md
+/// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs`,
+/// preferring a `tiploc_crs` row when the SAME TIPLOC appears in both
+/// (`DISTINCT ON (tiploc) ... ORDER BY tiploc, priority`, `tiploc_crs` at
+/// priority 1). Every TIPLOC this function used to return from
+/// `stanox_crs` alone still comes back unchanged (no existing caller or
+/// fixture loses anything); a TIPLOC that exists ONLY in `tiploc_crs` --
+/// e.g. Vauxhall's `VAUXHLM`/`VAUXHLW` or Clapham Junction's
+/// `CLPHMJM`/`CLPHMJW`, both previously collapsed to one row per STANOX
+/// by `stanox_crs`'s `PRIMARY KEY (stanox)` -- now ALSO comes back, which
+/// it could not before this plan (see `journey.rs`'s `tiploc_key` doc
+/// comment). The return type stays `Vec<common::StanoxCrsRecord>`: this is
+/// a generic "which rows cover this CRS" lookup, and `StanoxCrsRecord`'s
+/// shape already has every field a `tiploc_crs` row also has.
 pub async fn list_stanox_crs_for_crs(
     pool: &PgPool,
     crs: &str,
 ) -> Result<Vec<common::StanoxCrsRecord>> {
     let rows = sqlx::query_as::<_, StanoxCrsRow>(
-        "SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes FROM stanox_crs \
-         WHERE UPPER(crs) = UPPER($1)",
+        "SELECT DISTINCT ON (tiploc) tiploc, crs, station_name, stanox, source_sequence, change_time_minutes \
+         FROM ( \
+             SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 1 AS priority \
+             FROM tiploc_crs WHERE UPPER(crs) = UPPER($1) \
+             UNION ALL \
+             SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 2 AS priority \
+             FROM stanox_crs WHERE UPPER(crs) = UPPER($1) \
+         ) merged \
+         ORDER BY tiploc, priority",
     )
     .bind(crs)
     .fetch_all(pool)
@@ -778,6 +800,92 @@ pub async fn list_stanox_crs_for_crs(
     Ok(rows
         .into_iter()
         .map(common::StanoxCrsRecord::from)
+        .collect())
+}
+
+/// Upserts a batch of directly-resolved TIPLOC->CRS rows into the
+/// TIPLOC-primary `tiploc_crs` table -- the sibling of `upsert_stanox_crs`
+/// above, modeled on it directly (same transaction-per-batch shape, same
+/// `ON CONFLICT (tiploc) DO UPDATE SET ...` pattern for every column
+/// except `tiploc`/`updated_at`). Every daily delivery is a full refresh,
+/// same as `stanox_crs` (see this table's migration comment), so this is
+/// always a complete-table upsert-by-`tiploc`, never a delta. See
+/// `common::TiplocCrsRecord`'s own doc comment for why this table keeps
+/// EVERY TIPLOC as its own row rather than `stanox_crs`'s
+/// one-row-per-STANOX disambiguation.
+pub async fn upsert_tiploc_crs(pool: &PgPool, records: &[common::TiplocCrsRecord]) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+
+    for record in records {
+        sqlx::query(
+            r#"
+            INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            ON CONFLICT (tiploc) DO UPDATE SET
+                crs                  = EXCLUDED.crs,
+                station_name         = EXCLUDED.station_name,
+                stanox               = EXCLUDED.stanox,
+                source_sequence      = EXCLUDED.source_sequence,
+                change_time_minutes  = EXCLUDED.change_time_minutes,
+                updated_at           = NOW()
+            "#,
+        )
+        .bind(&record.tiploc)
+        .bind(&record.crs)
+        .bind(&record.station_name)
+        .bind(&record.stanox)
+        .bind(record.source_sequence)
+        .bind(record.change_time_minutes)
+        .execute(&mut *tx)
+        .await?;
+
+        count += 1;
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Row shape for `list_tiploc_crs`'s `SELECT` -- a dedicated `FromRow`
+/// struct, mirroring `StanoxCrsRow`'s own convention directly above.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct TiplocCrsRow {
+    tiploc: String,
+    crs: String,
+    station_name: String,
+    stanox: String,
+    source_sequence: i32,
+    change_time_minutes: Option<i32>,
+}
+
+impl From<TiplocCrsRow> for common::TiplocCrsRecord {
+    fn from(row: TiplocCrsRow) -> Self {
+        common::TiplocCrsRecord {
+            tiploc: row.tiploc,
+            crs: row.crs,
+            station_name: row.station_name,
+            stanox: row.stanox,
+            source_sequence: row.source_sequence,
+            change_time_minutes: row.change_time_minutes,
+        }
+    }
+}
+
+/// The full current `tiploc_crs` table, ordered by `tiploc` for a stable,
+/// reviewable response shape -- mirrors `list_stanox_crs`'s own shape.
+/// Task 3's `trip_planning.rs` reads this to build its TIPLOC->CRS
+/// resolution alongside `stanox_crs`.
+pub async fn list_tiploc_crs(pool: &PgPool) -> Result<Vec<common::TiplocCrsRecord>> {
+    let rows = sqlx::query_as::<_, TiplocCrsRow>(
+        "SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes FROM tiploc_crs ORDER BY tiploc",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(common::TiplocCrsRecord::from)
         .collect())
 }
 
@@ -900,12 +1008,32 @@ impl From<FixedLinkRow> for common::FixedLinkRecord {
 /// the pair disagree on anything exotic. (Case folding is still done
 /// SQL-side here and Rust-side in the batch; both are ASCII-identical for
 /// a TIPLOC, so that asymmetry is cosmetic rather than a second trap.)
+///
+/// As of docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md
+/// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs`,
+/// deterministically preferring a `tiploc_crs` row when the SAME TIPLOC
+/// exists in both tables with DIFFERENT CRS values (a real possible
+/// transient state across delivery cycles) -- same `priority` pattern
+/// `list_stanox_crs_for_crs` established (`tiploc_crs` at priority 1,
+/// `stanox_crs` at priority 2, `ORDER BY priority` before `LIMIT 1`). A
+/// TIPLOC present in `stanox_crs` but not yet in `tiploc_crs` still
+/// resolves exactly as before; a TIPLOC present ONLY in `tiploc_crs` --
+/// e.g. Vauxhall's/Clapham Junction's previously-dropped sibling TIPLOC --
+/// now ALSO resolves, which it could not before this plan.
 pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT crs FROM stanox_crs WHERE UPPER(TRIM(tiploc)) = UPPER($1) LIMIT 1")
-            .bind(tiploc.trim())
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT crs FROM ( \
+             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs \
+             UNION ALL \
+             SELECT tiploc, crs, 2 AS priority FROM stanox_crs \
+         ) merged \
+         WHERE UPPER(TRIM(tiploc)) = UPPER($1) \
+         ORDER BY priority \
+         LIMIT 1",
+    )
+    .bind(tiploc.trim())
+    .fetch_optional(pool)
+    .await?;
     Ok(row.map(|(crs,)| crs))
 }
 
@@ -917,9 +1045,19 @@ pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String
 /// `UPPER(TRIM(tiploc))` -- see `crs_for_tiploc`'s own doc comment for why
 /// the `TRIM` is load-bearing rather than cosmetic, and
 /// `journey::tiploc_key` for the matching Rust-side key a caller's `get`
-/// has to build. A TIPLOC with no `stanox_crs` row is simply absent from
-/// the map (degrade, don't fabricate -- same posture `crs_for_tiploc`
+/// has to build. A TIPLOC with no row in either table is simply absent
+/// from the map (degrade, don't fabricate -- same posture `crs_for_tiploc`
 /// already has for a single lookup).
+///
+/// As of docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md
+/// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs`,
+/// deterministically preferring a `tiploc_crs` row when the SAME TIPLOC
+/// exists in both tables with DIFFERENT CRS values -- see `crs_for_tiploc`
+/// above for why that matters and the `priority` pattern both share.
+/// `DISTINCT ON (UPPER(TRIM(tiploc)))` with `ORDER BY UPPER(TRIM(tiploc)),
+/// priority` picks the `tiploc_crs` row (priority 1) first per TIPLOC
+/// before `.collect()` builds the map, so the result no longer depends on
+/// unspecified `UNION` row order.
 pub async fn crs_for_tiplocs_batch(
     pool: &PgPool,
     tiplocs: &[String],
@@ -929,8 +1067,13 @@ pub async fn crs_for_tiplocs_batch(
     }
     let upper: Vec<String> = tiplocs.iter().map(|t| t.trim().to_uppercase()).collect();
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT UPPER(TRIM(tiploc)), UPPER(crs) FROM stanox_crs \
-         WHERE UPPER(TRIM(tiploc)) = ANY($1)",
+        "SELECT DISTINCT ON (UPPER(TRIM(tiploc))) UPPER(TRIM(tiploc)), UPPER(crs) FROM ( \
+             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs \
+             UNION ALL \
+             SELECT tiploc, crs, 2 AS priority FROM stanox_crs \
+         ) merged \
+         WHERE UPPER(TRIM(tiploc)) = ANY($1) \
+         ORDER BY UPPER(TRIM(tiploc)), priority",
     )
     .bind(&upper)
     .fetch_all(pool)
@@ -5543,6 +5686,159 @@ mod stanox_crs_lookup_query_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    /// The actual end-to-end proof of Task 3 of
+    /// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md's
+    /// union-read fix: seeds ONLY `tiploc_crs` (via `upsert_tiploc_crs`,
+    /// never touching `stanox_crs` at all) with Vauxhall's two real
+    /// TIPLOCs, both sharing one STANOX and CRS -- exactly the shape
+    /// `stanox_crs`'s `PRIMARY KEY (stanox)` could never have represented
+    /// simultaneously. Both `crs_for_tiplocs_batch` and
+    /// `list_stanox_crs_for_crs` must resolve BOTH TIPLOCs even though
+    /// neither ever queries `tiploc_crs` alone in this codebase -- proving
+    /// the union SQL actually reads the new table, not just the old one.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                both_of_vauxhalls_tiplocs_resolve_through_the_union_when_seeded_only_in_tiploc_crs \
+                -- --ignored --test-threads=1`"]
+    async fn both_of_vauxhalls_tiplocs_resolve_through_the_union_when_seeded_only_in_tiploc_crs() {
+        let pool = test_pool().await;
+        upsert_tiploc_crs(
+            &pool,
+            &[
+                common::TiplocCrsRecord {
+                    tiploc: "TEST-VAUXHLM".to_string(),
+                    crs: "VXH".to_string(),
+                    station_name: "VAUXHALL".to_string(),
+                    stanox: "TEST-VXH-STANOX".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+                common::TiplocCrsRecord {
+                    tiploc: "TEST-VAUXHLW".to_string(),
+                    crs: "VXH".to_string(),
+                    station_name: "VAUXHALL".to_string(),
+                    stanox: "TEST-VXH-STANOX".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed tiploc_crs (stanox_crs is deliberately left untouched)");
+
+        let batch = crs_for_tiplocs_batch(
+            &pool,
+            &["TEST-VAUXHLM".to_string(), "TEST-VAUXHLW".to_string()],
+        )
+        .await
+        .expect("crs_for_tiplocs_batch");
+        assert_eq!(
+            batch.get("TEST-VAUXHLM"),
+            Some(&"VXH".to_string()),
+            "TEST-VAUXHLM exists only in tiploc_crs -- must still resolve via the union"
+        );
+        assert_eq!(
+            batch.get("TEST-VAUXHLW"),
+            Some(&"VXH".to_string()),
+            "TEST-VAUXHLW exists only in tiploc_crs -- must still resolve via the union"
+        );
+
+        let for_crs = list_stanox_crs_for_crs(&pool, "VXH")
+            .await
+            .expect("list_stanox_crs_for_crs");
+        assert!(
+            for_crs.iter().any(|r| r.tiploc == "TEST-VAUXHLM"),
+            "TEST-VAUXHLM must be present in list_stanox_crs_for_crs('VXH')"
+        );
+        assert!(
+            for_crs.iter().any(|r| r.tiploc == "TEST-VAUXHLW"),
+            "TEST-VAUXHLW must be present in list_stanox_crs_for_crs('VXH')"
+        );
+
+        sqlx::query("DELETE FROM tiploc_crs WHERE tiploc IN ('TEST-VAUXHLM', 'TEST-VAUXHLW')")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+}
+
+/// DB-gated tests for `upsert_tiploc_crs`/`list_tiploc_crs` (Task 2 of
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md). Same
+/// shape/doc-comment convention as `stanox_crs_lookup_query_tests` above.
+#[cfg(test)]
+mod tiploc_crs_query_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back -- --ignored`"]
+    async fn two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back() {
+        // The direct DB-level proof this plan's whole point (two TIPLOCs,
+        // one STANOX, both persisted) actually works against a real
+        // schema -- independent of the `stanox_crs` table entirely, which
+        // would only ever keep one of these two rows under its own
+        // STANOX-keyed disambiguation. See `common::TiplocCrsRecord`'s own
+        // doc comment.
+        let pool = test_pool().await;
+
+        upsert_tiploc_crs(
+            &pool,
+            &[
+                common::TiplocCrsRecord {
+                    tiploc: "TEST-VAUXHLM".to_string(),
+                    crs: "VXH".to_string(),
+                    station_name: "VAUXHALL".to_string(),
+                    stanox: "TEST-87214".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+                common::TiplocCrsRecord {
+                    tiploc: "TEST-VAUXHLW".to_string(),
+                    crs: "VXH".to_string(),
+                    station_name: "VAUXHALL".to_string(),
+                    stanox: "TEST-87214".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed tiploc_crs");
+
+        let rows = list_tiploc_crs(&pool).await.expect("list_tiploc_crs");
+        let vauxhlm = rows.iter().find(|r| r.tiploc == "TEST-VAUXHLM");
+        let vauxhlw = rows.iter().find(|r| r.tiploc == "TEST-VAUXHLW");
+        assert!(
+            vauxhlm.is_some(),
+            "TEST-VAUXHLM should be present alongside TEST-VAUXHLW, both sharing STANOX TEST-87214"
+        );
+        assert!(
+            vauxhlw.is_some(),
+            "TEST-VAUXHLW should be present alongside TEST-VAUXHLM, both sharing STANOX TEST-87214"
+        );
+        assert_eq!(vauxhlm.unwrap().crs, "VXH");
+        assert_eq!(vauxhlm.unwrap().stanox, "TEST-87214");
+        assert_eq!(vauxhlw.unwrap().crs, "VXH");
+        assert_eq!(vauxhlw.unwrap().stanox, "TEST-87214");
+
+        sqlx::query("DELETE FROM tiploc_crs WHERE tiploc IN ('TEST-VAUXHLM', 'TEST-VAUXHLW')")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }
 

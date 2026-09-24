@@ -96,12 +96,27 @@ struct FixedLinkRow {
     days_mask: String,
 }
 
-/// Builds [`InterchangeData`] from the whole current `stanox_crs` and
-/// `fixed_links` tables (Phase 1) -- both are small (~3,100 and ~4,222 rows
-/// respectively, per this plan's own header), so a full-table read on every
-/// trip-planning query is the same cost class as the existing per-request
-/// reference-data reads this app already does elsewhere (e.g.
-/// `queries::list_stanox_crs`), not a new performance concern.
+/// Builds [`InterchangeData`] from the whole current `stanox_crs`,
+/// `tiploc_crs`, and `fixed_links` tables (Phase 1's `stanox_crs`/
+/// `fixed_links` reads, plus `tiploc_crs` added by Task 3 of
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) -- all
+/// small tables, so a full-table read on every trip-planning query is the
+/// same cost class as the existing per-request reference-data reads this
+/// app already does elsewhere (e.g. `queries::list_stanox_crs`), not a new
+/// performance concern.
+///
+/// `tiploc_crs` is read in a SECOND pass, after the `stanox_crs` pass
+/// below, so a `tiploc_crs` row naturally overrides/adds to whatever the
+/// `stanox_crs` pass already populated for that TIPLOC on `insert`
+/// (`change_time_by_tiploc`, `tiploc_to_crs`) -- same union-read posture as
+/// `queries::crs_for_tiploc`/`crs_for_tiplocs_batch`/
+/// `list_stanox_crs_for_crs`, which prefer a `tiploc_crs` row when a
+/// TIPLOC exists in both tables. `crs_to_tiplocs`'s existing
+/// dedup-by-`contains` guard already prevents duplicate entries regardless
+/// of which pass runs first. A TIPLOC that exists ONLY in `tiploc_crs` --
+/// e.g. Vauxhall's/Clapham Junction's previously-dropped sibling TIPLOC --
+/// now also populates every one of these maps, which it could not before
+/// this plan (see `journey.rs`'s `tiploc_key` doc comment).
 pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
     let stanox_rows = crate::data::queries::list_stanox_crs(pool).await?;
     let mut change_time_by_tiploc = HashMap::new();
@@ -120,6 +135,18 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
         // otherwise return the same sibling more than once). This table is
         // small (~3,100 rows total), so an O(n) `contains` check per push
         // is fine.
+        let siblings = crs_to_tiplocs.entry(row.crs.clone()).or_default();
+        if !siblings.contains(&row.tiploc) {
+            siblings.push(row.tiploc.clone());
+        }
+    }
+
+    let tiploc_crs_rows = crate::data::queries::list_tiploc_crs(pool).await?;
+    for row in &tiploc_crs_rows {
+        if let Some(minutes) = row.change_time_minutes {
+            change_time_by_tiploc.insert(row.tiploc.clone(), minutes);
+        }
+        tiploc_to_crs.insert(row.tiploc.clone(), row.crs.clone());
         let siblings = crs_to_tiplocs.entry(row.crs.clone()).or_default();
         if !siblings.contains(&row.tiploc) {
             siblings.push(row.tiploc.clone());

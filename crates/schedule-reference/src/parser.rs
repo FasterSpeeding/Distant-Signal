@@ -280,6 +280,90 @@ pub fn resolve(
     rows
 }
 
+/// One directly-resolved TIPLOC->CRS row -- the TIPLOC-primary output
+/// `resolve_tiploc_crs` produces. Same fields `ParsedRow` carries, minus
+/// `stanox`'s role as a grouping key (it is still carried through, just
+/// never grouped/deduplicated on).
+///
+/// Wired into `main.rs`'s `poll_once` by this plan's Task 4 (the `POST
+/// /private/tiploc-crs` publish and the `tiploc_to_crs` map-construction
+/// sites) -- see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TiplocCrsRow {
+    pub tiploc: String,
+    pub crs: String,
+    pub station_name: String,
+    pub stanox: String,
+    pub change_time_minutes: Option<i32>,
+}
+
+/// Resolves a TIPLOC-PRIMARY CRS crosswalk: every `TI` record whose own CRS
+/// is populated, or whose blank CRS is completed from `msn_crs_by_tiploc`
+/// for that SAME TIPLOC (identical per-TIPLOC completion `resolve` already
+/// does), becomes its own row -- with NO STANOX-based grouping,
+/// tiebreaking, or exclusion step of any kind. This is deliberate, not a
+/// simplification that drops a needed safeguard: see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md's
+/// "Investigation finding" section for why a STANOX-inheritance policy is
+/// NOT needed here, and why this cannot wrongly promote a same-STANOX
+/// junction TIPLOC (case 2 of `crates/api/src/data/journey.rs`'s
+/// `tiploc_key` doc comment) to a real station's identity: a junction
+/// TIPLOC with neither its own `TI` CRS nor its own `MSN` record simply
+/// produces no row here, exactly as it produces none in `resolve`.
+///
+/// Real example this exists to fix: Vauxhall's `VAUXHLM`/`VAUXHLW` (STANOX
+/// `87214`, both CRS `VXH`) and Clapham Junction's `CLPHMJM`/`CLPHMJW`
+/// (STANOX `87219`, both CRS `CLJ`) each get their own row here, unlike
+/// `resolve`, which keeps only one TIPLOC per STANOX.
+///
+/// Unlike `resolve`, this function does NOT filter out X-prefixed
+/// pseudo-CRS candidates in favor of a sole non-X-prefixed one, so a TIPLOC
+/// whose only resolvable CRS is X-prefixed (e.g. real STANOX 87201's
+/// `VICTRCR`/`XVR`, documented in reference-data/stanox-crs.md:100-113) now
+/// gets its own `tiploc_crs` row where it previously had none via
+/// `stanox_crs` -- not a new user-facing bug, since `journey.rs`'s
+/// `an_x_prefixed_pseudo_crs_is_blanked_rather_than_displayed_as_a_real_station`
+/// test/mechanism already exists specifically to blank such values back out
+/// at render time, but worth documenting explicitly here.
+pub fn resolve_tiploc_crs(
+    ti: &[TiRecord],
+    msn_crs_by_tiploc: &HashMap<String, String>,
+    msn_change_time_by_tiploc: &HashMap<String, i32>,
+) -> Vec<TiplocCrsRow> {
+    // `by_tiploc: HashMap` rather than pushing straight into a `Vec` guards
+    // against two `TI` lines for the same TIPLOC in a malformed delivery --
+    // last-one-wins, matching this module's existing "skip/degrade malformed
+    // input, never hard-error" posture elsewhere in this same file.
+    let mut by_tiploc: HashMap<String, TiplocCrsRow> = HashMap::new();
+
+    for record in ti {
+        let Some(stanox) = &record.stanox else {
+            continue;
+        };
+        let crs = record
+            .crs
+            .clone()
+            .or_else(|| msn_crs_by_tiploc.get(&record.tiploc).cloned());
+        let Some(crs) = crs else { continue };
+
+        by_tiploc.insert(
+            record.tiploc.clone(),
+            TiplocCrsRow {
+                tiploc: record.tiploc.clone(),
+                crs,
+                station_name: record.station_name.clone(),
+                stanox: stanox.clone(),
+                change_time_minutes: msn_change_time_by_tiploc.get(&record.tiploc).copied(),
+            },
+        );
+    }
+
+    let mut rows: Vec<TiplocCrsRow> = by_tiploc.into_values().collect();
+    rows.sort_by(|a, b| a.tiploc.cmp(&b.tiploc));
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +673,166 @@ mod resolve_tests {
             );
         }
         assert_eq!(rows.len(), 9);
+    }
+}
+
+#[cfg(test)]
+mod resolve_tiploc_crs_tests {
+    use super::*;
+
+    // Duplicated from resolve_tests::ti (rather than making that helper
+    // pub(super) and importing it) to keep this task's diff additive-only:
+    // resolve_tests and every other existing test in this file stays
+    // byte-for-byte unmodified. Same 6-line shape, same convention (blank
+    // stanox/crs strings map to None).
+    fn ti(tiploc: &str, name: &str, stanox: &str, crs: &str) -> TiRecord {
+        TiRecord {
+            tiploc: tiploc.to_string(),
+            station_name: name.to_string(),
+            stanox: if stanox.is_empty() {
+                None
+            } else {
+                Some(stanox.to_string())
+            },
+            crs: if crs.is_empty() {
+                None
+            } else {
+                Some(crs.to_string())
+            },
+        }
+    }
+
+    #[test]
+    fn vauxhall_both_real_tiplocs_resolve_to_the_same_real_crs_when_both_ti_records_carry_it_directly()
+     {
+        // Core regression test for this plan's whole point. Vauxhall's two
+        // real TIPLOCs (STANOX 87214, both CRS VXH -- see
+        // reference-data/stanox-crs.csv line "87214,VXH") each carry their
+        // own CRS directly on their own TI record.
+        let ti_records = vec![
+            ti("VAUXHLM", "VAUXHALL", "87214", "VXH"),
+            ti("VAUXHLW", "VAUXHALL", "87214", "VXH"),
+        ];
+
+        let rows = resolve_tiploc_crs(&ti_records, &HashMap::new(), &HashMap::new());
+        assert_eq!(rows.len(), 2, "one row per TIPLOC, not per STANOX");
+        assert_eq!(rows[0].crs, "VXH");
+        assert_eq!(rows[1].crs, "VXH");
+
+        // Explicit contrast: `resolve` (existing, unchanged) on this SAME
+        // input keeps only ONE TIPLOC per STANOX -- this is the exact
+        // information loss this plan's tiploc_crs crosswalk exists to fix.
+        // This assertion fails loudly if a future change to `resolve`
+        // itself ever accidentally "fixes" this the wrong way (i.e. inside
+        // `resolve` rather than via this new, separate crosswalk).
+        assert_eq!(
+            resolve(&ti_records, &HashMap::new(), &HashMap::new()).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn vauxhall_windsor_lines_still_resolves_when_its_own_ti_crs_is_blank_and_only_msn_completes_it()
+     {
+        // Same two real Vauxhall TIPLOCs, but VAUXHLW's own TI CRS is blank
+        // here, completed only via its own MSN A record instead -- proves
+        // the fix works whichever of the two real completion paths turns
+        // out to be true for this TIPLOC in a live delivery (this plan's
+        // Context section explains why that was not independently
+        // re-verified byte-for-byte in this pass).
+        let ti_records = vec![
+            ti("VAUXHLM", "VAUXHALL", "87214", "VXH"),
+            ti("VAUXHLW", "VAUXHALL", "87214", ""),
+        ];
+        let msn_crs_by_tiploc = HashMap::from([("VAUXHLW".to_string(), "VXH".to_string())]);
+
+        let rows = resolve_tiploc_crs(&ti_records, &msn_crs_by_tiploc, &HashMap::new());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].crs, "VXH");
+        assert_eq!(rows[1].crs, "VXH");
+    }
+
+    #[test]
+    fn clapham_junction_both_real_tiplocs_resolve_to_the_same_real_crs() {
+        // Same shape as the Vauxhall case above, for Clapham Junction's two
+        // real TIPLOCs (STANOX 87219, both CRS CLJ -- see
+        // reference-data/stanox-crs.csv line "87219,CLJ").
+        let ti_records = vec![
+            ti("CLPHMJM", "CLAPHAM JUNCTION", "87219", "CLJ"),
+            ti("CLPHMJW", "CLAPHAM JUNCTION", "87219", "CLJ"),
+        ];
+
+        let rows = resolve_tiploc_crs(&ti_records, &HashMap::new(), &HashMap::new());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].crs, "CLJ");
+        assert_eq!(rows[1].crs, "CLJ");
+    }
+
+    #[test]
+    fn a_junction_tiploc_sharing_a_stations_stanox_with_no_own_crs_anywhere_still_does_not_resolve()
+    {
+        // Proves no accidental STANOX-inheritance -- the exact worry
+        // `crates/api/src/data/journey.rs`'s `tiploc_key` doc comment names
+        // by example (a Waterloo-area junction TIPLOC wrongly inheriting
+        // Waterloo's own CRS). WATRLWC shares STANOX 87212 with real
+        // station WATRLMN, but has neither its own TI CRS nor a matching
+        // MSN record, so it must simply not resolve -- not default to
+        // WATRLMN's WAT.
+        let ti_records = vec![
+            ti("WATRLMN", "LONDON WATERLOO", "87212", "WAT"),
+            ti("WATRLWC", "WATERLOO WINDSOR JN", "87212", ""),
+        ];
+
+        let rows = resolve_tiploc_crs(&ti_records, &HashMap::new(), &HashMap::new());
+        assert_eq!(
+            rows.len(),
+            1,
+            "WATRLWC must be absent, not defaulted to WAT"
+        );
+        assert_eq!(rows[0].tiploc, "WATRLMN");
+        assert_eq!(rows[0].crs, "WAT");
+    }
+
+    #[test]
+    fn ambiguous_stanox_with_two_genuine_non_x_candidates_now_resolves_both_instead_of_neither() {
+        // The real, currently-excluded `resolve` case (STANOX 89428: ASHFKI
+        // /ASI vs ASHFKY/AFK, both real, distinct, bookable stations --
+        // copied from
+        // resolve_tests::ambiguous_stanox_with_two_non_x_candidates_is_excluded_entirely).
+        // Explicit, positive contrast: `resolve` on this SAME input still
+        // returns 0 rows (per that existing, unchanged test) because
+        // neither candidate has a principled STANOX-level tiebreaker: this
+        // is a real side benefit of the TIPLOC-primary design, not a
+        // required behavior change to `resolve` itself, since each TIPLOC's
+        // own CRS is directly known and neither needs to borrow the
+        // other's identity.
+        let ti_records = vec![
+            ti("ASHFKI", "ASHFORD INT (PLATS 3-4)", "89428", "ASI"),
+            ti("ASHFKY", "ASHFORD INTERNATIONAL", "89428", "AFK"),
+        ];
+
+        let rows = resolve_tiploc_crs(&ti_records, &HashMap::new(), &HashMap::new());
+        assert_eq!(rows.len(), 2);
+        // Rows are sorted by tiploc: "ASHFKI" < "ASHFKY".
+        assert_eq!(rows[0].tiploc, "ASHFKI");
+        assert_eq!(rows[0].crs, "ASI");
+        assert_eq!(rows[1].tiploc, "ASHFKY");
+        assert_eq!(rows[1].crs, "AFK");
+
+        assert_eq!(
+            resolve(&ti_records, &HashMap::new(), &HashMap::new()).len(),
+            0,
+            "resolve itself is unchanged: 89428 stays excluded there"
+        );
+    }
+
+    #[test]
+    fn a_tiploc_with_no_stanox_at_all_still_does_not_resolve() {
+        // Matches `resolve`'s existing guard, carried over unchanged: a
+        // blank STANOX maps to None per `ti()`'s own mapping, so the record
+        // is skipped before CRS resolution is even attempted.
+        let ti_records = vec![ti("FOO", "n", "", "BAR")];
+        let rows = resolve_tiploc_crs(&ti_records, &HashMap::new(), &HashMap::new());
+        assert!(rows.is_empty());
     }
 }

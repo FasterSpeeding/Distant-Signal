@@ -124,6 +124,7 @@ async fn poll_once(
     let msn_crs = parser::parse_msn_a_lines(&a_text);
     let msn_change_time = parser::parse_msn_change_time_by_tiploc(&a_text);
     let rows = parser::resolve(&ti_records, &msn_crs, &msn_change_time);
+    let tiploc_rows = parser::resolve_tiploc_crs(&ti_records, &msn_crs, &msn_change_time);
 
     tracing::info!(
         delivery = %delivery.dir_name,
@@ -170,6 +171,40 @@ async fn poll_once(
     // computed in-memory table is discarded and rebuilt... next cycle".
     *last_processed_delivery = Some(delivery.dir_name.clone());
 
+    // `tiploc_crs` (Task 4 of
+    // docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) is a
+    // strict superset of `stanox_crs` used for defense-in-depth, not the
+    // record `last_processed_delivery` advances on -- so this publish is
+    // deliberately best-effort, log-and-continue (matching
+    // `publish_fixed_links`'s own posture just below, NOT the stricter
+    // "abort the cycle on failure" posture the `stanox_crs` POST above
+    // has). A failed POST here must never prevent the `stanox_crs`
+    // POST/advance above (already done by this point) or any publish below
+    // it from proceeding.
+    let tiploc_crs_records: Vec<common::TiplocCrsRecord> = tiploc_rows
+        .into_iter()
+        .map(|row| common::TiplocCrsRecord {
+            tiploc: row.tiploc,
+            crs: row.crs,
+            station_name: row.station_name,
+            stanox: row.stanox,
+            source_sequence,
+            change_time_minutes: row.change_time_minutes,
+        })
+        .collect();
+
+    if let Err(err) = common::ingest::post_batch(
+        client,
+        &config.tiploc_crs_url,
+        internal_oauth,
+        &tiploc_crs_records,
+        "tiploc/crs rows",
+    )
+    .await
+    {
+        tracing::error!(error = ?err, "failed to publish tiploc/crs rows; will retry next cycle");
+    }
+
     if let Some(alf_path) = &delivery.alf_path {
         publish_fixed_links(client, config, alf_path, internal_oauth, source_sequence).await;
     } else {
@@ -180,8 +215,15 @@ async fn poll_once(
         );
     }
 
-    publish_cif_derived_products(client, config, &delivery.mca_path, internal_oauth, &records)
-        .await;
+    publish_cif_derived_products(
+        client,
+        config,
+        &delivery.mca_path,
+        internal_oauth,
+        &records,
+        &tiploc_crs_records,
+    )
+    .await;
 
     Ok(())
 }
@@ -412,12 +454,24 @@ static UNRESOLVED_TIPLOC_LOG: std::sync::LazyLock<common::log_once::LogOnceSet> 
 /// as long as this process stays up -- without the dedup, a station whose
 /// gap is already known and simply not yet fixed would re-log every single
 /// delivery, forever.
+///
+/// As of this plan's Task 4, this takes `tiploc_crs_records` (the richer,
+/// TIPLOC-primary crosswalk, see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) rather
+/// than `stanox_crs_records`: either source is a valid choice here (both
+/// are supersets of what this function actually needs, a plain
+/// TIPLOC->CRS map), but `tiploc_crs_records` is the more consistent
+/// choice since `publish_schedule_network_departures`/
+/// `publish_schedule_destination_departures` (this same file) already
+/// switched to it for their own `tiploc_to_crs` maps -- this function now
+/// sees the SAME superset those two do, rather than the narrower,
+/// STANOX-truncated one.
 fn log_new_unresolved_booked_tiplocs(
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
-    stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
 ) {
-    let tiploc_to_crs: std::collections::HashMap<String, String> = stanox_crs_records
+    let tiploc_to_crs: std::collections::HashMap<String, String> = tiploc_crs_records
         .iter()
         .map(|r| {
             (
@@ -453,12 +507,21 @@ fn log_new_unresolved_booked_tiplocs(
 /// this plan adds. See
 /// docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
 /// Decision 1.
+///
+/// As of this plan's Task 4, this also takes `tiploc_crs_records` (the
+/// richer, TIPLOC-primary crosswalk `parser::resolve_tiploc_crs` produces,
+/// see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) --
+/// `stanox_crs_records` stays as a parameter too (unchanged, still used by
+/// `publish_schedule_line_population`'s `crs_to_tiploc_map` inversion,
+/// which is out of this task's scope) rather than being removed.
 async fn publish_cif_derived_products(
     client: &Client,
     config: &Config,
     mca_path: &std::path::Path,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
     stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
 ) {
     let mca_schedule_text = match read_prefixed_lines_multi(
         mca_path,
@@ -481,7 +544,7 @@ async fn publish_cif_derived_products(
     // population, not this publish step.
     let today = chrono::Utc::now().date_naive();
 
-    log_new_unresolved_booked_tiplocs(&index, today, stanox_crs_records);
+    log_new_unresolved_booked_tiplocs(&index, today, tiploc_crs_records);
 
     publish_schedule_line_population(
         client,
@@ -497,7 +560,7 @@ async fn publish_cif_derived_products(
         config,
         &index,
         today,
-        stanox_crs_records,
+        tiploc_crs_records,
         internal_oauth,
     )
     .await;
@@ -523,7 +586,7 @@ async fn publish_cif_derived_products(
             config,
             &index,
             date,
-            stanox_crs_records,
+            tiploc_crs_records,
             internal_oauth,
         )
         .await;
@@ -638,15 +701,23 @@ const MAX_DEPARTURES_PER_STATION: usize = 10; // mirrors poller-ldbws's own
 // num_rows=10 default,
 // crates/poller-ldbws/src/config.rs:45-46
 
+/// As of this plan's Task 4, `tiploc_to_crs` (below) is built from
+/// `tiploc_crs_records` (the richer, TIPLOC-primary crosswalk
+/// `parser::resolve_tiploc_crs` produces) rather than
+/// `stanox_crs_records` -- see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md. This
+/// only changes which real, same-STANOX calling points can now resolve
+/// simultaneously (e.g. Vauxhall's `VAUXHLM`/`VAUXHLW`); the batching,
+/// capping and POST shape described just above are unchanged.
 async fn publish_schedule_network_departures(
     client: &Client,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
-    stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) {
-    let tiploc_to_crs: std::collections::HashMap<String, String> = stanox_crs_records
+    let tiploc_to_crs: std::collections::HashMap<String, String> = tiploc_crs_records
         .iter()
         .map(|r| {
             (
@@ -778,9 +849,13 @@ fn schedule_destination_departures_rows(
 
 /// The destination-keyed sibling of `publish_schedule_network_departures`
 /// directly above: same one-batch-array POST shape, same `tiploc_to_crs`
-/// map built from this cycle's already-resolved `stanox_crs_records`, same
-/// log-and-continue error posture (a failed POST just means this delivery's
-/// grouping is discarded and rebuilt when the next one lands). See
+/// map built from this cycle's already-resolved `tiploc_crs_records` (as
+/// of this plan's Task 4 -- see
+/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md, and
+/// `publish_schedule_network_departures`'s own doc comment for the same
+/// switch), same log-and-continue error posture (a failed POST just means
+/// this delivery's grouping is discarded and rebuilt when the next one
+/// lands). See
 /// docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
 /// Approach B, as revised by
 /// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md,
@@ -817,10 +892,10 @@ async fn publish_schedule_destination_departures(
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
-    stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) {
-    let tiploc_to_crs: std::collections::HashMap<String, String> = stanox_crs_records
+    let tiploc_to_crs: std::collections::HashMap<String, String> = tiploc_crs_records
         .iter()
         .map(|r| {
             (
@@ -1751,6 +1826,7 @@ mod poll_once_tests {
             fixed_links_url: "http://127.0.0.1:1/fixed-links".to_string(),
             schedule_calling_points_full_url: "http://127.0.0.1:1/schedule-calling-points-full"
                 .to_string(),
+            tiploc_crs_url: "http://127.0.0.1:1/tiploc-crs".to_string(),
             schedule_feed_ingests_url: schedule_feed_ingests_url.to_string(),
             lines: common::config::LineCatalogue(vec![]),
             internal_oauth: common::oauth_client::InternalOAuthArgs {
