@@ -339,6 +339,14 @@ pub struct DestinationDeparture {
     /// the same architectural gap `day_offset` above was added to close on
     /// the DEPARTURE side.
     pub destination_arrival_day_offset: u8,
+    /// The schedule's `BX` ATOC Code (see [`BasicSchedule::operator_atoc`]),
+    /// copied verbatim from [`crate::resolve::ResolvedSchedule::operator_atoc`].
+    /// It is computed once per schedule and attached unchanged to every
+    /// entry that schedule contributes -- exactly like `true_origin_crs`
+    /// above, not recomputed per calling point. `None` when the schedule's
+    /// `BX` record is absent or its ATOC Code field was blank (see
+    /// `BasicSchedule::operator_atoc`'s own doc comment).
+    pub operator_atoc: Option<String>,
 }
 
 /// One `BS`(+`BX`)/`LO`/`LI`*/`LT` block, pre-STP-resolution.
@@ -373,6 +381,7 @@ mod tests {
                 is_half_minute_departure: false,
                 day_offset: 0,
             }],
+            operator_atoc: None,
         };
         let entry: LinePopulationEntry = resolved.clone().into();
         assert_eq!(entry.uid, "C11052");
