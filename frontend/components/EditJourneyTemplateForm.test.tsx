@@ -142,6 +142,90 @@ describe('EditJourneyTemplateForm', () => {
     expect(refreshMock).toHaveBeenCalled();
   });
 
+  it('a leg with no time fields at all is valid and PUTs every window bound as null (backend allows a fully-open-window template leg -- see api::data::journey_templates::validate_template_leg)', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    renderWithMantine(
+      <EditJourneyTemplateForm
+        template={template({
+          legs: [
+            {
+              id: 1,
+              originCrs: 'KGX',
+              originName: 'London Kings Cross',
+              destinationCrs: 'EDB',
+              destinationName: 'Edinburgh',
+              departAfter: null,
+              departBefore: null,
+              arriveAfter: null,
+              arriveBefore: null,
+            },
+          ],
+        })}
+      />,
+    );
+
+    // No time field was ever filled in -- origin/destination alone (the
+    // only fields validate_template_leg actually checks) are enough to
+    // enable Save.
+    expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/JourneyTemplates/167',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({
+            customName: 'My commute',
+            legs: [
+              {
+                originCrs: 'KGX',
+                destinationCrs: 'EDB',
+                departWindow: { after: null, before: null },
+                arriveWindow: { after: null, before: null },
+              },
+            ],
+            daysOfWeek: null,
+            active: true,
+            startsOn: null,
+            endsOn: null,
+            defaultMatchMode: 'manual',
+            autoCommitRule: null,
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText('Saved.')).toBeInTheDocument();
+  });
+
+  it('a newly-added leg (all four time fields blank by construction) is valid once origin/destination are filled in, with no time field required', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
+
+    const originFields = screen.getAllByLabelText('Origin CRS');
+    const destinationFields = screen.getAllByLabelText('Destination CRS');
+    fireEvent.change(originFields[1], { target: { value: 'YRK' } });
+    fireEvent.change(destinationFields[1], { target: { value: 'NCL' } });
+
+    expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body.legs[1]).toEqual({
+      originCrs: 'YRK',
+      destinationCrs: 'NCL',
+      departWindow: { after: null, before: null },
+      arriveWindow: { after: null, before: null },
+    });
+  });
+
   it('a 401 shows a login prompt instead of the raw backend error text', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
