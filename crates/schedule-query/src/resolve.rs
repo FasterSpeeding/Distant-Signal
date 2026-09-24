@@ -641,6 +641,7 @@ mod tests {
             date_from: NaiveDate::parse_from_str(from, "%Y-%m-%d").unwrap(),
             date_to: NaiveDate::parse_from_str(to, "%Y-%m-%d").unwrap(),
             days_of_week: days,
+            operator_atoc: None,
         }
     }
 
