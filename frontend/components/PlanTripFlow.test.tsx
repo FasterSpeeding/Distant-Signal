@@ -129,7 +129,9 @@ describe('PlanTripFlow', () => {
       '/api/Journeys',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23' } }),
+        body: JSON.stringify({
+          leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23', originCrs: 'EUS', destinationCrs: 'MKC' },
+        }),
       })
     );
   });
@@ -251,7 +253,9 @@ describe('PlanTripFlow', () => {
       '/api/Journeys',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23' } }),
+        body: JSON.stringify({
+          leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23', originCrs: 'EUS', destinationCrs: 'MKC' },
+        }),
       })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -259,10 +263,86 @@ describe('PlanTripFlow', () => {
       '/api/Journeys/42/legs',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ mode: 'knownTrain', trainUid: 'C22000', serviceDate: '2026-09-23' }),
+        body: JSON.stringify({
+          mode: 'knownTrain',
+          trainUid: 'C22000',
+          serviceDate: '2026-09-23',
+          originCrs: 'MKC',
+          destinationCrs: 'EDB',
+        }),
       })
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends the train leg's own origin/destination, not the segment's, for a leg that boards/alights mid-route", async () => {
+    // The plan's own Birmingham->Glasgow/Crewe->Preston example, made
+    // concrete: a single segment advertised as BHM -> GLC whose one
+    // itinerary's train leg actually boards at Crewe and alights at
+    // Preston (a transfer leg before/after the train leg in a real
+    // itinerary is what would produce this -- irrelevant to this test,
+    // which only needs the train leg's own origin/destination to differ
+    // from the segment's). The committed `knownTrain` request must carry
+    // the LEG's own CRE/PRE, never the segment's BHM/GLC.
+    const midRoutePlan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'BHM',
+          destinationCrs: 'GLC',
+          cappedByMaxChanges: false,
+          itineraries: [
+            {
+              legs: [
+                {
+                  kind: 'train',
+                  trainUid: 'X12345',
+                  serviceDate: '2026-09-23',
+                  originCrs: 'CRE',
+                  destinationCrs: 'PRE',
+                  scheduledDeparture: '10:00:00',
+                  scheduledArrival: '11:15:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 0,
+              totalDurationMinutes: 75,
+            },
+          ],
+        },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(midRoutePlan) } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
+      } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onCreated = vi.fn();
+    renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'BHM' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'GLC' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    await screen.findByText('10:00 CRE → PRE 11:15');
+    const radios = screen.getAllByRole('radio');
+    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(screen.getByText('Track this journey'));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/Journeys',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          leg: { mode: 'knownTrain', trainUid: 'X12345', serviceDate: '2026-09-23', originCrs: 'CRE', destinationCrs: 'PRE' },
+        }),
+      })
+    );
   });
 
   it('reports which leg failed and still hands off the already-created journey when a later leg’s add-leg call throws a network exception', async () => {
