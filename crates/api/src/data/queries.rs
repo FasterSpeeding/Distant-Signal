@@ -1010,22 +1010,25 @@ impl From<FixedLinkRow> for common::FixedLinkRecord {
 /// a TIPLOC, so that asymmetry is cosmetic rather than a second trap.)
 ///
 /// As of docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md
-/// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs` (a
-/// `UNION`, not `UNION ALL` -- duplicate `(tiploc, crs)` pairs collapse,
-/// so a TIPLOC present in both tables with the SAME CRS never produces
-/// ambiguity). A TIPLOC present in `stanox_crs` but not yet in
-/// `tiploc_crs` still resolves exactly as before; a TIPLOC present ONLY in
-/// `tiploc_crs` -- e.g. Vauxhall's/Clapham Junction's previously-dropped
-/// sibling TIPLOC -- now ALSO resolves, which it could not before this
-/// plan.
+/// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs`,
+/// deterministically preferring a `tiploc_crs` row when the SAME TIPLOC
+/// exists in both tables with DIFFERENT CRS values (a real possible
+/// transient state across delivery cycles) -- same `priority` pattern
+/// `list_stanox_crs_for_crs` established (`tiploc_crs` at priority 1,
+/// `stanox_crs` at priority 2, `ORDER BY priority` before `LIMIT 1`). A
+/// TIPLOC present in `stanox_crs` but not yet in `tiploc_crs` still
+/// resolves exactly as before; a TIPLOC present ONLY in `tiploc_crs` --
+/// e.g. Vauxhall's/Clapham Junction's previously-dropped sibling TIPLOC --
+/// now ALSO resolves, which it could not before this plan.
 pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT crs FROM ( \
-             SELECT tiploc, crs FROM tiploc_crs \
-             UNION \
-             SELECT tiploc, crs FROM stanox_crs \
+             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs \
+             UNION ALL \
+             SELECT tiploc, crs, 2 AS priority FROM stanox_crs \
          ) merged \
          WHERE UPPER(TRIM(tiploc)) = UPPER($1) \
+         ORDER BY priority \
          LIMIT 1",
     )
     .bind(tiploc.trim())
@@ -1047,9 +1050,14 @@ pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String
 /// already has for a single lookup).
 ///
 /// As of docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md
-/// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs`, same
-/// as `crs_for_tiploc` above -- see that function's doc comment for what
-/// this does and does not change for existing callers.
+/// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs`,
+/// deterministically preferring a `tiploc_crs` row when the SAME TIPLOC
+/// exists in both tables with DIFFERENT CRS values -- see `crs_for_tiploc`
+/// above for why that matters and the `priority` pattern both share.
+/// `DISTINCT ON (UPPER(TRIM(tiploc)))` with `ORDER BY UPPER(TRIM(tiploc)),
+/// priority` picks the `tiploc_crs` row (priority 1) first per TIPLOC
+/// before `.collect()` builds the map, so the result no longer depends on
+/// unspecified `UNION` row order.
 pub async fn crs_for_tiplocs_batch(
     pool: &PgPool,
     tiplocs: &[String],
@@ -1059,12 +1067,13 @@ pub async fn crs_for_tiplocs_batch(
     }
     let upper: Vec<String> = tiplocs.iter().map(|t| t.trim().to_uppercase()).collect();
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT UPPER(TRIM(tiploc)), UPPER(crs) FROM ( \
-             SELECT tiploc, crs FROM tiploc_crs \
-             UNION \
-             SELECT tiploc, crs FROM stanox_crs \
+        "SELECT DISTINCT ON (UPPER(TRIM(tiploc))) UPPER(TRIM(tiploc)), UPPER(crs) FROM ( \
+             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs \
+             UNION ALL \
+             SELECT tiploc, crs, 2 AS priority FROM stanox_crs \
          ) merged \
-         WHERE UPPER(TRIM(tiploc)) = ANY($1)",
+         WHERE UPPER(TRIM(tiploc)) = ANY($1) \
+         ORDER BY UPPER(TRIM(tiploc)), priority",
     )
     .bind(&upper)
     .fetch_all(pool)

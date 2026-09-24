@@ -317,11 +317,24 @@ pub struct TiplocCrsRow {
 /// (STANOX `87219`, both CRS `CLJ`) each get their own row here, unlike
 /// `resolve`, which keeps only one TIPLOC per STANOX.
 ///
+/// Unlike `resolve`, this function does NOT filter out X-prefixed
+/// pseudo-CRS candidates in favor of a sole non-X-prefixed one, so a TIPLOC
+/// whose only resolvable CRS is X-prefixed (e.g. real STANOX 87201's
+/// `VICTRCR`/`XVR`, documented in reference-data/stanox-crs.md:100-113) now
+/// gets its own `tiploc_crs` row where it previously had none via
+/// `stanox_crs` -- not a new user-facing bug, since `journey.rs`'s
+/// `an_x_prefixed_pseudo_crs_is_blanked_rather_than_displayed_as_a_real_station`
+/// test/mechanism already exists specifically to blank such values back out
+/// at render time, but worth documenting explicitly here.
 pub fn resolve_tiploc_crs(
     ti: &[TiRecord],
     msn_crs_by_tiploc: &HashMap<String, String>,
     msn_change_time_by_tiploc: &HashMap<String, i32>,
 ) -> Vec<TiplocCrsRow> {
+    // `by_tiploc: HashMap` rather than pushing straight into a `Vec` guards
+    // against two `TI` lines for the same TIPLOC in a malformed delivery --
+    // last-one-wins, matching this module's existing "skip/degrade malformed
+    // input, never hard-error" posture elsewhere in this same file.
     let mut by_tiploc: HashMap<String, TiplocCrsRow> = HashMap::new();
 
     for record in ti {
@@ -350,10 +363,6 @@ pub fn resolve_tiploc_crs(
     rows.sort_by(|a, b| a.tiploc.cmp(&b.tiploc));
     rows
 }
-// (`by_tiploc: HashMap` rather than pushing straight into a `Vec` guards
-// against two `TI` lines for the same TIPLOC in a malformed delivery --
-// last-one-wins, matching this module's existing "skip/degrade malformed
-// input, never hard-error" posture elsewhere in this same file.)
 
 #[cfg(test)]
 mod tests {
