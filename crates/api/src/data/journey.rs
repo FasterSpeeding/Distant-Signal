@@ -86,21 +86,45 @@ struct RawCallingPoint {
 /// unresolved calling point remain, both visible in the same live journey
 /// and neither one a key-format problem:
 ///
-/// 1. **A real station reached via a line-group TIPLOC the crosswalk does
-///    not hold.** `stanox_crs`'s primary key is `stanox`
-///    (`migrations/20260901150000_stanox_crs.sql`), so the table stores at
+/// 1. **CLOSED, 2026-09-24: a real station reached via a line-group TIPLOC
+///    the crosswalk does not hold.** `stanox_crs`'s primary key is `stanox`
+///    (`migrations/20260901150000_stanox_crs.sql`), so that table stores at
 ///    most ONE TIPLOC per STANOX -- whichever one `schedule-reference`'s
 ///    `resolve` happened to pick as the CRS-bearing candidate. A station
-///    whose STANOX covers several TIPLOCs therefore resolves for one of
-///    them and silently misses for the rest. On `L82877` that is Vauxhall
+///    whose STANOX covers several TIPLOCs therefore resolved for one of
+///    them and silently missed for the rest. On `L82877` that was Vauxhall
 ///    (`VAUXHLM`, "Vauxhall Main Lines", STANOX 87214, called at twice) and
 ///    Clapham Junction (`CLPHMJM` main lines and `CLPHMJW` Windsor lines,
-///    STANOX 87219) -- all 7 characters, so trimming cannot help them.
-///    Closing this needs a TIPLOC-keyed crosswalk, which is an ingestion
-///    and reference-data-schema change, not a query fix, and it needs a
-///    stated policy for when a co-located TIPLOC may inherit its STANOX's
-///    station identity (a naive "inherit always" would wrongly hand
-///    Waterloo's CRS to the junction TIPLOCs in case 2).
+///    STANOX 87219) -- all 7 characters, so trimming could not help them.
+///    Closing this needed a TIPLOC-keyed crosswalk (an ingestion and
+///    reference-data-schema change, not a query fix), and this codebase's
+///    own investigation found it needed no STANOX-inheritance policy at
+///    all -- a naive "any TIPLOC sharing a STANOX inherits that STANOX's
+///    one resolved CRS" design would indeed have wrongly handed Waterloo's
+///    CRS to the junction TIPLOCs in case 2 below, but Vauxhall's and
+///    Clapham Junction's siblings don't need inheritance: each TIPLOC
+///    already carries its own CRS directly (its own `TI` record, or that
+///    same TIPLOC's own `MSN` `A` record when `TI`'s CRS is blank), so a
+///    crosswalk keyed on TIPLOC rather than STANOX resolves every one of
+///    them with no tiebreaker or inheritance step required. The fix: a new
+///    `tiploc_crs` table (`PRIMARY KEY (tiploc)`,
+///    `crates/api/migrations/20260924130000_tiploc_crs.sql`), populated by
+///    a new `crates/schedule-reference::parser::resolve_tiploc_crs`
+///    function that keeps EVERY TIPLOC with a resolvable CRS as its own
+///    row -- no STANOX-based grouping or exclusion -- alongside the
+///    existing `stanox_crs` table/`resolve` function, which are completely
+///    unchanged. `queries::crs_for_tiploc`, `crs_for_tiplocs_batch`, and
+///    `list_stanox_crs_for_crs` now read the UNION of both tables
+///    (preferring a `tiploc_crs` row when a TIPLOC is present in both), so
+///    every existing `stanox_crs`-only fixture still resolves exactly as
+///    before and BOTH of Vauxhall's real TIPLOCs (`VAUXHLM`/`VAUXHLW`) and
+///    BOTH of Clapham Junction's real TIPLOCs (`CLPHMJM`/`CLPHMJW`) now
+///    resolve on the same journey. See
+///    docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md for
+///    the full design and investigation findings, and
+///    `both_of_vauxhalls_real_tiplocs_resolve_when_the_crosswalk_holds_both`/
+///    `both_of_clapham_junctions_real_tiplocs_resolve_when_the_crosswalk_holds_both`
+///    below for the regression tests proving it at this module's level.
 /// 2. **A genuine non-station timing point.** A CIF `LI` passing record
 ///    carries its time in the pass field (bytes `20..24`), which
 ///    `schedule_query::parse_calling_point` does not decode, so such a stop
@@ -1713,34 +1737,59 @@ mod tests {
         );
     }
 
-    /// A **characterization** test, not a regression test: it records that
-    /// trimming does nothing for the first remaining gap in `tiploc_key`'s
-    /// "What this does NOT fix" note (Vauxhall's `VAUXHLM`, Clapham
-    /// Junction's `CLPHMJM`/`CLPHMJW`, each called at under a TIPLOC that
-    /// is not the one their STANOX-keyed crosswalk row retained). It passes
-    /// identically with and without this fix -- that is the point. It
-    /// exists so the gap is stated in code rather than only in prose, and
-    /// so whoever closes it has an obvious place to come and change the
-    /// expectation.
     #[test]
-    fn a_line_group_tiploc_absent_from_the_stanox_keyed_crosswalk_is_still_unresolved() {
+    fn both_of_vauxhalls_real_tiplocs_resolve_when_the_crosswalk_holds_both() {
+        // Regression test for tiploc_key's "What this does NOT fix" item 1
+        // (now closed -- see docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md
+        // and crates/schedule-reference::parser::resolve_tiploc_crs). Before
+        // that fix, `tiploc_to_crs` could only ever contain ONE of
+        // VAUXHLM/VAUXHLW at a time (stanox_crs's one-row-per-STANOX
+        // limit) -- this test's whole point is that it now legitimately
+        // contains BOTH, and both calling points on the same journey
+        // resolve, exactly as they should on real train `L82877`.
         let service_date: NaiveDate = "2026-09-14".parse().unwrap();
-        // `VAUXHLW` stands in for "whichever sibling TIPLOC of STANOX 87214
-        // the crosswalk actually retained" -- which one it is was not
-        // verified, and does not matter to what this test pins: the
-        // crosswalk can hold only ONE of Vauxhall's TIPLOCs, and the
-        // schedule calls at `VAUXHLM`.
-        let tiploc_to_crs: HashMap<String, String> = [("VAUXHLW".to_string(), "VXH".to_string())]
-            .into_iter()
-            .collect();
+        let tiploc_to_crs: HashMap<String, String> = [
+            ("VAUXHLM".to_string(), "VXH".to_string()),
+            ("VAUXHLW".to_string(), "VXH".to_string()),
+        ]
+        .into_iter()
+        .collect();
 
-        let stops = stops_from_calling_points(&[raw_cp("VAUXHLM")], &tiploc_to_crs, service_date);
-
-        assert_eq!(
-            stops[0].crs, None,
-            "trimming cannot help a 7-character TIPLOC the crosswalk simply does not hold -- \
-             closing this needs a TIPLOC-keyed crosswalk, not a query change"
+        let stops = stops_from_calling_points(
+            &[raw_cp("VAUXHLM"), raw_cp("VAUXHLW")],
+            &tiploc_to_crs,
+            service_date,
         );
+
+        assert_eq!(stops[0].crs, Some("VXH".to_string()));
+        assert_eq!(stops[1].crs, Some("VXH".to_string()));
+    }
+
+    #[test]
+    fn both_of_clapham_junctions_real_tiplocs_resolve_when_the_crosswalk_holds_both() {
+        // Same regression as `both_of_vauxhalls_real_tiplocs_resolve_when_the_crosswalk_holds_both`
+        // above, for this module's OTHER real example of the same gap:
+        // Clapham Junction's `CLPHMJM` (main lines) and `CLPHMJW` (Windsor
+        // lines), both STANOX 87219, both real CRS `CLJ`. Before the fix,
+        // `stanox_crs`'s one-row-per-STANOX limit meant `tiploc_to_crs`
+        // could hold only one of these two TIPLOCs at a time; now it can
+        // legitimately hold both, and both calling points resolve.
+        let service_date: NaiveDate = "2026-09-14".parse().unwrap();
+        let tiploc_to_crs: HashMap<String, String> = [
+            ("CLPHMJM".to_string(), "CLJ".to_string()),
+            ("CLPHMJW".to_string(), "CLJ".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let stops = stops_from_calling_points(
+            &[raw_cp("CLPHMJM"), raw_cp("CLPHMJW")],
+            &tiploc_to_crs,
+            service_date,
+        );
+
+        assert_eq!(stops[0].crs, Some("CLJ".to_string()));
+        assert_eq!(stops[1].crs, Some("CLJ".to_string()));
     }
 
     #[test]
