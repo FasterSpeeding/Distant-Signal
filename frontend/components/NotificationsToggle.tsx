@@ -1,9 +1,21 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button } from '@mantine/core';
+import { Button, Text } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+
+/** Shown for any failure in `enable()` -- a rejected `pushManager.subscribe()`
+ * (common on Firefox/Brave with push disabled at the OS/browser level, or a
+ * malformed VAPID key), a denied `Notification.requestPermission()` prompt
+ * the user backs out of via the browser chrome rather than an explicit
+ * "Block", or a network failure on either `fetch()`. Deliberately generic
+ * rather than the raw `Error#message` -- those come from `DOMException`s
+ * whose wording ("The user denied permission for the notification" /
+ * "Registration failed - push service error", depending on browser) is not
+ * written for an end user, and other browsers throw with no message text at
+ * all. */
+const ENABLE_ERROR_MESSAGE = "Couldn't enable notifications. Check your browser's notification permissions.";
 
 /** Converts the VAPID public key (base64url, as returned by
  * `GET /public/notifications/vapid-public-key`) into the raw
@@ -57,15 +69,45 @@ export function NotificationsToggle() {
   const [supported, setSupported] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
 
   useEffect(() => {
-    setSupported('serviceWorker' in navigator && 'PushManager' in window);
+    const isSupported = 'serviceWorker' in navigator && 'PushManager' in window;
+    setSupported(isSupported);
     setChecked(true);
+    if (!isSupported) return;
+
+    // Seed `enabled` from the REAL subscription state, not just an assumed
+    // `false` -- without this a returning subscriber sees "Enable
+    // notifications" on every visit and would call `subscribe()` again on
+    // every click, rather than the button reflecting they're already
+    // subscribed. `getRegistration()` (not `.ready`, which resolves only
+    // once a service worker HAS become active, and hangs forever until
+    // then) resolves to `undefined` immediately when there is none yet to
+    // check. Optional-chained/guarded throughout since a partial or
+    // stubbed `serviceWorker` implementation may not expose it.
+    let cancelled = false;
+    const registrationPromise = navigator.serviceWorker.getRegistration?.();
+    registrationPromise
+      ?.then((registration) => registration?.pushManager.getSubscription())
+      .then((subscription) => {
+        if (!cancelled && subscription) {
+          setEnabled(true);
+        }
+      })
+      .catch(() => {
+        // Nothing to seed -- falls back to the same "not yet enabled"
+        // default a browser that was never subscribed would show.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function enable() {
     setBusy(true);
+    setError(null);
     needsLoginState.reset();
     try {
       const permission = await Notification.requestPermission();
@@ -75,6 +117,7 @@ export function NotificationsToggle() {
 
       const keyResponse = await fetch('/api/notifications/vapid-public-key');
       if (!keyResponse.ok) {
+        setError(ENABLE_ERROR_MESSAGE);
         return;
       }
       const vapidPublicKey = await keyResponse.text();
@@ -97,10 +140,19 @@ export function NotificationsToggle() {
       if (!subscribeResponse.ok) {
         if (subscribeResponse.status === 401) {
           needsLoginState.markNeedsLogin();
+        } else {
+          setError(ENABLE_ERROR_MESSAGE);
         }
         return;
       }
       setEnabled(true);
+    } catch {
+      // A rejected `Notification.requestPermission()`, `pushManager.subscribe()`
+      // (common on Firefox/Brave with push disabled, or a malformed VAPID
+      // key), or either `fetch()` all land here -- previously an unhandled
+      // promise rejection, with the button just silently re-enabling and
+      // no indication anything went wrong.
+      setError(ENABLE_ERROR_MESSAGE);
     } finally {
       setBusy(false);
     }
@@ -118,6 +170,7 @@ export function NotificationsToggle() {
       <Button onClick={enable} disabled={!checked || !supported || busy || enabled} variant={enabled ? 'light' : 'filled'}>
         {enabled ? 'Notifications enabled' : 'Enable notifications'}
       </Button>
+      {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to enable notifications.
       </LoginPromptModal>

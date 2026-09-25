@@ -56,6 +56,7 @@ export function RenameTicketButton({
         setSaving(false);
         return;
       }
+      setSaving(false);
       close();
       router.refresh();
     } catch {

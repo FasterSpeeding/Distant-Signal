@@ -99,6 +99,33 @@ describe('RenameTrainButton', () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
+  // Bug: `router.refresh()` preserves client component state (it re-runs
+  // Server Components, it does not remount this one), so a `saving` flag
+  // left `true` when it fired stayed `true` forever -- `handleOpen` resets
+  // `value`/`error` but never touched `saving`, so every future open of
+  // this modal rendered "Save" permanently disabled/spinning. The fix
+  // resets `saving` in the same synchronous continuation as `close()`/
+  // `router.refresh()` rather than only in the `catch` branch.
+  it('Save is usable again on a later open, not stuck disabled from the previous save', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ customName: 'My commute' }), { status: 200 }));
+
+    renderWithMantine(<RenameTrainButton trackingId={42} customName={null} defaultName="KGX → EDB, 10 May" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    let input = await screen.findByLabelText('Custom name');
+    fireEvent.change(input, { target: { value: 'My commute' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+
+    // Reopen (the prop-driven `customName` hasn't changed in this test, since
+    // nothing re-renders the component with a new prop -- only the real app's
+    // `router.refresh()` would do that -- so the field starts empty again).
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    input = await screen.findByLabelText('Custom name');
+    fireEvent.change(input, { target: { value: 'A new name' } });
+    expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
+  });
+
   it('a 401 shows a login prompt instead of the raw backend error text', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));

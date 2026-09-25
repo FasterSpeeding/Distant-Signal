@@ -4,6 +4,17 @@ import { renderWithMantine } from '@/test/render';
 import { EditJourneyTemplateForm } from './EditJourneyTemplateForm';
 import type { JourneyTemplateDetail } from '@/lib/types';
 
+/** Forces `input.validity.badInput`, which is how a real browser reports a
+ * half-entered time ("09:--"). jsdom models neither segment state nor
+ * `badInput`, so the only way to exercise that branch here is to say so
+ * directly -- same helper as `TimeFilterInput.test.tsx`'s own. */
+function setBadInput(input: HTMLInputElement, badInput: boolean) {
+  Object.defineProperty(input, 'validity', {
+    configurable: true,
+    get: () => ({ badInput }),
+  });
+}
+
 const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: refreshMock, push: vi.fn() }),
@@ -224,6 +235,107 @@ describe('EditJourneyTemplateForm', () => {
       departWindow: { after: null, before: null },
       arriveWindow: { after: null, before: null },
     });
+  });
+
+  // Bug: every `TimeFilterInput` here was wired with `onIncompleteChange={()
+  // => {}}`, discarding the "this time field is half-entered" signal that
+  // `TrainSearchForm`/`TrackTrainForm`/`AddJourneyLegButton` all correctly
+  // guard on elsewhere in this codebase. A user who typed an hour, never
+  // finished the minutes, and pressed Save got `departWindow.after: null`
+  // PUT to the backend with a green "Saved." and no error -- the bound was
+  // dropped silently. `setBadInput` + `fireEvent.change` with a partial
+  // value is what triggers `validity.badInput` in jsdom, the same signal
+  // `TimeFilterInput`'s own doc comment describes and its own test file
+  // exercises the same way.
+  it('a half-typed time on a leg blocks Save, rather than silently dropping the bound', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+    expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
+
+    // An hour with no minutes -- a native `<input type="time">` reports
+    // `value` as `''` here (indistinguishable from untouched) but sets
+    // `validity.badInput`, which is what `TimeFilterInput` actually reads.
+    const departFrom = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+    setBadInput(departFrom, true);
+    fireEvent.change(departFrom, { target: { value: '' } });
+
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Compounding bug: legs were keyed by array index, so removing a middle
+  // leg could shift a `TimeFilterInput`'s incomplete-state onto the wrong
+  // leg's data. Legs now carry a stable `key` (the backend leg id, or a
+  // client-side counter for a brand-new leg) instead, so an incomplete-time
+  // block on leg 2 must travel with leg 2's own data when leg 1 is removed,
+  // not linger on whatever now occupies index 0.
+  it('removing an earlier leg does not carry its incomplete-time block onto the remaining leg', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    renderWithMantine(
+      <EditJourneyTemplateForm
+        template={template({
+          legs: [
+            {
+              id: 1,
+              originCrs: 'KGX',
+              originName: 'London Kings Cross',
+              destinationCrs: 'EDB',
+              destinationName: 'Edinburgh',
+              departAfter: null,
+              departBefore: null,
+              arriveAfter: null,
+              arriveBefore: null,
+            },
+            {
+              id: 2,
+              originCrs: 'EDB',
+              originName: 'Edinburgh',
+              destinationCrs: 'INV',
+              destinationName: 'Inverness',
+              departAfter: '09:00',
+              departBefore: null,
+              arriveAfter: null,
+              arriveBefore: null,
+            },
+          ],
+        })}
+      />,
+    );
+
+    // Leave leg 1's earliest-departure half-typed -- via an actual value
+    // transition (real time -> cleared-with-badInput), same as
+    // `TimeFilterInput.test.tsx`'s own incomplete-time tests: setting an
+    // already-empty field to '' again is a no-op DOM-wise and would never
+    // fire a change event to begin with.
+    const departFromFields = screen.getAllByLabelText('Earliest departure (optional)') as HTMLInputElement[];
+    setBadInput(departFromFields[0], false);
+    fireEvent.change(departFromFields[0], { target: { value: '08:00' } });
+    setBadInput(departFromFields[0], true);
+    fireEvent.change(departFromFields[0], { target: { value: '' } });
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+
+    // Remove leg 1 -- the incomplete block belongs to leg 1's own identity,
+    // not to "whatever is now at index 0" (leg 2, post-removal).
+    fireEvent.click(screen.getByRole('button', { name: 'Remove leg 1' }));
+
+    expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const body = JSON.parse((fetchMock.mock.calls[0][1]?.body as string) ?? '{}');
+    expect(body.legs).toEqual([
+      {
+        originCrs: 'EDB',
+        destinationCrs: 'INV',
+        departWindow: { after: '09:00', before: null },
+        arriveWindow: { after: null, before: null },
+      },
+    ]);
   });
 
   it('a 401 shows a login prompt instead of the raw backend error text', async () => {

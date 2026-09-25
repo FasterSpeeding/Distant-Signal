@@ -119,4 +119,33 @@ describe('AddCustomLineToGroupButton', () => {
     expect(await screen.findByText('custom line not found')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
+
+  // Bug: `router.refresh()` preserves client component state, so a
+  // `submitting` flag left `true` when it fired stayed `true` forever --
+  // `handleOpen` resets `selected`/`error` but never touched `submitting`,
+  // permanently disabling/spinning "Share with group" on every future open.
+  // See `AddTrainToGroupButton.test.tsx`'s identical regression test for the
+  // full rationale.
+  it('"Share with group" is usable again on a later open, not stuck disabled from the previous share', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url === '/api/lines') return Promise.resolve(linesResponse());
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    renderWithMantine(<AddCustomLineToGroupButton groupId="grp-1" excludeLineIds={[]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
+    let [select] = await screen.findAllByLabelText('Custom line');
+    fireEvent.click(select);
+    fireEvent.click(await screen.findByText('My Commute'));
+    fireEvent.click(screen.getByRole('button', { name: 'Share with group' }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
+    [select] = await screen.findAllByLabelText('Custom line');
+    fireEvent.click(select);
+    fireEvent.click(await screen.findByText('My Commute'));
+    expect(screen.getByRole('button', { name: 'Share with group' })).not.toBeDisabled();
+  });
 });
