@@ -323,3 +323,127 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value_t = 300)]
     pub backlog_match_sweep_interval_secs: u64,
 }
+
+/// The one invariant this crate cannot check at compile time and that has now
+/// been broken in production: **every `INTERNAL_OAUTH_GROUP_*` env var this
+/// `ServiceArguments` declares must also be set on the `api` container in
+/// `charts/distant-signal/templates/api-deployment.yaml`.**
+///
+/// This is the same class of declared-but-unwired bug that
+/// `crates/schedule-reference/src/config.rs`'s own `chart_env_wiring_tests`
+/// module exists to prevent, and it is dangerous for the same reason: every
+/// group field above carries a *suggested default*, so a var the chart forgets
+/// to set does NOT fail fast. clap is satisfied, `main` starts, and `api`
+/// silently enforces the crate's own suggested group name instead of the one
+/// the operator actually created in Authentik.
+///
+/// What that looks like in production: `require_internal_oauth` compares the
+/// caller's verified `groups` claim against the wrong name, so EVERY
+/// `/private/*` request from that one caller is rejected `403` -- forever, and
+/// only for that caller, so nothing else looks broken. That is exactly what
+/// happened to `INTERNAL_OAUTH_GROUP_TRUST_BACKLOG`: declared 2026-09-05
+/// alongside `/private/trust-event-backlog`, but never added to
+/// `api-deployment.yaml`, which wired the other 12 group vars. Every
+/// `POST /private/trust-event-backlog` from `trust-backlog-consumer` 403'd,
+/// and because that crate's backlog is a Redis queue it drains only on
+/// success, the observable symptom was an ever-growing Redis key -- not an
+/// error anyone was watching. `values.yaml`'s own comment still said "8 group
+/// fields" when the struct had 13, which is how far this had already drifted.
+///
+/// A test is what makes the next one impossible to ship.
+#[cfg(test)]
+mod chart_env_wiring_tests {
+    use clap::CommandFactory;
+
+    use super::ServiceArguments;
+
+    /// Prefix shared by every machine-credential group field above.
+    /// Deliberately NOT matched against `CHATBOT_ACCESS_GROUP`, which is an
+    /// end-user SSO group, not one of these -- see its own doc comment.
+    const GROUP_ENV_PREFIX: &str = "INTERNAL_OAUTH_GROUP_";
+
+    /// The `api` container's own slice of the api Deployment template. Scoped
+    /// from its `- name: api` line to EOF rather than matching the whole file,
+    /// matching `crates/schedule-reference/src/config.rs`'s equivalent helper
+    /// -- so a var that only ever appears in one of this template's leading
+    /// `fail`-guard comment blocks cannot satisfy the check by accident.
+    /// `api` is the only container in this template, so "to EOF" is the whole
+    /// block.
+    fn api_container_block() -> String {
+        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../charts/distant-signal/templates/api-deployment.yaml");
+        let rendered = std::fs::read_to_string(&chart)
+            .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));
+        let marker = "- name: api\n";
+        let start = rendered.find(marker).expect(
+            "the api Deployment must still declare a container named `api`; if it was renamed, \
+             update this test's marker",
+        );
+        rendered[start..].to_string()
+    }
+
+    #[test]
+    fn every_internal_oauth_group_this_config_declares_is_set_on_the_charts_api_container() {
+        let block = api_container_block();
+        let command = ServiceArguments::command();
+
+        let declared: Vec<String> = command
+            .get_arguments()
+            .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+            .filter(|env| env.starts_with(GROUP_ENV_PREFIX))
+            .map(str::to_string)
+            .collect();
+        assert!(
+            declared.len() >= 13,
+            "sanity check: this ServiceArguments declares one {GROUP_ENV_PREFIX}* env var per \
+             real /private/* caller (13 of them as of 2026-09-25); got {declared:?}"
+        );
+
+        let missing: Vec<&String> = declared
+            .iter()
+            .filter(|env| !block.contains(&format!("- name: {env}")))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "these {GROUP_ENV_PREFIX}* env vars are declared by crates/api/src/data/config.rs but \
+             never set on the `api` container in \
+             charts/distant-signal/templates/api-deployment.yaml, so under Helm api silently \
+             enforces this crate's own suggested group name instead of the operator's real \
+             Authentik group -- every /private/* request from the affected caller then 403s \
+             forever, with no startup failure and no error on api's side: {missing:?}"
+        );
+    }
+
+    /// The chart must not set a group var this struct no longer declares
+    /// either: a stale `INTERNAL_OAUTH_GROUP_*` in the template is a value an
+    /// operator can configure that silently does nothing, and it is the same
+    /// drift in the opposite direction.
+    #[test]
+    fn the_chart_sets_no_internal_oauth_group_this_config_does_not_declare() {
+        let block = api_container_block();
+        let command = ServiceArguments::command();
+
+        let declared: Vec<String> = command
+            .get_arguments()
+            .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+            .filter(|env| env.starts_with(GROUP_ENV_PREFIX))
+            .map(str::to_string)
+            .collect();
+
+        let stale: Vec<&str> = block
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- name: "))
+            .filter(|env| env.starts_with(GROUP_ENV_PREFIX))
+            .filter(|env| !declared.iter().any(|d| d == env))
+            .collect();
+
+        assert!(
+            stale.is_empty(),
+            "charts/distant-signal/templates/api-deployment.yaml sets these \
+             {GROUP_ENV_PREFIX}* env vars on the api container, but \
+             crates/api/src/data/config.rs no longer declares them, so clap ignores them and any \
+             operator who configures one gets no effect at all: {stale:?}"
+        );
+    }
+}
