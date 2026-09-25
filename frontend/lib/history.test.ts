@@ -196,7 +196,12 @@ describe('resolveRange', () => {
       NOW,
     );
     expect(range.preset).toBeNull();
-    expect(range.from).toBe('2026-08-01T00:00:00Z');
+    // Re-serialized from the parsed instant, not echoed back verbatim (see
+    // the traversal test below for why) -- so the canonical `.000Z` form,
+    // which is also exactly what the preset branch and `HistoryRangePicker`
+    // already emit.
+    expect(range.from).toBe('2026-08-01T00:00:00.000Z');
+    expect(range.to).toBe('2026-08-05T00:00:00.000Z');
   });
 
   it('falls back to the default rather than erroring on junk', () => {
@@ -206,6 +211,43 @@ describe('resolveRange', () => {
 
   it('ignores a half-specified custom range', () => {
     expect(resolveRange({ from: '2026-08-01T00:00:00Z' }, NOW).preset).toBe('7d');
+  });
+
+  // Security regression. `from`/`to` are spliced into backend URL PATH
+  // segments (`getLineStatusHistory`, the whole `getLine*Stats` family), and
+  // `Date.parse` is not a validator: V8 accepts a trailing parenthesised
+  // comment, so this whole string parses as a real date. The old code echoed
+  // `params.from` back verbatim, putting attacker-chosen `../` text straight
+  // into a URL path. Whatever comes out of here must be a string this
+  // function itself produced.
+  it('never echoes a traversal payload back, even when Date.parse accepts it', () => {
+    const payload = '2026-08-01 (../../../../../Journeys/mine?';
+    // Precondition: V8 really does parse this (if this ever stops being
+    // true the test below would pass for the wrong reason).
+    expect(Number.isNaN(Date.parse(payload))).toBe(false);
+
+    const range = resolveRange({ from: payload, to: '2026-08-05T00:00:00Z' }, NOW);
+    expect(range.from).not.toContain('..');
+    expect(range.from).not.toContain('/');
+    expect(range.from).not.toContain('?');
+    expect(range.from).toBe(new Date(Date.parse(payload)).toISOString());
+    // Both ends, and every fallback path, are always round-tripped ISO.
+    for (const value of [range.from, range.to]) {
+      expect(new Date(value).toISOString()).toBe(value);
+    }
+  });
+
+  it('round-trips both ends as canonical ISO for every resolution path', () => {
+    const cases = [
+      resolveRange({}, NOW),
+      resolveRange({ range: '30d' }, NOW),
+      resolveRange({ from: 'nonsense', to: 'nonsense' }, NOW),
+      resolveRange({ from: '2026-08-01', to: '2026-08-02' }, NOW),
+    ];
+    for (const range of cases) {
+      expect(new Date(range.from).toISOString()).toBe(range.from);
+      expect(new Date(range.to).toISOString()).toBe(range.to);
+    }
   });
 });
 

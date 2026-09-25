@@ -20,7 +20,11 @@
  * request shape, unlike the track call itself). */
 export async function shareTrackedTrainToGroup(groupId: string, trackingId: number): Promise<void> {
   try {
-    await fetch(`/api/groups/${groupId}/trains`, {
+    // `encodeURIComponent`, for the same reason every path segment in
+    // `lib/api.ts` has it (see that file's "Path-segment encoding invariant"
+    // note): an unencoded segment lets a `../`-bearing id resolve the request
+    // away from the intended proxy route.
+    await fetch(`/api/groups/${encodeURIComponent(groupId)}/trains`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trainSubscriptionId: trackingId }),

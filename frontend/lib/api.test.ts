@@ -34,6 +34,13 @@ import {
   getGroupCustomLines,
   getSharedGroupCustomLines,
   getJourneyByShareToken,
+  getGroup,
+  getGroupMembers,
+  getGroupTrains,
+  getGroupJourneys,
+  getGroupJoinPreview,
+  getOperatorDailyStats,
+  getNetworkDailyStats,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -177,10 +184,21 @@ describe('api client', () => {
     await expect(getStationAccessibility('ZZZ')).resolves.toEqual({});
   });
 
+  // The expected URLs below (and in the `statsFetchers` table further down)
+  // carry `%3A` rather than a literal `:` in their RFC3339 instants. That is
+  // `encodeURIComponent` doing its job: every caller-supplied path segment in
+  // `lib/api.ts` is now encoded (see that file's "Path-segment encoding
+  // invariant" note -- `from`/`to` reach these helpers from `?from=`/`?to=`
+  // query params, so they are attacker-reachable text like any other id).
+  // The escaping is transparent to the backend: axum's `Path` extractor
+  // percent-decodes each matched segment before deserializing it, which
+  // `range_routes_accept_percent_encoded_path_segments` in
+  // `crates/api/src/routes/line_status.rs` asserts directly against the real
+  // router rather than leaving it assumed here.
   it('getLineStatusHistory builds the correct range URL', async () => {
     await getLineStatusHistory('wcml', '2026-07-01T00:00:00Z', '2026-07-07T00:00:00Z');
     expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Line/wcml/Status/2026-07-01T00:00:00Z/to/2026-07-07T00:00:00Z',
+      'http://test-api:8080/Line/wcml/Status/2026-07-01T00%3A00%3A00Z/to/2026-07-07T00%3A00%3A00Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
@@ -189,7 +207,7 @@ describe('api client', () => {
     incomingCookies.header = 'distant_signal_session=abc123';
     await getLineStatusHistory('wcml', '2026-07-01T00:00:00Z', '2026-07-07T00:00:00Z');
     expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Line/wcml/Status/2026-07-01T00:00:00Z/to/2026-07-07T00:00:00Z',
+      'http://test-api:8080/Line/wcml/Status/2026-07-01T00%3A00%3A00Z/to/2026-07-07T00%3A00%3A00Z',
       expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
     );
   });
@@ -255,7 +273,7 @@ describe('api client', () => {
     );
     await getLineHalfHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Line/wcml/Stats/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/HalfHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
@@ -264,7 +282,7 @@ describe('api client', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
     await getLineHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
@@ -273,7 +291,7 @@ describe('api client', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
     await getLineSixHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Line/wcml/Stats/SixHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/SixHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
@@ -319,7 +337,7 @@ describe('api client', () => {
     );
     await getLineHalfHourlyCoverageStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Line/wcml/Stats/Coverage/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/Coverage/HalfHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
@@ -338,17 +356,17 @@ describe('api client', () => {
     [
       'getLineHalfHourlyStats',
       () => getLineHalfHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
-      'http://test-api:8080/Line/wcml/Stats/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/HalfHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
     ],
     [
       'getLineHourlyStats',
       () => getLineHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
-      'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
     ],
     [
       'getLineSixHourlyStats',
       () => getLineSixHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
-      'http://test-api:8080/Line/wcml/Stats/SixHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/SixHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
     ],
     [
       'getLineDailyCoverageStats',
@@ -359,7 +377,7 @@ describe('api client', () => {
       'getLineHalfHourlyCoverageStats',
       () =>
         getLineHalfHourlyCoverageStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
-      'http://test-api:8080/Line/wcml/Stats/Coverage/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      'http://test-api:8080/Line/wcml/Stats/Coverage/HalfHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
     ],
   ];
 
@@ -1091,5 +1109,153 @@ describe('api client', () => {
   it('getJourneyByShareToken throws ApiNotFoundError on a 404', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     await expect(getJourneyByShareToken('invalid-token')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+});
+
+/** Security regression suite for the path-traversal class this file's
+ * "Path-segment encoding invariant" note in `lib/api.ts` describes.
+ *
+ * The bug: these helpers took caller-supplied ids/tokens/codes straight into
+ * a template literal. Their arguments come overwhelmingly from Next.js
+ * dynamic route params, and Next DECODES those before a page component sees
+ * them -- so a visitor requesting `/lines/..%2F..%2Fmetrics%3F` handed the
+ * helper the literal string `../../metrics?`, and `fetch` then resolved the
+ * URL away from the intended route entirely:
+ *
+ *   new URL('http://api' + '/StopPoint/' + '../../metrics?' + '/Disruption')
+ *     === 'http://api/metrics?/Disruption'
+ *
+ * Most of these helpers also forward the visitor's own session cookie, which
+ * made it a confused deputy: the frontend pod reaching the backend's
+ * unauthenticated operational endpoints from inside the cluster on a
+ * visitor's say-so.
+ *
+ * The fix is `encodeURIComponent` on every interpolated segment, so a
+ * segment can only ever BE a segment. These tests assert the crafted input
+ * survives as percent-encoded text in the fetched URL -- and, separately,
+ * that the resulting URL still resolves to the intended path rather than
+ * escaping it, which is the property that actually matters. */
+describe('api client path-segment encoding (traversal regression)', () => {
+  // The empirically-verified payload from the review: `..` pairs to climb out
+  // of the intended route, plus a `?` to swallow whatever the helper appends
+  // after the interpolation point.
+  const PAYLOAD = '../../metrics?';
+  const ENCODED = '..%2F..%2Fmetrics%3F';
+  const BASE = 'http://test-api:8080';
+
+  beforeEach(() => {
+    incomingCookies.header = '';
+    vi.stubEnv('API_BASE_URL', BASE);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([sampleReport]), { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function fetchedUrl(): string {
+    return vi.mocked(fetch).mock.calls[0][0] as string;
+  }
+
+  // A representative sample across every URL-building shape in the file:
+  // single-segment ids, multi-segment `{id}/…` suffixes, the comma-joined
+  // multi-id route, the `{from}/to/{to}` range families, and share/join
+  // tokens. `intendedPrefix` is the part of the path the crafted segment must
+  // NOT be able to escape.
+  const cases: { name: string; call: () => Promise<unknown>; intendedPrefix: string }[] = [
+    { name: 'getStopPointDisruption', call: () => getStopPointDisruption(PAYLOAD), intendedPrefix: '/StopPoint/' },
+    { name: 'getStationSampleStats', call: () => getStationSampleStats(PAYLOAD), intendedPrefix: '/public/stations/' },
+    { name: 'getStationAccessibility', call: () => getStationAccessibility(PAYLOAD), intendedPrefix: '/public/stations/' },
+    { name: 'getCustomLine', call: () => getCustomLine(PAYLOAD), intendedPrefix: '/public/lines/' },
+    { name: 'getLineDefinition', call: () => getLineDefinition(PAYLOAD), intendedPrefix: '/public/lines/' },
+    { name: 'getLineTrains', call: () => getLineTrains(PAYLOAD), intendedPrefix: '/public/lines/' },
+    { name: 'getLineStatus', call: () => getLineStatus([PAYLOAD], false), intendedPrefix: '/Line/' },
+    { name: 'getLineStatusForMode', call: () => getLineStatusForMode(PAYLOAD), intendedPrefix: '/Line/Mode/' },
+    {
+      name: 'getLineStatusHistory',
+      call: () => getLineStatusHistory(PAYLOAD, PAYLOAD, PAYLOAD),
+      intendedPrefix: '/Line/',
+    },
+    { name: 'getLineDailyStats', call: () => getLineDailyStats(PAYLOAD, PAYLOAD, PAYLOAD), intendedPrefix: '/Line/' },
+    {
+      name: 'getLineHalfHourlyStats',
+      call: () => getLineHalfHourlyStats(PAYLOAD, PAYLOAD, PAYLOAD),
+      intendedPrefix: '/Line/',
+    },
+    { name: 'getLineHourlyStats', call: () => getLineHourlyStats(PAYLOAD, PAYLOAD, PAYLOAD), intendedPrefix: '/Line/' },
+    {
+      name: 'getLineSixHourlyStats',
+      call: () => getLineSixHourlyStats(PAYLOAD, PAYLOAD, PAYLOAD),
+      intendedPrefix: '/Line/',
+    },
+    {
+      name: 'getLineDailyCoverageStats',
+      call: () => getLineDailyCoverageStats(PAYLOAD, PAYLOAD, PAYLOAD),
+      intendedPrefix: '/Line/',
+    },
+    {
+      name: 'getLineHalfHourlyCoverageStats',
+      call: () => getLineHalfHourlyCoverageStats(PAYLOAD, PAYLOAD, PAYLOAD),
+      intendedPrefix: '/Line/',
+    },
+    {
+      name: 'getOperatorDailyStats',
+      call: () => getOperatorDailyStats(PAYLOAD, PAYLOAD, PAYLOAD),
+      intendedPrefix: '/public/operators/',
+    },
+    {
+      name: 'getNetworkDailyStats',
+      call: () => getNetworkDailyStats(PAYLOAD, PAYLOAD),
+      intendedPrefix: '/public/network/stats/',
+    },
+    { name: 'getGroup', call: () => getGroup(PAYLOAD), intendedPrefix: '/public/groups/' },
+    { name: 'getGroupMembers', call: () => getGroupMembers(PAYLOAD), intendedPrefix: '/public/groups/' },
+    { name: 'getGroupTrains', call: () => getGroupTrains(PAYLOAD), intendedPrefix: '/public/groups/' },
+    { name: 'getGroupCustomLines', call: () => getGroupCustomLines(PAYLOAD), intendedPrefix: '/public/groups/' },
+    { name: 'getGroupJourneys', call: () => getGroupJourneys(PAYLOAD), intendedPrefix: '/public/groups/' },
+    { name: 'getGroupJoinPreview', call: () => getGroupJoinPreview(PAYLOAD), intendedPrefix: '/public/groups/join/' },
+    {
+      name: 'getJourneyByShareToken',
+      call: () => getJourneyByShareToken(PAYLOAD),
+      intendedPrefix: '/Journeys/shared/',
+    },
+  ];
+
+  for (const { name, call, intendedPrefix } of cases) {
+    it(`${name} percent-encodes a traversal segment instead of passing it through raw`, async () => {
+      await call();
+      const url = fetchedUrl();
+
+      // The crafted text reached the backend URL only in escaped form...
+      expect(url).toContain(ENCODED);
+      expect(url).not.toContain(PAYLOAD);
+      // ...so no un-escaped traversal or query-string-opening character from
+      // the payload survives anywhere in the built URL.
+      expect(url.slice(BASE.length)).not.toContain('../');
+      expect(url.slice(BASE.length)).not.toContain('?');
+
+      // The property that actually matters: `fetch`/`URL` normalization can
+      // no longer walk the request out of the route it was meant for.
+      const resolved = new URL(url);
+      expect(resolved.origin).toBe(BASE);
+      expect(resolved.pathname.startsWith(intendedPrefix)).toBe(true);
+      expect(resolved.search).toBe('');
+    });
+  }
+
+  it('leaves an ordinary id untouched (the encoding is not mangling normal URLs)', async () => {
+    await getGroupMembers('abc-123');
+    expect(fetchedUrl()).toBe(`${BASE}/public/groups/abc-123/members`);
+  });
+
+  // The comma in `/Line/{ids}/Status` is the route's own multi-id separator,
+  // so it must survive the encoding while the ids themselves do not escape.
+  it('getLineStatus keeps the comma separator meaningful while encoding each id', async () => {
+    await getLineStatus(['wcml', PAYLOAD], true);
+    expect(fetchedUrl()).toBe(`${BASE}/Line/wcml,${ENCODED}/Status?detail=true`);
   });
 });
