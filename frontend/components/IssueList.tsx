@@ -21,7 +21,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
-import type { IssueItem } from '@/lib/stationIssues';
+import { statusKey, type IssueItem } from '@/lib/stationIssues';
 import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/lib/validity';
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
 import { isGoodSeverity } from '@/lib/severity';
@@ -403,8 +403,22 @@ export function IssueList({
         panels outright so "collapsed by default" also means "not rendered".
       */}
       <Accordion multiple keepMounted={false}>
-        {filtered.map((status, i) => (
-          <AccordionItem key={i} value={String(i)}>
+        {/*
+          Bug: this used to be `key={i} value={String(i)}` -- the ARRAY
+          INDEX into `filtered`, not a property of the issue itself. Mantine's
+          Accordion tracks which panels are expanded by `value`, so once a
+          user expanded (say) index 2 and then a chip/tab filter change
+          re-sorted or shortened `filtered`, index 2 could silently become a
+          *different* issue -- the panel stayed "expanded" but now showed the
+          wrong incident's detail underneath the same position. `statusKey`
+          (`lib/stationIssues.ts`) is this codebase's own established stable
+          identity for a `LineStatus` (already used to dedupe issues across
+          reports), so it's keyed/valued on that instead -- tied to the
+          issue's own severity/reason/validity-window, not its position in
+          this render's array.
+        */}
+        {filtered.map((status) => (
+          <AccordionItem key={statusKey(status)} value={statusKey(status)}>
             <AccordionControl>
               {/*
                 The badges are the row's classification and provenance, so

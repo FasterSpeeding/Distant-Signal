@@ -92,4 +92,33 @@ describe('RunTemplateNowButton', () => {
     expect(await screen.findByText('template has no legs')).toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });
+
+  // Bug: the Service date field was free text with no client-side format
+  // check, so a malformed value used to sail straight through to
+  // `POST /JourneyTemplates/{id}/materialize` and come back as a raw
+  // backend 400 instead of a friendly inline message.
+  it('shows an inline error for a malformed service date and keeps the button disabled', async () => {
+    renderWithMantine(<RunTemplateNowButton templateId={167} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+
+    const serviceDate = await screen.findByLabelText('Service date');
+    fireEvent.change(serviceDate, { target: { value: '2026-02-30' } });
+
+    expect(await screen.findByText('Must be a valid date (YYYY-MM-DD)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create journey' })).toBeDisabled();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it('rejects a date-shaped but non-existent calendar date (not just a bare regex check)', async () => {
+    renderWithMantine(<RunTemplateNowButton templateId={167} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+
+    const serviceDate = await screen.findByLabelText('Service date');
+    // Shaped exactly like a real date, but month 13 doesn't exist -- a bare
+    // `/^\d{4}-\d{2}-\d{2}$/` shape check alone would wrongly accept this.
+    fireEvent.change(serviceDate, { target: { value: '2026-13-01' } });
+
+    expect(await screen.findByText('Must be a valid date (YYYY-MM-DD)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create journey' })).toBeDisabled();
+  });
 });

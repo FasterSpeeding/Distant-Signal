@@ -4,6 +4,7 @@ import { useRef, useState, type FormEvent } from 'react';
 import { Alert, Button, Card, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
+import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { RenderedTrainLeg } from '@/lib/types';
 import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
@@ -190,12 +191,44 @@ function isAnthropicAuthError(err: unknown): boolean {
   return false;
 }
 
+/** `client/streamableHttp.js`'s `StreamableHTTPError` carries the real HTTP
+ * status as `.code` (set on 401/403/etc. responses from the MCP server --
+ * see `streamableHttp.js`'s own `throw new StreamableHTTPError(response.status, ...)`
+ * call sites). Checked structurally as well as via `instanceof`, mirroring
+ * `isAnthropicAuthError` above, so a test double built with the same shape
+ * is still recognized. */
+function mcpHttpStatus(err: unknown): number | null {
+  if (err instanceof StreamableHTTPError) return err.code ?? null;
+  if (err && typeof err === 'object' && 'code' in err) {
+    const code = (err as { code?: unknown }).code;
+    const ctorName = (err as { constructor?: { name?: string } }).constructor?.name;
+    if (typeof code === 'number' && ctorName === 'StreamableHTTPError') return code;
+  }
+  return null;
+}
+
 function classifyChatError(err: unknown): ChatError {
   if (isAnthropicAuthError(err)) {
     return { kind: 'anthropic-rejected' };
   }
+  // Bug: this used to be `/401|403|unauthoriz/i.test(message)` -- a plain
+  // substring match against the whole error message, so any tool-error text
+  // that merely *contained* "401" somewhere (a train reporting number, a
+  // fare code, an unrelated upstream error string forwarded verbatim) was
+  // misclassified as a session-expiry error, even though nothing about the
+  // session had actually expired. A `StreamableHTTPError`'s real `.code`
+  // status is authoritative and checked first; only when no structured
+  // status is available (a bare `Error` thrown by `buildRunnableTools` for
+  // a failed tool call, whose `message` is raw upstream/tool text) does this
+  // fall back to a text match, and that fallback now requires an isolated
+  // "401"/"403"/"unauthorized" token rather than a bare substring, so it
+  // can't fire on a number embedded inside a longer token.
+  const status = mcpHttpStatus(err);
+  if (status === 401 || status === 403) {
+    return { kind: 'mcp-reconnect' };
+  }
   const message = err instanceof Error ? err.message : 'Something went wrong.';
-  if (/401|403|unauthoriz/i.test(message)) {
+  if (status === null && /(?<![\w-])(401|403|unauthorized)(?![\w-])/i.test(message)) {
     return { kind: 'mcp-reconnect' };
   }
   return { kind: 'tool-error', message };

@@ -258,4 +258,63 @@ describe('PinToggle', () => {
     });
     expect(screen.getByLabelText('Pin (currently not pinned)')).toBeInTheDocument();
   });
+
+  // Bug: `toggle()` used to be a bare `try`/`finally` with no `catch` -- a
+  // rejected `fetch()` (offline, DNS failure, a dropped connection
+  // mid-request) threw as an unhandled promise rejection. The `finally`
+  // still re-enabled the button, so the click just silently did nothing
+  // from the user's point of view: a dead click with no visible error.
+  // Mirrors `NotificationsToggle.tsx`'s identical `enable()` fix.
+  it('shows a visible error, not a silent dead click, when the preferences read rejects outright', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+
+    expect(await screen.findByText("Couldn't update. Check your connection and try again.")).toBeInTheDocument();
+    // The button recovers rather than staying stuck disabled/loading
+    // forever -- the `finally` block already reset `busy`; what was
+    // missing was only the visible error.
+    await waitFor(() => expect(screen.getByLabelText('Pin (currently not pinned)')).not.toBeDisabled());
+    // Still unpinned -- the write never happened.
+    expect(screen.getByLabelText('Pin (currently not pinned)')).toBeInTheDocument();
+  });
+
+  it('shows the same visible error when the PUT rejects outright (read succeeded, write did not)', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/api/preferences') {
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
+      }
+      throw new TypeError('Failed to fetch');
+    });
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+
+    expect(await screen.findByText("Couldn't update. Check your connection and try again.")).toBeInTheDocument();
+    expect(screen.getByLabelText('Pin (currently not pinned)')).toBeInTheDocument();
+  });
+
+  it('clears a previous network-failure error at the start of a fresh attempt', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/api/preferences') {
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
+      }
+      return new Response(null, { status: 204 });
+    });
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    const button = screen.getByLabelText('Pin (currently not pinned)');
+    fireEvent.click(button);
+    expect(await screen.findByText("Couldn't update. Check your connection and try again.")).toBeInTheDocument();
+
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(screen.queryByText("Couldn't update. Check your connection and try again.")).not.toBeInTheDocument(),
+    );
+  });
 });

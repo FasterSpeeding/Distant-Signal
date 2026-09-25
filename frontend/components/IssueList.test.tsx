@@ -279,6 +279,32 @@ describe('IssueList', () => {
     expect(await screen.findByText('Full details here')).toBeInTheDocument();
   });
 
+  // Bug: `AccordionItem` used to be `key={i} value={String(i)}` -- the
+  // array INDEX into the (re-filterable) `filtered` list, not a property of
+  // the issue itself. Mantine's Accordion tracks which panels are expanded
+  // by `value`, so expanding index 0 and then narrowing the list so a
+  // DIFFERENT issue becomes the new index 0 used to leave that issue's own
+  // panel looking pre-expanded, even though the user never clicked it.
+  it('does not carry an expanded panel over to a different issue after a chip filter reorders the list', async () => {
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    fireEvent.click(screen.getByText(/^All/));
+
+    // Expand the row that lands at index 0 ("Signal failure" / minorNow).
+    fireEvent.click(screen.getByText('Signal failure'));
+    expect(await screen.findByText('No further detail available.')).toBeInTheDocument();
+
+    // Narrow to a single, DIFFERENT status ("Severe Delays" / inferredNow),
+    // which becomes the new (and only) index 0.
+    openFilters();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
+
+    expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
+    expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
+    // The new occupant of "index 0" must start collapsed -- it was never
+    // itself clicked, so no detail panel should be showing.
+    expect(screen.queryByText('No further detail available.')).not.toBeInTheDocument();
+  });
+
   it('surfaces the "View full incident details" link when a status disruption is knowledgebase-sourced', async () => {
     const withKnowledgebaseSource: LineStatus = {
       ...minorNow,

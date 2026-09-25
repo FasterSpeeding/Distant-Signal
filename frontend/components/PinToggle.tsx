@@ -2,10 +2,19 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ActionIcon, Group, Tooltip } from '@mantine/core';
+import { ActionIcon, Group, Text, Tooltip } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import type { Preferences } from '@/lib/types';
+
+/** Shown for any network failure in `toggle()` -- a rejected `fetch()`
+ * (offline, DNS failure, the request aborted mid-flight, ...) on either the
+ * read or the write. Mirrors `NotificationsToggle.tsx`'s own
+ * `ENABLE_ERROR_MESSAGE` constant: deliberately generic rather than the raw
+ * `Error#message`, which for a `fetch()` rejection is a browser-specific,
+ * not-written-for-end-users string ("Failed to fetch" / "NetworkError when
+ * attempting to fetch resource", depending on browser). */
+const TOGGLE_ERROR_MESSAGE = "Couldn't update. Check your connection and try again.";
 
 type PinKind = 'line' | 'station' | 'operator';
 
@@ -62,6 +71,10 @@ export function PinToggle({
   // fresh attempt. Surfaces *why* the click did nothing, instead of the
   // dead-click silence this replaced (see the comment further down).
   const needsLoginState = useNeedsLogin();
+  // Set on a network failure (a rejected `fetch()`) from either request
+  // below, reset at the start of every fresh attempt -- see the `catch`
+  // block in `toggle()` for why this exists.
+  const [error, setError] = useState<string | null>(null);
 
   /** Known tradeoff: this is a full read-modify-write against the whole
    * pinned list, not a per-item mutation. Each toggle re-fetches
@@ -78,6 +91,7 @@ export function PinToggle({
   async function toggle() {
     setBusy(true);
     needsLoginState.reset();
+    setError(null);
     try {
       const prefsResponse = await fetch('/api/preferences');
       // Both endpoints below require an authenticated user, so an
@@ -125,6 +139,15 @@ export function PinToggle({
       }
       setPinned(!pinned);
       router.refresh();
+    } catch {
+      // Bug: this used to be a bare `try`/`finally` with no `catch` -- a
+      // rejected `fetch()` (offline, DNS failure, a dropped connection
+      // mid-request) threw as an unhandled promise rejection, the `finally`
+      // below still re-enabled the button, and the click just silently did
+      // nothing from the user's point of view: a dead click with no
+      // indication anything went wrong. Mirrors `NotificationsToggle.tsx`'s
+      // `enable()` -- same bug, same fix shape.
+      setError(TOGGLE_ERROR_MESSAGE);
     } finally {
       setBusy(false);
     }
@@ -165,6 +188,11 @@ export function PinToggle({
           <StarIcon filled={pinned} />
         </ActionIcon>
       </Tooltip>
+      {error && (
+        <Text size="xs" c="var(--ds-color-error-text)">
+          {error}
+        </Text>
+      )}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to pin this {kind}.
       </LoginPromptModal>

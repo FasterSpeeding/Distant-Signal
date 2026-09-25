@@ -12,6 +12,35 @@ import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 
 type LegMode = NewJourneyLegRequest['mode'];
 
+// Same convention as `TrainSearchForm.tsx`/`TrackTrainForm.tsx`/
+// `TicketEntryForm.tsx`'s own `CRS_PATTERN` -- a bare 3-letter code, checked
+// client-side so a malformed value gets a friendly inline message here
+// rather than reaching the backend and coming back as a raw 400.
+const CRS_PATTERN = /^[A-Za-z]{3}$/;
+
+/** Bug: this form's Service date field is free text (`placeholder`
+ * "YYYY-MM-DD" is only a hint, not enforced) with no client-side format
+ * check at all -- unlike this codebase's date-PICKER fields
+ * (`TrackTrainForm.tsx`'s `DateInput`), which can't produce a malformed
+ * value by construction. A garbled date used to sail straight through to
+ * `POST /Journeys/{id}/legs` and come back as a raw backend 400
+ * (`validate_window_leg`/`validate_known_train_leg`,
+ * `crates/api/src/data/journeys.rs`) shown verbatim in the `error` Alert.
+ *
+ * Checks BOTH shape and real calendar validity: `dayjs` (no
+ * `customParseFormat` plugin is installed in this app) parses an
+ * out-of-range date like "2026-02-30" by rolling it forward to March 2nd
+ * rather than rejecting it, so `DATE_PATTERN` alone would pass a value the
+ * backend would reject. Re-formatting the parsed result and comparing it
+ * back to the original string catches that roll-over without adding a new
+ * dependency. */
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+function isValidServiceDate(value: string): boolean {
+  if (!DATE_PATTERN.test(value)) return false;
+  const parsed = dayjs(value);
+  return parsed.isValid() && parsed.format('YYYY-MM-DD') === value;
+}
+
 /** Chains a new leg onto an existing journey (spec §3, multi-leg
  * chaining) -- modeled directly on `AddTrainToGroupButton.tsx`'s
  * button → modal → fetch shape (`'use client'`, `useDisclosure`, a bare
@@ -125,12 +154,16 @@ export function AddJourneyLegButton({
   const windowOrderValid =
     (!departFrom || !departTo || departFrom <= departTo) && (!arriveFrom || !arriveTo || arriveFrom <= arriveTo);
 
+  const serviceDateValid = isValidServiceDate(serviceDate);
+  const originCrsValid = CRS_PATTERN.test(originCrs.trim());
+  const destinationCrsValid = CRS_PATTERN.test(destinationCrs.trim());
+
   const isValid =
     mode === 'knownTrain'
-      ? trainUid.trim() !== '' && serviceDate !== ''
-      : originCrs.trim() !== '' &&
-        destinationCrs.trim() !== '' &&
-        serviceDate !== '' &&
+      ? trainUid.trim() !== '' && serviceDateValid
+      : originCrsValid &&
+        destinationCrsValid &&
+        serviceDateValid &&
         windowTimesComplete &&
         windowHasABound &&
         windowOrderValid;
@@ -201,6 +234,7 @@ export function AddJourneyLegButton({
             placeholder="YYYY-MM-DD"
             value={serviceDate}
             onChange={(event) => setServiceDate(event.currentTarget.value)}
+            error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
           />
           {mode === 'window' && (
             <>
@@ -209,12 +243,14 @@ export function AddJourneyLegButton({
                 placeholder="e.g. WOK"
                 value={originCrs}
                 onChange={(event) => setOriginCrs(event.currentTarget.value)}
+                error={originCrs.length > 0 && !originCrsValid ? 'Must be a 3-letter CRS code' : null}
               />
               <TextInput
                 label="Destination CRS"
                 placeholder="e.g. WAT"
                 value={destinationCrs}
                 onChange={(event) => setDestinationCrs(event.currentTarget.value)}
+                error={destinationCrs.length > 0 && !destinationCrsValid ? 'Must be a 3-letter CRS code' : null}
               />
               {/* Review §2.2/I17: same fix as `TrackTrainForm`'s own window
                   fields -- states the at-least-one-of-four rule up front
