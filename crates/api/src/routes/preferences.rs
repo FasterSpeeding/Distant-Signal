@@ -121,11 +121,44 @@ async fn get_preferences(
     }))
 }
 
+/// Upper bound on how many ids/codes a single `PUT /preferences/pinned-*`
+/// body may contain, enforced by [`reject_if_over_pin_limit`] before any of
+/// these ever reach `preferences::replace_pinned_*`.
+///
+/// There is no legitimate reason for a real user to pin thousands of
+/// lines/stations/operators -- the whole catalogue of real lines, stations,
+/// and operator codes is itself only in the hundreds -- so 500 is generous
+/// headroom over any real use while still capping the row-by-row insert
+/// cost of `replace_pinned_*`'s per-element loop (see that function's own
+/// doc comment) to something bounded and cheap, repeatable per request by
+/// any logged-in user.
+const MAX_PINNED_ITEMS: usize = 500;
+
+/// Returns a clean `400` when `items` exceeds [`MAX_PINNED_ITEMS`], so an
+/// oversized `PUT` body is rejected before it ever reaches
+/// `preferences::replace_pinned_*`'s unbounded per-row insert loop, rather
+/// than being accepted and paid for as thousands of single-row inserts in
+/// one transaction.
+fn reject_if_over_pin_limit(items: &[String], noun: &str) -> Result<(), (StatusCode, String)> {
+    if items.len() > MAX_PINNED_ITEMS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "too many pinned {noun} ({} submitted, {MAX_PINNED_ITEMS} max)",
+                items.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 async fn put_pinned_lines(
     State(app): State<App>,
     user: AuthenticatedUser,
     Json(ids): Json<Vec<String>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    reject_if_over_pin_limit(&ids, "lines")?;
+
     preferences::replace_pinned_lines(&app.database, &user.id, &ids)
         .await
         .map_err(internal_error)?;
@@ -137,6 +170,8 @@ async fn put_pinned_stations(
     user: AuthenticatedUser,
     Json(crs_codes): Json<Vec<String>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    reject_if_over_pin_limit(&crs_codes, "stations")?;
+
     if crs_codes.iter().any(|crs| crs.len() != 3) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -155,6 +190,8 @@ async fn put_pinned_operators(
     user: AuthenticatedUser,
     Json(codes): Json<Vec<String>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    reject_if_over_pin_limit(&codes, "operators")?;
+
     preferences::replace_pinned_operators(&app.database, &user.id, &codes)
         .await
         .map_err(internal_error)?;
@@ -299,6 +336,34 @@ mod tests {
         let pinned = vec!["ZZ".to_string()];
         let result = filter_known_pinned_operators(pinned, vec!["SW".to_string()]);
         assert!(result.is_empty());
+    }
+
+    /// The regression case for the review finding: an array at exactly the
+    /// cap is accepted (no off-by-one), so this pins down the boundary
+    /// before the "too many" case below pins down the rejection.
+    #[test]
+    fn a_pin_array_at_exactly_the_cap_is_accepted() {
+        let items: Vec<String> = (0..MAX_PINNED_ITEMS).map(|i| i.to_string()).collect();
+        assert!(reject_if_over_pin_limit(&items, "lines").is_ok());
+    }
+
+    /// The core regression case: before this cap existed, an unbounded
+    /// array was accepted straight into `replace_pinned_*`'s row-by-row
+    /// insert loop -- cheap, repeatable resource exhaustion for any logged-in
+    /// user. One element over the cap must now get a clean 400, not be
+    /// accepted and paid for as thousands of single-row inserts in one
+    /// transaction.
+    #[test]
+    fn a_pin_array_over_the_cap_is_rejected_with_a_clean_400() {
+        let items: Vec<String> = (0..=MAX_PINNED_ITEMS).map(|i| i.to_string()).collect();
+        let err = reject_if_over_pin_limit(&items, "lines")
+            .expect_err("an over-cap array must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(
+            err.1.contains("too many pinned lines"),
+            "error message should name what was over the limit: {}",
+            err.1
+        );
     }
 }
 

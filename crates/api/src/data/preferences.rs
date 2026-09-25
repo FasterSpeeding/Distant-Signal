@@ -56,12 +56,38 @@ pub async fn filter_existing_station_crs(
         .collect()
 }
 
+/// Drops later duplicates from `items`, keeping the first occurrence of
+/// each (and therefore the caller's own ordering for whichever copy
+/// survives) -- shared by all three `replace_pinned_*` functions below.
+///
+/// Load-bearing, not cosmetic: each of those functions inserts one row per
+/// element inside a single transaction with no `ON CONFLICT` clause, so a
+/// caller-supplied duplicate (the same id/code twice in one PUT body) would
+/// hit the `(user_id, <key>)` primary key on the second insert and fail the
+/// whole request with a 500 -- a client bug (double-submitted pin) turning
+/// into a server error instead of a clean, idempotent write. Route-layer
+/// length capping (see `crates/api/src/routes/preferences.rs`) handles the
+/// sibling "unbounded array" concern; this handles "unbounded array with
+/// unbounded duplicates in it" being cheap to send even under that cap.
+fn dedupe_preserving_order(items: &[String]) -> Vec<&String> {
+    let mut seen = std::collections::HashSet::with_capacity(items.len());
+    items
+        .iter()
+        .filter(|item| seen.insert(item.as_str()))
+        .collect()
+}
+
 /// Replaces `user_id`'s entire pinned-lines set with `ids`, in one
 /// transaction (delete-all then insert-all) so a PUT is atomic — concurrent
 /// readers never see a partially-updated list. Scoped to `user_id` now, not
 /// the whole table -- the pre-ownership version's `DELETE FROM pinned_lines`
 /// (no predicate) would wipe every other user's pins too.
+///
+/// `ids` is deduplicated (see [`dedupe_preserving_order`]) before the
+/// insert loop -- a duplicate id in the caller's array must not turn into a
+/// primary-key-violation 500.
 pub async fn replace_pinned_lines(pool: &PgPool, user_id: &str, ids: &[String]) -> Result<()> {
+    let ids = dedupe_preserving_order(ids);
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1")
         .bind(user_id)
@@ -80,12 +106,15 @@ pub async fn replace_pinned_lines(pool: &PgPool, user_id: &str, ids: &[String]) 
     Ok(())
 }
 
-/// Same replace-whole-set semantics as `replace_pinned_lines`, for stations.
+/// Same replace-whole-set semantics as `replace_pinned_lines`, for stations
+/// -- including the same de-duplication of `crs_codes` before the insert
+/// loop, for the same reason (see [`dedupe_preserving_order`]).
 pub async fn replace_pinned_stations(
     pool: &PgPool,
     user_id: &str,
     crs_codes: &[String],
 ) -> Result<()> {
+    let crs_codes = dedupe_preserving_order(crs_codes);
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM pinned_stations WHERE user_id = $1")
         .bind(user_id)
@@ -104,12 +133,14 @@ pub async fn replace_pinned_stations(
 
 /// Same replace-whole-set semantics as `replace_pinned_lines`/
 /// `replace_pinned_stations` -- delete-all-then-insert-all in one
-/// transaction, scoped to `user_id`.
+/// transaction, scoped to `user_id`, including the same de-duplication of
+/// `codes` before the insert loop (see [`dedupe_preserving_order`]).
 pub async fn replace_pinned_operators(
     pool: &PgPool,
     user_id: &str,
     codes: &[String],
 ) -> Result<()> {
+    let codes = dedupe_preserving_order(codes);
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM pinned_operators WHERE user_id = $1")
         .bind(user_id)
@@ -126,6 +157,37 @@ pub async fn replace_pinned_operators(
     }
     tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dedupe_preserving_order_drops_later_duplicates_keeping_first_occurrence_order() {
+        let items = vec![
+            "northern".to_string(),
+            "victoria".to_string(),
+            "northern".to_string(),
+            "central".to_string(),
+            "victoria".to_string(),
+        ];
+        let deduped: Vec<&str> = dedupe_preserving_order(&items)
+            .into_iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(deduped, vec!["northern", "victoria", "central"]);
+    }
+
+    #[test]
+    fn dedupe_preserving_order_of_an_already_unique_list_is_unchanged() {
+        let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let deduped: Vec<&str> = dedupe_preserving_order(&items)
+            .into_iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(deduped, vec!["a", "b", "c"]);
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +245,61 @@ mod db_tests {
             .await
             .expect("cleanup fixture pins");
         sqlx::query("DELETE FROM users WHERE id = 'TEST-PINNED-OPERATORS-USER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user");
+    }
+
+    /// The real-failure-shape regression for the review finding: before
+    /// de-duplication, a duplicate entry in the PUT body reached the
+    /// per-row insert loop unchanged, and the second insert of the same
+    /// `(user_id, operator_code)` hit the primary key and failed the whole
+    /// request with a 500 instead of a clean, idempotent write. `replace_pinned_operators`
+    /// is exercised directly here (the same call
+    /// `crates/api/src/routes/preferences.rs::put_pinned_operators` makes)
+    /// with a caller-supplied duplicate, asserting it now succeeds and the
+    /// duplicate collapses to one stored row.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                replace_pinned_operators_with_a_duplicate_code_does_not_500_and_collapses_to_one_row \
+                -- --ignored`"]
+    async fn replace_pinned_operators_with_a_duplicate_code_does_not_500_and_collapses_to_one_row()
+    {
+        let pool = connect().await;
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-PINNED-DUP-USER', 'test@example.com', 'Test Rider') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        // "SW" appears twice -- before de-duplication this would hit the
+        // (user_id, operator_code) primary key on the second insert and
+        // fail the whole transaction.
+        replace_pinned_operators(
+            &pool,
+            "TEST-PINNED-DUP-USER",
+            &["SW".to_string(), "VT".to_string(), "SW".to_string()],
+        )
+        .await
+        .expect("a duplicate entry in the input must not fail the whole PUT with a 500");
+
+        let mut codes = list_pinned_operator_codes(&pool, "TEST-PINNED-DUP-USER")
+            .await
+            .expect("list pinned operator codes");
+        codes.sort();
+        assert_eq!(
+            codes,
+            vec!["SW".to_string(), "VT".to_string()],
+            "the duplicate must collapse to a single stored row, not be stored twice or dropped entirely"
+        );
+
+        sqlx::query("DELETE FROM pinned_operators WHERE user_id = 'TEST-PINNED-DUP-USER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture pins");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-PINNED-DUP-USER'")
             .execute(&pool)
             .await
             .expect("cleanup fixture user");
