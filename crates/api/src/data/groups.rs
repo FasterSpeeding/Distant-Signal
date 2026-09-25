@@ -720,19 +720,40 @@ pub async fn consume_invite_link(
 ///
 /// Returns `false` if `train_subscription_id` doesn't exist or isn't
 /// owned by `user_id` -- the route maps this to `404`, never `403`.
+///
+/// **The ownership check and the insert now share one transaction (Low
+/// finding, 2026-09-25 review) -- this function used to run them as two
+/// separate statements, the one pattern [`grant_custom_line`] below
+/// deliberately does NOT use and explains why in its own doc comment: a
+/// real FK (`group_trains.train_subscription_id REFERENCES
+/// train_subscriptions(id)`, see `20260911090000_shared_groups.sql`) sits
+/// between the two.** Between this function's own SELECT confirming
+/// ownership and its INSERT, a concurrent request untracking that exact
+/// train (`train_tracking::delete_tracked_train`, reachable from a second
+/// tab/device at any time) could delete the `train_subscriptions` row out
+/// from under it -- turning what should be a clean, documented `404` into
+/// an FK-violation `500` instead. `FOR KEY SHARE` (not `FOR UPDATE`) is the
+/// same minimal lock `grant_custom_line` already uses for the identical
+/// shape: it blocks a concurrent DELETE of this row for the rest of this
+/// transaction without blocking the owner from renaming/updating it
+/// elsewhere, and it's exactly the lock this INSERT's own FK check takes a
+/// moment later anyway, so the two are self-compatible.
 pub async fn add_train_to_group(
     pool: &PgPool,
     group_id: &str,
     train_subscription_id: i64,
     user_id: &str,
 ) -> Result<bool> {
-    let owned: Option<(i64,)> =
-        sqlx::query_as("SELECT id FROM train_subscriptions WHERE id = $1 AND user_id = $2")
-            .bind(train_subscription_id)
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await?;
+    let mut tx = pool.begin().await?;
+    let owned: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM train_subscriptions WHERE id = $1 AND user_id = $2 FOR KEY SHARE",
+    )
+    .bind(train_subscription_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     if owned.is_none() {
+        tx.rollback().await?;
         return Ok(false);
     }
 
@@ -744,8 +765,9 @@ pub async fn add_train_to_group(
     .bind(group_id)
     .bind(train_subscription_id)
     .bind(user_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(true)
 }
 
@@ -761,19 +783,31 @@ pub async fn add_train_to_group(
 /// Returns `false` if `journey_id` doesn't exist or isn't owned by
 /// `user_id` -- the route maps this to `404`, never `403`, same as every
 /// other ownership check in this file.
+///
+/// **The ownership check and the insert now share one transaction (Low
+/// finding, 2026-09-25 review) -- same fix, same reasoning, as
+/// [`add_train_to_group`] just above.** `group_journeys.journey_id`
+/// carries a real FK to `journeys(id)` (see
+/// `20260922110000_group_journeys.sql`), so the same "ownership confirmed,
+/// then the row vanishes before the INSERT" race (here: a concurrent
+/// `journeys::delete_journey`) would otherwise surface as an FK-violation
+/// `500` instead of the documented `404`. `FOR KEY SHARE` again mirrors
+/// `grant_custom_line`'s own minimal lock for the identical shape.
 pub async fn add_journey_to_group(
     pool: &PgPool,
     group_id: &str,
     journey_id: i64,
     user_id: &str,
 ) -> Result<bool> {
+    let mut tx = pool.begin().await?;
     let owned: Option<(i64,)> =
-        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2 FOR KEY SHARE")
             .bind(journey_id)
             .bind(user_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await?;
     if owned.is_none() {
+        tx.rollback().await?;
         return Ok(false);
     }
 
@@ -785,8 +819,9 @@ pub async fn add_journey_to_group(
     .bind(group_id)
     .bind(journey_id)
     .bind(user_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(true)
 }
 
@@ -2817,6 +2852,71 @@ mod db_tests {
         cleanup(&pool, &["TEST-GROUPS-ADDTRAIN-OWNER-2"]).await;
     }
 
+    /// Low finding's own regression test (2026-09-25 review): proves the
+    /// mechanism `add_train_to_group`'s ownership-check-then-insert fix now
+    /// relies on -- `SELECT ... FOR KEY SHARE` on `train_subscriptions`
+    /// actually blocks a concurrent `DELETE` of that same row, closing the
+    /// window that used to let a race turn a documented `404` into an
+    /// FK-violation `500`.
+    ///
+    /// Same technique as
+    /// `remove_member_serializes_concurrent_calls_via_the_groups_row_lock`:
+    /// racing two real concurrent calls and hoping to land inside the
+    /// original bug's narrow window would be flaky by construction, so this
+    /// proves the lock directly -- a first transaction takes the exact same
+    /// `FOR KEY SHARE` lock `add_train_to_group` now takes and holds it
+    /// open; a concurrent `DELETE FROM train_subscriptions` for that same
+    /// row (the untrack path `add_train_to_group`'s own doc comment names)
+    /// must BLOCK behind it, confirmed by a short timeout it must NOT
+    /// complete within, resuming only once the holder commits.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                add_train_to_group_row_lock_blocks_a_concurrent_untrack -- --ignored --test-threads=1`"]
+    async fn add_train_to_group_row_lock_blocks_a_concurrent_untrack() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-ADDTRAIN-LOCK-OWNER").await;
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-ADDTRAIN-LOCK-OWNER").await;
+
+        // Holder: takes the same `FOR KEY SHARE` lock `add_train_to_group`
+        // now takes, in its own transaction, and keeps it open (uncommitted)
+        // until told to release it below.
+        let mut holder_tx = pool.begin().await.expect("begin holder tx");
+        sqlx::query("SELECT id FROM train_subscriptions WHERE id = $1 FOR KEY SHARE")
+            .bind(train_id)
+            .fetch_optional(&mut *holder_tx)
+            .await
+            .expect("acquire the train_subscriptions row lock");
+
+        // A real, concurrent DELETE of that same row -- exactly the
+        // concurrent-untrack race `add_train_to_group`'s own doc comment
+        // describes -- on a separate connection out of the same pool.
+        let pool2 = pool.clone();
+        let mut handle = tokio::spawn(async move {
+            sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+                .bind(train_id)
+                .execute(&pool2)
+                .await
+        });
+
+        let still_running =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut handle).await;
+        assert!(
+            still_running.is_err(),
+            "a concurrent DELETE of the row must block behind the FOR KEY SHARE lock, not \
+             proceed while add_train_to_group's own transaction still holds it"
+        );
+
+        holder_tx.commit().await.expect("release the lock");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("the DELETE must complete promptly once the lock is released")
+            .expect("spawned task panicked")
+            .expect("delete");
+
+        cleanup(&pool, &["TEST-GROUPS-ADDTRAIN-LOCK-OWNER"]).await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
@@ -3148,6 +3248,52 @@ mod db_tests {
             .await
             .ok();
         cleanup(&pool, &["TEST-GROUPS-ADDJOURNEY-OWNER-2"]).await;
+    }
+
+    /// `add_journey_to_group`'s own counterpart to
+    /// `add_train_to_group_row_lock_blocks_a_concurrent_untrack` -- same
+    /// mechanism, same reasoning, now proven against `journeys` and the
+    /// `group_journeys.journey_id` FK instead.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                add_journey_to_group_row_lock_blocks_a_concurrent_delete -- --ignored --test-threads=1`"]
+    async fn add_journey_to_group_row_lock_blocks_a_concurrent_delete() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-ADDJOURNEY-LOCK-OWNER").await;
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-ADDJOURNEY-LOCK-OWNER").await;
+
+        let mut holder_tx = pool.begin().await.expect("begin holder tx");
+        sqlx::query("SELECT id FROM journeys WHERE id = $1 FOR KEY SHARE")
+            .bind(journey_id)
+            .fetch_optional(&mut *holder_tx)
+            .await
+            .expect("acquire the journeys row lock");
+
+        let pool2 = pool.clone();
+        let mut handle = tokio::spawn(async move {
+            sqlx::query("DELETE FROM journeys WHERE id = $1")
+                .bind(journey_id)
+                .execute(&pool2)
+                .await
+        });
+
+        let still_running =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut handle).await;
+        assert!(
+            still_running.is_err(),
+            "a concurrent DELETE of the row must block behind the FOR KEY SHARE lock, not \
+             proceed while add_journey_to_group's own transaction still holds it"
+        );
+
+        holder_tx.commit().await.expect("release the lock");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("the DELETE must complete promptly once the lock is released")
+            .expect("spawned task panicked")
+            .expect("delete");
+
+        cleanup(&pool, &["TEST-GROUPS-ADDJOURNEY-LOCK-OWNER"]).await;
     }
 
     #[tokio::test]

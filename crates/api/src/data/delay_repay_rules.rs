@@ -65,17 +65,58 @@ pub const ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate,
 ///     plan does not resolve). An operator NOT in this list is assumed DR15,
 ///     per the design doc's own cited "most operators use DR15" finding --
 ///     see `estimate_delay_repay` below.
-const DR30_OPERATORS: &[&str] = &["lner", "crosscountry", "scotrail"];
+///
+/// **Additional spelling variants, added for Low finding #5 (2026-09-25
+/// review).** The substring match above only ever catches a spelling that
+/// literally contains one of these tokens, and real-world ticket
+/// `operator` text (`.pkpass`'s `organizationName`, or whatever a PDF
+/// e-ticket's own retailer template prints) is not guaranteed to spell an
+/// operator's name the same way this table originally did. Two confirmed
+/// real-world misses:
+///   - `"Cross Country"` (a space-separated rendering CrossCountry's own
+///     branding and third-party retailers both use interchangeably with
+///     the no-space `"CrossCountry"`) does not contain `"crosscountry"` as
+///     a substring at all, so it fell through to the DR15 branch --
+///     understating a legitimate CrossCountry claim's compensation band.
+///   - `"London North Eastern Railway"` (LNER's full legal/trading name,
+///     which some retailers print in full rather than the `"LNER"`
+///     initialism) does not contain `"lner"` either, same understating
+///     effect.
+///
+/// Both operators still only ever run DR30 under any of these spellings --
+/// this is additional MATCHING coverage for the same two verified real
+/// operators above, not a new, unverified entry.
+const DR30_OPERATORS: &[&str] = &[
+    "lner",
+    "london north eastern railway",
+    "crosscountry",
+    "cross country",
+    "scotrail",
+];
 
 /// Verified, operator-specific claim pages for the same three DR30
 /// operators above (found alongside their scheme during this plan's
 /// research pass). Every other operator falls back to `GENERIC_CLAIM_URL`
 /// -- deliberately not filled in with unverified guesses. See this plan's
 /// Global Constraints.
+///
+/// Carries the same additional spelling variants as `DR30_OPERATORS` above
+/// (Low finding #5) -- each variant maps to the SAME verified URL as its
+/// canonical spelling, not a new, unverified one, so a "Cross Country" or
+/// "London North Eastern Railway" ticket links to the correct claim page
+/// instead of falling back to `GENERIC_CLAIM_URL`.
 const CLAIM_URLS: &[(&str, &str)] = &[
     ("lner", "https://delayrepay.lner.co.uk/delayrepayV2/"),
     (
+        "london north eastern railway",
+        "https://delayrepay.lner.co.uk/delayrepayV2/",
+    ),
+    (
         "crosscountry",
+        "https://delayrepay.crosscountrytrains.co.uk/",
+    ),
+    (
+        "cross country",
         "https://delayrepay.crosscountrytrains.co.uk/",
     ),
     (
@@ -210,6 +251,53 @@ mod tests {
         assert_eq!(
             claim_url_for("CrossCountry"),
             "https://delayrepay.crosscountrytrains.co.uk/"
+        );
+    }
+
+    /// Low finding #5's own regression test (2026-09-25 review): a
+    /// space-separated "Cross Country" spelling must still be recognized as
+    /// the DR30 CrossCountry -- before this fix, `"cross country"` did not
+    /// contain the no-space `"crosscountry"` substring, so it silently fell
+    /// through to the DR15 branch and understated compensation.
+    #[test]
+    fn cross_country_with_a_space_is_still_recognized_as_dr30() {
+        assert_eq!(
+            estimate_delay_repay("Cross Country", 30).unwrap().scheme,
+            "DR30"
+        );
+        assert_eq!(
+            estimate_delay_repay("Cross Country", 20),
+            None,
+            "DR30 has no 15-29 minute band, same as the no-space spelling"
+        );
+        assert_eq!(
+            claim_url_for("Cross Country"),
+            "https://delayrepay.crosscountrytrains.co.uk/",
+            "must link to the real CrossCountry claim page, not the generic fallback"
+        );
+    }
+
+    /// Low finding #5's own regression test (2026-09-25 review): LNER's
+    /// full trading name must be recognized as DR30 too -- before this fix,
+    /// `"london north eastern railway"` did not contain the `"lner"`
+    /// substring, so it silently fell through to DR15.
+    #[test]
+    fn lners_full_trading_name_is_still_recognized_as_dr30() {
+        assert_eq!(
+            estimate_delay_repay("London North Eastern Railway", 30)
+                .unwrap()
+                .scheme,
+            "DR30"
+        );
+        assert_eq!(
+            estimate_delay_repay("London North Eastern Railway", 20),
+            None,
+            "DR30 has no 15-29 minute band, same as the LNER initialism"
+        );
+        assert_eq!(
+            claim_url_for("London North Eastern Railway"),
+            "https://delayrepay.lner.co.uk/delayrepayV2/",
+            "must link to the real LNER claim page, not the generic fallback"
         );
     }
 

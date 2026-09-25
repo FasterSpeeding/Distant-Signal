@@ -1348,19 +1348,58 @@ async fn post_pkpass_upload_standalone(
 /// `sqlx::query` call and touches no database handle -- there is nothing
 /// in this file that could accidentally persist an unreviewed upload. See
 /// this plan's Global Constraints.
+///
+/// **Low finding (2026-09-25 review): `ticket_extraction::parse_pkpass` used
+/// to run inline on this async handler's own executor thread.** The `zip`
+/// crate's inflate is bounded here (`ticket_extraction::MAX_ENTRY_BYTES`
+/// caps every entry read, so this was never the unbounded-allocation hazard
+/// `parse_pdf`'s own doc comment describes for `pdf_extract`/`lopdf`) -- so
+/// this never crashed the process. It still ran synchronous, CPU-bound ZIP
+/// inflate + JSON parsing directly on a tokio worker thread, which stalls
+/// every OTHER request multiplexed onto that same worker for however long
+/// the parse takes, exactly the general "don't block the executor" hazard
+/// `routes::trips`'s own `spawn_blocking` doc comment names. Moved onto the
+/// blocking pool via `spawn_blocking`, with the same wall-clock budget
+/// pattern `handle_pdf_upload` already uses just below, so a pathological
+/// upload degrades to one failed request rather than a stalled worker
+/// thread.
 async fn handle_pkpass_upload(
     mut multipart: Multipart,
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
-    ticket_extraction::parse_pkpass(&bytes)
-        .map(Json)
-        .map_err(|err| {
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("could not read this as a train .pkpass: {err}"),
-            )
-        })
+
+    let parsed = tokio::time::timeout(
+        PKPASS_PARSE_TIMEOUT,
+        tokio::task::spawn_blocking(move || ticket_extraction::parse_pkpass(&bytes)),
+    )
+    .await;
+
+    match parsed {
+        Ok(Ok(Ok(ticket))) => Ok(Json(ticket)),
+        Ok(Ok(Err(err))) => Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("could not read this as a train .pkpass: {err}"),
+        )),
+        Ok(Err(join_err)) => {
+            tracing::error!(error = ?join_err, ".pkpass parse task panicked or was cancelled");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to parse .pkpass".to_string(),
+            ))
+        }
+        Err(_elapsed) => Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            "pkpass parsing took too long; try a smaller or simpler file".to_string(),
+        )),
+    }
 }
+
+/// Wall-clock budget for a single `.pkpass`'s parse -- mirrors
+/// `PDF_PARSE_TIMEOUT`'s own reasoning: generous for any legitimate ticket
+/// pass (a `pass.json` a few KB, parsed in well under a second), bounded
+/// against a pathological upload tying up a blocking-pool thread
+/// indefinitely.
+const PKPASS_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Same contract as `post_pkpass_upload` (Task 7) -- see that handler's
 /// doc comment for why `_user`/`_tracking_id` are otherwise unused, and
