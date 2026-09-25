@@ -482,9 +482,18 @@ api:
   sessionTtlDays: 14
   # Internal-service OAuth2 verification -- see
   # docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md.
-  # REQUIRED -- crates/api's clap config declares issuerUrl/clientId/8
+  # REQUIRED -- crates/api's clap config declares issuerUrl/clientId/13
   # group fields with no default for the first two, so a pod without them
   # exits immediately, same fail-fast posture as sso.* above.
+  #
+  # The group fields DO have defaults, which is precisely why a missing one is
+  # dangerous rather than fail-fast: api silently falls back to the crate's
+  # own suggested name, and if the operator's real Authentik group differs,
+  # that caller's /private/* POSTs 403 forever. The count above must match
+  # `groups:` below one-for-one -- enforced by
+  # crates/api/src/data/config.rs's `chart_env_wiring_tests` module, which
+  # fails the build if this template stops setting any declared
+  # INTERNAL_OAUTH_GROUP_* var.
   internalOauth:
     # -- OIDC issuer base URL for the internal-service OAuth2 provider.
     # JWKS is discovered from this URL's .well-known/openid-configuration,
@@ -506,6 +515,18 @@ api:
       scheduleIngest: svc-schedule-ingest
       scheduleReference: svc-schedule-reference
       fullCoverage: svc-full-coverage-consumer
+      # Gates POST /private/trust-event-backlog -- trust-backlog-consumer's
+      # own service-account group. MUST equal
+      # trustBacklogConsumer.internalOauthUsername's own Authentik group
+      # below, or every POST that workload makes is rejected 403 forever and
+      # its Redis backlog grows without bound, with nothing but the
+      # consumer's own error log as evidence. (Declared as
+      # `internal_oauth_group_trust_backlog` in crates/api/src/data/config.rs
+      # since 2026-09-05 but only wired into api-deployment.yaml here on
+      # 2026-09-25 -- which is exactly the drift
+      # crates/api/src/data/config.rs's `chart_env_wiring_tests` module now
+      # makes impossible to reintroduce.)
+      trustBacklog: svc-trust-backlog-consumer
       irishRailGtfs: svc-poller-irish-rail-gtfs
       irishRailLive: svc-poller-irish-rail-live
       nirStations: svc-poller-nir-stations
