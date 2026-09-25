@@ -2446,6 +2446,17 @@ mod db_tests {
         let train_uid = "TEST-UNCATALOGUED-ORIGIN";
         let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
 
+        // Cleanup FIRST as well as last: `find_or_create_train` is idempotent
+        // per `(train_uid, service_date)`, so a row left behind by an earlier
+        // FAILED run (which never reaches its own cleanup) would already carry
+        // the schedule columns this test asserts get filled in -- passing for
+        // the wrong reason.
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+
         let trains_id = crate::data::trains::find_or_create_train(&pool, train_uid, service_date)
             .await
             .expect("find_or_create_train for fixture");

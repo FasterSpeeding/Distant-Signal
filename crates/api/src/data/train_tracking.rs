@@ -5465,6 +5465,16 @@ mod db_tests {
     async fn upsert_train_event_refuses_a_resolution_whose_uid_disagrees() {
         let pool = connect().await;
         let user_id = "TEST-UID-DISAGREE";
+        cleanup_user(&pool, user_id).await;
+        // Cleanup FIRST as well as last, the same posture
+        // `an_nr_primary_subscription_receives_live_movement_events` already
+        // takes: this test's whole assertion is "nothing was written to this
+        // shared row", and `find_or_create_train` is idempotent per
+        // `(train_uid, service_date)` -- so a leftover row from an earlier
+        // FAILED run (which never reaches its own cleanup) would be reused
+        // here with its `train_id` already stamped, failing this test for a
+        // reason that has nothing to do with the code under test.
+        cleanup_disagreement_fixture_trains(&pool).await;
         seed_user(&pool, user_id).await;
         let service_date = chrono::Utc::now().date_naive();
 
@@ -5530,24 +5540,39 @@ mod db_tests {
                 .expect("count current-state rows");
         assert_eq!(states, 0, "nor a current-state write");
 
-        sqlx::query("DELETE FROM train_current_state WHERE trains_id = $1")
-            .bind(trains_id)
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
-            .bind(trains_id)
-            .execute(&pool)
-            .await
-            .ok();
         cleanup_user(&pool, user_id).await;
-        sqlx::query(
-            "DELETE FROM trains WHERE train_uid IN ('TEST-DISAGREE-EXISTING', \
+        cleanup_disagreement_fixture_trains(&pool).await;
+    }
+
+    /// Deletes both `trains` identities the uid-disagreement test uses, plus
+    /// anything keyed on them. Called at the START of that test as well as the
+    /// end -- see its own comment for why a leftover row would otherwise fail
+    /// it for the wrong reason.
+    async fn cleanup_disagreement_fixture_trains(pool: &PgPool) {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM trains WHERE train_uid IN ('TEST-DISAGREE-EXISTING', \
              'TEST-DISAGREE-OTHER')",
         )
-        .execute(&pool)
+        .fetch_all(pool)
         .await
-        .ok();
+        .unwrap_or_default();
+        for id in ids {
+            sqlx::query("DELETE FROM train_current_state WHERE trains_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM trains WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+        }
     }
 
     /// The other side of the same guard, so it cannot pass by refusing
@@ -5561,9 +5586,31 @@ mod db_tests {
     async fn upsert_train_event_applies_a_resolution_whose_uid_agrees() {
         let pool = connect().await;
         let user_id = "TEST-UID-AGREE";
+        // Same cleanup-first posture as its sibling above: this asserts an
+        // exact movement-row count, which a leftover row from a failed earlier
+        // run would distort.
+        cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
         let service_date = chrono::Utc::now().date_naive();
 
+        sqlx::query(
+            "DELETE FROM train_movement_events WHERE trains_id IN \
+             (SELECT id FROM trains WHERE train_uid = 'TEST-AGREE-UID')",
+        )
+        .execute(&pool)
+        .await
+        .ok();
+        sqlx::query(
+            "DELETE FROM train_current_state WHERE trains_id IN \
+             (SELECT id FROM trains WHERE train_uid = 'TEST-AGREE-UID')",
+        )
+        .execute(&pool)
+        .await
+        .ok();
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-AGREE-UID'")
+            .execute(&pool)
+            .await
+            .ok();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-AGREE-UID", service_date)
                 .await
