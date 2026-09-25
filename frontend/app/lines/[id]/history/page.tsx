@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import { notFound } from 'next/navigation';
 import { Alert, Divider, Paper, Skeleton, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text, Title } from '@mantine/core';
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -84,6 +85,21 @@ export default async function LineHistoryPage({
 }) {
   const { id } = await params;
   const query = await searchParams;
+
+  // A real line id is always a lowercase slug -- see
+  // `app/lines/[id]/page.tsx`'s own identical check for the full
+  // catalogue-vs-custom-line id-shape explanation. Checked BEFORE `id`
+  // ever reaches `getLineStatus`/`getLineStatusHistory` below, both of
+  // which interpolate it unencoded into their target URL (`lib/api.ts`) --
+  // a malformed value could otherwise redirect one of those fetches
+  // somewhere this route never intended. Unlike the detail page, this page
+  // has no existing "id doesn't exist" render of its own to reuse
+  // (`resolveLineName` degrades to showing the raw id rather than
+  // rejecting it) -- `notFound()` is the safest default here, and matches
+  // `app/journeys/[id]/page.tsx`'s own convention for a malformed param.
+  if (!/^[a-z0-9-]+$/.test(id)) {
+    notFound();
+  }
 
   const now = Date.now();
   const [name, retention] = await Promise.all([

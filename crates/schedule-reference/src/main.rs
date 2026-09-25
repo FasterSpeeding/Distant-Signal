@@ -1168,9 +1168,18 @@ fn schedule_destination_departures_rows(
 ///    `DefaultBodyLimit::max(100 * 1024 * 1024)`
 ///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom. If a future
 ///    measurement pushes it past ~60MB, chunk it with
-///    `for chunk in rows.chunks(50_000)` and teach the ingest handler
-///    "the first chunk clears the day" -- addendum §3's documented
-///    fallback, and Task 1 Step 3 of this plan.
+///    `for chunk in rows.chunks(50_000)`, calling
+///    `common::ingest::post_batch` once per chunk with
+///    `?first_chunk=true` on the URL for the first chunk and
+///    `?first_chunk=false` for every chunk after it (see the single call
+///    below, which always sends `?first_chunk=true` today since this
+///    function still sends exactly one call per date) -- addendum §3's
+///    documented fallback, and Task 1 Step 3 of this plan. The ingest side
+///    of "the first chunk clears the day" already exists
+///    (`queries::upsert_schedule_destination_departures_chunk`,
+///    `crates/api/src/routes/ingest.rs::post_schedule_destination_departures`'s
+///    `?first_chunk=` query parameter) -- turning this fallback on is then
+///    just this loop change, no further API-side work.
 async fn publish_schedule_destination_departures(
     client: &Client,
     config: &Config,
@@ -1223,20 +1232,21 @@ async fn publish_schedule_destination_departures(
 /// `publish_schedule_destination_departures`'s own `NaiveTime::MIN`, see
 /// that function's doc comment, point 1).
 ///
-/// **Chunked** as of 2026-09-25, via [`post_date_scoped_rows_in_chunks`] --
-/// the `rows.chunks(50_000)` fallback this doc comment previously described
-/// as a documented follow-up is now what actually runs, on every publish, not
-/// only once a measurement forces it. This is the largest product this
-/// service publishes (every `LO`/`LI`/`LT` calling point of every
-/// non-cancelled schedule, including the passing points and junction TIPLOCs
-/// its departure-bearing sibling excludes, so realistically 2-3x that
+/// **Chunked as of 2026-09-25**, via [`post_date_scoped_rows_in_chunks`] --
+/// the `rows.chunks(50_000)` fallback this doc comment previously described as
+/// a follow-up "just this loop change" away is now what actually runs, on every
+/// publish, rather than waiting for a measurement to force it. This is the
+/// largest product this service publishes (every `LO`/`LI`/`LT` calling point
+/// of every non-cancelled schedule, including the passing points and junction
+/// TIPLOCs its departure-bearing sibling excludes, so realistically 2-3x that
 /// sibling's ~377,000 rows per date) and it publishes eight dates per cycle,
-/// which put a single un-chunked POST plausibly at or over `api`'s 100MB body
-/// limit and/or this crate's 30s `REQUEST_TIMEOUT`. See
-/// [`PUBLISH_CHUNK_ROWS`] for the sizing and
-/// [`post_date_scoped_rows_in_chunks`] for the "only the first chunk clears
-/// the date" contract that keeps chunking from turning into per-chunk data
-/// loss.
+/// which put a single un-chunked POST plausibly at or over `api`'s
+/// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`)
+/// and/or this crate's 30s `REQUEST_TIMEOUT`. See [`PUBLISH_CHUNK_ROWS`] for
+/// the sizing and [`post_date_scoped_rows_in_chunks`] for the `?first_chunk=`
+/// contract -- already supported on the ingest side
+/// (`queries::upsert_schedule_calling_points_full_chunk`) -- that keeps
+/// chunking from turning into per-chunk data loss.
 async fn publish_schedule_calling_points_full(
     client: &Client,
     config: &Config,
@@ -1400,12 +1410,17 @@ const PUBLISH_CHUNK_ROWS: usize = 50_000;
 /// every chunk of one date ran that unchanged, chunk 2 would delete
 /// everything chunk 1 had just inserted and the date would end up holding
 /// only the LAST chunk -- a far worse bug than the oversized body this
-/// chunking exists to prevent. So `?replace=true` is sent on the FIRST chunk
-/// of a date only (clear the date, then insert), and `?replace=false` on
-/// every chunk after it (insert only). A route that receives no `replace`
-/// parameter at all defaults to `true`, i.e. the pre-chunking behavior, so
-/// direct in-process callers of those `queries::upsert_*` functions are
-/// unaffected.
+/// chunking exists to prevent. So `?first_chunk=true` is sent on the FIRST
+/// chunk of a date only (clear the date, then insert), and
+/// `?first_chunk=false` on every chunk after it (insert only).
+///
+/// `first_chunk` is `api`'s OWN already-landed parameter name for exactly this
+/// (`routes::ingest::ScheduleChunkParams`,
+/// `queries::upsert_schedule_calling_points_full_chunk`) -- the ingest side
+/// added it ahead of a publisher that would use it, and this is that
+/// publisher. Getting the name wrong here would be silent and catastrophic:
+/// `api` would ignore the unknown parameter, every chunk would take the
+/// `DELETE` branch, and each date would keep only its last chunk.
 ///
 /// **Partial-date exposure, and why it is the right trade.** A failure part
 /// way through a date (chunk 5 of 12 times out) leaves that date holding
@@ -1413,7 +1428,7 @@ const PUBLISH_CHUNK_ROWS: usize = 50_000;
 /// one thing the previous single-transaction shape could not do. That is
 /// bounded and self-healing: the failure is recorded on [`CycleOutcome`], the
 /// delivery marker does not advance, and the next cycle (≤ `poll_interval_secs`
-/// later) republishes the whole date starting from a `replace=true` chunk.
+/// later) republishes the whole date starting from a `first_chunk=true` chunk.
 /// The alternative -- a body that never lands at all, for a whole day, with
 /// one log line -- is not better, it is just less visible.
 async fn post_date_scoped_rows_in_chunks(
@@ -1430,34 +1445,41 @@ async fn post_date_scoped_rows_in_chunks(
     // sending it keeps this cycle's `posted 0 <noun>` log line -- the only
     // evidence that the publish ran at all and genuinely had nothing to say.
     if rows.is_empty() {
-        return common::ingest::post_batch(client, &replace_url(url, true), tokens, rows, noun)
+        return common::ingest::post_batch(client, &first_chunk_url(url, true), tokens, rows, noun)
             .await;
     }
 
     let chunk_count = rows.len().div_ceil(PUBLISH_CHUNK_ROWS);
     for (index, chunk) in rows.chunks(PUBLISH_CHUNK_ROWS).enumerate() {
-        let replace = index == 0;
-        common::ingest::post_batch(client, &replace_url(url, replace), tokens, chunk, noun)
-            .await
-            .map_err(|err| {
-                anyhow::anyhow!(
-                    "chunk {}/{chunk_count} ({} rows, replace={replace}) failed: {err}",
-                    index + 1,
-                    chunk.len(),
-                )
-            })?;
+        let first_chunk = index == 0;
+        common::ingest::post_batch(
+            client,
+            &first_chunk_url(url, first_chunk),
+            tokens,
+            chunk,
+            noun,
+        )
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "chunk {}/{chunk_count} ({} rows, first_chunk={first_chunk}) failed: {err}",
+                index + 1,
+                chunk.len(),
+            )
+        })?;
     }
     Ok(())
 }
 
-/// Appends the `replace` query parameter [`post_date_scoped_rows_in_chunks`]
-/// uses to tell a date-scoped ingest route whether this chunk is the one that
-/// clears the date. Handles a URL that already carries a query string, since
-/// these URLs come from configuration and nothing stops an operator setting
-/// one.
-fn replace_url(url: &str, replace: bool) -> String {
+/// Appends the `first_chunk` query parameter
+/// [`post_date_scoped_rows_in_chunks`] uses to tell a date-scoped ingest route
+/// whether this chunk is the one that clears the date -- `api`'s own parameter
+/// name for it, see that function's doc comment. Handles a URL that already
+/// carries a query string, since these URLs come from configuration and
+/// nothing stops an operator setting one.
+fn first_chunk_url(url: &str, first_chunk: bool) -> String {
     let separator = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{separator}replace={replace}")
+    format!("{url}{separator}first_chunk={first_chunk}")
 }
 
 /// A single-object POST (not a batch array) -- `common::ingest::post_batch`
@@ -2864,30 +2886,30 @@ mod chunked_publish_tests {
     }
 
     #[test]
-    fn replace_url_marks_only_the_chunk_that_may_clear_the_date() {
+    fn first_chunk_url_marks_only_the_chunk_that_may_clear_the_date() {
         assert_eq!(
-            replace_url("http://api:8080/private/schedule-calling-points-full", true),
-            "http://api:8080/private/schedule-calling-points-full?replace=true"
+            first_chunk_url("http://api:8080/private/schedule-calling-points-full", true),
+            "http://api:8080/private/schedule-calling-points-full?first_chunk=true"
         );
         assert_eq!(
-            replace_url(
+            first_chunk_url(
                 "http://api:8080/private/schedule-calling-points-full",
                 false
             ),
-            "http://api:8080/private/schedule-calling-points-full?replace=false"
+            "http://api:8080/private/schedule-calling-points-full?first_chunk=false"
         );
     }
 
     #[test]
-    fn replace_url_appends_to_a_url_that_already_has_a_query_string() {
+    fn first_chunk_url_appends_to_a_url_that_already_has_a_query_string() {
         assert_eq!(
-            replace_url("http://api:8080/private/x?trace=1", true),
-            "http://api:8080/private/x?trace=1&replace=true"
+            first_chunk_url("http://api:8080/private/x?trace=1", true),
+            "http://api:8080/private/x?trace=1&first_chunk=true"
         );
     }
 
     /// **The core contract test.** Several chunks per date, and exactly ONE of
-    /// them -- the first -- carries `replace=true`. If every chunk carried it,
+    /// them -- the first -- carries `first_chunk=true`. If every chunk carried it,
     /// each chunk's `DELETE ... WHERE service_date = ANY(...)` would delete
     /// the chunks before it and the date would end up holding only the last
     /// chunk: a far worse bug than the oversized body this chunking prevents.
@@ -2915,9 +2937,15 @@ mod chunked_publish_tests {
 
         let posts = capture_posts(&server, "/private/chunked").await;
         assert_eq!(posts.len(), 3, "2*chunk+1 rows must be split into 3 POSTs");
-        assert_eq!(posts[0], (PUBLISH_CHUNK_ROWS, "replace=true".to_string()));
-        assert_eq!(posts[1], (PUBLISH_CHUNK_ROWS, "replace=false".to_string()));
-        assert_eq!(posts[2], (1, "replace=false".to_string()));
+        assert_eq!(
+            posts[0],
+            (PUBLISH_CHUNK_ROWS, "first_chunk=true".to_string())
+        );
+        assert_eq!(
+            posts[1],
+            (PUBLISH_CHUNK_ROWS, "first_chunk=false".to_string())
+        );
+        assert_eq!(posts[2], (1, "first_chunk=false".to_string()));
     }
 
     /// A publish small enough to fit in one chunk must be byte-for-byte the
@@ -2941,7 +2969,7 @@ mod chunked_publish_tests {
 
         assert_eq!(
             capture_posts(&server, "/private/chunked").await,
-            vec![(10, "replace=true".to_string())]
+            vec![(10, "first_chunk=true".to_string())]
         );
     }
 
@@ -2967,13 +2995,13 @@ mod chunked_publish_tests {
 
         assert_eq!(
             capture_posts(&server, "/private/chunked").await,
-            vec![(0, "replace=true".to_string())]
+            vec![(0, "first_chunk=true".to_string())]
         );
     }
 
     /// A failing chunk must surface as an error naming WHICH chunk failed, so
     /// the caller records a retryable failure and the next cycle republishes
-    /// the whole date from a `replace=true` chunk.
+    /// the whole date from a `first_chunk=true` chunk.
     #[tokio::test]
     async fn a_failing_chunk_is_an_error_that_names_the_chunk() {
         let server = wiremock::MockServer::start().await;
@@ -2991,8 +3019,8 @@ mod chunked_publish_tests {
             .expect_err("a 413 must not be swallowed");
         let message = format!("{err}");
         assert!(
-            message.contains("chunk 1/1") && message.contains("replace=true"),
-            "error must identify the chunk and its replace flag; got: {message}"
+            message.contains("chunk 1/1") && message.contains("first_chunk=true"),
+            "error must identify the chunk and its first_chunk flag; got: {message}"
         );
     }
 }

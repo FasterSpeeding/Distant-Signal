@@ -65,6 +65,24 @@ async fn main() -> anyhow::Result<()> {
             &pool,
             &static_lines,
             &defaults,
+            &mut dedup_ledger,
+            config.full_coverage_enabled_default,
+        )
+        .await;
+
+        if let Err(err) = result {
+            tracing::error!(error = ?err, "aggregation cycle failed; will retry next interval");
+        }
+
+        // Retention runs UNCONDITIONALLY, after the aggregation pass and
+        // outside its `?`-chain -- deliberately not gated on `result` being
+        // `Ok`. Pruning has no data dependency on the status/stats writes
+        // above, and two of its tiers exist to enforce real RDM licensing
+        // obligations (`trust_event_backlog`'s 1-day window, the LDBWS-derived
+        // stats tables' 1-year ceiling), so a run of failing aggregation
+        // cycles must not quietly suspend them. See `run_retention`.
+        if let Err(err) = run_retention(
+            &pool,
             config.history_retention_days,
             config.daily_stats_retention_days,
             config.half_hourly_stats_retention_hours,
@@ -73,18 +91,19 @@ async fn main() -> anyhow::Result<()> {
             config.untracked_trains_retention_days,
             config.schedule_destination_departures_retention_days,
             config.schedule_derived_products_retention_days,
-            &mut dedup_ledger,
-            config.full_coverage_enabled_default,
         )
-        .await;
+        .await
+        {
+            tracing::error!(error = ?err, "retention pruning failed; will retry next interval");
+        }
+
+        // Records the whole iteration -- aggregation AND retention -- which
+        // is what this histogram measured before retention was split out of
+        // `run_cycle`, so its existing dashboards/alerts keep their meaning.
         metrics::histogram!(common::metrics::metric_name(
             "aggregator_cycle_duration_seconds"
         ))
         .record(cycle_start.elapsed().as_secs_f64());
-
-        if let Err(err) = result {
-            tracing::error!(error = ?err, "aggregation cycle failed; will retry next interval");
-        }
     }
 }
 
@@ -167,35 +186,36 @@ async fn main() -> anyhow::Result<()> {
 /// against transaction count/WAL-fsync savings if it ever needs revisiting.
 const WRITE_CHUNK_SIZE: usize = 50;
 
-// This crate's own single-call-site orchestration function, threading every
-// per-cycle config knob straight through -- same posture as
-// `full-coverage-consumer/src/main.rs` and `schedule-ingest/src/main.rs`'s
-// own `#[allow(clippy::too_many_arguments)]` on their analogous top-level
-// loop functions, rather than `aggregation::ClassifyCounts`'s bundling
-// pattern (which exists for a function with real internal reuse/tests
-// exercising the fields independently -- not the case here).
-#[allow(clippy::too_many_arguments)]
+// This crate's own single-call-site orchestration function. Every retention
+// knob it used to thread through now belongs to `run_retention` instead --
+// see that function's doc comment for why pruning is no longer part of this
+// one's `?`-chain.
 async fn run_cycle(
     pool: &sqlx::PgPool,
     static_lines: &HashMap<String, LineDefinition>,
     defaults: &Defaults,
-    retention_days: i64,
-    daily_stats_retention_days: i64,
-    half_hourly_stats_retention_hours: i64,
-    trust_event_backlog_retention_days: i64,
-    trains_retention_days: i64,
-    untracked_trains_retention_days: i64,
-    schedule_destination_departures_retention_days: i64,
-    schedule_derived_products_retention_days: i64,
     dedup_ledger: &mut SeenServiceLedger,
     full_coverage_enabled_default: bool,
 ) -> anyhow::Result<()> {
+    // Every custom line loaded here is merged into the global catalogue and
+    // then fully re-evaluated below -- matcher pass against every active
+    // incident, segment rebuild, `line_status`/stats writes -- on every
+    // cycle, for as long as it exists. That per-cycle cost is what
+    // `crates/api`'s `custom_lines::MAX_CUSTOM_LINES_PER_USER` bounds at the
+    // creation end; there is deliberately no cap enforced here, since
+    // silently dropping catalogued lines mid-cycle would be worse than the
+    // work of evaluating them.
     let custom_lines = queries::load_custom_lines(pool).await?;
     let lines = aggregation::merge_custom_lines(static_lines, custom_lines);
     let registry = SegmentRegistry::new(&lines);
 
     let incidents = queries::load_incidents(pool).await?;
-    let samples = queries::load_station_samples(pool).await?;
+    let mut samples = queries::load_station_samples(pool).await?;
+    // Freshness gate on the LDBWS snapshot BEFORE anything reads it, so both
+    // consumers below -- `aggregation::aggregate`'s severity inference and
+    // `dedup::dedup_new_sample_stats`'s daily "distinct trains" rollup -- see
+    // the same live-only view. See `aggregation::drop_stale_samples`.
+    let stale_samples_dropped = aggregation::drop_stale_samples(&mut samples, chrono::Utc::now());
 
     let mut reports = aggregation::aggregate(&lines, &incidents, &samples, &registry, defaults);
     // Layer 3 (Decision 3): merges a per-line materialized full-coverage
@@ -243,7 +263,182 @@ async fn run_cycle(
     let current_line_ids: Vec<String> = lines.keys().cloned().collect();
     let removed = queries::prune_removed_lines(pool, &current_line_ids).await?;
 
+    // Per-service dedup pass, folded together with the daily-stats write:
+    // `dedup::dedup_new_sample_stats` is STATEFUL (it mutates `dedup_ledger`
+    // via `mark_seen`), so it must be called AT MOST ONCE per line per
+    // cycle -- calling it twice for the same line would make the second
+    // call see everything as already-seen and silently under-report. The
+    // gate for whether a line gets a `record_daily_stats` write at all
+    // (independent of whether dedup finds anything NEW) is computed once
+    // per line via `lines_with_sample_coverage`, not once per status --
+    // see that function's doc for why iterating `report.statuses` would
+    // double-count.
+    let cycle_now = chrono::Utc::now();
+    let today = queries::london_calendar_day(cycle_now);
+    let half_hour_start = queries::utc_half_hour_start(cycle_now);
+    let mut new_services_this_cycle: u64 = 0;
+    let mut daily_stats_recorded = 0u64;
+    let mut half_hourly_stats_recorded = 0u64;
+    // Batched into WRITE_CHUNK_SIZE-sized transactions, same rationale (and
+    // caveat re: dedup_ledger mutation ordering) as the write_line_status
+    // pass above -- see `WRITE_CHUNK_SIZE`'s doc comment. A separate set of
+    // transactions from that pass, not a shared one: different tables,
+    // different purpose, no atomicity requirement between the two passes.
+    let coverage = lines_with_sample_coverage(&reports, &lines);
+    for chunk in coverage.chunks(WRITE_CHUNK_SIZE) {
+        let mut tx = pool.begin().await?;
+        for &(line_id, line) in chunk {
+            let deduped = dedup::dedup_new_sample_stats(
+                dedup_ledger,
+                line_id,
+                today,
+                line,
+                &samples,
+                defaults,
+            );
+            if let Some(ref stats) = deduped {
+                new_services_this_cycle += stats.total as u64;
+            }
+            // Both calls below are fed the SAME `deduped` value -- this is
+            // Decision 2's whole point (see that function's own doc comment
+            // and the half_hourly_and_daily_stats_reconcile_for_a_single_line_and_period
+            // test in queries.rs): a day's 48 half-hourly rows must sum back to
+            // that day's daily row, which only holds if both writes see an
+            // identical per-cycle contribution, not two independently
+            // computed ones. Sharing the same chunk transaction doesn't
+            // change this invariant -- it held (and was verified by that
+            // test) back when both calls were separately autocommitted too.
+            queries::record_daily_stats(&mut *tx, line_id, today, deduped.as_ref()).await?;
+            queries::record_half_hourly_stats(&mut *tx, line_id, half_hour_start, deduped.as_ref())
+                .await?;
+            daily_stats_recorded += 1;
+            half_hourly_stats_recorded += 1;
+        }
+        tx.commit().await?;
+    }
+    dedup_ledger.prune_before(today);
+
+    // The full-coverage sibling of the dedup/daily-stats pass above. Unlike
+    // that pass, this one is fed each status's raw `full_coverage_stats`
+    // directly, NOT run through a dedup step -- see
+    // `queries::record_daily_coverage_stats`'s own module doc comment for
+    // why (no defined per-service dedup analog exists yet for a
+    // full-coverage producer).
+    //
+    // NOT a no-op any more, and this comment used to claim otherwise ("always
+    // a no-op today ... `merge_full_coverage` above is always called with an
+    // empty signal map"). That stopped being true on 2026-09-21: the Option B
+    // consumer shipped as `crates/full-coverage-consumer`, it writes real
+    // `full_coverage_line_stats` rows that `load_full_coverage_line_stats`
+    // reads above, and `lines/tfw-conwy-valley.toml` sets
+    // `full_coverage_enabled = true`, so that line really does flow through
+    // `merge_full_coverage` -> here every cycle. Left uncorrected, the stale
+    // comment invited exactly one bad conclusion: that
+    // `merge_full_coverage_stats`'s severity-overwrite branch could not
+    // affect production (it can -- see that function's own doc comment for
+    // the demotion bug that reached live traffic through this path).
+    let coverage_lines = lines_with_full_coverage(&reports);
+    let mut coverage_stats_recorded = 0u64;
+    for chunk in coverage_lines.chunks(WRITE_CHUNK_SIZE) {
+        let mut tx = pool.begin().await?;
+        for &(line_id, status) in chunk {
+            queries::record_daily_coverage_stats(
+                &mut *tx,
+                line_id,
+                today,
+                status.full_coverage_stats.as_ref(),
+            )
+            .await?;
+            queries::record_half_hourly_coverage_stats(
+                &mut *tx,
+                line_id,
+                half_hour_start,
+                status.full_coverage_stats.as_ref(),
+            )
+            .await?;
+            coverage_stats_recorded += 1;
+        }
+        tx.commit().await?;
+    }
+
+    metrics::gauge!(common::metrics::metric_name("aggregator_lines_total"))
+        .set(reports.len() as f64);
+    metrics::gauge!(common::metrics::metric_name("aggregator_incidents_loaded"))
+        .set(incidents.len() as f64);
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_deduped_new_services_total"
+    ))
+    .increment(new_services_this_cycle);
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_daily_stats_recorded_total"
+    ))
+    .increment(daily_stats_recorded);
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_half_hourly_stats_recorded_total"
+    ))
+    .increment(half_hourly_stats_recorded);
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_coverage_stats_recorded_total"
+    ))
+    .increment(coverage_stats_recorded);
+
+    tracing::info!(
+        lines = reports.len(),
+        incidents = incidents.len(),
+        stale_sample_stations_dropped = stale_samples_dropped,
+        removed_lines = removed,
+        deduped_new_services = new_services_this_cycle,
+        daily_stats_recorded = daily_stats_recorded,
+        half_hourly_stats_recorded = half_hourly_stats_recorded,
+        coverage_stats_recorded = coverage_stats_recorded,
+        "aggregation cycle complete"
+    );
+
+    Ok(())
+}
+
+/// Every data-independent retention prune, in its own pass.
+///
+/// # Why this is NOT part of `run_cycle`'s `?`-chain
+///
+/// It used to be, interleaved with the status/stats writes, so ANY earlier
+/// failure in the cycle -- a malformed row, a transient write error on one
+/// line, a single `write_line_status` panic-free `Err` -- returned early and
+/// silently skipped every prune queued behind it. One of those prunes is
+/// `trust_event_backlog`'s, whose 1-day window exists to enforce an RDM
+/// licensing safeguard (see `Config::trust_event_backlog_retention_days`),
+/// and another is `line_status_daily_stats`/`line_status_half_hourly_stats`'
+/// LDBWS 1-year deletion ceiling. Retention is a compliance obligation with
+/// no data dependency on the aggregation it was sharing a `?`-chain with, so
+/// `main`'s loop now awaits this separately and logs its own failure --
+/// pruning happens on schedule even during a stretch of failing cycles.
+///
+/// `prune_removed_lines` deliberately stays in `run_cycle`: it needs that
+/// cycle's freshly-merged line set, so it genuinely cannot run without a
+/// successful load.
+///
+/// Every argument is a retention knob threaded straight through from
+/// `Config` -- same posture (and same `#[allow]`) as
+/// `full-coverage-consumer/src/main.rs` and `schedule-ingest/src/main.rs`'s
+/// analogous top-level loop functions, which `run_cycle` itself used to
+/// carry before this split.
+#[allow(clippy::too_many_arguments)]
+async fn run_retention(
+    pool: &sqlx::PgPool,
+    retention_days: i64,
+    daily_stats_retention_days: i64,
+    half_hourly_stats_retention_hours: i64,
+    trust_event_backlog_retention_days: i64,
+    trains_retention_days: i64,
+    untracked_trains_retention_days: i64,
+    schedule_destination_departures_retention_days: i64,
+    schedule_derived_products_retention_days: i64,
+) -> anyhow::Result<()> {
     let pruned = queries::prune_history(pool, retention_days).await?;
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_history_rows_pruned_total"
+    ))
+    .increment(pruned);
 
     // Loud, unmissable, per-cycle (not "first cycle only") retention
     // safeguard for trust_event_backlog -- see
@@ -302,8 +497,10 @@ async fn run_cycle(
     // The other three CIF-derived published products, which had NO pruning job
     // anywhere in this repo until 2026-09-25. All three grow by a new
     // `service_date` per delivery, forever -- the "bounded key space, trivial
-    // steady-state size" reasoning that justified skipping them bounded the
-    // `crs`/`line_id` dimension and not the date one. See
+    // steady-state size" reasoning that justified skipping them (quoted in the
+    // comment directly above, which called its own table "the one published
+    // product in this repo that genuinely accrues") bounded the `crs`/`line_id`
+    // dimension and not the date one. See
     // Config::schedule_derived_products_retention_days and each prune
     // function's own doc comment.
     let schedule_calling_points_full_pruned =
@@ -330,157 +527,37 @@ async fn run_cycle(
     ))
     .increment(schedule_line_population_pruned);
 
-    // Per-service dedup pass, folded together with the daily-stats write:
-    // `dedup::dedup_new_sample_stats` is STATEFUL (it mutates `dedup_ledger`
-    // via `mark_seen`), so it must be called AT MOST ONCE per line per
-    // cycle -- calling it twice for the same line would make the second
-    // call see everything as already-seen and silently under-report. The
-    // gate for whether a line gets a `record_daily_stats` write at all
-    // (independent of whether dedup finds anything NEW) is computed once
-    // per line via `lines_with_sample_coverage`, not once per status --
-    // see that function's doc for why iterating `report.statuses` would
-    // double-count.
-    let cycle_now = chrono::Utc::now();
-    let today = queries::london_calendar_day(cycle_now);
-    let half_hour_start = queries::utc_half_hour_start(cycle_now);
-    let mut new_services_this_cycle: u64 = 0;
-    let mut daily_stats_recorded = 0u64;
-    let mut half_hourly_stats_recorded = 0u64;
-    // Batched into WRITE_CHUNK_SIZE-sized transactions, same rationale (and
-    // caveat re: dedup_ledger mutation ordering) as the write_line_status
-    // pass above -- see `WRITE_CHUNK_SIZE`'s doc comment. A separate set of
-    // transactions from that pass, not a shared one: different tables,
-    // different purpose, no atomicity requirement between the two passes.
-    let coverage = lines_with_sample_coverage(&reports, &lines);
-    for chunk in coverage.chunks(WRITE_CHUNK_SIZE) {
-        let mut tx = pool.begin().await?;
-        for &(line_id, line) in chunk {
-            let deduped = dedup::dedup_new_sample_stats(
-                dedup_ledger,
-                line_id,
-                today,
-                line,
-                &samples,
-                defaults,
-            );
-            if let Some(ref stats) = deduped {
-                new_services_this_cycle += stats.total as u64;
-            }
-            // Both calls below are fed the SAME `deduped` value -- this is
-            // Decision 2's whole point (see that function's own doc comment
-            // and the half_hourly_and_daily_stats_reconcile_for_a_single_line_and_period
-            // test in queries.rs): a day's 48 half-hourly rows must sum back to
-            // that day's daily row, which only holds if both writes see an
-            // identical per-cycle contribution, not two independently
-            // computed ones. Sharing the same chunk transaction doesn't
-            // change this invariant -- it held (and was verified by that
-            // test) back when both calls were separately autocommitted too.
-            queries::record_daily_stats(&mut *tx, line_id, today, deduped.as_ref()).await?;
-            queries::record_half_hourly_stats(&mut *tx, line_id, half_hour_start, deduped.as_ref())
-                .await?;
-            daily_stats_recorded += 1;
-            half_hourly_stats_recorded += 1;
-        }
-        tx.commit().await?;
-    }
-    dedup_ledger.prune_before(today);
-
     let daily_stats_pruned = queries::prune_daily_stats(pool, daily_stats_retention_days).await?;
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_daily_stats_pruned_total"
+    ))
+    .increment(daily_stats_pruned);
     let half_hourly_stats_pruned =
         queries::prune_half_hourly_stats(pool, half_hourly_stats_retention_hours).await?;
-
-    // Decision 4 scaffolding: the full-coverage sibling of the dedup/
-    // daily-stats pass above. Unlike that pass, this one is fed each
-    // status's raw `full_coverage_stats` directly, NOT run through a
-    // dedup step -- see `queries::record_daily_coverage_stats`'s own
-    // module doc comment for why (no defined per-service dedup analog
-    // exists yet for a full-coverage producer). Always a no-op today
-    // (`lines_with_full_coverage` finds nothing, since `merge_full_coverage`
-    // above is always called with an empty signal map) -- this is the
-    // write-path half of the same scaffolding `merge_full_coverage`
-    // documents.
-    let coverage_lines = lines_with_full_coverage(&reports);
-    let mut coverage_stats_recorded = 0u64;
-    for chunk in coverage_lines.chunks(WRITE_CHUNK_SIZE) {
-        let mut tx = pool.begin().await?;
-        for &(line_id, status) in chunk {
-            queries::record_daily_coverage_stats(
-                &mut *tx,
-                line_id,
-                today,
-                status.full_coverage_stats.as_ref(),
-            )
-            .await?;
-            queries::record_half_hourly_coverage_stats(
-                &mut *tx,
-                line_id,
-                half_hour_start,
-                status.full_coverage_stats.as_ref(),
-            )
-            .await?;
-            coverage_stats_recorded += 1;
-        }
-        tx.commit().await?;
-    }
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_half_hourly_stats_pruned_total"
+    ))
+    .increment(half_hourly_stats_pruned);
 
     let daily_coverage_stats_pruned =
         queries::prune_daily_coverage_stats(pool, daily_stats_retention_days).await?;
     let half_hourly_coverage_stats_pruned =
         queries::prune_half_hourly_coverage_stats(pool, half_hourly_stats_retention_hours).await?;
-
-    metrics::gauge!(common::metrics::metric_name("aggregator_lines_total"))
-        .set(reports.len() as f64);
-    metrics::gauge!(common::metrics::metric_name("aggregator_incidents_loaded"))
-        .set(incidents.len() as f64);
-    metrics::counter!(common::metrics::metric_name(
-        "aggregator_history_rows_pruned_total"
-    ))
-    .increment(pruned);
-    metrics::counter!(common::metrics::metric_name(
-        "aggregator_deduped_new_services_total"
-    ))
-    .increment(new_services_this_cycle);
-    metrics::counter!(common::metrics::metric_name(
-        "aggregator_daily_stats_recorded_total"
-    ))
-    .increment(daily_stats_recorded);
-    metrics::counter!(common::metrics::metric_name(
-        "aggregator_daily_stats_pruned_total"
-    ))
-    .increment(daily_stats_pruned);
-    metrics::counter!(common::metrics::metric_name(
-        "aggregator_half_hourly_stats_recorded_total"
-    ))
-    .increment(half_hourly_stats_recorded);
-    metrics::counter!(common::metrics::metric_name(
-        "aggregator_half_hourly_stats_pruned_total"
-    ))
-    .increment(half_hourly_stats_pruned);
-    metrics::counter!(common::metrics::metric_name(
-        "aggregator_coverage_stats_recorded_total"
-    ))
-    .increment(coverage_stats_recorded);
     metrics::counter!(common::metrics::metric_name(
         "aggregator_coverage_stats_pruned_total"
     ))
     .increment(daily_coverage_stats_pruned + half_hourly_coverage_stats_pruned);
 
     tracing::info!(
-        lines = reports.len(),
-        incidents = incidents.len(),
-        removed_lines = removed,
         pruned_history_rows = pruned,
         trust_event_backlog_pruned = trust_event_backlog_pruned,
         trains_pruned = trains_pruned,
-        deduped_new_services = new_services_this_cycle,
-        daily_stats_recorded = daily_stats_recorded,
+        schedule_destination_departures_pruned = schedule_destination_departures_pruned,
         daily_stats_pruned = daily_stats_pruned,
-        half_hourly_stats_recorded = half_hourly_stats_recorded,
         half_hourly_stats_pruned = half_hourly_stats_pruned,
-        coverage_stats_recorded = coverage_stats_recorded,
         daily_coverage_stats_pruned = daily_coverage_stats_pruned,
         half_hourly_coverage_stats_pruned = half_hourly_coverage_stats_pruned,
-        "aggregation cycle complete"
+        "retention pruning complete"
     );
 
     Ok(())

@@ -26,8 +26,32 @@ export const revalidate = 0;
  * picker) on that flag alone, so this page adds no second, hand-written
  * gate on top of it -- its only job is resolving the token, deciding
  * redirect-vs-render, and rendering. */
+/** A real share token is `crate::auth::generate_session_token()`'s own
+ * shape -- 32 random bytes, base64url (`URL_SAFE_NO_PAD`) encoded -- the
+ * same generator every other opaque token in this app uses (session ids,
+ * group ids, invite-link tokens). Checked BEFORE `token` ever reaches
+ * `getJourneyByShareToken`/`getJourney` below, which build their target URL
+ * by interpolating it unencoded (`lib/api.ts`) -- a malformed value could
+ * otherwise redirect that fetch somewhere this route never intended.
+ * Treated exactly like an unknown/expired/revoked token (the same friendly
+ * "Link not found" copy below, not a bare `notFound()`) rather than as a
+ * distinct case -- from a visitor's perspective a malformed token and one
+ * that just doesn't resolve are the same fact: this link doesn't work. */
+function isValidShareToken(token: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(token);
+}
+
 export default async function SharedJourneyPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
+
+  if (!isValidShareToken(token)) {
+    return (
+      <Stack p="lg" gap="md">
+        <Title order={1}>Link not found</Title>
+        <Alert color="red">This share link is invalid or has been revoked. Ask whoever shared it for a new one.</Alert>
+      </Stack>
+    );
+  }
 
   let journey;
   try {

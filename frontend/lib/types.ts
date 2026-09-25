@@ -823,6 +823,15 @@ export interface JourneyLegDetail {
   arriveAfter: string | null;
   arriveBefore: string | null;
   matchMode: 'unmatched' | 'manual' | 'auto';
+  /** Whether this leg was ever created via a window search -- `true` for a
+   * `window`-mode leg (even one with all four bounds below left `null`, a
+   * deliberate "any train, any time" search) or a template-materialized
+   * leg; `false` for a `pin`/`knownTrain`-mode leg, which never had a
+   * window to search at all. Drives `JourneyLegCard.tsx`'s `hasWindow`/
+   * "Change train" gate -- see that component's own doc comment for why
+   * the four bounds above are no longer enough to derive this on their
+   * own. */
+  windowSearched: boolean;
   trackedTrainState: TrackedTrainState | null;
   legSkip: LegSkipStatus | null;
 }

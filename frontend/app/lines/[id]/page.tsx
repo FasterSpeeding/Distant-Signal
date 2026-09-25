@@ -210,6 +210,15 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
 
+  // Same id-shape check the page component below runs -- see its own doc
+  // comment. `generateMetadata` runs independently and would otherwise
+  // reach `fetchLineStatusResult`/`getCustomLine`/`getAllLines` with a
+  // malformed id before the page component ever gets a chance to reject
+  // it.
+  if (!/^[a-z0-9-]+$/.test(id)) {
+    notFound();
+  }
+
   const statusResult = await fetchLineStatusResult(id);
 
   if (statusResult.coverage === 'not-computed') {
@@ -266,6 +275,25 @@ export default async function LineDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+
+  // A real line id is always a lowercase slug: a catalogue line's id comes
+  // straight from its config filename (`lines/*.toml`, e.g.
+  // "wcml-birmingham", "tfl-victoria"), and a custom line's id is
+  // `custom-{slugify(name)}[-N]` (`crates/api/src/data/custom_lines.rs`'s
+  // `slugify`, which only ever emits lowercase ASCII alphanumerics and
+  // single dashes). Checked BEFORE `id` ever reaches
+  // `getLineStatus`/`getCustomLine`/etc below -- several of which forward
+  // the ambient session cookie straight through to the backend
+  // (`cookieForwardInit()`, `lib/api.ts`) and interpolate `id` into the
+  // target URL unencoded, so a malformed value (a `../` segment, an
+  // embedded `?`/`#`) could otherwise redirect one of those cookie-bearing
+  // fetches somewhere this route never intended. Defense in depth
+  // alongside a separate encoding fix in `lib/api.ts` itself; this is the
+  // "never even build the request" half, same posture
+  // `app/journeys/[id]/page.tsx` takes with its own `/^\d+$/` check.
+  if (!/^[a-z0-9-]+$/.test(id)) {
+    notFound();
+  }
 
   // No CIF-derived schedule population is ever published for a TfL line
   // (`schedule-reference`'s own `lines_to_publish` only ever iterates the

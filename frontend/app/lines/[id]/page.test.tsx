@@ -418,6 +418,55 @@ describe('LineDetailPage -- outage behaviour', () => {
   });
 });
 
+// Finding 3 of the 2026-09-24 security review: a malformed id (a `../`
+// segment, an embedded `?`/`#`) used to reach `getLineStatus`/`getCustomLine`
+// (which forward the ambient session cookie) completely unvalidated. Both
+// the page component and `generateMetadata` now reject it with `notFound()`
+// before either ever fetches anything for it, same convention as the
+// existing "still 404s for an unknown line" test above.
+describe('LineDetailPage -- malformed id', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    // `notFound()` is a no-op mock (the real one throws) -- these keep the
+    // rest of the page from crashing on the fall-through render the same
+    // way the "still 404s for an unknown line" test above does; what these
+    // tests actually assert is that `notFound()` was called at all.
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getAllLines).mockResolvedValue([]);
+    vi.mocked(api.getLineDefinition).mockRejectedValue(new ApiNotFoundError('not found'));
+  });
+
+  it('calls notFound() for an id containing a path-traversal segment', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    await renderPage('../evil');
+    expect(notFound).toHaveBeenCalled();
+  });
+
+  it('calls notFound() for an id with uppercase or non-slug characters', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    await renderPage('WCML?x=1');
+    expect(notFound).toHaveBeenCalled();
+  });
+
+  it('generateMetadata also calls notFound() for a malformed id', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    await generateMetadata({ params: Promise.resolve({ id: '../evil' }) });
+    expect(notFound).toHaveBeenCalled();
+  });
+
+  it('accepts a real-shaped lowercase slug id (regression: valid ids must still work)', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('wcml-birmingham', 'West Coast Main Line')]);
+    await renderPage('wcml-birmingham');
+    expect(notFound).not.toHaveBeenCalled();
+  });
+});
+
 // The bug this describe exists for: a custom line whose own detail page
 // 404'd for its owner. `/Line/{id}/Status` 404s until the aggregator has
 // written a `line_status` row, which a just-created custom line does not

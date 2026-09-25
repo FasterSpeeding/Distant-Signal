@@ -37,6 +37,21 @@ describe('JoinGroupPage', () => {
     expect(await screen.findByText('Invite link not found')).toBeInTheDocument();
   });
 
+  // Finding 3 of the 2026-09-24 security review: a malformed token (a
+  // `../` segment, an embedded `?`/`#`) used to reach
+  // `getGroupJoinPreview`/`getGroup` completely unvalidated. Treated the
+  // same as an unknown/expired invite link -- the same "Invite link not
+  // found" copy -- but without ever calling the API at all.
+  it('shows the same invalid-link message for a malformed token, without ever calling getGroupJoinPreview', async () => {
+    // `getGroupJoinPreview`'s call count carries over from earlier tests in
+    // this file (nothing resets it between tests) -- clear it here so this
+    // assertion is about THIS test's render, not the whole file's history.
+    vi.mocked(getGroupJoinPreview).mockClear();
+    renderWithMantine(await JoinGroupPage({ params: Promise.resolve({ token: '../evil' }) }));
+    expect(await screen.findByText('Invite link not found')).toBeInTheDocument();
+    expect(getGroupJoinPreview).not.toHaveBeenCalled();
+  });
+
   it('shows a login link when the visitor is not authenticated', async () => {
     vi.mocked(getGroupJoinPreview).mockResolvedValue({ groupId: 'grp-1', groupName: 'Family', memberCount: 3 });
     vi.mocked(getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
@@ -158,5 +173,16 @@ describe('generateMetadata', () => {
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'bad-token' }) });
     expect(metadata).toEqual({});
     expect(notFound).not.toHaveBeenCalled();
+  });
+
+  // Finding 3: same shape check the page component runs, applied here too
+  // -- `generateMetadata` runs independently and would otherwise reach
+  // `getGroupJoinPreview` with a malformed token before the page component
+  // ever gets a chance to reject it.
+  it('falls back to site-wide metadata for a malformed token, without ever calling getGroupJoinPreview', async () => {
+    vi.mocked(getGroupJoinPreview).mockClear();
+    const metadata = await generateMetadata({ params: Promise.resolve({ token: '../evil' }) });
+    expect(metadata).toEqual({});
+    expect(getGroupJoinPreview).not.toHaveBeenCalled();
   });
 });

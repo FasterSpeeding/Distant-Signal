@@ -43,6 +43,7 @@ function leg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
     departBefore: null,
     arriveAfter: null,
     arriveBefore: null,
+    windowSearched: false,
     matchMode: 'manual',
     trackedTrainState: trackedState(),
     legSkip: null,

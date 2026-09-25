@@ -12,6 +12,82 @@ const devOrigins = (process.env.NEXT_ALLOWED_DEV_ORIGINS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// This app keeps a billable Anthropic API key and MCP OAuth tokens in
+// localStorage (lib/anthropicKey.ts, lib/mcpOAuthProvider.ts) -- a
+// deliberate, documented product decision (see those files' own doc
+// comments), unchanged by this CSP. What this closes is the gap next to
+// it: with no Content-Security-Policy at all, a future XSS (a DOMPurify
+// bypass in app/incidents/[id]/page.tsx's `dangerouslySetInnerHTML`, a
+// compromised dependency) could read those credentials and `fetch`/
+// `sendBeacon`/`<img src=...>` them to any origin on the internet with
+// nothing in the browser to stop it. This constrains which origins a
+// request FROM this page can ever reach, so that same script is confined
+// to the handful of origins this app already trusts with those
+// credentials by design.
+function railMcpOrigin() {
+  const url = process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL;
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    // Malformed env var -- degrade to omitting it rather than crash the
+    // whole config module over a broken deploy-time value; ChatPanel.tsx's
+    // own MCP call would fail loudly on its own in that case anyway.
+    return null;
+  }
+}
+
+// `connect-src` is the directive actually doing the exfiltration-blocking
+// work here: 'self' (this app's own same-origin `/api/*` proxy calls), the
+// Anthropic API (components/ChatPanel.tsx's own direct
+// `new Anthropic({ dangerouslyAllowBrowser: true })` call -- the entire
+// reason the API key lives in the browser at all), and this deployment's
+// own `NEXT_PUBLIC_RAILMCP_PUBLIC_URL` origin (ChatPanel.tsx's MCP
+// `StreamableHTTPClientTransport`, a direct browser-to-railMcp connection
+// that carries the MCP OAuth token). Grepped for every external
+// `src=`/`href=` this app's own components render before writing this --
+// the only one found (components/OpenDataAttribution.tsx's plain link to
+// nationalrail.co.uk) is a normal, user-initiated navigation, not a
+// same-page fetch, so it needs no `connect-src` entry; there is no Google
+// Fonts or other CDN usage anywhere in the codebase to allow for either.
+//
+// `script-src`/`style-src` both need 'unsafe-inline', noted here as the
+// two directives most worth a follow-up review:
+//   - Mantine's `<ColorSchemeScript>` (app/layout.tsx) renders a small
+//     inline `<script>` that stamps `data-mantine-color-scheme` before
+//     hydration, to avoid a flash of the wrong theme -- Mantine's own
+//     documented pattern, normally paired with a per-request `nonce` prop.
+//     That needs a `middleware.ts` minting a fresh nonce per request (this
+//     app has none today) -- out of scope for this pass, which only adds a
+//     static header via `headers()` below. This directive alone WOULD let
+//     an injected inline `<script>` execute, same as having no script-src
+//     at all -- but on its own it does not help exfiltrate anything; the
+//     `connect-src`/`img-src`/`form-action` restrictions here still confine
+//     where that script's own requests can go.
+//   - This app (and Mantine's own components) render plain React inline
+//     `style={{...}}` throughout -- `style-src 'self'` alone blocks every
+//     one of those under a browser that enforces CSP on the `style`
+//     attribute, which would visibly break the app today. Inline-style
+//     injection has no plain CSS-only way to read localStorage and send it
+//     anywhere, so this is the low-risk, near-universal relaxation almost
+//     every React app's CSP carries.
+function contentSecurityPolicy() {
+  const mcpOrigin = railMcpOrigin();
+  const connectSrc = ["'self'", 'https://api.anthropic.com', ...(mcpOrigin ? [mcpOrigin] : [])].join(' ');
+  return [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    `connect-src ${connectSrc}`,
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+  ].join('; ');
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   ...(devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
@@ -53,6 +129,18 @@ const nextConfig = {
       {
         source: '/sw.js',
         headers: [{ key: 'Cache-Control', value: 'no-cache' }],
+      },
+      // Every route, page and API alike -- Next merges headers from every
+      // matching entry, so this adds to (never replaces) the /sw.js rule
+      // above for that one path. A CSP header on a JSON `/api/*` response
+      // is inert (browsers only ever enforce it on a response that becomes
+      // a Document), so this is harmless there and correct everywhere a
+      // real page is served, including `/connect-claude/authorize`'s own
+      // bare-HTML consent screen (app/connect-claude/authorize/route.ts),
+      // which renders one untrusted, if escaped, value into its markup.
+      {
+        source: '/:path*',
+        headers: [{ key: 'Content-Security-Policy', value: contentSecurityPolicy() }],
       },
     ];
   },

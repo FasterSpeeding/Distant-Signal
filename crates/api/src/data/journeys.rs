@@ -59,6 +59,12 @@ pub struct JourneyLegRow {
     pub arrive_before: Option<NaiveTime>,
     pub train_subscription_id: Option<i64>,
     pub match_mode: String,
+    /// See [`insert_leg`]'s own doc comment on the `window_searched`
+    /// parameter -- distinguishes a leg deliberately created with a fully
+    /// open ("any train, any time") search window from one that was never
+    /// window-searched at all, both of which otherwise look identical
+    /// (`depart_*`/`arrive_*` all `NULL`).
+    pub window_searched: bool,
 }
 
 pub async fn get_owned_leg(
@@ -70,7 +76,7 @@ pub async fn get_owned_leg(
     let row = sqlx::query_as::<_, JourneyLegRow>(
         "SELECT jl.id, jl.journey_id, jl.origin_crs, jl.destination_crs, jl.service_date, \
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
-                jl.train_subscription_id, jl.match_mode \
+                jl.train_subscription_id, jl.match_mode, jl.window_searched \
          FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
          WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3",
@@ -109,25 +115,48 @@ pub struct JourneyLegWithNamesRow {
     pub arrive_before: Option<NaiveTime>,
     pub train_subscription_id: Option<i64>,
     pub match_mode: String,
+    /// See [`JourneyLegRow::window_searched`]'s own doc comment -- same
+    /// field, same meaning.
+    pub window_searched: bool,
 }
 
-async fn insert_journey(
-    pool: &PgPool,
+/// Generic over `E: PgExecutor` (rather than `&PgPool`) -- see
+/// `train_tracking::create_pin`'s own doc comment for the pattern and why:
+/// this lets the three `create_journey_with_*` functions below call this
+/// with `&mut *tx` from inside one shared transaction (19-pass security/bug
+/// review, journeys area, Medium finding 3), while `add_known_train_leg_to_journey`/
+/// `add_window_leg_to_journey` (Phase 2, unaffected by that finding) keep
+/// passing a bare `&PgPool` unchanged.
+async fn insert_journey<'c, E>(
+    executor: E,
     user_id: &str,
     custom_name: Option<&str>,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     let (id,): (i64,) =
         sqlx::query_as("INSERT INTO journeys (user_id, custom_name) VALUES ($1, $2) RETURNING id")
             .bind(user_id)
             .bind(custom_name)
-            .fetch_one(pool)
+            .fetch_one(executor)
             .await?;
     Ok(id)
 }
 
+/// `window_searched` -- 19-pass security/bug review, journeys area, Medium
+/// finding 1: `TRUE` for a leg created via a window search
+/// (`create_journey_with_window_leg`/`add_window_leg_to_journey`), even one
+/// with all four `depart_*`/`arrive_*` bounds left `None` (a deliberate
+/// "any train, any time" search); `FALSE` for a `pin`/`knownTrain`-mode leg,
+/// which never had a window to search at all. This is what lets
+/// `JourneyLegCard.tsx`'s `hasWindow`/"Change train" gate tell those two
+/// all-NULL-bounds cases apart -- see
+/// `20260925090000_journey_legs_window_searched.sql`'s own header comment.
+/// Same generic-executor reasoning as [`insert_journey`].
 #[allow(clippy::too_many_arguments)]
-async fn insert_leg(
-    pool: &PgPool,
+async fn insert_leg<'c, E>(
+    executor: E,
     journey_id: i64,
     leg_order: i32,
     origin_crs: Option<&str>,
@@ -139,13 +168,17 @@ async fn insert_leg(
     depart_before: Option<NaiveTime>,
     arrive_after: Option<NaiveTime>,
     arrive_before: Option<NaiveTime>,
-) -> anyhow::Result<i64> {
+    window_searched: bool,
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     let (id,): (i64,) = sqlx::query_as(
         "INSERT INTO journey_legs \
             (journey_id, leg_order, origin_crs, destination_crs, service_date, \
              train_subscription_id, match_mode, \
-             depart_after, depart_before, arrive_after, arrive_before) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             depart_after, depart_before, arrive_after, arrive_before, window_searched) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          RETURNING id",
     )
     .bind(journey_id)
@@ -159,7 +192,8 @@ async fn insert_leg(
     .bind(depart_before)
     .bind(arrive_after)
     .bind(arrive_before)
-    .fetch_one(pool)
+    .bind(window_searched)
+    .fetch_one(executor)
     .await?;
     Ok(id)
 }
@@ -210,10 +244,16 @@ async fn owned_next_leg_order(
 /// (`train_tracking::create_pin`, unchanged) -- the `pin` mode of
 /// `POST /Journeys` (`crates/api/src/routes/journeys.rs`), replacing
 /// `TrackTrainForm.tsx`'s direct `POST /Train/track` call (design doc
-/// §7.2). Two sequential inserts, not one transaction -- see this plan's
-/// own Judgment Call 5 for why (`create_pin` is typed to take `&PgPool`,
-/// not a transaction handle; widening its signature is out of this
-/// phase's scope).
+/// §7.2). All writes run inside one transaction -- see this function's own
+/// body doc comment (19-pass security/bug review, journeys area, Medium
+/// finding 3) for why: an earlier version ran two-then-three sequential,
+/// non-transactional statements here (this plan's own original Judgment
+/// Call 5, which cited `create_pin` being typed to take `&PgPool` rather
+/// than a transaction handle as the reason not to), which could leave a
+/// zero-leg `journeys` row behind on a mid-sequence failure.
+/// `train_tracking::create_pin` is now generic over `PgExecutor` precisely
+/// so it can run inside this function's own transaction -- see its own doc
+/// comment.
 ///
 /// The new leg's `origin_crs`/`destination_crs` are the pin's OWN
 /// `origin_crs`/`destination_crs` (the latter may be `None` -- optional on
@@ -235,10 +275,19 @@ pub async fn create_journey_with_pin_leg(
     custom_name: Option<&str>,
     pin: &common::TrackPinRequest,
 ) -> anyhow::Result<(i64, i64, i64)> {
-    let journey_id = insert_journey(pool, user_id, custom_name).await?;
-    let tracking_id = crate::data::train_tracking::create_pin(pool, pin, user_id).await?;
+    // One transaction, not three sequential statements -- 19-pass
+    // security/bug review, journeys area, Medium finding 3: a failure
+    // partway through (constraint violation, FK error, pool error) used to
+    // leave a zero-leg `journeys` row behind (invisible on `/Journeys/mine`,
+    // which inner-joins legs, but still reachable by id, with no UI path to
+    // see or delete it). `materialize_template`
+    // (`journey_templates.rs`) already established this pattern for its own
+    // multi-statement write -- same `pool.begin()`/`tx.commit()` shape here.
+    let mut tx = pool.begin().await?;
+    let journey_id = insert_journey(&mut *tx, user_id, custom_name).await?;
+    let tracking_id = crate::data::train_tracking::create_pin(&mut *tx, pin, user_id).await?;
     let leg_id = insert_leg(
-        pool,
+        &mut *tx,
         journey_id,
         1,
         Some(pin.origin_crs.as_str()),
@@ -250,8 +299,10 @@ pub async fn create_journey_with_pin_leg(
         None,
         None,
         None,
+        false,
     )
     .await?;
+    tx.commit().await?;
     Ok((journey_id, leg_id, tracking_id))
 }
 
@@ -300,15 +351,24 @@ pub async fn create_journey_with_known_train_leg(
     origin_crs_override: Option<&str>,
     destination_crs_override: Option<&str>,
 ) -> anyhow::Result<(i64, i64, i64)> {
-    let journey_id = insert_journey(pool, user_id, custom_name).await?;
+    // One transaction -- 19-pass security/bug review, journeys area, Medium
+    // finding 3: beyond the general zero-leg-journey risk
+    // [`create_journey_with_pin_leg`]'s own doc comment describes, THIS
+    // function's non-transactional version had an extra failure mode: a
+    // leg-insert failure after `create_subscription_for_train` had already
+    // committed would orphan that `train_subscriptions` row too (reachable
+    // via `/Train/{trackingId}`/`GET /Train/mine`, but never linked from
+    // any journey). Wrapping the whole sequence rolls that back as well.
+    let mut tx = pool.begin().await?;
+    let journey_id = insert_journey(&mut *tx, user_id, custom_name).await?;
     let tracking_id =
-        crate::data::train_tracking::create_subscription_for_train(pool, trains_id, user_id)
+        crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
             .await?;
     let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
     )
     .bind(tracking_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
     let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
     let origin_crs = origin_crs_override.map(str::to_string).or(pin_origin_crs);
@@ -316,7 +376,7 @@ pub async fn create_journey_with_known_train_leg(
         .map(str::to_string)
         .or(pin_destination_crs);
     let leg_id = insert_leg(
-        pool,
+        &mut *tx,
         journey_id,
         1,
         origin_crs.as_deref(),
@@ -328,8 +388,10 @@ pub async fn create_journey_with_known_train_leg(
         None,
         None,
         None,
+        false,
     )
     .await?;
+    tx.commit().await?;
     Ok((journey_id, leg_id, tracking_id))
 }
 
@@ -394,6 +456,7 @@ pub async fn add_known_train_leg_to_journey(
         None,
         None,
         None,
+        false,
     )
     .await?;
     Ok(Some((leg_id, tracking_id)))
@@ -514,9 +577,14 @@ pub async fn create_journey_with_window_leg(
     depart_window: TimeWindow,
     arrive_window: TimeWindow,
 ) -> anyhow::Result<(i64, i64)> {
-    let journey_id = insert_journey(pool, user_id, custom_name).await?;
+    // One transaction -- 19-pass security/bug review, journeys area, Medium
+    // finding 3; see [`create_journey_with_pin_leg`]'s own doc comment for
+    // the full reasoning (a mid-sequence failure used to leave a zero-leg
+    // `journeys` row behind).
+    let mut tx = pool.begin().await?;
+    let journey_id = insert_journey(&mut *tx, user_id, custom_name).await?;
     let leg_id = insert_leg(
-        pool,
+        &mut *tx,
         journey_id,
         1,
         Some(origin_crs),
@@ -528,8 +596,12 @@ pub async fn create_journey_with_window_leg(
         depart_window.before,
         arrive_window.after,
         arrive_window.before,
+        // Always `true`: a `window`-mode leg is, by definition, a window
+        // search -- see [`insert_leg`]'s own doc comment on this parameter.
+        true,
     )
     .await?;
+    tx.commit().await?;
     Ok((journey_id, leg_id))
 }
 
@@ -572,6 +644,7 @@ pub async fn add_window_leg_to_journey(
         depart_window.before,
         arrive_window.after,
         arrive_window.before,
+        true,
     )
     .await?;
     Ok(Some(leg_id))
@@ -642,11 +715,24 @@ pub async fn set_leg_train_subscription(
 /// /Train/mine` regardless of which journeys ever referenced it).
 ///
 /// Ownership-checked read first, then a `COUNT` and one of two deletes, all
-/// inside one transaction -- a concurrent second delete of the journey's
-/// last leg between the read and the write is the same vanishingly-unlikely
-/// race `post_leg_train`'s own doc comment already accepts as handled-not-
-/// silently-ignored elsewhere in this file, not specially guarded against
-/// here beyond the transaction itself.
+/// inside one transaction, with the journey row locked (`FOR UPDATE`) up
+/// front -- closes a real race the transaction alone did NOT: two
+/// concurrent `delete_leg` calls for DIFFERENT legs of the SAME two-leg
+/// journey could otherwise both read `remaining = 2` (READ COMMITTED
+/// doesn't block a plain `SELECT COUNT(*)` on another transaction's
+/// in-flight `DELETE`), both conclude "delete just this leg, the journey
+/// still has one left", and both commit -- leaving a zero-leg journey
+/// behind, invisible to `list_journeys_for_user`'s inner join but still
+/// reachable by id, exactly the state this function's own doc comment
+/// above says nothing else in this codebase expects to see. Locking
+/// `journeys` first (the same `FOR UPDATE`/`FOR KEY SHARE`-inside-one-
+/// transaction pattern `groups::grant_custom_line` already uses for its own
+/// race) forces the second concurrent call to wait for the first to commit
+/// before it can even run its own `COUNT`, so it then correctly reads
+/// `remaining = 1` and takes the "delete the whole journey" branch instead.
+/// `FOR UPDATE`, not the lighter `FOR KEY SHARE`: this function's own
+/// writes below delete rows that reference `journey_id`, not merely read
+/// it.
 ///
 /// Returns `Ok(None)` for "no such leg, or not this caller's" (route maps
 /// to `404`, matching `get_owned_leg`'s own convention). Returns
@@ -658,6 +744,16 @@ pub async fn delete_leg(
     user_id: &str,
 ) -> anyhow::Result<Option<bool>> {
     let mut tx = pool.begin().await?;
+
+    // Locks the journey row (if it exists) for the rest of this
+    // transaction -- see this function's own doc comment above. A
+    // nonexistent `journey_id` simply locks nothing here and falls through
+    // to the ownership check below, which reports "not found" exactly as
+    // before.
+    sqlx::query_as::<_, (i64,)>("SELECT id FROM journeys WHERE id = $1 FOR UPDATE")
+        .bind(journey_id)
+        .fetch_optional(&mut *tx)
+        .await?;
 
     let owned: Option<(i64,)> = sqlx::query_as(
         "SELECT jl.id FROM journey_legs jl \
@@ -681,6 +777,14 @@ pub async fn delete_leg(
     let journey_also_deleted = remaining <= 1;
 
     if journey_also_deleted {
+        // Removing the last leg removes the whole occurrence, so this is a
+        // discard of a template occurrence exactly as much as
+        // `delete_journey` is -- tombstone it before the delete, or the
+        // recurrence sweep re-mints it within the hour. Deliberately NOT
+        // done when other legs survive: the occurrence itself still exists
+        // then, and the sweep's own "already has a leg on this date" guard
+        // still sees it.
+        record_template_occurrence_skips(&mut tx, journey_id).await?;
         // Cascades into `journey_legs` for us (`ON DELETE CASCADE`) --
         // deleting the leg row explicitly first would be redundant, not
         // wrong, but this is the one statement, not two.
@@ -697,6 +801,49 @@ pub async fn delete_leg(
 
     tx.commit().await?;
     Ok(Some(journey_also_deleted))
+}
+
+/// Records "the occurrence this template produced for this date was
+/// explicitly discarded by its owner" for every `(source_template_id,
+/// service_date)` pair `journey_id` covers -- a tombstone in
+/// `journey_template_skipped_dates` (migration `20260925214500`).
+///
+/// Real bug this closes: `crates/notifier`'s recurrence sweep decides
+/// whether today's occurrence still needs minting purely by asking "does a
+/// journey from this template already have a leg on this date"
+/// (`notifier::queries::materialize_due_template_occurrence`). Deleting
+/// today's auto-minted occurrence -- the ordinary "I'm not travelling
+/// today" action -- made that question false again, so the next sweep tick,
+/// AT MOST AN HOUR LATER, re-minted the journey, re-auto-committed its legs
+/// and resumed pushing notifications for something the user had explicitly
+/// thrown away. Nothing anywhere recorded that the deletion had happened:
+/// the `journeys` row was the only trace of an occurrence, and deleting it
+/// removes that trace by definition. This is that missing record.
+///
+/// Called from inside both delete paths' own transactions, BEFORE the
+/// delete (it reads the legs it is about to lose). Idempotent (`ON
+/// CONFLICT DO NOTHING`) and a no-op for a journey with no
+/// `source_template_id` -- an ordinary hand-built journey has no template
+/// occurrence to suppress.
+///
+/// Scoped per `(template_id, service_date)`, not per template: skipping
+/// today must never suppress tomorrow's occurrence of the same commute.
+async fn record_template_occurrence_skips(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    journey_id: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO journey_template_skipped_dates (template_id, service_date) \
+         SELECT j.source_template_id, jl.service_date \
+         FROM journeys j JOIN journey_legs jl ON jl.journey_id = j.id \
+         WHERE j.id = $1 AND j.source_template_id IS NOT NULL \
+         GROUP BY j.source_template_id, jl.service_date \
+         ON CONFLICT (template_id, service_date) DO NOTHING",
+    )
+    .bind(journey_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Deletes an ENTIRE journey the caller owns, in one step -- the direct
@@ -747,11 +894,34 @@ pub async fn delete_leg(
 /// for "no such journey, or not this caller's" (the route maps this to
 /// `404`, never `403`, matching [`delete_leg`]'s own convention).
 pub async fn delete_journey(pool: &PgPool, journey_id: i64, user_id: &str) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
+
+    // Ownership-scoped read FIRST, so the tombstone write below can never
+    // record a skip for a journey this caller doesn't own (the tombstone
+    // statement itself is keyed only by journey id -- ownership is proven
+    // here instead, inside the same transaction as the delete, so a
+    // not-yours journey leaves no trace at all and still reports `false`).
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
+            .bind(journey_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if owned.is_none() {
+        return Ok(false);
+    }
+
+    // Deleting a template-minted occurrence is the user saying "not this
+    // one" -- without this the recurrence sweep re-mints it within the
+    // hour. See `record_template_occurrence_skips`.
+    record_template_occurrence_skips(&mut tx, journey_id).await?;
+
     let result = sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
         .bind(journey_id)
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -939,7 +1109,7 @@ pub async fn list_legs_for_journey(
         "SELECT jl.id, jl.journey_id, jl.origin_crs, so.name AS origin_name, \
                 jl.destination_crs, sd.name AS destination_name, jl.service_date, \
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
-                jl.train_subscription_id, jl.match_mode \
+                jl.train_subscription_id, jl.match_mode, jl.window_searched \
          FROM journey_legs jl \
          LEFT JOIN stations so ON so.crs = UPPER(jl.origin_crs) \
          LEFT JOIN stations sd ON sd.crs = UPPER(jl.destination_crs) \
@@ -1041,6 +1211,116 @@ mod db_tests {
                 .await
                 .expect("cleanup fixture user");
         }
+    }
+
+    // --- delete_leg (concurrency) -----------------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                concurrent_deletes_of_different_legs_never_leave_a_zero_leg_journey \
+                -- --ignored --test-threads=1`"]
+    async fn concurrent_deletes_of_different_legs_never_leave_a_zero_leg_journey() {
+        // Regression test for the 19-pass security/bug review's journeys-
+        // area Medium finding 4: two concurrent `delete_leg` calls for
+        // DIFFERENT legs of the SAME two-leg journey used to both read
+        // `remaining = 2` before either committed, so both took the
+        // "delete just this leg" branch and left a zero-leg journey behind
+        // -- see `delete_leg`'s own updated doc comment for the `SELECT ...
+        // FOR UPDATE` fix.
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-DELETE-LEG-RACE";
+        seed_user(&pool, user_id).await;
+        let journey_id = insert_journey(&pool, user_id, None)
+            .await
+            .expect("insert journey");
+        let leg_a = insert_leg(
+            &pool,
+            journey_id,
+            1,
+            Some("WAT"),
+            Some("RDG"),
+            "2026-09-22".parse().unwrap(),
+            None,
+            "unmatched",
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("insert leg a");
+        let leg_b = insert_leg(
+            &pool,
+            journey_id,
+            2,
+            Some("RDG"),
+            Some("BRI"),
+            "2026-09-22".parse().unwrap(),
+            None,
+            "unmatched",
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("insert leg b");
+
+        let pool_a = pool.clone();
+        let pool_b = pool.clone();
+        let (result_a, result_b) = tokio::join!(
+            delete_leg(&pool_a, journey_id, leg_a, user_id),
+            delete_leg(&pool_b, journey_id, leg_b, user_id),
+        );
+        let result_a = result_a.expect("delete leg a");
+        let result_b = result_b.expect("delete leg b");
+        assert!(result_a.is_some(), "leg a delete must find its leg");
+        assert!(result_b.is_some(), "leg b delete must find its leg");
+
+        // The bug: both concurrent deletes concluding "the journey
+        // survives with one leg left" (`journey_also_deleted = false` for
+        // both), because both read `remaining = 2` before either wrote.
+        let both_left_the_journey_alive = result_a == Some(false) && result_b == Some(false);
+        assert!(
+            !both_left_the_journey_alive,
+            "both concurrent deletes reported the journey survived -- the \
+             zero-leg-journey race this test guards against"
+        );
+
+        let (legs_left,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM journey_legs WHERE journey_id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count remaining legs");
+        let (journeys_left,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM journeys WHERE id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count remaining journeys");
+
+        // The only two valid end states: the journey is gone entirely (one
+        // of the two deletes correctly saw `remaining = 1` and took the
+        // "delete the whole journey" branch), or -- if some future change
+        // ever made this race survivable another way -- it has exactly its
+        // normal complement of legs, never zero.
+        if journeys_left == 0 {
+            assert_eq!(
+                legs_left, 0,
+                "if the journey is gone, no orphaned legs may remain"
+            );
+        } else {
+            assert_eq!(
+                legs_left, 1,
+                "a surviving journey must never have zero legs"
+            );
+        }
+
+        cleanup_journey(&pool, journey_id, &[user_id]).await;
     }
 
     fn fixture_pin(origin_crs: &str) -> common::TrackPinRequest {
@@ -2182,6 +2462,7 @@ mod db_tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .expect("insert leg");
@@ -2290,6 +2571,7 @@ mod db_tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .expect("insert leg 1");
@@ -2306,6 +2588,7 @@ mod db_tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .expect("insert leg 2");
@@ -2367,5 +2650,179 @@ mod db_tests {
             .await
             .expect("attempt delete of a nonexistent journey");
         assert!(!deleted);
+    }
+    /// Finding 3's api-side regression test: deleting a template-minted
+    /// occurrence must leave a `(template_id, service_date)` tombstone behind,
+    /// or `crates/notifier`'s recurrence sweep re-mints that occurrence on its
+    /// next tick -- within the hour -- and starts pushing again for a journey
+    /// the user explicitly discarded. Covers both delete paths (whole journey,
+    /// and last-leg-takes-the-journey-with-it), the "not this caller's
+    /// journey" case (no tombstone at all), and an ordinary non-template
+    /// journey (nothing to tombstone).
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                deleting_a_template_occurrence -- --ignored --test-threads=1`"]
+    async fn deleting_a_template_occurrence_records_a_skip_day_so_the_sweep_cannot_remint_it() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-SKIPDAY-OWNER";
+        let bystander_id = "TEST-JOURNEY-SKIPDAY-BYSTANDER";
+        seed_user(&pool, user_id).await;
+        seed_user(&pool, bystander_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+
+        let template_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journey_templates (user_id, custom_name, default_match_mode) \
+             VALUES ($1, 'Skip Day Fixture', 'auto') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed template");
+
+        async fn seed_occurrence(
+            pool: &PgPool,
+            user_id: &str,
+            template_id: i64,
+            service_date: chrono::NaiveDate,
+            legs: i32,
+        ) -> i64 {
+            let journey_id: i64 = sqlx::query_scalar(
+                "INSERT INTO journeys (user_id, custom_name, source_template_id) \
+                 VALUES ($1, NULL, $2) RETURNING id",
+            )
+            .bind(user_id)
+            .bind(template_id)
+            .fetch_one(pool)
+            .await
+            .expect("seed occurrence");
+            for leg_order in 1..=legs {
+                insert_leg(
+                    pool,
+                    journey_id,
+                    leg_order,
+                    Some("RDG"),
+                    Some("WOK"),
+                    service_date,
+                    None,
+                    "unmatched",
+                    None,
+                    None,
+                    None,
+                    None,
+                    // A template-materialized occurrence -- always a search,
+                    // even a fully-open one (see the window_searched column's
+                    // own migration doc comment).
+                    true,
+                )
+                .await
+                .expect("seed occurrence leg");
+            }
+            journey_id
+        }
+
+        async fn tombstones(pool: &PgPool, template_id: i64) -> Vec<chrono::NaiveDate> {
+            sqlx::query_scalar(
+                "SELECT service_date FROM journey_template_skipped_dates \
+                 WHERE template_id = $1 ORDER BY service_date",
+            )
+            .bind(template_id)
+            .fetch_all(pool)
+            .await
+            .expect("read tombstones")
+        }
+
+        // 1. A non-owner's failed delete must leave no trace at all --
+        //    otherwise anyone could suppress someone else's commute.
+        let journey_id = seed_occurrence(&pool, user_id, template_id, service_date, 1).await;
+        assert!(
+            !delete_journey(&pool, journey_id, bystander_id)
+                .await
+                .expect("non-owner delete attempt")
+        );
+        assert!(
+            tombstones(&pool, template_id).await.is_empty(),
+            "a delete that deleted nothing must not record a skip day"
+        );
+
+        // 2. The owner deleting the whole occurrence records the skip day.
+        assert!(
+            delete_journey(&pool, journey_id, user_id)
+                .await
+                .expect("owner delete")
+        );
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date],
+            "deleting today's occurrence must record THIS date -- and only this date, so the same \
+             commute still materializes tomorrow"
+        );
+
+        // 3. Removing the LAST leg also removes the occurrence, so it must
+        //    tombstone too -- for a different date, proving the scoping.
+        let other_date: chrono::NaiveDate = "2026-09-26".parse().unwrap();
+        let single_leg_journey = seed_occurrence(&pool, user_id, template_id, other_date, 1).await;
+        let leg_id: i64 = sqlx::query_scalar("SELECT id FROM journey_legs WHERE journey_id = $1")
+            .bind(single_leg_journey)
+            .fetch_one(&pool)
+            .await
+            .expect("read the single leg");
+        let journey_also_deleted = delete_leg(&pool, single_leg_journey, leg_id, user_id)
+            .await
+            .expect("delete the last leg")
+            .expect("the leg must have existed");
+        assert!(journey_also_deleted);
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date, other_date]
+        );
+
+        // 4. Removing ONE leg of a two-leg occurrence leaves the occurrence
+        //    standing, so there is nothing to suppress -- the sweep's own
+        //    "already has a leg on this date" guard still sees it.
+        let third_date: chrono::NaiveDate = "2026-09-27".parse().unwrap();
+        let two_leg_journey = seed_occurrence(&pool, user_id, template_id, third_date, 2).await;
+        let first_leg_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM journey_legs WHERE journey_id = $1 ORDER BY leg_order LIMIT 1",
+        )
+        .bind(two_leg_journey)
+        .fetch_one(&pool)
+        .await
+        .expect("read the first leg");
+        let also_deleted = delete_leg(&pool, two_leg_journey, first_leg_id, user_id)
+            .await
+            .expect("delete one of two legs")
+            .expect("the leg must have existed");
+        assert!(!also_deleted);
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date, other_date],
+            "removing one leg of a surviving occurrence must NOT record a skip day"
+        );
+
+        // 5. An ordinary, non-template journey has no occurrence to suppress.
+        let plain_journey = seed_journey(&pool, user_id).await;
+        assert!(
+            delete_journey(&pool, plain_journey, user_id)
+                .await
+                .expect("delete a plain journey")
+        );
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date, other_date]
+        );
+
+        sqlx::query("DELETE FROM journeys WHERE source_template_id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM journey_templates WHERE id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .ok(); // cascades journey_template_legs + journey_template_skipped_dates
+        cleanup_user(&pool, user_id).await;
+        cleanup_user(&pool, bystander_id).await;
     }
 }
