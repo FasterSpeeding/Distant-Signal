@@ -414,6 +414,14 @@ async fn get_schedule_reference_last_publish(
 
 /// `crates/schedule-reference`'s per-sequence batch of resolved
 /// STANOX/CRS rows -- see `queries::upsert_stanox_crs`.
+///
+/// Also prunes (`queries::prune_stanox_crs_not_in`), in the same request,
+/// right after the upsert: this whole POST body IS one delivery's complete
+/// STANOX set (see `upsert_stanox_crs`'s own migration-comment-cited "every
+/// daily delivery is a full refresh"), so any row this call did NOT just
+/// upsert is stale as of this cycle and must go -- see that function's own
+/// doc comment for why this cleanup is a route-level step rather than baked
+/// into the upsert itself (Signal Box Audit Low finding, 2026-09-25).
 async fn post_stanox_crs(
     State(app): State<App>,
     Json(records): Json<Vec<common::StanoxCrsRecord>>,
@@ -421,16 +429,27 @@ async fn post_stanox_crs(
     let upserted = queries::upsert_stanox_crs(&app.database, &records)
         .await
         .map_err(internal_error)?;
+    let keep_stanoxes: Vec<String> = records.iter().map(|r| r.stanox.clone()).collect();
+    queries::prune_stanox_crs_not_in(&app.database, &keep_stanoxes)
+        .await
+        .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
 /// `crates/schedule-reference`'s per-sequence batch of directly-resolved
 /// TIPLOC->CRS rows -- see `queries::upsert_tiploc_crs`.
+///
+/// Also prunes (`queries::prune_tiploc_crs_not_in`), same reasoning and same
+/// same-request timing as `post_stanox_crs`'s own doc comment directly above.
 async fn post_tiploc_crs(
     State(app): State<App>,
     Json(records): Json<Vec<common::TiplocCrsRecord>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let upserted = queries::upsert_tiploc_crs(&app.database, &records)
+        .await
+        .map_err(internal_error)?;
+    let keep_tiplocs: Vec<String> = records.iter().map(|r| r.tiploc.clone()).collect();
+    queries::prune_tiploc_crs_not_in(&app.database, &keep_tiplocs)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
@@ -1269,6 +1288,111 @@ mod db_tests {
             .await
             .expect("query should succeed against an empty table");
         assert_eq!(fetched_at, None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                post_stanox_crs -- --ignored --test-threads=1`"]
+    async fn a_second_post_stanox_crs_prunes_stanoxes_absent_from_the_new_delivery() {
+        // End-to-end proof of the Signal Box Audit Low finding this closes:
+        // a real delivery cycle (one POST = one whole delivery's STANOX set,
+        // per `upsert_stanox_crs`'s own doc comment) that stops mentioning a
+        // previously-published STANOX must remove it, not leave it to
+        // accumulate forever.
+        let pool = connect().await;
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-ROUTE-PRUNE-%'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+
+        let first_body = json!([
+            {
+                "stanox": "TEST-ROUTE-PRUNE-KEEP",
+                "crs": "EUS",
+                "tiploc": "TEST-RP-EUSTON",
+                "station_name": "EUSTON",
+                "source_sequence": 1,
+                "change_time_minutes": null,
+            },
+            {
+                "stanox": "TEST-ROUTE-PRUNE-STALE",
+                "crs": "CRE",
+                "tiploc": "TEST-RP-CREWE",
+                "station_name": "CREWE",
+                "source_sequence": 1,
+                "change_time_minutes": null,
+            },
+        ]);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/stanox-crs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(first_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let after_first: Vec<(String,)> =
+            sqlx::query_as("SELECT stanox FROM stanox_crs WHERE stanox LIKE 'TEST-ROUTE-PRUNE-%'")
+                .fetch_all(&pool)
+                .await
+                .expect("read back after first delivery");
+        assert_eq!(
+            after_first.len(),
+            2,
+            "both rows land from the first delivery"
+        );
+
+        // The next delivery no longer mentions TEST-ROUTE-PRUNE-STALE at
+        // all (e.g. a decommissioned STANOX).
+        let second_body = json!([
+            {
+                "stanox": "TEST-ROUTE-PRUNE-KEEP",
+                "crs": "EUS",
+                "tiploc": "TEST-RP-EUSTON",
+                "station_name": "EUSTON",
+                "source_sequence": 2,
+                "change_time_minutes": null,
+            },
+        ]);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/stanox-crs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(second_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let after_second: Vec<(String,)> =
+            sqlx::query_as("SELECT stanox FROM stanox_crs WHERE stanox LIKE 'TEST-ROUTE-PRUNE-%'")
+                .fetch_all(&pool)
+                .await
+                .expect("read back after second delivery");
+        assert_eq!(
+            after_second.len(),
+            1,
+            "the STANOX the second delivery stopped mentioning must be pruned"
+        );
+        assert_eq!(after_second[0].0, "TEST-ROUTE-PRUNE-KEEP");
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-ROUTE-PRUNE-%'")
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     async fn delete_network_departures_fixture(pool: &PgPool, crs: &str) {
