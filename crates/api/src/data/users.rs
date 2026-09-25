@@ -507,10 +507,66 @@ pub async fn insert_session(
     )
     .bind(hashed_token)
     .bind(user_id)
-    .bind(ttl_days as i32)
+    .bind(session_ttl_days_i32(ttl_days))
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Checked `i64` -> `i32` conversion for `ttl_days`, `make_interval(days =>
+/// ...)`'s own bind slot (sqlx sends an integer `days` argument as `INT4`).
+///
+/// This used to be a bare `ttl_days as i32`, a silent-truncation bug: a
+/// `session_ttl_days` config value past `i32::MAX` (~5.8 million days --
+/// absurd for a real deployment, but not rejected by the config parser,
+/// which only requires a valid `i64`) would wrap into an arbitrary,
+/// possibly-negative day count instead of erroring, handing a user a
+/// session that expires immediately or nonsensically far in the past/future
+/// rather than failing the request. `AppState::init` (`crates/api/src/app.rs`)
+/// already runs this exact same `i32::try_from` check once at startup --
+/// consistent with every other config guard there (`sso_client_secret`
+/// non-empty, the `internal_oauth_*` non-empty loop) -- so a bad value is
+/// refused before the service ever accepts a request. This is the
+/// same check repeated at the point of use: defense in depth, so this
+/// function stays correct on its own even if a future caller ever supplies
+/// a `ttl_days` that didn't come from `AppState::init`'s validated config,
+/// and a `panic!` (not a silent wrap) is the right failure mode for a
+/// value that startup validation should already have caught.
+fn session_ttl_days_i32(ttl_days: i64) -> i32 {
+    i32::try_from(ttl_days).unwrap_or_else(|_| {
+        panic!(
+            "session_ttl_days ({ttl_days}) does not fit in the 32-bit day count \
+             `make_interval(days => ...)` requires -- this should already have been \
+             rejected at startup by AppState::init's own i32::try_from(session_ttl_days) \
+             check; refusing to silently wrap/truncate it here instead"
+        )
+    })
+}
+
+#[cfg(test)]
+mod session_ttl_days_i32_tests {
+    use super::*;
+
+    #[test]
+    fn passes_through_an_ordinary_value_unchanged() {
+        assert_eq!(session_ttl_days_i32(14), 14);
+    }
+
+    #[test]
+    fn passes_through_the_exact_i32_boundary() {
+        assert_eq!(session_ttl_days_i32(i64::from(i32::MAX)), i32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in the 32-bit day count")]
+    fn panics_loudly_instead_of_silently_truncating_an_out_of_range_value() {
+        // Before this fix, `ttl_days as i32` on this exact input silently
+        // wrapped to a negative `i32` (`(i32::MAX as i64 + 1) as i32 ==
+        // i32::MIN`) instead of erroring -- `make_interval(days =>
+        // i32::MIN)` would then hand a brand-new session an `expires_at`
+        // far in the PAST, i.e. already-expired the instant it's created.
+        let _ = session_ttl_days_i32(i64::from(i32::MAX) + 1);
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

@@ -410,6 +410,31 @@ fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
 /// nothing" is a fault, not an instruction to forget every line. The poller
 /// refuses to post one either (belt and braces, since this is the side that
 /// would do the damage).
+///
+/// **Ownership guard.** `line_status.line_id` is only `TEXT PRIMARY KEY` --
+/// nothing in the schema stops a TfL line id (`crates/poller-tfl`'s own
+/// naming, e.g. `"victoria"`) from colliding with an `aggregator`-owned
+/// line id (derived from `lines/*.toml` file stems). The two writers'
+/// naming schemes staying disjoint is a CONVENTION, not an enforced
+/// constraint (see `20260822120000_line_status_source.sql`'s own migration
+/// comment, which introduced `source` for exactly this reason but as a
+/// plain unindexed column, not part of the key). Before this fix, a
+/// collision was invisible: `ON CONFLICT (line_id) DO UPDATE SET ...
+/// source = 'tfl'` would silently steal an `aggregator`-owned row -- and
+/// the "is this line changed" read just above only checked
+/// `source = 'tfl'` rows, so a colliding `aggregator` row read back as "no
+/// existing TfL row" (`existing = None`) rather than "an existing row I
+/// must not touch", making the theft look like an ordinary first-write.
+/// Now: (1) the pre-write read checks the row's actual owner regardless of
+/// source, and bails loudly (`anyhow::bail!`, aborting the whole batch's
+/// transaction) the moment it finds a same-`line_id` row owned by anyone
+/// other than `'tfl'`; (2) the `ON CONFLICT DO UPDATE` itself carries a
+/// `WHERE line_status.source = 'tfl'` guard so a same-`line_id` row
+/// created by a concurrent `aggregator` write, in the window between that
+/// read and this statement, is refused rather than overwritten; and (3) a
+/// resulting zero-rows-affected write (only reachable via that race, since
+/// the pre-write read already ruled out the non-racy case) is itself
+/// treated as the same loud failure, not silently ignored.
 pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport]) -> Result<u64> {
     if reports.is_empty() {
         return Ok(0);
@@ -421,14 +446,29 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
     for report in reports {
         let statuses_json = serde_json::to_value(&report.statuses)?;
 
-        let existing: Option<serde_json::Value> = sqlx::query_scalar(
-            "SELECT statuses FROM line_status WHERE line_id = $1 AND source = 'tfl'",
+        let existing_owner: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(
+            "SELECT source, CASE WHEN source = 'tfl' THEN statuses ELSE NULL END \
+             FROM line_status WHERE line_id = $1",
         )
         .bind(&report.id)
         .fetch_optional(&mut *tx)
         .await?;
 
-        sqlx::query(
+        if let Some((owner, _)) = &existing_owner {
+            if owner != "tfl" {
+                anyhow::bail!(
+                    "refusing to upsert TfL line status for line_id {:?}: that line_id is \
+                     already owned by source {:?}, not 'tfl' -- this is a naming collision \
+                     between two independent line-id schemes (see upsert_tfl_line_status's \
+                     doc comment), not a legitimate TfL update",
+                    report.id,
+                    owner
+                );
+            }
+        }
+        let existing = existing_owner.and_then(|(_, statuses)| statuses);
+
+        let write_result = sqlx::query(
             r#"
             INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
             VALUES ($1, $2, $3, $4, $5, NOW(), 'tfl')
@@ -439,6 +479,7 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
                 statuses    = EXCLUDED.statuses,
                 computed_at = NOW(),
                 source      = 'tfl'
+            WHERE line_status.source = 'tfl'
             "#,
         )
         .bind(&report.id)
@@ -448,6 +489,17 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
         .bind(&statuses_json)
         .execute(&mut *tx)
         .await?;
+
+        if write_result.rows_affected() == 0 {
+            anyhow::bail!(
+                "refusing to upsert TfL line status for line_id {:?}: the write affected no \
+                 rows, which only happens when a same-line_id row owned by a different source \
+                 was created concurrently after this function's own ownership check -- \
+                 aborting rather than silently no-op'ing what should have been an insert or \
+                 update",
+                report.id
+            );
+        }
 
         if tfl_statuses_changed(existing.as_ref(), &statuses_json) {
             sqlx::query(
@@ -805,12 +857,27 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
 /// station's code cover" lookup Decision 3 step 3 of
 /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md
 /// calls for (`list_stanox_crs`'s existing `WHERE`-less shape returns
-/// everything; this is its `WHERE crs = $1` sibling). `UPPER(...)` on both
-/// sides, matching `TRACKED_TRAIN_STATE_SELECT`'s own established
+/// everything; this is its `WHERE crs = $1` sibling). `UPPER(TRIM(...))`
+/// on both sides, matching `TRACKED_TRAIN_STATE_SELECT`'s own established
 /// convention -- `tracked_trains.pin_origin_crs` is never
 /// case-normalized at write time (`validate_pin` doesn't uppercase it),
 /// so a case-insensitive compare here is load-bearing, not defensive
 /// tidiness.
+///
+/// This file's convention for every TIPLOC/CRS equality lookup is
+/// `UPPER(TRIM(column)) = UPPER(TRIM(parameter))`: a Signal Box Audit Low
+/// finding found the lookups in this file disagreeing -- some raw, some
+/// `UPPER`-only, one pair (`crs_for_tiploc`/`crs_for_tiplocs_batch`)
+/// already `UPPER`+`TRIM` -- so two functions that both claimed to
+/// resolve "the same" code could silently return different answers for a
+/// lowercase or whitespace-padded input depending on which one a caller
+/// happened to call. `UPPER(TRIM(...))` is now applied uniformly across
+/// every such lookup in this file (see `latest_station_sample`,
+/// `latest_station_full_coverage_samples`,
+/// `latest_schedule_network_departures`, `list_fixed_links_from_crs`,
+/// `station_names_for_crs_batch` for the others), and
+/// `queries_crs_tiploc_normalization_tests` below has a regression test
+/// proving two of them now agree on the same lowercase/padded input.
 ///
 /// As of docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md
 /// (Task 3), this reads the UNION of `tiploc_crs` and `stanox_crs`,
@@ -834,10 +901,10 @@ pub async fn list_stanox_crs_for_crs(
         "SELECT DISTINCT ON (tiploc) tiploc, crs, station_name, stanox, source_sequence, change_time_minutes \
          FROM ( \
              SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 1 AS priority \
-             FROM tiploc_crs WHERE UPPER(crs) = UPPER($1) \
+             FROM tiploc_crs WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1)) \
              UNION ALL \
              SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 2 AS priority \
-             FROM stanox_crs WHERE UPPER(crs) = UPPER($1) \
+             FROM stanox_crs WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1)) \
          ) merged \
          ORDER BY tiploc, priority",
     )
@@ -983,15 +1050,17 @@ pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecor
 
 /// Every `fixed_links` row whose `from_crs` matches `crs` -- Phase 2's own
 /// read-side lookup shape (mirrors `list_stanox_crs_for_crs`'s own
-/// `WHERE crs = $1` pattern). Case-insensitive, matching that function's
-/// own `UPPER(...)` convention.
+/// `WHERE crs = $1` pattern). Case-insensitive and trim-insensitive,
+/// matching this file's single `UPPER(TRIM(...))` normalization
+/// convention for every TIPLOC/CRS lookup (see `list_stanox_crs_for_crs`'s
+/// doc comment for the regression this convention closes).
 pub async fn list_fixed_links_from_crs(
     pool: &PgPool,
     crs: &str,
 ) -> Result<Vec<common::FixedLinkRecord>> {
     let rows = sqlx::query_as::<_, FixedLinkRow>(
         "SELECT mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, source_sequence \
-         FROM fixed_links WHERE UPPER(from_crs) = UPPER($1)",
+         FROM fixed_links WHERE UPPER(TRIM(from_crs)) = UPPER(TRIM($1))",
     )
     .bind(crs)
     .fetch_all(pool)
@@ -1353,6 +1422,16 @@ pub async fn upsert_schedule_network_departures(
 /// (`routes::departures::get_station_schedule_departures`) maps this to a
 /// `404`, the same honesty split `get_station_departures` already uses for
 /// `station_samples`.
+///
+/// `UPPER(TRIM(crs)) = UPPER(TRIM($1))`, not a raw `=`: `crs` here comes straight off
+/// the URL path (`Path<String>` in `routes::departures`, no normalization
+/// applied), and this file's other CRS lookups --
+/// `list_stanox_crs_for_crs`, `list_fixed_links_from_crs`,
+/// `station_names_for_crs_batch` -- all case-fold before comparing. A raw
+/// `=` here made this function the odd one out: a caller hitting
+/// `/stations/kgx/schedule-departures` (lowercase) would silently 404
+/// even though `/stations/KGX/schedule-departures` resolves, purely
+/// because this one comparison never normalized case.
 pub async fn latest_schedule_network_departures(
     pool: &PgPool,
     crs: &str,
@@ -1360,7 +1439,8 @@ pub async fn latest_schedule_network_departures(
 ) -> Result<Option<serde_json::Value>> {
     use sqlx::Row;
     let row = sqlx::query(
-        "SELECT departures FROM schedule_network_departures WHERE crs = $1 AND service_date = $2",
+        "SELECT departures FROM schedule_network_departures \
+         WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1)) AND service_date = $2",
     )
     .bind(crs)
     .bind(service_date)
@@ -2293,22 +2373,39 @@ pub async fn search_schedule_calling_point_departures(
 /// above, not an extension of it, even though the design doc names
 /// extending that function as one option. Two reasons:
 ///
-/// 1. **Behavioral difference, not just a superset.** A journey leg's
-///    "depart X, arrive Y" is meaningless unless Y is reached strictly
-///    AFTER departing X (§0.5's own named gap) -- so this function's
-///    `EXISTS` branches enforce that ordering UNCONDITIONALLY, for every
-///    origin/destination pair. `search_schedule_calling_point_departures`
-///    above only enforces it for the SAME-station case (a loop-service
-///    check, `stop.origin_crs = main.origin_crs`) and deliberately does
-///    NOT for two different stations -- see that function's own doc
-///    comment, point 2. That is the right behavior for the general-purpose
-///    `/trains` search page (matching a schedule by any calling point, not
-///    a directed leg); widening it in place would be an unrelated,
-///    unreviewed behavior change to that already-shipped public endpoint.
-/// 2. **Merge safety.** Other in-flight, unmerged branches independently
-///    modify `search_schedule_calling_point_departures`'s own `stops_at`/
-///    ordering logic (see this plan's own staleness note). A sibling
-///    function with zero line overlap cannot collide with that work.
+/// 1. **Required-vs-optional shape, not a behavioral difference in
+///    ordering.** A journey leg's "depart X, arrive Y" is meaningless
+///    unless Y is reached strictly AFTER departing X (§0.5's own named
+///    gap) -- so this function's `EXISTS` branches enforce that ordering
+///    UNCONDITIONALLY, for every origin/destination pair, with BOTH
+///    `origin_crs` and `destination_crs` required parameters.
+///    **Correction (Signal Box Audit, Low finding):** this doc comment
+///    used to claim `search_schedule_calling_point_departures` above
+///    still only enforced that ordering for the SAME-station case and
+///    deliberately not for two different stations -- true when this
+///    function was first written, but stale even at the time this
+///    comment shipped: that function's own doc comment (point 1,
+///    directly above) documents the 2026-09-22 widening that made it
+///    enforce the identical unconditional "later in the journey, by
+///    `(day_offset, scheduled)`" ordering for its own OPTIONAL `stops_at`
+///    parameter, same-station or not. The genuine, still-true reason
+///    this stays a sibling rather than folding into that function is the
+///    required-vs-optional shape: a journey leg always names both ends
+///    (`origin_crs`/`destination_crs` both mandatory here), while
+///    `search_schedule_calling_point_departures` backs the general-purpose
+///    `/trains` search page, where `stops_at` is one optional filter among
+///    several on a single-station-anchored search, not a second mandatory
+///    endpoint. Forcing that shape to also carry a mandatory second
+///    endpoint would be a real, separate API-shape change to an
+///    already-shipped public endpoint, not something to fold in silently
+///    here.
+/// 2. **Merge safety.** At the time this function was introduced, other
+///    in-flight, unmerged branches independently modified
+///    `search_schedule_calling_point_departures`'s own `stops_at`/
+///    ordering logic (see this plan's own staleness note) -- since landed
+///    as the 2026-09-22 widening point 1 references above. A sibling
+///    function with zero line overlap could not collide with that
+///    in-flight work.
 ///
 /// Consequently this duplicates ~25 lines of row-to-JSON mapping logic
 /// from `search_schedule_calling_point_departures` rather than factoring
@@ -2657,12 +2754,28 @@ pub async fn get_full_coverage_line_stats(
 /// read-time Darwin/TRUST correlation (`routes/train.rs`'s
 /// `blend_darwin_eta`), which needs one station's current departure board
 /// to look up against a tracked train's pin/next-calling-point.
+///
+/// `UPPER(TRIM(crs)) = UPPER(TRIM($1))`: this is the exact odd-one-out this doc
+/// comment used to warn about -- every sibling CRS lookup in this file
+/// (`list_stanox_crs_for_crs`, `list_fixed_links_from_crs`,
+/// `station_names_for_crs_batch`) case-folds before comparing, but this
+/// one used to compare with a raw `=`. That silently broke two real
+/// callers: `routes::departures::get_station_departures`, which binds
+/// `crs` straight off the URL path with no normalization, would 404 for
+/// a lowercase path segment even though the uppercase form resolved; and
+/// `station_skip::leg_skip_status` (the "origin-skip detection" this
+/// backs -- §5.2 of the journey-tracking design), which would silently
+/// treat a leg as "no sample, not skipped" instead of actually checking,
+/// for any `journey_legs.origin_crs`/`destination_crs` that wasn't stored
+/// upper-case.
 pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<StationSample>> {
     use sqlx::Row;
-    let row = sqlx::query("SELECT crs, polled_at, departures FROM station_samples WHERE crs = $1")
-        .bind(crs)
-        .fetch_optional(pool)
-        .await?;
+    let row = sqlx::query(
+        "SELECT crs, polled_at, departures FROM station_samples WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1))",
+    )
+    .bind(crs)
+    .fetch_optional(pool)
+    .await?;
 
     row.map(|row| {
         let departures_json: serde_json::Value = row.try_get("departures")?;
@@ -2679,13 +2792,19 @@ pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<St
 /// operator that has resolved this cycle. Full-coverage analog of
 /// `latest_station_sample`, one level finer -- design doc Decision 2.
 /// Empty `Vec` for every station today: no producer writes this table yet.
+///
+/// `UPPER(TRIM(crs)) = UPPER(TRIM($1))`, matching `latest_station_sample`'s own fix
+/// directly above (same table family, same `routes::station_stats`
+/// caller passing an un-normalized path segment) -- kept consistent
+/// rather than letting this sibling drift back into the same raw-`=` bug.
 pub async fn latest_station_full_coverage_samples(
     pool: &PgPool,
     crs: &str,
 ) -> Result<Vec<StationFullCoverageSample>> {
     use sqlx::Row;
     let rows = sqlx::query(
-        "SELECT crs, operator, resolved_at, stats FROM station_full_coverage_samples WHERE crs = $1",
+        "SELECT crs, operator, resolved_at, stats FROM station_full_coverage_samples \
+         WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1))",
     )
     .bind(crs)
     .fetch_all(pool)
@@ -4614,6 +4733,10 @@ pub async fn movement_events_for_train(
 /// in this data model (`pin_origin_name`, etc.), for a stop list built from
 /// several separate CRS codes rather than one join target. A code with no
 /// reference row is simply absent from the map.
+///
+/// Keys are `UPPER(TRIM(...))` on both the input and the column, matching
+/// this file's single TIPLOC/CRS normalization convention (see
+/// `list_stanox_crs_for_crs`'s doc comment).
 pub async fn station_names_for_crs_batch(
     pool: &PgPool,
     crs_codes: &[String],
@@ -4621,12 +4744,13 @@ pub async fn station_names_for_crs_batch(
     if crs_codes.is_empty() {
         return Ok(HashMap::new());
     }
-    let upper: Vec<String> = crs_codes.iter().map(|c| c.to_uppercase()).collect();
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT UPPER(crs), name FROM stations WHERE UPPER(crs) = ANY($1)")
-            .bind(&upper)
-            .fetch_all(pool)
-            .await?;
+    let upper: Vec<String> = crs_codes.iter().map(|c| c.trim().to_uppercase()).collect();
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT UPPER(TRIM(crs)), name FROM stations WHERE UPPER(TRIM(crs)) = ANY($1)",
+    )
+    .bind(&upper)
+    .fetch_all(pool)
+    .await?;
     Ok(rows.into_iter().collect())
 }
 
@@ -4924,6 +5048,73 @@ mod tests {
         let tfl = summaries.iter().find(|row| row.id == "TEST-TFL").unwrap();
         assert_eq!(tfl.mode_name, "tube");
         assert_eq!(tfl.name, "test tfl line");
+    }
+
+    /// Regression test for the Signal Box Audit Low finding on
+    /// `upsert_tfl_line_status`: `line_id` is only `TEXT PRIMARY KEY`, so
+    /// nothing at the schema level stops a TfL line id from colliding with
+    /// an `aggregator`-owned one. Before the ownership guard, a colliding
+    /// TfL post would silently `ON CONFLICT (line_id) DO UPDATE SET ...
+    /// source = 'tfl'`, stealing the aggregator's row -- this proves it
+    /// now fails loudly (`Err`, whole batch rolled back by the caller
+    /// never committing) and leaves the aggregator's row untouched.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                upsert_tfl_line_status_refuses_to_steal_a_non_tfl_owned_row_with_the_same_line_id \
+                -- --ignored`"]
+    async fn upsert_tfl_line_status_refuses_to_steal_a_non_tfl_owned_row_with_the_same_line_id() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+             VALUES ('TEST-COLLIDE', 'aggregator owns this', 'national-rail', '{NT}', '[]', \
+                     'aggregator') \
+             ON CONFLICT (line_id) DO UPDATE SET source = EXCLUDED.source, \
+                                                  name = EXCLUDED.name",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed a non-TfL-owned row under the colliding line_id");
+
+        let colliding_report = common::LineStatusReport {
+            id: "TEST-COLLIDE".to_string(),
+            name: "a TfL line that happens to share this id".to_string(),
+            mode_name: "tube".to_string(),
+            operators: vec!["TfL".to_string()],
+            statuses: vec![],
+        };
+
+        let result = upsert_tfl_line_status(&pool, std::slice::from_ref(&colliding_report)).await;
+        assert!(
+            result.is_err(),
+            "an id collision with a non-TfL-owned row must fail loudly, not silently overwrite"
+        );
+
+        let (source, name): (String, String) =
+            sqlx::query_as("SELECT source, name FROM line_status WHERE line_id = 'TEST-COLLIDE'")
+                .fetch_one(&pool)
+                .await
+                .expect("the aggregator's row must still exist, untouched");
+        assert_eq!(
+            source, "aggregator",
+            "ownership must not have been stolen by the refused TfL write"
+        );
+        assert_eq!(
+            name, "aggregator owns this",
+            "the aggregator's own data must not have been overwritten by the refused TfL write"
+        );
+
+        sqlx::query("DELETE FROM line_status WHERE line_id = 'TEST-COLLIDE'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture row");
     }
 
     #[tokio::test]
@@ -6013,6 +6204,90 @@ mod stanox_crs_lookup_query_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+}
+
+/// Regression coverage for a Signal Box Audit Low finding: this file's
+/// TIPLOC/CRS equality lookups used to disagree on case/whitespace
+/// normalization -- some compared raw values, some `UPPER`-only, and
+/// `crs_for_tiploc`/`crs_for_tiplocs_batch` already did `UPPER`+`TRIM` --
+/// so two functions that both claimed to resolve "the same" CRS could
+/// silently return different answers for the identical lowercase input
+/// depending on which one a caller happened to call. Every lookup in this
+/// file now normalizes with `UPPER(TRIM(...))` (see
+/// `list_stanox_crs_for_crs`'s doc comment for the full list); these
+/// tests seed one row and prove that two lookups which previously
+/// disagreed -- `latest_station_sample` (used to compare with a raw `=`)
+/// and `list_stanox_crs_for_crs` (already `UPPER`-only) -- now both
+/// resolve the same lowercase/whitespace-padded input.
+#[cfg(test)]
+mod crs_tiploc_normalization_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                latest_station_sample_and_list_stanox_crs_for_crs_agree_on_a_lowercase_query \
+                -- --ignored --test-threads=1`"]
+    async fn latest_station_sample_and_list_stanox_crs_for_crs_agree_on_a_lowercase_query() {
+        let pool = test_pool().await;
+
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, change_time_minutes, updated_at) \
+             VALUES ('TEST-NORM-STANOX', 'ZNM', 'TESTNORM', 'TEST NORMALIZATION STATION', 1, NULL, NOW()) \
+             ON CONFLICT (stanox) DO UPDATE SET crs = EXCLUDED.crs, tiploc = EXCLUDED.tiploc",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        sqlx::query(
+            "INSERT INTO station_samples (crs, polled_at, departures) \
+             VALUES ('ZNM', NOW(), '[]'::jsonb) \
+             ON CONFLICT (crs) DO UPDATE SET departures = EXCLUDED.departures",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed station_samples");
+
+        // Before this fix, `latest_station_sample` compared with a raw
+        // `=` while `list_stanox_crs_for_crs` already normalized with
+        // `UPPER(...)` -- so a lowercase, whitespace-padded query like
+        // this one would resolve through one lookup and silently miss
+        // through the other. Both must now agree.
+        let sample = latest_station_sample(&pool, "  znm  ")
+            .await
+            .expect("latest_station_sample");
+        assert!(
+            sample.is_some(),
+            "latest_station_sample must resolve a lowercase, whitespace-padded CRS"
+        );
+
+        let stanox_rows = list_stanox_crs_for_crs(&pool, "  znm  ")
+            .await
+            .expect("list_stanox_crs_for_crs");
+        assert!(
+            stanox_rows.iter().any(|r| r.tiploc == "TESTNORM"),
+            "list_stanox_crs_for_crs must resolve the same lowercase, whitespace-padded CRS"
+        );
+
+        sqlx::query("DELETE FROM station_samples WHERE crs = 'ZNM'")
+            .execute(&pool)
+            .await
+            .expect("cleanup station_samples");
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-NORM-STANOX'")
+            .execute(&pool)
+            .await
+            .expect("cleanup stanox_crs");
     }
 }
 
