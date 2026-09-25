@@ -252,18 +252,49 @@ async fn post_tfl_line_status(
 
 /// `trust-consumer`'s per-poll-cycle batch of TRUST-derived events for
 /// tracked trains -- see `queries_train_tracking::upsert_train_event`.
+/// Non-transactional across the batch, deliberately, and the returned
+/// `upserted` count now reflects that honestly (2026-09-25 Low-severity
+/// auth-core review: previously, a per-event error aborted the WHOLE
+/// request via `?` on the first failure -- so a caller got either a `500`
+/// with no count at all, discarding whatever prefix of the batch had
+/// already committed, or (on full success) `events.len()`; there was no
+/// response shape that ever reported a genuinely partial result).
+/// `upsert_train_event` runs several independent statements per event
+/// (legacy-resolution lookups via `flip_legacy_resolution`, the shared
+/// `trains`/`train_movement_events`/`train_current_state` writes, etc.),
+/// each against `pool: &PgPool` directly rather than a shared transaction
+/// handle -- wrapping this whole per-cycle batch in one transaction would
+/// mean threading a `Transaction` all the way through
+/// `upsert_train_event`/`flip_legacy_resolution` and every one of their
+/// own sibling call sites (`data::trust_event_backlog_match`, and this
+/// module's own ~15 direct test call sites), a much larger refactor than
+/// this fix's own scope justifies for a Low-severity finding. Instead:
+/// a per-event failure is logged and skipped -- exactly the same
+/// log-and-continue posture `post_trust_event_backlog` just below already
+/// takes for its own secondary shared-movement write, for the same
+/// reason (one bad event must not sacrifice the rest of an otherwise-good
+/// batch) -- and `upserted` reports how many actually committed. The
+/// upserts this loop performs are themselves idempotent (keyed
+/// `INSERT ... ON CONFLICT`-style writes further down the call chain), so
+/// `trust-consumer` retrying a batch that partially failed is safe.
 async fn post_train_events(
     State(app): State<App>,
     Json(events): Json<Vec<common::TrainMovementEventMessage>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let mut upserted = 0u64;
     for event in &events {
-        queries_train_tracking::upsert_train_event(&app.database, event)
-            .await
-            .map_err(internal_error)?;
+        match queries_train_tracking::upsert_train_event(&app.database, event).await {
+            Ok(()) => upserted += 1,
+            Err(err) => {
+                tracing::warn!(
+                    error = ?err,
+                    tracked_train_id = event.tracked_train_id,
+                    "failed to upsert train event; continuing with the rest of the batch"
+                );
+            }
+        }
     }
-    Ok(Json(UpsertResponse {
-        upserted: events.len() as u64,
-    }))
+    Ok(Json(UpsertResponse { upserted }))
 }
 
 /// `trust-consumer`'s fast-path forwarding signals for the notifier-
@@ -1531,6 +1562,167 @@ mod db_tests {
 
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                train_events_batch_reports_an_accurate_upserted_count -- --ignored --test-threads=1`"]
+    async fn train_events_batch_reports_an_accurate_upserted_count_when_one_event_fails_mid_batch()
+    {
+        // The regression this test exists to pin (2026-09-25 Low-severity
+        // auth-core review, "ingest batch writes are non-transactional"):
+        // before the fix, `post_train_events` used `?` to abort the WHOLE
+        // request on the first per-event error, so a caller either got a
+        // bare `500` (no count reported at all, silently discarding
+        // whatever prefix of the batch had already committed) or, on full
+        // success, `events.len()` -- there was no response shape that ever
+        // reported a genuinely partial result. This drives one real,
+        // deliberately-invalid event (a `status` value the DB's own CHECK
+        // constraint on `train_current_state.status` rejects) through the
+        // real router, alongside two harmless ones, and asserts:
+        //  1. the request still succeeds overall (`200`, not `500`) --
+        //     one bad event no longer sacrifices the rest of the batch;
+        //  2. `upserted` counts only the two that actually succeeded, not
+        //     all three; and
+        //  3. the failing event's OWN partial application is visible: its
+        //     `train_movement_events` row landed (that INSERT ran and
+        //     committed before the CHECK-violating one) even though its
+        //     `train_current_state` row never did -- the literal
+        //     "non-transactional, partial application" shape this finding
+        //     names, now at least honestly reported via the count.
+        let pool = connect().await;
+        let user_id = "TEST-INGEST-TRAIN-EVENTS-BATCH-USER";
+        sqlx::query("INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed fixture user");
+        let subscription_id: i64 = sqlx::query_scalar(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, '2099-03-01', 'ZFA', '2099-03-01T08:00:00Z') \
+             RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed fixture train_subscriptions row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+
+        let events = json!([
+            {
+                // Resolves a real trains_id (via flip_legacy_resolution's
+                // (None, Some(train_uid)) arm) and so actually reaches
+                // upsert_train_movement -- but with an invalid `status`
+                // that violates train_current_state's own CHECK
+                // constraint, forcing a genuine DB error on this one
+                // event only.
+                "tracked_train_id": subscription_id,
+                "resolved_train_uid": "TEST-INGEST-BATCH-PARTIAL-UID",
+                "resolved_train_id": "T99999",
+                "dedup_key": "test-ingest-batch-partial-dedup",
+                "msg_type": "0003",
+                "raw_body": {},
+                "status": "not-a-real-status-value"
+            },
+            {
+                // No identity resolvable at all (an unknown
+                // tracked_train_id) -- upsert_train_event drops this as a
+                // logged no-op and returns Ok(()), same as before this
+                // fix; included to prove the batch keeps processing past
+                // the failing event above.
+                "tracked_train_id": -9_123_456_001i64,
+                "dedup_key": "test-ingest-batch-harmless-1",
+                "msg_type": "0003",
+                "raw_body": {},
+                "status": "en_route"
+            },
+            {
+                "tracked_train_id": -9_123_456_002i64,
+                "dedup_key": "test-ingest-batch-harmless-2",
+                "msg_type": "0003",
+                "raw_body": {},
+                "status": "en_route"
+            }
+        ]);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/train-events")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&events).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "one bad event in the batch must not fail the whole request"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"upserted": 2}),
+            "upserted must count only the two events that actually succeeded, not all three"
+        );
+
+        let fixture_service_date: chrono::NaiveDate = "2099-03-01".parse().unwrap();
+        let trains_id: i64 =
+            sqlx::query_scalar("SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2")
+                .bind("TEST-INGEST-BATCH-PARTIAL-UID")
+                .bind(fixture_service_date)
+                .fetch_one(&pool)
+                .await
+                .expect("the failing event's own resolution still created a trains row");
+
+        let movement_dedup_key: String =
+            sqlx::query_scalar("SELECT dedup_key FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect(
+                    "the failing event's train_movement_events write committed before the \
+             CHECK-violating train_current_state write ran -- exactly the partial-application \
+             shape this finding names",
+                );
+        assert_eq!(movement_dedup_key, "test-ingest-batch-partial-dedup");
+
+        let current_state_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count train_current_state rows");
+        assert_eq!(
+            current_state_count, 0,
+            "the CHECK-violating insert must not have landed a train_current_state row"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(subscription_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
             .execute(&pool)
             .await
             .ok();

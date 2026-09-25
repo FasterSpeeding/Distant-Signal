@@ -399,6 +399,28 @@ pub(crate) fn build_internal_oauth_routes(
     ]
 }
 
+/// Startup guard (2026-09-25 Low-severity auth-core review): the
+/// user-facing SSO client and the internal-service OAuth2 client must
+/// never be configured with the SAME `client_id` -- see the call site in
+/// `AppState::init` for the full rationale. Factored out as its own free
+/// function (rather than an inline `ensure!` in `init`) purely so this one
+/// check is unit-testable without needing a live database connection --
+/// everything else `AppState::init` does before reaching this point
+/// (connecting to Postgres, parsing `REDIS_URL`) is not something a plain
+/// `#[test]` can exercise cheaply.
+fn ensure_sso_and_internal_oauth_clients_differ(
+    sso_client_id: &str,
+    internal_oauth_client_id: &str,
+) -> Result<()> {
+    ensure!(
+        sso_client_id != internal_oauth_client_id,
+        "sso_client_id and internal_oauth_client_id must be different values -- both are \
+         configured to \"{sso_client_id}\", which would let a human SSO login and an \
+         internal-service bearer token satisfy each other's audience check"
+    );
+    Ok(())
+}
+
 /// Hand-rolled rather than `#[derive(Debug)]`. Two independent reasons:
 ///
 /// 1. `OidcClient` holds a `reqwest::Client` and a
@@ -497,6 +519,34 @@ impl AppState {
         })
         .context("failed to construct OIDC client")?;
 
+        // `sso_client_id` (a real human's own browser-based login, verified
+        // by `OidcClient`/`openidconnect`'s ID-token verifier) and
+        // `internal_oauth_client_id` (the `aud` every verified `/private/*`
+        // bearer token must carry, checked by `ServiceTokenVerifier::verify`
+        // below) are two entirely separate identities by design --
+        // `internal_oauth_issuer_url`'s own doc comment on `ServiceArguments`
+        // already documents that they MAY legitimately share the same
+        // Authentik instance (issuer), just under different
+        // Applications/Providers, so issuer equality is never checked here.
+        // client_id equality is a different matter: nothing about the two
+        // verifiers' own logic prevents a token that satisfies one client
+        // id's audience check from also satisfying the other if a
+        // chart/secret-wiring mistake ever handed both the SAME client_id --
+        // a human's own SSO-issued ID token could then pass
+        // `ServiceTokenVerifier::verify`'s `aud` check (or a
+        // client-credentials access token could pass the SSO side), letting
+        // a real person's browser session masquerade as a trusted internal
+        // service credential, or vice versa. Today's chart wires genuinely
+        // distinct values for both (this is a misconfiguration-only risk),
+        // but nothing before this guard actually verified that at startup --
+        // fail loudly here rather than let a wiring mistake pass silently
+        // into production. See `ensure_sso_and_internal_oauth_clients_differ`
+        // for why this check is its own free function.
+        ensure_sso_and_internal_oauth_clients_differ(
+            &config.sso_client_id,
+            &config.internal_oauth_client_id,
+        )?;
+
         // An empty required-group value must never silently become "any
         // group matches" -- the same failure class the old shared-secret
         // design guarded against for its own credential (see the startup
@@ -592,5 +642,29 @@ impl AppState {
             schedule_crs_line_index,
             line_matcher,
         }))
+    }
+}
+
+#[cfg(test)]
+mod internal_oauth_startup_guard_tests {
+    use super::ensure_sso_and_internal_oauth_clients_differ;
+
+    #[test]
+    fn distinct_client_ids_pass() {
+        assert!(
+            ensure_sso_and_internal_oauth_clients_differ(
+                "human-login-client",
+                "svc-internal-client"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn identical_client_ids_fail_loudly() {
+        let err = ensure_sso_and_internal_oauth_clients_differ("same-id", "same-id")
+            .expect_err("identical client ids must be rejected at startup");
+        assert!(err.to_string().contains("sso_client_id"));
+        assert!(err.to_string().contains("internal_oauth_client_id"));
     }
 }
