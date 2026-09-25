@@ -18,6 +18,7 @@ use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
 use crate::data::journey_templates::{self, TemplateLegInput};
 use crate::data::journeys;
+use crate::data::train_tracking;
 
 pub fn router() -> Router {
     Router::new()
@@ -227,6 +228,14 @@ async fn post_journey_template(
                     "A template needs at least one leg.".to_string(),
                 ));
             }
+            // 2026-09 Signal Box Audit Low finding: same unvalidated
+            // custom_name write path `routes::journeys::post_journey` had
+            // (see that fix's own doc comment) -- this one lives right
+            // next to it in the sibling templates route, and was equally
+            // missing the trim/length-cap every other custom-name write in
+            // this codebase applies.
+            let custom_name = train_tracking::validate_custom_name(custom_name.as_deref())
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
             let leg_inputs = legs
                 .into_iter()
                 .map(to_template_leg_input)
@@ -245,6 +254,10 @@ async fn post_journey_template(
             custom_name,
             journey_id,
         } => {
+            // Same custom_name cap as the `Manual` arm above -- see its own
+            // doc comment.
+            let custom_name = train_tracking::validate_custom_name(custom_name.as_deref())
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
             // Ownership, not mere readability -- Judgment Call 3.
             let owner = journeys::journey_owner(&app.database, journey_id)
                 .await
@@ -366,6 +379,10 @@ async fn put_journey_template(
         body.ends_on,
     )
     .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    // Same custom_name cap as `post_journey_template`'s own arms -- see
+    // that fix's doc comment.
+    let custom_name = train_tracking::validate_custom_name(body.custom_name.as_deref())
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     let leg_inputs = body
         .legs
         .into_iter()
@@ -375,7 +392,7 @@ async fn put_journey_template(
         &app.database,
         template_id,
         &user.id,
-        body.custom_name.as_deref(),
+        custom_name.as_deref(),
         &leg_inputs,
         body.days_of_week,
         body.active,

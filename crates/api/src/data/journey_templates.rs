@@ -92,13 +92,19 @@ pub struct JourneyTemplateListItem {
 /// the promote-from-journey path (Task 3's route handles that leg
 /// separately -- see [`create_template`]'s own doc comment).
 pub fn validate_template_leg(origin_crs: &str, destination_crs: &str) -> Result<(), String> {
-    if origin_crs.trim().len() != 3 {
+    // 2026-09 Signal Box Audit Low finding: this was `.trim().len() != 3`,
+    // a UTF-8 BYTE-length check, not a character check -- a multi-byte
+    // character could pass while not being a real CRS code. Fixed to
+    // match `routes::trains::normalize_crs`'s own check, same fix applied
+    // to `journeys::validate_window_leg`/`validate_known_train_overrides`
+    // for the identical bug.
+    if !is_three_letter_crs(origin_crs) {
         return Err(
             "Enter a valid origin station — CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
-    if destination_crs.trim().len() != 3 {
+    if !is_three_letter_crs(destination_crs) {
         return Err(
             "Enter a valid destination station — CRS codes are three letters, like WOK or \
              EUS."
@@ -106,6 +112,16 @@ pub fn validate_template_leg(origin_crs: &str, destination_crs: &str) -> Result<
         );
     }
     Ok(())
+}
+
+/// A real 3-letter CRS code, ASCII-alphabetic only, case-insensitive --
+/// same check as `routes::trains::normalize_crs`/
+/// `journeys::is_three_letter_crs` (each module keeps its own private
+/// copy rather than reaching across the module boundary, matching this
+/// codebase's existing convention for this exact check).
+fn is_three_letter_crs(crs: &str) -> bool {
+    let trimmed = crs.trim();
+    trimmed.chars().count() == 3 && trimmed.chars().all(|c| c.is_ascii_alphabetic())
 }
 
 /// User-facing validation for a template's recurrence fields
@@ -460,6 +476,36 @@ pub async fn materialize_template(
     }
 
     let mut tx = pool.begin().await?;
+
+    // 2026-09 Signal Box Audit Low finding: `get_owned_template`/
+    // `list_template_legs` above both run against `pool` directly, BEFORE
+    // this transaction opens -- leaving a window, between that read and
+    // this transaction's own writes, where a concurrent `delete_template`
+    // could remove the row just read. `journeys.source_template_id`
+    // references `journey_templates(id)`, so a template deleted in that
+    // window turned the `INSERT` below into a foreign-key-violation
+    // database error -- which the route's blanket `internal_error` mapping
+    // surfaces as a confusing 500, when the honest answer is the same
+    // clean 404 this function already returns for "no such template" up
+    // above. Re-confirming existence (and ownership) here, row-locked via
+    // `FOR UPDATE`, closes that window: `delete_template`'s own `DELETE`
+    // needs the same row lock, so it either lands before this recheck
+    // (caught here, clean 404) or blocks until this transaction commits or
+    // rolls back (materialization proceeds; the template deletion, which
+    // only detaches `journeys.source_template_id` via `ON DELETE SET
+    // NULL`, applies afterwards as normal).
+    let still_owned: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM journey_templates WHERE id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(template_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if still_owned.is_none() {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+
     let (journey_id,): (i64,) = sqlx::query_as(
         "INSERT INTO journeys (user_id, custom_name, source_template_id) \
          VALUES ($1, $2, $3) RETURNING id",
@@ -546,6 +592,15 @@ mod validate_template_leg_tests {
     #[test]
     fn a_short_destination_code_is_rejected() {
         assert!(validate_template_leg("WAT", "R").is_err());
+    }
+
+    #[test]
+    // 2026-09 Signal Box Audit Low finding regression: same byte-length
+    // (not character-count) bug `journeys::validate_window_leg` had --
+    // "€" (U+20AC) is exactly 3 UTF-8 bytes but one character, the exact
+    // shape of value a `.len() != 3` check would wrongly accept.
+    fn a_three_byte_non_ascii_character_is_rejected() {
+        assert!(validate_template_leg("€", "RDG").is_err());
     }
 
     #[test]
@@ -1126,6 +1181,64 @@ mod db_tests {
 
         cleanup_user(&pool, owner_id).await;
         cleanup_user(&pool, other_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                materialize_template_racing_a_concurrent_delete_never_errors -- --ignored --test-threads=1`"]
+    // 2026-09 Signal Box Audit Low finding regression test: before this
+    // fix, `get_owned_template`/`list_template_legs` read OUTSIDE
+    // `materialize_template`'s own transaction, leaving a window where a
+    // concurrent `delete_template` could remove the row in between --
+    // turning the later `INSERT INTO journeys (..., source_template_id)`
+    // into a foreign-key-violation database error, surfaced by the route
+    // as a confusing 500 rather than the clean 404 "no such template"
+    // already produces. The in-transaction `FOR UPDATE` recheck added by
+    // that fix must make `materialize_template` come back `Ok(...)` no
+    // matter which of these two concurrent operations wins -- never `Err`.
+    async fn materialize_template_racing_a_concurrent_delete_never_errors() {
+        let pool = connect().await;
+        let user_id = "TEST-TEMPLATE-MAT-RACE";
+        seed_user(&pool, user_id).await;
+
+        let legs = vec![fixture_leg("WAT", "RDG")];
+        let template_id = create_template(&pool, user_id, None, &legs)
+            .await
+            .expect("create template");
+
+        let pool_a = pool.clone();
+        let pool_b = pool.clone();
+        let (materialize_result, _delete_result) = tokio::join!(
+            materialize_template(&pool_a, template_id, user_id, "2026-09-22".parse().unwrap()),
+            delete_template(&pool_b, template_id, user_id),
+        );
+
+        let materialized =
+            materialize_result.expect("materialize must never error under this race");
+
+        if let Some(materialized) = materialized {
+            sqlx::query("DELETE FROM journey_legs WHERE id = ANY($1)")
+                .bind(&materialized.leg_ids)
+                .execute(&pool)
+                .await
+                .expect("cleanup materialized journey_legs");
+            sqlx::query("DELETE FROM journeys WHERE id = $1")
+                .bind(materialized.journey_id)
+                .execute(&pool)
+                .await
+                .expect("cleanup materialized journey");
+        }
+        // Whichever operation actually won the race, make sure the
+        // template itself is gone before cleanup -- a no-op if
+        // `delete_template` already won.
+        sqlx::query("DELETE FROM journey_templates WHERE id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup template if delete lost the race");
+
+        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]

@@ -5,6 +5,47 @@ use tower_http::trace::TraceLayer;
 use api::app::{App, AppState, Router};
 use api::{data, routes};
 
+/// Redacts an unlisted-link share token out of a request URI before it
+/// reaches `tracing`'s per-request span. 2026-09 Signal Box Audit Low
+/// finding: `TraceLayer::new_for_http()`'s default `make_span_with` logs
+/// the full request URI verbatim as a span field -- for `GET
+/// /Journeys/shared/{token}` (`routes::journeys::get_journey_by_share_token`)
+/// that means the raw, unauthenticated-bearer share token travels into
+/// every trace/log line this request produces, stacked on top of the
+/// exposure this codebase does NOT control (ingress access logs, browser
+/// history, a `Referer` header on any outbound link/asset request the
+/// shared page makes) -- the token is the entire access control for that
+/// route, so leaking it anywhere is equivalent to leaking the resource
+/// itself.
+///
+/// A full TTL mechanism for journey share links already exists at the
+/// data layer -- `unlisted_links::rotate_link`'s own `ttl: Option<Duration>`
+/// parameter, backed by `unlisted_links.expires_at` and honored by
+/// `resolve_link`/`get_active_link` -- but journeys deliberately pass
+/// `None` today, a DOCUMENTED product decision
+/// (`docs/superpowers/specs/2026-09-23-unlisted-links-design.md` §5: a
+/// journey's link grants read-only access to one already-bounded
+/// resource, not an ever-growing membership boundary, so explicit
+/// revoke/regenerate are its only two owner-facing levers). Silently
+/// overriding that as a side effect of a Low-severity logging fix would be
+/// a bigger, product-level change than this finding calls for -- forcing
+/// every existing share link to start expiring is a UX change worth its
+/// own decision, not something to sneak in here. Redacting the token from
+/// tracing output is the smaller, purely-defensive fix instead: it closes
+/// the log-exposure channel without changing the feature's behavior at
+/// all, and if a TTL mechanism is wanted later, the plumbing is already
+/// there waiting for it.
+fn redact_share_token_uri(uri: &axum::http::Uri) -> String {
+    let path = uri.path();
+    if let Some(token) = path.strip_prefix("/Journeys/shared/")
+        && !token.is_empty()
+        && !token.contains('/')
+    {
+        return "/Journeys/shared/[REDACTED]".to_string();
+    }
+    uri.to_string()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
@@ -92,7 +133,16 @@ async fn main() -> anyhow::Result<()> {
 
     let router = router
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %redact_share_token_uri(request.uri()),
+                    version = ?request.version(),
+                )
+            },
+        ))
         .with_state(app.clone());
 
     tracing_subscriber::fmt()
@@ -249,5 +299,50 @@ async fn session_cleanup_sweep_loop(app: App) {
                 tracing::error!(error = ?err, "session-cleanup sweep failed; will retry next interval");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod redact_share_token_uri_tests {
+    use super::redact_share_token_uri;
+
+    #[test]
+    // 2026-09 Signal Box Audit Low finding regression: the whole point of
+    // this function is that the raw token never reaches the returned
+    // string.
+    fn redacts_a_journey_share_token() {
+        let uri: axum::http::Uri = "/Journeys/shared/super-secret-token-123"
+            .parse()
+            .expect("valid uri");
+        let redacted = redact_share_token_uri(&uri);
+        assert_eq!(redacted, "/Journeys/shared/[REDACTED]");
+        assert!(!redacted.contains("super-secret-token-123"));
+    }
+
+    #[test]
+    fn leaves_an_ordinary_request_uri_untouched() {
+        let uri: axum::http::Uri = "/Journeys/mine".parse().expect("valid uri");
+        assert_eq!(redact_share_token_uri(&uri), "/Journeys/mine");
+    }
+
+    #[test]
+    fn leaves_a_journey_detail_uri_untouched() {
+        // Only the PUBLIC share-token route carries a bare secret in the
+        // path -- an ordinary `/Journeys/{id}` uses an opaque-but-not-
+        // secret numeric id behind session auth, nothing to redact.
+        let uri: axum::http::Uri = "/Journeys/42".parse().expect("valid uri");
+        assert_eq!(redact_share_token_uri(&uri), "/Journeys/42");
+    }
+
+    #[test]
+    fn does_not_redact_the_bare_shared_prefix_with_no_token() {
+        let uri: axum::http::Uri = "/Journeys/shared/".parse().expect("valid uri");
+        assert_eq!(redact_share_token_uri(&uri), "/Journeys/shared/");
+    }
+
+    #[test]
+    fn preserves_the_query_string_shape_for_non_matching_paths() {
+        let uri: axum::http::Uri = "/Journeys/mine?foo=bar".parse().expect("valid uri");
+        assert_eq!(redact_share_token_uri(&uri), "/Journeys/mine?foo=bar");
     }
 }
