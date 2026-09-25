@@ -143,7 +143,37 @@ postgresql:
   # -- Merged over the pod securityContext. The uid/gid/fsGroup 999 pins are
   # required by the postgres image -- override them only if you know why.
   podSecurityContext: {}
-  resources: {}
+  # -- Starting-point resources, NOT a tuning pass. Every block in this file
+  # was `{}` until 2026-09-25, which put EVERY pod in this chart in the
+  # BestEffort QoS class -- the first thing the kubelet evicts under node
+  # memory pressure, in no particular order, INCLUDING the bundled Postgres
+  # StatefulSet. A `schedule-reference` CIF parse or a leaking
+  # `full-coverage-consumer` cache could therefore take the database down
+  # with it. Sizes below are reasoned from what each workload actually
+  # does (see each block's own note); replace them with real numbers from
+  # production monitoring.
+  #
+  # MEMORY gets a request AND a limit: it is the non-compressible resource,
+  # so a limit is what turns a leak into one OOMKilled pod instead of a
+  # degraded node. CPU gets a request but deliberately NO limit: a CPU
+  # limit throttles via CFS quota, which on these async Rust services
+  # shows up as latency spikes rather than a clean failure, and the
+  # requests alone are enough for scheduling and for proportional sharing
+  # under contention.
+  # Every table in the app, plus shared_buffers/work_mem for the
+  # aggregation and schedule queries. The request is deliberately
+  # well ABOVE steady-state usage: eviction ranks Burstable pods by
+  # how far over their request they are, so a generous request is what
+  # keeps the database near the bottom of that list. For the strongest
+  # protection set requests == limits here (Guaranteed QoS), accepting
+  # that the postmaster is then OOMKilled rather than throttled if it
+  # ever genuinely exceeds the limit.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
     # requests:
     #   cpu: 100m
     #   memory: 256Mi
@@ -220,7 +250,13 @@ pollers:
     existingSecretInternalOauthPasswordKey: internal-oauth-password-poller-incidents
     logLevel: info
     extraEnv: []
-    resources: {}
+    # Fetches and diffs one RDM incident feed per tick.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
     nodeSelector: {}
     tolerations: []
     affinity: {}
@@ -254,7 +290,14 @@ pollers:
     existingSecretInternalOauthPasswordKey: internal-oauth-password-poller-stations
     logLevel: info
     extraEnv: []
-    resources: {}
+    # Holds the whole ~2,500-row station catalogue in memory to build one
+    # ingest body.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        memory: 384Mi
     nodeSelector: {}
     tolerations: []
     affinity: {}
@@ -300,7 +343,13 @@ pollers:
     extraEnv:
       - name: TFL_MODES
         value: "tube,dlr,overground,elizabeth-line,tram"
-    resources: {}
+    # One TfL line-status JSON document per tick.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        memory: 384Mi
     nodeSelector: {}
     tolerations: []
     affinity: {}
@@ -334,7 +383,13 @@ pollers:
     existingSecretInternalOauthPasswordKey: internal-oauth-password-poller-tocs
     logLevel: info
     extraEnv: []
-    resources: {}
+    # The smallest poller in the chart: a short operator list per tick.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
     nodeSelector: {}
     tolerations: []
     affinity: {}
@@ -377,7 +432,14 @@ pollers:
     existingSecretInternalOauthPasswordKey: internal-oauth-password-poller-ldbws
     logLevel: info
     extraEnv: []
-    resources: {}
+    # Parses Darwin LDBWS SOAP responses, which are verbose XML and the
+    # largest bodies any RDM poller handles.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        memory: 384Mi
     nodeSelector: {}
     tolerations: []
     affinity: {}
@@ -615,7 +677,18 @@ api:
       timeoutSeconds: 3
   # -- Extra env vars appended to the container.
   extraEnv: []
-  resources: {}
+  # The biggest single driver here is NOT steady-state serving, it is
+  # the /private/* schedule publishes: schedule-reference POSTs a
+  # whole-network day in one body (~30MB of JSON, ~60MB worst case per
+  # docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+  # Task 1), and api buffers and deserialises that. Plus the line
+  # catalogue, the sqlx pool, and one arena per concurrent request.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 1536Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -706,8 +779,23 @@ devAuthentik:
       enabled: true
       size: 1Gi
       storageClass: ""
-    resources: {}
-  resources: {}
+    # Dev-only throwaway database for devAuthentik's own state -- tiny
+    # next to the app's own postgresql above.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+  # Dev-only, and a Django/Celery stack rather than a Rust binary --
+  # its floor is set by the Python interpreter and its own workers, not
+  # by load. Shared by BOTH the server and worker Deployments.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -819,7 +907,14 @@ aggregator:
   untrackedTrainsRetentionDays: 14
   logLevel: info
   extraEnv: []
-  resources: {}
+  # A singleton loop: one line-catalogue copy plus one batch of
+  # line_status/history rows in flight at a time.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -871,7 +966,14 @@ notifier:
     existingSecretPrivateKeyKey: "vapid-private-key"
   logLevel: info
   extraEnv: []
-  resources: {}
+  # Polls Postgres and signs web-push payloads. No caches, no batching
+  # beyond one poll's worth of rows.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -922,7 +1024,16 @@ redis:
       - ReadWriteOnce
     # -- Use a pre-existing PVC instead of a chart-rendered one.
     existingClaim: ""
-  resources: {}
+  # A trigger/queue store, not a cache -- but note this chart sets no
+  # `maxmemory`, so Redis will happily grow to the limit below if a
+  # consumer stalls. The limit is the backstop; the real fix for a
+  # stalled consumer is the consumer.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1007,7 +1118,15 @@ enricher:
   reclaimMinIdleSecs: 1000
   logLevel: info
   extraEnv: []
-  resources: {}
+  # Reads one incident at a time off Redis and calls out to the LLM
+  # over HTTP. Almost all of its wall-clock is waiting on that call, so
+  # both numbers are small.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1096,7 +1215,16 @@ trustConsumer:
   # the suspect (e.g. the upstream feed vendor silently fixes their bug).
   trustTimestampCorrectionEnabled: true
   extraEnv: []
-  resources: {}
+  # The highest sustained message rate in the stack (the live TRUST
+  # movement feed). Memory is librdkafka's own fetch buffers plus the
+  # STANOX/CRS crosswalk it caches; CPU is per-message parsing, which
+  # is why its request is one of the larger ones.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1156,7 +1284,18 @@ fullCoverageConsumer:
   redisGapCheckSecs: 60
   logLevel: info
   extraEnv: []
-  resources: {}
+  # Called out by the 2026-09-25 review as one of the two real leak/
+  # spike risks in this chart: it holds PER-LINE population caches
+  # (schedule_line_population) alongside the same movement feed
+  # trust-consumer reads, so its footprint scales with the line
+  # catalogue rather than staying flat. Sized with materially more
+  # headroom than trust-consumer for exactly that reason.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1209,7 +1348,14 @@ trustBacklogConsumer:
   # correction, same default, same reasoning).
   trustTimestampCorrectionEnabled: true
   extraEnv: []
-  resources: {}
+  # Drains a Redis list in bounded batches and POSTs them on. The
+  # backlog itself lives in Redis, not in this process.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1262,7 +1408,14 @@ movementRelay:
   metricsPort: 9094
   logLevel: info
   extraEnv: []
-  resources: {}
+  # A pure Kafka -> Redis-stream passthrough: one message in flight
+  # plus librdkafka's fetch buffers.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1311,7 +1464,15 @@ pollerIrishRailGtfs:
   logLevel: info
   metricsPort: 9091
   extraEnv: []
-  resources: {}
+  # Downloads the Irish Rail GTFS zip and expands it to build the
+  # station/line ingest bodies -- a whole archive in memory, so an
+  # order of magnitude above the JSON/XML pollers above.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1360,7 +1521,13 @@ pollerIrishRailLive:
   logLevel: info
   metricsPort: 9091
   extraEnv: []
-  resources: {}
+  # One Irish Rail live-departures XML document at a time.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1407,7 +1574,13 @@ pollerNirStations:
   logLevel: info
   metricsPort: 9091
   extraEnv: []
-  resources: {}
+  # Two CSV files, parsed once per tick.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -1508,6 +1681,15 @@ scheduleFeed:
     # chart, deployed to a real cluster, behaves as that source reading
     # predicts (docker/podman were not available to test this in this
     # pass -- see this task's own report).
+    # drakkan/sftpgo doing nothing but accepting one SFTP session a day and
+    # streaming a zip to the shared PVC. The smallest container in the chart;
+    # it holds no application state at all.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
     destinationFolder: incoming
     # -- Optional deeper subfolder within destinationFolder, e.g. "2026"
     # for DTD to land files in "/incoming/2026". Empty by default: RSPS5046
@@ -1551,6 +1733,15 @@ scheduleFeed:
     internalOauthPassword: ""
     existingSecretInternalOauthUsernameKey: internal-oauth-username-schedule-ingest
     existingSecretInternalOauthPasswordKey: internal-oauth-password-schedule-ingest
+    # A read_dir/stat scan loop plus an unzip of the delivered archive to the
+    # same PVC. It streams rather than buffering the whole extract, so it sits
+    # much closer to the sftp container than to `reference` below.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
   # -- Third sibling container in this same Pod (crates/schedule-reference):
   # once `ingest` has moved a verified-complete delivery into
   # storage_dir/<n>/, parses that sequence's TI/A records into the
@@ -1575,6 +1766,27 @@ scheduleFeed:
     internalOauthPassword: ""
     existingSecretInternalOauthUsernameKey: internal-oauth-username-schedule-reference
     existingSecretInternalOauthPasswordKey: internal-oauth-password-schedule-reference
+    # BY FAR the largest allocation in this chart, and the other of the two
+    # leak/spike risks the 2026-09-25 review called out. This container parses
+    # the WHOLE-NETWORK CIF extract in memory and builds several derived
+    # whole-network products from it before POSTing them -- the
+    # schedule_calling_points_full publish alone is ~1.7-2 million rows at
+    # ~30MB per day
+    # (docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase2-connections-array-plan.md:113),
+    # and it holds a per-line TIPLOC set for the entire line catalogue on top
+    # of that. CPU is correspondingly the highest too: the parse is a genuine
+    # single-threaded burst once per delivery, not a trickle.
+    #
+    # The limit is set with real slack rather than snugly: an OOMKill here
+    # aborts the parse partway through, which (like every other publish in
+    # this crate) is best-effort log-and-continue -- so it does not retry
+    # loudly, it just leaves the product stale until the next delivery.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        memory: 3Gi
   service:
     # -- LoadBalancer or NodePort + an operator-managed external LB/DNS --
     # NOT an Ingress (HTTP(S)-only by spec, cannot carry SFTP). Actually
@@ -1600,6 +1812,12 @@ scheduleFeed:
       - ReadWriteOnce
     existingClaim: ""
   logLevel: info
+  # FALLBACK ONLY. Each of this Pod's three containers has its own
+  # `resources` block above (sftp/ingest/reference); this is what
+  # schedulefeed-deployment.yaml falls back to for any container whose
+  # own block is left empty. Leaving it `{}` is correct now that all
+  # three are set individually -- it exists so an operator's
+  # pre-existing single-block override keeps working.
   resources: {}
   nodeSelector: {}
   tolerations: []
@@ -1720,7 +1938,14 @@ frontend:
   # Server Components, not baked at build time, so this is a runtime value.
   apiBaseUrl: ""
   extraEnv: []
-  resources: {}
+  # A Next.js server render process -- Node's heap dominates, and it is
+  # fairly insensitive to load here because the heavy lifting is api's.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
