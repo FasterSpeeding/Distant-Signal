@@ -1735,6 +1735,136 @@ mod tests {
         assert!(!belongs_to_line(&wrong_operator, bml));
     }
 
+    // --- Sample staleness (drop_stale_samples) ---
+
+    /// One `station_samples` row for `crs`, polled `age_minutes` ago, with
+    /// enough relevant departures to clear `min_sample_size` and enough
+    /// cancellations to classify as disruption -- so a test can tell
+    /// "inferred from this row" apart from "ignored this row" by severity
+    /// alone.
+    fn sample_polled_minutes_ago(crs: &str, age_minutes: i64) -> StationSample {
+        StationSample {
+            crs: crs.to_string(),
+            polled_at: Utc::now() - Duration::minutes(age_minutes),
+            departures: vec![
+                departure("AON", 0, true),
+                departure("AON", 0, true),
+                departure("AON", 0, true),
+                departure("AON", 0, false),
+            ],
+        }
+    }
+
+    #[test]
+    fn drop_stale_samples_keeps_fresh_rows_and_drops_only_stale_ones() {
+        let now = Utc::now();
+        let mut samples: HashMap<String, StationSample> = HashMap::from([
+            // Just polled.
+            ("AHT".to_string(), sample_polled_minutes_ago("AHT", 0)),
+            // A slow sweep / one missed cycle -- still live.
+            ("FRM".to_string(), sample_polled_minutes_ago("FRM", 5)),
+            // Exactly on the cutoff -- inclusive, still live.
+            (
+                "AON".to_string(),
+                sample_polled_minutes_ago("AON", MAX_SAMPLE_AGE_MINUTES),
+            ),
+            // A poller that died an hour ago.
+            ("WOK".to_string(), sample_polled_minutes_ago("WOK", 60)),
+            // ...and one that died yesterday, the case that re-counted its
+            // frozen departures as new trains at every midnight rollover.
+            ("PAD".to_string(), sample_polled_minutes_ago("PAD", 26 * 60)),
+        ]);
+
+        let dropped = drop_stale_samples(&mut samples, now);
+
+        assert_eq!(dropped, 2);
+        let mut kept: Vec<&str> = samples.keys().map(String::as_str).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["AHT", "AON", "FRM"]);
+    }
+
+    #[test]
+    fn drop_stale_samples_is_a_no_op_on_a_healthy_feed() {
+        let now = Utc::now();
+        let mut samples: HashMap<String, StationSample> =
+            HashMap::from([("AHT".to_string(), sample_polled_minutes_ago("AHT", 1))]);
+        assert_eq!(drop_stale_samples(&mut samples, now), 0);
+        assert_eq!(samples.len(), 1);
+    }
+
+    #[test]
+    fn a_stalled_poller_stops_producing_inferred_severities_instead_of_freezing_one() {
+        // The real failure shape: `poller-ldbws` stalls, `station_samples`
+        // keeps its last snapshot (UPSERT by CRS, nothing expires it), and
+        // `infer_from_samples` used to keep publishing a severity derived
+        // from those hours-old departures forever. Same row, same line, only
+        // `polled_at` differs between the two halves of this test.
+        let lines = load_all_lines();
+        let alton = &lines["swr-alton"];
+        let defaults = Defaults::default();
+        let now = Utc::now();
+
+        // Fresh: 3 of 4 cancelled is real, current disruption and must still
+        // be reported.
+        let mut fresh: HashMap<String, StationSample> =
+            HashMap::from([("AHT".to_string(), sample_polled_minutes_ago("AHT", 1))]);
+        assert_eq!(drop_stale_samples(&mut fresh, now), 0);
+        let status = infer_from_samples(alton, &fresh, &defaults);
+        assert_ne!(
+            status.severity,
+            Severity::GoodService,
+            "a live feed showing 75% cancellations must still produce a severity"
+        );
+
+        // The identical snapshot, three hours stale: no live data, so no
+        // inferred severity and no sample stats -- exactly the `NoCoverage`
+        // shape `infer_from_samples` already produces for a station that
+        // never reported at all.
+        let mut stale: HashMap<String, StationSample> =
+            HashMap::from([("AHT".to_string(), sample_polled_minutes_ago("AHT", 180))]);
+        assert_eq!(drop_stale_samples(&mut stale, now), 1);
+        let status = infer_from_samples(alton, &stale, &defaults);
+        assert_eq!(status.severity, Severity::GoodService);
+        assert_eq!(status.sample_availability, SampleAvailability::NoCoverage);
+        assert_eq!(
+            status.sample_stats, None,
+            "a frozen snapshot must not be published as live traffic stats"
+        );
+    }
+
+    #[test]
+    fn a_stalled_poller_contributes_no_departures_to_the_daily_dedup_rollup() {
+        // The other half of the staleness bug: `dedup_new_sample_stats` keys
+        // its ledger by (line, London calendar day), so every midnight
+        // rollover re-counted a frozen snapshot's departures as brand-new
+        // distinct trains -- a full day of fabricated traffic stats from a
+        // dead feed, every day it stayed down. Filtering the map before
+        // dedup sees it means there is nothing left to re-count.
+        let lines = load_all_lines();
+        let alton = &lines["swr-alton"];
+        let defaults = Defaults::default();
+        let now = Utc::now();
+        let today = crate::queries::london_calendar_day(now);
+
+        let mut samples: HashMap<String, StationSample> =
+            HashMap::from([("AHT".to_string(), sample_polled_minutes_ago("AHT", 180))]);
+        assert_eq!(drop_stale_samples(&mut samples, now), 1);
+
+        let mut ledger = crate::dedup::SeenServiceLedger::new();
+        let deduped = crate::dedup::dedup_new_sample_stats(
+            &mut ledger,
+            "swr-alton",
+            today,
+            alton,
+            &samples,
+            &defaults,
+        );
+        assert!(
+            deduped.is_none(),
+            "a stale snapshot must contribute no new distinct trains"
+        );
+    }
+
     #[test]
     fn infer_from_samples_returns_below_threshold_availability_with_the_correct_counts() {
         // swr-alton.toml: sample_stations = ["AHT", "FRM", "AON"]
@@ -3819,6 +3949,88 @@ mod tests {
         // existing behavior for an incident-derived status.
         assert_eq!(status.data_quality, DataQuality::Knowledgebase);
         assert!(status.reason.contains("full-coverage data shows: "));
+    }
+
+    #[test]
+    fn merge_full_coverage_stats_never_demotes_an_ldbws_inferred_severity() {
+        // The regression this fix exists for, and it is LIVE:
+        // `lines/tfw-conwy-valley.toml` sets `full_coverage_enabled = true`,
+        // so a real line's LDBWS-inferred statuses take this branch every
+        // cycle. The branch used to overwrite `severity` unconditionally
+        // whenever the coverage classification was anything but
+        // `GoodService`, so a full-coverage population that merely looked
+        // mildly late DEMOTED a genuinely severe live-sample severity --
+        // publishing the milder of two real signals, against this layer's
+        // documented escalate-only posture.
+        let defaults = Defaults::default();
+        let thresholds = thresholds_for(&defaults, &HashMap::new());
+        let mut report = LineStatusReport {
+            id: "tfw-conwy-valley".to_string(),
+            name: "Conwy Valley".to_string(),
+            mode_name: "national-rail".to_string(),
+            operators: vec![],
+            statuses: vec![{
+                let mut status = ldbws_status(Severity::PartSuspended);
+                status.reason = "6 of 10 sampled services cancelled.".to_string();
+                status
+            }],
+        };
+        // 30% delayed -> MinorDelays (rank 3), strictly milder than the
+        // PartSuspended (rank 4) the live samples already established.
+        let stats = coverage_stats(10, 3, 0);
+
+        merge_full_coverage_stats(&mut report, &stats, &thresholds);
+
+        let status = &report.statuses[0];
+        assert_eq!(
+            status.severity,
+            Severity::PartSuspended,
+            "a milder full-coverage read must never demote an LDBWS-inferred severity"
+        );
+        assert_eq!(
+            status.reason, "6 of 10 sampled services cancelled.",
+            "the LDBWS reason describes the severity on display and must survive"
+        );
+        assert_eq!(
+            status.data_quality,
+            DataQuality::LdbwsInferred,
+            "provenance must stay with whichever signal actually determined the severity"
+        );
+        // The full-coverage numbers are still attached -- only the severity
+        // overwrite is suppressed.
+        assert_eq!(
+            status.full_coverage_availability,
+            FullCoverageAvailability::Available(stats.clone())
+        );
+        assert_eq!(status.full_coverage_stats, Some(stats));
+    }
+
+    #[test]
+    fn merge_full_coverage_stats_leaves_an_equal_rank_ldbws_severity_alone() {
+        // Equal rank is not an escalation, matching
+        // `escalate_from_coverage_stats`' strictly-higher-rank gate:
+        // SevereDelays and PartSuspended are both rank 4, so a coverage read
+        // at the same rank must not rewrite the status (or its provenance).
+        let defaults = Defaults::default();
+        let thresholds = thresholds_for(&defaults, &HashMap::new());
+        let mut report = LineStatusReport {
+            id: "tfw-conwy-valley".to_string(),
+            name: "Conwy Valley".to_string(),
+            mode_name: "national-rail".to_string(),
+            operators: vec![],
+            statuses: vec![ldbws_status(Severity::PartSuspended)],
+        };
+        // 60% cancelled -> PartSuspended, same rank AND same severity.
+        let stats = coverage_stats(10, 0, 6);
+
+        merge_full_coverage_stats(&mut report, &stats, &thresholds);
+
+        assert_eq!(report.statuses[0].severity, Severity::PartSuspended);
+        assert_eq!(
+            report.statuses[0].data_quality,
+            DataQuality::LdbwsInferred,
+            "no escalation happened, so nothing was TRUST-determined"
+        );
     }
 
     #[test]

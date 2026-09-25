@@ -1204,6 +1204,121 @@ mod db_tests {
         (status, value)
     }
 
+    /// Issues `POST /public/lines` with a minimally-valid create body (a
+    /// name and the 2 stations `create_line` requires).
+    async fn create_line_request(
+        router: axum::Router,
+        raw_token: &str,
+        name: &str,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/public/lines")
+            .header(
+                header::COOKIE,
+                format!("distant_signal_session={raw_token}"),
+            )
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "name": name,
+                    "operators": ["SW"],
+                    "stations": ["WAT", "SUR"],
+                }))
+                .expect("serialize request body"),
+            ))
+            .expect("build request");
+        let response = router.oneshot(request).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, value)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                creating_more_custom_lines_than_the_per_user_cap_is_rejected_with_400 \
+                -- --ignored`"]
+    async fn creating_more_custom_lines_than_the_per_user_cap_is_rejected_with_400() {
+        // The real cost this cap exists for is in another service entirely:
+        // `aggregator`'s `run_cycle` reloads every custom line and
+        // re-evaluates it (matcher, segment rebuild, status/stats writes)
+        // every 60 seconds, forever. Before this cap, `create_line` enforced
+        // only a non-empty name and >= 2 stations, so one user could script
+        // thousands of creates and permanently degrade the cycle for
+        // everyone.
+        const USER: &str = "test-user-custom-line-cap";
+        let pool = connect().await;
+        let raw_token = seed_session(&pool, USER).await;
+
+        // Seed the user right up to one BELOW the cap in a single statement,
+        // so the two requests below exercise the exact boundary.
+        sqlx::query(
+            "INSERT INTO custom_lines \
+                (id, name, operators, stations, headcode_prefixes, destination_crs_filter, \
+                 user_id, created_at) \
+             SELECT 'custom-cap-fixture-' || i, 'Cap Fixture ' || i, ARRAY['SW']::text[], \
+                    ARRAY['WAT','SUR']::text[], ARRAY[]::text[], ARRAY[]::text[], $1, NOW() \
+             FROM generate_series(1, $2::int) AS i",
+        )
+        .bind(USER)
+        .bind(custom_lines::MAX_CUSTOM_LINES_PER_USER - 1)
+        .execute(&pool)
+        .await
+        .expect("seed fixture custom lines");
+
+        // The one that lands exactly ON the cap still succeeds.
+        let (at_cap_status, _) = create_line_request(
+            test_router(test_app(pool.clone(), vec![])),
+            &raw_token,
+            "Cap Boundary Line",
+        )
+        .await;
+
+        // The next one is refused.
+        let (over_cap_status, over_cap_body) = create_line_request(
+            test_router(test_app(pool.clone(), vec![])),
+            &raw_token,
+            "One Too Many",
+        )
+        .await;
+
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM custom_lines WHERE user_id = $1")
+                .bind(USER)
+                .fetch_one(&pool)
+                .await
+                .expect("count fixture custom lines");
+        cleanup_user(&pool, USER).await;
+
+        assert_eq!(
+            at_cap_status,
+            StatusCode::OK,
+            "a create that lands exactly on the cap must still succeed"
+        );
+        assert_eq!(
+            over_cap_status,
+            StatusCode::BAD_REQUEST,
+            "exceeding the cap must be a client error, not a 500 or a silent success"
+        );
+        assert!(
+            over_cap_body
+                .as_str()
+                .unwrap_or_default()
+                .contains("maximum"),
+            "the 400 body should tell the user what happened, got {over_cap_body:?}"
+        );
+        assert_eq!(
+            remaining,
+            custom_lines::MAX_CUSTOM_LINES_PER_USER,
+            "the refused create must not have inserted a row"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \

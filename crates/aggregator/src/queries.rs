@@ -1228,6 +1228,106 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p aggregator \
+                load_incidents_skips_one_malformed_row_instead_of_failing_the_batch -- --ignored`"]
+    async fn load_incidents_skips_one_malformed_row_instead_of_failing_the_batch() {
+        // The real failure shape: `validity_periods` is JSONB, so Postgres
+        // accepts any valid JSON in it, but `serde_json::from_value` into
+        // `Vec<ValidityPeriod>` rejects anything that isn't an array of
+        // periods with the right fields. One such row used to fail the WHOLE
+        // batch -- every line's status write for the cycle, plus (before
+        // retention was split out) every prune behind it, including
+        // `trust_event_backlog`'s licensing-mandated window.
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO incidents \
+                (incident_id, summary, description, operators, affected_stations, priority, validity_periods, is_planned, is_cleared) \
+             VALUES \
+                ('TEST-GOOD-1', 'good', 'fine', '{}', '{}', 0, '[]', false, false), \
+                ('TEST-BAD-JSONB', 'bad', 'malformed', '{}', '{}', 0, '{\"not\": \"an array of periods\"}', false, false), \
+                ('TEST-GOOD-2', 'good', 'fine', '{}', '{}', 0, '[]', false, false) \
+             ON CONFLICT (incident_id) DO UPDATE SET validity_periods = EXCLUDED.validity_periods",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let loaded = load_incidents(&pool).await;
+
+        sqlx::query(
+            "DELETE FROM incidents WHERE incident_id IN \
+             ('TEST-GOOD-1', 'TEST-BAD-JSONB', 'TEST-GOOD-2')",
+        )
+        .execute(&pool)
+        .await
+        .expect("cleanup fixture rows");
+
+        let loaded = loaded.expect("one malformed row must not fail the whole load");
+        let ids: Vec<&str> = loaded
+            .iter()
+            .map(|i| i.message.incident_id.as_str())
+            .collect();
+        assert!(
+            ids.contains(&"TEST-GOOD-1") && ids.contains(&"TEST-GOOD-2"),
+            "both well-formed rows must survive alongside the bad one, got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"TEST-BAD-JSONB"),
+            "the malformed row must be skipped, not silently coerced"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p aggregator \
+                load_station_samples_skips_one_malformed_row_instead_of_failing_the_batch \
+                -- --ignored`"]
+    async fn load_station_samples_skips_one_malformed_row_instead_of_failing_the_batch() {
+        // Same shape as the incidents case, for the other JSONB loader: a
+        // `departures` value that isn't a `Vec<StationDeparture>` must cost
+        // that one station's coverage for the cycle, not every station's.
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO station_samples (crs, polled_at, departures) VALUES \
+                ('ZZG', NOW(), '[]'), \
+                ('ZZB', NOW(), '[{\"service_id\": 42}]') \
+             ON CONFLICT (crs) DO UPDATE SET departures = EXCLUDED.departures, \
+                polled_at = EXCLUDED.polled_at",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let loaded = load_station_samples(&pool).await;
+
+        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZZG', 'ZZB')")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture rows");
+
+        let loaded = loaded.expect("one malformed row must not fail the whole load");
+        assert!(
+            loaded.contains_key("ZZG"),
+            "the well-formed station sample must survive"
+        );
+        assert!(
+            !loaded.contains_key("ZZB"),
+            "the malformed station sample must be skipped"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p aggregator \
                 prune_removed_lines_leaves_other_sources_alone -- --ignored`"]
@@ -2245,6 +2345,70 @@ mod tests {
         assert_eq!(
             result, fresh,
             "non-ldbws-inferred entries must pass through untouched"
+        );
+    }
+
+    /// `ldbws_status`'s sibling for the other inferred provenance -- the one
+    /// `aggregation::merge_full_coverage_stats` stamps when full-coverage
+    /// data determines a line's severity with no incident present.
+    fn trust_status(from_date: &str, severity: &str, reason: &str) -> serde_json::Value {
+        let mut statuses = ldbws_status(from_date, severity, reason);
+        statuses[0]["data_quality"] = serde_json::Value::String("trust-inferred".to_string());
+        statuses
+    }
+
+    #[test]
+    fn carry_forward_also_covers_trust_inferred_entries() {
+        // `trust-inferred` has exactly the same problem `ldbws-inferred` does:
+        // no incident of its own to take a stable `from_date` from, so
+        // `aggregation.rs` re-stamps it with `Utc::now()` every cycle.
+        // Recognizing only `ldbws-inferred` meant a `TrustInferred` status
+        // (live today -- `lines/tfw-conwy-valley.toml` sets
+        // `full_coverage_enabled = true`) reported "disrupted since just now"
+        // forever, no matter how long the disruption had actually been
+        // running.
+        let existing = trust_status(
+            "2026-09-24T06:00:00Z",
+            "part-suspended",
+            "6 of 10 sampled services cancelled.",
+        );
+        let fresh = trust_status(
+            "2026-09-24T09:30:00Z",
+            "part-suspended",
+            "6 of 10 sampled services cancelled.",
+        );
+
+        let result = carry_forward_ldbws_from_date(&existing, &fresh);
+
+        assert_eq!(
+            result[0]["validity"]["from_date"], existing[0]["validity"]["from_date"],
+            "an unchanged trust-inferred status must keep its original since-timestamp"
+        );
+    }
+
+    #[test]
+    fn carry_forward_treats_a_provenance_change_between_inferred_kinds_as_a_new_status() {
+        // Both sides are inferred, but the signal that determined the
+        // published severity changed (LDBWS sampling -> full-coverage TRUST
+        // data, or back). That is a real change in what the status means, so
+        // it gets a fresh stamp rather than silently inheriting the other
+        // provenance's clock.
+        let existing = ldbws_status(
+            "2026-09-24T06:00:00Z",
+            "part-suspended",
+            "6 of 10 sampled services cancelled.",
+        );
+        let fresh = trust_status(
+            "2026-09-24T09:30:00Z",
+            "part-suspended",
+            "6 of 10 sampled services cancelled.",
+        );
+
+        let result = carry_forward_ldbws_from_date(&existing, &fresh);
+
+        assert_eq!(
+            result[0]["validity"]["from_date"], fresh[0]["validity"]["from_date"],
+            "a provenance change must not carry the old from_date forward"
         );
     }
 
