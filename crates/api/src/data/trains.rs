@@ -921,4 +921,116 @@ mod db_tests {
         .await
         .ok();
     }
+
+    /// Structural regression test for the `trains_train_id_service_date`
+    /// partial unique index
+    /// (`20260925222000_trains_train_id_service_date_unique.sql`), the
+    /// schema-level backstop for today's (2026-09-25) CRS+time
+    /// mismatching incident: two DIFFERENT `trains` rows (i.e. two
+    /// different `train_uid`s) must never be able to share one TRUST
+    /// `train_id` for the same `service_date` once both are resolved --
+    /// that is exactly the bug class that let one subscription silently
+    /// read another train's movements. Bypasses `mark_train_resolved` and
+    /// writes the second row's `train_id` directly, so this test exercises
+    /// the CONSTRAINT itself rather than any application-level guard (the
+    /// `is_provable_identity_contradiction` veto in
+    /// `trust_event_backlog_match.rs` / `trust-consumer::matching` is
+    /// covered by its own tests already; this one proves the database
+    /// still refuses the write even if every application-level guard were
+    /// ever removed or had a bug).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                two_trains_rows_cannot_share_a_train_id_and_service_date_once_resolved \
+                -- --ignored"]
+    async fn two_trains_rows_cannot_share_a_train_id_and_service_date_once_resolved() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+
+        let first_id = find_or_create_train(&pool, "TEST-TRAINS-UNIQUE-UID-1", service_date)
+            .await
+            .expect("find_or_create_train (first)");
+        let second_id = find_or_create_train(&pool, "TEST-TRAINS-UNIQUE-UID-2", service_date)
+            .await
+            .expect("find_or_create_train (second)");
+
+        mark_train_resolved(&pool, first_id, "TEST-SHARED-TRAIN-ID")
+            .await
+            .expect("mark_train_resolved (first) must succeed -- no collision yet");
+
+        // The second, DIFFERENT trains row claiming the SAME train_id for
+        // the SAME service_date is exactly today's incident shape (a
+        // London Northwestern pin's `trains` row and an Avanti service's
+        // `trains` row both carrying one TRUST train_id) -- this must be
+        // rejected by the database itself, not merely by application code.
+        let result =
+            sqlx::query("UPDATE trains SET train_id = $2, resolved_at = NOW() WHERE id = $1")
+                .bind(second_id)
+                .bind("TEST-SHARED-TRAIN-ID")
+                .execute(&pool)
+                .await;
+
+        assert!(
+            result.is_err(),
+            "a second trains row must not be able to claim an already-resolved train_id for the \
+             same service_date; the trains_train_id_service_date unique index should have \
+             rejected this write, but it succeeded"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("trains_train_id_service_date"),
+            "expected the unique index name in the constraint-violation error, got: {err}"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(first_id)
+            .bind(second_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// The other half of the same constraint: multiple schedule-matched-
+    /// but-not-yet-TRUST-resolved `trains` rows (`train_id IS NULL`) for
+    /// the SAME `service_date` must remain unaffected -- these are
+    /// perfectly ordinary, expected rows (every service scheduled for a
+    /// rail day that TRUST hasn't activated yet), and the partial index's
+    /// whole point (`WHERE train_id IS NOT NULL`) is to never block them.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                multiple_null_train_id_rows_for_the_same_service_date_are_allowed -- --ignored"]
+    async fn multiple_null_train_id_rows_for_the_same_service_date_are_allowed() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+
+        let first_id = find_or_create_train(&pool, "TEST-TRAINS-NULL-UID-1", service_date)
+            .await
+            .expect("find_or_create_train (first, still unresolved)");
+        let second_id = find_or_create_train(&pool, "TEST-TRAINS-NULL-UID-2", service_date)
+            .await
+            .expect("find_or_create_train (second, still unresolved)");
+
+        assert_ne!(first_id, second_id);
+
+        let (train_id_1,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM trains WHERE id = $1")
+                .bind(first_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains row 1");
+        let (train_id_2,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM trains WHERE id = $1")
+                .bind(second_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains row 2");
+        assert_eq!(train_id_1, None, "neither row has been TRUST-resolved yet");
+        assert_eq!(train_id_2, None, "neither row has been TRUST-resolved yet");
+
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(first_id)
+            .bind(second_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
 }
