@@ -99,14 +99,28 @@ async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-/** Builds the `fetch`/`fetchJson` `init` fragment that forwards the
- * incoming request's session cookie to the backend -- a Server
- * Component's own `fetch` never inherits it automatically. Returns `{}`
- * (no `Cookie` header at all) when the visitor has no cookies, matching
- * every existing cookie-forwarding call site's own conditional shape. */
+/** The session cookie's own name -- must match `SESSION_COOKIE_NAME` in
+ * `app/connect-claude/authorize/route.ts` and `crates/api/src/auth.rs`. */
+const SESSION_COOKIE_NAME = 'distant_signal_session';
+
+/** Builds the `fetch`/`fetchJson` `init` fragment that forwards ONLY the
+ * incoming request's session cookie to the backend -- a Server Component's
+ * own `fetch` never inherits any cookie automatically. Returns `{}` (no
+ * `Cookie` header at all) when the visitor has no session cookie, matching
+ * every existing cookie-forwarding call site's own conditional shape.
+ *
+ * Deliberately forwards only the one named cookie rather than the whole
+ * incoming jar (`(await cookies()).toString()`, this function's own earlier
+ * behaviour, and the shape every call site below used to duplicate inline)
+ * -- Signal Box Audit, flib Low finding: "the entire cookie jar is forwarded
+ * on every SSR fetch". The backend only ever needs the session cookie to
+ * authenticate the caller; any OTHER cookie a future feature sets on this
+ * origin (an A/B flag, a consent banner, ...) has no business leaving the
+ * frontend pod for the backend's own separate origin, and forwarding the raw
+ * `Cookie` header would ship it there unconditionally. */
 async function cookieForwardInit(): Promise<RequestInit> {
-  const cookieHeader = (await cookies()).toString();
-  return cookieHeader ? { headers: { Cookie: cookieHeader } } : {};
+  const session = (await cookies()).get(SESSION_COOKIE_NAME)?.value;
+  return session ? { headers: { Cookie: `${SESSION_COOKIE_NAME}=${session}` } } : {};
 }
 
 /* ---------------------------------------------------------------------------
@@ -455,10 +469,9 @@ export async function getNetworkSixHourlyStats(
  * `fetchJson` uses. */
 export async function getPreferences(): Promise<Preferences> {
   const url = `${baseUrl()}/public/preferences`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (response.status === 401) {
     return { pinnedLines: [], pinnedStations: [], pinnedOperators: [] };
@@ -477,10 +490,9 @@ export async function getPreferences(): Promise<Preferences> {
  * 200 with `authenticated: false` — so this can go through the shared
  * `fetchJson` instead of needing its own 401-tolerant branch. */
 export async function getSession(): Promise<SessionInfo> {
-  const cookieHeader = (await cookies()).toString();
   return fetchJson<SessionInfo>(`${baseUrl()}/public/auth/session`, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
 }
 
@@ -494,10 +506,9 @@ export async function getSession(): Promise<SessionInfo> {
  * neither into the other, unlike every other 401-only gate in this file. */
 export async function getChatbotAccess(): Promise<'allowed' | 'unauthenticated' | 'forbidden'> {
   try {
-    const cookieHeader = (await cookies()).toString();
     await fetchJson(`${baseUrl()}/public/chatbot/access`, {
       cache: 'no-store',
-      ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+      ...(await cookieForwardInit()),
     });
     return 'allowed';
   } catch (err) {
@@ -677,10 +688,9 @@ export async function getPublicTrainByUidAndDate(
  * separate `getSession()` call the way `TicketPanel` does. */
 export async function getMyTrackedTrains(): Promise<TrackedTrainListItem[] | null> {
   const url = `${baseUrl()}/Train/mine`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (response.status === 401) {
     return null;
@@ -729,10 +739,9 @@ export async function getJourneyByShareToken(token: string): Promise<JourneyDeta
  * consume later without a backend change. */
 export async function getMyJourneys(): Promise<JourneyListItem[] | null> {
   const url = `${baseUrl()}/Journeys/mine`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
@@ -784,10 +793,9 @@ export async function getJourneyTemplate(id: number): Promise<JourneyTemplateDet
  * hand-written contract for it. */
 export async function getTicketsForTrackedTrain(trackingId: number): Promise<TrackedTrainTicket[] | null> {
   const url = `${baseUrl()}/Train/${trackingId}/tickets`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (response.status === 401 || response.status === 404) {
     return null;
@@ -812,10 +820,9 @@ export async function getDelayRepayEstimate(
   ticketId: number,
 ): Promise<DelayRepayEstimateResponse | null> {
   const url = `${baseUrl()}/Train/${trackingId}/tickets/${ticketId}/delay-repay`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (response.status === 401 || response.status === 404) {
     return null;
@@ -839,10 +846,9 @@ export async function getDelayRepayEstimate(
  * `getSession()` call the way `TicketPanel` does. */
 export async function getMyTickets(): Promise<TicketListItem[] | null> {
   const url = `${baseUrl()}/Train/tickets/mine`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (response.status === 401) {
     return null;

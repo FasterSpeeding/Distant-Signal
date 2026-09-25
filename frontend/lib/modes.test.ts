@@ -84,4 +84,16 @@ describe('MODE_TO_COUNTRY / countryForMode / countryForReport', () => {
     expect(countryForReport({ modeName: 'island-of-ireland-roi' }, syntheticTable)).toBe('RepublicOfIreland');
     expect(countryForReport({ modeName: 'national-rail' }, syntheticTable)).toBe('Gb');
   });
+
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". `modeName` is an open-ended feed string -- a
+  // modeName literally named "constructor" (or another Object.prototype
+  // key) used to make `table[modeName]` resolve to `Object.prototype
+  // .constructor` (a function) against the real, empty `MODE_TO_COUNTRY`
+  // table, which `?? 'Gb'` would not catch.
+  it('defaults a modeName matching an Object.prototype key to Gb, not a function', () => {
+    expect(countryForMode('constructor')).toBe('Gb');
+    expect(countryForMode('toString')).toBe('Gb');
+    expect(countryForMode('hasOwnProperty')).toBe('Gb');
+  });
 });

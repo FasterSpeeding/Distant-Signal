@@ -17,6 +17,19 @@ describe('categoryLabel', () => {
   it('falls back to the raw token for an unlisted category', () => {
     expect(categoryLabel('some-future-category')).toBe('some-future-category');
   });
+
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". `category` is an open-ended string (a TOML
+  // category, a TfL mode_name, or "custom") -- a category literally named
+  // "constructor" (or another Object.prototype key) used to make
+  // `CATEGORY_LABELS[category]` resolve to `Object.prototype.constructor`
+  // (a function), which `?? category` would not catch.
+  it('falls back to the raw token for a category matching an Object.prototype key, not a function', () => {
+    expect(categoryLabel('constructor')).toBe('constructor');
+    expect(typeof categoryLabel('constructor')).toBe('string');
+    expect(categoryLabel('toString')).toBe('toString');
+    expect(categoryLabel('hasOwnProperty')).toBe('hasOwnProperty');
+  });
 });
 
 describe('operatorLabel', () => {

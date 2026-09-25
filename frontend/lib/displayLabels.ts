@@ -25,7 +25,19 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export function categoryLabel(category: string): string {
-  return CATEGORY_LABELS[category] ?? category;
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". `category` is an open-ended string (see this
+  // module's own doc comment on `CATEGORY_LABELS` -- a TOML `category`, a
+  // TfL `mode_name`, or `"custom"`), so a bare `CATEGORY_LABELS[category]`
+  // would resolve `category === 'constructor'` to `Object.prototype
+  // .constructor` (a function) rather than `undefined` -- `?? category`
+  // never fires because a function is neither `null` nor `undefined`, and
+  // `app/lines/[id]/page.tsx` would render that function where it expects a
+  // string, printing "[object Function]"-shaped output. Guarding with
+  // `hasOwnProperty` keeps the lookup to CATEGORY_LABELS' own declared keys.
+  return Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, category)
+    ? CATEGORY_LABELS[category]
+    : category;
 }
 
 /** Builds a code -> name lookup from the full TOC reference list

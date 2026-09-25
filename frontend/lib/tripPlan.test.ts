@@ -85,4 +85,45 @@ describe('fetchTripPlan', () => {
       fetchTripPlan({ originCrs: 'EUS', destinationCrs: 'MKC', waypointCrs: [], date: '2099-01-01', results: 'fastest' })
     ).rejects.toMatchObject(new TripPlanError('no schedule data published', 404));
   });
+
+  it('still surfaces the backend message verbatim on a 400 (bad CRS/results value)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve('unknown CRS code') } as Response)
+    );
+    await expect(
+      fetchTripPlan({ originCrs: 'ZZZ', destinationCrs: 'MKC', waypointCrs: [], date: '2026-09-23', results: 'fastest' })
+    ).rejects.toMatchObject(new TripPlanError('unknown CRS code', 400));
+  });
+
+  // The bug: an unreachable/misbehaving backend's raw response body (which
+  // can be Next's own proxy error text, an HTML error page, or a stack
+  // trace fragment) used to become the message shown verbatim in
+  // PlanTripFlow's alert for ANY non-ok status, not just the two
+  // backend-authored ones (400/404). A 500 must now get a generic,
+  // honest message instead -- while the real body is still logged to the
+  // console so the failure stays debuggable server-side.
+  it('replaces a non-400/404 error body with a generic message, logging the raw body instead', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('<html>Internal Server Error</html>') } as Response)
+    );
+    const promise = fetchTripPlan({
+      originCrs: 'EUS',
+      destinationCrs: 'MKC',
+      waypointCrs: [],
+      date: '2026-09-23',
+      results: 'fastest',
+    });
+    await expect(promise).rejects.toBeInstanceOf(TripPlanError);
+    await expect(promise).rejects.toMatchObject({
+      status: 500,
+      message: 'Something went wrong planning this trip. Please try again.',
+    });
+    await expect(promise).rejects.not.toMatchObject({ message: expect.stringContaining('<html>') });
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('500'), '<html>Internal Server Error</html>');
+  });
 });

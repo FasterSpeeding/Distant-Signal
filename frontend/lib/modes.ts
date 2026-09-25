@@ -73,7 +73,18 @@ export const MODE_TO_COUNTRY: Record<string, Country> = {};
  * docs/superpowers/plans/2026-09-05-country-filtering-plan.md) --
  * production call sites should never pass `table` explicitly. */
 export function countryForMode(modeName: string, table: Record<string, Country> = MODE_TO_COUNTRY): Country {
-  return table[modeName] ?? 'Gb';
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". `modeName` is an open-ended feed string (a
+  // `LineStatusReport.modeName`), so a bare `table[modeName]` would resolve
+  // `modeName === 'constructor'` to `Object.prototype.constructor` (a
+  // function) rather than `undefined` -- `?? 'Gb'` never fires because a
+  // function is neither `null` nor `undefined`, and this would return a
+  // function where every caller expects a `Country` string (e.g.
+  // `lib/networkStatusOverview.ts`'s `byCountry[country]`, which would then
+  // key a whole bucket off that function). Guarding with `hasOwnProperty`
+  // keeps the lookup to the table's own declared entries -- today, and for
+  // as long as `MODE_TO_COUNTRY` stays empty, always `Gb`.
+  return Object.prototype.hasOwnProperty.call(table, modeName) ? table[modeName] : 'Gb';
 }
 
 /** `countryForMode`, keyed off a `LineStatusReport`/`LineStatusHistoryEntry`
