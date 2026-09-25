@@ -280,10 +280,39 @@ export function JourneyLegCard({
             <Text fw={600} size="lg">
               {title}
             </Text>
+            {/* Feature request: "journey view legs [should] have link
+                throughs to the train entries for each leg" -- this was
+                previously a plain, unlinked `Text`, even though every
+                other per-train reference in the app (`JourneyLegCandidates`'
+                own "View live status", `StationTimetable`/`TrainSearchForm`/
+                `LineTrainsResults` row links) already points here. Gated on
+                `state.trainUid` alone, same as the plain-text version this
+                replaces: `trackedTrainState !== null` (the branch this card
+                is already in) does NOT by itself mean a train has been
+                identified yet -- `resolutionStatus === 'pending'` leaves
+                `trainUid` `null` until Network Rail's first live report
+                names the actual service, and there is no `/train/[uid]/...`
+                page to link to before that happens. `leg.serviceDate`, not
+                `state.serviceDate`: this mirrors every other call site
+                below on this card (`JourneyLegCandidates`' own
+                `serviceDate={leg.serviceDate}` prop) that treats the LEG's
+                own service date, not the matched train's, as the source of
+                truth for this URL segment -- the two agree in practice, but
+                the leg is what this card is rendering. `/train/[uid]/[date]`
+                is a fully public route (no auth, no share token), so this
+                is safe to render identically on both the owner's own
+                `/journeys/[id]` view and the anonymous `/journeys/shared/
+                [token]` view -- it discloses nothing beyond what following
+                the link itself already would, and adds nothing to the
+                share-link page's own metadata (see that page's
+                `generateMetadata` doc comment on why the token/journey id
+                stay out of public metadata; a per-leg link to an
+                already-public train page is a different, unrelated
+                concern). */}
             {state.trainUid && (
-              <Text size="xs" c="dimmed">
+              <TextLink href={`/train/${encodeURIComponent(state.trainUid)}/${leg.serviceDate}`} size="xs">
                 Train {state.trainUid}
-              </Text>
+              </TextLink>
             )}
           </Stack>
           {/* `isOwner` is Phase 4's sharing gate -- a shared-group viewer
