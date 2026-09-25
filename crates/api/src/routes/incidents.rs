@@ -892,7 +892,6 @@ mod db_tests {
             match_keywords: vec![],
             excluded_keywords: vec![],
             severity_overrides: std::collections::HashMap::new(),
-            exclusive_segments: vec![],
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
