@@ -105,30 +105,18 @@ async fn main() -> anyhow::Result<()> {
         .nest("/public", routes::public_router())
         .nest("/private", routes::private_router(app.clone()));
 
-    // Unlike the other seven binaries, api's own listener stays up either
-    // way -- metrics_enabled only decides whether /metrics is registered
-    // and whether requests are counted at all. See `metrics_enabled` in
-    // crates/api/src/data/config.rs.
+    // Unlike the other seven binaries, api's own PUBLIC listener stays up
+    // either way -- metrics_enabled only decides whether requests are
+    // counted at all and whether the separate internal-only /metrics
+    // listener below is started. See `metrics_enabled`/`metrics_port` in
+    // crates/api/src/data/config.rs for the full "why a second listener,
+    // not a route on this router" rationale (2026-09-25 Signal Box Audit
+    // Low finding: /metrics used to be a route on THIS router, sharing
+    // api's public port -- and therefore the public Ingress's catch-all
+    // `path: /` rule -- with no authentication of its own).
     if app.config.metrics_enabled {
-        router = router
-            // Deliberately NOT gated by require_internal_oauth. Read-only,
-            // and NetworkPolicy-gated (from the monitoring namespace
-            // specifically) when NetworkPolicy is enabled (see
-            // docs/superpowers/specs/2026-08-29-metrics-design.md's Open
-            // Question 3, and the metrics plan's Task 10). NOTE: unlike the
-            // other seven binaries' dedicated metrics ports, this route
-            // shares api's own HTTP port -- so if `ingress.api.enabled=true`
-            // (default false), it IS reachable through that public Ingress
-            // alongside the rest of the public API, exactly like api's own
-            // /private/* caveat already documented in the chart README. The
-            // exposure is read-only request-count/latency telemetry, not
-            // secrets, and metrics.enabled=false removes this route
-            // entirely.
-            .route(
-                "/metrics",
-                axum::routing::get(move || async move { metrics_handle.render() }),
-            )
-            .layer(metrics_layer);
+        router = router.layer(metrics_layer);
+        spawn_metrics_listener(app.config.metrics_port, metrics_handle);
     }
 
     let router = router
@@ -171,6 +159,54 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&app.config.bind_url).await?;
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Starts api's own internal-only `/metrics` listener on a SEPARATE port
+/// from the public one `bind_url` binds -- see `metrics_port`'s own doc
+/// comment in crates/api/src/data/config.rs for the full "why a second
+/// listener" rationale (2026-09-25 Signal Box Audit Low finding: /metrics
+/// used to be a route on the public router, reachable through the chart's
+/// Ingress with no auth of its own whenever both `metrics_enabled` and
+/// `ingress.api.enabled` were set).
+///
+/// `metrics_handle` is the SAME `PrometheusHandle` `PrometheusMetricLayerBuilder::build_pair`
+/// handed back to `main` -- the request-counting `metrics_layer` stays on
+/// the public router (that's what actually observes real traffic); this
+/// listener only renders the shared recorder's current text exposition.
+///
+/// Best-effort, matching `crates/health-http::spawn_with_state`'s own
+/// posture for its (also best-effort, also internal-only) `/healthz`
+/// listener: a bind failure here logs and returns rather than taking down
+/// the whole process -- `/metrics` is a scrape target, not something the
+/// rest of `api` depends on to function.
+fn spawn_metrics_listener(
+    port: u16,
+    metrics_handle: axum_prometheus::metrics_exporter_prometheus::PrometheusHandle,
+) {
+    tokio::spawn(async move {
+        let metrics_router = axum::Router::new().route(
+            "/metrics",
+            axum::routing::get(move || {
+                let metrics_handle = metrics_handle.clone();
+                async move { metrics_handle.render() }
+            }),
+        );
+        let bind_addr = format!("0.0.0.0:{port}");
+        let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                tracing::error!(
+                    error = ?err,
+                    bind_addr,
+                    "failed to bind api's internal /metrics listener"
+                );
+                return;
+            }
+        };
+        if let Err(err) = axum::serve(listener, metrics_router).await {
+            tracing::error!(error = ?err, "api's internal /metrics listener stopped");
+        }
+    });
 }
 
 /// Periodic retry of Decision 3's schedule-first match against every

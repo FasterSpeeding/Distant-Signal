@@ -734,7 +734,17 @@ services:
       WATCH_DIR: /data/schedule-feed/${SCHEDULE_FEED_DESTINATION_PATH:-incoming}
       STORAGE_DIR: /data/schedule-feed
       CHECK_TIMES: ${SCHEDULE_FEED_CHECK_TIMES:-22:00,22:30,23:00,23:30,00:00,00:30,01:00,01:30,16:00}
-      RETENTION_KEEP_SEQUENCES: ${RETENTION_KEEP_SEQUENCES:-2}
+      # RETENTION_KEEP_DELIVERIES, not the old RETENTION_KEEP_SEQUENCES --
+      # crates/schedule-ingest/src/config.rs's `retention_keep_deliveries`
+      # field was renamed from `retention_keep_sequences` ("there is no
+      # sequence number any more, just delivery timestamps" -- see that
+      # field's own doc comment), which silently retired the OLD env var
+      # name clap read it under. 2026-09-25 Signal Box Audit Low finding:
+      # this file kept setting the stale RETENTION_KEEP_SEQUENCES name,
+      # which clap ignores (it isn't the env name this field declares any
+      # more), so the setting was inert in local dev -- masked only because
+      # the code's own default (2) happens to match what was set here.
+      RETENTION_KEEP_DELIVERIES: ${RETENTION_KEEP_DELIVERIES:-2}
       STABILITY_CYCLES: ${SCHEDULE_FEED_STABILITY_CYCLES:-2}
       INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
       INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}

@@ -1657,6 +1657,7 @@ mod db_tests {
             daily_stats_retention_days: 300,
             half_hourly_stats_retention_hours: 840,
             metrics_enabled: false,
+            metrics_port: 9091,
             defaults_file: None,
             lines: LineCatalogue(vec![]),
             vapid_public_key: "test-vapid-public-key".to_string(),
