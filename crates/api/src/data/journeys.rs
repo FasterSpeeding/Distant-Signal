@@ -2710,6 +2710,10 @@ mod db_tests {
                     None,
                     None,
                     None,
+                    // A template-materialized occurrence -- always a search,
+                    // even a fully-open one (see the window_searched column's
+                    // own migration doc comment).
+                    true,
                 )
                 .await
                 .expect("seed occurrence leg");
