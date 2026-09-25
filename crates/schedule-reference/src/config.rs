@@ -147,3 +147,93 @@ pub struct Config {
     #[command(flatten)]
     pub metrics: common::service_args::MetricsArgs,
 }
+
+/// The one invariant this crate cannot check at compile time and that has now
+/// been broken twice in production: **every `*_URL` env var this `Config`
+/// declares must also be set on the `reference` container in
+/// `charts/distant-signal/templates/schedulefeed-deployment.yaml`.**
+///
+/// Every default above points at `http://api:8080/...`, which resolves only
+/// under `docker-compose.yml` (where the api service really is named `api`
+/// -- see that file's own `schedule-reference` entry, which deliberately
+/// relies on these defaults and sets no URL beyond `API_INGEST_URL`). Under
+/// Helm the api Service is `{{ include "distant-signal.apiFullname" . }}` --
+/// `<release>-api`, never bare `api` (`_helpers.tpl`'s
+/// `distant-signal.apiBaseUrl`) -- so a URL the chart forgets to set does
+/// NOT fall back to something workable: it points at a hostname that does
+/// not exist in the cluster, and because each `publish_*` function in
+/// `main.rs` is deliberately best-effort log-and-continue, the product it
+/// publishes silently never lands in Postgres at all, forever, with nothing
+/// but a recurring `error!` line to show for it.
+///
+/// That is exactly what happened to `SCHEDULE_CALLING_POINTS_FULL_URL`
+/// (added to this file by the 2026-09-23 dynamic-trip-planning Phase 2
+/// commit, which touched no chart file): `schedule_calling_points_full`
+/// stayed permanently empty in production, so `GET /Trips/plan` answered
+/// "no CIF-derived schedule data has been published for <date> yet" for
+/// *every* date, not just a date near the edge of the forward window. The
+/// same omission had already happened to `SCHEDULE_FEED_INGESTS_URL`
+/// (silently disabling `main::seed_last_processed_delivery`'s
+/// restart-dedup), and was caught by hand for `TIPLOC_CRS_URL` only during
+/// a late whole-branch review. A test is what makes the next one impossible
+/// to ship.
+#[cfg(test)]
+mod chart_env_wiring_tests {
+    use clap::CommandFactory;
+
+    use super::Config;
+
+    /// The `reference` container's own slice of the schedulefeed Deployment
+    /// template -- scoped rather than matching the whole file, so a var set
+    /// only on the sibling `ingest` container (which has its own
+    /// `API_INGEST_URL`, pointing at a different route) cannot satisfy this
+    /// check by accident. `reference` is the last container in the template,
+    /// so "from its `- name:` line to EOF" is the whole block.
+    fn reference_container_block() -> String {
+        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../charts/distant-signal/templates/schedulefeed-deployment.yaml");
+        let rendered = std::fs::read_to_string(&chart)
+            .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));
+        let marker = "- name: reference";
+        let start = rendered.find(marker).expect(
+            "the schedulefeed Deployment must still declare a container named `reference`; \
+             if it was renamed, update this test's marker",
+        );
+        rendered[start..].to_string()
+    }
+
+    #[test]
+    fn every_api_url_this_config_declares_is_set_on_the_charts_reference_container() {
+        let block = reference_container_block();
+        let command = Config::command();
+
+        let declared: Vec<String> = command
+            .get_arguments()
+            .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+            .filter(|env| env.ends_with("_URL"))
+            .map(str::to_string)
+            .collect();
+        assert!(
+            declared.len() >= 6,
+            "sanity check: this Config declares several *_URL env vars (stanox-crs, \
+             schedule-feed-ingests, line-population, network-departures, \
+             destination-departures, fixed-links, calling-points-full, tiploc-crs, plus \
+             internal-oauth's token URL); got {declared:?}"
+        );
+
+        let missing: Vec<&String> = declared
+            .iter()
+            .filter(|env| !block.contains(&format!("- name: {env}")))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "these *_URL env vars are declared by crates/schedule-reference/src/config.rs but \
+             never set on the `reference` container in \
+             charts/distant-signal/templates/schedulefeed-deployment.yaml, so under Helm they \
+             silently fall back to their `http://api:8080/...` defaults -- a hostname that does \
+             not exist in the cluster, since the chart's api Service is `<release>-api`: \
+             {missing:?}"
+        );
+    }
+}
