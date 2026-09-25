@@ -663,6 +663,8 @@ async fn post_journey(
             origin_crs,
             destination_crs,
         } => {
+            journeys::validate_train_uid(&train_uid)
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
             journeys::validate_known_train_overrides(
                 origin_crs.as_deref(),
                 destination_crs.as_deref(),
@@ -772,6 +774,8 @@ async fn post_journey_leg(
             origin_crs,
             destination_crs,
         } => {
+            journeys::validate_train_uid(&train_uid)
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
             journeys::validate_known_train_overrides(
                 origin_crs.as_deref(),
                 destination_crs.as_deref(),
@@ -1170,6 +1174,26 @@ async fn build_journey_detail_response(
             }
             None => None,
         };
+        // Low finding #5 (2026-09-25 review): `TrackedTrainState` is reused
+        // verbatim here for BOTH the owner's own read and every non-owner
+        // read this function serves -- a fellow group member
+        // (`journey_readable_by`) and, via `get_journey_by_share_token`, a
+        // visitor with no account at all. Its `shared_group_count` field
+        // (how many OTHER groups the owner shares this exact train into)
+        // is private information about the OWNER's own group memberships,
+        // not about this journey -- treated as such everywhere else in
+        // this codebase (`PublicTrainState`, the genuinely-public
+        // `/Train/{uid}/{date}` read model, never carries this field at
+        // all). Zeroing it for every non-owner reader closes that leak
+        // without disturbing the "exactly today's `TrackedTrainState`
+        // shape" contract this route's own doc comment promises for the
+        // owner's response.
+        let tracked_train_state = tracked_train_state.map(|mut state| {
+            if !is_owner {
+                state.shared_group_count = 0;
+            }
+            state
+        });
 
         let leg_skip = match (
             leg.origin_crs.as_deref(),
@@ -1462,6 +1486,8 @@ async fn post_leg_train(
             StatusCode::NOT_FOUND,
             "no journey leg with that id".to_string(),
         ))?;
+
+    journeys::validate_train_uid(&body.train_uid).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
 
     let trains_id = crate::data::trains::find_or_create_train(
         &app.database,
@@ -2147,6 +2173,146 @@ mod db_tests {
         cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG").await;
     }
 
+    /// Signal Box Audit 2026-09-25 Low finding #1: before
+    /// `journeys::validate_train_uid` existed, `post_leg_train` fed a bare
+    /// caller-typed `trainUid` straight into `trains::find_or_create_train`,
+    /// which unconditionally upserts into the GLOBAL, shared `trains`
+    /// table -- any authenticated caller could mint unlimited garbage rows
+    /// there with arbitrary strings. This pins down that a malformed
+    /// `trainUid` now gets a clean `400` instead, and that no `trains` row
+    /// was minted for it.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_leg_train_rejects_a_malformed_train_uid -- --ignored --test-threads=1`"]
+    async fn post_leg_train_rejects_a_malformed_train_uid() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG-BAD-UID").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+
+        let garbage_uid = "x".repeat(4096);
+        let (status, body) = post_json(
+            router,
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": garbage_uid, "serviceDate": "2026-09-22" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "malformed uid: {body:?}");
+
+        let minted: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = $1")
+            .bind(&garbage_uid)
+            .fetch_one(&pool)
+            .await
+            .expect("count trains rows for the garbage uid");
+        assert_eq!(
+            minted.0, 0,
+            "a rejected trainUid must never reach the shared `trains` table"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG-BAD-UID").await;
+    }
+
+    /// Signal Box Audit 2026-09-25 Low finding #1's sibling coverage for
+    /// journey/leg CREATION (`post_leg_train_rejects_a_malformed_train_uid`
+    /// above only covers the "change train" route): `POST /Journeys`'s
+    /// `knownTrain` mode must reject a malformed `trainUid` too, before it
+    /// ever reaches `trains::find_or_create_train`'s upsert into the
+    /// shared `trains` table.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey_known_train_rejects_a_malformed_train_uid -- --ignored \
+                --test-threads=1`"]
+    async fn post_journey_known_train_rejects_a_malformed_train_uid() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-CREATE-BAD-UID").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let garbage_uid = "'; DROP TABLE trains; --";
+        let (status, body) = post_json(
+            router,
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": {
+                    "mode": "knownTrain",
+                    "trainUid": garbage_uid,
+                    "serviceDate": "2026-09-22"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "malformed uid: {body:?}");
+
+        let minted: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = $1")
+            .bind(garbage_uid)
+            .fetch_one(&pool)
+            .await
+            .expect("count trains rows for the garbage uid");
+        assert_eq!(
+            minted.0, 0,
+            "a rejected trainUid must never reach the shared `trains` table"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-CREATE-BAD-UID").await;
+    }
+
+    /// Low finding #2 (2026-09-25 review): before `post_journey` validated
+    /// `customName` at all, a multi-KB name reached
+    /// `create_journey_with_known_train_leg` unchanged and would have been
+    /// stored and rendered to every group member this journey is ever
+    /// shared with. Pins down that the same `common::CUSTOM_NAME_MAX_LENGTH`
+    /// cap every other `custom_name` write path in this codebase already
+    /// enforces (`train_tracking::validate_custom_name`) is now applied to
+    /// journey creation too.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey_rejects_an_oversized_custom_name -- --ignored --test-threads=1`"]
+    async fn post_journey_rejects_an_oversized_custom_name() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let oversized_name = "a".repeat(common::CUSTOM_NAME_MAX_LENGTH + 1);
+        let (status, body) = post_json(
+            router,
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "customName": oversized_name,
+                "leg": {
+                    "mode": "knownTrain",
+                    "trainUid": "LONGNM",
+                    "serviceDate": "2026-09-22"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "oversized name: {body:?}");
+
+        cleanup_user(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
+    }
+
     /// End-to-end coverage for "Change train" (item 6 of the 2026-09-22 UX
     /// review's fix-cycle follow-up): a leg that has BOTH a persisted
     /// search window AND a currently-matched train -- the exact state
@@ -2193,8 +2359,8 @@ mod db_tests {
         delete_fixture_day(&pool, service_date).await;
 
         // Two real WAT -> RDG candidates within the leg's own persisted
-        // window (08:00-11:00): CT-CHANGE-1 (the first pick) and
-        // CT-CHANGE-2 (what "Change train" re-picks). This is the table
+        // window (08:00-11:00): CTCHG1 (the first pick) and
+        // CTCHG2 (what "Change train" re-picks). This is the table
         // `GET .../candidates` actually reads
         // (`queries::search_journey_leg_candidates`) -- unlike
         // `post_leg_train`, which never touches it, so the sibling test
@@ -2240,13 +2406,13 @@ mod db_tests {
             ]
         }
         let mut rows = candidate_rows(
-            "CT-CHANGE-1",
+            "CTCHG1",
             service_date,
             chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("valid time"),
             chrono::NaiveTime::from_hms_opt(9, 30, 0).expect("valid time"),
         );
         rows.extend(candidate_rows(
-            "CT-CHANGE-2",
+            "CTCHG2",
             service_date,
             chrono::NaiveTime::from_hms_opt(10, 0, 0).expect("valid time"),
             chrono::NaiveTime::from_hms_opt(10, 30, 0).expect("valid time"),
@@ -2284,7 +2450,7 @@ mod db_tests {
             router.clone(),
             format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
             Some(&token),
-            serde_json::json!({ "trainUid": "CT-CHANGE-1", "serviceDate": service_date.to_string() }),
+            serde_json::json!({ "trainUid": "CTCHG1", "serviceDate": service_date.to_string() }),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "first pick: {body:?}");
@@ -2313,7 +2479,7 @@ mod db_tests {
             .map(|r| r["uid"].as_str().expect("uid present"))
             .collect();
         assert!(
-            uids.contains(&"CT-CHANGE-1") && uids.contains(&"CT-CHANGE-2"),
+            uids.contains(&"CTCHG1") && uids.contains(&"CTCHG2"),
             "candidates must stay scoped to the leg's own persisted window on a matched leg too: {uids:?}"
         );
 
@@ -2326,7 +2492,7 @@ mod db_tests {
             router.clone(),
             format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
             Some(&token),
-            serde_json::json!({ "trainUid": "CT-CHANGE-2", "serviceDate": service_date.to_string() }),
+            serde_json::json!({ "trainUid": "CTCHG2", "serviceDate": service_date.to_string() }),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "change train: {body:?}");
@@ -3455,7 +3621,7 @@ mod db_tests {
             "/Journeys".to_string(),
             Some(&owner_token),
             serde_json::json!({
-                "leg": { "mode": "knownTrain", "trainUid": "SHARE-1", "serviceDate": "2026-09-22" }
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE1", "serviceDate": "2026-09-22" }
             }),
         )
         .await;
@@ -3482,9 +3648,97 @@ mod db_tests {
         assert_eq!(legs.len(), 1);
         assert_eq!(legs[0]["matchMode"], "manual");
         assert!(legs[0]["trackedTrainState"].is_object());
-        assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "SHARE-1");
+        assert_eq!(legs[0]["trackedTrainState"]["trainUid"], "SHARE1");
 
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-RESOLVE-OWNER").await;
+    }
+
+    /// Signal Box Audit 2026-09-25 Low finding #5: `sharedGroupCount` --
+    /// how many OTHER groups the owner shares this exact train into -- must
+    /// never reach an anonymous share-token viewer. This shares the SAME
+    /// leg's train subscription into two different groups (so the owner's
+    /// own `sharedGroupCount` is provably nonzero), then confirms the
+    /// public `GET /Journeys/shared/{token}` response reports `0`, not the
+    /// real count.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_by_share_token_never_discloses_shared_group_count \
+                -- --ignored --test-threads=1`"]
+    async fn get_journey_by_share_token_never_discloses_shared_group_count() {
+        let pool = connect().await;
+        let owner_id = "TEST-ROUTE-SHARE-SGC-OWNER";
+        let owner_token = seed_session(&pool, owner_id).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&owner_token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "SGC001", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let tracking_id = created["trackingId"].as_i64().expect("trackingId present");
+
+        let group_a = crate::data::groups::create_group(&pool, "SGC group A", owner_id)
+            .await
+            .expect("create fixture group A");
+        let group_b = crate::data::groups::create_group(&pool, "SGC group B", owner_id)
+            .await
+            .expect("create fixture group B");
+        assert!(
+            crate::data::groups::add_train_to_group(&pool, &group_a, tracking_id, owner_id)
+                .await
+                .expect("share into group A")
+        );
+        assert!(
+            crate::data::groups::add_train_to_group(&pool, &group_b, tracking_id, owner_id)
+                .await
+                .expect("share into group B")
+        );
+
+        // The owner's own authenticated read sees the real count.
+        let (status, owner_body) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&owner_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            owner_body["legs"][0]["trackedTrainState"]["sharedGroupCount"], 2,
+            "the owner's own view must still show the real count: {owner_body:?}"
+        );
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create share link: {body:?}");
+        let token = body["token"].as_str().expect("token present").to_string();
+
+        // No cookie at all -- a genuinely anonymous visitor.
+        let (status, anon_body) = request(router, format!("/Journeys/shared/{token}"), None).await;
+        assert_eq!(status, StatusCode::OK, "resolve share token: {anon_body:?}");
+        assert_eq!(
+            anon_body["legs"][0]["trackedTrainState"]["sharedGroupCount"], 0,
+            "an anonymous share-token viewer must never see how many groups \
+             the owner shares this train into: {anon_body:?}"
+        );
+
+        for group_id in [&group_a, &group_b] {
+            sqlx::query("DELETE FROM groups WHERE id = $1")
+                .bind(group_id)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture group");
+        }
+        cleanup_user(&pool, owner_id).await;
     }
 
     #[tokio::test]
@@ -3501,7 +3755,7 @@ mod db_tests {
             "/Journeys".to_string(),
             Some(&owner_token),
             serde_json::json!({
-                "leg": { "mode": "knownTrain", "trainUid": "SHARE-2", "serviceDate": "2026-09-22" }
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE2", "serviceDate": "2026-09-22" }
             }),
         )
         .await;
@@ -3554,7 +3808,7 @@ mod db_tests {
             "/Journeys".to_string(),
             Some(&owner_token),
             serde_json::json!({
-                "leg": { "mode": "knownTrain", "trainUid": "SHARE-3", "serviceDate": "2026-09-22" }
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE3", "serviceDate": "2026-09-22" }
             }),
         )
         .await;
@@ -3601,7 +3855,7 @@ mod db_tests {
             "/Journeys".to_string(),
             Some(&owner_token),
             serde_json::json!({
-                "leg": { "mode": "knownTrain", "trainUid": "SHARE-4", "serviceDate": "2026-09-22" }
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE4", "serviceDate": "2026-09-22" }
             }),
         )
         .await;
@@ -3640,7 +3894,7 @@ mod db_tests {
             "/Journeys".to_string(),
             Some(&owner_token),
             serde_json::json!({
-                "leg": { "mode": "knownTrain", "trainUid": "SHARE-5", "serviceDate": "2026-09-22" }
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE5", "serviceDate": "2026-09-22" }
             }),
         )
         .await;
@@ -3704,7 +3958,7 @@ mod db_tests {
             "/Journeys".to_string(),
             Some(&owner_token),
             serde_json::json!({
-                "leg": { "mode": "knownTrain", "trainUid": "SHARE-6", "serviceDate": "2026-09-22" }
+                "leg": { "mode": "knownTrain", "trainUid": "SHARE6", "serviceDate": "2026-09-22" }
             }),
         )
         .await;

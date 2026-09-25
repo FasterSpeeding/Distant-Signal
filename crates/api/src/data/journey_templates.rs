@@ -124,6 +124,36 @@ fn is_three_letter_crs(crs: &str) -> bool {
     trimmed.chars().count() == 3 && trimmed.chars().all(|c| c.is_ascii_alphabetic())
 }
 
+/// Upper bound on how many legs a single template `POST`/`PUT` body may
+/// carry (Low finding #6 of the 2026-09-25 review's deferred user-area
+/// pass). Before this cap, `post_journey_template`'s `Manual` variant and
+/// `put_journey_template` both accepted a caller-supplied `legs: Vec<_>` of
+/// unbounded length and looped it straight into [`create_template`]/
+/// [`replace_template`]'s one-`INSERT`-per-leg transaction -- the same
+/// "unbounded array, unbounded per-row insert cost" shape
+/// `routes::preferences::MAX_PINNED_ITEMS` already exists to cap for pinned
+/// lines/stations/operators (see that constant's own doc comment).
+///
+/// A real journey template is a repeating COMMUTE pattern (design doc §2.2)
+/// -- a multi-leg interchange journey rarely has more than two or three
+/// legs in practice. 20 is generous headroom over any real use (more legs
+/// than most people take in a week of commuting) while still bounding the
+/// per-request insert cost to something small and fixed.
+pub const MAX_LEGS_PER_TEMPLATE: usize = 20;
+
+/// Returns a clean, user-facing error when `leg_count` exceeds
+/// [`MAX_LEGS_PER_TEMPLATE`] -- called by both `post_journey_template`
+/// (`Manual` mode) and `put_journey_template` before either ever reaches
+/// [`create_template`]/[`replace_template`]'s per-row insert loop.
+pub fn validate_leg_count(leg_count: usize) -> Result<(), String> {
+    if leg_count > MAX_LEGS_PER_TEMPLATE {
+        return Err(format!(
+            "A template can have at most {MAX_LEGS_PER_TEMPLATE} legs ({leg_count} submitted)."
+        ));
+    }
+    Ok(())
+}
+
 /// User-facing validation for a template's recurrence fields
 /// (`default_match_mode`/`auto_commit_rule`/`days_of_week`/`starts_on`/
 /// `ends_on`) -- same pure-validator pattern as [`validate_template_leg`],
@@ -620,6 +650,31 @@ mod validate_template_leg_tests {
             !message.contains('_'),
             "user-facing copy leaked an identifier: {message}"
         );
+    }
+}
+
+#[cfg(test)]
+mod validate_leg_count_tests {
+    use super::*;
+
+    #[test]
+    fn a_leg_count_at_exactly_the_cap_is_accepted() {
+        assert!(validate_leg_count(MAX_LEGS_PER_TEMPLATE).is_ok());
+    }
+
+    #[test]
+    fn a_leg_count_one_over_the_cap_is_rejected() {
+        let err = validate_leg_count(MAX_LEGS_PER_TEMPLATE + 1)
+            .expect_err("an over-cap leg count must be rejected");
+        assert!(
+            err.contains(&MAX_LEGS_PER_TEMPLATE.to_string()),
+            "error message should name the cap: {err}"
+        );
+    }
+
+    #[test]
+    fn a_single_leg_is_accepted() {
+        assert!(validate_leg_count(1).is_ok());
     }
 }
 
