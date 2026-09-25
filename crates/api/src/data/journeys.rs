@@ -681,6 +681,14 @@ pub async fn delete_leg(
     let journey_also_deleted = remaining <= 1;
 
     if journey_also_deleted {
+        // Removing the last leg removes the whole occurrence, so this is a
+        // discard of a template occurrence exactly as much as
+        // `delete_journey` is -- tombstone it before the delete, or the
+        // recurrence sweep re-mints it within the hour. Deliberately NOT
+        // done when other legs survive: the occurrence itself still exists
+        // then, and the sweep's own "already has a leg on this date" guard
+        // still sees it.
+        record_template_occurrence_skips(&mut tx, journey_id).await?;
         // Cascades into `journey_legs` for us (`ON DELETE CASCADE`) --
         // deleting the leg row explicitly first would be redundant, not
         // wrong, but this is the one statement, not two.
@@ -697,6 +705,49 @@ pub async fn delete_leg(
 
     tx.commit().await?;
     Ok(Some(journey_also_deleted))
+}
+
+/// Records "the occurrence this template produced for this date was
+/// explicitly discarded by its owner" for every `(source_template_id,
+/// service_date)` pair `journey_id` covers -- a tombstone in
+/// `journey_template_skipped_dates` (migration `20260925090000`).
+///
+/// Real bug this closes: `crates/notifier`'s recurrence sweep decides
+/// whether today's occurrence still needs minting purely by asking "does a
+/// journey from this template already have a leg on this date"
+/// (`notifier::queries::materialize_due_template_occurrence`). Deleting
+/// today's auto-minted occurrence -- the ordinary "I'm not travelling
+/// today" action -- made that question false again, so the next sweep tick,
+/// AT MOST AN HOUR LATER, re-minted the journey, re-auto-committed its legs
+/// and resumed pushing notifications for something the user had explicitly
+/// thrown away. Nothing anywhere recorded that the deletion had happened:
+/// the `journeys` row was the only trace of an occurrence, and deleting it
+/// removes that trace by definition. This is that missing record.
+///
+/// Called from inside both delete paths' own transactions, BEFORE the
+/// delete (it reads the legs it is about to lose). Idempotent (`ON
+/// CONFLICT DO NOTHING`) and a no-op for a journey with no
+/// `source_template_id` -- an ordinary hand-built journey has no template
+/// occurrence to suppress.
+///
+/// Scoped per `(template_id, service_date)`, not per template: skipping
+/// today must never suppress tomorrow's occurrence of the same commute.
+async fn record_template_occurrence_skips(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    journey_id: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO journey_template_skipped_dates (template_id, service_date) \
+         SELECT j.source_template_id, jl.service_date \
+         FROM journeys j JOIN journey_legs jl ON jl.journey_id = j.id \
+         WHERE j.id = $1 AND j.source_template_id IS NOT NULL \
+         GROUP BY j.source_template_id, jl.service_date \
+         ON CONFLICT (template_id, service_date) DO NOTHING",
+    )
+    .bind(journey_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Deletes an ENTIRE journey the caller owns, in one step -- the direct
@@ -747,11 +798,34 @@ pub async fn delete_leg(
 /// for "no such journey, or not this caller's" (the route maps this to
 /// `404`, never `403`, matching [`delete_leg`]'s own convention).
 pub async fn delete_journey(pool: &PgPool, journey_id: i64, user_id: &str) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
+
+    // Ownership-scoped read FIRST, so the tombstone write below can never
+    // record a skip for a journey this caller doesn't own (the tombstone
+    // statement itself is keyed only by journey id -- ownership is proven
+    // here instead, inside the same transaction as the delete, so a
+    // not-yours journey leaves no trace at all and still reports `false`).
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
+            .bind(journey_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if owned.is_none() {
+        return Ok(false);
+    }
+
+    // Deleting a template-minted occurrence is the user saying "not this
+    // one" -- without this the recurrence sweep re-mints it within the
+    // hour. See `record_template_occurrence_skips`.
+    record_template_occurrence_skips(&mut tx, journey_id).await?;
+
     let result = sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
         .bind(journey_id)
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(result.rows_affected() > 0)
 }
 

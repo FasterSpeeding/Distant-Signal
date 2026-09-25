@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     let cooldown = chrono::Duration::minutes(config.cooldown_minutes);
+    let cursor_grace = chrono::Duration::seconds(config.cursor_grace_seconds);
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
     let mut forward_interval =
         tokio::time::interval(Duration::from_secs(config.forward_queue_poll_interval_secs));
@@ -61,8 +62,10 @@ async fn main() -> anyhow::Result<()> {
             _ = interval.tick() => {
                 let result = run_cycle(
                     &pool,
+                    Utc::now(),
                     cooldown,
                     config.train_delay_threshold_minutes,
+                    cursor_grace,
                     &config.vapid_private_key,
                     &config.vapid_subject,
                 )
@@ -74,7 +77,9 @@ async fn main() -> anyhow::Result<()> {
             _ = forward_interval.tick() => {
                 let result = run_forward_queue_cycle(
                     &pool,
+                    Utc::now(),
                     config.train_delay_threshold_minutes,
+                    cursor_grace,
                     &config.vapid_private_key,
                     &config.vapid_subject,
                 )
@@ -97,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
             _ = template_sweep_interval.tick() => {
                 let result = run_template_sweep_cycle(
                     &pool,
+                    Utc::now(),
                     config.auto_commit_lead_minutes,
                     &config.vapid_private_key,
                     &config.vapid_subject,
@@ -112,23 +118,32 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_cycle(
     pool: &PgPool,
+    now: DateTime<Utc>,
     cooldown: chrono::Duration,
     train_delay_threshold_minutes: i32,
+    cursor_grace: chrono::Duration,
     vapid_private_key: &str,
     vapid_subject: &str,
 ) -> anyhow::Result<()> {
-    let now = Utc::now();
-
     // --- Lines (Decision 2/3/5) ---
-    let line_cursor_start = queries::read_cursor(pool, "line_status_history").await?;
-    let line_candidates = queries::poll_line_candidates(pool, line_cursor_start).await?;
-    let line_max_id = line_candidates
-        .iter()
-        .map(|c| c.id)
-        .max()
-        .unwrap_or(line_cursor_start);
+    let line_cursor = queries::read_cursor(pool, "line_status_history").await?;
+    let (line_candidates, line_observed_max_id) =
+        queries::poll_line_candidates(pool, line_cursor.last_processed_id).await?;
 
     for candidate in &line_candidates {
+        // Mirrors `notify_train_candidates`'s own per-candidate log, and is
+        // the only production read of `LineCandidate::id` now that the
+        // watermark advances over every row POLLED rather than over the
+        // candidate ids alone (see `queries::poll_line_candidates`) -- worth
+        // keeping precisely because "which history row did this push come
+        // from" is the first question asked when a notification looks wrong.
+        tracing::debug!(
+            line_status_history_id = candidate.id,
+            line_id = %candidate.line_id,
+            previous_rank = candidate.previous_rank,
+            new_rank = candidate.new_rank,
+            "line notification candidate"
+        );
         let user_ids = queries::pinned_users_for_line(pool, &candidate.line_id).await?;
         for user_id in user_ids {
             let state =
@@ -169,13 +184,24 @@ async fn run_cycle(
             }
         }
     }
-    queries::advance_cursor(pool, "line_status_history", line_max_id).await?;
+    queries::advance_cursor_with_grace(
+        pool,
+        "line_status_history",
+        &line_cursor,
+        line_observed_max_id,
+        now,
+        cursor_grace,
+    )
+    .await?;
 
     // --- Trains (Decision 4) ---
-    let train_cursor_start = queries::read_cursor(pool, "train_movement_events").await?;
-    let (train_candidates, train_max_id) =
-        queries::poll_train_candidates(pool, train_cursor_start, train_delay_threshold_minutes)
-            .await?;
+    let train_cursor = queries::read_cursor(pool, "train_movement_events").await?;
+    let (train_candidates, train_max_id) = queries::poll_train_candidates(
+        pool,
+        train_cursor.last_processed_id,
+        train_delay_threshold_minutes,
+    )
+    .await?;
     notify_train_candidates(
         pool,
         &train_candidates,
@@ -184,7 +210,15 @@ async fn run_cycle(
         now,
     )
     .await?;
-    queries::advance_cursor(pool, "train_movement_events", train_max_id).await?;
+    queries::advance_cursor_with_grace(
+        pool,
+        "train_movement_events",
+        &train_cursor,
+        train_max_id,
+        now,
+        cursor_grace,
+    )
+    .await?;
 
     Ok(())
 }
@@ -317,20 +351,30 @@ fn build_train_notification_payload(
 /// `"train_movement_events"` cursor.
 async fn run_forward_queue_cycle(
     pool: &PgPool,
+    now: DateTime<Utc>,
     train_delay_threshold_minutes: i32,
+    cursor_grace: chrono::Duration,
     vapid_private_key: &str,
     vapid_subject: &str,
 ) -> anyhow::Result<()> {
-    let now = Utc::now();
-    let cursor_start = queries::read_cursor(pool, "notifier_forward_queue").await?;
-    let (touched_trains_ids, max_id) = queries::poll_forward_queue(pool, cursor_start).await?;
+    let cursor = queries::read_cursor(pool, "notifier_forward_queue").await?;
+    let (touched_trains_ids, max_id) =
+        queries::poll_forward_queue(pool, cursor.last_processed_id).await?;
     for trains_id in touched_trains_ids {
         let candidates =
             queries::candidates_for_trains_id(pool, trains_id, train_delay_threshold_minutes)
                 .await?;
         notify_train_candidates(pool, &candidates, vapid_private_key, vapid_subject, now).await?;
     }
-    queries::advance_cursor(pool, "notifier_forward_queue", max_id).await?;
+    queries::advance_cursor_with_grace(
+        pool,
+        "notifier_forward_queue",
+        &cursor,
+        max_id,
+        now,
+        cursor_grace,
+    )
+    .await?;
     Ok(())
 }
 
@@ -412,14 +456,23 @@ async fn run_skip_check_cycle(
 /// The recurring-journey materialization sweep's own cycle (Task 4/5,
 /// spec §3.1-3.2). "Today" is a plain Europe/London calendar date (see
 /// this plan's Architecture section for why not a rail day) -- computed
-/// once per tick and used for both stages.
+/// once per tick from `now` and used for both stages.
+///
+/// `now` is INJECTED, not read from the clock inside here -- the same
+/// convention `api::data::reconciliation::retry_schedule_enrichment_for_nr_primary_trains`
+/// and `train_tracking::validate_pin(pin, now)` already establish in this
+/// workspace. Which candidate this sweep commits a leg to is now a direct
+/// function of the time of day it runs at (see
+/// `decision::commit_check_window`), so that time of day has to be
+/// controllable from a test rather than being whatever the clock happened to
+/// read while the suite ran.
 async fn run_template_sweep_cycle(
     pool: &PgPool,
+    now: DateTime<Utc>,
     auto_commit_lead_minutes: i64,
     vapid_private_key: &str,
     vapid_subject: &str,
 ) -> anyhow::Result<()> {
-    let now = Utc::now();
     let today = now.with_timezone(&chrono_tz::Europe::London).date_naive();
 
     // --- Stage 1: mint due occurrences ---
@@ -451,26 +504,31 @@ async fn run_template_sweep_cycle(
     for leg in queries::unmatched_auto_legs_for_commit_check(pool, today).await? {
         // A template leg is allowed to carry no time window at all (see
         // `api::data::journey_templates::validate_template_leg`'s own doc
-        // comment) -- `unmatched_auto_legs_for_commit_check` no longer
-        // filters such a leg out, so `depart_after`/`arrive_after` can
-        // both genuinely be `None` here. Midnight is used as the
-        // "earliest bound" in that case rather than skipping the leg:
-        // with no lower bound at all there is no "too early" to guard
-        // against, and since this leg's own `service_date` is always
-        // `today` (the caller's own query scoping), `now` is always
-        // already on-or-after local midnight, so `is_due_for_commit_check`
-        // below is unconditionally true from the very first sweep tick of
-        // the day -- i.e. this degrades to "always due," not to a
-        // still-gated check against a fake bound.
-        let earliest_bound = leg
-            .depart_after
-            .or(leg.arrive_after)
-            .unwrap_or(chrono::NaiveTime::MIN);
-        let Some(earliest_bound_utc) = london_to_utc(leg.service_date.and_time(earliest_bound))
-        else {
-            continue; // nonexistent local time (spring-forward gap) -- best-effort, skip this tick
+        // comment) -- `unmatched_auto_legs_for_commit_check` does not filter
+        // such a leg out, so any subset of the four bounds can be `None`
+        // here. `decision::commit_check_window` classifies that subset;
+        // read its doc comment for the "due from midnight, so committed to
+        // an overnight train at the first tick after midnight" bug that
+        // replaced `unwrap_or(NaiveTime::MIN)` with this.
+        let window = decision::commit_check_window(
+            leg.depart_after,
+            leg.depart_before,
+            leg.arrive_after,
+            leg.arrive_before,
+        );
+        let due_bound_utc = match window.due_check_bound() {
+            Some(bound) => {
+                let Some(bound_utc) = london_to_utc(leg.service_date.and_time(bound)) else {
+                    continue; // nonexistent local time (spring-forward gap) -- best-effort, skip this tick
+                };
+                bound_utc
+            }
+            // Fully open: there is no stated time to wait for, so this leg
+            // is due whenever the sweep looks -- and `now`, not midnight, is
+            // what "nearest/next" is then measured against below.
+            None => now,
         };
-        if !decision::is_due_for_commit_check(now, earliest_bound_utc, auto_commit_lead_minutes) {
+        if !decision::is_due_for_commit_check(now, due_bound_utc, auto_commit_lead_minutes) {
             continue;
         }
 
@@ -487,6 +545,27 @@ async fn run_template_sweep_cycle(
         .await?;
 
         if candidates.is_empty() {
+            // "No service was found" is only honest if we actually HAVE
+            // today's timetable. Zero candidates against an unpublished day
+            // (a fresh environment, a schedule-reference outage, a late CIF
+            // delivery) is indistinguishable at this point from zero
+            // candidates against a real, complete timetable -- and this
+            // notification fires AT MOST ONCE per leg, ever
+            // (`decide_unmatched_notification`), so a false one sent now
+            // permanently silences the genuine one a real problem would
+            // warrant later this morning. Same "an empty result set can't
+            // tell you which of the two it is, so probe the day" reasoning
+            // `api::data::queries::schedule_destination_departures_published_for`
+            // already encodes for its own 404-versus-`200 []` split.
+            if !queries::schedule_published_for(pool, leg.service_date).await? {
+                tracing::info!(
+                    journey_leg_id = leg.journey_leg_id,
+                    service_date = %leg.service_date,
+                    "no schedule published for this leg's service date yet; deferring the \
+                     no-service-found determination to a later tick rather than notifying"
+                );
+                continue;
+            }
             let already_notified =
                 queries::unmatched_notification_state(pool, &leg.user_id, leg.journey_leg_id)
                     .await?
@@ -537,27 +616,69 @@ async fn run_template_sweep_cycle(
             .iter()
             .map(|(_, day_offset, t)| (*day_offset, *t))
             .collect();
-        let Some(winner_idx) =
+        // A leg that names its own earliest time keeps nearest-to-now (an
+        // already-departed candidate is a legitimate answer there -- the
+        // sweep may just be running behind the window the user chose). A leg
+        // with NO lower bound instead takes the next candidate still
+        // upcoming, so "any train" can never resolve to one that has already
+        // left. See `decision::commit_check_window`.
+        let winner_idx = if window.names_an_earliest_time() {
             decision::pick_nearest_to_now_candidate(&day_offset_times, now_local)
-        else {
-            continue; // unreachable given the is_empty() check above, defensive only
+        } else {
+            decision::pick_next_upcoming_candidate(&day_offset_times, now_local)
+        };
+        let Some(winner_idx) = winner_idx else {
+            // Only reachable for an open-ended leg whose every candidate has
+            // already departed (nearest-to-now is `None` for an empty slice
+            // alone, already excluded above). Deliberately silent: candidates
+            // DO exist for this route today, so this is not the
+            // "no service found" case either -- there is simply nothing left
+            // to board today, and nothing worth pushing about.
+            tracing::debug!(
+                journey_leg_id = leg.journey_leg_id,
+                candidates = candidates.len(),
+                "every candidate for this open-ended leg has already departed; leaving it \
+                 unmatched rather than committing it to a train that has left"
+            );
+            continue;
         };
         let (train_uid, _, _) = &candidates[winner_idx];
 
-        let trains_id = queries::find_or_create_train(pool, train_uid, leg.service_date).await?;
-        let tracking_id =
-            queries::create_subscription_for_train(pool, trains_id, &leg.user_id).await?;
-        if !queries::commit_leg_to_train(pool, leg.journey_leg_id, tracking_id).await? {
-            tracing::warn!(
+        // Enriching find-or-create, NOT the bare one: a bare `trains` row
+        // leaves `origin_crs`/`destination_crs`/`scheduled_departure` NULL,
+        // which `create_subscription_for_train` then copies (as NULLs) into
+        // the new subscription's own `pin_*` columns -- and with
+        // `pin_destination_crs` NULL, `skip_check::leg_is_skipped` has no
+        // Darwin departure to match against, so station-skip detection could
+        // never fire for an auto-committed leg at all. This is the
+        // auto-commit path's counterpart to the enrichment the MANUAL pick
+        // route already runs (`api::routes::journeys::post_leg_train` ->
+        // `routes::train::enrich_shared_train`); see
+        // `queries::find_or_create_train_with_cif_schedule` for why the
+        // notifier does the CIF half itself rather than reaching into that
+        // (unreachable, api-crate) function.
+        let trains_id =
+            queries::find_or_create_train_with_cif_schedule(pool, train_uid, leg.service_date)
+                .await?;
+        // Subscribe-and-commit as ONE transaction: on the no-op path (the
+        // user picked a train by hand at the same moment) the subscription
+        // this would otherwise have left behind is rolled back with it,
+        // instead of lingering and pushing notifications for a train they
+        // never chose. See `queries::auto_commit_leg_to_train`.
+        match queries::auto_commit_leg_to_train(pool, leg.journey_leg_id, trains_id, &leg.user_id)
+            .await?
+        {
+            Some(tracking_id) => tracing::info!(
                 journey_leg_id = leg.journey_leg_id,
-                "leg was committed by a concurrent tick before this one finished; skipping"
-            );
-        } else {
-            tracing::info!(
-                journey_leg_id = leg.journey_leg_id,
+                tracking_id,
                 train_uid,
-                "auto-committed leg to nearest-to-now candidate"
-            );
+                "auto-committed leg to its chosen candidate"
+            ),
+            None => tracing::warn!(
+                journey_leg_id = leg.journey_leg_id,
+                "leg was committed by a concurrent actor before this tick finished; rolled back \
+                 the subscription created for it rather than orphaning it"
+            ),
         }
     }
 
@@ -825,7 +946,13 @@ mod db_tests {
             .expect("seed second (transitioned) history row");
 
         let cooldown = chrono::Duration::minutes(20);
-        run_cycle(&pool, cooldown, 15, "not-a-real-vapid-key", "mailto:test@example.invalid")
+        // `Duration::zero()` grace: this test asserts the line-notification
+        // side effect of a single cycle, and a real grace window would hold
+        // the watermark back for the whole of it -- the grace window's own
+        // behavior is asserted directly by
+        // `queries::tests::advance_cursor_with_grace_*` instead.
+        let grace = chrono::Duration::zero();
+        run_cycle(&pool, Utc::now(), cooldown, 15, grace, "not-a-real-vapid-key", "mailto:test@example.invalid")
             .await
             .expect("run_cycle must return Ok even though the send itself fails against an invalid endpoint");
 
@@ -839,8 +966,10 @@ mod db_tests {
         // leave the state unchanged.
         run_cycle(
             &pool,
+            Utc::now(),
             cooldown,
             15,
+            grace,
             "not-a-real-vapid-key",
             "mailto:test@example.invalid",
         )
@@ -957,6 +1086,7 @@ mod sweep_cycle_tests {
 
         run_template_sweep_cycle(
             &pool,
+            Utc::now(),
             1440, // generous lead window -- a seeded 00:00:00 depart_after is always "due" by the time this test runs
             "not-a-real-vapid-key",
             "mailto:test@example.invalid",
@@ -987,6 +1117,7 @@ mod sweep_cycle_tests {
 
         run_template_sweep_cycle(
             &pool,
+            Utc::now(),
             1440,
             "not-a-real-vapid-key",
             "mailto:test@example.invalid",
@@ -1151,6 +1282,7 @@ mod sweep_cycle_tests {
 
         run_template_sweep_cycle(
             &pool,
+            Utc::now(),
             120, // the spec's own suggested default -- irrelevant here since a fully-open leg is always due
             "not-a-real-vapid-key",
             "mailto:test@example.invalid",
@@ -1270,6 +1402,7 @@ mod sweep_cycle_tests {
 
         run_template_sweep_cycle(
             &pool,
+            Utc::now(),
             1440,
             "not-a-real-vapid-key",
             "mailto:test@example.invalid",
@@ -1307,6 +1440,7 @@ mod sweep_cycle_tests {
 
         run_template_sweep_cycle(
             &pool,
+            Utc::now(),
             1440,
             "not-a-real-vapid-key",
             "mailto:test@example.invalid",

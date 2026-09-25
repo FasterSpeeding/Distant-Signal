@@ -18,29 +18,104 @@ use sqlx::{PgPool, Row};
 
 use crate::decision::train_severity_rank;
 
+/// One `notifier_cursor` row: the committed watermark plus the
+/// not-yet-promoted proposal behind the grace window
+/// (`20260925091000_notifier_cursor_pending_watermark.sql`). See
+/// [`advance_cursor_with_grace`] for the full two-phase mechanic and the
+/// out-of-order-commit bug it closes.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CursorState {
+    /// Every row at or below this id is genuinely processed-and-past --
+    /// only this value bounds the next poll's `WHERE id > $1`.
+    pub last_processed_id: i64,
+    /// The highest id some EARLIER cycle observed, awaiting promotion into
+    /// `last_processed_id` once it is older than the grace window. `None`
+    /// on a brand-new cursor row (and on one last written by a pre-grace
+    /// notifier build).
+    pub pending_id: Option<i64>,
+    pub pending_observed_at: Option<DateTime<Utc>>,
+}
+
 /// Upserts a zero row on first use -- the migration declares the table's
 /// shape but deliberately does not seed rows (Task 1), so the first ever
 /// poll cycle for a given `name` creates its own starting-at-zero cursor
 /// here.
-pub async fn read_cursor(pool: &PgPool, name: &str) -> anyhow::Result<i64> {
-    let row: (i64,) = sqlx::query_as(
+pub async fn read_cursor(pool: &PgPool, name: &str) -> anyhow::Result<CursorState> {
+    let row = sqlx::query_as::<_, CursorState>(
         "INSERT INTO notifier_cursor (name, last_processed_id) VALUES ($1, 0) \
          ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name \
-         RETURNING last_processed_id",
+         RETURNING last_processed_id, pending_id, pending_observed_at",
     )
     .bind(name)
     .fetch_one(pool)
     .await?;
-    Ok(row.0)
+    Ok(row)
 }
 
-pub async fn advance_cursor(pool: &PgPool, name: &str, new_value: i64) -> anyhow::Result<()> {
-    sqlx::query("UPDATE notifier_cursor SET last_processed_id = $1 WHERE name = $2")
-        .bind(new_value)
-        .bind(name)
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Advances a watermark through a GRACE WINDOW rather than straight to
+/// "the maximum id this cycle happened to see."
+///
+/// The bug this closes: ids come off a sequence at INSERT time, but a row
+/// only becomes visible at COMMIT time, so ids are NOT committed in order.
+/// Under the old `SET last_processed_id = MAX(id) observed`, a transaction
+/// holding id 100 that committed after a cycle had already observed (and
+/// stepped past) id 101 was skipped FOREVER -- for line status that means a
+/// user is never told about a severity escalation, and nothing downstream
+/// ever re-checks it. Every writer of the three tables this crate polls is
+/// transactional and can commit out of id order under concurrency (the
+/// aggregator's `write_line_status`, `api`'s `upsert_tfl_line_status`, TRUST
+/// ingest, and trust-consumer's own forwarding write).
+///
+/// The fix, two-phase: this cycle PROPOSES `observed_max_id`
+/// (`pending_id`/`pending_observed_at`), and only PROMOTES a proposal made
+/// by an earlier cycle into `last_processed_id` once that proposal has aged
+/// past `grace`. The promoting cycle has, by construction, just re-read
+/// every row above the old `last_processed_id` -- so a lower-id row that
+/// committed late, inside the grace window, is in THAT read's candidate set
+/// before the cursor ever moves past it. A row can therefore be read by
+/// several consecutive cycles; every send path fed by these cursors is
+/// already idempotent against that (`decision::decide_user_notification`'s
+/// own "already notified this exact resulting state" guard, and the
+/// escalation-only `decide_train_notification`).
+///
+/// Residual, deliberately accepted: a transaction that stays in flight for
+/// LONGER than `grace` can still be missed. That is the standard tradeoff of
+/// this pattern -- the alternative (never trusting an id watermark at all)
+/// means re-scanning the whole table forever. `grace` is configurable
+/// (`--cursor-grace-seconds`) precisely so it can be widened if a writer
+/// ever grows a genuinely long-running transaction.
+///
+/// Returns the `last_processed_id` now stored, for the caller's logging.
+pub async fn advance_cursor_with_grace(
+    pool: &PgPool,
+    name: &str,
+    state: &CursorState,
+    observed_max_id: i64,
+    now: DateTime<Utc>,
+    grace: chrono::Duration,
+) -> anyhow::Result<i64> {
+    let promoted = match (state.pending_id, state.pending_observed_at) {
+        (Some(pending_id), Some(observed_at)) if now - observed_at >= grace => pending_id,
+        _ => state.last_processed_id,
+    };
+    // `max` on both: a watermark must never move BACKWARDS, not even if a
+    // stale proposal (or a deleted row shrinking `observed_max_id`) would
+    // otherwise take it there.
+    let new_last = promoted.max(state.last_processed_id);
+    let new_pending = observed_max_id.max(new_last);
+
+    sqlx::query(
+        "UPDATE notifier_cursor \
+         SET last_processed_id = $1, pending_id = $2, pending_observed_at = $3 \
+         WHERE name = $4",
+    )
+    .bind(new_last)
+    .bind(new_pending)
+    .bind(now)
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(new_last)
 }
 
 pub struct LineCandidate {
@@ -75,16 +150,96 @@ fn worst_rank(statuses: &[LineStatus]) -> u8 {
         .unwrap_or(0)
 }
 
+/// Decodes one polled `line_status_history` row into a candidate, or
+/// `None` for "this row is not a candidate" -- which now deliberately
+/// covers BOTH "no severity transition here" and "this row's own JSON does
+/// not decode into `Vec<LineStatus>` at all."
+///
+/// The bug that second case closes: this logic used `serde_json::from_value(
+/// ...)?` inline, so ONE undecodable `statuses` (or `previous_statuses`)
+/// blob -- a partially-written row, a shape written by an older/newer
+/// build of `common::LineStatus`, anything hand-edited -- returned `Err`
+/// out of the whole poll, which aborted `run_cycle` BEFORE it reached
+/// `advance_cursor`. The cursor therefore never moved past that row, and
+/// every subsequent cycle failed at the exact same point, forever, for
+/// EVERY user and for BOTH the line-status and the train-movement halves of
+/// the cycle (trains are polled after this in the same function). A
+/// permanent, silent, total notification outage caused by one bad row.
+///
+/// Skipping-and-logging instead is the same posture
+/// `schedule_matching::run_schedule_match_sweep` already takes for one
+/// malformed row inside a sweep ("a single row's failure ... is logged and
+/// skipped, not propagated"), and is what the aggregator's equivalent
+/// row-decode path does too. A genuine DB/connectivity failure still
+/// propagates -- that is `fetch_all`'s own `?`, above, untouched.
+fn line_candidate_from_row(row: LineHistoryRow) -> Option<LineCandidate> {
+    let statuses: Vec<LineStatus> = match serde_json::from_value(row.statuses) {
+        Ok(statuses) => statuses,
+        Err(err) => {
+            tracing::error!(
+                error = ?err,
+                line_status_history_id = row.id,
+                line_id = %row.line_id,
+                "skipping an undecodable line_status_history.statuses row -- the cursor still \
+                 advances past it rather than stalling every notification forever"
+            );
+            return None;
+        }
+    };
+    let new_rank = worst_rank(&statuses);
+
+    let previous_rank = match row.previous_statuses {
+        None => None,
+        Some(previous_json) => match serde_json::from_value::<Vec<LineStatus>>(previous_json) {
+            Ok(previous_statuses) => Some(worst_rank(&previous_statuses)),
+            Err(err) => {
+                tracing::error!(
+                    error = ?err,
+                    line_status_history_id = row.id,
+                    line_id = %row.line_id,
+                    "skipping a line_status_history row whose PRECEDING row's statuses are \
+                     undecodable -- there is no trustworthy previous rank to compare against"
+                );
+                return None;
+            }
+        },
+    };
+
+    if !crate::decision::is_severity_transition(previous_rank, new_rank) {
+        return None;
+    }
+    // Safe: is_severity_transition returning true already requires
+    // previous_rank to be Some (its None branch always returns false) --
+    // see the LineCandidate.previous_rank field comment.
+    Some(LineCandidate {
+        id: row.id,
+        line_id: row.line_id,
+        new_rank,
+        previous_rank: previous_rank.expect("checked by is_severity_transition"),
+    })
+}
+
 /// One correlated subquery per row to find "the immediately preceding
 /// line_status_history row for this same line_id" (Decision 3's guard --
 /// NULL previous_statuses means none exists). This workspace's existing
 /// data-volume scale ("single trusted personal instance", per DESIGN.md)
 /// doesn't justify a window-function rewrite for this; revisit if line
 /// count/history volume ever grows enough to matter.
+///
+/// Returns `(candidates, observed_max_id)`. The second element is the
+/// highest id this poll actually SAW, not the highest id that turned out to
+/// be a candidate -- same shape `poll_train_candidates` already returns, and
+/// necessary for the same two reasons: an ordinary non-transition row (by
+/// far the common case -- most `line_status_history` rows repeat the
+/// previous severity) and a skipped undecodable row must BOTH let the
+/// watermark move past them. `run_cycle` previously took `max` over the
+/// CANDIDATE ids alone, so a cycle that found no candidate at all left the
+/// cursor where it was and re-scanned the same rows on every subsequent
+/// cycle for as long as no transition ever occurred.
 pub async fn poll_line_candidates(
     pool: &PgPool,
     since_id: i64,
-) -> anyhow::Result<Vec<LineCandidate>> {
+) -> anyhow::Result<(Vec<LineCandidate>, i64)> {
     let rows = sqlx::query_as::<_, LineHistoryRow>(
         "SELECT h.id, h.line_id, h.statuses AS statuses, \
                 (SELECT h2.statuses FROM line_status_history h2 \
@@ -98,32 +253,12 @@ pub async fn poll_line_candidates(
     .fetch_all(pool)
     .await?;
 
-    let mut candidates = Vec::new();
-    for row in rows {
-        let statuses: Vec<LineStatus> = serde_json::from_value(row.statuses)?;
-        let new_rank = worst_rank(&statuses);
-
-        let previous_rank = match row.previous_statuses {
-            None => None,
-            Some(previous_json) => {
-                let previous_statuses: Vec<LineStatus> = serde_json::from_value(previous_json)?;
-                Some(worst_rank(&previous_statuses))
-            }
-        };
-
-        if crate::decision::is_severity_transition(previous_rank, new_rank) {
-            // Safe: is_severity_transition returning true already requires
-            // previous_rank to be Some (its None branch always returns
-            // false) -- see the LineCandidate.previous_rank field comment.
-            candidates.push(LineCandidate {
-                id: row.id,
-                line_id: row.line_id,
-                new_rank,
-                previous_rank: previous_rank.expect("checked by is_severity_transition"),
-            });
-        }
-    }
-    Ok(candidates)
+    let observed_max_id = rows.iter().map(|row| row.id).max().unwrap_or(since_id);
+    let candidates = rows
+        .into_iter()
+        .filter_map(line_candidate_from_row)
+        .collect();
+    Ok((candidates, observed_max_id))
 }
 
 pub struct TrainCandidate {
@@ -602,9 +737,23 @@ pub async fn upsert_skip_notification_state(
 /// double-submit").
 ///
 /// Returns `Ok(None)` if this template already has an occurrence for
-/// `today` (no-op, not an error) or if the template has zero legs (should
-/// be unreachable given Phase B's own validation, but defensively a no-op
-/// rather than a partially-minted journey).
+/// `today` (no-op, not an error), if the user explicitly DISCARDED today's
+/// occurrence (see the tombstone guard below), or if the template has zero
+/// legs (should be unreachable given Phase B's own validation, but
+/// defensively a no-op rather than a partially-minted journey).
+///
+/// The tombstone guard (`journey_template_skipped_dates`, migration
+/// `20260925090000`) closes a real, loud bug: the "already materialized"
+/// half of this guard is satisfied only while the minted `journeys` row
+/// still EXISTS, so a user deleting today's auto-minted occurrence (they
+/// aren't travelling today) had it re-minted by the very next sweep tick --
+/// within the hour -- complete with a fresh auto-commit and fresh pushes
+/// for a journey they had explicitly discarded, with no way to make it stop
+/// other than pausing the whole template. `api`'s own delete paths
+/// (`data::journeys::delete_journey`/`delete_leg`) now record a
+/// `(template_id, service_date)` tombstone as they delete, and an explicit
+/// re-materialize of the same date clears it again
+/// (`data::journey_templates::materialize_template`).
 ///
 /// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 1) --
 /// also exercised directly by this module's own `sweep_tests`.
@@ -643,6 +792,10 @@ pub async fn materialize_due_template_occurrence(
          WHERE NOT EXISTS ( \
              SELECT 1 FROM journeys j JOIN journey_legs jl ON jl.journey_id = j.id \
              WHERE j.source_template_id = $3 AND jl.service_date = $4 \
+         ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM journey_template_skipped_dates s \
+             WHERE s.template_id = $3 AND s.service_date = $4 \
          ) \
          RETURNING id",
     )
@@ -896,13 +1049,22 @@ pub async fn schedule_candidates_for_leg(
 /// necessarily, per this crate's crate-boundary constraint. Keep this in
 /// sync with that function's exact ON CONFLICT shape if it ever changes.
 ///
-/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
-/// also exercised directly by this module's own `sweep_tests`.
-pub async fn find_or_create_train(
-    pool: &PgPool,
+/// Prefer [`find_or_create_train_with_cif_schedule`] below for the
+/// auto-commit path: a BARE row created here has no
+/// `origin_crs`/`destination_crs`/`scheduled_departure` at all, which
+/// silently disables station-skip detection for the leg committed to it
+/// (see that function's own doc comment). This plain version is kept
+/// because the enriching one falls back to it whenever CIF has nothing to
+/// enrich WITH, and because it is the exact shape being duplicated from
+/// `crates/api`.
+pub async fn find_or_create_train<'e, E>(
+    executor: E,
     train_uid: &str,
     service_date: chrono::NaiveDate,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) \
          ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
@@ -910,6 +1072,151 @@ pub async fn find_or_create_train(
     )
     .bind(train_uid)
     .bind(service_date)
+    .fetch_one(executor)
+    .await?;
+    Ok(row.0)
+}
+
+/// The schedule shape CIF already publishes for a train this crate is about
+/// to auto-commit a leg to: its own true origin departure, and its own
+/// final destination. Both come straight out of
+/// `schedule_destination_departures` -- the SAME table the auto-commit
+/// candidate itself came from, so if a candidate existed at all, this data
+/// exists too.
+struct CifTrainSchedule {
+    true_origin_crs: String,
+    scheduled: chrono::NaiveTime,
+    /// The train's own TERMINUS, not the leg's destination -- `None` only if
+    /// no row for this train carries a resolvable arrival at all.
+    destination_crs: Option<String>,
+}
+
+/// Reads `(true origin, its booked departure, terminus)` for one
+/// `(train_uid, service_date)` out of CIF.
+///
+/// `origin_crs = true_origin_crs` is the same predicate
+/// `crates/api::data::reconciliation::true_origin_departure` uses to pick a
+/// schedule's OWN origin row out of the several rows this flattened table
+/// holds per train (one per departure-bearing calling point x destination
+/// pair). The terminus is the row with the latest resolvable arrival --
+/// `(destination_arrival_day_offset, destination_arrival)` DESC, day-offset
+/// leading so an overnight schedule's post-midnight terminus does not sort
+/// as the earliest stop (the same `(day_offset, time)` ordering convention
+/// `schedule_candidates_for_leg` above and `schedule-reference`'s own
+/// publisher already use).
+async fn cif_train_schedule(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: chrono::NaiveDate,
+) -> anyhow::Result<Option<CifTrainSchedule>> {
+    let origin: Option<(String, chrono::NaiveTime)> = sqlx::query_as(
+        "SELECT origin_crs, scheduled FROM schedule_destination_departures \
+         WHERE train_uid = $1 AND service_date = $2 AND origin_crs = true_origin_crs \
+         ORDER BY day_offset, scheduled LIMIT 1",
+    )
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    let Some((true_origin_crs, scheduled)) = origin else {
+        return Ok(None);
+    };
+
+    let destination_crs: Option<String> = sqlx::query_scalar(
+        "SELECT destination_crs FROM schedule_destination_departures \
+         WHERE train_uid = $1 AND service_date = $2 AND destination_arrival IS NOT NULL \
+         ORDER BY destination_arrival_day_offset DESC, destination_arrival DESC LIMIT 1",
+    )
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(Some(CifTrainSchedule {
+        true_origin_crs,
+        scheduled,
+        destination_crs,
+    }))
+}
+
+/// [`find_or_create_train`], but also mirrors CIF's own already-published
+/// schedule for this train onto the shared `trains` row -- the auto-commit
+/// path's counterpart to the enrichment the MANUAL "pick a train" route
+/// runs (`api::routes::journeys::post_leg_train` ->
+/// `routes::train::enrich_shared_train`).
+///
+/// The bug this closes: the sweep's auto-commit called the BARE
+/// `find_or_create_train`, so an auto-committed leg's shared row kept
+/// `origin_crs`/`destination_crs`/`scheduled_departure` NULL. That is not
+/// cosmetic -- `create_subscription_for_train` below copies exactly those
+/// three columns into the new subscription's `pin_*` columns, and
+/// `skip_check::leg_is_skipped` matches a live Darwin departure board by
+/// `pin_destination_crs`, so with them NULL station-skip detection for every
+/// auto-committed leg could never fire at all. `api`'s own periodic
+/// `reconciliation::retry_schedule_enrichment_for_nr_primary_trains` sweep
+/// does eventually enrich such a row, but only once the train's origin
+/// departure is already `schedule_enrichment_grace_minutes` in the PAST --
+/// far too late for skip detection on a leg committed ~2h before departure.
+///
+/// Deliberately CIF-only, and deliberately not a duplicate of
+/// `enrich_shared_train`:
+///
+/// * The identity is already KNOWN here -- `train_uid` came out of
+///   `schedule_candidates_for_leg`, i.e. out of CIF itself. The api-side
+///   `schedule_matching::find_schedule_match` heuristic exists to DISCOVER
+///   an unknown uid from a (CRS, time) pin against
+///   `schedule_line_population`; it has nothing to add once the uid is a
+///   given, and duplicating it here would also drag the static
+///   `lines/*.toml` catalogue into this crate.
+/// * `trains.calling_points` is deliberately left alone rather than
+///   rebuilt from `schedule_calling_points_full`. The journey timeline
+///   already falls back to that table directly when the column is NULL
+///   (`api::data::journey::build_journey_stops`, the 2026-09-23 fallback
+///   fix), and every schedule column on this row is written with
+///   `COALESCE(existing, new)` -- so writing a lossier blob here (that
+///   table carries no `is_half_minute_*` flags) would PERMANENTLY block the
+///   richer one a real api-side schedule match writes later.
+/// * TRUST backlog replay (`enrich_shared_train`'s other half) is likewise
+///   left to the api: a leg is auto-committed BEFORE its train has run, so
+///   there is no retained history to replay yet, and once it does run
+///   `trust-consumer` feeds this shared `trains_id` live anyway.
+///
+/// Every column is `COALESCE`d against the existing value, exactly like
+/// `api::data::trains::find_or_create_train_with_schedule_match` -- so this
+/// never clobbers richer data an api-side match already wrote, and is safe
+/// to call repeatedly. Falls back to a bare `find_or_create_train` when CIF
+/// has nothing published for this train at all (best-effort, never fatal:
+/// the auto-commit itself must still happen).
+pub async fn find_or_create_train_with_cif_schedule(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: chrono::NaiveDate,
+) -> anyhow::Result<i64> {
+    let Some(schedule) = cif_train_schedule(pool, train_uid, service_date).await? else {
+        return find_or_create_train(pool, train_uid, service_date).await;
+    };
+    // A nonexistent local time (the spring-forward gap) means there is no
+    // instant to store; the rest of the enrichment is still worth writing.
+    let scheduled_departure = crate::london_to_utc(service_date.and_time(schedule.scheduled));
+
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO trains \
+            (train_uid, service_date, origin_crs, scheduled_departure, destination_crs, \
+             schedule_matched_at) \
+         VALUES ($1, $2, $3, $4, $5, NOW()) \
+         ON CONFLICT (train_uid, service_date) DO UPDATE SET \
+            train_uid           = EXCLUDED.train_uid, \
+            origin_crs          = COALESCE(trains.origin_crs, EXCLUDED.origin_crs), \
+            scheduled_departure = COALESCE(trains.scheduled_departure, EXCLUDED.scheduled_departure), \
+            destination_crs     = COALESCE(trains.destination_crs, EXCLUDED.destination_crs), \
+            schedule_matched_at = COALESCE(trains.schedule_matched_at, EXCLUDED.schedule_matched_at) \
+         RETURNING id",
+    )
+    .bind(train_uid)
+    .bind(service_date)
+    .bind(&schedule.true_origin_crs)
+    .bind(scheduled_departure)
+    .bind(schedule.destination_crs.as_deref())
     .fetch_one(pool)
     .await?;
     Ok(row.0)
@@ -919,13 +1226,17 @@ pub async fn find_or_create_train(
 /// -- same CTE idempotency idiom, same accepted "ordinary repeat case
 /// only" concurrency caveat as the original's own doc comment states.
 ///
-/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
-/// also exercised directly by this module's own `sweep_tests`.
-pub async fn create_subscription_for_train(
-    pool: &PgPool,
+/// Generic over the executor (not `&PgPool`) so
+/// [`auto_commit_leg_to_train`] can run it inside its own transaction
+/// alongside the commit it must be atomic with.
+pub async fn create_subscription_for_train<'e, E>(
+    executor: E,
     trains_id: i64,
     user_id: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     let row: (i64,) = sqlx::query_as(
         "WITH existing AS ( \
              SELECT id FROM train_subscriptions \
@@ -941,7 +1252,7 @@ pub async fn create_subscription_for_train(
     )
     .bind(user_id)
     .bind(trains_id)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
     Ok(row.0)
 }
@@ -952,22 +1263,93 @@ pub async fn create_subscription_for_train(
 /// match_mode = 'unmatched'` so a leg already committed by a concurrent
 /// tick (or since raced-and-lost) is a silent no-op, not a double write.
 ///
-/// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
-/// also exercised directly by this module's own `sweep_tests`.
-pub async fn commit_leg_to_train(
-    pool: &PgPool,
+/// Generic over the executor for the same reason
+/// [`create_subscription_for_train`] is -- [`auto_commit_leg_to_train`]
+/// runs both inside ONE transaction. Still called directly (with a plain
+/// `&PgPool`) by this module's own `sweep_tests`.
+pub async fn commit_leg_to_train<'e, E>(
+    executor: E,
     journey_leg_id: i64,
     train_subscription_id: i64,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<bool>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     let result = sqlx::query(
         "UPDATE journey_legs SET train_subscription_id = $1, match_mode = 'auto' \
          WHERE id = $2 AND match_mode = 'unmatched'",
     )
     .bind(train_subscription_id)
     .bind(journey_leg_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// "Subscribe this user to this train AND commit this leg to that
+/// subscription" as ONE atomic step -- `Ok(Some(train_subscription_id))` if
+/// the leg really was committed, `Ok(None)` if it had already been
+/// committed by someone else and nothing was written at all.
+///
+/// The bug this closes: the sweep used to call
+/// [`create_subscription_for_train`] and then [`commit_leg_to_train`] as two
+/// independent statements. On the no-op path -- the leg was committed
+/// between those two calls by a concurrent actor, in practice the user
+/// themselves picking a train by hand via `POST
+/// /Journeys/{j}/legs/{l}/train` -- the subscription STAYED, orphaned: no
+/// journey leg referenced it, nothing in the UI's journey view explained it,
+/// and `candidates_for_trains_id`'s per-subscriber fan-out kept generating
+/// delay/cancellation pushes off it for a train the user never chose to
+/// track. The same applied to any error raised after the subscription
+/// insert.
+///
+/// Rolling back is specifically safe for BOTH shapes
+/// `create_subscription_for_train`'s CTE can take: if a subscription for
+/// `(user_id, trains_id)` already existed, that CTE's `existing` branch only
+/// SELECTs it (no write to undo), so the rollback cannot destroy a
+/// subscription this sweep did not create -- it only ever discards its own
+/// brand-new INSERT.
+pub async fn auto_commit_leg_to_train(
+    pool: &PgPool,
+    journey_leg_id: i64,
+    trains_id: i64,
+    user_id: &str,
+) -> anyhow::Result<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    let train_subscription_id = create_subscription_for_train(&mut *tx, trains_id, user_id).await?;
+    let committed = commit_leg_to_train(&mut *tx, journey_leg_id, train_subscription_id).await?;
+    if !committed {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    tx.commit().await?;
+    Ok(Some(train_subscription_id))
+}
+
+/// Whether CIF has published ANY schedule row at all for `service_date` --
+/// this crate's own copy of `api::data::queries`'s
+/// `schedule_destination_departures_published_for` (necessarily duplicated,
+/// per this crate's crate-boundary constraint; that one is private to its
+/// own module anyway). One indexed lookup: `service_date` leads
+/// `schedule_destination_departures`' primary key.
+///
+/// Used by the commit-check's zero-candidate branch to tell "we genuinely
+/// have today's timetable and nothing in it matches this leg" apart from "we
+/// do not have today's timetable yet" -- the exact same 404-versus-`200 []`
+/// distinction the api draws on the read side, applied here to a
+/// notification that fires at most once per leg and can therefore not be
+/// taken back.
+pub async fn schedule_published_for(
+    pool: &PgPool,
+    service_date: chrono::NaiveDate,
+) -> anyhow::Result<bool> {
+    let probe: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM schedule_destination_departures WHERE service_date = $1 LIMIT 1",
+    )
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(probe.is_some())
 }
 
 /// Called from `main.rs`'s `run_template_sweep_cycle` (Task 5, stage 2) --
@@ -1108,8 +1490,8 @@ mod tests {
             .expect("seed second (transitioned) history row");
 
         let cursor_name = "line_status_history";
-        let start = read_cursor(&pool, cursor_name).await.expect("read cursor");
-        let first_pass = poll_line_candidates(&pool, start)
+        let cursor = read_cursor(&pool, cursor_name).await.expect("read cursor");
+        let (first_pass, observed_max_id) = poll_line_candidates(&pool, cursor.last_processed_id)
             .await
             .expect("first poll");
         let candidate = first_pass
@@ -1119,12 +1501,23 @@ mod tests {
         assert_eq!(candidate.previous_rank, 0);
         assert!(candidate.new_rank > 0);
 
-        let max_id = first_pass.iter().map(|c| c.id).max().unwrap_or(start);
-        advance_cursor(&pool, cursor_name, max_id)
-            .await
-            .expect("advance");
+        // `Duration::zero()` grace: this test is about the POLL's own
+        // since-id behavior, so the watermark is promoted immediately here.
+        // The grace window itself is covered by
+        // `advance_cursor_with_grace_only_promotes_a_proposal_once_it_has_aged`
+        // and its sibling below.
+        let advanced = advance_cursor_with_grace(
+            &pool,
+            cursor_name,
+            &cursor,
+            observed_max_id,
+            Utc::now(),
+            chrono::Duration::zero(),
+        )
+        .await
+        .expect("advance");
 
-        let second_pass = poll_line_candidates(&pool, max_id)
+        let (second_pass, _) = poll_line_candidates(&pool, advanced.max(observed_max_id))
             .await
             .expect("second poll");
         assert!(
