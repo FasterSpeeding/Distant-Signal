@@ -67,6 +67,7 @@ describe('TicketPanel', () => {
         destinationCrs: 'EDB',
         originName: null,
         destinationName: null,
+        currentDepartureDate: null,
         source: 'manual',
         createdAt: '2026-08-29T12:00:00Z',
         customName: null,
@@ -98,6 +99,7 @@ describe('TicketPanel', () => {
         destinationCrs: null,
         originName: null,
         destinationName: null,
+        currentDepartureDate: null,
         source: 'manual',
         createdAt: '2026-08-29T12:00:00Z',
         customName: null,
@@ -119,8 +121,8 @@ describe('TicketPanel', () => {
   it('multiple tickets: fetches a delay-repay estimate per ticket, not just the first', async () => {
     vi.mocked(api.getSession).mockResolvedValue(session(true));
     vi.mocked(api.getTicketsForTrackedTrain).mockResolvedValue([
-      { id: 1, trackedTrainId: 1, operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, originName: null, destinationName: null, source: 'manual', createdAt: '2026-08-29T12:00:00Z', customName: null },
-      { id: 2, trackedTrainId: 1, operator: 'CrossCountry', ticketType: null, originCrs: null, destinationCrs: null, originName: null, destinationName: null, source: 'manual', createdAt: '2026-08-29T13:00:00Z', customName: null },
+      { id: 1, trackedTrainId: 1, operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, originName: null, destinationName: null, currentDepartureDate: null, source: 'manual', createdAt: '2026-08-29T12:00:00Z', customName: null },
+      { id: 2, trackedTrainId: 1, operator: 'CrossCountry', ticketType: null, originCrs: null, destinationCrs: null, originName: null, destinationName: null, currentDepartureDate: null, source: 'manual', createdAt: '2026-08-29T13:00:00Z', customName: null },
     ]);
     await TicketPanel({ trackingId: 1 });
     expect(api.getDelayRepayEstimate).toHaveBeenCalledWith(1, 1);

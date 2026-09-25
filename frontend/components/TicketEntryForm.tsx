@@ -94,6 +94,14 @@ export function TicketEntryForm({
   const [ticketType, setTicketType] = useState('');
   const [originCrs, setOriginCrs] = useState('');
   const [destinationCrs, setDestinationCrs] = useState('');
+  // Carried through unedited from an upload preview (if any produced one)
+  // straight to the save request -- there's no field on this form for a
+  // human to review/edit it against, same "invisibly carried, not a form
+  // field" treatment `source` already gets just below. See
+  // `PartialTicket.currentDepartureDate`'s own comment for what this is: a
+  // best-effort hint for a later "create a journey leg from this ticket"
+  // action, never something this form itself acts on.
+  const [currentDepartureDate, setCurrentDepartureDate] = useState<string | undefined>(undefined);
   const [source, setSource] = useState<TicketSource>('manual');
   const [autoFilled, setAutoFilled] = useState<Set<string>>(new Set());
 
@@ -139,6 +147,7 @@ export function TicketEntryForm({
     setTicketType('');
     setOriginCrs('');
     setDestinationCrs('');
+    setCurrentDepartureDate(undefined);
     setSource('manual');
     setAutoFilled(new Set());
     setTab('manual');
@@ -172,6 +181,7 @@ export function TicketEntryForm({
       setDestinationCrs(preview.destinationCrs);
       filled.add('destinationCrs');
     }
+    setCurrentDepartureDate(preview.currentDepartureDate);
     setSource(preview.source);
     setAutoFilled(filled);
     setTab('manual');
@@ -240,6 +250,7 @@ export function TicketEntryForm({
         ...(ticketType.trim() ? { ticket_type: ticketType.trim() } : {}),
         ...(originCrs.trim() ? { origin_crs: originCrs.trim().toUpperCase() } : {}),
         ...(destinationCrs.trim() ? { destination_crs: destinationCrs.trim().toUpperCase() } : {}),
+        ...(currentDepartureDate ? { current_departure_date: currentDepartureDate } : {}),
       };
       const response = await fetch(`/api/${ticketsBasePath}`, {
         method: 'POST',

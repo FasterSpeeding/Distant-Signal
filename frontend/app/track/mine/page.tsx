@@ -8,6 +8,7 @@ import { TicketSummary } from '@/components/TicketSummary';
 import { ReliabilityDigest } from '@/components/ReliabilityDigest';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
+import { CreateJourneyLegFromTicketButton } from '@/components/CreateJourneyLegFromTicketButton';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
 import { StatusRow } from '@/components/StatusRow';
@@ -421,6 +422,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
                     customName={ticket.customName}
                     defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
                   />
+                  <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
                   <DeleteTicketButton ticketId={ticket.id} />
                 </Group>
               </Stack>
@@ -558,6 +560,7 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
           <TextLink href={`/track?${trackParams.toString()}`} underline="always">
             Track a new train for this ticket
           </TextLink>
+          <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
           <RenameTicketButton
             ticketId={ticket.id}
             customName={ticket.customName}

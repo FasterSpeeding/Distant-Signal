@@ -4,6 +4,7 @@ import { LoginLink } from './LoginLink';
 import { TicketEntryForm } from './TicketEntryForm';
 import { DelayRepayEstimate } from './DelayRepayEstimate';
 import { TicketSummary } from './TicketSummary';
+import { CreateJourneyLegFromTicketButton } from './CreateJourneyLegFromTicketButton';
 import { DeleteTicketButton } from './DeleteTicketButton';
 import { RenameTicketButton } from './RenameTicketButton';
 
@@ -101,6 +102,7 @@ export async function TicketPanel({ trackingId }: { trackingId: number }) {
               customName={ticket.customName}
               defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
             />
+            <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
             <DeleteTicketButton ticketId={ticket.id} />
           </Group>
         </Stack>

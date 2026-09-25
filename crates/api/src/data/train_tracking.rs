@@ -409,6 +409,7 @@ mod ticket_entry_tests {
             ticket_type: Some("single".to_string()),
             origin_crs: origin_crs.map(str::to_string),
             destination_crs: Some("EDB".to_string()),
+            current_departure_date: None,
             source: source.to_string(),
         }
     }
@@ -425,6 +426,7 @@ mod ticket_entry_tests {
             ticket_type: None,
             origin_crs: None,
             destination_crs: None,
+            current_departure_date: None,
             source: "manual".to_string(),
         };
         assert!(validate_ticket_entry(&entry).is_ok());
@@ -466,6 +468,7 @@ mod ticket_entry_tests {
                 ticket_type: None,
                 origin_crs: Some("KGX".to_string()),
                 destination_crs: Some("Edinburgh Waverley".to_string()),
+                current_departure_date: None,
                 source: "manual".to_string(),
             })
             .unwrap_err(),
@@ -1746,8 +1749,9 @@ pub async fn create_ticket(
 ) -> anyhow::Result<i64> {
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO tracked_train_tickets \
-            (tracked_train_id, user_id, operator, ticket_type, origin_crs, destination_crs, source) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+            (tracked_train_id, user_id, operator, ticket_type, origin_crs, destination_crs, \
+             current_departure_date, source) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
          RETURNING id",
     )
     .bind(tracked_train_id)
@@ -1756,6 +1760,7 @@ pub async fn create_ticket(
     .bind(&entry.ticket_type)
     .bind(&entry.origin_crs)
     .bind(&entry.destination_crs)
+    .bind(entry.current_departure_date)
     .bind(&entry.source)
     .fetch_one(pool)
     .await?;
@@ -1820,6 +1825,14 @@ pub struct TrackedTrainTicket {
     /// `TrackedTrainListItem` already covers).
     pub origin_name: Option<String>,
     pub destination_name: Option<String>,
+    /// See `ticket_extraction::PartialTicket::current_departure_date`'s own
+    /// doc comment -- this is that same best-effort HINT, persisted
+    /// verbatim by `create_ticket`. `GET /Train/tickets/{ticketId}/journey-leg-proposal`
+    /// (`data::journey_leg_proposal::propose_window_leg`) is the one reader
+    /// that does anything with it; every other existing reader of this
+    /// struct (`TicketPanel.tsx`'s rendering, the Delay Repay route) simply
+    /// ignores it, same as any other field it doesn't need.
+    pub current_departure_date: Option<DateTime<Utc>>,
     pub source: String,
     pub created_at: DateTime<Utc>,
     pub custom_name: Option<String>,
@@ -1831,8 +1844,8 @@ pub struct TrackedTrainTicket {
 // must qualify its columns -- see both callers.
 const TICKET_SELECT: &str = "\
     SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
-           so.name AS origin_name, sd.name AS destination_name, t.source, t.created_at, \
-           t.custom_name \
+           so.name AS origin_name, sd.name AS destination_name, t.current_departure_date, \
+           t.source, t.created_at, t.custom_name \
     FROM tracked_train_tickets t \
     LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
     LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs)";
@@ -2335,6 +2348,7 @@ mod db_tests {
             ticket_type: Some("single".to_string()),
             origin_crs: Some("KGX".to_string()),
             destination_crs: Some("EDB".to_string()),
+            current_departure_date: None,
             source: "manual".to_string(),
         }
     }

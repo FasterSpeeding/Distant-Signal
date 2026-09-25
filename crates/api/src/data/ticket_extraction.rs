@@ -6,6 +6,7 @@
 //! Constraints on review-before-save) and NEVER decodes a barcode or
 //! touches ITSO data, in either format (see the design doc's Non-goals).
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 /// What a `.pkpass`/PDF parse could recover -- the same fillable fields as
@@ -30,6 +31,29 @@ pub struct PartialTicket {
     /// Constraints.
     pub origin_crs: Option<String>,
     pub destination_crs: Option<String>,
+    /// The ticket's own claimed departure INSTANT, when the source format
+    /// carries one -- currently only ever populated from a `.pkpass`'s
+    /// `semantics.currentDepartureDate` (Apple's standardised key for
+    /// exactly this, an ISO 8601 date-time string), and only `Some` when
+    /// that key parses as a real `DateTime`. `None` for every PDF-sourced
+    /// ticket (no PDF date/time extraction exists in this module -- neither
+    /// tier's ticket-type/route regexes attempt one, and adding one would
+    /// be a new, separate false-positive surface against unstructured
+    /// text); also `None` for a `.pkpass` whose `semantics` dictionary is
+    /// absent, or present but missing this one key, or a `primaryFields`
+    /// heuristic match (that positional fallback is names only, per
+    /// `primary_fields_origin_destination`'s own doc comment -- it has
+    /// nothing dateable to read either).
+    ///
+    /// This is deliberately a best-effort HINT for a journey-leg search
+    /// window (`data::journey_leg_proposal::propose_window_leg`), never a
+    /// hard pin: a ticket's booked departure can genuinely differ from the
+    /// train the traveller actually catches (an earlier/later service on
+    /// the same ticket, a rebooked journey, ...), so nothing in this
+    /// codebase ever treats this field as an exact scheduled-departure
+    /// match target the way `TrackPinRequest::scheduled_departure` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_departure_date: Option<DateTime<Utc>>,
     pub source: &'static str,
 }
 
@@ -80,6 +104,8 @@ pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket
         .get("auxiliaryFields")
         .and_then(|fields| keyed_field_value(fields, "ticketType"));
 
+    let current_departure_date = semantics.and_then(semantics_current_departure_date);
+
     // Diagnostic only -- never surfaced in PartialTicket, the frontend, or
     // any persisted row. debug-level specifically so it costs nothing in
     // default-configured production logging and cannot become a de facto
@@ -93,6 +119,7 @@ pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket
         ticket_type,
         origin_crs: origin,
         destination_crs: destination,
+        current_departure_date,
         source,
     })
 }
@@ -105,6 +132,24 @@ fn semantics_origin_destination(semantics: &serde_json::Value) -> Option<(String
         .get("destinationStationName")
         .and_then(|v| v.as_str())?;
     Some((origin.to_string(), destination.to_string()))
+}
+
+/// Reads `semantics.currentDepartureDate` -- Apple's standardised key,
+/// confirmed present in Apple's own semantic-tags schema (see this module's
+/// doc comment's cross-reference to
+/// docs/superpowers/specs/2026-08-29-journey-ticket-tracking-design.md's
+/// research section) -- and parses it as an RFC 3339/ISO 8601 date-time.
+/// `None` if the key is absent, not a string, or doesn't parse as a real
+/// date-time -- same "leave it blank, don't guess" contract as every other
+/// optional read in this module; a malformed value is exactly as useless as
+/// a missing one, and is never worth surfacing as a parse error for a
+/// preview endpoint the user reviews before anything is saved anyway.
+fn semantics_current_departure_date(semantics: &serde_json::Value) -> Option<DateTime<Utc>> {
+    semantics
+        .get("currentDepartureDate")
+        .and_then(|v| v.as_str())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
 /// Apple's PassKit docs specify a boarding-pass-style pass's
@@ -319,6 +364,74 @@ mod pass_json_tests {
         let pass = json!({"boardingPass": {"transitType": "PKTransitTypeTrain"}});
         assert_eq!(parse_pass_json(&pass).unwrap().ticket_type, None);
     }
+
+    #[test]
+    fn current_departure_date_is_read_from_semantics_when_present() {
+        let pass = json!({
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "semantics": {
+                    "departureStationName": "Kings Cross",
+                    "destinationStationName": "Edinburgh",
+                    "currentDepartureDate": "2026-09-22T18:32:00Z"
+                }
+            }
+        });
+        let ticket = parse_pass_json(&pass).unwrap();
+        assert_eq!(
+            ticket.current_departure_date,
+            Some("2026-09-22T18:32:00Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn current_departure_date_is_none_when_semantics_omits_it() {
+        let pass = json!({
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "semantics": {
+                    "departureStationName": "Kings Cross",
+                    "destinationStationName": "Edinburgh"
+                }
+            }
+        });
+        assert_eq!(parse_pass_json(&pass).unwrap().current_departure_date, None);
+    }
+
+    #[test]
+    fn current_departure_date_is_none_when_semantics_is_absent_entirely() {
+        // Falls back to the `primaryFields` heuristic for origin/destination
+        // (see `primary_fields_origin_destination`'s own doc comment) --
+        // that positional match is names only, so there is nothing dateable
+        // to read either.
+        let pass = json!({
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "primaryFields": [
+                    {"key":"origin","label":"FROM","value":"London Waterloo"},
+                    {"key":"destination","label":"TO","value":"Woking"}
+                ]
+            }
+        });
+        let ticket = parse_pass_json(&pass).unwrap();
+        assert_eq!(ticket.source, "pkpass-heuristic");
+        assert_eq!(ticket.current_departure_date, None);
+    }
+
+    #[test]
+    fn current_departure_date_is_none_when_the_value_does_not_parse_as_a_real_date_time() {
+        let pass = json!({
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "semantics": {
+                    "departureStationName": "Kings Cross",
+                    "destinationStationName": "Edinburgh",
+                    "currentDepartureDate": "not-a-real-date"
+                }
+            }
+        });
+        assert_eq!(parse_pass_json(&pass).unwrap().current_departure_date, None);
+    }
 }
 
 #[cfg(test)]
@@ -448,6 +561,9 @@ pub fn parse_pdf_text(text: &str) -> PartialTicket {
         ticket_type,
         origin_crs: origin,
         destination_crs: destination,
+        // No PDF date/time extraction exists in this module -- see
+        // `PartialTicket::current_departure_date`'s own doc comment.
+        current_departure_date: None,
         source: "pdf-heuristic",
     }
 }
@@ -536,6 +652,11 @@ mod parse_pdf_text_tests {
         assert_eq!(ticket.destination_crs, Some("Woking".to_string()));
         assert_eq!(ticket.ticket_type, Some("Off-Peak Day Single".to_string()));
         assert_eq!(ticket.source, "pdf-heuristic");
+        // No PDF date/time extraction exists in this module -- see
+        // `PartialTicket::current_departure_date`'s own doc comment. The
+        // "18:32" in this very fixture's text is deliberately NOT read as a
+        // departure time.
+        assert_eq!(ticket.current_departure_date, None);
     }
 
     #[test]
