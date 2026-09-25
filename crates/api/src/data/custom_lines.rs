@@ -95,6 +95,34 @@ pub async fn get_custom_line(
     )))
 }
 
+/// How many custom lines one user may own.
+///
+/// This is not a storage limit -- a `custom_lines` row is tiny. It is a cap
+/// on recurring COMPUTE: `aggregator`'s `run_cycle` reloads every custom line
+/// from this table on every cycle (60s by default) and merges it into the
+/// global catalogue, so each one is re-evaluated against every active
+/// incident by the matcher, gets its segments rebuilt in the
+/// `SegmentRegistry`, and takes its own `line_status`/daily-stats writes --
+/// every cycle, forever, whether or not anyone ever looks at it. Creation was
+/// previously bounded only by "a non-empty name and at least 2 stations", so
+/// one user scripting a few thousand creates would degrade the aggregation
+/// cycle for every user of the system.
+///
+/// 50 is far above any plausible real use (the feature exists so someone can
+/// describe their own commute -- a handful of routes), and far below the
+/// thousands it takes to matter for cycle time.
+pub const MAX_CUSTOM_LINES_PER_USER: i64 = 50;
+
+/// How many custom lines `user_id` currently owns, for
+/// [`MAX_CUSTOM_LINES_PER_USER`] enforcement.
+pub async fn count_custom_lines_for_user(pool: &PgPool, user_id: &str) -> Result<i64> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom_lines WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
 /// Inserts a new custom line, deriving its id from `new.name` via
 /// [`slugify`]. On a slug collision (another custom line already has that
 /// id — e.g. two lines both named "My Commute"), retries with `-2`, `-3`,
