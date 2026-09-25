@@ -466,6 +466,34 @@ async fn get_schedule_line_population(
     Ok(Json(population))
 }
 
+/// Query parameter shared by `/schedule-destination-departures` and
+/// `/schedule-calling-points-full` -- both are DELETE(-maybe)+INSERT
+/// whole-day-replace publishes that may one day be split across multiple
+/// calls per service date (`rows.chunks(50_000)`, see
+/// `crates/schedule-reference/src/main.rs`'s own doc comments on
+/// `publish_schedule_destination_departures`/`publish_schedule_calling_points_full`).
+/// `first_chunk` tells the matching `queries::upsert_*_chunk` function
+/// whether THIS call should clear the touched dates before inserting
+/// (`true`, and the caller's first/only call for those dates in this
+/// publish cycle) or only insert (`false`, a later call for dates an
+/// earlier call in the same cycle already cleared).
+///
+/// Defaults to `true` when omitted -- the same DELETE-then-INSERT-every-call
+/// behavior this route had before this parameter existed -- so an older or
+/// unaware caller (or a manual request) gets the same whole-day-replace
+/// semantics it always had, rather than silently becoming insert-only and
+/// leaking stale rows forward. `schedule-reference` passes it explicitly on
+/// every call.
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+struct ScheduleChunkParams {
+    #[serde(default = "default_true")]
+    first_chunk: bool,
+}
+
 /// `crates/schedule-reference`'s per-cycle batch of CIF-derived per-station
 /// departures -- see `queries::upsert_schedule_network_departures`. POST
 /// only: unlike `/schedule-line-population`, no service reads this table
@@ -495,17 +523,29 @@ async fn post_schedule_network_departures(
 /// `routes::trains::get_trains_search`.
 ///
 /// The body is FLAT -- one element per departure, ~377,000 of them, ~30MB
-/// -- not one element per destination with an array inside it. The whole
-/// batch replaces its service date in one transaction inside
-/// `upsert_schedule_destination_departures`; this handler adds no logic of
-/// its own beyond that call, deliberately.
+/// -- not one element per destination with an array inside it. Today
+/// `schedule-reference` always sends exactly one call per service date (see
+/// that crate's own `publish_schedule_destination_departures` doc comment),
+/// so `first_chunk` is always `true` in practice; the query parameter exists
+/// so a future multi-chunk publish (`rows.chunks(50_000)`, documented there)
+/// can send `?first_chunk=false` for its second-and-later calls without a
+/// later chunk's implicit DELETE wiping out an earlier chunk's just-inserted
+/// rows for the same date -- see
+/// `queries::upsert_schedule_destination_departures_chunk`'s own doc
+/// comment. This handler adds no logic of its own beyond that call,
+/// deliberately.
 async fn post_schedule_destination_departures(
     State(app): State<App>,
+    axum::extract::Query(params): axum::extract::Query<ScheduleChunkParams>,
     Json(rows): Json<Vec<ScheduleDestinationDeparturesRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_schedule_destination_departures(&app.database, &rows)
-        .await
-        .map_err(internal_error)?;
+    let upserted = queries::upsert_schedule_destination_departures_chunk(
+        &app.database,
+        &rows,
+        params.first_chunk,
+    )
+    .await
+    .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
@@ -513,15 +553,24 @@ async fn post_schedule_destination_departures(
 /// calling-point publish -- POST-only, no GET pair, same shape as
 /// `/schedule-destination-departures` and `/fixed-links` directly above,
 /// reusing the same `schedule-reference` writer credential (see
-/// `app.rs`'s route-group table). See `queries::upsert_schedule_calling_points_full`
-/// for the DELETE+INSERT-array transaction shape.
+/// `app.rs`'s route-group table). See
+/// `queries::upsert_schedule_calling_points_full_chunk` for the
+/// DELETE(-if-first-chunk)+INSERT-array transaction shape, and
+/// `post_schedule_destination_departures` directly above for why this
+/// route, too, takes a `?first_chunk=` query parameter rather than always
+/// deleting.
 async fn post_schedule_calling_points_full(
     State(app): State<App>,
+    axum::extract::Query(params): axum::extract::Query<ScheduleChunkParams>,
     Json(rows): Json<Vec<ScheduleCallingPointsFullRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_schedule_calling_points_full(&app.database, &rows)
-        .await
-        .map_err(internal_error)?;
+    let upserted = queries::upsert_schedule_calling_points_full_chunk(
+        &app.database,
+        &rows,
+        params.first_chunk,
+    )
+    .await
+    .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 

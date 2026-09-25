@@ -942,9 +942,18 @@ fn schedule_destination_departures_rows(
 ///    `DefaultBodyLimit::max(100 * 1024 * 1024)`
 ///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom. If a future
 ///    measurement pushes it past ~60MB, chunk it with
-///    `for chunk in rows.chunks(50_000)` and teach the ingest handler
-///    "the first chunk clears the day" -- addendum §3's documented
-///    fallback, and Task 1 Step 3 of this plan.
+///    `for chunk in rows.chunks(50_000)`, calling
+///    `common::ingest::post_batch` once per chunk with
+///    `?first_chunk=true` on the URL for the first chunk and
+///    `?first_chunk=false` for every chunk after it (see the single call
+///    below, which always sends `?first_chunk=true` today since this
+///    function still sends exactly one call per date) -- addendum §3's
+///    documented fallback, and Task 1 Step 3 of this plan. The ingest side
+///    of "the first chunk clears the day" already exists
+///    (`queries::upsert_schedule_destination_departures_chunk`,
+///    `crates/api/src/routes/ingest.rs::post_schedule_destination_departures`'s
+///    `?first_chunk=` query parameter) -- turning this fallback on is then
+///    just this loop change, no further API-side work.
 async fn publish_schedule_destination_departures(
     client: &Client,
     config: &Config,
@@ -970,9 +979,18 @@ async fn publish_schedule_destination_departures(
         schedule_query::departures_by_destination_crs(index, today, now, &tiploc_to_crs);
     let rows = schedule_destination_departures_rows(by_destination, today);
 
+    // This function sends exactly one call per date, so it is always that
+    // date's first (and only) chunk -- `first_chunk=true` tells the ingest
+    // handler to clear the date before inserting, same behavior this route
+    // has always had. See this function's own doc comment, point 2, for the
+    // documented multi-chunk fallback this parameter exists for.
+    let url = format!(
+        "{}?first_chunk=true",
+        config.schedule_destination_departures_url
+    );
     if let Err(err) = common::ingest::post_batch(
         client,
-        &config.schedule_destination_departures_url,
+        &url,
         internal_oauth,
         &rows,
         "schedule-derived destination departures rows",
@@ -1001,9 +1019,12 @@ async fn publish_schedule_destination_departures(
 /// delivery pushes this past a comfortable fraction of
 /// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`),
 /// apply the same `for chunk in rows.chunks(50_000)` fallback
-/// `schedule_destination_departures`'s own doc comment already documents,
-/// teaching `post_schedule_calling_points_full` "the first chunk clears
-/// the date" the same way that route's own doc comment already teaches it.
+/// `publish_schedule_destination_departures`'s own doc comment already
+/// documents, including its `?first_chunk=` query parameter on each chunk's
+/// URL -- the ingest side already supports it
+/// (`queries::upsert_schedule_calling_points_full_chunk`,
+/// `post_schedule_calling_points_full`'s own `?first_chunk=` parameter), so
+/// turning this fallback on is just this loop change.
 async fn publish_schedule_calling_points_full(
     client: &Client,
     config: &Config,
@@ -1038,9 +1059,16 @@ async fn publish_schedule_calling_points_full(
         }
     }
 
+    // Same "always this date's first and only chunk today" posture as
+    // `publish_schedule_destination_departures` above -- see that
+    // function's own doc comment.
+    let url = format!(
+        "{}?first_chunk=true",
+        config.schedule_calling_points_full_url
+    );
     if let Err(err) = common::ingest::post_batch(
         client,
-        &config.schedule_calling_points_full_url,
+        &url,
         internal_oauth,
         &rows,
         "schedule-derived full calling-point rows",
