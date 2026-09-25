@@ -415,9 +415,16 @@ api:
     # install`/`helm template` run ever sets it for you.
     digest: ""
     pullPolicy: IfNotPresent
-  # -- Replicas. >1 is safe: crates/api/src/main.rs runs sqlx::migrate!() in
-  # process at startup, and sqlx's Migrator takes a Postgres advisory lock,
-  # so concurrent startups serialise their migrations rather than racing.
+  # -- Replicas. >1 does not corrupt anything: crates/api/src/main.rs runs
+  # sqlx::migrate!() in process at startup, and sqlx's Migrator takes a
+  # Postgres advisory lock, so concurrent startups serialise their migrations
+  # rather than racing.
+  #
+  # It does NOT buy zero-downtime rollouts, though: api-deployment.yaml pins
+  # `strategy: type: Recreate` (see its own comment there for why -- the same
+  # in-process migration run is why), so every replica is terminated before
+  # any new one starts, whatever this is set to. Raise it for read throughput
+  # and node-failure tolerance, not for rollout availability.
   replicaCount: 1
   service:
     type: ClusterIP
