@@ -681,6 +681,14 @@ pub async fn delete_leg(
     let journey_also_deleted = remaining <= 1;
 
     if journey_also_deleted {
+        // Removing the last leg removes the whole occurrence, so this is a
+        // discard of a template occurrence exactly as much as
+        // `delete_journey` is -- tombstone it before the delete, or the
+        // recurrence sweep re-mints it within the hour. Deliberately NOT
+        // done when other legs survive: the occurrence itself still exists
+        // then, and the sweep's own "already has a leg on this date" guard
+        // still sees it.
+        record_template_occurrence_skips(&mut tx, journey_id).await?;
         // Cascades into `journey_legs` for us (`ON DELETE CASCADE`) --
         // deleting the leg row explicitly first would be redundant, not
         // wrong, but this is the one statement, not two.
@@ -697,6 +705,49 @@ pub async fn delete_leg(
 
     tx.commit().await?;
     Ok(Some(journey_also_deleted))
+}
+
+/// Records "the occurrence this template produced for this date was
+/// explicitly discarded by its owner" for every `(source_template_id,
+/// service_date)` pair `journey_id` covers -- a tombstone in
+/// `journey_template_skipped_dates` (migration `20260925214500`).
+///
+/// Real bug this closes: `crates/notifier`'s recurrence sweep decides
+/// whether today's occurrence still needs minting purely by asking "does a
+/// journey from this template already have a leg on this date"
+/// (`notifier::queries::materialize_due_template_occurrence`). Deleting
+/// today's auto-minted occurrence -- the ordinary "I'm not travelling
+/// today" action -- made that question false again, so the next sweep tick,
+/// AT MOST AN HOUR LATER, re-minted the journey, re-auto-committed its legs
+/// and resumed pushing notifications for something the user had explicitly
+/// thrown away. Nothing anywhere recorded that the deletion had happened:
+/// the `journeys` row was the only trace of an occurrence, and deleting it
+/// removes that trace by definition. This is that missing record.
+///
+/// Called from inside both delete paths' own transactions, BEFORE the
+/// delete (it reads the legs it is about to lose). Idempotent (`ON
+/// CONFLICT DO NOTHING`) and a no-op for a journey with no
+/// `source_template_id` -- an ordinary hand-built journey has no template
+/// occurrence to suppress.
+///
+/// Scoped per `(template_id, service_date)`, not per template: skipping
+/// today must never suppress tomorrow's occurrence of the same commute.
+async fn record_template_occurrence_skips(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    journey_id: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO journey_template_skipped_dates (template_id, service_date) \
+         SELECT j.source_template_id, jl.service_date \
+         FROM journeys j JOIN journey_legs jl ON jl.journey_id = j.id \
+         WHERE j.id = $1 AND j.source_template_id IS NOT NULL \
+         GROUP BY j.source_template_id, jl.service_date \
+         ON CONFLICT (template_id, service_date) DO NOTHING",
+    )
+    .bind(journey_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Deletes an ENTIRE journey the caller owns, in one step -- the direct
@@ -747,11 +798,34 @@ pub async fn delete_leg(
 /// for "no such journey, or not this caller's" (the route maps this to
 /// `404`, never `403`, matching [`delete_leg`]'s own convention).
 pub async fn delete_journey(pool: &PgPool, journey_id: i64, user_id: &str) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
+
+    // Ownership-scoped read FIRST, so the tombstone write below can never
+    // record a skip for a journey this caller doesn't own (the tombstone
+    // statement itself is keyed only by journey id -- ownership is proven
+    // here instead, inside the same transaction as the delete, so a
+    // not-yours journey leaves no trace at all and still reports `false`).
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
+            .bind(journey_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if owned.is_none() {
+        return Ok(false);
+    }
+
+    // Deleting a template-minted occurrence is the user saying "not this
+    // one" -- without this the recurrence sweep re-mints it within the
+    // hour. See `record_template_occurrence_skips`.
+    record_template_occurrence_skips(&mut tx, journey_id).await?;
+
     let result = sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
         .bind(journey_id)
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -2367,5 +2441,175 @@ mod db_tests {
             .await
             .expect("attempt delete of a nonexistent journey");
         assert!(!deleted);
+    }
+    /// Finding 3's api-side regression test: deleting a template-minted
+    /// occurrence must leave a `(template_id, service_date)` tombstone behind,
+    /// or `crates/notifier`'s recurrence sweep re-mints that occurrence on its
+    /// next tick -- within the hour -- and starts pushing again for a journey
+    /// the user explicitly discarded. Covers both delete paths (whole journey,
+    /// and last-leg-takes-the-journey-with-it), the "not this caller's
+    /// journey" case (no tombstone at all), and an ordinary non-template
+    /// journey (nothing to tombstone).
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                deleting_a_template_occurrence -- --ignored --test-threads=1`"]
+    async fn deleting_a_template_occurrence_records_a_skip_day_so_the_sweep_cannot_remint_it() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-SKIPDAY-OWNER";
+        let bystander_id = "TEST-JOURNEY-SKIPDAY-BYSTANDER";
+        seed_user(&pool, user_id).await;
+        seed_user(&pool, bystander_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+
+        let template_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journey_templates (user_id, custom_name, default_match_mode) \
+             VALUES ($1, 'Skip Day Fixture', 'auto') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed template");
+
+        async fn seed_occurrence(
+            pool: &PgPool,
+            user_id: &str,
+            template_id: i64,
+            service_date: chrono::NaiveDate,
+            legs: i32,
+        ) -> i64 {
+            let journey_id: i64 = sqlx::query_scalar(
+                "INSERT INTO journeys (user_id, custom_name, source_template_id) \
+                 VALUES ($1, NULL, $2) RETURNING id",
+            )
+            .bind(user_id)
+            .bind(template_id)
+            .fetch_one(pool)
+            .await
+            .expect("seed occurrence");
+            for leg_order in 1..=legs {
+                insert_leg(
+                    pool,
+                    journey_id,
+                    leg_order,
+                    Some("RDG"),
+                    Some("WOK"),
+                    service_date,
+                    None,
+                    "unmatched",
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .expect("seed occurrence leg");
+            }
+            journey_id
+        }
+
+        async fn tombstones(pool: &PgPool, template_id: i64) -> Vec<chrono::NaiveDate> {
+            sqlx::query_scalar(
+                "SELECT service_date FROM journey_template_skipped_dates \
+                 WHERE template_id = $1 ORDER BY service_date",
+            )
+            .bind(template_id)
+            .fetch_all(pool)
+            .await
+            .expect("read tombstones")
+        }
+
+        // 1. A non-owner's failed delete must leave no trace at all --
+        //    otherwise anyone could suppress someone else's commute.
+        let journey_id = seed_occurrence(&pool, user_id, template_id, service_date, 1).await;
+        assert!(
+            !delete_journey(&pool, journey_id, bystander_id)
+                .await
+                .expect("non-owner delete attempt")
+        );
+        assert!(
+            tombstones(&pool, template_id).await.is_empty(),
+            "a delete that deleted nothing must not record a skip day"
+        );
+
+        // 2. The owner deleting the whole occurrence records the skip day.
+        assert!(
+            delete_journey(&pool, journey_id, user_id)
+                .await
+                .expect("owner delete")
+        );
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date],
+            "deleting today's occurrence must record THIS date -- and only this date, so the same \
+             commute still materializes tomorrow"
+        );
+
+        // 3. Removing the LAST leg also removes the occurrence, so it must
+        //    tombstone too -- for a different date, proving the scoping.
+        let other_date: chrono::NaiveDate = "2026-09-26".parse().unwrap();
+        let single_leg_journey = seed_occurrence(&pool, user_id, template_id, other_date, 1).await;
+        let leg_id: i64 = sqlx::query_scalar("SELECT id FROM journey_legs WHERE journey_id = $1")
+            .bind(single_leg_journey)
+            .fetch_one(&pool)
+            .await
+            .expect("read the single leg");
+        let journey_also_deleted = delete_leg(&pool, single_leg_journey, leg_id, user_id)
+            .await
+            .expect("delete the last leg")
+            .expect("the leg must have existed");
+        assert!(journey_also_deleted);
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date, other_date]
+        );
+
+        // 4. Removing ONE leg of a two-leg occurrence leaves the occurrence
+        //    standing, so there is nothing to suppress -- the sweep's own
+        //    "already has a leg on this date" guard still sees it.
+        let third_date: chrono::NaiveDate = "2026-09-27".parse().unwrap();
+        let two_leg_journey = seed_occurrence(&pool, user_id, template_id, third_date, 2).await;
+        let first_leg_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM journey_legs WHERE journey_id = $1 ORDER BY leg_order LIMIT 1",
+        )
+        .bind(two_leg_journey)
+        .fetch_one(&pool)
+        .await
+        .expect("read the first leg");
+        let also_deleted = delete_leg(&pool, two_leg_journey, first_leg_id, user_id)
+            .await
+            .expect("delete one of two legs")
+            .expect("the leg must have existed");
+        assert!(!also_deleted);
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date, other_date],
+            "removing one leg of a surviving occurrence must NOT record a skip day"
+        );
+
+        // 5. An ordinary, non-template journey has no occurrence to suppress.
+        let plain_journey = seed_journey(&pool, user_id).await;
+        assert!(
+            delete_journey(&pool, plain_journey, user_id)
+                .await
+                .expect("delete a plain journey")
+        );
+        assert_eq!(
+            tombstones(&pool, template_id).await,
+            vec![service_date, other_date]
+        );
+
+        sqlx::query("DELETE FROM journeys WHERE source_template_id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM journey_templates WHERE id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .ok(); // cascades journey_template_legs + journey_template_skipped_dates
+        cleanup_user(&pool, user_id).await;
+        cleanup_user(&pool, bystander_id).await;
     }
 }

@@ -493,6 +493,24 @@ pub async fn materialize_template(
         .await?;
         leg_ids.push(leg_id);
     }
+
+    // An explicit "Run now" for a date whose occurrence was previously
+    // DISCARDED (`journey_template_skipped_dates`, written by
+    // `journeys::delete_journey`/`delete_leg` -- see
+    // `journeys::record_template_occurrence_skips` for the re-mint bug that
+    // tombstone closes) is the user unambiguously asking for that date back,
+    // so it clears the tombstone: the recurrence sweep may mint for this
+    // date again if this occurrence is later deleted... which would, itself,
+    // write a fresh tombstone. Without this, a discarded date would stay
+    // permanently un-sweepable even after the user changed their mind.
+    sqlx::query(
+        "DELETE FROM journey_template_skipped_dates WHERE template_id = $1 AND service_date = $2",
+    )
+    .bind(template_id)
+    .bind(service_date)
+    .execute(&mut *tx)
+    .await?;
+
     tx.commit().await?;
 
     Ok(Some(MaterializedJourney {
