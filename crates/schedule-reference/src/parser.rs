@@ -14,6 +14,76 @@
 
 use std::collections::HashMap;
 
+/// Guards every fixed-byte-offset `&str` slice in this module against the
+/// only two ways such a slice can panic: a line shorter than the offset
+/// (`byte index N is out of bounds`) and a line where the offset falls
+/// INSIDE a multi-byte UTF-8 character (`byte index N is not a char
+/// boundary`). A `line.len() >= min_len` check alone -- which is all this
+/// module had before this fix -- catches the first and not the second.
+///
+/// This is not hypothetical. `parse_ti_lines`/`parse_msn_a_lines`/
+/// `parse_msn_change_time_by_tiploc` are each driven by `main.rs`'s
+/// `read_prefixed_lines` in a loop over every matching line of a real
+/// 700MB+ `RJTTF<n>MCA.txt`/`RJTTF<n>MSN.txt`, inside a long-running
+/// container. One non-ASCII byte straddling one of these offsets -- in a
+/// station name, a TI description, or any corrupted stretch of the file --
+/// panics the whole process, and because the delivery on the read-only PVC
+/// does not change, the restarted container reads the same bad line and
+/// panics again: a crash loop, with every one of this service's seven
+/// published products frozen for as long as it lasts.
+///
+/// **This is a verbatim port of `schedule_query::parse`'s own
+/// `is_fixed_width_decodable`** (`crates/schedule-query/src/parse.rs`),
+/// which was added to that sibling crate after coverage-guided fuzzing
+/// found eight separate panic sites of exactly this shape in it. That
+/// crate's copy carries the long-form reasoning; the parts that matter
+/// here are repeated rather than only cross-referenced:
+///
+/// * The ASCII check is WHOLE-LINE, not per-field, so a line with a
+///   multi-byte character anywhere -- even outside the fields this module
+///   actually decodes -- rejects the whole record. That is a real widening
+///   of "malformed", accepted on purpose: CIF/MSN are ASCII by
+///   specification, so a line carrying non-ASCII bytes anywhere has
+///   already failed the format, and a per-field check would be both slower
+///   and easier to leave a hole in.
+/// * It is not a content check in the other direction: `is_ascii()` is true
+///   of the C0 controls, so a `NUL`-filled line still decodes into a
+///   plausible-looking record. Tightening what counts as a valid field
+///   VALUE is a separate question; the job here is the char-boundary panic
+///   class.
+/// * A rejected line is SKIPPED silently, matching this module's existing
+///   posture for every other malformed line (see `parse_ti_lines`'s own
+///   "a single malformed line must not abort the whole extraction").
+///
+/// Kept as a local copy rather than imported from `schedule-query`:
+/// `schedule-reference` does depend on that crate, but its `parse` module's
+/// helper is private and deliberately so (that module decodes the schedule
+/// BODY record family, this one the `TI`/`A` reference-data family -- they
+/// share a hazard, not a record format), and exporting a two-line
+/// predicate across a crate boundary to avoid duplicating it would couple
+/// the two parsers' evolution for no benefit.
+fn is_fixed_width_decodable(line: &str, min_len: usize) -> bool {
+    line.len() >= min_len && line.is_ascii()
+}
+
+/// Shortest `TI` line [`parse_ti_lines`] can decode: its own widest slice
+/// ends at byte 56 (`53..56`, the CRS field). Named rather than inlined so
+/// the guard call site and this module's tests refer to the same number,
+/// matching `schedule_query::parse`'s own `MIN_*_LEN` convention.
+const MIN_TI_LEN: usize = 56;
+
+/// Shortest MSN `A` line [`parse_msn_a_lines`] can decode: its widest
+/// slice ends at byte 52 (`49..52`, the CRS field).
+const MIN_MSN_A_LEN: usize = 52;
+
+/// Shortest MSN `A` line [`parse_msn_change_time_by_tiploc`] can decode:
+/// its widest slice ends at byte 65 (`63..65`, the change-time field) --
+/// deliberately a different, longer minimum than [`MIN_MSN_A_LEN`] for the
+/// same record type, because this function reads a field further into the
+/// line than `parse_msn_a_lines` does, so a line long enough for one is not
+/// necessarily long enough for the other.
+const MIN_MSN_CHANGE_TIME_LEN: usize = 65;
+
 /// One parsed `TI` (TIPLOC Insert) record from a CIF `MCA` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TiRecord {
@@ -36,7 +106,10 @@ pub struct TiRecord {
 pub fn parse_ti_lines(text: &str) -> Vec<TiRecord> {
     text.lines()
         .filter_map(|line| {
-            if line.len() < 56 {
+            // Guards all four fixed-offset slices below (`2..9`, `18..44`,
+            // `44..49`, `53..56`) against BOTH panic conditions at once --
+            // see [`is_fixed_width_decodable`].
+            if !is_fixed_width_decodable(line, MIN_TI_LEN) {
                 return None;
             }
             let tiploc = line[2..9].trim().to_string();
@@ -76,7 +149,9 @@ pub fn parse_ti_lines(text: &str) -> Vec<TiRecord> {
 pub fn parse_msn_a_lines(text: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in text.lines() {
-        if line.len() < 52 {
+        // Guards the `36..43` and `49..52` slices below against BOTH panic
+        // conditions at once -- see [`is_fixed_width_decodable`].
+        if !is_fixed_width_decodable(line, MIN_MSN_A_LEN) {
             continue;
         }
         let tiploc = line[36..43].trim();
@@ -171,7 +246,9 @@ pub fn parse_msn_a_lines(text: &str) -> HashMap<String, String> {
 pub fn parse_msn_change_time_by_tiploc(text: &str) -> HashMap<String, i32> {
     let mut map = HashMap::new();
     for line in text.lines() {
-        if line.len() < 65 {
+        // Guards the `36..43` and `63..65` slices below against BOTH panic
+        // conditions at once -- see [`is_fixed_width_decodable`].
+        if !is_fixed_width_decodable(line, MIN_MSN_CHANGE_TIME_LEN) {
             continue;
         }
         let tiploc = line[36..43].trim();
@@ -834,5 +911,117 @@ mod resolve_tiploc_crs_tests {
         let ti_records = vec![ti("FOO", "n", "", "BAR")];
         let rows = resolve_tiploc_crs(&ti_records, &HashMap::new(), &HashMap::new());
         assert!(rows.is_empty());
+    }
+}
+
+/// Regression tests for the 2026-09-25 non-ASCII panic-crash-loop fix --
+/// see [`is_fixed_width_decodable`]'s own doc comment for the production
+/// failure mode (one non-ASCII byte in a 700MB+ delivery file panics this
+/// service, which then crash-loops on the same line forever, freezing all
+/// seven of its published products).
+///
+/// Every case below takes a REAL, byte-verbatim fixture line from the
+/// modules above and moves a single multi-byte character into it so that one
+/// of this module's own hard-coded slice offsets lands in the MIDDLE of that
+/// character, with the line's byte LENGTH deliberately unchanged -- so the
+/// pre-existing `line.len() >= N` check still passes and the char-boundary
+/// panic is the only thing left to catch. Before the fix, each of these
+/// panicked with `byte index N is not a char boundary; it is inside 'é'
+/// (bytes M..N+1) of ...`; after it, the malformed line is silently
+/// skipped, exactly like every other malformed line in this module.
+#[cfg(test)]
+mod non_ascii_boundary_tests {
+    use super::msn_tests::A_WATRLMN;
+    use super::*;
+
+    /// Rewrites `line` so that byte index `boundary` falls INSIDE a
+    /// multi-byte character, without changing the line's total byte length.
+    ///
+    /// `é` is two bytes (`0xC3 0xA9`), so overwriting the two ASCII bytes at
+    /// `boundary - 1` and `boundary` with it puts its first byte at
+    /// `boundary - 1` and its continuation byte at `boundary` -- making
+    /// `boundary` itself not a char boundary while every other offset in the
+    /// line, and the line's length, stay exactly as they were.
+    fn straddling_char_at(line: &str, boundary: usize) -> String {
+        let mut out = String::with_capacity(line.len());
+        out.push_str(&line[..boundary - 1]);
+        out.push('é');
+        out.push_str(&line[boundary + 1..]);
+        assert_eq!(
+            out.len(),
+            line.len(),
+            "the fixture must keep its original byte length so the length check still passes"
+        );
+        assert!(
+            !out.is_char_boundary(boundary),
+            "the fixture must actually put a char boundary violation at the offset under test"
+        );
+        out
+    }
+
+    const TI_EUSTON: &str =
+        "TIEUSTON 00144400NLONDON EUSTON             724102893EUSLONDON EUSTON           ";
+
+    #[test]
+    fn parse_ti_lines_skips_a_line_whose_tiploc_offset_is_mid_character() {
+        // `line[2..9]`, the TIPLOC field's own end offset.
+        let line = straddling_char_at(TI_EUSTON, 9);
+        assert_eq!(parse_ti_lines(&line), Vec::new());
+    }
+
+    #[test]
+    fn parse_ti_lines_skips_a_line_whose_station_name_offset_is_mid_character() {
+        // `line[18..44]`/`line[44..49]`'s shared boundary -- the realistic
+        // production shape: a multi-byte character inside a station NAME,
+        // straddling the start of the STANOX field.
+        let line = straddling_char_at(TI_EUSTON, 44);
+        assert_eq!(parse_ti_lines(&line), Vec::new());
+    }
+
+    #[test]
+    fn parse_ti_lines_skips_a_line_whose_crs_offset_is_mid_character() {
+        // `line[53..56]`, the last and furthest-in slice this function reads.
+        let line = straddling_char_at(TI_EUSTON, 56);
+        assert_eq!(parse_ti_lines(&line), Vec::new());
+    }
+
+    #[test]
+    fn parse_ti_lines_keeps_decoding_the_rest_of_the_file_after_a_bad_line() {
+        // The whole point of skipping rather than panicking: a real
+        // delivery's other ~12,084 `TI` records must still publish.
+        let bad = straddling_char_at(TI_EUSTON, 44);
+        let text = format!("{bad}\n{TI_EUSTON}\n");
+        let records = parse_ti_lines(&text);
+        assert_eq!(records.len(), 1, "the one good line must still decode");
+        assert_eq!(records[0].tiploc, "EUSTON");
+    }
+
+    #[test]
+    fn parse_msn_a_lines_skips_a_line_whose_tiploc_offset_is_mid_character() {
+        // `line[36..43]`, the TIPLOC field's own end offset.
+        let line = straddling_char_at(A_WATRLMN, 43);
+        assert!(parse_msn_a_lines(&line).is_empty());
+    }
+
+    #[test]
+    fn parse_msn_a_lines_skips_a_line_whose_crs_offset_is_mid_character() {
+        // `line[49..52]`, the CRS field's own end offset.
+        let line = straddling_char_at(A_WATRLMN, 52);
+        assert!(parse_msn_a_lines(&line).is_empty());
+    }
+
+    #[test]
+    fn parse_msn_change_time_skips_a_line_whose_change_time_offset_is_mid_character() {
+        // `line[63..65]`'s own start offset -- the field this function reads
+        // furthest into the line, and the one `MIN_MSN_A_LEN`'s shorter
+        // minimum would not have covered.
+        let line = straddling_char_at(A_WATRLMN, 63);
+        assert!(parse_msn_change_time_by_tiploc(&line).is_empty());
+    }
+
+    #[test]
+    fn parse_msn_change_time_skips_a_line_whose_tiploc_offset_is_mid_character() {
+        let line = straddling_char_at(A_WATRLMN, 43);
+        assert!(parse_msn_change_time_by_tiploc(&line).is_empty());
     }
 }
