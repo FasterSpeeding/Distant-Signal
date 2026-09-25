@@ -553,14 +553,16 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
 /// **`service_date` floor, added for the 2026-09-25 review finding (Medium
 /// 8).** "Active" used to rest entirely on two exclusions that between them
 /// excluded almost nothing over time:
-/// * `resolution_status != 'unresolved'` -- verified by grepping the whole
-///   workspace: `'unresolved'` is a legal value of the CHECK constraint
-///   (`20260828120000_train_tracking.sql`,
+/// * `resolution_status != 'unresolved'` -- at the time of the 2026-09-25
+///   review's Medium 8 finding, `'unresolved'` was a legal value of the
+///   CHECK constraint (`20260828120000_train_tracking.sql`,
 ///   `20260905150000_schedule_matched_resolution.sql`) that NO code path
-///   anywhere ever writes. Every row is `'pending'`, `'schedule_matched'` or
-///   `'resolved'`, so this clause has never excluded a single row in
-///   production. Kept anyway (the value is still legal, and a future writer
-///   of it would mean exactly this), but it cannot be the bound.
+///   anywhere ever wrote, so this clause had never excluded a single row in
+///   production. Kept anyway at the time ("a future writer of it would mean
+///   exactly this"), and as of that same review's Low finding #2,
+///   [`mark_subscription_unresolved_on_cancellation`] is now that writer: a
+///   subscription cancelled before ever resolving flips here, precisely the
+///   "nothing further to do with it" case this exclusion always anticipated.
 /// * the `train_current_state` status check -- which stops applying the
 ///   moment `aggregator::queries::prune_trains` deletes the `trains` row at
 ///   30 days: `trains_id` is `ON DELETE SET NULL`, so the `LEFT JOIN`s go
@@ -865,6 +867,45 @@ enum LegacyResolution {
     UidMismatch,
 }
 
+/// **Low finding #2 of the 2026-09-25 review's own fix.** A real
+/// Cancellation for a train a `'pending'`/`'schedule_matched'` subscription
+/// is tracking never carries `resolved_train_uid`/`resolved_train_id` --
+/// `trust-consumer::process.rs`'s `TrustMessage::Cancellation` handler has
+/// no new identity to report, only the fact that this journey is over -- so
+/// [`flip_legacy_resolution`] never runs for it and `resolution_status`
+/// stayed `'pending'` forever, even though there is no train left to ever
+/// resolve to. Worse than mere display staleness: `list_pending_pins_for_schedule_match`/
+/// `list_pending_pins_for_backlog_match` both re-select every still-`'pending'`,
+/// still-`trains_id IS NULL` row on every sweep tick, so a subscription
+/// whose train was cancelled before ever departing its origin (no Movement,
+/// so no `resolve_origin_departure` match either) was retried forever for a
+/// train that will never produce another event.
+///
+/// Flips it to `'unresolved'` instead -- a value the `CHECK` constraint has
+/// allowed since `20260905150000_schedule_matched_resolution.sql`, and which
+/// `list_active_tracked_trains`'s own doc comment already named as
+/// deliberately unwritten, "kept anyway... a future writer of it would mean
+/// exactly this": exactly this case, a subscription with nothing further to
+/// do. Only from `'pending'`/`'schedule_matched'` -- an already-`'resolved'`
+/// subscription (the train departed, then was cancelled mid-journey) is left
+/// alone: it is more informative than `'unresolved'` (the train WAS found),
+/// isn't in either sweep's `WHERE resolution_status = 'pending'` anyway, and
+/// downgrading it would be exactly finding #1's "regress an already-advanced
+/// status" mistake played out one layer up.
+async fn mark_subscription_unresolved_on_cancellation(
+    pool: &PgPool,
+    tracked_train_id: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE train_subscriptions SET resolution_status = 'unresolved' \
+         WHERE id = $1 AND resolution_status IN ('pending', 'schedule_matched')",
+    )
+    .bind(tracked_train_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Idempotent, same overall contract as before this task: resolves the pin
 /// (if `resolved_train_id` is `Some`) and writes the shared movement/
 /// current-state tables. As of this task, that write ALWAYS goes through
@@ -900,6 +941,19 @@ pub async fn upsert_train_event(
     // movements to a shared row every subscriber reads is not.
     if resolved == LegacyResolution::UidMismatch {
         return Ok(());
+    }
+
+    // Low finding #2: a Cancellation carries `event.status == "cancelled"`
+    // (set by `trust_schema::journey::apply_cancellation`) but, per the
+    // above, never a `resolved_train_id` -- so this is the one place left to
+    // stop such a subscription being retried forever. Independent of the
+    // `trains_id`/movement write below: even when this subscription's
+    // identity was never established at all (so the movement itself is
+    // dropped, further down), the subscription-level bookkeeping must still
+    // advance -- there is nothing further any sweep can do for it either
+    // way.
+    if event.status == "cancelled" {
+        mark_subscription_unresolved_on_cancellation(pool, event.tracked_train_id).await?;
     }
 
     let trains_id = match resolved {
@@ -2859,6 +2913,92 @@ mod db_tests {
         // all -- TRACKED_TRAIN_STATE_SELECT's LEFT JOIN cs ON cs.trains_id =
         // tt.trains_id finds nothing to join against.
         assert_eq!(state.status, None);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// **Low finding #2 of the 2026-09-25 review, this fix's own regression
+    /// test.** A Cancellation-derived event (`status == "cancelled"`) never
+    /// carries `resolved_train_id` -- see `fixture_event`'s defaults, and
+    /// `trust-consumer::process.rs`'s own `TrustMessage::Cancellation`
+    /// handler, which this fixture mirrors -- so before this fix
+    /// `resolution_status` stayed `'pending'` forever for a subscription
+    /// whose train was cancelled before ever resolving. It must now flip to
+    /// `'unresolved'`, the terminal "nothing left to do" value
+    /// `list_active_tracked_trains`'s own doc comment already anticipated a
+    /// future writer for.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                upsert_train_event -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_with_status_cancelled_flips_a_pending_subscription_to_unresolved() {
+        let pool = connect().await;
+        let user_id = "TEST-UPSERT-CANCELLED-PENDING";
+        seed_user(&pool, user_id).await;
+        let tracking_id = seed_tracked_train(&pool, user_id).await;
+
+        let mut event = fixture_event(tracking_id, "dedup-cancelled-pending");
+        event.status = "cancelled".to_string();
+        // A real Cancellation carries neither field -- see this test's own
+        // doc comment.
+        event.resolved_train_uid = None;
+        event.resolved_train_id = None;
+
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert train event");
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(
+            state.resolution_status, "unresolved",
+            "a cancellation for a still-pending subscription must stop it being retried forever"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The companion guard: a subscription that had ALREADY resolved (its
+    /// train departed, then was cancelled mid-journey) must not be
+    /// downgraded to `'unresolved'` -- that would be strictly less
+    /// informative (the train WAS found) and is exactly finding #1's
+    /// "regress an already-advanced status" mistake played out on this
+    /// column instead of `train_current_state.status`.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                upsert_train_event -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_with_status_cancelled_does_not_downgrade_an_already_resolved_subscription()
+     {
+        let pool = connect().await;
+        let user_id = "TEST-UPSERT-CANCELLED-RESOLVED";
+        seed_user(&pool, user_id).await;
+        let tracking_id = seed_tracked_train(&pool, user_id).await;
+        sqlx::query("UPDATE train_subscriptions SET resolution_status = 'resolved' WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .expect("seed an already-resolved subscription");
+
+        let mut event = fixture_event(tracking_id, "dedup-cancelled-resolved");
+        event.status = "cancelled".to_string();
+        event.resolved_train_uid = None;
+        event.resolved_train_id = None;
+
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert train event");
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(
+            state.resolution_status, "resolved",
+            "an already-resolved subscription must not be downgraded by a later cancellation"
+        );
 
         cleanup_user(&pool, user_id).await;
     }
