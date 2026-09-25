@@ -575,6 +575,12 @@ async fn post_journey(
                 tracking_id,
                 &pin.origin_crs,
                 pin.scheduled_departure,
+                // Kept in lockstep with `routes::train::post_track`'s own call
+                // (this leg IS a `create_pin` pin): the destination the user
+                // picked is what breaks a same-minute tie between two real
+                // services at a busy station -- see
+                // `schedule_matching::find_schedule_match`'s round 4(a).
+                pin.destination_crs.as_deref(),
                 pin.service_date,
                 &app.schedule_crs_line_index,
                 &pin.skipped_stations,

@@ -530,6 +530,35 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
 /// with `train_uid`/`train_id` both `None` -- `TrackedTrainRow`/
 /// `TrackedTrainRef` already type both fields `Option` for exactly this
 /// reason.
+///
+/// **`service_date` floor, added for the 2026-09-25 review finding (Medium
+/// 8).** "Active" used to rest entirely on two exclusions that between them
+/// excluded almost nothing over time:
+/// * `resolution_status != 'unresolved'` -- verified by grepping the whole
+///   workspace: `'unresolved'` is a legal value of the CHECK constraint
+///   (`20260828120000_train_tracking.sql`,
+///   `20260905150000_schedule_matched_resolution.sql`) that NO code path
+///   anywhere ever writes. Every row is `'pending'`, `'schedule_matched'` or
+///   `'resolved'`, so this clause has never excluded a single row in
+///   production. Kept anyway (the value is still legal, and a future writer
+///   of it would mean exactly this), but it cannot be the bound.
+/// * the `train_current_state` status check -- which stops applying the
+///   moment `aggregator::queries::prune_trains` deletes the `trains` row at
+///   30 days: `trains_id` is `ON DELETE SET NULL`, so the `LEFT JOIN`s go
+///   `NULL` and `cs.status IS NULL` makes the row "active" again, forever.
+///
+/// The result was that every subscription ever created came back on every
+/// reference reload -- an unbounded set that `trust-consumer` rebuilds its
+/// whole in-memory index from, periodically, for the life of the deployment.
+/// A `service_date` floor bounds it by the only thing that actually decides
+/// whether TRUST can still say anything about a train: its service date.
+/// `CURRENT_DATE - INTERVAL '2 days'` matches this file's other two sweep
+/// bounds (`list_pending_pins_for_backlog_match`,
+/// `list_pending_pins_for_schedule_match`) rather than inventing a third
+/// figure, and is generously past the point where TRUST's live Train
+/// Movements stream -- the only feed this set exists to recognize messages
+/// from -- still carries anything for a service (`MAX_PIN_AGE` is 6 hours;
+/// an overnight service spans one calendar boundary, not two).
 pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<TrackedTrainRef>> {
     let rows = sqlx::query_as::<_, TrackedTrainRow>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
@@ -539,6 +568,7 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          WHERE tt.resolution_status != 'unresolved' \
+           AND tt.service_date >= CURRENT_DATE - INTERVAL '2 days' \
            AND (cs.status IS NULL OR cs.status NOT IN ('completed', 'cancelled'))",
     )
     .fetch_all(pool)
@@ -678,12 +708,15 @@ pub async fn upsert_train_movement(
 /// `tracked_trains.resolution_status`, mirrors the resolution onto the
 /// shared `trains` row (same dual-write Task 5 introduced), and returns
 /// the resolved `trains_id` so the caller can feed the same event into
-/// `upsert_train_movement`. Returns `None` only in the accepted-gap case:
-/// no `trains_id` was already known AND this call carries no
-/// `resolved_train_uid` either (this process never saw the Activation) --
+/// `upsert_train_movement`. Returns [`LegacyResolution::NoIdentity`] in the
+/// accepted-gap case: no `trains_id` was already known AND this call carries
+/// no `resolved_train_uid` either (this process never saw the Activation) --
 /// the pin still flips to `'resolved'` for this user's own tracking
 /// purposes, but no shared `trains` row can be created or updated without
-/// a known identity.
+/// a known identity. Returns [`LegacyResolution::UidMismatch`] when the
+/// identity this resolution claims disagrees with the one the subscription's
+/// already-linked shared row carries -- see that variant and the guard
+/// below.
 ///
 /// As of Task 22 (Step D's final cutover), this `UPDATE` writes ONLY
 /// `resolution_status` -- `tracked_trains.train_uid`/`train_id`/
@@ -716,20 +749,64 @@ async fn flip_legacy_resolution(
     tracked_train_id: i64,
     resolved_train_uid: Option<&str>,
     resolved_train_id: &str,
-) -> anyhow::Result<Option<i64>> {
-    let row: Option<(Option<i64>, chrono::NaiveDate)> = sqlx::query_as(
-        "UPDATE train_subscriptions SET resolution_status = 'resolved' \
-         WHERE id = $1 RETURNING trains_id, service_date",
+) -> anyhow::Result<LegacyResolution> {
+    // The scalar subquery reads the ALREADY-LINKED shared row's own
+    // `train_uid` in the same round trip as the status flip -- the value the
+    // `UidMismatch` guard below compares against. Cheap (`trains.id` is the
+    // primary key) and, unlike a follow-up `SELECT`, guaranteed to describe
+    // the same `trains_id` this statement just returned.
+    let row: Option<(Option<i64>, chrono::NaiveDate, Option<String>)> = sqlx::query_as(
+        "UPDATE train_subscriptions tt SET resolution_status = 'resolved' \
+         WHERE tt.id = $1 \
+         RETURNING tt.trains_id, tt.service_date, \
+                   (SELECT tr.train_uid FROM trains tr WHERE tr.id = tt.trains_id)",
     )
     .bind(tracked_train_id)
     .fetch_optional(pool)
     .await?;
-    let Some((existing_trains_id, service_date)) = row else {
-        return Ok(None);
+    let Some((existing_trains_id, service_date, existing_train_uid)) = row else {
+        return Ok(LegacyResolution::NoIdentity);
     };
 
-    let trains_id = match (existing_trains_id, resolved_train_uid) {
-        (Some(id), _) => Some(id),
+    match (existing_trains_id, resolved_train_uid) {
+        // **The uid-disagreement guard (2026-09-25 review finding, High 2).**
+        // This subscription is already linked to a shared `trains` row for
+        // one identity, and this resolution claims a DIFFERENT one. Before
+        // this guard, the `(Some(id), _)` arm below took the existing
+        // `trains_id` unconditionally and the caller then wrote this event's
+        // movement onto it -- so one mis-resolved subscription could
+        // attribute a foreign train's movements to an already-correctly-
+        // matched shared row, which is visible to EVERY subscriber of that
+        // row (and feeds journey view, delay-repay evidence and
+        // notifications), not just the one whose pin was mis-resolved.
+        //
+        // Same posture as this codebase's other uid-mismatch guard
+        // (`schedule_matching::attempt_schedule_match_for_shared_train`):
+        // warn with both uids and decline, rather than write something we
+        // know to be wrong. The status flip above is deliberately left in
+        // place -- it is this user's own per-subscription bookkeeping and
+        // carries no cross-subscriber identity claim, unlike the shared-row
+        // writes this arm refuses.
+        (Some(existing_id), Some(resolved))
+            if existing_train_uid
+                .as_deref()
+                .is_some_and(|existing| existing != resolved) =>
+        {
+            tracing::warn!(
+                tracked_train_id,
+                trains_id = existing_id,
+                existing_train_uid = existing_train_uid.as_deref(),
+                resolved_train_uid = resolved,
+                resolved_train_id,
+                "live TRUST resolution disagrees with the train_uid this subscription's shared \
+                 row already carries; refusing to attribute this train's movements to it"
+            );
+            Ok(LegacyResolution::UidMismatch)
+        }
+        (Some(id), _) => {
+            crate::data::trains::mark_train_resolved(pool, id, resolved_train_id).await?;
+            Ok(LegacyResolution::Applied(id))
+        }
         (None, Some(train_uid)) => {
             let id =
                 crate::data::trains::find_or_create_train(pool, train_uid, service_date).await?;
@@ -738,14 +815,35 @@ async fn flip_legacy_resolution(
                 .bind(id)
                 .execute(pool)
                 .await?;
-            Some(id)
+            crate::data::trains::mark_train_resolved(pool, id, resolved_train_id).await?;
+            Ok(LegacyResolution::Applied(id))
         }
-        (None, None) => None,
-    };
-    if let Some(id) = trains_id {
-        crate::data::trains::mark_train_resolved(pool, id, resolved_train_id).await?;
+        (None, None) => Ok(LegacyResolution::NoIdentity),
     }
-    Ok(trains_id)
+}
+
+/// [`flip_legacy_resolution`]'s outcome. A bare `Option<i64>` could not
+/// express the third case: "we know which shared row this subscription
+/// points at, and we are deliberately NOT writing to it." Returning `None`
+/// for that would be actively wrong, because [`upsert_train_event`] treats
+/// `None` as "no identity known yet" and falls back to reading `trains_id`
+/// straight off the subscription -- which is the very row the guard just
+/// refused, so the refused write would happen anyway one line later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyResolution {
+    /// The resolution was applied to this `trains_id`; the caller should
+    /// write this event's movement against it.
+    Applied(i64),
+    /// No shared identity exists or could be created (this process never
+    /// saw the Activation, and the subscription has no `trains_id` yet) --
+    /// the documented accepted gap. The caller may still fall back to the
+    /// subscription's own `trains_id` if one appeared by another route.
+    NoIdentity,
+    /// The resolution's `train_uid` disagrees with the one the already-linked
+    /// shared row carries. Nothing was written, and the caller must NOT
+    /// write this event anywhere -- see the guard in
+    /// [`flip_legacy_resolution`].
+    UidMismatch,
 }
 
 /// Idempotent, same overall contract as before this task: resolves the pin
@@ -761,7 +859,7 @@ pub async fn upsert_train_event(
     pool: &PgPool,
     event: &TrainMovementEventMessage,
 ) -> anyhow::Result<()> {
-    let resolved_trains_id = match &event.resolved_train_id {
+    let resolved = match &event.resolved_train_id {
         Some(train_id) => {
             flip_legacy_resolution(
                 pool,
@@ -771,12 +869,23 @@ pub async fn upsert_train_event(
             )
             .await?
         }
-        None => None,
+        None => LegacyResolution::NoIdentity,
     };
 
-    let trains_id = match resolved_trains_id {
-        Some(id) => Some(id),
-        None => sqlx::query_scalar::<_, Option<i64>>(
+    // A refused resolution (High 2's uid-disagreement guard) must not fall
+    // through to the `SELECT trains_id` below: that would read back exactly
+    // the shared row the guard just declined to attribute this event to, and
+    // write the movement onto it anyway. Dropping the event is the same
+    // posture the "no identity at all" branch further down already takes --
+    // losing one movement is recoverable, mis-attributing another train's
+    // movements to a shared row every subscriber reads is not.
+    if resolved == LegacyResolution::UidMismatch {
+        return Ok(());
+    }
+
+    let trains_id = match resolved {
+        LegacyResolution::Applied(id) => Some(id),
+        _ => sqlx::query_scalar::<_, Option<i64>>(
             "SELECT trains_id FROM train_subscriptions WHERE id = $1",
         )
         .bind(event.tracked_train_id)
@@ -799,12 +908,15 @@ pub async fn upsert_train_event(
     Ok(())
 }
 
-/// As of this task, this ONLY flips `resolution_status` -- every schedule
-/// column this used to also write now lives exclusively on the shared
-/// `trains` row (`schedule_matching::attempt_schedule_match`'s own
-/// `find_or_create_train_with_schedule_match` call, Task 3). Guarded on
-/// `trains_id IS NULL` rather than the old `train_uid IS NULL` -- since
-/// Task 8's read cutover, `tracked_trains.train_uid` is no longer the
+/// Flips `resolution_status` to `'schedule_matched'` AND links the
+/// subscription to the shared `trains` row the match resolved, in ONE
+/// statement. Every schedule column this function once wrote lives
+/// exclusively on that shared row now
+/// (`schedule_matching::attempt_schedule_match`'s own
+/// `find_or_create_train_with_schedule_match` call, Task 3).
+///
+/// Guarded on `trains_id IS NULL` rather than the old `train_uid IS NULL` --
+/// since Task 8's read cutover, `tracked_trains.train_uid` is no longer the
 /// signal anything trusts for "has this pin been schedule-matched yet."
 /// Still safe to call from BOTH the synchronous pin-creation path and the
 /// periodic sweep without a race clobbering a row that has since moved on
@@ -813,12 +925,32 @@ pub async fn upsert_train_event(
 /// it) -- `rows_affected() == 0` in either of those cases is not an error,
 /// just a no-op, which is why this returns `bool` rather than erroring on
 /// zero rows affected.
-pub async fn apply_schedule_match(pool: &PgPool, tracked_train_id: i64) -> anyhow::Result<bool> {
+///
+/// **`trains_id` is written HERE, in the same `UPDATE` as the status flip
+/// (2026-09-25 review finding, Medium 5).** It used to be a separate
+/// `UPDATE train_subscriptions SET trains_id = $2` statement issued by
+/// `schedule_matching::attempt_schedule_match` AFTER this one, on the same
+/// pool and outside any transaction. A crash between the two left the row
+/// `'schedule_matched'` with `trains_id NULL` permanently: the retry sweep
+/// only ever selects `resolution_status = 'pending'` rows
+/// (`list_pending_pins_for_schedule_match`), and every read path resolves
+/// identity through `trains_id`, so the subscription was both unrepairable
+/// and permanently schedule-less. Postgres applies a single `UPDATE`
+/// atomically, so that intermediate state no longer exists -- this is why
+/// the parameter is here rather than in a caller-side follow-up write. See
+/// `attempt_schedule_match`'s own doc comment for the full ordering account.
+pub async fn apply_schedule_match(
+    pool: &PgPool,
+    tracked_train_id: i64,
+    trains_id: i64,
+) -> anyhow::Result<bool> {
     let result = sqlx::query(
-        "UPDATE train_subscriptions SET resolution_status = 'schedule_matched' \
+        "UPDATE train_subscriptions \
+         SET resolution_status = 'schedule_matched', trains_id = $2 \
          WHERE id = $1 AND trains_id IS NULL AND resolution_status = 'pending'",
     )
     .bind(tracked_train_id)
+    .bind(trains_id)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
@@ -849,6 +981,12 @@ pub struct PendingSchedulePin {
     pub service_date: chrono::NaiveDate,
     pub pin_origin_crs: Option<String>,
     pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    /// The destination the user's own departure-board pick named. Carried
+    /// through the sweep purely so a pin resolved by a LATER sweep tick gets
+    /// the same same-minute tie-break the synchronous attempt at pin-creation
+    /// time already had -- see `schedule_matching::find_schedule_match`'s
+    /// round 4(a). `None` for an origin-only pin.
+    pub pin_destination_crs: Option<String>,
     /// See `common::TrackPinRequest.skipped_stations`'s own doc comment --
     /// this row's own captured snapshot, carried through the sweep to
     /// `schedule_matching::attempt_schedule_match` so a pin the SYNCHRONOUS
@@ -929,14 +1067,33 @@ pub struct PendingSchedulePin {
 /// destination/calling points that stay `NULL`. Closing that needs a
 /// schedule lookup keyed on `train_uid` alone, which no index in this
 /// codebase supports today; out of scope for this fix.
+///
+/// **`service_date` floor, added for the 2026-09-25 review finding (Medium
+/// 7), mirroring `list_pending_pins_for_backlog_match`'s own identical
+/// bound.** This query had none: a pin that can never match -- its
+/// `schedule_line_population` was pruned, its origin CRS is on no line, its
+/// schedule simply does not exist -- was re-selected and re-attempted on
+/// EVERY sweep tick, forever, for as long as the row stayed `'pending'`.
+/// Each attempt is a `list_stanox_crs_for_crs` read plus one
+/// `schedule_line_population` read AND a full JSONB parse per candidate line
+/// (a whole day of schedules for that line), so the futile work is
+/// substantial, unbounded in time, and grows monotonically with every such
+/// pin a user ever creates. `CURRENT_DATE - INTERVAL '2 days'` is the same
+/// figure and the same reasoning as the backlog sibling (see its doc
+/// comment): one full day of margin past the shortest realistic retention
+/// window, so a boundary row is never dropped moments before it would have
+/// matched. Nothing is lost past the floor that was reachable anyway -- a
+/// schedule match needs that date's `schedule_line_population`, and
+/// `schedule-reference` only publishes a rolling window of upcoming dates.
 pub async fn list_pending_pins_for_schedule_match(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
     let rows = sqlx::query_as::<_, PendingSchedulePin>(
-        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure, pin_skipped_stations, \
-                pin_platform, pin_planned_platform \
+        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
+                pin_skipped_stations, pin_platform, pin_planned_platform \
          FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending' \
-         AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL",
+         AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL \
+         AND service_date >= CURRENT_DATE - INTERVAL '2 days'",
     )
     .fetch_all(pool)
     .await?;
@@ -1043,6 +1200,23 @@ pub struct TrackedTrainState {
     /// `get_by_tracking_id_returns_a_row_with_null_pins_for_an_nr_primary_subscription`.
     pub pin_origin_crs: Option<String>,
     pub pin_destination_crs: Option<String>,
+    /// The pin's own scheduled departure, `None` for an NR-primary
+    /// subscription whose `trains` row had no schedule data to source it from
+    /// (same reason as `pin_origin_crs` immediately above).
+    ///
+    /// Internal plumbing, never sent to the frontend -- hence
+    /// `#[serde(skip_serializing)]`, the same posture
+    /// `schedule_skipped_stations`/`schedule_platform` already take on this
+    /// struct. It exists solely so `routes::train::blend_darwin_eta` can hand
+    /// `eta_blend::find_darwin_eta` the instant that identifies WHICH service
+    /// on the origin's departure board this pin actually is; without it that
+    /// overlay could only match on destination, and published the next
+    /// service's estimate once the tracked train left the board (the
+    /// 2026-09-25 review's High 3 finding). The wire already carries this
+    /// value on `TrackedTrainListItem` for `GET /Train/mine`, so nothing new
+    /// is exposed by reading it here.
+    #[serde(skip_serializing)]
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
     /// `None` whenever the `LEFT JOIN` below found no `stations` row for
     /// `pin_origin_crs` (an unrecognised code, or reference data that
     /// hasn't caught up) -- see Decision 3 of the plan this join
@@ -1186,6 +1360,7 @@ pub struct TrackedTrainState {
 // updated assertions for the concrete, tested shape of that gap.
 const TRACKED_TRAIN_STATE_SELECT: &str = "\
     SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
+           tt.pin_scheduled_departure, \
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
            tt.resolution_status, tr.train_uid, tr.train_id, \
            tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
@@ -3629,10 +3804,16 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-LIST-ACTIVE-TRAINS-ID-USER";
         seed_user(&pool, user_id).await;
+        // TODAY, not a hardcoded past date: as of the 2026-09-25 Medium 8 fix,
+        // `list_active_tracked_trains` applies a `service_date` floor, so a
+        // fixture dated weeks in the past is (correctly) not active and would
+        // make this test assert the wrong thing. Same change, same reason, in
+        // every `list_active_tracked_trains` test below.
+        let service_date = chrono::Utc::now().date_naive();
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             "TEST-LIST-ACTIVE-TRAINS-ID-UID",
-            "2026-09-06".parse().unwrap(),
+            service_date,
         )
         .await
         .expect("find_or_create_train");
@@ -3645,8 +3826,8 @@ mod db_tests {
              RETURNING id",
         )
         .bind(user_id)
-        .bind("2026-09-06".parse::<chrono::NaiveDate>().unwrap())
-        .bind("2026-09-06T19:15:00Z".parse::<DateTime<Utc>>().unwrap())
+        .bind(service_date)
+        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
         .bind(trains_id)
         .fetch_one(&pool)
         .await
@@ -3694,12 +3875,15 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-LIST-ACTIVE-TRAINS-DEST-USER";
         seed_user(&pool, user_id).await;
+        // Today, for the `service_date` floor -- see the sibling test above.
+        let service_date = chrono::Utc::now().date_naive();
+        let scheduled_departure = service_date.and_hms_opt(18, 32, 0).unwrap().and_utc();
         let trains_id = crate::data::trains::find_or_create_train_with_schedule_match(
             &pool,
             "TEST-LIST-ACTIVE-TRAINS-DEST-UID",
-            "2026-09-06".parse().unwrap(),
+            service_date,
             "WAT",
-            "2026-09-06T18:32:00Z".parse().unwrap(),
+            scheduled_departure,
             Some("WOK"),
             "line-a",
             &serde_json::json!([]),
@@ -3718,8 +3902,8 @@ mod db_tests {
              RETURNING id",
         )
         .bind(user_id)
-        .bind("2026-09-06".parse::<chrono::NaiveDate>().unwrap())
-        .bind("2026-09-06T18:32:00Z".parse::<DateTime<Utc>>().unwrap())
+        .bind(service_date)
+        .bind(scheduled_departure)
         .bind(trains_id)
         .fetch_one(&pool)
         .await
@@ -4059,10 +4243,14 @@ mod db_tests {
         let user_id = "TEST-PRUNED-NR-PRIMARY-SWEEP";
         seed_user(&pool, user_id).await;
 
+        // Today, so this test keeps proving what it claims: the row must be
+        // excluded because its `pin_*` columns are NULL, NOT because the
+        // 2026-09-25 Medium 7 `service_date` floor swept it out for an
+        // unrelated reason.
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             "TEST-PRUNED-NR-PRIMARY-UID",
-            "2026-09-06".parse().unwrap(),
+            chrono::Utc::now().date_naive(),
         )
         .await
         .expect("seed a bare trains row with no schedule data");
@@ -4156,10 +4344,13 @@ mod db_tests {
         seed_user(&pool, second_user_id).await;
 
         let train_uid = "TEST-SHARED-TRAINS-ID-UID";
+        // Today, for `list_active_tracked_trains`' `service_date` floor (the
+        // 2026-09-25 Medium 8 fix) -- `create_subscription_for_train` copies
+        // this date onto both subscriptions.
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             train_uid,
-            "2026-09-06".parse().unwrap(),
+            chrono::Utc::now().date_naive(),
         )
         .await
         .expect("find_or_create_train");
@@ -4544,7 +4735,10 @@ mod db_tests {
         let user_id = "TEST-NR-LIVE-FLOW";
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        // Today: this test reads the subscription back through
+        // `list_active_tracked_trains`, which applies a `service_date` floor as
+        // of the 2026-09-25 Medium 8 fix.
+        let service_date = chrono::Utc::now().date_naive();
 
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-NR-LIVE-UID", service_date)
@@ -5077,5 +5271,351 @@ mod db_tests {
             .await
             .ok();
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// **The 2026-09-25 Medium 7 regression test**: the SCHEDULE-match sweep's
+    /// own missing `service_date` floor, the exact hazard its backlog sibling
+    /// directly above already documented and handled.
+    ///
+    /// A pin whose service date is long past can never schedule-match (that
+    /// date's `schedule_line_population` is gone, if it was ever published),
+    /// but nothing excluded it: every sweep tick re-selected it and re-ran a
+    /// full `attempt_schedule_match` -- a crosswalk read plus a
+    /// whole-day-of-schedules JSONB parse per candidate line -- forever, for
+    /// every such pin ever created.
+    ///
+    /// Asserts both sides of the floor, so it cannot pass by excluding
+    /// everything: yesterday's pin is still a candidate, the ten-day-old one
+    /// is not.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_schedule_match_applies_a_service_date_floor \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_schedule_match_applies_a_service_date_floor() {
+        let pool = connect().await;
+        let user_id = "TEST-SCHEDULE-SWEEP-FLOOR";
+        seed_user(&pool, user_id).await;
+
+        let recent = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        let stale = chrono::Utc::now().date_naive() - chrono::Duration::days(10);
+        let recent_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            recent,
+            Some("EUS"),
+            Some(recent.and_hms_opt(18, 15, 0).unwrap().and_utc()),
+            "pending",
+            None,
+        )
+        .await;
+        let stale_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            stale,
+            Some("EUS"),
+            Some(stale.and_hms_opt(18, 15, 0).unwrap().and_utc()),
+            "pending",
+            None,
+        )
+        .await;
+
+        let pending = list_pending_pins_for_schedule_match(&pool)
+            .await
+            .expect("list_pending_pins_for_schedule_match");
+        assert!(
+            pending.iter().any(|row| row.id == recent_id),
+            "yesterday's pending pin is inside the 2-day floor and must still be retried"
+        );
+        assert!(
+            !pending.iter().any(|row| row.id == stale_id),
+            "a ten-day-old pending pin can never schedule-match and must not be retried on \
+             every sweep tick forever"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The sweep must also carry the pin's own destination through, or a pin
+    /// that only ever resolves via the periodic retry silently loses the
+    /// same-minute tie-break the synchronous attempt at pin-creation time had
+    /// -- see `schedule_matching::find_schedule_match`'s round 4(a). Cheap to
+    /// assert, and the kind of column that is easy to add to a struct and
+    /// forget in the `SELECT`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_schedule_match_carries_the_pin_destination \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_schedule_match_carries_the_pin_destination() {
+        let pool = connect().await;
+        let user_id = "TEST-SCHEDULE-SWEEP-DEST";
+        seed_user(&pool, user_id).await;
+
+        let service_date = chrono::Utc::now().date_naive();
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
+                 pin_destination_crs) \
+             VALUES ($1, $2, 'BHM', $3, 'EUS') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(service_date.and_hms_opt(16, 6, 0).unwrap().and_utc())
+        .fetch_one(&pool)
+        .await
+        .expect("seed a pending pin with a destination");
+
+        let pending = list_pending_pins_for_schedule_match(&pool)
+            .await
+            .expect("list_pending_pins_for_schedule_match");
+        let row = pending
+            .iter()
+            .find(|row| row.id == id)
+            .expect("the seeded pin must be a sweep candidate");
+        assert_eq!(row.pin_destination_crs.as_deref(), Some("EUS"));
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// **The 2026-09-25 Medium 8 regression test**: "active tracked trains"
+    /// used to mean "every subscription ever created."
+    ///
+    /// Neither of the two exclusions bounded it. `resolution_status !=
+    /// 'unresolved'` excludes a value nothing in this workspace ever writes
+    /// (grepped: only the two migrations' CHECK constraints mention it), and
+    /// the `train_current_state` status check stops applying entirely once
+    /// `prune_trains` deletes the `trains` row at 30 days -- `trains_id` is
+    /// `ON DELETE SET NULL`, so the `LEFT JOIN`s go NULL and `cs.status IS
+    /// NULL` readmits the row for good. `trust-consumer` rebuilt its whole
+    /// in-memory reference index from this monotonically-growing set on every
+    /// periodic reload.
+    ///
+    /// Both sides asserted: today's subscription is still active, a
+    /// ten-day-old one (with no `train_current_state` row at all, which is
+    /// exactly the post-prune shape) is not.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_active_tracked_trains_excludes_a_stale_service_date \
+                -- --ignored --test-threads=1`"]
+    async fn list_active_tracked_trains_excludes_a_stale_service_date() {
+        let pool = connect().await;
+        let user_id = "TEST-ACTIVE-STALE";
+        seed_user(&pool, user_id).await;
+
+        let today = chrono::Utc::now().date_naive();
+        let stale = today - chrono::Duration::days(10);
+        let today_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            today,
+            Some("WAT"),
+            Some(today.and_hms_opt(18, 32, 0).unwrap().and_utc()),
+            "resolved",
+            None,
+        )
+        .await;
+        let stale_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            stale,
+            Some("WAT"),
+            Some(stale.and_hms_opt(18, 32, 0).unwrap().and_utc()),
+            "resolved",
+            None,
+        )
+        .await;
+
+        let refs = list_active_tracked_trains(&pool)
+            .await
+            .expect("list_active_tracked_trains");
+        assert!(
+            refs.iter().any(|r| r.id == today_id),
+            "today's subscription is exactly what this set exists for"
+        );
+        assert!(
+            !refs.iter().any(|r| r.id == stale_id),
+            "a ten-day-old subscription has nothing left for trust-consumer's live stream to \
+             say about it and must not stay in the active set forever"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// **The 2026-09-25 High 2 regression test**: a live-TRUST resolution
+    /// whose `train_uid` DISAGREES with the one this subscription's shared
+    /// `trains` row already carries must be refused outright, not glued onto
+    /// that row.
+    ///
+    /// The shape, which is reachable in production: a subscription is already
+    /// correctly linked to train A (schedule-matched, or resolved earlier),
+    /// and `trust-consumer`'s CRS+time heuristic then matches the same pin to
+    /// train B at a busy station and calls this with B's uid. The
+    /// `(Some(existing_trains_id), _)` arm took the existing `trains_id`
+    /// unconditionally and never compared the uids, so
+    /// `mark_train_resolved` stamped B's TRUST `train_id` onto A's row and
+    /// `upsert_train_movement` wrote B's movements into A's movement/current-
+    /// state tables -- visible to EVERY subscriber of A, and feeding A's
+    /// journey view, ETA and delay-repay evidence.
+    ///
+    /// Asserts the refusal is total: A's `train_id` stays NULL, and no
+    /// movement or current-state row appears for A at all.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                upsert_train_event_refuses_a_resolution_whose_uid_disagrees \
+                -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_refuses_a_resolution_whose_uid_disagrees() {
+        let pool = connect().await;
+        let user_id = "TEST-UID-DISAGREE";
+        seed_user(&pool, user_id).await;
+        let service_date = chrono::Utc::now().date_naive();
+
+        // Train A: the identity this subscription is ALREADY correctly linked
+        // to, deliberately left unresolved (`train_id` NULL) so the assertions
+        // below can tell "nothing was written" from "something was".
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-DISAGREE-EXISTING",
+            service_date,
+        )
+        .await
+        .expect("find_or_create_train for the existing identity");
+
+        let tracked_train_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("BHM"),
+            Some(service_date.and_hms_opt(16, 6, 0).unwrap().and_utc()),
+            "schedule_matched",
+            Some(trains_id),
+        )
+        .await;
+
+        // Train B's resolution arriving for train A's subscription.
+        let mut event = fixture_event(tracked_train_id, "test-uid-disagree-dedup");
+        event.resolved_train_uid = Some("TEST-DISAGREE-OTHER".to_string());
+        event.resolved_train_id = Some("999999999".to_string());
+
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert_train_event must not error -- it declines, loudly, and returns Ok");
+
+        let (train_id,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM trains WHERE id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back the existing shared row");
+        assert_eq!(
+            train_id, None,
+            "the disagreeing resolution must not stamp another train's TRUST train_id onto this \
+             already-correctly-matched shared row"
+        );
+
+        let (movements,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count movement rows");
+        assert_eq!(
+            movements, 0,
+            "a refused resolution must not fall through to a movement write against the same \
+             shared row -- that was the whole harm"
+        );
+        let (states,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count current-state rows");
+        assert_eq!(states, 0, "nor a current-state write");
+
+        sqlx::query("DELETE FROM train_current_state WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+        sqlx::query(
+            "DELETE FROM trains WHERE train_uid IN ('TEST-DISAGREE-EXISTING', \
+             'TEST-DISAGREE-OTHER')",
+        )
+        .execute(&pool)
+        .await
+        .ok();
+    }
+
+    /// The other side of the same guard, so it cannot pass by refusing
+    /// everything: when the resolution's uid AGREES with the shared row's, the
+    /// resolution applies exactly as it always did -- `train_id` stamped,
+    /// movement and current-state rows written.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                upsert_train_event_applies_a_resolution_whose_uid_agrees \
+                -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_applies_a_resolution_whose_uid_agrees() {
+        let pool = connect().await;
+        let user_id = "TEST-UID-AGREE";
+        seed_user(&pool, user_id).await;
+        let service_date = chrono::Utc::now().date_naive();
+
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-AGREE-UID", service_date)
+                .await
+                .expect("find_or_create_train");
+        let tracked_train_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("BHM"),
+            Some(service_date.and_hms_opt(16, 6, 0).unwrap().and_utc()),
+            "schedule_matched",
+            Some(trains_id),
+        )
+        .await;
+
+        let mut event = fixture_event(tracked_train_id, "test-uid-agree-dedup");
+        event.resolved_train_uid = Some("TEST-AGREE-UID".to_string());
+        event.resolved_train_id = Some("111111111".to_string());
+
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert_train_event");
+
+        let (train_id,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM trains WHERE id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back the shared row");
+        assert_eq!(train_id, Some("111111111".to_string()));
+        let (movements,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count movement rows");
+        assert_eq!(movements, 1);
+
+        sqlx::query("DELETE FROM train_current_state WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-AGREE-UID'")
+            .execute(&pool)
+            .await
+            .ok();
     }
 }

@@ -1202,6 +1202,51 @@ pub async fn get_schedule_line_population(
         .map_err(Into::into)
 }
 
+/// Every published line whose `service_date` population contains a schedule
+/// with this `train_uid` -- the identity-first inverse of
+/// [`get_schedule_line_population`], which can only answer "what is on THIS
+/// line."
+///
+/// Exists for `schedule_matching::find_schedule_match`'s
+/// known-identity fallback: a train whose ORIGIN station appears on no
+/// `lines/*.toml` at all (a real shape -- an uncatalogued branch terminus)
+/// has no candidate line to look up by CRS, even though
+/// `schedule_query::schedules_touching` has already put its whole schedule,
+/// origin calling point included, into the population of every line that
+/// lists ANY station it calls at further down the route. Without this, such
+/// a train's schedule was unreachable from a known `train_uid`.
+///
+/// One JSONB containment query, not 100-plus per-line reads: `population @>
+/// '[{"uid": ...}]'` is true exactly when some array element of
+/// `population` is an object carrying that `uid` (jsonb containment matches
+/// objects partially), so Postgres does the "which line carries this uid"
+/// scan itself. `ORDER BY line_id` so a caller iterating the result is
+/// deterministic across calls, matching `crs_to_line_ids`' own
+/// alphabetical-by-file candidate ordering.
+///
+/// Deliberately NOT indexed: this runs only on the fallback path above (a
+/// known uid whose origin CRS is uncatalogued), the table holds one row per
+/// line per date (a few hundred rows), and a GIN index on a
+/// whole-day-of-schedules JSONB column would cost every
+/// `schedule-reference` publish far more than it saves here.
+pub async fn list_line_ids_with_uid_in_population(
+    pool: &PgPool,
+    service_date: chrono::NaiveDate,
+    train_uid: &str,
+) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT line_id FROM schedule_line_population \
+         WHERE service_date = $1 \
+           AND population @> jsonb_build_array(jsonb_build_object('uid', $2::text)) \
+         ORDER BY line_id",
+    )
+    .bind(service_date)
+    .bind(train_uid)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(line_id,)| line_id).collect())
+}
+
 /// One `POST /private/schedule-network-departures` batch element --
 /// query-scoped, deserialized straight off the request body by
 /// `routes::ingest::post_schedule_network_departures`. Defined here

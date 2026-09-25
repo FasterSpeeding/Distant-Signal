@@ -461,6 +461,11 @@ async fn post_track(
         tracking_id,
         &pin.origin_crs,
         pin.scheduled_departure,
+        // The destination the user's own departure-board pick named. Breaks a
+        // same-minute tie between two real services at a busy station -- see
+        // `schedule_matching::find_schedule_match`'s round 4(a); without it
+        // this pin could silently resolve to the other one's identity.
+        pin.destination_crs.as_deref(),
         pin.service_date,
         &app.schedule_crs_line_index,
         &pin.skipped_stations,
@@ -1024,6 +1029,16 @@ pub(crate) async fn blend_darwin_eta(
     let Some(pin_origin_crs) = state.pin_origin_crs.as_deref() else {
         return state;
     };
+    // `pin_scheduled_departure` is what identifies WHICH row on that origin's
+    // departure board this pin is (2026-09-25 review, High 3 -- see
+    // `eta_blend::find_darwin_eta`). It is `NULL` for exactly the same
+    // NR-primary shape `pin_origin_crs` is, and without it there is no way to
+    // tell the tracked service apart from the next one to the same
+    // destination -- so the overlay declines rather than guessing, the same
+    // return-`state`-unchanged posture as every other branch here.
+    let Some(pin_scheduled_departure) = state.pin_scheduled_departure else {
+        return state;
+    };
     let Ok(samples) =
         crate::data::queries::latest_station_sample(&app.database, pin_origin_crs).await
     else {
@@ -1034,7 +1049,7 @@ pub(crate) async fn blend_darwin_eta(
             &sample.departures,
             Some(destination),
             None,
-            state.service_date,
+            pin_scheduled_departure,
         )
     {
         state.eta_next = Some(eta);
@@ -1361,6 +1376,7 @@ mod tests {
             service_date: "2026-08-29".parse().unwrap(),
             pin_origin_crs: Some("KGX".to_string()),
             pin_destination_crs: Some("EDB".to_string()),
+            pin_scheduled_departure: Some(fixed_instant()),
             pin_origin_name: Some("London Kings Cross".to_string()),
             pin_destination_name: Some("Edinburgh Waverley".to_string()),
             resolution_status: "resolved".to_string(),
@@ -1782,16 +1798,31 @@ mod db_tests {
     }
 
     /// Seeds one `station_samples` row with a single non-cancelled
-    /// departure heading to `destination_crs`, at `estimated` (a bare
-    /// `"HH:MM"`, London local time -- see `eta_blend::find_darwin_eta`).
-    /// Lets a 200-case test prove `blend_darwin_eta`'s overlay is still
-    /// applied post-ownership-gate, not just that the route returns 200.
-    async fn seed_station_sample(pool: &PgPool, crs: &str, destination_crs: &str, estimated: &str) {
+    /// departure heading to `destination_crs`, scheduled at `scheduled` and
+    /// estimated at `estimated` (both bare `"HH:MM"`, London local time --
+    /// see `eta_blend::find_darwin_eta`). Lets a 200-case test prove
+    /// `blend_darwin_eta`'s overlay is still applied post-ownership-gate, not
+    /// just that the route returns 200.
+    ///
+    /// `scheduled` became a parameter for the 2026-09-25 High 3 fix: the
+    /// overlay now only matches a board row whose OWN scheduled time is within
+    /// a couple of minutes of the pin's, so a fixture has to make the two
+    /// agree to describe one service rather than two. The old hardcoded
+    /// `"11:55"` against a pin scheduled at 12:00 UTC (13:00 local) described
+    /// a row an hour and five minutes away from the pin -- i.e. exactly the
+    /// wrong-train shape the fix rejects.
+    async fn seed_station_sample(
+        pool: &PgPool,
+        crs: &str,
+        destination_crs: &str,
+        scheduled: &str,
+        estimated: &str,
+    ) {
         let departures = serde_json::json!([{
             "service_id": "test-service",
             "operator": "GR",
             "destination_crs": destination_crs,
-            "scheduled": "11:55",
+            "scheduled": scheduled,
             "estimated": estimated,
             "is_cancelled": false,
             "delay_minutes": 5,
@@ -2470,7 +2501,11 @@ mod db_tests {
             service_date,
         )
         .await;
-        seed_station_sample(&pool, "KGX", "EDB", "13:45").await;
+        // `seed_tracked_train` pins 12:00 UTC on `service_date`, which in BST
+        // is 13:00 local -- so the board row this overlay must match is the
+        // 13:00 to EDB, running 45 minutes late. (A row at any other time is
+        // a different service now; see `eta_blend::find_darwin_eta`.)
+        seed_station_sample(&pool, "KGX", "EDB", "13:00", "13:45").await;
 
         let router = test_router(test_app(pool.clone()));
         let (status, body) =
