@@ -95,6 +95,10 @@ export function journeyListItemStatusGroup(item: JourneyListItem): LegStatusGrou
     arriveAfter: null,
     arriveBefore: null,
     matchMode: item.matchMode,
+    // `JourneyListItem` carries no windowSearched field (same flattened-row
+    // gap as `legSkip` below) -- legStatusGroup never reads it, so the
+    // adapter just needs a valid placeholder, not the real value.
+    windowSearched: false,
     trackedTrainState:
       item.trainSubscriptionId === null
         ? null
