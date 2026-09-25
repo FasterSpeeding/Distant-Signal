@@ -489,6 +489,24 @@ impl AppState {
             "sso_client_secret (--sso-client-secret / SSO_CLIENT_SECRET) must not be empty"
         );
 
+        // `data::users::insert_session` binds `session_ttl_days` into
+        // `make_interval(days => $3)` as an `i32` (sqlx sends a plain
+        // integer `days` argument as `INT4`), but the config field itself
+        // is `i64` -- clap's parser happily accepts any in-range `i64`,
+        // including one past `i32::MAX` (~5.8 million days, absurd for a
+        // real deployment but not something the parser itself rejects).
+        // Checked here, once, at startup, rather than left to silently
+        // wrap on first login: `insert_session` re-checks this same
+        // conversion itself (defense in depth, see its own doc comment),
+        // but a bad value should never get that far -- it should fail the
+        // deploy immediately, with a message naming the actual env var,
+        // the same posture every other guard in this block already takes.
+        i32::try_from(config.session_ttl_days).context(
+            "session_ttl_days (--session-ttl-days / SESSION_TTL_DAYS) does not fit in a \
+             32-bit day count -- sessions.expires_at is computed via \
+             make_interval(days => ...), which requires an i32",
+        )?;
+
         let oidc = OidcClient::new(OidcConfig {
             issuer_url: config.sso_issuer_url.clone(),
             client_id: config.sso_client_id.clone(),

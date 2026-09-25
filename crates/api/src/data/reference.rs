@@ -67,27 +67,63 @@ pub struct NearbyStation {
 /// `q` must already be trimmed and non-empty (callers go through
 /// `routes::reference::sanitize_query` first).
 pub async fn search_stations(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<Suggestion>> {
-    let contains = format!("%{q}%");
-    let prefix = format!("{q}%");
+    let escaped = escape_ilike_pattern(q);
+    let contains = format!("%{escaped}%");
+    let prefix = format!("{escaped}%");
     let rows: Vec<Suggestion> = sqlx::query_as(
         "SELECT crs AS code, name FROM stations \
-         WHERE crs ILIKE $1 OR name ILIKE $1 \
+         WHERE crs ILIKE $1 ESCAPE '\\' OR name ILIKE $1 ESCAPE '\\' \
          ORDER BY \
            CASE \
-             WHEN crs ILIKE $2 THEN 0 \
-             WHEN name ILIKE $3 THEN 1 \
+             WHEN crs ILIKE $2 ESCAPE '\\' THEN 0 \
+             WHEN name ILIKE $3 ESCAPE '\\' THEN 1 \
              ELSE 2 \
            END, \
            name \
          LIMIT $4",
     )
     .bind(&contains)
-    .bind(q)
+    .bind(&escaped)
     .bind(&prefix)
     .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+/// Escapes the three characters `ILIKE` treats specially -- `%`, `_`, and
+/// the escape character itself, `\` -- in a raw caller-supplied search
+/// term, so the term can be embedded inside a `%…%`/`…%` pattern and
+/// still only ever match itself literally rather than being reinterpreted
+/// as pattern syntax the caller didn't intend.
+///
+/// Without this, a search term containing `%` or `_` silently matches
+/// more than the caller typed (e.g. `"A_B"` matching `"AxB"`), and a term
+/// ending in a lone `\` makes Postgres reject the query outright: `\` is
+/// ILIKE's default escape character, so a trailing unescaped `\` leaves
+/// the pattern's last escape sequence incomplete, which is a syntax
+/// error, not merely a semantic surprise
+/// (`ERROR: LIKE pattern must not end with escape character`).
+///
+/// Every `ILIKE` pattern built from caller input in this module goes
+/// through this function -- both [`search_stations`] and [`search_tocs`]
+/// share it, one fix instead of two copies that could drift -- and every
+/// `ILIKE` clause built from its output must also carry an explicit
+/// `ESCAPE '\'` so Postgres agrees `\` is the escape character (it
+/// already defaults to `\` for `ILIKE`, but spelling it out ties the SQL
+/// text to this function's contract instead of leaving the pairing
+/// implicit).
+fn escape_ilike_pattern(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '%' => escaped.push_str("\\%"),
+            '_' => escaped.push_str("\\_"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 /// Returns the `limit` stations nearest to (`lat`, `lon`), nearest first,
@@ -149,22 +185,23 @@ pub async fn nearest_stations(
 /// ~30 operator names, and would make the two functions diverge for no
 /// reason. Same trimmed/non-empty contract as [`search_stations`].
 pub async fn search_tocs(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<Suggestion>> {
-    let contains = format!("%{q}%");
-    let prefix = format!("{q}%");
+    let escaped = escape_ilike_pattern(q);
+    let contains = format!("%{escaped}%");
+    let prefix = format!("{escaped}%");
     let rows: Vec<Suggestion> = sqlx::query_as(
         "SELECT atoc_code AS code, name FROM tocs \
-         WHERE atoc_code ILIKE $1 OR name ILIKE $1 \
+         WHERE atoc_code ILIKE $1 ESCAPE '\\' OR name ILIKE $1 ESCAPE '\\' \
          ORDER BY \
            CASE \
-             WHEN atoc_code ILIKE $2 THEN 0 \
-             WHEN name ILIKE $3 THEN 1 \
+             WHEN atoc_code ILIKE $2 ESCAPE '\\' THEN 0 \
+             WHEN name ILIKE $3 ESCAPE '\\' THEN 1 \
              ELSE 2 \
            END, \
            name \
          LIMIT $4",
     )
     .bind(&contains)
-    .bind(q)
+    .bind(&escaped)
     .bind(&prefix)
     .bind(limit)
     .fetch_all(pool)
@@ -205,6 +242,52 @@ pub const ACCESSIBILITY_KEYS: &[&str] = &[
     "helpAndSupport",
     "loungesAndWaiting",
 ];
+
+#[cfg(test)]
+mod ilike_escape_tests {
+    use super::*;
+
+    /// A `%` in the raw search term must not turn into an ILIKE wildcard --
+    /// otherwise a term like `"A%B"` would match any station whose code or
+    /// name has any text between "A" and "B", not just the literal string
+    /// "A%B".
+    #[test]
+    fn escapes_percent() {
+        assert_eq!(escape_ilike_pattern("A%B"), "A\\%B");
+    }
+
+    /// Same reasoning as `%`, for the single-character wildcard `_`.
+    #[test]
+    fn escapes_underscore() {
+        assert_eq!(escape_ilike_pattern("A_B"), "A\\_B");
+    }
+
+    /// The escape character itself must be doubled, both so a literal `\`
+    /// in the search term is matched literally and so a term ending in a
+    /// lone `\` can't leave the surrounding `%…%`/`…%` pattern with a
+    /// dangling, unterminated escape sequence -- which is exactly the
+    /// input that made Postgres reject the query outright before this fix.
+    #[test]
+    fn escapes_backslash() {
+        assert_eq!(escape_ilike_pattern("A\\B"), "A\\\\B");
+    }
+
+    /// A trailing lone backslash is the input that used to make Postgres
+    /// reject the query outright (`LIKE pattern must not end with escape
+    /// character`). After escaping, the pattern ends in `\\`, a complete
+    /// escaped-backslash sequence, so it's valid ILIKE syntax again.
+    #[test]
+    fn escapes_a_trailing_lone_backslash() {
+        assert_eq!(escape_ilike_pattern("A\\"), "A\\\\");
+    }
+
+    /// A term with none of the three special characters passes through
+    /// unchanged.
+    #[test]
+    fn leaves_ordinary_text_unchanged() {
+        assert_eq!(escape_ilike_pattern("York"), "York");
+    }
+}
 
 /// The in-memory filter step, pulled out as its own pure function so it can
 /// be unit-tested without a database (see `accessibility_filter_tests`
@@ -685,6 +768,73 @@ mod db_tests {
                 .execute(&pool)
                 .await
                 .expect("cleanup fixture toc");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                search_stations_handles_percent_underscore_and_trailing_backslash \
+                -- --ignored`"]
+    async fn search_stations_handles_percent_underscore_and_trailing_backslash() {
+        let pool = connect().await;
+
+        // Two fixtures that would be confused by unescaped ILIKE wildcards:
+        // a code containing a literal `_` and one containing a literal `%`.
+        // If `_`/`%` in the query term are not escaped, a search for
+        // "Z_YZ" would match "ZXYZ" too (since `_` matches any one
+        // character), and a search for "Z%YZ" would match any station
+        // whose name contains "Z" then "YZ" anywhere after it.
+        let fixtures: [(&str, &str); 2] = [("ZAA", "Z_YZ Sidings"), ("ZAB", "Z%YZ Junction")];
+        for (crs, name) in fixtures {
+            sqlx::query(
+                "INSERT INTO stations (crs, name) VALUES ($1, $2) \
+                 ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
+            )
+            .bind(crs)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .expect("seed fixture station");
+        }
+
+        let underscore_results = search_stations(&pool, "Z_YZ", 20).await.expect("search");
+        let underscore_names: Vec<&str> =
+            underscore_results.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            underscore_names,
+            vec!["Z_YZ Sidings"],
+            "a literal `_` in the query must not act as a single-character wildcard"
+        );
+
+        let percent_results = search_stations(&pool, "Z%YZ", 20).await.expect("search");
+        let percent_names: Vec<&str> = percent_results.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            percent_names,
+            vec!["Z%YZ Junction"],
+            "a literal `%` in the query must not act as a wildcard"
+        );
+
+        // The bug this whole test guards: before escaping, a query ending
+        // in a lone `\` made Postgres reject the query outright with
+        // "ERROR: LIKE pattern must not end with escape character". This
+        // must now return an empty (not error) result, since no fixture
+        // contains a literal trailing backslash.
+        let backslash_results = search_stations(&pool, "ZAA\\", 20)
+            .await
+            .expect("a trailing backslash in the query must not make Postgres reject the query");
+        assert!(
+            backslash_results.is_empty(),
+            "no fixture contains a literal trailing backslash, so this should be a clean empty \
+             result, not an error"
+        );
+
+        for (crs, _) in fixtures {
+            sqlx::query("DELETE FROM stations WHERE crs = $1")
+                .bind(crs)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture station");
         }
     }
 
