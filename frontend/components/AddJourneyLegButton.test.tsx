@@ -197,4 +197,64 @@ describe('AddJourneyLegButton', () => {
     expect(await screen.findByText('no schedule matched that window')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
+
+  // Bug: the Origin/Destination CRS and Service date fields were free text
+  // with no client-side format check, so a malformed value used to sail
+  // straight through to the backend and come back as a raw 400 instead of
+  // a friendly inline message. `Add leg` also stays disabled -- the
+  // existing `isValid` gate already blocks submission on any malformed
+  // required field, this just adds the "why" underneath the field.
+  it('shows an inline error for a malformed Origin CRS and keeps the button disabled', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const origin = await screen.findByLabelText('Origin CRS');
+    fireEvent.change(origin, { target: { value: 'WOKX' } });
+
+    expect(await screen.findByText('Must be a 3-letter CRS code')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it('shows no CRS error while the Origin field is still empty', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    await screen.findByLabelText('Origin CRS');
+    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+  });
+
+  it('shows an inline error for a malformed Service date and keeps the button disabled', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const destination = await screen.findByLabelText('Destination CRS');
+    fireEvent.change(destination, { target: { value: 'CLJ' } });
+    fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-02-30' } });
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+
+    expect(await screen.findByText('Must be a valid date (YYYY-MM-DD)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it('accepts a well-formed CRS and date and allows submission', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(legResponse());
+
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const destination = await screen.findByLabelText('Destination CRS');
+    fireEvent.change(destination, { target: { value: 'CLJ' } });
+    fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+
+    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Must be a valid date (YYYY-MM-DD)')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  });
 });

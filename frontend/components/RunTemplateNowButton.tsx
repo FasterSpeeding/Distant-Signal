@@ -9,6 +9,23 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { MaterializeTemplateRequest, MaterializeTemplateResponse } from '@/lib/types';
 
+/** Bug: the Service date field here is free text with no client-side
+ * format check -- a garbled date used to sail straight through to
+ * `POST /JourneyTemplates/{id}/materialize` and come back as a raw backend
+ * 400 shown verbatim in the `error` Alert. Same fix, and same rationale for
+ * the round-trip-through-`dayjs`-and-compare check (rather than a bare
+ * regex), as `AddJourneyLegButton.tsx`'s identical helper: `dayjs` has no
+ * `customParseFormat` plugin installed in this app, so it silently rolls
+ * an out-of-range date like "2026-02-30" forward to a real one instead of
+ * rejecting it, and a bare `DATE_PATTERN` shape check alone would miss
+ * that. */
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+function isValidServiceDate(value: string): boolean {
+  if (!DATE_PATTERN.test(value)) return false;
+  const parsed = dayjs(value);
+  return parsed.isValid() && parsed.format('YYYY-MM-DD') === value;
+}
+
 /** "Run now" — the manual, on-demand materialization trigger
  * (`POST /JourneyTemplates/{id}/materialize`), §6 item 3. Defaults its
  * date field to today (`dayjs().format('YYYY-MM-DD')`, same convention
@@ -37,8 +54,10 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
     open();
   }
 
+  const serviceDateValid = isValidServiceDate(serviceDate);
+
   async function handleSubmit() {
-    if (!serviceDate) return;
+    if (!serviceDateValid) return;
     setSubmitting(true);
     setError(null);
     needsLoginState.reset();
@@ -79,12 +98,13 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
             placeholder="YYYY-MM-DD"
             value={serviceDate}
             onChange={(event) => setServiceDate(event.currentTarget.value)}
+            error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
           />
           {error && <Alert color="red">{error}</Alert>}
           {needsLoginState.needsLogin && (
             <LoginLink underline="always">Log in to run this template</LoginLink>
           )}
-          <Button onClick={handleSubmit} disabled={!serviceDate} loading={submitting}>
+          <Button onClick={handleSubmit} disabled={!serviceDateValid} loading={submitting}>
             Create journey
           </Button>
         </Stack>

@@ -5,6 +5,8 @@ import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { LoadMoreControl } from './LoadMoreControl';
 import { StatusRow } from './StatusRow';
 import { TextLink } from './TextLink';
+import { useNeedsLogin } from './useNeedsLogin';
+import { LoginPromptModal } from './LoginPromptModal';
 import { searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
@@ -117,6 +119,15 @@ export function JourneyLegCandidates({
   // as TrainSearchForm.tsx's `loadingMore`/`searching` split: a "Load more"
   // in flight must not blank the rows already on screen.
   const [loadingMore, setLoadingMore] = useState(false);
+  // Bug fix: a lapsed session (401 from the candidates fetch) used to fall
+  // straight into the generic 'error' branch below ("Couldn't load
+  // candidate trains right now. Try again.") with no login prompt -- and
+  // since the session had actually expired, "Try again" could never
+  // succeed. Mirrors `PinToggle.tsx`'s established `useNeedsLogin()` /
+  // `LoginPromptModal` shape: reset at the start of every fresh attempt,
+  // set on a real 401, surfaced as an unconditionally-rendered modal below
+  // rather than folded into `body()`'s own state machine.
+  const needsLoginState = useNeedsLogin();
 
   // Operator/TOC filter -- design doc's journey-leg-operator-filter plan,
   // Task 6. `operator` is the raw typed text (drives the Autocomplete's own
@@ -155,6 +166,7 @@ export function JourneyLegCandidates({
   useEffect(() => {
     let cancelled = false;
     setResults('loading');
+    needsLoginState.reset();
     const params = new URLSearchParams();
     if (committedOperator) params.set('operator', committedOperator);
     const query = params.toString();
@@ -163,8 +175,16 @@ export function JourneyLegCandidates({
       .then((body: CandidatesResponse) => {
         if (!cancelled) setResults({ rows: body.results, nextCursor: body.nextCursor, loadMoreFailed: false });
       })
-      .catch(() => {
-        if (!cancelled) setResults('error');
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // A lapsed session, specifically -- distinguished from every other
+        // failure (a 500, a network error, ...) so only THIS case gets the
+        // login prompt instead of the plain "try again" message that can
+        // never succeed for it.
+        if (err instanceof Response && err.status === 401) {
+          needsLoginState.markNeedsLogin();
+        }
+        setResults('error');
       });
     return () => {
       cancelled = true;
@@ -172,7 +192,12 @@ export function JourneyLegCandidates({
     // `committedOperator` joins `journeyId`/`legId` as a full reset trigger,
     // same as this plan's Task 6 brief requires: a changed filter drops any
     // existing rows/`nextCursor` and searches again from page 1, exactly
-    // like a fresh `journeyId`/`legId` mount already does.
+    // like a fresh `journeyId`/`legId` mount already does. `needsLoginState`
+    // is deliberately excluded: it's a fresh object from `useNeedsLogin()`
+    // every render (its `reset`/`markNeedsLogin` callbacks aren't
+    // memoized), so listing it would re-run this fetch on every render
+    // instead of only on a real prop/filter change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [journeyId, legId, committedOperator]);
 
   // Mirrors `TrainSearchForm.tsx`'s own `handleLoadMore` almost verbatim:
@@ -194,6 +219,12 @@ export function JourneyLegCandidates({
         `/api/Journeys/${journeyId}/legs/${legId}/candidates?${params.toString()}`,
       );
       if (!response.ok) {
+        // Same 401-specific handling as the initial fetch above -- a
+        // session that lapsed between page 1 and "Load more" gets the login
+        // prompt too, not just a retry button that can never succeed.
+        if (response.status === 401) {
+          needsLoginState.markNeedsLogin();
+        }
         setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
@@ -244,9 +275,16 @@ export function JourneyLegCandidates({
       );
     }
     if (results === 'error') {
+      // A lapsed session gets its own message -- "Try again" is honest
+      // advice for a transient failure, but actively misleading for a 401,
+      // since retrying with the same expired session can never succeed.
+      // The actual login prompt is the `LoginPromptModal` rendered
+      // unconditionally below, same as `PinToggle.tsx`.
       return (
         <Alert color="red" title="Search failed">
-          Couldn&apos;t load candidate trains right now. Try again.
+          {needsLoginState.needsLogin
+            ? 'Your session has expired. Log in again to see candidate trains.'
+            : "Couldn't load candidate trains right now. Try again."}
         </Alert>
       );
     }
@@ -329,6 +367,9 @@ export function JourneyLegCandidates({
         })}
       />
       {body()}
+      <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
+        Log in to see candidate trains for this leg.
+      </LoginPromptModal>
     </Stack>
   );
 }

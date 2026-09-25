@@ -3,6 +3,16 @@ import { screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
 
+// `LoginPromptModal`'s own `LoginButtonLink` calls `useLoginHref()`, which
+// calls `usePathname()`/`useSearchParams()` -- same stub `PinToggle.test.tsx`/
+// `NotificationsToggle.test.tsx` use for the same reason (these throw
+// outside a real Next.js App Router tree). Only exercised once a test
+// actually drives this component into its `needsLogin` state below.
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/journeys/1',
+  useSearchParams: () => new URLSearchParams(''),
+}));
+
 // A BTH -> SWI leg riding two Bristol -> London Paddington services: the
 // leg's own two ends (`legOriginCrs`/`legDestinationCrs`) are neither of
 // the train's (`originCrs`/`destinationCrs`), which is exactly the shape
@@ -339,6 +349,71 @@ describe('JourneyLegCandidates', () => {
     );
 
     expect(await screen.findByText('Search failed')).toBeInTheDocument();
+  });
+
+  // Bug: a lapsed session (401) used to fall into the same generic
+  // "Couldn't load candidate trains right now. Try again." branch as any
+  // other failure -- but retrying with the same expired session can never
+  // succeed, and there was no login prompt telling the user why.
+  it('shows a login prompt, not the generic retry message, when the candidates fetch 401s', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))),
+    );
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(await screen.findByText('Search failed')).toBeInTheDocument();
+    expect(
+      screen.getByText('Your session has expired. Log in again to see candidate trains.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Couldn't load candidate trains right now. Try again."),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole('link', { name: 'Log in' }),
+    ).toHaveAttribute('href', '/api/auth/login?return_to=%2Fjourneys%2F1');
+  });
+
+  it('a non-401 failure still shows the generic retry message with no login prompt', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('boom', { status: 500 }))),
+    );
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(
+      await screen.findByText("Couldn't load candidate trains right now. Try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Log in' })).not.toBeInTheDocument();
+  });
+
+  it('shows the login prompt on a 401 from "Load more" too', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('after=')) {
+        return Promise.resolve(new Response('no session', { status: 401 }));
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ results: CANDIDATES_FIXTURE.results, nextCursor: 'cursor-1' }), {
+          status: 200,
+        }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    const loadMore = await screen.findByRole('button', { name: /load more/i });
+    fireEvent.click(loadMore);
+
+    expect(
+      await screen.findByRole('link', { name: 'Log in' }),
+    ).toHaveAttribute('href', '/api/auth/login?return_to=%2Fjourneys%2F1');
   });
 
   // Task 6, journey-leg-operator-filter plan: the backend now filters
