@@ -166,26 +166,53 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_trust_backlog.clone()],
         ),
-        // GET has two legitimate readers now: schedule-ingest reading back
-        // its own last write (unchanged), and schedule-reference, added so
-        // it can seed its restart-durable `last_processed_delivery` dedup
-        // state from `api`'s own persisted record on startup instead of
-        // always starting at `None` -- see `schedule-reference::main`'s
-        // `seed_last_processed_delivery`. Read-only for schedule-reference:
-        // POST stays schedule-ingest-only, matching `/stanox-crs` GET's own
-        // multi-reader-groups-vs-single-writer-group shape just below.
+        // ONE reader again: schedule-ingest reading back its own last write.
+        //
+        // schedule-reference's read grant here was REMOVED (2026-09-25): it
+        // used to seed its restart dedup marker from this route, which was
+        // the bug -- this route reports when schedule-INGEST extracted a
+        // delivery, not whether schedule-reference ever published it. It now
+        // reads its own `/schedule-reference-publishes` marker instead (just
+        // below), so it has no business reading this route at all any more,
+        // and a grant no caller needs is a grant that should not exist. The
+        // only cost of revoking it is during the rolling deploy that lands
+        // this change: an old `reference` pod still GETting this route gets a
+        // 403, which `seed_last_processed_delivery` already handles as
+        // "fall back to first-run behavior" (a redundant republish of a
+        // delivery it had already published -- wasteful for one cycle, never
+        // data loss).
         (
             "/schedule-feed-ingests",
             Method::GET,
-            vec![
-                config.internal_oauth_group_schedule_ingest.clone(),
-                config.internal_oauth_group_schedule_reference.clone(),
-            ],
+            vec![config.internal_oauth_group_schedule_ingest.clone()],
         ),
         (
             "/schedule-feed-ingests",
             Method::POST,
             vec![config.internal_oauth_group_schedule_ingest.clone()],
+        ),
+        // BOTH methods, ONE group -- schedule-reference reading back its own
+        // last write, exactly the shape /full-coverage-stats below documents
+        // ("this producer reading back its own last write, not a second
+        // caller"), and deliberately NOT /schedule-feed-ingests' split shape
+        // directly above: no other service writes or reads this marker.
+        //
+        // This route exists because seeding schedule-reference's restart
+        // dedup from /schedule-feed-ingests (schedule-INGEST's
+        // extraction-time record) made a restart mid-processing skip a
+        // delivery that had never actually been published. schedule-reference
+        // now writes its own completion marker here, once per delivery, only
+        // after every product for that delivery has published successfully.
+        // See crates/api/migrations/20260925130000_schedule_reference_publishes.sql.
+        (
+            "/schedule-reference-publishes",
+            Method::GET,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
+        (
+            "/schedule-reference-publishes",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
         // Split by method, NOT a shared two-group entry: trust-consumer,
         // full-coverage-consumer, and trust-backlog-consumer only ever GET

@@ -28,18 +28,31 @@ pub struct Config {
     #[arg(long, env, default_value = "http://api:8080/private/stanox-crs")]
     pub api_ingest_url: String,
 
-    /// `api`'s GET counterpart of `schedule-ingest`'s own per-delivery
-    /// ingest record (`crates/api/src/routes/ingest.rs`'s
-    /// `/schedule-feed-ingests` route) -- read once at startup to seed
-    /// `last_processed_delivery` from the real, persisted identity of the
-    /// most recently successfully-ingested delivery, rather than always
-    /// starting at `None` on a restart. See `main::seed_last_processed_delivery`.
+    /// This service's OWN per-delivery completion marker route (`GET` +
+    /// `POST /private/schedule-reference-publishes`) -- read once at startup
+    /// to seed `last_processed_delivery`, and written once per delivery,
+    /// only after EVERY product derived from that delivery has published
+    /// successfully. See `main::seed_last_processed_delivery` and
+    /// `main::poll_once`.
+    ///
+    /// **This replaced `schedule_feed_ingests_url` as the seeding source,
+    /// and the difference is the whole reason this field exists.** That
+    /// route is `schedule-ingest`'s record of having EXTRACTED a delivery
+    /// zip, written the moment extraction verifies -- before this service
+    /// has read a byte of it. Seeding from it meant a restart of the
+    /// `reference` container between "ingest recorded the delivery" and
+    /// "reference finished publishing it" (an OOM kill during the in-memory
+    /// CIF parse, a rolling deploy, any crash) made this process believe it
+    /// had already handled a delivery it had never published, so `poll_once`
+    /// short-circuited and every product for that delivery silently never
+    /// landed until the next delivery arrived ~24 hours later. See
+    /// `crates/api/migrations/20260925130000_schedule_reference_publishes.sql`.
     #[arg(
         long,
         env,
-        default_value = "http://api:8080/private/schedule-feed-ingests"
+        default_value = "http://api:8080/private/schedule-reference-publishes"
     )]
-    pub schedule_feed_ingests_url: String,
+    pub schedule_reference_publishes_url: String,
 
     /// The `api` crate's ingestion endpoint for this service's second
     /// responsibility (Task 7): per-line CIF SCHEDULE population publish.

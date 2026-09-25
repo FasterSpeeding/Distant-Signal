@@ -76,6 +76,11 @@ pub fn router() -> Router {
             axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
         )
         .route(
+            "/schedule-reference-publishes",
+            axum::routing::get(get_schedule_reference_last_publish)
+                .post(post_schedule_reference_publish),
+        )
+        .route(
             "/stanox-crs",
             axum::routing::get(get_stanox_crs).post(post_stanox_crs),
         )
@@ -369,6 +374,44 @@ async fn post_schedule_feed_ingest(
     Ok(Json(UpsertResponse { upserted: 1 }))
 }
 
+/// `crates/schedule-reference`'s OWN per-delivery completion marker -- the
+/// one route in this file where that producer both writes and reads back its
+/// own state, because the state IS its own (see
+/// `queries::insert_schedule_reference_publish`).
+///
+/// Distinct from `/schedule-feed-ingests` above, and the distinction is
+/// load-bearing: that route is `schedule-ingest`'s record of having
+/// EXTRACTED a delivery; this one is `schedule-reference`'s record of having
+/// PUBLISHED everything it derives from that delivery. `schedule-reference`
+/// used to seed its restart dedup from the former, which meant a restart
+/// mid-processing made it skip a delivery it had never actually published
+/// -- see `20260925130000_schedule_reference_publishes.sql`.
+async fn post_schedule_reference_publish(
+    State(app): State<App>,
+    Json(req): Json<common::ingest::ScheduleReferencePublishRequest>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    queries::insert_schedule_reference_publish(&app.database, &req.delivery)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted: 1 }))
+}
+
+/// The GET half of `/schedule-reference-publishes` -- read once at startup by
+/// `schedule-reference::main::seed_last_processed_delivery`. Returns the
+/// delivery directory name, NOT a timestamp, unlike every `last_*_fetch` GET
+/// in this file: see `common::ingest::ScheduleReferencePublishRequest`'s own
+/// doc comment for why the marker is the directory name verbatim.
+async fn get_schedule_reference_last_publish(
+    State(app): State<App>,
+) -> Result<Json<common::ingest::LastCompletedPublishResponse>, (StatusCode, String)> {
+    let delivery = queries::last_completed_schedule_reference_publish(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(common::ingest::LastCompletedPublishResponse {
+        delivery,
+    }))
+}
+
 /// `crates/schedule-reference`'s per-sequence batch of resolved
 /// STANOX/CRS rows -- see `queries::upsert_stanox_crs`.
 async fn post_stanox_crs(
@@ -501,12 +544,46 @@ async fn post_schedule_network_departures(
 /// its own beyond that call, deliberately.
 async fn post_schedule_destination_departures(
     State(app): State<App>,
+    axum::extract::Query(params): axum::extract::Query<ChunkedReplaceParams>,
     Json(rows): Json<Vec<ScheduleDestinationDeparturesRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_schedule_destination_departures(&app.database, &rows)
-        .await
-        .map_err(internal_error)?;
+    let upserted = queries::upsert_schedule_destination_departures_chunk(
+        &app.database,
+        &rows,
+        params.replace_dates(),
+    )
+    .await
+    .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
+}
+
+/// `?replace=true|false` on the two date-scoped, wholesale-replace publish
+/// routes (`/schedule-destination-departures`,
+/// `/schedule-calling-points-full`) -- whether THIS request is the one that
+/// clears its service date before inserting.
+///
+/// `schedule-reference` splits an oversized per-date publish into several
+/// POSTs (see that crate's `post_date_scoped_rows_in_chunks` and
+/// `PUBLISH_CHUNK_ROWS`) and sends `replace=true` on the first chunk of a date
+/// and `replace=false` on every chunk after it. Without that distinction each
+/// chunk's own `DELETE ... WHERE service_date = ANY(...)` would delete the
+/// chunks before it and the date would end up holding only the last one --
+/// which would be a much worse bug than the oversized body the chunking
+/// exists to prevent.
+///
+/// **Absent means `true`**, i.e. the exact pre-chunking behavior: a caller
+/// that knows nothing about chunking (or a hand-run `curl`) still gets a
+/// clean wholesale replace rather than silently merging into the previous
+/// delivery's rows.
+#[derive(Debug, Deserialize)]
+struct ChunkedReplaceParams {
+    replace: Option<bool>,
+}
+
+impl ChunkedReplaceParams {
+    fn replace_dates(&self) -> bool {
+        self.replace.unwrap_or(true)
+    }
 }
 
 /// Dynamic Trip Planning Phase 2's whole-network, un-bucketed
@@ -517,11 +594,16 @@ async fn post_schedule_destination_departures(
 /// for the DELETE+INSERT-array transaction shape.
 async fn post_schedule_calling_points_full(
     State(app): State<App>,
+    axum::extract::Query(params): axum::extract::Query<ChunkedReplaceParams>,
     Json(rows): Json<Vec<ScheduleCallingPointsFullRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_schedule_calling_points_full(&app.database, &rows)
-        .await
-        .map_err(internal_error)?;
+    let upserted = queries::upsert_schedule_calling_points_full_chunk(
+        &app.database,
+        &rows,
+        params.replace_dates(),
+    )
+    .await
+    .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
