@@ -429,6 +429,28 @@ pub async fn remove_member(
 ) -> Result<RemoveMemberOutcome> {
     let mut tx = pool.begin().await?;
 
+    // Finding #3 (2026-09-25 review): serializes concurrent `remove_member`
+    // calls on the SAME group. Without this, two concurrent departures
+    // (e.g. the owner leaving while their would-be successor leaves at the
+    // same moment) could interleave: this call's `remaining` count and its
+    // successor `SELECT` below could both observe a member row a
+    // concurrent call was simultaneously deleting, so the successor
+    // `UPDATE` further down would match zero rows while this function
+    // still returned `Removed { new_owner: Some(..) }` for an update that
+    // never actually happened -- leaving the group with no `owner` row at
+    // all (`get_group_detail`'s inner join on `role = 'owner'` then 404s
+    // for every remaining member, forever, since nothing else ever
+    // repairs it). Taking this lock first forces a second concurrent call
+    // on the same group to wait for this transaction to commit (or roll
+    // back) before it can even read `group_members`, so it always sees
+    // this call's fully-applied result, never a half-applied one. See
+    // `remove_member_serializes_concurrent_calls_via_the_groups_row_lock`
+    // below for the regression coverage.
+    sqlx::query("SELECT id FROM groups WHERE id = $1 FOR UPDATE")
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
     let target_role: Option<String> =
         sqlx::query_scalar("SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2")
             .bind(group_id)
@@ -2393,6 +2415,92 @@ mod db_tests {
         assert!(detail.is_none(), "the group itself should be gone");
 
         cleanup(&pool, &["TEST-GROUPS-SOLO-OWNER"]).await;
+    }
+
+    /// Finding #3's own regression test (2026-09-25 review): proves
+    /// `remove_member` actually serializes against a concurrent transaction
+    /// via the `groups` row lock, rather than racing it.
+    ///
+    /// Racing two real `tokio::spawn`ed `remove_member` calls and hoping to
+    /// land inside the narrow bad-interleave window the finding describes
+    /// would be flaky by construction (the window is a handful of
+    /// statements wide). Instead this proves the mechanism directly: a
+    /// first transaction takes the exact same `SELECT ... FOR UPDATE` lock
+    /// `remove_member` now takes and holds it open; a second, real
+    /// `remove_member` call for the SAME group is spawned concurrently and
+    /// must BLOCK behind it -- confirmed by a short timeout it must NOT
+    /// complete within -- resuming only once the holder commits and
+    /// releases the lock. Before this fix there was no lock to block on at
+    /// all, so this same test would have shown the second call completing
+    /// well inside the timeout, free to interleave with the first.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_member_serializes_concurrent_calls_via_the_groups_row_lock \
+                -- --ignored --test-threads=1`"]
+    async fn remove_member_serializes_concurrent_calls_via_the_groups_row_lock() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-LOCK-OWNER").await;
+        seed_user(&pool, "TEST-GROUPS-LOCK-ADMIN").await;
+        let group_id = create_group(&pool, "Lock Test", "TEST-GROUPS-LOCK-OWNER")
+            .await
+            .expect("create group");
+        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')")
+            .bind(&group_id)
+            .bind("TEST-GROUPS-LOCK-ADMIN")
+            .execute(&pool)
+            .await
+            .expect("seed admin");
+
+        // Holder: takes the same row lock `remove_member` now takes, in its
+        // own transaction, and keeps it open (uncommitted) until told to
+        // release it below.
+        let mut holder_tx = pool.begin().await.expect("begin holder tx");
+        sqlx::query("SELECT id FROM groups WHERE id = $1 FOR UPDATE")
+            .bind(&group_id)
+            .fetch_optional(&mut *holder_tx)
+            .await
+            .expect("acquire the groups row lock");
+
+        // A real, concurrent `remove_member` call for the SAME group, on a
+        // separate connection out of the same pool -- exactly the shape of
+        // the owner-leaves-while-their-successor-leaves race the finding
+        // describes.
+        let pool2 = pool.clone();
+        let group_id2 = group_id.clone();
+        let mut handle = tokio::spawn(async move {
+            remove_member(&pool2, &group_id2, "TEST-GROUPS-LOCK-OWNER").await
+        });
+
+        let still_running =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut handle).await;
+        assert!(
+            still_running.is_err(),
+            "remove_member must block behind a concurrent transaction's groups row lock, not \
+             proceed to read/write group_members while that lock is still held"
+        );
+
+        holder_tx.commit().await.expect("release the lock");
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("remove_member must complete promptly once the lock is released")
+            .expect("spawned task panicked")
+            .expect("remove_member");
+        assert_eq!(
+            outcome,
+            RemoveMemberOutcome::Removed {
+                new_owner: Some("TEST-GROUPS-LOCK-ADMIN".to_string())
+            },
+            "once unblocked, the call must still complete correctly and transfer ownership"
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-LOCK-OWNER", "TEST-GROUPS-LOCK-ADMIN"]).await;
     }
 
     #[tokio::test]
