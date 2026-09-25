@@ -606,7 +606,8 @@ mod parse_pdf_text_tests {
     }
 }
 
-/// Thin wrapper: validates the `%PDF-` magic header, extracts the native
+/// Thin wrapper: validates the `%PDF-` magic header, runs
+/// `reject_pdf_compression_bombs` as a size guard, extracts the native
 /// text layer via the third-party `pdf_extract` crate, and hands off to
 /// `parse_pdf_text` (the actual logic, fully unit-tested above).
 ///
@@ -614,17 +615,217 @@ mod parse_pdf_text_tests {
 /// input via code this app doesn't control; a panic inside it must fail
 /// this one request, not take the whole handler down. See this plan's
 /// Global Constraints on file upload hygiene.
+///
+/// **`catch_unwind` does NOT cover an allocation failure (Finding #1 of
+/// the 2026-09-25 review).** In Rust, a failed allocation `abort()`s the
+/// whole process -- it is not a panic, `catch_unwind` cannot intercept it,
+/// and neither can the `tokio::time::timeout` wrapped around this call by
+/// `routes::train::handle_pdf_upload` (that timeout only stops the caller
+/// from *awaiting* the spawned blocking task; the task itself, and the OS
+/// thread running it, keep executing to completion or crash regardless).
+/// `pdf_extract` fully inflates every `FlateDecode`/`LZWDecode` stream in
+/// the document into memory via `lopdf`, which places NO bound of its own
+/// on the decompressed size anywhere -- confirmed directly against
+/// `lopdf` 0.42.0's source
+/// (`Stream::decompressed_content`/`decompress_zlib` in `object.rs`
+/// `read_to_end`s an unbounded `Vec`, and this happens even during
+/// `Document::load_mem` itself, for compressed xref/object streams, not
+/// merely while extracting a page's own content stream later). A small,
+/// highly-compressed stream within this route's ordinary 8 MiB
+/// `DefaultBodyLimit` (see `routes::train`) can therefore make `lopdf` try
+/// to allocate gigabytes, aborting the entire API process for every
+/// in-flight request, not just this one.
+///
+/// `reject_pdf_compression_bombs` below is called BEFORE
+/// `pdf_extract::extract_text_from_mem` specifically so a pathological
+/// upload never reaches `lopdf`'s unbounded path at all. See that
+/// function's own doc comment for exactly what it does and does not
+/// protect against -- it is a real, meaningful mitigation, not a complete
+/// one; complete protection would require running the actual parse in a
+/// separate, resource-limited process, which is a larger follow-up than
+/// this pass's scope.
 pub fn parse_pdf(bytes: &[u8]) -> anyhow::Result<PartialTicket> {
     anyhow::ensure!(
         bytes.starts_with(b"%PDF-"),
         "not a PDF file (missing %PDF- header)"
     );
+    anyhow::ensure!(
+        bytes.len() <= MAX_PDF_UPLOAD_BYTES,
+        "PDF is too large ({} bytes; this route accepts at most {} bytes for a PDF e-ticket)",
+        bytes.len(),
+        MAX_PDF_UPLOAD_BYTES
+    );
+
+    reject_pdf_compression_bombs(bytes)?;
 
     let text = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes))
         .map_err(|_| anyhow::anyhow!("PDF text extraction panicked"))?
         .map_err(|err| anyhow::anyhow!("failed to extract text from PDF: {err}"))?;
 
     Ok(parse_pdf_text(&text))
+}
+
+/// A PDF upload above this size is rejected before any parsing is
+/// attempted -- tighter than `routes::train`'s generic 8 MiB
+/// `DefaultBodyLimit` (which also covers the unrelated `.pkpass` route, a
+/// bounded zip-entry read with no comparable risk). No legitimate ticket
+/// PDF (a boarding pass or e-ticket, typically well under 1 MiB)
+/// approaches this size; a smaller input also caps how many
+/// `stream`/`endstream` spans `reject_pdf_compression_bombs` below has to
+/// scan for a given upload.
+const MAX_PDF_UPLOAD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Cumulative decompressed-bytes budget for `reject_pdf_compression_bombs`'s
+/// bounded pre-scan. Comfortably above any legitimate ticket PDF's actual
+/// content (a boarding pass's real text/image streams add up to at most a
+/// few MiB decompressed) while still bounding a malicious stream's blast
+/// radius to a fixed, small amount of real memory -- see
+/// `reject_pdf_compression_bombs`'s own doc comment for how this bound is
+/// actually enforced without ever materializing a bomb's full output.
+const MAX_TOTAL_INFLATED_BYTES: usize = 256 * 1024 * 1024;
+
+/// **Finding #1 of the 2026-09-25 review's mitigation**: a best-effort,
+/// in-process guard against a PDF compression bomb, run BEFORE this
+/// module hands `bytes` to `pdf_extract`/`lopdf` (see `parse_pdf`'s own
+/// doc comment for why that hand-off is otherwise unprotected).
+///
+/// ## What this does
+///
+/// `lopdf` exposes no way to cap decompressed stream size, and no way to
+/// learn a stream's DECOMPRESSED length up front (a PDF's own `/Length`
+/// key on a stream is the COMPRESSED length -- already bounded by
+/// `MAX_PDF_UPLOAD_BYTES` above -- not the decompressed one, so it cannot
+/// be used to reject a high compression RATIO). So instead of asking
+/// `lopdf` anything, this function does its OWN, completely independent,
+/// bounded decompression pass directly over the raw file bytes:
+///
+/// 1. Naively scans for every `stream` ... `endstream` span in the raw
+///    bytes (the literal PDF syntax marking a stream's raw data --
+///    intentionally NOT a real PDF object/xref parse, so this doesn't
+///    need to trust or replicate any of `lopdf`'s own object-graph
+///    logic).
+/// 2. For each span, attempts a zlib inflate (`FlateDecode` is the
+///    overwhelming majority filter in real-world PDFs, and the only one
+///    a genuine ticket PDF is realistically going to use) through a
+///    small, FIXED-SIZE, REUSED buffer -- never a growing `Vec` -- so
+///    this function's own memory use stays tiny regardless of how large
+///    a malicious stream claims to decompress to.
+/// 3. Aborts a single stream's decompression, and immediately rejects the
+///    whole file, the instant the RUNNING TOTAL across every stream seen
+///    so far exceeds `MAX_TOTAL_INFLATED_BYTES` -- without ever letting
+///    any decoder run to completion on a bomb.
+///
+/// A span that isn't valid zlib data (most real PDF streams aren't --
+/// images, fonts, and already-compressed content commonly use other or no
+/// filters) simply contributes 0 bytes and is skipped: this is a pre-scan
+/// for compression bombs specifically, not a general PDF parser, so a
+/// span this function can't make sense of is, by definition, not a
+/// zlib-based bomb it needs to catch.
+///
+/// ## What this does NOT protect against (documented honestly, not
+/// swept under the rug)
+///
+/// - **Not a real PDF parser.** The naive `stream`/`endstream` token scan
+///   can be fooled by a stream whose raw (compressed) bytes happen to
+///   contain the literal ASCII bytes `endstream` before the real
+///   terminator -- entirely possible in arbitrary binary data. This would
+///   make this function inspect a truncated slice, which can UNDER-count
+///   (and in the worst case, mean a bomb hiding past a spurious match
+///   isn't caught by this particular scan iteration) rather than over-count.
+/// - **Chained filters beyond the first stage are only partly covered.**
+///   A PDF stream may declare multiple chained filters (e.g.
+///   `/Filter [FlateDecode FlateDecode]`); this function's raw-byte scan
+///   has no dictionary to read `/Filter` from, so it only ever inflates
+///   the RAW bytes once. Any stream whose FIRST inflate stage alone would
+///   exceed `MAX_TOTAL_INFLATED_BYTES` is still caught (which covers the
+///   realistic, single-stage bomb shape this finding describes); a bomb
+///   engineered to stay small through its first stage and only explode on
+///   a LATER chained stage would evade this specific guard.
+/// - **Not process isolation.** This is an in-process heuristic sitting in
+///   front of `lopdf`, not a sandbox around it. `lopdf` itself is
+///   unmodified and just as unbounded as before for anything this
+///   pre-scan doesn't happen to catch. The genuinely complete fix -- running
+///   the actual `pdf_extract` parse in a separate, resource-limited OS
+///   process so an allocation failure there can't take down the API -- is
+///   a larger change than this pass's scope and is named here as the real
+///   follow-up, not silently deferred.
+fn reject_pdf_compression_bombs(bytes: &[u8]) -> anyhow::Result<()> {
+    let mut total_inflated: usize = 0;
+    let mut pos: usize = 0;
+
+    while let Some(rel) = find_subslice(&bytes[pos..], b"stream") {
+        let keyword_start = pos + rel;
+        let mut data_start = keyword_start + b"stream".len();
+        // PDF spec (ISO 32000-1 §7.3.8.1): the `stream` keyword is
+        // followed by CRLF or a bare LF (never a bare CR alone) before the
+        // raw stream data begins.
+        if bytes.get(data_start) == Some(&b'\r') && bytes.get(data_start + 1) == Some(&b'\n') {
+            data_start += 2;
+        } else if bytes.get(data_start) == Some(&b'\n') {
+            data_start += 1;
+        }
+
+        let Some(end_rel) = find_subslice(&bytes[data_start..], b"endstream") else {
+            // No matching terminator for the rest of the file -- nothing
+            // further to scan.
+            break;
+        };
+        let data_end = data_start + end_rel;
+        let raw = &bytes[data_start..data_end];
+
+        let remaining_budget = MAX_TOTAL_INFLATED_BYTES.saturating_sub(total_inflated);
+        total_inflated += bounded_inflate_len(raw, remaining_budget);
+        anyhow::ensure!(
+            total_inflated <= MAX_TOTAL_INFLATED_BYTES,
+            "PDF contains a stream that decompresses to an implausible size; refusing to parse it"
+        );
+
+        pos = data_end + b"endstream".len();
+    }
+
+    Ok(())
+}
+
+/// Returns the byte offset of the first occurrence of `needle` in
+/// `haystack`, or `None`. A tiny, dependency-free substring search --
+/// `bytes::Bytes`/`memchr` aren't already dependencies of this crate for
+/// this one call site, and `haystack`/`needle` here are small enough
+/// (bounded by `MAX_PDF_UPLOAD_BYTES`) that the naive `O(n*m)` worst case
+/// is not a real concern.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Streams `raw` through zlib inflate into a small, reused, FIXED-SIZE
+/// buffer -- never materializing the decompressed output as a whole -- and
+/// returns how many bytes came out. Stops reading (without decoding the
+/// rest) the instant the running total exceeds `budget`, so this function
+/// never spends more real memory than one buffer's worth, however large
+/// `raw` claims to decompress to. `raw` that isn't valid zlib data (or
+/// whose stream is truncated/corrupt) simply stops early via its own
+/// `Err`, contributing whatever it decoded before failing -- there is
+/// nothing more that can be recovered from it, and it contributed no risk
+/// either, since it never got the chance to produce unbounded output.
+fn bounded_inflate_len(raw: &[u8], budget: usize) -> usize {
+    use std::io::Read;
+
+    let mut decoder = flate2::read::ZlibDecoder::new(raw);
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = 0usize;
+    loop {
+        let n = match decoder.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        total += n;
+        if total > budget {
+            break;
+        }
+    }
+    total
 }
 
 #[cfg(test)]
@@ -634,5 +835,136 @@ mod parse_pdf_tests {
     #[test]
     fn bytes_without_the_pdf_magic_header_are_rejected_before_extraction_is_attempted() {
         assert!(parse_pdf(b"this is not a pdf").is_err());
+    }
+}
+
+#[cfg(test)]
+mod reject_pdf_compression_bombs_tests {
+    use super::*;
+
+    /// Builds a minimal, syntactically-plausible `stream ... endstream`
+    /// span (with no surrounding PDF object machinery -- the scan doesn't
+    /// need it) wrapping `raw` compressed bytes, the exact shape
+    /// `reject_pdf_compression_bombs`'s naive token scan looks for.
+    fn wrap_stream(raw: &[u8]) -> Vec<u8> {
+        let mut out = b"stream\n".to_vec();
+        out.extend_from_slice(raw);
+        out.extend_from_slice(b"\nendstream");
+        out
+    }
+
+    fn zlib_compress(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        // `fast()`, not `best()`: these fixtures are large, all-zero
+        // buffers specifically so the compression ratio is enormous even
+        // at the cheapest effort level -- keeping the test suite itself
+        // fast is more useful here than squeezing out a marginally better
+        // ratio.
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(data).expect("compress fixture data");
+        encoder.finish().expect("finish zlib stream")
+    }
+
+    #[test]
+    fn an_ordinary_small_stream_is_accepted() {
+        let compressed = zlib_compress(b"a perfectly ordinary, small ticket PDF content stream");
+        let pdf_like = wrap_stream(&compressed);
+        assert!(reject_pdf_compression_bombs(&pdf_like).is_ok());
+    }
+
+    #[test]
+    fn a_file_with_no_stream_keyword_at_all_is_accepted() {
+        assert!(
+            reject_pdf_compression_bombs(b"%PDF-1.4\nnothing stream-shaped here at all").is_ok()
+        );
+    }
+
+    /// The real failure shape Finding #1 exists to prevent: a small,
+    /// highly-compressed stream that would decompress to something far
+    /// past any real ticket PDF's needs. `flate2` can happily compress a
+    /// large, repetitive buffer down to a tiny fraction of its size --
+    /// this fixture is well within `MAX_PDF_UPLOAD_BYTES`, well within
+    /// what a real request body limit would allow through, and still
+    /// decompresses past `MAX_TOTAL_INFLATED_BYTES`.
+    #[test]
+    fn a_highly_compressed_bomb_stream_is_rejected() {
+        let bomb_plaintext = vec![0u8; MAX_TOTAL_INFLATED_BYTES + 1024 * 1024];
+        let compressed = zlib_compress(&bomb_plaintext);
+        // Ratio-based, not an absolute byte count: at this fixture's size
+        // (257 MiB of zeros) DEFLATE's own match-length cap means the
+        // compressed form is a couple of MiB, not the "well under 1 MiB" an
+        // earlier version of this check assumed -- still a >100x ratio, and
+        // still the point of this sanity check: prove the fixture really is
+        // a small upload that decompresses to something enormous, not
+        // (accidentally) a large upload to begin with.
+        assert!(
+            compressed.len() < bomb_plaintext.len() / 20,
+            "fixture sanity check: an all-zero buffer must compress to a small fraction of its \
+             original size, got {} bytes compressed from {} bytes",
+            compressed.len(),
+            bomb_plaintext.len()
+        );
+        let pdf_like = wrap_stream(&compressed);
+
+        let result = reject_pdf_compression_bombs(&pdf_like);
+        assert!(
+            result.is_err(),
+            "a stream that decompresses past MAX_TOTAL_INFLATED_BYTES must be rejected before \
+             pdf_extract/lopdf ever sees it"
+        );
+    }
+
+    /// The guard's own memory discipline: `bounded_inflate_len` must not
+    /// have materialized the bomb's full output to detect it -- it should
+    /// have stopped reading from the decoder as soon as the budget was
+    /// exceeded. Proven indirectly: this test's bomb decompresses to
+    /// several times `MAX_TOTAL_INFLATED_BYTES`, and the whole test
+    /// (compress + scan) still completes quickly, with no attempt to
+    /// `Vec`-allocate anything close to the bomb's true decompressed size.
+    #[test]
+    fn the_bounded_inflate_helper_stops_reading_once_the_budget_is_exceeded() {
+        let bomb_plaintext = vec![b'x'; 32 * 1024 * 1024];
+        let compressed = zlib_compress(&bomb_plaintext);
+        let produced = bounded_inflate_len(&compressed, 1024);
+        assert!(
+            produced > 1024,
+            "must have exceeded the tiny budget (proving it actually decoded real data)"
+        );
+        assert!(
+            produced < bomb_plaintext.len(),
+            "must have stopped well short of the bomb's true, much larger decompressed size"
+        );
+    }
+
+    /// Multiple individually-small streams whose DECOMPRESSED sizes sum
+    /// past the budget must still be rejected -- the running total is
+    /// cumulative across every stream in the file, not reset per-stream
+    /// (a PDF with many moderate content streams, e.g. one per page of a
+    /// many-page document, is a realistic non-malicious shape this must
+    /// still bound the total memory impact of).
+    #[test]
+    fn the_budget_is_cumulative_across_multiple_streams_not_reset_per_stream() {
+        let each = MAX_TOTAL_INFLATED_BYTES / 2 + 1024 * 1024;
+        let compressed = zlib_compress(&vec![0u8; each]);
+
+        let mut pdf_like = wrap_stream(&compressed);
+        pdf_like.extend_from_slice(b"\n");
+        pdf_like.extend_from_slice(&wrap_stream(&compressed));
+
+        assert!(
+            reject_pdf_compression_bombs(&pdf_like).is_err(),
+            "two streams each just over half the budget must still be rejected on their combined \
+             total, even though neither alone exceeds it"
+        );
+    }
+
+    /// A span between `stream`/`endstream` that isn't valid zlib data
+    /// (most real PDF streams aren't -- images, fonts, uncompressed
+    /// content) must not be treated as an error; it simply contributes no
+    /// bytes and the scan moves on.
+    #[test]
+    fn a_non_zlib_stream_span_is_skipped_without_error() {
+        let pdf_like = wrap_stream(b"this is not zlib data at all, just raw bytes");
+        assert!(reject_pdf_compression_bombs(&pdf_like).is_ok());
     }
 }

@@ -345,7 +345,15 @@ pub async fn ingest_shared_movements_batch(
                     event.actual_timestamp,
                     event.variation_status.as_deref(),
                 ) {
-                    derived.delay_minutes = Some((a - p).num_minutes() as i32);
+                    // Finding #4 (2026-09-25 review): guarded against a
+                    // corrupt `actual_timestamp` producing an implausible
+                    // delay -- see `common::trust_timestamp::plausible_delay_minutes`'s
+                    // own doc comment for why `None` (keep `apply_movement`'s
+                    // coarser, already-computed estimate) rather than
+                    // clamping to a fabricated-but-bounded number.
+                    if let Some(delay) = common::trust_timestamp::plausible_delay_minutes(a, p) {
+                        derived.delay_minutes = Some(delay);
+                    }
                 }
                 derived
             }

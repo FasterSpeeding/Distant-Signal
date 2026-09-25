@@ -13,6 +13,12 @@ chrono-tz = "0.10"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 common = { path = "../common" }
 dotenv = "0.15.0"
+# Explicit, not merely transitive-via-`pdf-extract`/`lopdf`/`zip`: used
+# directly by `ticket_extraction::reject_pdf_compression_bombs` to run our
+# OWN bounded zlib decompression pass over a candidate PDF, ahead of
+# `pdf_extract`'s/`lopdf`'s own completely unbounded one -- see that
+# function's doc comment.
+flate2 = "1"
 glob = "0.3.3"
 # Needed only to name `log::LevelFilter` for
 # `sqlx::ConnectOptions::log_slow_statements` (see `app.rs::AppState::init`)
