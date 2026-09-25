@@ -217,12 +217,55 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value_t = 840)]
     pub half_hourly_stats_retention_hours: i64,
 
-    /// Whether to expose the `/metrics` route and its request-metrics
-    /// middleware. Unlike the other 7 binaries, `api`'s own HTTP listener
-    /// stays up regardless (it's the main service) -- this only controls
-    /// whether `/metrics` is registered and whether requests are counted.
+    /// Whether to expose `/metrics` at all and count requests into it.
+    /// Unlike the other 7 binaries, `api`'s own public HTTP listener stays
+    /// up regardless (it's the main service) -- this only controls whether
+    /// requests are counted and whether the SEPARATE internal-only
+    /// `/metrics` listener (`metrics_port`, below) is started at all.
     #[arg(long, env, default_value_t = true)]
     pub metrics_enabled: bool,
+
+    /// Port for `api`'s own internal-only Prometheus `/metrics` listener --
+    /// bound and served by a SEPARATE `axum::serve` task
+    /// (`main::spawn_metrics_listener`) from the one `bind_url` binds for
+    /// public traffic.
+    ///
+    /// 2026-09-25 Signal Box Audit Low finding: until this field existed,
+    /// `/metrics` was registered as an ordinary route on the SAME router as
+    /// every public endpoint, sharing `bind_url`'s listener/port with no
+    /// authentication of its own. That listener is also exactly what the
+    /// chart's Ingress resource (`charts/distant-signal/templates/ingress.yaml`)
+    /// points at with a catch-all `path: / (Prefix)` rule when
+    /// `ingress.api.enabled` is true -- and NetworkPolicy (pod-to-pod only)
+    /// cannot see, let alone block, traffic arriving through an Ingress
+    /// controller. So whenever an operator had BOTH `metrics_enabled` and
+    /// `ingress.api.enabled` set (both common), `/metrics` -- read-only
+    /// request-count/latency telemetry, not a secret, but still internal
+    /// operational detail -- was reachable by anyone on the public
+    /// internet, unauthenticated.
+    ///
+    /// Fixed the same way every other binary in this workspace already
+    /// serves its own `/metrics`, via a listener the Ingress never routes
+    /// to and that the chart's NetworkPolicy scopes to the monitoring
+    /// namespace alone (see `networkpolicy.yaml`'s api-metrics rule) --
+    /// this crate just can't reuse `common::metrics::install` verbatim like
+    /// they do, since it already drives `axum-prometheus`'s
+    /// `PrometheusMetricLayerBuilder` off its own public router rather than
+    /// installing `metrics-exporter-prometheus` directly (see that
+    /// module's own doc comment). `main::spawn_metrics_listener` instead
+    /// stands up a second, tiny `axum::Router` serving only `GET /metrics`,
+    /// fed by the SAME `PrometheusHandle` the request-counting middleware
+    /// on the public listener already produces -- one shared recorder, two
+    /// listeners.
+    ///
+    /// Default `9091` matches the chart-wide `metrics.port` default every
+    /// other workload (aggregator/enricher/every poller) already uses --
+    /// safe to share the same numeric default across every workload since
+    /// each lives in its own Pod's network namespace, never colliding with
+    /// another container's listener.
+    #[arg(long, env, default_value_t = 9091)]
+    pub metrics_port: u16,
+
     #[arg(long, value_parser = parse_toml_path::<Defaults>, value_hint = ValueHint::FilePath, value_name = "FILE")]
     pub defaults_file: Option<Defaults>,
     /// Directory of line-catalogue TOML files, loaded once at startup.
@@ -270,9 +313,16 @@ pub struct ServiceArguments {
     /// `schedule_line_population` row is picked up within a rail day's
     /// working hours, cheap enough (a handful of still-pending rows on a
     /// typical day) not to matter at this cadence. Deliberately NOT wired
-    /// into the Helm chart -- same "default suffices, override via env if
-    /// an operator ever needs to" posture as several other unwired
-    /// `ServiceArguments` fields in this file.
+    /// into the Helm chart -- "default suffices, override via env if an
+    /// operator ever needs to" posture. Unlike its three sibling sweep
+    /// intervals below (`reconciliation_sweep_interval_secs`,
+    /// `backlog_match_sweep_interval_secs`, `session_cleanup_interval_secs`,
+    /// all wired into `api-deployment.yaml` as part of the 2026-09-25
+    /// Signal Box Audit Low pass), this ONE field's "unwired" state is a
+    /// deliberate, this-comment-carries-it decision, not an oversight --
+    /// kept unwired specifically so at least one example survives of an
+    /// intentionally-not-chart-exposed tunable, rather than every field in
+    /// this struct ending up wired by convention alone.
     #[arg(long, env, default_value_t = 300)]
     pub schedule_match_interval_secs: u64,
 
@@ -463,5 +513,47 @@ mod chart_env_wiring_tests {
              crates/api/src/data/config.rs no longer declares them, so clap ignores them and any \
              operator who configures one gets no effect at all: {stale:?}"
         );
+    }
+
+    /// Narrower cousin of the two tests above, for the four sweep-cadence
+    /// tunables wired into `api-deployment.yaml` in the same 2026-09-25
+    /// Signal Box Audit Low pass that added this test:
+    /// `reconciliation_sweep_interval_secs`, `schedule_enrichment_grace_minutes`,
+    /// `backlog_match_sweep_interval_secs` and `session_cleanup_interval_secs`.
+    /// Each had a working default and so was a silent "can't tune without a
+    /// redeploy" gap rather than the group-var tests' silent-403 hazard --
+    /// still the same underlying bug class, still worth a guard.
+    /// `schedule_match_interval_secs` is deliberately excluded: its own doc
+    /// comment in this file explains why it stays unwired on purpose.
+    #[test]
+    fn every_sweep_interval_tunable_this_config_declares_is_set_on_the_charts_api_container() {
+        const SWEEP_ENV_VARS: &[&str] = &[
+            "RECONCILIATION_SWEEP_INTERVAL_SECS",
+            "SCHEDULE_ENRICHMENT_GRACE_MINUTES",
+            "BACKLOG_MATCH_SWEEP_INTERVAL_SECS",
+            "SESSION_CLEANUP_INTERVAL_SECS",
+        ];
+        let block = api_container_block();
+        let command = ServiceArguments::command();
+
+        let declared_env_names: Vec<String> = command
+            .get_arguments()
+            .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+            .map(str::to_string)
+            .collect();
+        for env in SWEEP_ENV_VARS {
+            assert!(
+                declared_env_names.iter().any(|d| d == env),
+                "sanity check: crates/api/src/data/config.rs must still declare {env} as an \
+                 env-backed ServiceArguments field; this test's own env var list is stale if not"
+            );
+            assert!(
+                block.contains(&format!("- name: {env}")),
+                "{env} is declared by crates/api/src/data/config.rs but never set on the `api` \
+                 container in charts/distant-signal/templates/api-deployment.yaml, so under Helm \
+                 an operator can never tune it without a rebuild -- it silently stays at this \
+                 crate's own default forever"
+            );
+        }
     }
 }
