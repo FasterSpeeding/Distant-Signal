@@ -912,6 +912,71 @@ mod tests {
         assert_eq!(body, "northern|2026-08-01|2026-08-31");
     }
 
+    #[tokio::test]
+    async fn range_routes_accept_percent_encoded_path_segments() {
+        // Load-bearing for the frontend, not just a curiosity. `frontend/lib/api.ts`
+        // percent-encodes EVERY caller-supplied path segment it interpolates
+        // (see that file's "Path-segment encoding invariant" note): its args
+        // come from Next.js dynamic route params, which Next *decodes* before
+        // a page sees them, so an unencoded `${id}` let a visitor-crafted
+        // `..%2F..%2Fmetrics%3F` resolve the SSR fetch out of the intended
+        // route and into this service's own unauthenticated endpoints, with
+        // the visitor's cookie attached.
+        //
+        // That fix means an RFC3339 instant now reaches these routes with its
+        // colons escaped (`2026-08-01T00%3A00%3A00.000Z`), and a line id with
+        // any reserved character escaped too. This probe confirms axum's
+        // `Path` extractor percent-DECODES each matched segment before
+        // deserializing it -- so the encoding is transparent here -- and,
+        // crucially, that an escaped `%2F` stays inside one segment rather
+        // than splitting into two and changing which route matches.
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        async fn probe(
+            Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+        ) -> String {
+            format!("{id}|{from}|{to}")
+        }
+
+        let app: axum::Router = axum::Router::new().route(
+            "/Line/{id}/Stats/HalfHourly/{from}/to/{to}",
+            axum::routing::get(probe),
+        );
+
+        // Escaped colons in both instants, and an id carrying an escaped
+        // slash -- the shape the traversal fix produces.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(
+                        "/Line/custom%2F42/Stats/HalfHourly/\
+                         2026-08-01T00%3A00%3A00.000Z/to/2026-08-31T23%3A59%3A59.000Z",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "percent-encoded path segments must still match this route and parse"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(
+            body, "custom/42|2026-08-01 00:00:00 UTC|2026-08-31 23:59:59 UTC",
+            "each segment should arrive percent-decoded, and the escaped slash \
+             should stay within the single `{{id}}` segment"
+        );
+    }
+
     fn half_hourly_stats_row(
         total: i64,
         delayed: i64,

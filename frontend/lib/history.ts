@@ -194,7 +194,20 @@ const PRESET_DAYS: Record<RangePreset, number> = { '7d': 7, '30d': 30 };
  * needs no redirect, a shared link keeps meaning "the last 7 days" rather
  * than freezing an instant, and the picker can highlight the active preset
  * from the URL alone. Anything unparseable falls back to the default rather
- * than erroring: a mistyped query string should still show a useful page. */
+ * than erroring: a mistyped query string should still show a useful page.
+ *
+ * SECURITY: the returned `from`/`to` are always RE-SERIALIZED from the parsed
+ * instant (`new Date(ms).toISOString()`), never the caller's own input string
+ * echoed back. These two values are spliced into backend URL *path segments*
+ * by `getLineStatusHistory` and the whole `getLine*Stats`/`getOperator*Stats`/
+ * `getNetwork*Stats` family, and `Date.parse` is far too permissive to be a
+ * validator: V8 accepts trailing parenthesised comments, so
+ * `Date.parse('2026-01-01 (../../../../../Journeys/mine?')` returns a
+ * perfectly valid timestamp. Echoing the raw string through would put
+ * attacker-chosen `../` text into a URL path -- `lib/api.ts` now encodes every
+ * segment as its own defence (see its "Path-segment encoding invariant"
+ * note), and this is the matching half of that: nothing but a string this
+ * function itself produced can ever reach the URL builder. */
 export function resolveRange(
   params: { from?: string; to?: string; range?: string },
   now: number,
@@ -202,7 +215,7 @@ export function resolveRange(
   const from = params.from ? Date.parse(params.from) : NaN;
   const to = params.to ? Date.parse(params.to) : NaN;
   if (!Number.isNaN(from) && !Number.isNaN(to) && from <= to) {
-    return { from: params.from!, to: params.to!, preset: null };
+    return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), preset: null };
   }
 
   const preset: RangePreset = params.range === '30d' ? '30d' : '7d';

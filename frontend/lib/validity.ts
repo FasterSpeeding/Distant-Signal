@@ -17,11 +17,24 @@ export type IssueBucket = 'active' | 'upcoming' | 'ended';
  * as the real test. An unparseable `toDate` resolves to "still active"
  * rather than silently dropping the issue out of every bucket — the same
  * bias towards surfacing rather than hiding that the rest of this
- * component uses. */
+ * component uses.
+ *
+ * `isNow` is only "sufficient" for a period that has actually STARTED,
+ * though, which is why `fromDate` is checked first. Because the flag really
+ * means `end_time.is_none()` ("open-ended"), a planned future engineering
+ * work with `fromDate` next Monday and `toDate: null` arrives with
+ * `isNow: true` — and short-circuiting on the flag classified it Active
+ * today, putting it in the wrong tab and under-counting Upcoming. A period
+ * that hasn't begun is never active, whatever the flag says. */
 export function periodIsActive(period: ValidityPeriod, now: number): boolean {
-  if (period.isNow) return true;
   const from = Date.parse(period.fromDate);
-  if (Number.isNaN(from) || from > now) return false;
+  // A future start beats `isNow` (see above). An UNPARSEABLE `fromDate`
+  // deliberately does not: that's the "we can't tell when it starts" case,
+  // where the flag is the only signal there is, and the surface-rather-than-
+  // hide bias this file already applies to `toDate` says trust it.
+  if (!Number.isNaN(from) && from > now) return false;
+  if (period.isNow) return true;
+  if (Number.isNaN(from)) return false;
   if (period.toDate === null) return true;
   const to = Date.parse(period.toDate);
   return Number.isNaN(to) || to >= now;

@@ -109,8 +109,45 @@ async function cookieForwardInit(): Promise<RequestInit> {
   return cookieHeader ? { headers: { Cookie: cookieHeader } } : {};
 }
 
+/* ---------------------------------------------------------------------------
+ * Path-segment encoding invariant (security)
+ *
+ * EVERY caller-supplied `string` spliced into a backend URL below -- path
+ * segment or query value -- goes through `encodeURIComponent`. This is not
+ * cosmetic. These helpers run in Server Components, most of them forward the
+ * visitor's own session cookie (`cookieForwardInit`), and their arguments
+ * come overwhelmingly from Next.js dynamic route params -- which Next
+ * *decodes* before a page component ever sees them. So a visitor-crafted URL
+ * like `/lines/..%2F..%2Fmetrics%3F` arrives here as the literal string
+ * `../../metrics?`, and an unencoded `${id}` lets `fetch` resolve it away
+ * from the intended route entirely: `new URL('http://api' + '/StopPoint/' +
+ * '../../metrics?' + '/Disruption')` is `http://api/metrics?/Disruption`.
+ * That is a confused deputy -- the frontend pod reaching the backend's own
+ * unauthenticated operational endpoints from inside the cluster, with the
+ * visitor's cookie attached, on the visitor's say-so.
+ *
+ * `encodeURIComponent` closes it because it percent-encodes `/`, `?`, `#`
+ * and `..`'s separators, so the segment can only ever *be* a segment.
+ *
+ * Helpers whose id parameter is typed `number` (`getTrackedTrainById`,
+ * `getJourney`, `getJourneyTemplate`, `getTicketsForTrackedTrain`,
+ * `getDelayRepayEstimate`) are deliberately left uninterpolated-but-unencoded:
+ * a `number` cannot carry a `/`, `?` or `.`-pair, and every call site coerces
+ * with `Number(...)` first (worst case `NaN`, a harmless 4-char segment). If
+ * one of those signatures ever widens to `string`, it must gain
+ * `encodeURIComponent` at the same time.
+ * ------------------------------------------------------------------------- */
+
 export async function getLineStatusForMode(mode: string): Promise<LineStatusReport[]> {
-  const url = `${baseUrl()}/Line/Mode/${mode}/Status`;
+  // `mode` may be a comma-separated list (`'national-rail,tube,tram'`), the
+  // comma being this route's own separator -- so it's encoded per-element and
+  // rejoined, exactly like `getLineStatus`'s `ids` below. See that function's
+  // comment, and the encoding-invariant note above.
+  const modeParam = mode
+    .split(',')
+    .map((m) => encodeURIComponent(m))
+    .join(',');
+  const url = `${baseUrl()}/Line/Mode/${modeParam}/Status`;
   return fetchJson<LineStatusReport[]>(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
@@ -118,7 +155,12 @@ export async function getLineStatusForMode(mode: string): Promise<LineStatusRepo
 }
 
 export async function getLineStatus(ids: string[], detail: boolean): Promise<LineStatusReport[]> {
-  const idsParam = ids.join(',');
+  // Each id is encoded individually and the commas re-added afterwards: the
+  // comma is this route's own multi-id separator (`/Line/{ids}/Status`), so
+  // encoding the joined string would encode the separators too and the
+  // backend would see one absurd single id. Encoding per-id keeps the
+  // separator meaningful while still making each id un-escapable.
+  const idsParam = ids.map((id) => encodeURIComponent(id)).join(',');
   const query = detail ? '?detail=true' : '';
   const url = `${baseUrl()}/Line/${idsParam}/Status${query}`;
   return fetchJson<LineStatusReport[]>(url, {
@@ -128,7 +170,7 @@ export async function getLineStatus(ids: string[], detail: boolean): Promise<Lin
 }
 
 export async function getStopPointDisruption(crs: string): Promise<LineStatusReport[]> {
-  return fetchJson<LineStatusReport[]>(`${baseUrl()}/StopPoint/${crs}/Disruption`, {
+  return fetchJson<LineStatusReport[]>(`${baseUrl()}/StopPoint/${encodeURIComponent(crs)}/Disruption`, {
     cache: 'no-store',
   });
 }
@@ -141,7 +183,7 @@ export async function getStopPointDisruption(crs: string): Promise<LineStatusRep
  * all) via `errorForResponse`, same as every other `fetchJson` caller --
  * `fetchStationSampleStats` in `app/stations/[crs]/page.tsx` catches it. */
 export async function getStationSampleStats(crs: string): Promise<StationOperatorSampleStats[]> {
-  return fetchJson<StationOperatorSampleStats[]>(`${baseUrl()}/public/stations/${crs}/sample-stats`, {
+  return fetchJson<StationOperatorSampleStats[]>(`${baseUrl()}/public/stations/${encodeURIComponent(crs)}/sample-stats`, {
     cache: 'no-store',
   });
 }
@@ -157,7 +199,7 @@ export async function getStationSampleStats(crs: string): Promise<StationOperato
  * `fetchStationAccessibility` in `app/stations/[crs]/page.tsx` catches it
  * and renders it as a different sentence from a `200 {}`. */
 export async function getStationAccessibility(crs: string): Promise<StationAccessibilityData> {
-  return fetchJson<StationAccessibilityData>(`${baseUrl()}/public/stations/${crs}/accessibility`, {
+  return fetchJson<StationAccessibilityData>(`${baseUrl()}/public/stations/${encodeURIComponent(crs)}/accessibility`, {
     next: { revalidate: 3600 },
   });
 }
@@ -185,7 +227,7 @@ export async function getLineStatusHistory(
   from: string,
   to: string,
 ): Promise<LineStatusHistoryEntry[]> {
-  const url = `${baseUrl()}/Line/${id}/Status/${from}/to/${to}`;
+  const url = `${baseUrl()}/Line/${encodeURIComponent(id)}/Status/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`;
   return fetchJson<LineStatusHistoryEntry[]>(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
@@ -206,7 +248,7 @@ export async function getLineDailyStats(
   to: string,
 ): Promise<LineDailyStats[]> {
   return fetchJson<LineDailyStats[]>(
-    `${baseUrl()}/Line/${id}/Stats/${from}/to/${to}`,
+    `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
@@ -230,7 +272,7 @@ export async function getLineHalfHourlyStats(
   to: string,
 ): Promise<LineHalfHourlyStats[]> {
   return fetchJson<LineHalfHourlyStats[]>(
-    `${baseUrl()}/Line/${id}/Stats/HalfHourly/${from}/to/${to}`,
+    `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/HalfHourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
@@ -246,7 +288,7 @@ export async function getLineHourlyStats(
   to: string,
 ): Promise<LineHourlyStats[]> {
   return fetchJson<LineHourlyStats[]>(
-    `${baseUrl()}/Line/${id}/Stats/Hourly/${from}/to/${to}`,
+    `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/Hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
@@ -259,7 +301,7 @@ export async function getLineSixHourlyStats(
   to: string,
 ): Promise<LineSixHourlyStats[]> {
   return fetchJson<LineSixHourlyStats[]>(
-    `${baseUrl()}/Line/${id}/Stats/SixHourly/${from}/to/${to}`,
+    `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/SixHourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
@@ -276,7 +318,7 @@ export async function getLineDailyCoverageStats(
   to: string,
 ): Promise<LineDailyCoverageStats[]> {
   return fetchJson<LineDailyCoverageStats[]>(
-    `${baseUrl()}/Line/${id}/Stats/Coverage/${from}/to/${to}`,
+    `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/Coverage/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
@@ -292,7 +334,7 @@ export async function getLineHalfHourlyCoverageStats(
   to: string,
 ): Promise<LineHalfHourlyCoverageStats[]> {
   return fetchJson<LineHalfHourlyCoverageStats[]>(
-    `${baseUrl()}/Line/${id}/Stats/Coverage/HalfHourly/${from}/to/${to}`,
+    `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/Coverage/HalfHourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
@@ -309,7 +351,7 @@ export async function getOperatorDailyStats(
   to: string,
 ): Promise<OperatorDailyStats[]> {
   return fetchJson<OperatorDailyStats[]>(
-    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/${from}/to/${to}`,
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
   );
 }
@@ -322,7 +364,7 @@ export async function getOperatorHalfHourlyStats(
   to: string,
 ): Promise<OperatorHalfHourlyStats[]> {
   return fetchJson<OperatorHalfHourlyStats[]>(
-    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/half-hourly/${from}/to/${to}`,
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/half-hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
   );
 }
@@ -334,7 +376,7 @@ export async function getOperatorHourlyStats(
   to: string,
 ): Promise<OperatorHourlyStats[]> {
   return fetchJson<OperatorHourlyStats[]>(
-    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/hourly/${from}/to/${to}`,
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
   );
 }
@@ -346,7 +388,7 @@ export async function getOperatorSixHourlyStats(
   to: string,
 ): Promise<OperatorSixHourlyStats[]> {
   return fetchJson<OperatorSixHourlyStats[]>(
-    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/six-hourly/${from}/to/${to}`,
+    `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/six-hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
   );
 }
@@ -355,7 +397,7 @@ export async function getOperatorSixHourlyStats(
  * (catalogue National Rail lines only -- see this plan's Judgment Call 5
  * for why TfL lines never contribute) daily Trends rollup. */
 export async function getNetworkDailyStats(from: string, to: string): Promise<NetworkDailyStats[]> {
-  return fetchJson<NetworkDailyStats[]>(`${baseUrl()}/public/network/stats/${from}/to/${to}`, {
+  return fetchJson<NetworkDailyStats[]>(`${baseUrl()}/public/network/stats/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`, {
     cache: 'no-store',
   });
 }
@@ -365,13 +407,13 @@ export async function getNetworkHalfHourlyStats(
   to: string,
 ): Promise<NetworkHalfHourlyStats[]> {
   return fetchJson<NetworkHalfHourlyStats[]>(
-    `${baseUrl()}/public/network/stats/half-hourly/${from}/to/${to}`,
+    `${baseUrl()}/public/network/stats/half-hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
   );
 }
 
 export async function getNetworkHourlyStats(from: string, to: string): Promise<NetworkHourlyStats[]> {
-  return fetchJson<NetworkHourlyStats[]>(`${baseUrl()}/public/network/stats/hourly/${from}/to/${to}`, {
+  return fetchJson<NetworkHourlyStats[]>(`${baseUrl()}/public/network/stats/hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`, {
     cache: 'no-store',
   });
 }
@@ -381,7 +423,7 @@ export async function getNetworkSixHourlyStats(
   to: string,
 ): Promise<NetworkSixHourlyStats[]> {
   return fetchJson<NetworkSixHourlyStats[]>(
-    `${baseUrl()}/public/network/stats/six-hourly/${from}/to/${to}`,
+    `${baseUrl()}/public/network/stats/six-hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
   );
 }
@@ -523,7 +565,7 @@ export async function getAllTocs(): Promise<Suggestion[]> {
  * no case here worth a distinct "please log in, this might be yours"
  * prompt. */
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
-  const url = `${baseUrl()}/public/lines/${id}`;
+  const url = `${baseUrl()}/public/lines/${encodeURIComponent(id)}`;
   const response = await fetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
@@ -536,7 +578,7 @@ export async function getCustomLine(id: string): Promise<CustomLineDetail> {
 }
 
 export async function getLineDefinition(id: string): Promise<LineDefinitionSummary> {
-  const url = `${baseUrl()}/public/lines/${id}/definition`;
+  const url = `${baseUrl()}/public/lines/${encodeURIComponent(id)}/definition`;
   return fetchJson<LineDefinitionSummary>(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
@@ -560,7 +602,7 @@ export async function getLineDefinition(id: string): Promise<LineDefinitionSumma
  * route just above. */
 export async function getLineTrains(id: string, date?: string): Promise<LineTrainEntry[]> {
   const query = date ? `?date=${encodeURIComponent(date)}` : '';
-  const url = `${baseUrl()}/public/lines/${id}/trains${query}`;
+  const url = `${baseUrl()}/public/lines/${encodeURIComponent(id)}/trains${query}`;
   return fetchJson<LineTrainEntry[]>(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
@@ -673,7 +715,7 @@ export async function getJourney(id: number): Promise<JourneyDetail> {
  * for an unknown, expired, or revoked token -- same contract
  * `getGroupJoinPreview` already uses for its own token-not-found case. */
 export async function getJourneyByShareToken(token: string): Promise<JourneyDetail> {
-  const url = `${baseUrl()}/Journeys/shared/${token}`;
+  const url = `${baseUrl()}/Journeys/shared/${encodeURIComponent(token)}`;
   const response = await fetch(url, { cache: 'no-store' });
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<JourneyDetail>;
@@ -857,17 +899,17 @@ export async function getMyGroups(init?: Pick<RequestInit, 'signal'>): Promise<G
  * and is thrown via `fetchJson`, matching `getTrackedTrainById`'s own
  * convention rather than `getMyTrackedTrains`'s null-on-401 one. */
 export async function getGroup(id: string): Promise<GroupDetail> {
-  const url = `${baseUrl()}/public/groups/${id}`;
+  const url = `${baseUrl()}/public/groups/${encodeURIComponent(id)}`;
   return fetchJson<GroupDetail>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
 }
 
 export async function getGroupMembers(id: string): Promise<GroupMember[]> {
-  const url = `${baseUrl()}/public/groups/${id}/members`;
+  const url = `${baseUrl()}/public/groups/${encodeURIComponent(id)}/members`;
   return fetchJson<GroupMember[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
 }
 
 export async function getGroupTrains(id: string): Promise<GroupTrain[]> {
-  const url = `${baseUrl()}/public/groups/${id}/trains`;
+  const url = `${baseUrl()}/public/groups/${encodeURIComponent(id)}/trains`;
   return fetchJson<GroupTrain[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
 }
 
@@ -896,7 +938,7 @@ export async function getSharedGroupTrains(): Promise<SharedGroupTrain[] | null>
  * gets the group's usual `404`. Throws on a `401`, like `getGroupTrains`
  * and for the same reason (there is an id in the path). */
 export async function getGroupCustomLines(id: string): Promise<GroupCustomLine[]> {
-  const url = `${baseUrl()}/public/groups/${id}/lines/custom`;
+  const url = `${baseUrl()}/public/groups/${encodeURIComponent(id)}/lines/custom`;
   return fetchJson<GroupCustomLine[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
 }
 
@@ -922,7 +964,7 @@ export async function getSharedGroupCustomLines(): Promise<SharedGroupCustomLine
  * usual `404`. Throws on a `401`, like `getGroupTrains`/`getGroupCustomLines`
  * and for the same reason (there is an id in the path). */
 export async function getGroupJourneys(id: string): Promise<GroupJourney[]> {
-  const url = `${baseUrl()}/public/groups/${id}/journeys`;
+  const url = `${baseUrl()}/public/groups/${encodeURIComponent(id)}/journeys`;
   return fetchJson<GroupJourney[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
 }
 
@@ -945,6 +987,6 @@ export async function getSharedGroupJourneys(): Promise<SharedGroupJourney[] | n
  * needs no cookie forwarding either; a not-yet-logged-in visitor can see
  * the join preview before being sent through login. */
 export async function getGroupJoinPreview(token: string): Promise<GroupJoinPreview> {
-  const url = `${baseUrl()}/public/groups/join/${token}`;
+  const url = `${baseUrl()}/public/groups/join/${encodeURIComponent(token)}`;
   return fetchJson<GroupJoinPreview>(url, { cache: 'no-store' });
 }

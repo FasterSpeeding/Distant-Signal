@@ -22,8 +22,31 @@ function status(periods: ValidityPeriod[]): LineStatus {
 }
 
 describe('periodIsActive', () => {
-  it('trusts isNow when it is set', () => {
-    expect(periodIsActive(period({ fromDate: new Date(NOW + HOUR).toISOString(), isNow: true }), NOW)).toBe(true);
+  it('trusts isNow for a period that has already started', () => {
+    expect(periodIsActive(period({ fromDate: new Date(NOW - HOUR).toISOString(), isNow: true }), NOW)).toBe(true);
+  });
+
+  // Regression: `isNow` is built by the backend as `end_time.is_none()` --
+  // "open-ended", NOT "covers now" (see `validity.ts`'s own doc comment). A
+  // planned future engineering work therefore arrives as
+  // `{ fromDate: <future>, toDate: null, isNow: true }`, and this function
+  // used to short-circuit on the flag and call it Active today -- wrong tab,
+  // and the Upcoming count on every line/station page short by one.
+  it('does NOT treat a future-dated open-ended period as active, even with isNow set', () => {
+    const futureOpenEnded = period({
+      fromDate: new Date(NOW + 72 * HOUR).toISOString(),
+      toDate: null,
+      isNow: true,
+    });
+    expect(periodIsActive(futureOpenEnded, NOW)).toBe(false);
+    // ...and it lands in Upcoming rather than falling out of every bucket.
+    expect(periodIsUpcoming(futureOpenEnded, NOW)).toBe(true);
+    expect(bucketFor(status([futureOpenEnded]), NOW)).toBe('upcoming');
+  });
+
+  it('still trusts isNow when fromDate is unparseable (no start to compare against)', () => {
+    expect(periodIsActive(period({ fromDate: 'not a date', isNow: true }), NOW)).toBe(true);
+    expect(periodIsActive(period({ fromDate: 'not a date', isNow: false }), NOW)).toBe(false);
   });
 
   it('treats a period that started in the past and has not ended as active, despite isNow being false', () => {
