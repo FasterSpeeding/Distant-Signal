@@ -59,8 +59,22 @@ import { getSiteOrigin } from '@/lib/siteOrigin';
 // expects it bare.
 const ROOT_MOUNTED_PREFIXES = new Set(['Train', 'Journeys', 'JourneyTemplates', 'Trips']);
 
+// Next.js decodes each catch-all segment before populating `path`, so a
+// segment can legitimately contain a *decoded* `#`, `?`, or `/` (from an
+// incoming `%23`, `%3F`, or `%2F`) by the time it gets here. Joining the raw
+// segments with `/` and splicing that straight into a template-string URL
+// (below) let a decoded `#`/`?` re-assert itself as a literal fragment/query
+// separator once `new URL(...)` parsed the rejoined string -- silently
+// truncating the intended pathname and turning the remainder into a
+// fragment (dropped entirely) or query string, so the request could reach a
+// different backend path/query than the one the segments actually named.
+// Re-encoding each segment with `encodeURIComponent` before rejoining
+// guarantees a decoded special character stays a literal, inert path
+// character (e.g. `%23`) in the final URL instead of being reinterpreted as
+// a structural separator.
 function resolveTargetPath(path: string[]): string {
-  return ROOT_MOUNTED_PREFIXES.has(path[0]) ? `/${path.join('/')}` : `/public/${path.join('/')}`;
+  const encoded = path.map(encodeURIComponent).join('/');
+  return ROOT_MOUNTED_PREFIXES.has(path[0]) ? `/${encoded}` : `/public/${encoded}`;
 }
 
 /** Every browser-initiated mutation this app makes (creating a group,

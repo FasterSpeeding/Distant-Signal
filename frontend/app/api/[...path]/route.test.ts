@@ -322,4 +322,43 @@ describe('/api/[...path] proxy', () => {
       expect(fetch).not.toHaveBeenCalled();
     });
   });
+
+  // Finding 2 of the deferred fapp Low-severity batch (2026-09-24 security
+  // review): Next.js decodes each catch-all segment before populating
+  // `path`, so a segment can carry a *decoded* `#`/`?`/`/` by the time
+  // `resolveTargetPath` rejoins it into a template-string URL. Rejoining
+  // raw (pre-fix) let a decoded `#`/`?` re-assert itself as a literal
+  // fragment/query separator once `new URL(...)` parsed the result,
+  // silently truncating the intended pathname.
+  describe('segment re-encoding on rejoin', () => {
+    it('preserves a decoded "#" in a segment as a literal path character, not a fragment separator', async () => {
+      const req = makeRequest('/api/Train/placeholder');
+      await GET(req, { params: Promise.resolve({ path: ['Train', 'abc#def'] }) });
+      const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+      // Pre-fix, the rejoined `/Train/abc#def` was parsed by `new URL()`
+      // with `#def` as a fragment -- dropped entirely off the wire -- so
+      // the backend would have received `/Train/abc` instead.
+      expect(calledUrl.toString()).toBe('http://test-api:8080/Train/abc%23def');
+    });
+
+    it('preserves a decoded "?" in a segment as a literal path character, not a query separator', async () => {
+      const req = makeRequest('/api/Train/placeholder');
+      await GET(req, { params: Promise.resolve({ path: ['Train', 'abc?evil=1'] }) });
+      const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+      // Pre-fix, `?evil=1` would have been parsed as the query string
+      // instead of part of the path, resolving to pathname `/Train/abc`
+      // with an attacker-controlled query string appended.
+      // `encodeURIComponent` also escapes `=` (it isn't in the unreserved
+      // set), so the whole trailing segment comes out escaped, not just
+      // the `?`.
+      expect(calledUrl.toString()).toBe('http://test-api:8080/Train/abc%3Fevil%3D1');
+    });
+
+    it('preserves a decoded "/" (from an embedded %2F) in a segment as a literal path character, not a new path separator', async () => {
+      const req = makeRequest('/api/Train/placeholder');
+      await GET(req, { params: Promise.resolve({ path: ['Train', 'abc/def'] }) });
+      const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+      expect(calledUrl.toString()).toBe('http://test-api:8080/Train/abc%2Fdef');
+    });
+  });
 });

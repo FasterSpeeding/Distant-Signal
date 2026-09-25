@@ -211,5 +211,28 @@ export async function POST(req: NextRequest) {
     return new NextResponse('Could not complete the connection. Please try again.', { status: 502 });
   }
   const { redirectUrl } = (await completeRes.json()) as { redirectUrl: string };
+  // `redirectUrl` is `railMcp`'s own (external, cross-service) value --
+  // `NextResponse.redirect()` builds a `new URL(redirectUrl)` internally
+  // with no base, which throws a raw `TypeError` for anything that isn't
+  // an absolute URL. Left unhandled, that surfaced as an unhandled 500
+  // *after* the grant/denial above had already taken effect server-side --
+  // a confusing failure point for something checkable up front. Validating
+  // the shape here turns that into a clean, well-understood 400, and the
+  // explicit http(s)-only check also stops a non-navigable or otherwise
+  // unexpected scheme (e.g. `javascript:`) from ever reaching a `Location`
+  // header, on the same "don't trust an external value's shape" footing as
+  // this route's own `isValidMcpRequestId` check above.
+  if (!isValidHttpRedirectUrl(redirectUrl)) {
+    return new NextResponse('Received an invalid redirect target from the authorization adapter.', { status: 400 });
+  }
   return NextResponse.redirect(redirectUrl);
+}
+
+function isValidHttpRedirectUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }

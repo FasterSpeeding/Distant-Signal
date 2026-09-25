@@ -48,4 +48,49 @@ describe('BrowserMcpOAuthProvider', () => {
     expect(provider.clientMetadata.redirect_uris).toEqual(['https://status.example.com/chat/callback']);
     expect(provider.clientMetadata.token_endpoint_auth_method).toBe('none');
   });
+
+  // Finding 3 of the deferred fapp Low-severity batch (2026-09-24 security
+  // review): `state()` is the MCP SDK's own optional hook (`auth()` in
+  // `@modelcontextprotocol/sdk/client/auth.js` calls it when starting a new
+  // authorization redirect) for supplying an OAuth `state` value -- before
+  // this, it wasn't implemented at all, so no `state` was ever sent.
+  describe('OAuth state (state() / consumeAndVerifyState())', () => {
+    it('generates a fresh, non-empty state value each call and persists the latest one', () => {
+      const provider = new BrowserMcpOAuthProvider('https://status.example.com/chat/callback');
+      const first = provider.state();
+      expect(first).toBeTruthy();
+      const second = provider.state();
+      expect(second).toBeTruthy();
+      expect(second).not.toBe(first);
+      // Only the most recently generated value should verify -- the
+      // one actually sent on the authorization redirect that follows.
+      expect(provider.consumeAndVerifyState(second)).toBe(true);
+    });
+
+    it('verifies a matching state and consumes it (single-use)', () => {
+      const provider = new BrowserMcpOAuthProvider('https://status.example.com/chat/callback');
+      const state = provider.state();
+      expect(provider.consumeAndVerifyState(state)).toBe(true);
+      // Consumed -- replaying the same value against a later callback must
+      // not verify again.
+      expect(provider.consumeAndVerifyState(state)).toBe(false);
+    });
+
+    it('rejects a mismatched state', () => {
+      const provider = new BrowserMcpOAuthProvider('https://status.example.com/chat/callback');
+      provider.state();
+      expect(provider.consumeAndVerifyState('attacker-planted-state')).toBe(false);
+    });
+
+    it('rejects a null received state', () => {
+      const provider = new BrowserMcpOAuthProvider('https://status.example.com/chat/callback');
+      provider.state();
+      expect(provider.consumeAndVerifyState(null)).toBe(false);
+    });
+
+    it('rejects any state when none was ever generated for this browser', () => {
+      const provider = new BrowserMcpOAuthProvider('https://status.example.com/chat/callback');
+      expect(provider.consumeAndVerifyState('anything')).toBe(false);
+    });
+  });
 });

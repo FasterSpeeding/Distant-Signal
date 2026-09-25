@@ -89,9 +89,31 @@ export default function ChatCallbackPage() {
   const [state, setState] = useState<CallbackState>({ kind: 'connecting' });
 
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get('code');
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
     if (!code) {
       setState({ kind: 'error', message: 'No authorization code was present in the callback URL.' });
+      return;
+    }
+
+    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+
+    // Finding 3 of the deferred fapp Low-severity batch (2026-09-24
+    // security review): before this, nothing about this callback verified
+    // an OAuth `state` parameter -- defense against a planted/replayed
+    // authorization code rested entirely on the PKCE verifier mismatching
+    // over in `auth()`'s own token-exchange call below. `provider.state()`
+    // (called by `auth()` itself when it built the authorization redirect
+    // that sent the browser here -- see `BrowserMcpOAuthProvider`) stored a
+    // random single-use value before that redirect; verifying it here,
+    // BEFORE ever calling `auth()` with the code, rejects a callback that
+    // didn't actually originate from a redirect this browser itself
+    // started, independent of and prior to the PKCE check.
+    if (!provider.consumeAndVerifyState(params.get('state'))) {
+      setState({
+        kind: 'error',
+        message: 'The authorization response could not be verified. Please try connecting again from the Chat page.',
+      });
       return;
     }
 
@@ -109,7 +131,6 @@ export default function ChatCallbackPage() {
       });
     }, AUTH_TIMEOUT_MS);
 
-    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
     auth(provider, { serverUrl: railMcpPublicUrl(), authorizationCode: code })
       .then((result) => {
         if (settled) return;
