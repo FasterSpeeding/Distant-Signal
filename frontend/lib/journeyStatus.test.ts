@@ -43,6 +43,7 @@ function baseLeg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
     departBefore: null,
     arriveAfter: null,
     arriveBefore: null,
+    windowSearched: false,
     matchMode: 'auto',
     trackedTrainState: baseTrackedTrainState(),
     // Integration (2026-09-22): journey Phase 3 made `legSkip` a REQUIRED

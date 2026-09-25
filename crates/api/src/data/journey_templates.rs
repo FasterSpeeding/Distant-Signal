@@ -472,12 +472,22 @@ pub async fn materialize_template(
 
     let mut leg_ids = Vec::with_capacity(legs.len());
     for leg in &legs {
+        // `window_searched = TRUE` unconditionally -- 19-pass security/bug
+        // review, journeys area, Medium finding 1: a template leg is
+        // ALWAYS a search (never a direct pin/known-train pick), even when
+        // `validate_template_leg` allowed every one of its four window
+        // bounds to stay `None` (a deliberate "any train, any time"
+        // search -- that function's own doc comment). Without this column,
+        // such a leg was indistinguishable, once matched, from a
+        // `pin`/`knownTrain`-mode leg that never had a window at all, and
+        // `JourneyLegCard.tsx`'s `hasWindow` gate permanently hid "Change
+        // train" for it. See `20260925090000_journey_legs_window_searched.sql`.
         let (leg_id,): (i64,) = sqlx::query_as(
             "INSERT INTO journey_legs \
                 (journey_id, leg_order, origin_crs, destination_crs, service_date, \
                  train_subscription_id, match_mode, \
-                 depart_after, depart_before, arrive_after, arrive_before) \
-             VALUES ($1, $2, $3, $4, $5, NULL, 'unmatched', $6, $7, $8, $9) \
+                 depart_after, depart_before, arrive_after, arrive_before, window_searched) \
+             VALUES ($1, $2, $3, $4, $5, NULL, 'unmatched', $6, $7, $8, $9, TRUE) \
              RETURNING id",
         )
         .bind(journey_id)
@@ -1020,6 +1030,13 @@ mod db_tests {
         // the minted `journey_legs` row -- all four of
         // `depart_after`/`depart_before`/`arrive_after`/`arrive_before`
         // stay `NULL`, not defaulted to anything.
+        //
+        // ALSO covers the 19-pass security/bug review's journeys-area
+        // Medium finding 1: despite all four bounds being `NULL`,
+        // `window_searched` must still come back `true` -- otherwise this
+        // is byte-for-byte the same row shape as a `pin`/`knownTrain`-mode
+        // leg, and `JourneyLegCard.tsx`'s `hasWindow` gate would
+        // permanently hide "Change train" once this leg is matched.
         let pool = connect().await;
         let user_id = "TEST-TEMPLATE-MATERIALIZE-OPEN-WINDOW";
         seed_user(&pool, user_id).await;
@@ -1050,9 +1067,11 @@ mod db_tests {
             arrive_after: Option<NaiveTime>,
             arrive_before: Option<NaiveTime>,
             match_mode: String,
+            window_searched: bool,
         }
         let row: LegWindowRow = sqlx::query_as(
-            "SELECT depart_after, depart_before, arrive_after, arrive_before, match_mode \
+            "SELECT depart_after, depart_before, arrive_after, arrive_before, match_mode, \
+                    window_searched \
              FROM journey_legs WHERE id = $1",
         )
         .bind(materialized.leg_ids[0])
@@ -1064,6 +1083,11 @@ mod db_tests {
         assert_eq!(row.arrive_after, None);
         assert_eq!(row.arrive_before, None);
         assert_eq!(row.match_mode, "unmatched");
+        assert!(
+            row.window_searched,
+            "a template leg is always a search, even with a fully-open window -- \
+             window_searched must be true so \"Change train\" survives the first match"
+        );
 
         sqlx::query("DELETE FROM journey_legs WHERE journey_id = $1")
             .bind(materialized.journey_id)

@@ -898,6 +898,17 @@ struct JourneyLegDetailResponse {
     arrive_after: Option<NaiveTime>,
     arrive_before: Option<NaiveTime>,
     match_mode: String,
+    /// Whether this leg was ever created via a window search -- `true` for
+    /// a `window`-mode leg (even one with all four `depart_*`/`arrive_*`
+    /// bounds left unset, a deliberate "any train, any time" search) or a
+    /// template-materialized leg (always a search); `false` for a
+    /// `pin`/`knownTrain`-mode leg, which never had a window to search.
+    /// Backs `JourneyLegCard.tsx`'s `hasWindow`/"Change train" gate --
+    /// 19-pass security/bug review, journeys area, Medium finding 1. See
+    /// `data::journeys::JourneyLegRow::window_searched`'s own doc comment
+    /// for the full "why a fourth NULL-checkable field isn't enough"
+    /// reasoning.
+    window_searched: bool,
     /// `Some` once a train is bound -- the EXACT same shape
     /// `GET /Train/{trackingId}` returns
     /// (`train_tracking::TRACKED_TRAIN_STATE_SELECT`, `attach_journey_stops`,
@@ -1165,6 +1176,7 @@ async fn build_journey_detail_response(
             arrive_after: leg.arrive_after,
             arrive_before: leg.arrive_before,
             match_mode: leg.match_mode,
+            window_searched: leg.window_searched,
             tracked_train_state,
             leg_skip,
         });
