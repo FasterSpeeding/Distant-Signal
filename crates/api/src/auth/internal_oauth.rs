@@ -29,27 +29,57 @@ use openidconnect::core::{CoreJsonWebKey, CoreJsonWebKeySet, CoreProviderMetadat
 use openidconnect::{IssuerUrl, JsonWebKey as _, JsonWebKeySetUrl};
 use serde::Deserialize;
 
+/// `aud` (JWT spec, RFC 7519 §4.1.3) is legal as EITHER a single string OR
+/// a JSON array of strings -- a token is valid for any one of the
+/// audiences an array names. This resolved a real "Open Question 2" left
+/// by this module's original design ("`aud` is almost certainly the
+/// provider's own `client_id`... not confirmed against a real emitted
+/// token") in the 2026-09-25 Low-severity auth-core review: rather than
+/// keep assuming the bare-string shape and failing every array-shaped
+/// token closed as `Malformed` (indistinguishable, from a caller's PoV,
+/// from a genuinely corrupt token), this accepts both, matching the spec.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum Audience {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl Audience {
+    /// Does this `aud` claim include `expected` as (one of) its
+    /// audience(s)? Equality for the single-string shape, membership for
+    /// the array shape -- both are "is this token valid for me" in RFC
+    /// 7519 §4.1.3's own terms.
+    fn contains(&self, expected: &str) -> bool {
+        match self {
+            Audience::Single(aud) => aud == expected,
+            Audience::Multiple(auds) => auds.iter().any(|aud| aud == expected),
+        }
+    }
+}
+
 /// The claims this design's route-scoping check reads off a verified
 /// client-credentials access token (Decision 3). `groups` defaults to
 /// empty when the claim is entirely absent from the token -- never
 /// treated as "unscoped/allow everything" (see the route-scoping check in
 /// `crate::auth::require_internal_oauth`, Task 5).
 ///
-/// `aud` is modeled as a plain `String`, matching the spec's own stated
-/// assumption (Open Question 2: "almost certainly the provider's own
-/// `client_id`... not confirmed against a real emitted token"). If a real
-/// Authentik-issued token turns out to encode `aud` as a JSON array
-/// instead of a bare string, this struct's `aud` field needs to become
-/// `Vec<String>` (or an enum accepting either shape) and the audience
-/// check in `verify` below needs to check membership instead of equality
-/// -- flagged here as the concrete, single place that assumption would
-/// need revisiting.
+/// `nbf` ("not before") and `iat` ("issued at") are both optional per RFC
+/// 7519 -- Authentik's client-credentials tokens are observed to include
+/// both, but nothing here requires either claim to be present; `verify`
+/// below only checks them when they are. See `CLOCK_SKEW_LEEWAY` for why
+/// every time-based check (`exp` included) tolerates a small amount of
+/// clock drift between this process and whatever issued the token.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ServiceClaims {
     pub sub: String,
     pub iss: String,
-    pub aud: String,
+    pub aud: Audience,
     pub exp: i64,
+    #[serde(default)]
+    pub nbf: Option<i64>,
+    #[serde(default)]
+    pub iat: Option<i64>,
     #[serde(default)]
     pub groups: Vec<String>,
 }
@@ -120,6 +150,20 @@ const UNKNOWN_KID_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
 /// OUTBOUND request rate that same attacker can cause; this caps the
 /// unbounded-growth side of the same attack.
 const UNKNOWN_KID_CACHE_SWEEP_THRESHOLD: usize = 1024;
+
+/// Clock-skew tolerance applied to every time-based claim check in
+/// `verify` (`exp`, `nbf`, `iat`) -- added in the 2026-09-25 Low-severity
+/// auth-core review, which found none of the three had any tolerance at
+/// all. This process's clock and Authentik's are never perfectly
+/// synchronized (NTP drift, container scheduling jitter), and a verifier
+/// with zero leeway turns an ordinary few-seconds skew into a spurious
+/// `401` right at a token's issuance/expiry boundary -- exactly the
+/// noisy-failure-mode class `JWKS_HTTP_TIMEOUT`'s own doc comment above
+/// warns this module should not introduce. 60s matches the leeway most
+/// JWT/OIDC libraries default to (e.g. the `jsonwebtoken` crate's own
+/// `Validation::leeway` default) and is a small fraction of these tokens'
+/// actual lifetime.
+const CLOCK_SKEW_LEEWAY: Duration = Duration::from_secs(60);
 
 pub struct ServiceTokenVerifier {
     issuer_url: String,
@@ -279,12 +323,39 @@ impl ServiceTokenVerifier {
         if claims.iss != self.issuer_url {
             return Err(VerifyError::Invalid);
         }
-        if claims.aud != self.expected_audience {
+        if !claims.aud.contains(&self.expected_audience) {
             return Err(VerifyError::Invalid);
         }
-        if claims.exp <= chrono::Utc::now().timestamp() {
+
+        // All three time-based checks below tolerate CLOCK_SKEW_LEEWAY of
+        // drift between this process's clock and whatever issued the
+        // token -- see that constant's own doc comment.
+        let now = chrono::Utc::now().timestamp();
+        let leeway = CLOCK_SKEW_LEEWAY.as_secs() as i64;
+
+        // Expired even generously accounting for skew.
+        if claims.exp.saturating_add(leeway) <= now {
             return Err(VerifyError::Invalid);
         }
+        // `nbf` ("not before"): a token presented earlier than it claims
+        // to become valid, by more than the leeway allows, is rejected --
+        // optional per RFC 7519, so only checked when present.
+        if let Some(nbf) = claims.nbf
+            && nbf.saturating_sub(leeway) > now
+        {
+            return Err(VerifyError::Invalid);
+        }
+        // `iat` ("issued at"): a token claiming to have been issued in the
+        // future (again, allowing for skew) is a sign of a forged or
+        // badly-clocked issuer, not a legitimate token whose window simply
+        // hasn't started yet (that's what `nbf` is for) -- optional per
+        // RFC 7519, so only checked when present.
+        if let Some(iat) = claims.iat
+            && iat.saturating_sub(leeway) > now
+        {
+            return Err(VerifyError::Invalid);
+        }
+
         Ok(claims)
     }
 }
@@ -431,7 +502,7 @@ okZbiUUfaTzSWjonh81igWBCbs9l7+FaaiMCy3Hy5rA7g2eTdJoU7gxlabEnzdUj
 mod tests {
     use serde_json::json;
 
-    use super::test_support::{mock_authentik, sign_token, valid_claims};
+    use super::test_support::{AUDIENCE, mock_authentik, sign_token, valid_claims};
     use super::*;
 
     #[tokio::test]
@@ -671,5 +742,129 @@ mod tests {
             verifier.verify("only.two-parts").await,
             Err(VerifyError::Malformed)
         );
+    }
+
+    #[tokio::test]
+    async fn a_token_expired_within_the_clock_skew_leeway_still_verifies() {
+        // Regression coverage for CLOCK_SKEW_LEEWAY: an `exp` a few seconds
+        // in the past (well inside the 60s leeway) must not be treated the
+        // same as a genuinely expired token.
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c["exp"] = json!((chrono::Utc::now() - chrono::Duration::seconds(10)).timestamp());
+        }));
+
+        assert!(
+            verifier.verify(&token).await.is_ok(),
+            "an exp 10s in the past must still verify under a 60s leeway"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_expired_well_beyond_the_clock_skew_leeway_is_still_rejected() {
+        // The leeway must not become unlimited tolerance -- pins that
+        // an_expired_token_is_rejected's own 1-hour-expired case (far
+        // outside CLOCK_SKEW_LEEWAY) still fails.
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c["exp"] = json!((chrono::Utc::now() - chrono::Duration::minutes(5)).timestamp());
+        }));
+
+        assert_eq!(verifier.verify(&token).await, Err(VerifyError::Invalid));
+    }
+
+    #[tokio::test]
+    async fn a_token_not_yet_valid_beyond_the_leeway_is_rejected() {
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c["nbf"] = json!((chrono::Utc::now() + chrono::Duration::minutes(5)).timestamp());
+        }));
+
+        assert_eq!(verifier.verify(&token).await, Err(VerifyError::Invalid));
+    }
+
+    #[tokio::test]
+    async fn a_token_whose_nbf_is_within_the_leeway_still_verifies() {
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c["nbf"] = json!((chrono::Utc::now() + chrono::Duration::seconds(10)).timestamp());
+        }));
+
+        assert!(
+            verifier.verify(&token).await.is_ok(),
+            "an nbf 10s in the future must still verify under a 60s leeway"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_with_no_nbf_claim_at_all_still_verifies() {
+        // nbf is optional per RFC 7519 -- its absence must never be treated
+        // as a failure.
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c.as_object_mut().unwrap().remove("nbf");
+        }));
+
+        assert!(verifier.verify(&token).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_token_issued_in_the_future_beyond_the_leeway_is_rejected() {
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c["iat"] = json!((chrono::Utc::now() + chrono::Duration::minutes(5)).timestamp());
+        }));
+
+        assert_eq!(verifier.verify(&token).await, Err(VerifyError::Invalid));
+    }
+
+    #[tokio::test]
+    async fn a_token_with_no_iat_claim_at_all_still_verifies() {
+        // iat is optional per RFC 7519 -- its absence must never be treated
+        // as a failure.
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c.as_object_mut().unwrap().remove("iat");
+        }));
+
+        assert!(verifier.verify(&token).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_array_shaped_aud_containing_the_expected_audience_verifies() {
+        // RFC 7519 §4.1.3: `aud` may legally be a JSON array. Before this
+        // fix, `ServiceClaims::aud` was a plain `String`, so this shape
+        // failed closed as `Malformed` rather than being evaluated.
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c["aud"] = json!([AUDIENCE, "some-other-audience"]);
+        }));
+
+        assert!(verifier.verify(&token).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_array_shaped_aud_missing_the_expected_audience_is_rejected() {
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |c| {
+            c["aud"] = json!(["some-other-audience", "yet-another-one"]);
+        }));
+
+        assert_eq!(verifier.verify(&token).await, Err(VerifyError::Invalid));
+    }
+
+    #[test]
+    fn audience_contains_matches_a_single_string_shape() {
+        let aud = Audience::Single(AUDIENCE.to_string());
+        assert!(aud.contains(AUDIENCE));
+        assert!(!aud.contains("some-other-audience"));
+    }
+
+    #[test]
+    fn audience_contains_matches_membership_in_an_array_shape() {
+        let aud = Audience::Multiple(vec![AUDIENCE.to_string(), "other".to_string()]);
+        assert!(aud.contains(AUDIENCE));
+        assert!(aud.contains("other"));
+        assert!(!aud.contains("not-present"));
     }
 }

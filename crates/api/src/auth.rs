@@ -76,7 +76,7 @@ pub async fn require_internal_oauth(
     let path_matches: Vec<_> = app
         .internal_oauth_routes
         .iter()
-        .filter(|(prefix, _, _)| path.starts_with(prefix))
+        .filter(|(prefix, _, _)| path_matches_route(&path, prefix))
         .collect();
 
     if path_matches.is_empty() {
@@ -109,6 +109,29 @@ pub async fn require_internal_oauth(
     }
 
     Ok(next.run(request).await)
+}
+
+/// Segment-aware "does `path` fall under this table entry's `prefix`"
+/// check -- deliberately NOT a plain `path.starts_with(prefix)`. Every
+/// entry in `App::internal_oauth_routes` today happens to be registered as
+/// an exact route (no sibling path is ever a literal string-prefix of
+/// another, e.g. nothing named `/stanox-crs-extra` exists alongside
+/// `/stanox-crs`), so a bare `starts_with` has never actually
+/// misattributed a request -- but that's a property of today's route list,
+/// not something this check enforced. A plain prefix match would let a
+/// future route added as (say) `/stanox` silently authorize requests to
+/// `/stanox-crs` too (or vice versa), with no compiler error and no test
+/// failure unless someone thought to add one for that exact pair -- purely
+/// latent risk with zero CI signal to catch it. Requiring the byte right
+/// after `prefix` to be either the end of the string or a `/` closes that
+/// gap: a match only counts at a real path-segment boundary, exactly like
+/// this table's own individual entries are written (`/stanox-crs`, not
+/// `/stanox-crs*`).
+fn path_matches_route(path: &str, prefix: &str) -> bool {
+    match path.strip_prefix(prefix) {
+        Some(rest) => rest.is_empty() || rest.starts_with('/'),
+        None => false,
+    }
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -211,6 +234,51 @@ pub fn validate_return_to(raw: &str) -> Option<String> {
     Some(raw.to_string())
 }
 
+/// This app's own real, browser-facing origin (scheme + host[+port]), for
+/// comparing against an incoming request's `Origin`/`Referer` header (see
+/// `is_same_origin` below). Derived from `sso_redirect_url`, the same
+/// config value `routes::auth::cookie_secure` already derives `Secure`
+/// from -- see that function's own doc comment for why it's the one config
+/// value that's already the real, operator-configured, browser-facing
+/// origin this app is served from in any given environment (as opposed to,
+/// say, this service's own bind address, which is never what a browser's
+/// address bar shows).
+pub fn expected_browser_origin(sso_redirect_url: &str) -> Option<String> {
+    openidconnect::url::Url::parse(sso_redirect_url)
+        .ok()
+        .map(|url| url.origin().ascii_serialization())
+}
+
+/// Standard OWASP-recommended Origin check for a state-changing request,
+/// mirroring `frontend/app/connect-claude/authorize/route.ts`'s own
+/// `isSameOriginRequest` -- see that function's doc comment for the fuller
+/// rationale this codebase already committed to there: `SameSite=Lax` is
+/// this app's only other CSRF precedent, and it's enforced entirely
+/// client-side (by the browser) with nothing backing it up server-side.
+/// Checks `origin` first; falls back to `referer` only when `origin` is
+/// absent (a real browser-submitted POST -- or any genuine `fetch`/XHR --
+/// always carries at least one of the two); returns `false` when neither
+/// is present rather than guessing. `referer` is a full URL, so only its
+/// origin component (scheme+host+port) is compared, exactly like the
+/// TypeScript version does via `new URL(referer).origin`.
+///
+/// NOT applied to `GET /auth/callback` -- see that handler's own doc
+/// comment in `routes::auth` for why a same-origin check does not fit that
+/// route's shape at all (the whole point of a callback is that the browser
+/// arrives there via a cross-origin redirect FROM the IdP, so `Referer`
+/// legitimately names the IdP's own origin, never this app's).
+pub fn is_same_origin(origin: Option<&str>, referer: Option<&str>, expected_origin: &str) -> bool {
+    if let Some(origin) = origin {
+        return origin == expected_origin;
+    }
+    if let Some(referer) = referer {
+        return openidconnect::url::Url::parse(referer)
+            .map(|url| url.origin().ascii_serialization() == expected_origin)
+            .unwrap_or(false);
+    }
+    false
+}
+
 /// A fresh, high-entropy opaque session/login-state token: 256 bits of OS
 /// randomness, base64url-encoded (no padding) for a clean cookie value.
 /// This is the value actually sent to the browser -- never stored
@@ -275,18 +343,36 @@ impl FromRequestParts<App> for AuthenticatedUser {
     }
 }
 
-/// Same lookup as `AuthenticatedUser`, but never rejects -- `None` for "no
-/// session" instead of `401`. Used only by `GET /auth/session` (Task 7),
-/// which must report "not logged in" as a normal `200`, not an error.
+/// Same lookup as `AuthenticatedUser`, but doesn't turn "no session" into a
+/// hard rejection -- `None` for that expected case instead of `401`. Used
+/// only by `GET /auth/session` (Task 7), which must report "not logged in"
+/// as a normal `200`, not an error.
+///
+/// Deliberately NOT `Rejection = Infallible` (as an earlier version of this
+/// impl was): that collapsed `AuthenticatedUser::from_request_parts`'s TWO
+/// distinct failure shapes -- `401` ("no cookie, or a cookie naming no
+/// live session row", genuinely anonymous) and `500` ("the session lookup
+/// itself errored -- a transient Postgres blip, a pool exhaustion, etc.",
+/// NOT anonymous, just unknown") -- into the same `None`. A real logged-in
+/// user hitting a transient DB error would silently read back as "not
+/// logged in" with no error signal at all, which a frontend then has every
+/// reason to treat as "go log in again" -- a silent login loop with
+/// nothing in the response to explain why. `Rejection` is now the same
+/// `(StatusCode, String)` shape `AuthenticatedUser` itself already uses,
+/// so only the `401` case is folded into `Ok(None)` here; anything else
+/// (today, only the `500` DB-error case) propagates as a real error
+/// response, exactly like it would for a route requiring auth outright.
 pub struct OptionalAuthenticatedUser(pub Option<AuthenticatedUser>);
 
 impl FromRequestParts<App> for OptionalAuthenticatedUser {
-    type Rejection = std::convert::Infallible;
+    type Rejection = (axum::http::StatusCode, String);
 
     async fn from_request_parts(parts: &mut Parts, app: &App) -> Result<Self, Self::Rejection> {
-        Ok(OptionalAuthenticatedUser(
-            AuthenticatedUser::from_request_parts(parts, app).await.ok(),
-        ))
+        match AuthenticatedUser::from_request_parts(parts, app).await {
+            Ok(user) => Ok(OptionalAuthenticatedUser(Some(user))),
+            Err((axum::http::StatusCode::UNAUTHORIZED, _)) => Ok(OptionalAuthenticatedUser(None)),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -408,6 +494,32 @@ mod internal_oauth_middleware_tests {
     // production table, not a hand-copied stand-in) and drives real
     // `Request`s with real, wiremock-signed JWTs through
     // `require_internal_oauth` itself.
+
+    #[test]
+    fn path_matches_route_accepts_an_exact_match() {
+        assert!(path_matches_route("/stanox-crs", "/stanox-crs"));
+    }
+
+    #[test]
+    fn path_matches_route_accepts_a_real_sub_path_at_a_segment_boundary() {
+        assert!(path_matches_route("/stanox-crs/123", "/stanox-crs"));
+    }
+
+    #[test]
+    fn path_matches_route_rejects_a_sibling_path_that_merely_shares_a_string_prefix() {
+        // The regression this check exists to close: `/private/foo` must
+        // never be treated as a prefix-match for a request actually bound
+        // for `/private/foobar` (or vice versa) just because one string
+        // happens to start with the other -- only a match at a real `/`
+        // segment boundary counts.
+        assert!(!path_matches_route("/private/foobar", "/private/foo"));
+        assert!(!path_matches_route("/private/foo", "/private/foobar"));
+    }
+
+    #[test]
+    fn path_matches_route_rejects_an_unrelated_path() {
+        assert!(!path_matches_route("/stations", "/stanox-crs"));
+    }
 }
 
 #[cfg(test)]
@@ -607,6 +719,82 @@ mod tests {
         assert!(validate_return_to("/api/auth/login").is_some());
         assert!(validate_return_to("/api/auth/callback").is_some());
     }
+
+    #[test]
+    fn expected_browser_origin_strips_path_and_keeps_scheme_and_host() {
+        assert_eq!(
+            expected_browser_origin("https://rail.example.com/api/auth/callback"),
+            Some("https://rail.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn expected_browser_origin_keeps_a_non_default_port() {
+        assert_eq!(
+            expected_browser_origin("http://localhost:3000/api/auth/callback"),
+            Some("http://localhost:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn expected_browser_origin_returns_none_for_an_unparseable_url() {
+        assert_eq!(expected_browser_origin("not-a-url"), None);
+    }
+
+    #[test]
+    fn is_same_origin_accepts_a_matching_origin_header() {
+        assert!(is_same_origin(
+            Some("https://rail.example.com"),
+            None,
+            "https://rail.example.com"
+        ));
+    }
+
+    #[test]
+    fn is_same_origin_rejects_a_mismatched_origin_header() {
+        assert!(!is_same_origin(
+            Some("https://evil.example.com"),
+            None,
+            "https://rail.example.com"
+        ));
+    }
+
+    #[test]
+    fn is_same_origin_falls_back_to_referer_when_origin_is_absent() {
+        assert!(is_same_origin(
+            None,
+            Some("https://rail.example.com/some/page?x=1"),
+            "https://rail.example.com"
+        ));
+    }
+
+    #[test]
+    fn is_same_origin_rejects_a_mismatched_referer() {
+        assert!(!is_same_origin(
+            None,
+            Some("https://evil.example.com/some/page"),
+            "https://rail.example.com"
+        ));
+    }
+
+    #[test]
+    fn is_same_origin_rejects_when_neither_header_is_present() {
+        // A real browser-submitted POST (or any genuine fetch/XHR) always
+        // carries at least one of these -- refuse to guess rather than let
+        // a request with neither through.
+        assert!(!is_same_origin(None, None, "https://rail.example.com"));
+    }
+
+    #[test]
+    fn is_same_origin_prefers_origin_over_a_mismatched_referer() {
+        // `Origin`, when present, is authoritative -- a `Referer` fallback
+        // is only ever consulted in its absence.
+        assert!(is_same_origin(
+            Some("https://rail.example.com"),
+            Some("https://evil.example.com/page"),
+            "https://rail.example.com"
+        ));
+    }
 }
 
 /// End-to-end coverage for `require_internal_oauth`'s route-scoping check
@@ -648,7 +836,7 @@ mod route_scoping_tests {
     /// wrong-caller's token failing a check here is unambiguously "wrong
     /// caller," never a coincidental group-name collision this fixture
     /// introduced by accident.
-    fn test_config() -> ServiceArguments {
+    pub(super) fn test_config() -> ServiceArguments {
         ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
@@ -1070,6 +1258,105 @@ mod route_scoping_tests {
                     "expected {method} {path} to accept caller group {group}'s token"
                 );
             }
+        }
+    }
+}
+
+/// Coverage for `OptionalAuthenticatedUser`'s "no session" vs "DB error"
+/// distinction -- the fix this suite exists to pin: before it,
+/// `OptionalAuthenticatedUser`'s `Rejection` was `Infallible`, so a
+/// transient Postgres error during the session lookup collapsed into the
+/// exact same `Ok(None)` ("not logged in") a missing/expired session
+/// cookie already produces. Neither test here needs a live, reachable
+/// Postgres: the "no cookie" case never touches `app.database` at all
+/// (short-circuits inside `AuthenticatedUser::from_request_parts` before
+/// any query), and the "DB error" case deliberately points `app.database`
+/// at an address nothing listens on, so the query attempt itself fails
+/// fast with a real connection error -- exactly the failure mode this fix
+/// must propagate rather than swallow.
+#[cfg(test)]
+mod optional_authenticated_user_tests {
+    use axum::http::Request;
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::route_scoping_tests::test_config;
+    use super::*;
+    use crate::app::AppState;
+    use crate::auth::oidc::{OidcClient, OidcConfig};
+
+    /// Mirrors `route_scoping_tests::test_app`'s "lazily-parsed, never-
+    /// eagerly-connected `PgPool`" posture, with one deliberate
+    /// difference: that suite never actually queries its placeholder pool
+    /// (`require_internal_oauth` never touches `app.database`), so its
+    /// placeholder address is never dialed. This suite's DB-error test
+    /// DOES query through this pool -- that's the point -- so the address
+    /// below (port 1, nothing ever listens there) is chosen to fail the
+    /// connection attempt immediately rather than hang.
+    fn test_app() -> App {
+        let config = test_config();
+        std::sync::Arc::new(AppState {
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
+            database: PgPoolOptions::new()
+                .connect_lazy("postgres://user:password@127.0.0.1:1/placeholder")
+                .expect("build placeholder lazy pg pool"),
+            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
+            oidc: OidcClient::new(OidcConfig {
+                issuer_url: "https://example.invalid".to_string(),
+                client_id: "test-client".to_string(),
+                client_secret: "test-secret".to_string(),
+                redirect_url: "https://example.invalid/callback".to_string(),
+            })
+            .expect("construct placeholder oidc client"),
+            internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
+                "https://example.invalid".to_string(),
+                "test-internal-oauth-client".to_string(),
+            )
+            .expect("construct placeholder internal oauth verifier"),
+            internal_oauth_routes: Vec::new(),
+            schedule_crs_line_index: std::collections::HashMap::new(),
+            config,
+        })
+    }
+
+    #[tokio::test]
+    async fn no_session_cookie_resolves_to_anonymous_not_an_error() {
+        let app = test_app();
+        let request = Request::builder()
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        let (mut parts, _body) = request.into_parts();
+
+        let OptionalAuthenticatedUser(user) =
+            OptionalAuthenticatedUser::from_request_parts(&mut parts, &app)
+                .await
+                .expect("a missing session cookie must resolve to Ok(None), not an error");
+        assert!(user.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_db_error_during_session_lookup_propagates_as_an_error_not_anonymous() {
+        let app = test_app();
+        let request = Request::builder()
+            .header(
+                axum::http::header::COOKIE,
+                format!("{SESSION_COOKIE_NAME}=some-token-value"),
+            )
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        let (mut parts, _body) = request.into_parts();
+
+        // Not `.expect_err(...)`: that requires the `Ok` type to implement
+        // `Debug`, and `OptionalAuthenticatedUser`/`AuthenticatedUser`
+        // deliberately don't (matching this file's `LoginState`'s own
+        // no-`Debug` posture on auth-adjacent types -- nothing here is as
+        // sensitive as a login-state secret, but there's no upside to
+        // adding a derive purely to satisfy a test assertion).
+        match OptionalAuthenticatedUser::from_request_parts(&mut parts, &app).await {
+            Ok(_) => panic!(
+                "a DB error during session lookup must propagate as an error, not collapse \
+                 into Ok(None)"
+            ),
+            Err(err) => assert_eq!(err.0, axum::http::StatusCode::INTERNAL_SERVER_ERROR),
         }
     }
 }

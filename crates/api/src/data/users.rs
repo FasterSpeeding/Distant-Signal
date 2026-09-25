@@ -638,6 +638,48 @@ pub async fn prune_expired_sessions(pool: &PgPool) -> Result<u64> {
 /// here at all, so this one simply goes without. Nothing debug-formats or
 /// clones one today, and leaving the derives in place is just an open
 /// invitation for a future `tracing::debug!(?stored)` to change that.
+///
+/// # Why these three columns are stored plaintext, unlike `sessions.id`
+///
+/// `sessions.id` stores a SHA-256 digest of the session cookie value (see
+/// `crate::auth::hash_session_token`'s own doc comment), specifically so a
+/// DB dump/leak alone can't be replayed as a live session. `pkce_verifier`,
+/// `nonce`, and `csrf_state` were reviewed against that same bar (2026-09-25
+/// Low-severity auth-core review) and deliberately left plaintext, for two
+/// independent reasons that don't both apply the same way to every column
+/// here:
+///
+/// 1. `pkce_verifier` and `nonce` are not compared for equality by this
+///    app at all -- `pkce_verifier` is sent VERBATIM to the IdP's token
+///    endpoint in the code exchange (`app.oidc.exchange_code`, PKCE's own
+///    RFC 7636 mechanism requires the raw `code_verifier`, not a digest of
+///    it), and `nonce` is handed to `openidconnect`'s own ID-token verifier
+///    to compare against the `nonce` claim inside the returned ID token.
+///    Both round-trip through this app as opaque values it must hand back
+///    UNCHANGED; a one-way hash, by construction, cannot be reversed back
+///    into the value either of those consumers need. Storing anything other
+///    than the plaintext here would break the OIDC flow itself, not just
+///    add friction -- so, unlike `sessions.id`, there is no hash-and-compare
+///    substitute available for these two columns at all.
+/// 2. `csrf_state` genuinely COULD be hashed the same way `sessions.id` is
+///    (`routes::auth::callback` only ever compares it for equality against
+///    the `state` query parameter Authentik echoes back, never sends it
+///    anywhere or reads it back out). It is left plaintext anyway because
+///    the blast radius a leaked row actually carries is much smaller than a
+///    leaked session: reading this table at all already requires the same
+///    direct DB access a leaked `sessions` row would require, and once an
+///    attacker has that, `oidc_login_state` rows are single-use (`DELETE
+///    ... RETURNING` on first consumption, see `consume_login_state`) and
+///    expire after 15 minutes (`insert_login_state`'s own sweep, and
+///    `consume_login_state`'s own `WHERE created_at > NOW() - INTERVAL '15
+///    minutes'`) -- vs. a `sessions` row, which stays valid and replayable
+///    for up to `session_ttl_days` (14 days by default). Full parity with
+///    `sessions.id` would cost a second hashing/lookup path (`callback`
+///    would need to hash the incoming `state` param before comparing) for a
+///    window of exposure roughly 1300x shorter than the value that
+///    parity-driven design already protects. Judged not worth it here; kept
+///    plaintext alongside `pkce_verifier`/`nonce` instead of introducing an
+///    inconsistent "two columns hashed, two not" shape in the same table.
 #[derive(sqlx::FromRow)]
 pub struct LoginState {
     pub pkce_verifier: String,
@@ -646,6 +688,13 @@ pub struct LoginState {
     pub return_to: Option<String>,
 }
 
+/// See `oidc_login_state_created_at`
+/// (`crates/api/migrations/20260925221000_oidc_login_state_created_at_index.sql`)
+/// for why the sweep DELETE below is indexed -- without it, this function
+/// (called on EVERY hit to `GET /auth/login`, not on a periodic timer the
+/// way `sessions`' equivalent `prune_expired_sessions` is) would run a
+/// sequential scan of the whole table on every single request to a public,
+/// unauthenticated, credential-free endpoint.
 pub async fn insert_login_state(
     pool: &PgPool,
     id: &str,

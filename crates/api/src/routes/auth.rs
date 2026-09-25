@@ -51,6 +51,7 @@ fn captured_return_to(raw: Option<&str>) -> Option<String> {
 
 async fn login(
     State(app): State<App>,
+    headers: axum::http::HeaderMap,
     // A hard `Query<LoginParams>` extractor would reject the whole request
     // with a user-visible 400 on a malformed query string (e.g. a
     // duplicate `return_to`), which would abort the OIDC flow before this
@@ -60,6 +61,30 @@ async fn login(
     // `Err`, handled below identically to "no return_to was sent".
     params: Result<Query<LoginParams>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
+    // Defense in depth against the DB-write churn this route's own
+    // `insert_login_state` sweep makes non-free (see that function's doc
+    // comment): a genuine top-level navigation here (a user clicking a
+    // real "Log in" link) legitimately carries NO `Origin` header at all --
+    // browsers only attach `Origin` to a top-level GET navigation in a
+    // handful of cross-site cases, unlike a POST, which always carries one
+    // -- so this can't use the strict "Origin-or-Referer-required" check
+    // `logout` below uses without rejecting real logins. What it CAN
+    // reject without any false positives: an `Origin` header that IS
+    // present but names a different site entirely, which is exactly the
+    // shape a cross-origin `fetch`/XHR (as opposed to a real navigation)
+    // hitting this endpoint would carry. Absence of `Origin` is therefore
+    // treated as "can't tell, allow" here, not "reject" -- deliberately
+    // asymmetric with `logout`'s own check.
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
+        && Some(origin) != auth::expected_browser_origin(&app.config.sso_redirect_url).as_deref()
+    {
+        tracing::warn!(
+            origin,
+            "login rejected: Origin header names a different site"
+        );
+        return (StatusCode::FORBIDDEN, "cross-site request rejected").into_response();
+    }
+
     let (url, pkce_verifier, csrf_state, nonce) = match app.oidc.authorize_url().await {
         Ok(v) => v,
         Err(err) => {
@@ -123,6 +148,24 @@ fn post_login_target(stored_return_to: Option<&str>, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// Deliberately carries NO `Origin`/`Referer` check, unlike `login` and
+/// `logout` in this same module (2026-09-25 Low-severity auth-core
+/// review). The whole point of this route is that the browser arrives
+/// here via a cross-origin, top-level GET redirect FROM the IdP
+/// (Authentik) -- a legitimate callback's `Referer` therefore names
+/// Authentik's own origin, never this app's, and `Origin` is essentially
+/// never sent on a top-level GET navigation at all. A same-origin check
+/// here would either always fail-reject genuine logins (if compared
+/// against this app's own origin) or provide no real signal (if merely
+/// checked for presence). This route's actual, and stronger, CSRF defense
+/// is already in place: the `state` query parameter Authentik echoes back
+/// must match `csrf_state`, a random value bound to the `login_state_id`
+/// stored server-side and named only by the `HttpOnly`/`SameSite=Lax`
+/// login-state cookie set by `login` above (see the `stored.csrf_state !=
+/// state` check below) -- functionally the OAuth2 spec's own standard
+/// answer to this exact CSRF concern, and strictly harder to forge than an
+/// `Origin` header (which some HTTP clients let a caller set arbitrarily)
+/// would add on top of it.
 async fn callback(
     State(app): State<App>,
     headers: axum::http::HeaderMap,
@@ -232,6 +275,30 @@ async fn callback(
 }
 
 async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Response {
+    // Belt-and-suspenders CSRF defense in depth (2026-09-25 Low-severity
+    // auth-core review), on top of the existing `SameSite=Lax` posture
+    // `main.rs`'s CORS comment already relies on: `logout` is a `POST`
+    // that acts on whatever session cookie the browser happens to attach,
+    // exactly the shape a CSRF-vulnerable endpoint takes if `SameSite`
+    // alone (enforced entirely client-side, nothing backing it up
+    // server-side) is its only guard. Mirrors
+    // `frontend/app/connect-claude/authorize/route.ts`'s own
+    // `isSameOriginRequest` -- the strict form (unlike `login` above): a
+    // real POST always carries an `Origin` or `Referer` header, so
+    // rejecting when neither is present has no legitimate-request cost
+    // here the way it would on a plain top-level GET navigation.
+    let expected_origin = auth::expected_browser_origin(&app.config.sso_redirect_url);
+    if let Some(expected_origin) = expected_origin.as_deref()
+        && !auth::is_same_origin(
+            headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()),
+            headers.get(header::REFERER).and_then(|v| v.to_str().ok()),
+            expected_origin,
+        )
+    {
+        tracing::warn!("logout rejected: Origin/Referer did not match this app's own origin");
+        return (StatusCode::FORBIDDEN, "cross-site request rejected").into_response();
+    }
+
     // Local-only logout -- this plan does not implement RP-Initiated
     // Logout (see Global Constraints). If the session cookie is missing
     // or already invalid, logout is still a no-op success (idempotent),

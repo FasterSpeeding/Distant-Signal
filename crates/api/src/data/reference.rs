@@ -86,6 +86,7 @@ pub struct NearbyStation {
 ///     search term is interpreted as an ILIKE wildcard rather than a
 ///     literal character, silently broadening the match (e.g. searching
 ///     for a station literally named with a `%` would match everything).
+///
 /// `q` must already be trimmed and non-empty (callers go through
 /// `routes::reference::sanitize_query` first). Wildcard/escape-character
 /// handling is this function's own job, not the caller's -- see
