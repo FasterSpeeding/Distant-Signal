@@ -153,9 +153,41 @@ describe('JourneyLegCard', () => {
     expect(screen.getByText('London Kings Cross (KGX) → York (YRK) · 17:00')).toBeInTheDocument();
   });
 
-  it('still shows the headcode, dimmed, as secondary information', () => {
+  it('still shows the headcode, as secondary information', () => {
     renderWithMantine(<JourneyLegCard journeyId={167} leg={baseLeg()} isOwner isOnlyLeg={false} />);
     expect(screen.getByText('Train P9E010')).toBeInTheDocument();
+  });
+
+  // Feature request: journey-view legs should link through to their own
+  // train tracking page. `/train/[uid]/[date]` is the public per-train
+  // route (`app/train/[uid]/[date]/page.tsx`); the link uses the LEG's own
+  // `serviceDate`, same source of truth `JourneyLegCandidates` already
+  // reads off this card (`serviceDate={leg.serviceDate}`), not the matched
+  // train's own `state.serviceDate`.
+  it('links the headcode through to that train\'s own tracking page', () => {
+    renderWithMantine(<JourneyLegCard journeyId={167} leg={baseLeg()} isOwner isOnlyLeg={false} />);
+    expect(screen.getByRole('link', { name: 'Train P9E010' })).toHaveAttribute(
+      'href',
+      '/train/P9E010/2026-09-22',
+    );
+  });
+
+  // A leg can be "matched" (`trackedTrainState !== null`) while still
+  // waiting for Network Rail's first live report to actually name the
+  // service (`resolutionStatus: 'pending'`, `trainUid: null`) -- there is
+  // no `/train/[uid]/...` page to link to yet, so no link (and no
+  // headcode text at all) should render.
+  it('renders no train link (or headcode) for a matched-but-unresolved leg', () => {
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={167}
+        leg={baseLeg({ trackedTrainState: trackedState({ resolutionStatus: 'pending', trainUid: null }) })}
+        isOwner
+        isOnlyLeg={false}
+      />,
+    );
+    expect(screen.queryByRole('link', { name: /Train/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Train /)).not.toBeInTheDocument();
   });
 
   // 2026-09-22 UX review finding I14/2.4, later corrected: "Change train"
@@ -454,6 +486,19 @@ describe('JourneyLegCard (open leg)', () => {
     await settleCandidates();
 
     expect(screen.queryByText('Searching for a train to track — pick one below.')).not.toBeInTheDocument();
+  });
+
+  // An open leg has no `trackedTrainState` at all yet -- there is no
+  // `/train/[uid]/[date]` page to link to until a train is picked, so this
+  // card's own `JourneyLegCandidates` picker offers "View live status"
+  // links per candidate row instead (see that component's own test file);
+  // the card itself renders no top-level train link.
+  it('renders no top-level train link on an open leg', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
+    await settleCandidates();
+
+    expect(screen.queryByRole('link', { name: /^Train / })).not.toBeInTheDocument();
   });
 
   // The other half of the ternary-gap fix: an open (never-yet-matched)
