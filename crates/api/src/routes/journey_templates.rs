@@ -18,6 +18,7 @@ use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
 use crate::data::journey_templates::{self, TemplateLegInput};
 use crate::data::journeys;
+use crate::data::train_tracking;
 
 pub fn router() -> Router {
     Router::new()
@@ -227,6 +228,10 @@ async fn post_journey_template(
                     "A template needs at least one leg.".to_string(),
                 ));
             }
+            journey_templates::validate_leg_count(legs.len())
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            let custom_name = train_tracking::validate_custom_name(custom_name.as_deref())
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
             let leg_inputs = legs
                 .into_iter()
                 .map(to_template_leg_input)
@@ -245,6 +250,9 @@ async fn post_journey_template(
             custom_name,
             journey_id,
         } => {
+            let custom_name = train_tracking::validate_custom_name(custom_name.as_deref())
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
             // Ownership, not mere readability -- Judgment Call 3.
             let owner = journeys::journey_owner(&app.database, journey_id)
                 .await
@@ -256,6 +264,14 @@ async fn post_journey_template(
             let source_legs = journeys::list_legs_for_journey(&app.database, journey_id)
                 .await
                 .map_err(internal_error("read journey legs"))?;
+            // Defense in depth alongside `Manual` mode's own check above:
+            // a source journey's leg count isn't itself capped anywhere
+            // today (each leg is added one `POST /Journeys/{id}/legs` call
+            // at a time, never as a single array), but there's no reason to
+            // let an already-oversized journey mint an equally-oversized
+            // template here either.
+            journey_templates::validate_leg_count(source_legs.len())
+                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
             if source_legs
                 .iter()
                 .any(|leg| leg.origin_crs.is_none() || leg.destination_crs.is_none())
@@ -358,6 +374,8 @@ async fn put_journey_template(
             "A template needs at least one leg.".to_string(),
         ));
     }
+    journey_templates::validate_leg_count(body.legs.len())
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     journey_templates::validate_template_recurrence(
         &body.default_match_mode,
         body.auto_commit_rule.as_deref(),
@@ -366,6 +384,8 @@ async fn put_journey_template(
         body.ends_on,
     )
     .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    let custom_name = train_tracking::validate_custom_name(body.custom_name.as_deref())
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     let leg_inputs = body
         .legs
         .into_iter()
@@ -375,7 +395,7 @@ async fn put_journey_template(
         &app.database,
         template_id,
         &user.id,
-        body.custom_name.as_deref(),
+        custom_name.as_deref(),
         &leg_inputs,
         body.days_of_week,
         body.active,
@@ -872,6 +892,75 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Low finding #6 (2026-09-25 review): before
+    /// `journey_templates::validate_leg_count` existed, a `Manual`-mode
+    /// `legs` array had no upper bound at all, so this would have been
+    /// accepted and paid for as `MAX_LEGS_PER_TEMPLATE + 1` single-row
+    /// inserts in one transaction. Pins down a clean `400` instead.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey_template_manual_mode_too_many_legs_is_400 -- --ignored --test-threads=1`"]
+    async fn post_journey_template_manual_mode_too_many_legs_is_400() {
+        let pool = connect().await;
+        let user_id = "TEST-ROUTE-TEMPLATE-TOO-MANY-LEGS";
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let legs: Vec<serde_json::Value> = (0
+            ..=crate::data::journey_templates::MAX_LEGS_PER_TEMPLATE)
+            .map(|_| serde_json::json!({ "originCrs": "WAT", "destinationCrs": "RDG" }))
+            .collect();
+        let (status, body) = post_json(
+            router,
+            "/JourneyTemplates".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "mode": "manual",
+                "legs": legs
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "over-cap legs: {body:?}");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Low finding #2 (2026-09-25 review): before this route validated
+    /// `customName` at all, a multi-KB name reached `create_template`
+    /// unchanged and would have been stored and rendered to every group
+    /// member. Pins down that the same `common::CUSTOM_NAME_MAX_LENGTH`
+    /// cap every other `custom_name` write path in this codebase already
+    /// enforces (`train_tracking::validate_custom_name`) is now applied
+    /// here too.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey_template_manual_mode_an_oversized_custom_name_is_400 -- --ignored \
+                --test-threads=1`"]
+    async fn post_journey_template_manual_mode_an_oversized_custom_name_is_400() {
+        let pool = connect().await;
+        let user_id = "TEST-ROUTE-TEMPLATE-LONG-NAME";
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let oversized_name = "a".repeat(common::CUSTOM_NAME_MAX_LENGTH + 1);
+        let (status, body) = post_json(
+            router,
+            "/JourneyTemplates".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "mode": "manual",
+                "customName": oversized_name,
+                "legs": [{ "originCrs": "WAT", "destinationCrs": "RDG" }]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "oversized name: {body:?}");
 
         cleanup_user(&pool, user_id).await;
     }

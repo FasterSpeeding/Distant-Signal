@@ -553,6 +553,53 @@ pub fn validate_known_train_overrides(
     Ok(())
 }
 
+/// A real TRUST/CIF `train_uid` is always exactly this many characters --
+/// see `docs/superpowers/specs/2026-08-28-train-tracking-design.md`'s
+/// identifiers section (`"train_uid" (e.g. "C21373") -- the CIF/schedule
+/// UID"`) and `trust_schema::schema::Activation`'s own fixture literals
+/// (`"C21373"`, `"C88888"`, `"W34058"`, ...) -- every confirmed real-world
+/// example is a 6-character alphanumeric code.
+pub const TRAIN_UID_LENGTH: usize = 6;
+
+/// User-facing shape guard for a caller-supplied `train_uid`, Signal Box
+/// Audit 2026-09-25 Low finding #1: `KnownTrain`-mode leg creation
+/// (`POST /Journeys`, `POST /Journeys/{id}/legs`) and manual leg-matching
+/// (`POST /Journeys/{id}/legs/{legId}/train`) all take a bare
+/// caller-typed `train_uid` string and feed it straight into
+/// `trains::find_or_create_train`, which unconditionally upserts a row
+/// into the GLOBAL, shared `trains` table for `(train_uid, service_date)`
+/// -- there is no per-user scoping or moderation on that table at all.
+/// Without this check, any authenticated user could mint unlimited garbage
+/// `(train_uid, service_date)` rows by supplying arbitrary strings (a
+/// multi-KB blob, SQL-looking text, anything), polluting a table every
+/// other user's journeys/trains pages read from.
+///
+/// Deliberately just a SHAPE check (length + alphanumeric), not a
+/// real-identity lookup: this route has no synchronous way to confirm a
+/// `train_uid` corresponds to a real CIF schedule (the same reasoning
+/// [`validate_known_train_overrides`]'s doc comment gives for not
+/// validating overrides against real calling points), and legitimate
+/// candidates only ever reach this field pre-filled from this app's own
+/// `GET .../candidates` search results anyway -- this exists to reject
+/// obviously-malformed input, not to second-guess a well-formed one.
+///
+/// `find_or_create_train` itself is intentionally NOT where this check
+/// lives: it's also called with long, deliberately-not-6-character
+/// synthetic identifiers by internal consumers (`trust-backlog-consumer`'s
+/// bare-UID fallback path, this crate's own fixtures) that are not
+/// caller-facing and must stay unvalidated. This is purely a boundary
+/// check for the caller-facing routes in `routes::journeys`.
+pub fn validate_train_uid(train_uid: &str) -> Result<(), String> {
+    let trimmed = train_uid.trim();
+    if trimmed.len() != TRAIN_UID_LENGTH || !trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!(
+            "That doesn't look like a real train identifier — train IDs are \
+             {TRAIN_UID_LENGTH}-character codes like \"C21373\"."
+        ));
+    }
+    Ok(())
+}
+
 /// Creates a one-leg journey around an OPEN time-window search -- the
 /// `window` mode of `POST /Journeys` (design doc §2.1, §9's revised Phase
 /// 1 scope). No `train_subscriptions` row at all yet: `train_subscription_id`
@@ -1565,6 +1612,49 @@ mod db_tests {
         assert!(
             err.contains("origin"),
             "origin's message should take priority when both ends are malformed: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_train_uid_accepts_a_well_formed_six_character_uid() {
+        assert!(validate_train_uid("C21373").is_ok());
+    }
+
+    #[test]
+    fn validate_train_uid_accepts_surrounding_whitespace() {
+        assert!(validate_train_uid("  C21373  ").is_ok());
+    }
+
+    #[test]
+    fn validate_train_uid_rejects_something_shorter_than_six_characters() {
+        assert!(validate_train_uid("C2137").is_err());
+    }
+
+    #[test]
+    fn validate_train_uid_rejects_something_longer_than_six_characters() {
+        assert!(validate_train_uid("C213733").is_err());
+    }
+
+    #[test]
+    fn validate_train_uid_rejects_non_alphanumeric_characters() {
+        assert!(validate_train_uid("C2137!").is_err());
+        assert!(validate_train_uid("C213 3").is_err());
+        assert!(validate_train_uid("'; DR").is_err());
+    }
+
+    #[test]
+    fn validate_train_uid_rejects_an_empty_string() {
+        assert!(validate_train_uid("").is_err());
+        assert!(validate_train_uid("      ").is_err());
+    }
+
+    #[test]
+    fn validate_train_uid_message_carries_no_internal_field_names() {
+        let err = validate_train_uid("nope").unwrap_err();
+        assert!(!err.is_empty());
+        assert!(
+            !err.contains('_'),
+            "user-facing copy leaked an identifier: {err}"
         );
     }
 
@@ -2592,9 +2682,14 @@ mod db_tests {
                 .expect("readable while a member")
         );
 
-        crate::data::groups::remove_member(&pool, &group_id, "TEST-JOURNEY-READABLE-MEMBER-4")
-            .await
-            .expect("remove member");
+        crate::data::groups::remove_member(
+            &pool,
+            &group_id,
+            "TEST-JOURNEY-READABLE-MEMBER-4",
+            true,
+        )
+        .await
+        .expect("remove member");
 
         // Task 2's remove_member cascade should have deleted the
         // group_journeys row too, so this is doubly protected -- even a

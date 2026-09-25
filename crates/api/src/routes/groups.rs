@@ -359,8 +359,19 @@ async fn list_members(
 /// and there is only ever one owner, so this also protects the owner from
 /// a hypothetical second admin/owner-equivalent). The actual
 /// ownership-transfer/departed-cleanup/group-deletion logic lives entirely
-/// in `groups::remove_member` (Task 3); this handler only decides WHETHER
-/// the removal is authorized.
+/// in `groups::remove_member` (Task 3); this handler decides WHETHER the
+/// caller is even allowed to attempt the removal (membership, `can_manage`).
+///
+/// The "can never target the `owner`" refusal itself is NOT decided here
+/// any more -- see `groups::remove_member`'s doc comment (finding #3,
+/// 2026-09-25 Low-severity review). A `get_member_role` read done in this
+/// handler, before calling into `groups::remove_member`, was a stale
+/// snapshot: between that read and the actual removal, a concurrent
+/// request could finish promoting `target_user_id` to owner (the previous
+/// owner leaving at the same moment), and this handler would then wave a
+/// removal of the brand-new owner straight through. `groups::remove_member`
+/// now re-checks the target's role itself, inside the same row-locked
+/// transaction as the removal, so that check can no longer go stale.
 async fn remove_member(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -369,31 +380,24 @@ async fn remove_member(
     let caller_role = require_member(&app, &group_id, &user.id).await?;
 
     let is_self = target_user_id == user.id;
-    if !is_self {
-        if !caller_role.can_manage() {
-            return Err((
-                StatusCode::FORBIDDEN,
-                "you don't have permission to remove members from this group".to_string(),
-            ));
-        }
-        let target_role = groups::get_member_role(&app.database, &group_id, &target_user_id)
-            .await
-            .map_err(internal_error("check target membership"))?;
-        if target_role == Some(GroupRole::Owner) {
-            return Err((
-                StatusCode::FORBIDDEN,
-                "the group owner can't be removed".to_string(),
-            ));
-        }
+    if !is_self && !caller_role.can_manage() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "you don't have permission to remove members from this group".to_string(),
+        ));
     }
 
-    match groups::remove_member(&app.database, &group_id, &target_user_id)
+    match groups::remove_member(&app.database, &group_id, &target_user_id, is_self)
         .await
         .map_err(internal_error("remove member"))?
     {
         groups::RemoveMemberOutcome::NotAMember => {
             Err((StatusCode::NOT_FOUND, "no member with that id".to_string()))
         }
+        groups::RemoveMemberOutcome::OwnerCannotBeRemoved => Err((
+            StatusCode::FORBIDDEN,
+            "the group owner can't be removed".to_string(),
+        )),
         groups::RemoveMemberOutcome::Removed { .. } | groups::RemoveMemberOutcome::GroupDeleted => {
             Ok(StatusCode::NO_CONTENT)
         }
@@ -2115,7 +2119,7 @@ mod db_tests {
         .await
         .expect("seed fixture grant");
 
-        crate::data::groups::remove_member(&pool, &group_id, "TEST-ROUTE-GRANT-LEFT-SHARER")
+        crate::data::groups::remove_member(&pool, &group_id, "TEST-ROUTE-GRANT-LEFT-SHARER", true)
             .await
             .expect("the sharer leaves the group");
         assert_eq!(

@@ -402,6 +402,13 @@ pub enum RemoveMemberOutcome {
     /// group (§2.1: "An owner attempting to leave a group with no other
     /// members present simply deletes the group instead").
     GroupDeleted,
+    /// The target holds the `owner` role and `remover_is_target` was
+    /// `false` -- i.e. someone OTHER than the owner tried to remove them.
+    /// The route maps this to `403`. See [`remove_member`]'s doc comment
+    /// for why this is checked here, inside the locked transaction,
+    /// instead of only by the route before calling in (finding #3 of the
+    /// 2026-09-25 Low-severity pass).
+    OwnerCannotBeRemoved,
 }
 
 /// Removes `target_user_id` from `group_id`, handling every decided edge
@@ -419,13 +426,34 @@ pub enum RemoveMemberOutcome {
 ///    group is deleted instead of leaving it ownerless-and-empty.
 ///
 /// Permission checking (self-leave is always allowed; removing someone
-/// else requires `admin`/`owner` and can never target the `owner`) is the
-/// route's job (Task 7) -- this function only encodes what happens to the
-/// DATA once a removal is authorized.
+/// else requires `admin`/`owner`) is mostly the route's job (Task 7) --
+/// this function only encodes what happens to the DATA once a removal is
+/// authorized. The one exception is "can never target the `owner`"
+/// (`remover_is_target` is `false`): that check is re-validated HERE,
+/// inside the same `groups`-row-locked transaction as the removal itself,
+/// rather than left solely to a `get_member_role` read the route does
+/// beforehand.
+///
+/// Finding #3 (2026-09-25 Low-severity review, "user" area): the route's
+/// old pre-check read the target's role, decided "not the owner, go
+/// ahead", and only THEN called this function. Between that read and this
+/// function's write, a concurrent call could finish transferring
+/// ownership to that very target (the only way ownership changes hands --
+/// see this function's own §2.1 handling below -- when the actual owner
+/// leaves at the same moment). An admin removing a plain member could
+/// therefore land on a request that, by the time it actually executes,
+/// removes the group's brand-new owner -- exactly the case §3 ("an admin
+/// can never remove the owner") forbids, just with worse timing. Re-reading
+/// `target_role` under the `FOR UPDATE` lock this function already takes
+/// (finding #3 of the PRIOR review pass, serializing concurrent
+/// `remove_member` calls) closes the gap: by the time this check runs, no
+/// concurrent `remove_member`/ownership-transfer on this group can still be
+/// in flight, so the role read here is authoritative, not stale.
 pub async fn remove_member(
     pool: &PgPool,
     group_id: &str,
     target_user_id: &str,
+    remover_is_target: bool,
 ) -> Result<RemoveMemberOutcome> {
     let mut tx = pool.begin().await?;
 
@@ -461,6 +489,15 @@ pub async fn remove_member(
         tx.rollback().await?;
         return Ok(RemoveMemberOutcome::NotAMember);
     };
+
+    // Finding #3 (2026-09-25 Low-severity review): the authoritative check
+    // -- see this function's doc comment -- now that the `FOR UPDATE` lock
+    // above guarantees no concurrent `remove_member` on this group is still
+    // in flight to race against.
+    if target_role == "owner" && !remover_is_target {
+        tx.rollback().await?;
+        return Ok(RemoveMemberOutcome::OwnerCannotBeRemoved);
+    }
 
     let remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM group_members WHERE group_id = $1 AND user_id != $2",
@@ -2220,7 +2257,7 @@ mod db_tests {
             .await
             .expect("create group");
 
-        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-NEVER-A-MEMBER")
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-NEVER-A-MEMBER", true)
             .await
             .expect("remove attempt");
         assert_eq!(outcome, RemoveMemberOutcome::NotAMember);
@@ -2231,6 +2268,46 @@ mod db_tests {
             .await
             .ok();
         cleanup(&pool, &["TEST-GROUPS-REMOVE-OWNER-1"]).await;
+    }
+
+    /// Finding #3's own regression test (2026-09-25 Low-severity review):
+    /// proves the "can't remove the owner" refusal is enforced by
+    /// `remove_member` ITSELF, not only by a pre-check the route happens to
+    /// do beforehand. Calling straight into the data layer with
+    /// `remover_is_target: false` against an `owner` target -- the shape a
+    /// stale route-level check could no longer prevent once its read of the
+    /// target's role races a concurrent ownership transfer -- must still be
+    /// refused here, atomically, inside the locked transaction.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_member_refuses_to_remove_the_owner_even_when_called_directly \
+                -- --ignored`"]
+    async fn remove_member_refuses_to_remove_the_owner_even_when_called_directly() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-DIRECT-OWNER-1").await;
+        let group_id = create_group(&pool, "Direct Owner Test", "TEST-GROUPS-DIRECT-OWNER-1")
+            .await
+            .expect("create group");
+
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-DIRECT-OWNER-1", false)
+            .await
+            .expect("remove attempt");
+        assert_eq!(outcome, RemoveMemberOutcome::OwnerCannotBeRemoved);
+
+        // The refusal actually refused the write -- the owner is still a
+        // member, not merely reported as such.
+        let owner_role = get_member_role(&pool, &group_id, "TEST-GROUPS-DIRECT-OWNER-1")
+            .await
+            .expect("read owner role");
+        assert_eq!(owner_role, Some(GroupRole::Owner));
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-DIRECT-OWNER-1"]).await;
     }
 
     #[tokio::test]
@@ -2272,7 +2349,7 @@ mod db_tests {
         .await
         .expect("share the train into the group");
 
-        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-REMOVE-MEMBER-2")
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-REMOVE-MEMBER-2", true)
             .await
             .expect("remove member");
         assert_eq!(outcome, RemoveMemberOutcome::Removed { new_owner: None });
@@ -2341,7 +2418,7 @@ mod db_tests {
         .await
         .expect("seed newer admin");
 
-        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-TRANSFER-OWNER")
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-TRANSFER-OWNER", true)
             .await
             .expect("owner leaves");
         assert_eq!(
@@ -2394,7 +2471,7 @@ mod db_tests {
         .await
         .expect("seed member");
 
-        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-TRANSFER2-OWNER")
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-TRANSFER2-OWNER", true)
             .await
             .expect("owner leaves");
         assert_eq!(
@@ -2430,7 +2507,7 @@ mod db_tests {
             .await
             .expect("create group");
 
-        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-SOLO-OWNER")
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-SOLO-OWNER", true)
             .await
             .expect("owner leaves alone");
         assert_eq!(outcome, RemoveMemberOutcome::GroupDeleted);
@@ -2495,7 +2572,7 @@ mod db_tests {
         let pool2 = pool.clone();
         let group_id2 = group_id.clone();
         let mut handle = tokio::spawn(async move {
-            remove_member(&pool2, &group_id2, "TEST-GROUPS-LOCK-OWNER").await
+            remove_member(&pool2, &group_id2, "TEST-GROUPS-LOCK-OWNER", true).await
         });
 
         let still_running =
@@ -3505,7 +3582,7 @@ mod db_tests {
             .await
             .expect("share the journey into the group");
 
-        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-REMOVE-MEMBER-J1")
+        let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-REMOVE-MEMBER-J1", true)
             .await
             .expect("remove member");
         assert_eq!(outcome, RemoveMemberOutcome::Removed { new_owner: None });
@@ -3997,7 +4074,7 @@ mod db_tests {
             .await
             .expect("share a train too");
 
-        let outcome = remove_member(&pool, &group_id, "TEST-GRANT-LEAVE-SHARER")
+        let outcome = remove_member(&pool, &group_id, "TEST-GRANT-LEAVE-SHARER", true)
             .await
             .expect("remove member");
         assert_eq!(outcome, RemoveMemberOutcome::Removed { new_owner: None });
