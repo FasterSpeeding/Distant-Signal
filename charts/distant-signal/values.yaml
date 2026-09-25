@@ -545,12 +545,44 @@ api:
     # by main.rs. Changing this must be matched in tests/test-api-health.yaml.
     path: /public/health
     startup:
-      # 30 x 2s = 60s of headroom. The api runs sqlx::migrate!() BEFORE it
-      # binds its listener (crates/api/src/main.rs), so a cold start against
-      # an empty database can take a while and must not be killed by the
-      # liveness probe.
+      # 150 x 2s = 300s (5 minutes) of headroom. The api runs
+      # sqlx::migrate!() BEFORE it binds its listener
+      # (crates/api/src/main.rs:118), so /public/health does not answer at
+      # all until every pending migration has committed -- the startup
+      # probe's total budget is therefore a hard ceiling on migration
+      # wall-clock, not just on process boot.
+      #
+      # RAISED from 30 x 2s = 60s on 2026-09-25. 60s was sized for "a cold
+      # start against an empty database", which is no longer the interesting
+      # case: a single DDL step against a production-sized table can exceed
+      # it on its own. The largest tables here are
+      # `schedule_calling_points_full` (~1.7-2 million rows, torn down and
+      # rebuilt daily -- docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase2-connections-array-plan.md:113)
+      # and `schedule_destination_departures` (~377,000 rows per rail day at
+      # 1-2 days' retention -- docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md:369),
+      # and this crate's migration history is full of index builds against
+      # exactly those (e.g.
+      # 20260908150000_schedule_destination_departures_train_uid_idx.sql).
+      # A multi-million-row btree build is seconds on warm local NVMe but
+      # readily 1-2 minutes on throttled network-attached storage with the
+      # default 64MB maintenance_work_mem, and a GIN build (the
+      # incidents_affected_lines_gin shape) is several times slower again.
+      # At 60s such a migration was SIGKILLed mid-transaction, rolled back,
+      # and retried from scratch on the next restart -- a permanent
+      # crash-loop that never converges, rather than a slow-but-successful
+      # rollout.
+      #
+      # 300s is ~10x the estimated worst case at today's real row counts, so
+      # it absorbs a slow index build without hiding a genuinely wedged
+      # start for long. It costs nothing on the normal path: periodSeconds
+      # stays at 2, so a pod with no pending migrations still becomes ready
+      # within ~2s -- which matters, because api now rolls with
+      # `strategy: Recreate` (see api-deployment.yaml) and that readiness
+      # delay is real downtime. A config/connection failure is unaffected
+      # either way: the process exits and the container restarts regardless
+      # of this budget, which only governs "alive but not yet answering".
       periodSeconds: 2
-      failureThreshold: 30
+      failureThreshold: 150
       timeoutSeconds: 3
     readiness:
       periodSeconds: 10
