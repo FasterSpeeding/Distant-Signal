@@ -1427,9 +1427,46 @@ pub struct CallingPointDeparturePage {
 /// failing a ~377,000-row batch over one pathological schedule. The return
 /// value is therefore rows actually INSERTED, which may be under
 /// `rows.len()` in that case.
+///
+/// Always clears the touched dates first -- this is the "one call is the
+/// whole day" entry point every existing caller (this file's own tests,
+/// `crates/api/src/routes/journeys.rs`'s fixtures) uses. The ingest route
+/// (`crates/api/src/routes/ingest.rs::post_schedule_destination_departures`)
+/// instead calls [`upsert_schedule_destination_departures_chunk`], which lets
+/// the caller say whether THIS call is the first one touching these dates in
+/// the current publish cycle -- see that function's doc comment for why a
+/// second variant exists rather than a parameter added here (it would force
+/// every one of those unrelated call sites to pass a redundant `true`).
 pub async fn upsert_schedule_destination_departures(
     pool: &PgPool,
     rows: &[ScheduleDestinationDeparturesRow],
+) -> Result<u64> {
+    upsert_schedule_destination_departures_chunk(pool, rows, true).await
+}
+
+/// Chunk-aware core of [`upsert_schedule_destination_departures`]. `rows` is
+/// one call's worth of a publish cycle that may, in the future, split one
+/// day's ~377,000 rows across multiple calls (`rows.chunks(50_000)`, see
+/// `crates/schedule-reference/src/main.rs::publish_schedule_destination_departures`'s
+/// own doc comment) -- `first_chunk` says whether THIS call is the first one
+/// touching `rows`' dates in the current cycle.
+///
+/// `first_chunk = true` clears the touched dates first, identical to
+/// `upsert_schedule_destination_departures` above (in fact that function is
+/// just this one called with `true`). `first_chunk = false` skips the
+/// DELETE and only inserts -- so a later chunk's call does not wipe out an
+/// earlier chunk's just-inserted rows for the same date, which a per-call
+/// unconditional DELETE would do the moment more than one chunk is ever sent
+/// for the same date in one cycle. `crates/api/src/routes/ingest.rs`'s
+/// `post_schedule_destination_departures` is the only caller that passes
+/// `false` (via its `?first_chunk=` query parameter) -- today it always
+/// passes `true`, since `schedule-reference` sends exactly one call per
+/// date; the flag exists so that story stays correct the day chunking
+/// actually gets turned on, without a further schema/contract change.
+pub async fn upsert_schedule_destination_departures_chunk(
+    pool: &PgPool,
+    rows: &[ScheduleDestinationDeparturesRow],
+    first_chunk: bool,
 ) -> Result<u64> {
     if rows.is_empty() {
         return Ok(0);
@@ -1456,18 +1493,22 @@ pub async fn upsert_schedule_destination_departures(
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
-    // one -- and so the DELETE can never be wider than what is being
-    // written.
+    // one -- and so the DELETE (when it runs at all -- see `first_chunk`
+    // above) can never be wider than what is being written.
     let mut distinct_dates = service_dates.clone();
     distinct_dates.sort_unstable();
     distinct_dates.dedup();
 
     let mut tx = pool.begin().await?;
 
-    sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = ANY($1::date[])")
+    if first_chunk {
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE service_date = ANY($1::date[])",
+        )
         .bind(&distinct_dates)
         .execute(&mut *tx)
         .await?;
+    }
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
@@ -1543,9 +1584,37 @@ pub struct ScheduleCallingPointsFullRow {
 /// once per cycle, so a conflict can only mean a byte-identical duplicate
 /// within the same batch -- dropping it silently is strictly better than
 /// failing the whole batch over one pathological schedule.
+///
+/// Always clears the touched dates first -- the "one call is the whole day"
+/// entry point every existing caller (this file's own tests,
+/// `crates/api/src/routes/train.rs` and `crates/api/src/data/journey.rs`'s
+/// fixtures) uses. The ingest route
+/// (`crates/api/src/routes/ingest.rs::post_schedule_calling_points_full`)
+/// instead calls [`upsert_schedule_calling_points_full_chunk`] -- see that
+/// function's doc comment, and
+/// `upsert_schedule_destination_departures`/`upsert_schedule_destination_departures_chunk`
+/// directly above for the identical split and why it exists as two
+/// functions rather than one with an added parameter.
 pub async fn upsert_schedule_calling_points_full(
     pool: &PgPool,
     rows: &[ScheduleCallingPointsFullRow],
+) -> Result<u64> {
+    upsert_schedule_calling_points_full_chunk(pool, rows, true).await
+}
+
+/// Chunk-aware core of [`upsert_schedule_calling_points_full`] -- same
+/// `first_chunk` contract as
+/// [`upsert_schedule_destination_departures_chunk`]'s own doc comment:
+/// `true` (every caller today) clears the touched dates first; `false`
+/// skips the DELETE and only inserts, so a later chunk in the same publish
+/// cycle cannot wipe out an earlier chunk's just-inserted rows for the same
+/// date. `crates/api/src/routes/ingest.rs`'s `post_schedule_calling_points_full`
+/// is the only caller that can pass `false`, via its `?first_chunk=` query
+/// parameter.
+pub async fn upsert_schedule_calling_points_full_chunk(
+    pool: &PgPool,
+    rows: &[ScheduleCallingPointsFullRow],
+    first_chunk: bool,
 ) -> Result<u64> {
     if rows.is_empty() {
         return Ok(0);
@@ -1564,18 +1633,23 @@ pub async fn upsert_schedule_calling_points_full(
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
-    // one -- and so the DELETE can never be wider than what is being
-    // written. Same convention as `upsert_schedule_destination_departures`.
+    // one -- and so the DELETE (when it runs at all -- see `first_chunk`
+    // above) can never be wider than what is being written. Same
+    // convention as `upsert_schedule_destination_departures_chunk`.
     let mut distinct_dates = service_dates.clone();
     distinct_dates.sort_unstable();
     distinct_dates.dedup();
 
     let mut tx = pool.begin().await?;
 
-    sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = ANY($1::date[])")
+    if first_chunk {
+        sqlx::query(
+            "DELETE FROM schedule_calling_points_full WHERE service_date = ANY($1::date[])",
+        )
         .bind(&distinct_dates)
         .execute(&mut *tx)
         .await?;
+    }
 
     let result = sqlx::query(
         "INSERT INTO schedule_calling_points_full \
@@ -6159,6 +6233,67 @@ mod schedule_destination_departures_query_tests {
         delete_day(&pool, date).await;
     }
 
+    /// The real-failure-shape regression for the review finding: today
+    /// `schedule-reference` sends exactly one call per service date, but
+    /// `rows.chunks(50_000)` is a documented planned fallback for when a
+    /// day's payload grows too large for one call. Before
+    /// `upsert_schedule_destination_departures_chunk` existed, EVERY call
+    /// unconditionally ran `DELETE ... WHERE service_date = ANY(...)`
+    /// first, so a second chunk for the same date would have wiped out the
+    /// first chunk's just-inserted rows, silently leaving only the last
+    /// chunk's data for that day. This publishes two chunks for the same
+    /// date -- the second with `first_chunk = false` -- and asserts BOTH
+    /// chunks' rows survive.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_rows() {
+        let pool = test_pool().await;
+        let date = fixture_date(3);
+        delete_day(&pool, date).await;
+
+        let first_chunk_rows = vec![
+            row(date, "ZRD", time(8, 0), "CHUNK-A1", "EUS", None, None),
+            row(date, "ZRD", time(9, 0), "CHUNK-A2", "EUS", None, None),
+        ];
+        let inserted = upsert_schedule_destination_departures_chunk(&pool, &first_chunk_rows, true)
+            .await
+            .expect("first chunk upsert");
+        assert_eq!(inserted, 2);
+
+        // A different train_uid, same date -- the second chunk of the same
+        // publish cycle. `first_chunk = false`: must NOT clear the date
+        // before inserting.
+        let second_chunk_rows = vec![row(date, "ZRD", time(10, 0), "CHUNK-B1", "CRE", None, None)];
+        let inserted =
+            upsert_schedule_destination_departures_chunk(&pool, &second_chunk_rows, false)
+                .await
+                .expect("second chunk upsert");
+        assert_eq!(inserted, 1);
+
+        let mut stored: Vec<String> = sqlx::query_scalar(
+            "SELECT train_uid FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back both chunks");
+        stored.sort();
+        assert_eq!(
+            stored,
+            vec![
+                "CHUNK-A1".to_string(),
+                "CHUNK-A2".to_string(),
+                "CHUNK-B1".to_string(),
+            ],
+            "both chunks' rows must survive -- the first chunk's rows must not be \
+             wiped by the second chunk's insert"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
@@ -7761,6 +7896,86 @@ mod schedule_destination_departures_query_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    /// The `schedule_calling_points_full` sibling of
+    /// `a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_rows`
+    /// -- same review finding, same real-failure shape: before
+    /// `upsert_schedule_calling_points_full_chunk` existed, every call
+    /// unconditionally deleted the date first, so a second chunk publishing
+    /// a different train's calling points for the same date would have
+    /// wiped out the first chunk's just-inserted rows. Publishes two
+    /// chunks (different `uid`s, same `service_date`) -- the second with
+    /// `first_chunk = false` -- and asserts BOTH chunks' rows survive.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_calling_points \
+                -- --ignored --test-threads=1`"]
+    async fn a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_calling_points() {
+        let pool = test_pool().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        sqlx::query(
+            "DELETE FROM schedule_calling_points_full WHERE uid IN ('TEST-CHUNK-A', 'TEST-CHUNK-B')",
+        )
+        .execute(&pool)
+        .await
+        .ok();
+
+        let first_chunk_rows = vec![ScheduleCallingPointsFullRow {
+            service_date,
+            uid: "TEST-CHUNK-A".to_string(),
+            seq: 0,
+            tiploc: "RDG    ".to_string(),
+            kind: "origin".to_string(),
+            booked_arrival: None,
+            booked_departure: "10:15:00".parse().ok(),
+            day_offset: 0,
+        }];
+        let inserted = upsert_schedule_calling_points_full_chunk(&pool, &first_chunk_rows, true)
+            .await
+            .expect("first chunk upsert");
+        assert_eq!(inserted, 1);
+
+        // A different train (uid), same service_date -- the second chunk
+        // of the same publish cycle. `first_chunk = false`: must NOT clear
+        // the date before inserting.
+        let second_chunk_rows = vec![ScheduleCallingPointsFullRow {
+            service_date,
+            uid: "TEST-CHUNK-B".to_string(),
+            seq: 0,
+            tiploc: "WAT    ".to_string(),
+            kind: "origin".to_string(),
+            booked_arrival: None,
+            booked_departure: "11:00:00".parse().ok(),
+            day_offset: 0,
+        }];
+        let inserted = upsert_schedule_calling_points_full_chunk(&pool, &second_chunk_rows, false)
+            .await
+            .expect("second chunk upsert");
+        assert_eq!(inserted, 1);
+
+        let mut stored: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT uid FROM schedule_calling_points_full \
+             WHERE service_date = $1 AND uid IN ('TEST-CHUNK-A', 'TEST-CHUNK-B') ORDER BY uid",
+        )
+        .bind(service_date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back both chunks");
+        stored.sort();
+        assert_eq!(
+            stored,
+            vec!["TEST-CHUNK-A".to_string(), "TEST-CHUNK-B".to_string()],
+            "both chunks' rows must survive -- the first chunk's rows must not be \
+             wiped by the second chunk's insert"
+        );
+
+        sqlx::query(
+            "DELETE FROM schedule_calling_points_full WHERE uid IN ('TEST-CHUNK-A', 'TEST-CHUNK-B')",
+        )
+        .execute(&pool)
+        .await
+        .ok();
     }
 
     /// The midnight-crossing regression this whole fix targets, at the
