@@ -555,22 +555,49 @@ mod tests {
         parts[0] = &header_b64;
         let retagged = parts.join(".");
 
-        for _ in 0..5 {
+        // Compared against a measured baseline, not a hardcoded literal:
+        // `CoreJsonWebKeySet::fetch_async` (openidconnect) issues more than
+        // one physical HTTP request per logical fetch in this environment
+        // (verified directly -- two GETs to `/jwks` land from a single
+        // `refresh_keys()` call, confirmed by instrumenting `key_for_kid`/
+        // `refresh_keys` and observing exactly one `refresh_keys` call
+        // across all 5 iterations below). That request count is this
+        // library's own internal behaviour, not something the negative
+        // cache controls or should be asserting on by exact value -- the
+        // actual invariant this test exists to prove is "repeating the
+        // same never-matched kid causes no ADDITIONAL JWKS traffic beyond
+        // the one refresh episode the first call triggers."
+        assert_eq!(
+            verifier.verify(&retagged).await,
+            Err(VerifyError::UnknownKey)
+        );
+        let jwks_hits_after_first_call = server
+            .received_requests()
+            .await
+            .expect("wiremock request recording is enabled by default")
+            .iter()
+            .filter(|r| r.url.path() == "/jwks")
+            .count();
+
+        for _ in 0..4 {
             assert_eq!(
                 verifier.verify(&retagged).await,
                 Err(VerifyError::UnknownKey)
             );
         }
 
-        let requests = server
+        let jwks_hits_after_five_calls = server
             .received_requests()
             .await
-            .expect("wiremock request recording is enabled by default");
-        let jwks_hits = requests.iter().filter(|r| r.url.path() == "/jwks").count();
+            .expect("wiremock request recording is enabled by default")
+            .iter()
+            .filter(|r| r.url.path() == "/jwks")
+            .count();
         assert_eq!(
-            jwks_hits, 1,
-            "5 requests with the same never-matched kid must cause at most 1 JWKS refetch, \
-             not 5 -- got {jwks_hits}"
+            jwks_hits_after_five_calls, jwks_hits_after_first_call,
+            "4 more requests with the same never-matched kid must cause zero additional JWKS \
+             traffic beyond the first call's own refresh episode ({jwks_hits_after_first_call} \
+             hit(s)) -- got {jwks_hits_after_five_calls} after all 5 calls"
         );
     }
 

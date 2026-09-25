@@ -556,7 +556,7 @@ pub async fn delete_session(pool: &PgPool, hashed_token: &str) -> Result<()> {
 /// lookup (`WHERE s.expires_at > NOW()`), so a row this deletes was never
 /// usable as a live session anyway -- this exists purely so the table
 /// doesn't grow without bound on a long-lived deployment, backed by the
-/// `sessions_expires_at` index (`migrations/20260925090000_sessions_expires_at_index.sql`)
+/// `sessions_expires_at` index (`migrations/20260925220000_sessions_expires_at_index.sql`)
 /// so the sweep that calls this stays a cheap, index-only-ish DELETE
 /// rather than a full scan as the table grows. Called periodically by
 /// `main.rs`'s `session_cleanup_sweep_loop`, mirroring the "a
