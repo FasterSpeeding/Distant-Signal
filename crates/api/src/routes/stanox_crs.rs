@@ -17,7 +17,7 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 
 use crate::app::{App, Router};
 use crate::data::queries;
@@ -26,13 +26,37 @@ pub fn router() -> Router {
     Router::new().route("/stanox-crs", axum::routing::get(list_stanox_crs))
 }
 
+/// `Cache-Control` value for this route's response. `stanox_crs` is a
+/// slow-moving CIF/RDG reference table (station opens/renames/closures,
+/// not a live feed) served in full, unauthenticated, with no size cap --
+/// see finding "Whole-table dumps served uncached to anonymous callers".
+/// Without a cache header, every anonymous caller (or scanner) pays the
+/// full multi-MB query and response cost on every single request; an hour
+/// is generous headroom for the DB/bandwidth amplification this closes
+/// while still being far shorter than how often this table actually
+/// changes, so a stale read is never surprising for long. Public (not
+/// `private`): this route has no `AuthenticatedUser`/
+/// `OptionalAuthenticatedUser` extractor and its response never varies by
+/// caller, unlike `routes::lines::list_lines`'s conditional header for the
+/// same reason.
+const STANOX_CRS_CACHE_CONTROL: &str = "public, max-age=3600";
+
 async fn list_stanox_crs(
     State(app): State<App>,
-) -> Result<Json<Vec<common::StanoxCrsRecord>>, (StatusCode, String)> {
+) -> Result<
+    (
+        [(header::HeaderName, &'static str); 1],
+        Json<Vec<common::StanoxCrsRecord>>,
+    ),
+    (StatusCode, String),
+> {
     let rows = queries::list_stanox_crs(&app.database)
         .await
         .map_err(internal_error)?;
-    Ok(Json(rows))
+    Ok((
+        [(header::CACHE_CONTROL, STANOX_CRS_CACHE_CONTROL)],
+        Json(rows),
+    ))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
@@ -226,6 +250,18 @@ mod db_tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        // Regression for "Whole-table dumps served uncached to anonymous
+        // callers": a bulk reference-table mirror like this one must carry
+        // a `Cache-Control` an anonymous caller/CDN can actually use,
+        // rather than defaulting to no caching header at all.
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some(STANOX_CRS_CACHE_CONTROL),
+            "public whole-table dump must carry a public, positive-max-age Cache-Control"
+        );
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();

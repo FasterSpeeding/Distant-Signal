@@ -46,11 +46,29 @@ async fn get_station_sample_stats(
         ));
     }
 
-    let custom = crate::data::custom_lines::list_custom_lines(&app.database)
-        .await
-        .map_err(internal_error)?;
-    let mut lines: Vec<common::LineDefinition> = app.config.lines.to_vec();
-    lines.extend(custom.into_iter().map(common::LineDefinition::from));
+    // Deliberately the static catalogue ONLY -- never
+    // `custom_lines::list_custom_lines` (the unscoped, every-user variant).
+    // This route is unauthenticated (no `AuthenticatedUser`/
+    // `OptionalAuthenticatedUser` extractor above), so there is no caller
+    // identity to scope a per-user custom-line read to in the first place;
+    // the only other option besides omitting custom lines entirely would be
+    // reading every user's private custom lines into a response served to
+    // anonymous callers. `lines` here is consumed exclusively by
+    // `full_coverage_enabled_for` (`crates/api/src/data/station_stats.rs`)
+    // to decide whether a (station, operator) pair counts as
+    // full-coverage-enabled; a custom line's own `full_coverage_enabled` is
+    // always hardcoded `false` (`From<CustomLine> for LineDefinition`), so
+    // the ONLY way an unscoped custom line could change this route's public
+    // output is via `app.config.full_coverage_enabled_default` -- today
+    // always `false`, but nothing stops that default from changing. Mixing
+    // in every user's private custom-line station/operator membership would
+    // then let an anonymous caller infer something about other users'
+    // private custom lines purely from this public route's shape. See
+    // finding "Public station stats reads every user's private custom
+    // lines, unscoped" -- this is the loud guard the finding asked for: the
+    // unscoped path simply never runs here, regardless of the flag's
+    // current default.
+    let lines: Vec<common::LineDefinition> = app.config.lines.to_vec();
 
     // No per-station override mechanism exists (Decision 3) --
     // `Defaults::default()` is the same baseline `aggregator` uses for
@@ -762,5 +780,112 @@ mod db_tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                station_sample_stats -- --ignored --test-threads=1`"]
+    async fn station_sample_stats_ignores_another_users_private_custom_line_even_with_the_global_full_coverage_default_on()
+     {
+        // Regression for "Public station stats reads every user's private
+        // custom lines, unscoped": before this fix, this route pulled
+        // EVERY user's custom lines into `lines` unconditionally
+        // (`custom_lines::list_custom_lines`, the unscoped variant). A
+        // private custom line's own `full_coverage_enabled` is always
+        // hardcoded `false`, so the only way that unscoped read could ever
+        // change this public route's output is through
+        // `full_coverage_enabled_default` -- exercised here as `true` --
+        // where a stranger's private line covering this exact
+        // (station, operator) pair would incorrectly flip
+        // `fullCoverageAvailability` to "available", leaking a hint about
+        // another user's private data through a public, unauthenticated
+        // endpoint. After the fix, this route's `lines` is the static
+        // catalogue only, so a private custom line can never affect it
+        // regardless of the flag's value.
+        let pool = connect().await;
+        delete_fixture(&pool, "ZQK").await;
+        delete_full_coverage_fixture(&pool, "ZQK", "ZK").await;
+
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES \
+             ('TEST-STATION-STATS-CUSTOM-LINE-OWNER', 'stationstats@example.com', 'Owner') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        let custom_line = crate::data::custom_lines::insert_custom_line(
+            &pool,
+            crate::data::custom_lines::NewCustomLine {
+                name: "Station Stats Privacy Probe".to_string(),
+                operators: vec!["ZK".to_string()],
+                stations: vec!["ZQK".to_string(), "WAT".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-STATION-STATS-CUSTOM-LINE-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+
+        sqlx::query(
+            "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
+             VALUES ('ZQK', 'ZK', NOW(), \
+             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avg_delay_minutes\":2.5}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed full-coverage-only fixture row");
+
+        // No catalogue line at all -- the global default alone is what
+        // this test probes.
+        let router: axum::Router = crate::app::Router::new().merge(router()).with_state(
+            test_app_with_lines_and_full_coverage_default(pool.clone(), vec![], true),
+        );
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZQK/sample-stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["operator"], "ZK");
+        assert_eq!(
+            json[0]["fullCoverageAvailability"],
+            serde_json::json!({"state": "not-enabled"}),
+            "another user's private custom line covering this station/operator must never \
+             influence this public route's output, even with \
+             full_coverage_enabled_default: true: {json}"
+        );
+        assert!(json[0].get("fullCoverageStats").is_none());
+
+        sqlx::query("DELETE FROM custom_lines WHERE id = $1")
+            .bind(&custom_line.id)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture custom line");
+        sqlx::query(
+            "DELETE FROM pinned_lines WHERE user_id = 'TEST-STATION-STATS-CUSTOM-LINE-OWNER'",
+        )
+        .execute(&pool)
+        .await
+        .expect("cleanup fixture pins");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-STATION-STATS-CUSTOM-LINE-OWNER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user");
+        delete_fixture(&pool, "ZQK").await;
+        delete_full_coverage_fixture(&pool, "ZQK", "ZK").await;
     }
 }

@@ -228,13 +228,56 @@ async fn get_mode_status(
     Ok(Json(rows_to_json(rows, query.detail)))
 }
 
+/// Upper bound on how many comma-separated ids `GET /Line/{ids}/Status` may
+/// request in one call, matching `routes::preferences::MAX_PINNED_ITEMS`'s
+/// established cap for a caller-supplied id list elsewhere on this API --
+/// see that constant's own doc comment for why 500 is generous headroom
+/// over any real catalogue size. Enforced BEFORE dedup/lookup, so an
+/// oversized request is rejected cheaply rather than paying for
+/// `queries::line_status_for_ids`'s `= ANY($1)` lookup and then, on an
+/// all-miss request, echoing the whole (potentially huge) id list back
+/// into this handler's own 404 body.
+const MAX_LINE_STATUS_IDS: usize = 500;
+
+/// Splits and bounds `GET /Line/{ids}/Status`'s comma-separated `{ids}`
+/// path segment: rejects a request with more than [`MAX_LINE_STATUS_IDS`]
+/// ids with a `400` naming the count, then de-duplicates the rest,
+/// preserving first-occurrence order (this flows straight into the
+/// handler's success response order and, on an all-miss request, its 404
+/// message -- neither is worth losing by e.g. sorting instead).
+///
+/// Not a security bug on its own -- ids are always bound parameters, never
+/// interpolated into SQL -- but an unbounded, undeduplicated list lets a
+/// caller pay for the same row lookup arbitrarily many times over in one
+/// request and, on an all-miss request, echo an arbitrarily long id list
+/// back in the 404 body. See finding "Line-status id list has no bound or
+/// dedupe".
+fn parse_line_status_ids(raw: &str) -> Result<Vec<String>, (StatusCode, String)> {
+    let requested: Vec<&str> = raw.split(',').collect();
+    if requested.len() > MAX_LINE_STATUS_IDS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "too many line ids ({} submitted, {MAX_LINE_STATUS_IDS} max)",
+                requested.len()
+            ),
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    Ok(requested
+        .into_iter()
+        .filter(|id| seen.insert(*id))
+        .map(str::to_string)
+        .collect())
+}
+
 async fn get_line_status(
     State(app): State<App>,
     Path(ids): Path<String>,
     Query(query): Query<DetailQuery>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    let ids: Vec<String> = ids.split(',').map(|s| s.to_string()).collect();
+    let ids = parse_line_status_ids(&ids)?;
 
     let rows = queries::line_status_for_ids(&app.database, &ids)
         .await
@@ -730,6 +773,60 @@ mod tests {
     fn an_empty_mode_list_is_rejected_rather_than_matching_everything() {
         assert!(parse_modes("").is_err());
         assert!(parse_modes(",,").is_err());
+    }
+
+    #[test]
+    fn parse_line_status_ids_passes_through_a_short_unique_list_unchanged() {
+        assert_eq!(
+            parse_line_status_ids("south-western,elizabeth-line").unwrap(),
+            vec!["south-western".to_string(), "elizabeth-line".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_line_status_ids_dedupes_preserving_first_occurrence_order() {
+        assert_eq!(
+            parse_line_status_ids("a,b,a,c,b").unwrap(),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_line_status_ids_accepts_exactly_the_maximum() {
+        let raw = (0..MAX_LINE_STATUS_IDS)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            parse_line_status_ids(&raw).unwrap().len(),
+            MAX_LINE_STATUS_IDS
+        );
+    }
+
+    #[test]
+    fn parse_line_status_ids_rejects_more_than_the_maximum() {
+        // Regression for "Line-status id list has no bound or dedupe": a
+        // caller-supplied id list with no cap at all let an arbitrarily
+        // long path get echoed back into this route's own 404 message.
+        let raw = (0..=MAX_LINE_STATUS_IDS)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let (status, body) = parse_line_status_ids(&raw).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains(&(MAX_LINE_STATUS_IDS + 1).to_string()),
+            "error should name the submitted count: {body}"
+        );
+    }
+
+    #[test]
+    fn parse_line_status_ids_the_cap_applies_to_the_raw_submitted_count_not_the_deduped_one() {
+        // A caller repeating the same id thousands of times must still be
+        // rejected -- the cap exists to bound the cost of processing the
+        // request itself, not just the size of the final deduped list.
+        let raw = vec!["same-id"; MAX_LINE_STATUS_IDS + 1].join(",");
+        assert!(parse_line_status_ids(&raw).is_err());
     }
 
     use chrono::Utc;
