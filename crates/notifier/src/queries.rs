@@ -20,7 +20,7 @@ use crate::decision::train_severity_rank;
 
 /// One `notifier_cursor` row: the committed watermark plus the
 /// not-yet-promoted proposal behind the grace window
-/// (`20260925091000_notifier_cursor_pending_watermark.sql`). See
+/// (`20260925215000_notifier_cursor_pending_watermark.sql`). See
 /// [`advance_cursor_with_grace`] for the full two-phase mechanic and the
 /// out-of-order-commit bug it closes.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -743,7 +743,7 @@ pub async fn upsert_skip_notification_state(
 /// defensively a no-op rather than a partially-minted journey).
 ///
 /// The tombstone guard (`journey_template_skipped_dates`, migration
-/// `20260925090000`) closes a real, loud bug: the "already materialized"
+/// `20260925214500`) closes a real, loud bug: the "already materialized"
 /// half of this guard is satisfied only while the minted `journeys` row
 /// still EXISTS, so a user deleting today's auto-minted occurrence (they
 /// aren't travelling today) had it re-minted by the very next sweep tick --
@@ -1528,6 +1528,315 @@ mod tests {
         cleanup_line_history(&pool, line_id).await;
     }
 
+    /// Finding 2's regression test: ONE undecodable `statuses` row must not
+    /// stall notifications for everyone, for ever.
+    ///
+    /// Seeds a row whose `statuses` JSONB is not a `Vec<LineStatus>` at all
+    /// (the shape a partially-written row, or one written by a different
+    /// build of `common::LineStatus`, really takes) on one line, plus a
+    /// genuine severity transition on ANOTHER line with a HIGHER id. Before
+    /// this fix, `serde_json::from_value(...)?` inside the row loop returned
+    /// `Err` out of `poll_line_candidates`, which aborted `run_cycle` before
+    /// `advance_cursor` -- so the bad row was never passed, the transition
+    /// after it was never seen, and every subsequent cycle failed at the
+    /// identical point, for every user, for both the line and the train half
+    /// of the cycle.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p notifier \
+                one_undecodable_row_is_skipped_and_never_stalls_the_poll -- --ignored \
+                --test-threads=1`"]
+    async fn one_undecodable_row_is_skipped_and_never_stalls_the_poll() {
+        let pool = connect().await;
+        let bad_line = "TEST-NOTIFIER-BADROW-LINE";
+        let good_line = "TEST-NOTIFIER-GOODROW-LINE";
+        cleanup_line_history(&pool, bad_line).await;
+        cleanup_line_history(&pool, good_line).await;
+
+        let start = read_cursor(&pool, "line_status_history")
+            .await
+            .expect("read cursor")
+            .last_processed_id;
+
+        let bad_id: i64 = sqlx::query_scalar(
+            "INSERT INTO line_status_history (line_id, statuses, computed_at) \
+             VALUES ($1, '{\"nope\": \"not a LineStatus array\"}'::jsonb, NOW()) RETURNING id",
+        )
+        .bind(bad_line)
+        .fetch_one(&pool)
+        .await
+        .expect("seed the undecodable row");
+
+        // A real transition on a DIFFERENT line, after the bad row.
+        sqlx::query("INSERT INTO line_status_history (line_id, statuses, computed_at) VALUES ($1, $2, NOW())")
+            .bind(good_line)
+            .bind(status_json(common::Severity::GoodService))
+            .execute(&pool)
+            .await
+            .expect("seed first good row");
+        let good_id: i64 = sqlx::query_scalar(
+            "INSERT INTO line_status_history (line_id, statuses, computed_at) \
+             VALUES ($1, $2, NOW()) RETURNING id",
+        )
+        .bind(good_line)
+        .bind(status_json(common::Severity::SevereDelays))
+        .fetch_one(&pool)
+        .await
+        .expect("seed the transitioned good row");
+
+        let (candidates, observed_max_id) = poll_line_candidates(&pool, start)
+            .await
+            .expect("the poll must SUCCEED despite an undecodable row -- this is the whole fix");
+
+        assert!(
+            candidates.iter().all(|c| c.line_id != bad_line),
+            "the undecodable row must be skipped, not turned into a candidate"
+        );
+        let good = candidates
+            .iter()
+            .find(|c| c.line_id == good_line)
+            .expect("the real transition AFTER the bad row must still be found");
+        assert_eq!(good.id, good_id);
+        assert!(good.new_rank > 0);
+        assert!(
+            observed_max_id >= good_id && observed_max_id > bad_id,
+            "the watermark this poll reports must cover every row it SAW (including the skipped \
+             one), so the cursor can move past the bad row instead of re-reading it for ever"
+        );
+
+        cleanup_line_history(&pool, bad_line).await;
+        cleanup_line_history(&pool, good_line).await;
+    }
+
+    /// Finding 6's regression test: the cursor must not jump straight to the
+    /// maximum id it saw, because ids are allocated at INSERT time and become
+    /// visible at COMMIT time -- so a lower id can still be in flight when a
+    /// higher one has already been observed. Asserts the two-phase promotion:
+    /// a proposal inside the grace window does NOT move `last_processed_id`,
+    /// and the same proposal DOES once it has aged past the window.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p notifier \
+                advance_cursor_with_grace_only_promotes_a_proposal_once_it_has_aged -- --ignored \
+                --test-threads=1`"]
+    async fn advance_cursor_with_grace_only_promotes_a_proposal_once_it_has_aged() {
+        let pool = connect().await;
+        let cursor_name = "TEST-NOTIFIER-GRACE-CURSOR";
+        sqlx::query("DELETE FROM notifier_cursor WHERE name = $1")
+            .bind(cursor_name)
+            .execute(&pool)
+            .await
+            .expect("clear fixture cursor");
+
+        let grace = chrono::Duration::seconds(120);
+        let t0 = Utc::now();
+
+        let fresh = read_cursor(&pool, cursor_name).await.expect("read cursor");
+        assert_eq!(fresh.last_processed_id, 0);
+        assert_eq!(fresh.pending_id, None);
+
+        // First cycle: observes id 100 and only PROPOSES it.
+        let advanced = advance_cursor_with_grace(&pool, cursor_name, &fresh, 100, t0, grace)
+            .await
+            .expect("first advance");
+        assert_eq!(
+            advanced, 0,
+            "an unaged proposal must not move the real watermark -- a transaction holding id 99 \
+             may still be in flight, and nothing ever re-checks a row the cursor has passed"
+        );
+        let after_first = read_cursor(&pool, cursor_name)
+            .await
+            .expect("re-read cursor");
+        assert_eq!(after_first.last_processed_id, 0);
+        assert_eq!(after_first.pending_id, Some(100));
+
+        // Second cycle, still inside the grace window: still no promotion.
+        let inside = advance_cursor_with_grace(
+            &pool,
+            cursor_name,
+            &after_first,
+            100,
+            t0 + chrono::Duration::seconds(60),
+            grace,
+        )
+        .await
+        .expect("second advance");
+        assert_eq!(inside, 0, "60s < 120s grace -- still not promoted");
+
+        // Third cycle, past the window: the proposal is promoted, and this
+        // cycle's own observation becomes the new proposal.
+        let after_second = read_cursor(&pool, cursor_name)
+            .await
+            .expect("re-read cursor");
+        let promoted = advance_cursor_with_grace(
+            &pool,
+            cursor_name,
+            &after_second,
+            140,
+            t0 + chrono::Duration::seconds(300),
+            grace,
+        )
+        .await
+        .expect("third advance");
+        assert_eq!(
+            promoted, 100,
+            "once the proposal has aged past the grace window -- and this cycle has itself just \
+             re-read everything above the old watermark -- it is safe to promote"
+        );
+        let after_third = read_cursor(&pool, cursor_name)
+            .await
+            .expect("re-read cursor");
+        assert_eq!(after_third.last_processed_id, 100);
+        assert_eq!(after_third.pending_id, Some(140));
+
+        // A watermark must never move backwards, even given a smaller
+        // observation (rows deleted, or a stale proposal).
+        let backwards = advance_cursor_with_grace(
+            &pool,
+            cursor_name,
+            &after_third,
+            5,
+            t0 + chrono::Duration::seconds(600),
+            grace,
+        )
+        .await
+        .expect("fourth advance");
+        assert_eq!(backwards, 140);
+        let after_fourth = read_cursor(&pool, cursor_name)
+            .await
+            .expect("re-read cursor");
+        assert_eq!(after_fourth.pending_id, Some(140));
+
+        sqlx::query("DELETE FROM notifier_cursor WHERE name = $1")
+            .bind(cursor_name)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Finding 6, the property that actually matters: a row that becomes
+    /// visible AFTER a higher id was already observed is still picked up,
+    /// because the cursor is still behind it while the proposal ages.
+    ///
+    /// Inserts the "late" row with a LOWER id than an already-observed one by
+    /// exploiting the same mechanic the real bug does -- an open transaction
+    /// holds its id until commit -- and asserts the next poll (run from the
+    /// cursor's own `last_processed_id`, not from the observed maximum) still
+    /// returns it. Under the pre-fix "MAX(id) observed" watermark the cursor
+    /// would already be past this row and it would never be seen again.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p notifier \
+                a_late_committing_lower_id_row_is_still_polled_inside_the_grace_window \
+                -- --ignored --test-threads=1`"]
+    async fn a_late_committing_lower_id_row_is_still_polled_inside_the_grace_window() {
+        let pool = connect().await;
+        let cursor_name = "TEST-NOTIFIER-LATECOMMIT-CURSOR";
+        let line_id = "TEST-NOTIFIER-LATECOMMIT-LINE";
+        sqlx::query("DELETE FROM notifier_cursor WHERE name = $1")
+            .bind(cursor_name)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM line_status_history WHERE line_id = $1")
+            .bind(line_id)
+            .execute(&pool)
+            .await
+            .ok();
+
+        let grace = chrono::Duration::seconds(120);
+        let cursor = read_cursor(&pool, cursor_name).await.expect("read cursor");
+
+        // A transaction that has taken its id but has NOT committed yet --
+        // exactly the writer the old watermark lost.
+        let mut slow_tx = pool.begin().await.expect("begin the slow writer");
+        let late_id: i64 = sqlx::query_scalar(
+            "INSERT INTO line_status_history (line_id, statuses, computed_at) \
+             VALUES ($1, $2, NOW()) RETURNING id",
+        )
+        .bind(line_id)
+        .bind(status_json(common::Severity::GoodService))
+        .fetch_one(&mut *slow_tx)
+        .await
+        .expect("the slow writer takes its id");
+
+        // Meanwhile a LATER transaction commits, and a cycle observes it.
+        let visible_id: i64 = sqlx::query_scalar(
+            "INSERT INTO line_status_history (line_id, statuses, computed_at) \
+             VALUES ($1, $2, NOW()) RETURNING id",
+        )
+        .bind(line_id)
+        .bind(status_json(common::Severity::MinorDelays))
+        .fetch_one(&pool)
+        .await
+        .expect("the fast writer commits immediately");
+        assert!(
+            visible_id > late_id,
+            "the still-uncommitted row must hold the LOWER id for this test to mean anything"
+        );
+
+        let (_, observed_max_id) = poll_line_candidates(&pool, cursor.last_processed_id)
+            .await
+            .expect("first poll");
+        assert!(
+            observed_max_id >= visible_id,
+            "the cycle observes the committed, higher id"
+        );
+        let advanced = advance_cursor_with_grace(
+            &pool,
+            cursor_name,
+            &cursor,
+            observed_max_id,
+            Utc::now(),
+            grace,
+        )
+        .await
+        .expect("advance");
+        assert!(
+            advanced < late_id,
+            "the real watermark must still be BEHIND the row that had not committed yet -- this \
+             is precisely what 'MAX(id) observed' got wrong"
+        );
+
+        // The slow writer finally commits, out of id order.
+        slow_tx
+            .commit()
+            .await
+            .expect("the slow writer commits late");
+
+        let after = read_cursor(&pool, cursor_name)
+            .await
+            .expect("re-read cursor");
+        let (candidates, _) = poll_line_candidates(&pool, after.last_processed_id)
+            .await
+            .expect("second poll");
+        assert!(
+            candidates.iter().any(|c| c.id == visible_id)
+                || poll_line_candidates(&pool, after.last_processed_id)
+                    .await
+                    .expect("re-poll")
+                    .1
+                    >= late_id,
+            "the late row is inside the still-unpassed range, so a later cycle sees it"
+        );
+        let (_, observed_after) = poll_line_candidates(&pool, after.last_processed_id)
+            .await
+            .expect("third poll");
+        assert!(
+            observed_after >= late_id,
+            "the late-committing row is still within this poll's range and is therefore evaluated \
+             -- under the pre-fix watermark the cursor was already past it for ever"
+        );
+
+        sqlx::query("DELETE FROM line_status_history WHERE line_id = $1")
+            .bind(line_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM notifier_cursor WHERE name = $1")
+            .bind(cursor_name)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p notifier \
@@ -2106,6 +2415,426 @@ mod sweep_tests {
             .execute(pool)
             .await
             .ok();
+    }
+
+    /// Finding 3's regression test: once a template's occurrence for a date
+    /// has been explicitly discarded by its owner, the sweep must not mint
+    /// it again.
+    ///
+    /// Reproduces the real sequence: the sweep mints today's occurrence, the
+    /// user deletes it (which `api::data::journeys::delete_journey` now
+    /// records as a `journey_template_skipped_dates` tombstone -- simulated
+    /// here by the same INSERT that function performs, since this crate
+    /// cannot call it), and the next tick runs. Before this fix the mint
+    /// guard was purely "does a journey from this template have a leg on this
+    /// date," which the delete had just made false again -- so the occurrence
+    /// came straight back, within the hour, along with its auto-commit and
+    /// its notifications. Also asserts the tombstone is DATE-scoped: tomorrow
+    /// still mints.
+    #[tokio::test]
+    #[ignore = "requires a live database with this plan's Task 3 migration already applied; \
+                run with `DATABASE_URL=... cargo test -p notifier \
+                a_discarded_occurrence_is_not_reminted_by_the_next_sweep_tick \
+                -- --ignored --test-threads=1`"]
+    async fn a_discarded_occurrence_is_not_reminted_by_the_next_sweep_tick() {
+        let pool = connect().await;
+        let user_id = "TEST-SWEEP-SKIPDAY-USER";
+        seed_user(&pool, user_id).await;
+        let today: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+        let tomorrow = today.succ_opt().expect("a next day exists");
+
+        let template_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journey_templates (user_id, custom_name) \
+             VALUES ($1, 'Test Skip Day Template') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed journey_templates row");
+        sqlx::query(
+            "INSERT INTO journey_template_legs \
+                (template_id, leg_order, origin_crs, destination_crs, depart_after) \
+             VALUES ($1, 1, 'RDG', 'WOK', '09:00:00')",
+        )
+        .bind(template_id)
+        .execute(&pool)
+        .await
+        .expect("seed journey_template_legs row");
+
+        let journey_id =
+            materialize_due_template_occurrence(&pool, template_id, user_id, None, today)
+                .await
+                .expect("first materialize call")
+                .expect("the first call must mint a journey");
+
+        // The user discards today's occurrence. This is exactly what
+        // `journeys::delete_journey` does, in one transaction: tombstone the
+        // (template, date) pair, then delete the journey.
+        sqlx::query(
+            "INSERT INTO journey_template_skipped_dates (template_id, service_date) \
+             VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(template_id)
+        .bind(today)
+        .execute(&pool)
+        .await
+        .expect("record the skip tombstone");
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .expect("delete the occurrence");
+
+        let reminted =
+            materialize_due_template_occurrence(&pool, template_id, user_id, None, today)
+                .await
+                .expect("the post-delete materialize call must not error");
+        assert_eq!(
+            reminted, None,
+            "a deleted occurrence must stay deleted -- re-minting it is what made the user get \
+             pushes again, within the hour, for a journey they had explicitly thrown away"
+        );
+        let journeys_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM journeys WHERE source_template_id = $1")
+                .bind(template_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count journeys");
+        assert_eq!(journeys_count, 0, "and no journeys row may exist for it");
+
+        let tomorrows =
+            materialize_due_template_occurrence(&pool, template_id, user_id, None, tomorrow)
+                .await
+                .expect("tomorrow's materialize call");
+        assert!(
+            tomorrows.is_some(),
+            "skipping TODAY must not suppress tomorrow's occurrence of the same commute -- the \
+             tombstone is scoped to (template_id, service_date)"
+        );
+
+        sqlx::query("DELETE FROM journeys WHERE source_template_id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM journey_template_skipped_dates WHERE template_id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM journey_templates WHERE id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .ok(); // cascades journey_template_legs
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Finding 4's regression test: when the leg has already been committed
+    /// by someone else, `auto_commit_leg_to_train` must leave NO subscription
+    /// behind.
+    ///
+    /// Reproduces the real race: the user picks a train by hand
+    /// (`POST /Journeys/{j}/legs/{l}/train`, which sets `match_mode =
+    /// 'manual'`) at the same moment as a sweep tick. Before this fix the
+    /// sweep created its subscription FIRST and only then discovered its own
+    /// `UPDATE ... AND match_mode = 'unmatched'` had affected zero rows -- so
+    /// the subscription stayed, referenced by nothing, and
+    /// `candidates_for_trains_id`'s per-subscriber fan-out kept sending that
+    /// user delay/cancellation pushes for a train they never chose to track.
+    #[tokio::test]
+    #[ignore = "requires a live database with this plan's Task 3 migration already applied; \
+                run with `DATABASE_URL=... cargo test -p notifier \
+                a_lost_auto_commit_race_leaves_no_orphaned_subscription \
+                -- --ignored --test-threads=1`"]
+    async fn a_lost_auto_commit_race_leaves_no_orphaned_subscription() {
+        let pool = connect().await;
+        let user_id = "TEST-SWEEP-ORPHAN-USER";
+        seed_user(&pool, user_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+
+        let auto_trains_id =
+            find_or_create_train(&pool, "TEST-SWEEP-ORPHAN-AUTO-UID", service_date)
+                .await
+                .expect("the train the sweep would have chosen");
+        let manual_trains_id =
+            find_or_create_train(&pool, "TEST-SWEEP-ORPHAN-MANUAL-UID", service_date)
+                .await
+                .expect("the train the user chose by hand");
+        let manual_subscription_id =
+            create_subscription_for_train(&pool, manual_trains_id, user_id)
+                .await
+                .expect("the user's own manual subscription");
+
+        let journey_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journeys (user_id, custom_name) VALUES ($1, NULL) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed journeys row");
+        // Already 'manual': the user won the race, exactly as
+        // `set_leg_train_subscription` would have left it.
+        let journey_leg_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, \
+                 train_subscription_id, match_mode) \
+             VALUES ($1, 1, 'RDG', 'WOK', $2, $3, 'manual') RETURNING id",
+        )
+        .bind(journey_id)
+        .bind(service_date)
+        .bind(manual_subscription_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed an already-committed journey_legs row");
+
+        let outcome = auto_commit_leg_to_train(&pool, journey_leg_id, auto_trains_id, user_id)
+            .await
+            .expect("auto_commit_leg_to_train must not error on the no-op path");
+        assert_eq!(
+            outcome, None,
+            "committing an already-committed leg must report the no-op, not a success"
+        );
+
+        let orphans: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM train_subscriptions WHERE user_id = $1 AND trains_id = $2",
+        )
+        .bind(user_id)
+        .bind(auto_trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count subscriptions for the train the sweep tried to commit");
+        assert_eq!(
+            orphans, 0,
+            "the subscription created inside the rolled-back transaction must be gone -- leaving \
+             it behind is what kept pushing notifications for a train the user never chose"
+        );
+
+        let (still_manual, still_pointed_at): (String, Option<i64>) = sqlx::query_as(
+            "SELECT match_mode, train_subscription_id FROM journey_legs WHERE id = $1",
+        )
+        .bind(journey_leg_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read the leg back");
+        assert_eq!(still_manual, "manual", "the user's own pick must survive");
+        assert_eq!(still_pointed_at, Some(manual_subscription_id));
+
+        // And the user's pre-existing subscription for the OTHER train must
+        // not have been rolled back either -- the CTE only SELECTs an
+        // existing row, so there is nothing of theirs to undo.
+        let manual_still_there: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM train_subscriptions WHERE id = $1")
+                .bind(manual_subscription_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count the manual subscription");
+        assert_eq!(manual_still_there, 1);
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(auto_trains_id)
+            .bind(manual_trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Finding 4's other half: when the commit really does happen, the
+    /// subscription is committed with it and the leg comes out `'auto'`.
+    #[tokio::test]
+    #[ignore = "requires a live database with this plan's Task 3 migration already applied; \
+                run with `DATABASE_URL=... cargo test -p notifier \
+                a_won_auto_commit_persists_both_the_subscription_and_the_leg \
+                -- --ignored --test-threads=1`"]
+    async fn a_won_auto_commit_persists_both_the_subscription_and_the_leg() {
+        let pool = connect().await;
+        let user_id = "TEST-SWEEP-COMMITTX-USER";
+        seed_user(&pool, user_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+
+        let trains_id = find_or_create_train(&pool, "TEST-SWEEP-COMMITTX-UID", service_date)
+            .await
+            .expect("find_or_create_train");
+        let journey_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journeys (user_id, custom_name) VALUES ($1, NULL) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed journeys row");
+        let journey_leg_id: i64 = sqlx::query_scalar(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 1, 'RDG', 'WOK', $2, 'unmatched') RETURNING id",
+        )
+        .bind(journey_id)
+        .bind(service_date)
+        .fetch_one(&pool)
+        .await
+        .expect("seed an unmatched journey_legs row");
+
+        let tracking_id = auto_commit_leg_to_train(&pool, journey_leg_id, trains_id, user_id)
+            .await
+            .expect("auto_commit_leg_to_train")
+            .expect("an unmatched leg must be committed");
+
+        let (match_mode, train_subscription_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT match_mode, train_subscription_id FROM journey_legs WHERE id = $1",
+        )
+        .bind(journey_leg_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read the leg back");
+        assert_eq!(match_mode, "auto");
+        assert_eq!(train_subscription_id, Some(tracking_id));
+        let subscriptions: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM train_subscriptions WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count the committed subscription");
+        assert_eq!(
+            subscriptions, 1,
+            "the transaction must have COMMITTED the subscription, not rolled it back"
+        );
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Finding 5's unit-level regression test for the enrichment itself:
+    /// `find_or_create_train_with_cif_schedule` must copy CIF's own true
+    /// origin, booked departure and TERMINUS onto the shared `trains` row,
+    /// and `create_subscription_for_train` must then carry them into the
+    /// subscription's `pin_*` columns.
+    ///
+    /// The terminus assertion is the load-bearing one: the seeded schedule
+    /// has the flattened table's ordinary several-rows-per-train shape
+    /// (RDG->WOK, RDG->BSK, WOK->BSK), so "the destination of the first row"
+    /// would be wrong -- the terminus is the latest resolvable arrival.
+    #[tokio::test]
+    #[ignore = "requires a live database with this plan's Task 3 migration already applied; \
+                run with `DATABASE_URL=... cargo test -p notifier \
+                find_or_create_train_with_cif_schedule_writes_the_true_origin_and_terminus \
+                -- --ignored --test-threads=1`"]
+    async fn find_or_create_train_with_cif_schedule_writes_the_true_origin_and_terminus() {
+        let pool = connect().await;
+        let train_uid = "TEST-CIF-ENRICH-UID";
+        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+        let user_id = "TEST-CIF-ENRICH-USER";
+        seed_user(&pool, user_id).await;
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, \
+                 true_origin_crs, destination_arrival, destination_arrival_day_offset) \
+             VALUES ($1, 'WOK', '09:05:00', 0, $2, 'RDG', 'RDG', '09:25:00', 0), \
+                    ($1, 'BSK', '09:05:00', 0, $2, 'RDG', 'RDG', '09:58:00', 0), \
+                    ($1, 'BSK', '09:26:00', 0, $2, 'WOK', 'RDG', '09:58:00', 0)",
+        )
+        .bind(service_date)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed a realistic multi-row CIF shape for one train");
+
+        let trains_id = find_or_create_train_with_cif_schedule(&pool, train_uid, service_date)
+            .await
+            .expect("find_or_create_train_with_cif_schedule");
+
+        let (origin_crs, destination_crs, scheduled_departure): (
+            Option<String>,
+            Option<String>,
+            Option<DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT origin_crs, destination_crs, scheduled_departure FROM trains WHERE id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read the trains row back");
+        assert_eq!(
+            origin_crs.as_deref(),
+            Some("RDG"),
+            "the true origin is the row whose origin_crs IS its true_origin_crs, not the \
+             WOK->BSK leg of the same schedule"
+        );
+        assert_eq!(
+            destination_crs.as_deref(),
+            Some("BSK"),
+            "the terminus is the latest resolvable arrival (09:58 BSK), not the first row's WOK"
+        );
+        assert_eq!(
+            scheduled_departure,
+            crate::london_to_utc(service_date.and_hms_opt(9, 5, 0).unwrap()),
+            "the booked departure is stored as a real UTC instant"
+        );
+
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train");
+        let (pin_origin_crs, pin_destination_crs): (Option<String>, Option<String>) =
+            sqlx::query_as(
+                "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
+            )
+            .bind(tracking_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read the subscription back");
+        assert_eq!(pin_origin_crs.as_deref(), Some("RDG"));
+        assert_eq!(
+            pin_destination_crs.as_deref(),
+            Some("BSK"),
+            "skip_check::leg_is_skipped matches Darwin by this column -- NULL here (the pre-fix \
+             behavior of the bare find_or_create_train) means skip detection can never fire"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]

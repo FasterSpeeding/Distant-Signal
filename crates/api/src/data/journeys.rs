@@ -710,7 +710,7 @@ pub async fn delete_leg(
 /// Records "the occurrence this template produced for this date was
 /// explicitly discarded by its owner" for every `(source_template_id,
 /// service_date)` pair `journey_id` covers -- a tombstone in
-/// `journey_template_skipped_dates` (migration `20260925090000`).
+/// `journey_template_skipped_dates` (migration `20260925214500`).
 ///
 /// Real bug this closes: `crates/notifier`'s recurrence sweep decides
 /// whether today's occurrence still needs minting purely by asking "does a
