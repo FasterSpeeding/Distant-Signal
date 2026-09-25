@@ -600,6 +600,21 @@ async fn post_journey(
                     "pending"
                 }
             };
+            // Unconditional, exactly as `routes::train::post_track`'s own
+            // sibling call is -- including when `attempt_schedule_match`
+            // above just returned `schedule_matched` and therefore already
+            // bound this leg to a `trains` row with a known `train_uid`. A
+            // schedule match supplies timetable data but no TRUST
+            // movements, so an already-identified leg whose train has
+            // already run still wants this backfill. What makes that safe
+            // is `attempt_backlog_match`'s own contradiction filter (added
+            // 2026-09-25): a CRS+time candidate whose TRUST-confirmed
+            // `train_uid` differs from the one this subscription already
+            // knows itself to be tracking is rejected before anything is
+            // replayed or repointed. Without that filter this call could
+            // (and in production did) replay a different train's history
+            // onto a correctly-matched leg and repoint its `trains_id` --
+            // see that function's own comment.
             if let Err(err) = crate::data::trust_event_backlog_match::attempt_backlog_match(
                 &app.database,
                 tracking_id,

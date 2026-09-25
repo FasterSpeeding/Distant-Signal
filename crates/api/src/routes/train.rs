@@ -489,7 +489,22 @@ async fn post_track(
     // UPDATE is guarded by `WHERE train_uid IS NULL AND resolution_status
     // = 'pending'`, so it no-ops against a row this call already
     // resolved, and this call's own upsert_train_event write has no
-    // dependency on resolution_status's prior value at all. A failure
+    // dependency on resolution_status's prior value at all.
+    //
+    // That "safe in any order" argument was, until 2026-09-25, incomplete
+    // in one specific way worth naming here: it covers
+    // attempt_schedule_match's UPDATE no-opping, but said nothing about
+    // attempt_backlog_match's OWN Step A dual-write, which repoints
+    // `train_subscriptions.trains_id` unconditionally. Deliberately still
+    // called unconditionally -- a schedule match supplies timetable data
+    // but no TRUST movements, so an already-`schedule_matched` pin whose
+    // train has already run genuinely does still want this backfill -- but
+    // the safety now comes from attempt_backlog_match's own contradiction
+    // filter, which rejects a CRS+time candidate whose TRUST-confirmed
+    // train_uid differs from the one this subscription is already known to
+    // be tracking, rather than from ordering. See that function's own
+    // comment for the confirmed production incident and the residual it
+    // names. A failure
     // here must never fail pin creation itself, same posture as the
     // schedule match above; unlike that one, there is no periodic sweep
     // to retry a backlog match later -- see attempt_backlog_match's own
