@@ -719,10 +719,25 @@ async fn get_by_uid_and_date(
     // `origin_crs` is still unset -- a fast, no-op-shaped check for the
     // overwhelmingly common case of an already-matched or already-known-
     // unmatchable row.
+    //
+    // Medium finding, 19-pass review: without the
+    // `recently_failed` guard below, a `trains` row whose `origin_crs`
+    // stays permanently NULL (a train that can genuinely never
+    // schedule-match -- e.g. its true origin lies off the CIF-published
+    // network, or the shared row was minted from live TRUST data with no
+    // recoverable CIF origin at all) paid this same expensive re-match
+    // attempt on EVERY single read, forever, with no backoff -- and this
+    // route is public and unauthenticated, so any UID/date pair for a
+    // published CIF schedule is mintable and re-hittable by an anonymous
+    // crawler. See `ScheduleMatchFailureCache`'s own doc comment for the
+    // negative-cache fix.
     if let Some(current) = &state
         && current.origin_crs.is_none()
+        && !SCHEDULE_MATCH_FAILURE_CACHE.recently_failed(&train_uid, date)
     {
-        enrich_public_train_schedule(&app, &train_uid, date).await;
+        if !enrich_public_train_schedule(&app, &train_uid, date).await {
+            SCHEDULE_MATCH_FAILURE_CACHE.record_failure(&train_uid, date);
+        }
         state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
             .await
             .map_err(internal_error("read public train state"))?;
@@ -936,20 +951,28 @@ pub(crate) async fn enrich_shared_train(
 /// against whatever is already there -- safe to call for an
 /// already-matched row (fast no-op) or in a race with the tracked-train
 /// paths above (never clobbers, per that function's own doc comment).
-async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDate) {
+/// Returns `true` only when this attempt actually schedule-matched the
+/// row -- the caller (`get_by_uid_and_date`) uses that to decide whether to
+/// record a negative-cache entry via `SCHEDULE_MATCH_FAILURE_CACHE`. Every
+/// non-match outcome (no CIF origin found, an unresolvable local time, an
+/// attempted-but-unmatched schedule, or an outright lookup error) returns
+/// `false` -- from the caller's point of view all of those are equally "did
+/// not get a schedule this time," and equally expensive to blindly retry on
+/// every read.
+async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDate) -> bool {
     let origin =
         match crate::data::reconciliation::true_origin_departure(&app.database, train_uid, date)
             .await
         {
             Ok(Some(origin)) => origin,
-            Ok(None) => return,
+            Ok(None) => return false,
             Err(err) => {
                 tracing::warn!(
                     error = ?err,
                     train_uid,
                     "true-origin-departure lookup failed for public schedule enrichment"
                 );
-                return;
+                return false;
             }
         };
     let (origin_crs, scheduled) = origin;
@@ -961,7 +984,7 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
             "scheduled departure did not resolve to a real London local time; skipping public \
              schedule enrichment"
         );
-        return;
+        return false;
     };
 
     match schedule_matching::attempt_schedule_match_for_shared_train(
@@ -974,25 +997,119 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
     )
     .await
     {
-        Ok(true) => tracing::info!(
-            train_uid,
-            origin_crs,
-            "schedule-matched a previously-untracked shared train row from a public read"
-        ),
-        Ok(false) => tracing::debug!(
-            train_uid,
-            origin_crs,
-            "no schedule match for this untracked train's true origin departure"
-        ),
+        Ok(true) => {
+            tracing::info!(
+                train_uid,
+                origin_crs,
+                "schedule-matched a previously-untracked shared train row from a public read"
+            );
+            true
+        }
+        Ok(false) => {
+            tracing::debug!(
+                train_uid,
+                origin_crs,
+                "no schedule match for this untracked train's true origin departure"
+            );
+            false
+        }
         Err(err) => {
             tracing::warn!(
                 error = ?err,
                 train_uid,
                 "public schedule enrichment failed for an untracked shared train row"
-            )
+            );
+            false
         }
     }
 }
+
+/// Process-lifetime, in-memory negative cache for
+/// `enrich_public_train_schedule`'s best-effort schedule-match attempt.
+///
+/// Medium finding, 19-pass review: `GET /Train/by-uid/{uid}/{date}` is
+/// public and unauthenticated (see this module's own doc comment), and for
+/// a `trains` row whose `origin_crs` stays NULL -- a train that can never
+/// schedule-match, e.g. its true origin lies off the CIF-published
+/// network, or one that simply hasn't matched yet -- every single read
+/// re-ran the full match attempt, including decoding the entire
+/// `schedule_line_population` JSONB blob for every catalogue line at the
+/// origin CRS. Any UID/date pair for a published CIF schedule is mintable
+/// by `get_by_uid_and_date`'s own read-triggered upsert, so an anonymous
+/// crawler looping over known UID/date pairs paid this cost on every
+/// request, forever, with no backoff at all.
+///
+/// This does NOT change the mint-on-read behavior (still gated by
+/// `is_known_scheduled_train`, unchanged) and does NOT replace retries --
+/// it only stops the SAME read handler from redoing the SAME expensive
+/// match on the very next request for a row that just failed. The
+/// periodic sweep (`reconciliation::retry_schedule_enrichment_for_nr_primary_trains`
+/// for tracked rows) remains the thing that eventually retries a genuinely
+/// recoverable miss (e.g. a CIF publish that lands a few minutes late);
+/// this cache only bounds how often THIS route re-attempts it inline.
+///
+/// Process-local, not persisted or shared across replicas or restarts --
+/// deliberately, same tradeoff `common::log_once::LogOnceSet` documents
+/// for its own process-lifetime cache: this exists purely to cap the cost
+/// of one process serving repeat reads for the same row, not to coordinate
+/// retries cluster-wide. A cold process or an unlucky round-robin still
+/// attempts fresh (bounded) work, and a restart clears it for free.
+struct ScheduleMatchFailureCache {
+    failed_at: std::sync::Mutex<std::collections::HashMap<(String, NaiveDate), std::time::Instant>>,
+}
+
+/// How long a failed schedule-match attempt suppresses a retry from this
+/// route's read path. 15 minutes: long enough that a crawler re-polling
+/// the same known UID/date (the observed abuse shape -- see this cache's
+/// own doc comment) pays the full `schedule_line_population` decode cost
+/// at most 4 times an hour per row instead of once per request; short
+/// enough that a train whose CIF schedule is merely late to land (a
+/// delayed publish, a race with `trust-backlog-consumer`) is still
+/// retried well within the same journey, not left stale all day.
+const SCHEDULE_MATCH_FAILURE_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+impl ScheduleMatchFailureCache {
+    fn new() -> Self {
+        Self {
+            failed_at: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// `true` when `(train_uid, date)` failed a match attempt within the
+    /// last `SCHEDULE_MATCH_FAILURE_TTL`. A poisoned lock (another thread
+    /// panicked while holding it) still recovers the map rather than
+    /// propagating the panic -- same "best-effort, not load-bearing
+    /// application state" tradeoff `LogOnceSet::should_log` documents: a
+    /// caller's unrelated request must never fail merely because some
+    /// other task already poisoned this lock.
+    fn recently_failed(&self, train_uid: &str, date: NaiveDate) -> bool {
+        let failed_at = match self.failed_at.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        failed_at
+            .get(&(train_uid.to_string(), date))
+            .is_some_and(|at| at.elapsed() < SCHEDULE_MATCH_FAILURE_TTL)
+    }
+
+    /// Records a fresh failure timestamp for `(train_uid, date)`, and
+    /// opportunistically sweeps every entry that has already aged out --
+    /// piggybacking the sweep on a write this map is already taking rather
+    /// than running a separate timer/task, which bounds this map's size to
+    /// roughly "distinct failing rows read in the last TTL window" instead
+    /// of growing unboundedly for the life of the process.
+    fn record_failure(&self, train_uid: &str, date: NaiveDate) {
+        let mut failed_at = match self.failed_at.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        failed_at.retain(|_, at| at.elapsed() < SCHEDULE_MATCH_FAILURE_TTL);
+        failed_at.insert((train_uid.to_string(), date), std::time::Instant::now());
+    }
+}
+
+static SCHEDULE_MATCH_FAILURE_CACHE: std::sync::LazyLock<ScheduleMatchFailureCache> =
+    std::sync::LazyLock::new(ScheduleMatchFailureCache::new);
 
 /// Best-effort overlay: if a live Darwin/LDBWS departure board sample for
 /// this train's origin station has a concrete estimated time for a
@@ -1460,6 +1577,83 @@ mod tests {
         assert_eq!(response.estimate, None);
         assert_eq!(response.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
         assert!(!response.disclaimer.is_empty());
+    }
+
+    // --- ScheduleMatchFailureCache (negative cache for
+    // `enrich_public_train_schedule`; see its own doc comment) -----------
+
+    #[test]
+    fn a_fresh_key_has_never_failed() {
+        let cache = ScheduleMatchFailureCache::new();
+        assert!(!cache.recently_failed("UNKNOWNUID", fixed_instant().date_naive()));
+    }
+
+    #[test]
+    fn a_just_recorded_failure_is_recently_failed() {
+        let cache = ScheduleMatchFailureCache::new();
+        let date = fixed_instant().date_naive();
+        cache.record_failure("A12345", date);
+        assert!(cache.recently_failed("A12345", date));
+    }
+
+    #[test]
+    fn a_different_uid_or_date_is_unaffected_by_an_unrelated_failure() {
+        let cache = ScheduleMatchFailureCache::new();
+        let date = fixed_instant().date_naive();
+        cache.record_failure("A12345", date);
+
+        assert!(
+            !cache.recently_failed("B99999", date),
+            "a different uid must not be affected by another uid's failure"
+        );
+        assert!(
+            !cache.recently_failed("A12345", date + chrono::Duration::days(1)),
+            "the same uid on a different date must not be affected"
+        );
+    }
+
+    #[test]
+    fn an_entry_older_than_the_ttl_is_no_longer_recently_failed() {
+        let cache = ScheduleMatchFailureCache::new();
+        let date = fixed_instant().date_naive();
+        // Directly back-date the recorded instant past the TTL rather than
+        // sleeping in a unit test -- `tests` is a descendant module of
+        // `train`, so it can see `ScheduleMatchFailureCache`'s private
+        // `failed_at` field via `use super::*;` above.
+        {
+            let mut failed_at = cache.failed_at.lock().unwrap();
+            failed_at.insert(
+                ("A12345".to_string(), date),
+                std::time::Instant::now()
+                    - SCHEDULE_MATCH_FAILURE_TTL
+                    - std::time::Duration::from_secs(1),
+            );
+        }
+        assert!(!cache.recently_failed("A12345", date));
+    }
+
+    #[test]
+    fn recording_a_new_failure_sweeps_out_stale_entries() {
+        let cache = ScheduleMatchFailureCache::new();
+        let date = fixed_instant().date_naive();
+        {
+            let mut failed_at = cache.failed_at.lock().unwrap();
+            failed_at.insert(
+                ("STALE".to_string(), date),
+                std::time::Instant::now()
+                    - SCHEDULE_MATCH_FAILURE_TTL
+                    - std::time::Duration::from_secs(1),
+            );
+        }
+
+        cache.record_failure("FRESH", date);
+
+        let failed_at = cache.failed_at.lock().unwrap();
+        assert!(
+            !failed_at.contains_key(&("STALE".to_string(), date)),
+            "an aged-out entry must be swept on the next write, not retained forever"
+        );
+        assert!(failed_at.contains_key(&("FRESH".to_string(), date)));
     }
 
     #[test]
@@ -3397,6 +3591,142 @@ mod db_tests {
         .await
         .ok();
         sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-PUBSM-KGX'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Regression for the 19-pass review's Medium finding: a `trains` row
+    /// whose `origin_crs` stays NULL used to pay the full schedule-match
+    /// attempt -- including decoding `schedule_line_population` for every
+    /// catalogue line at the origin CRS -- on EVERY single unauthenticated
+    /// read, forever, with no backoff. Proves the `ScheduleMatchFailureCache`
+    /// fix: seeds a row with no matching schedule (so the first read's
+    /// match attempt genuinely fails and gets negative-cached), then makes
+    /// a schedule that WOULD now match appear before a second read -- and
+    /// asserts the second read still comes back unmatched, proving it did
+    /// not re-attempt the match at all.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_negative_caches_a_failed_schedule_match \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_negative_caches_a_failed_schedule_match() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let train_uid = "TEST-PUBLIC-NOMATCH-UID";
+
+        let trains_id = crate::data::trains::find_or_create_train(&pool, train_uid, service_date)
+            .await
+            .expect("find_or_create_train for fixture");
+        crate::data::trains::mark_train_resolved(&pool, trains_id, "TESTHC02")
+            .await
+            .expect("mark_train_resolved for fixture");
+
+        // Deliberately no `schedule_destination_departures` row for this
+        // uid yet -- `true_origin_departure` finds nothing, so this first
+        // read's match attempt fails and should be negative-cached.
+        let app = test_app_with_schedule_index(pool.clone(), std::collections::HashMap::new());
+        let router = test_router(app);
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/{train_uid}/{service_date}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert!(
+            body.get("originCrs").is_some_and(|v| v.is_null()),
+            "no schedule exists yet to match: {body:?}"
+        );
+
+        // Now seed exactly the schedule that WOULD match -- same fixture
+        // shape as the sibling
+        // `get_by_uid_and_date_schedule_matches_a_previously_untracked_row_with_live_data`
+        // test above.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, 'EDB', '12:00:00', $2, 'KGX', 'KGX')",
+        )
+        .bind(service_date)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed fixture schedule_destination_departures row");
+
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TEST-PUBNM-KGX', 'KGX', 'TEST-PUBNM-KGX-TP', 'KINGS CROSS', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ('east-coast-main-line', $1, $2) \
+             ON CONFLICT (line_id, service_date) DO UPDATE SET population = EXCLUDED.population",
+        )
+        .bind(service_date)
+        .bind(serde_json::json!([{
+            "uid": train_uid,
+            "calling_points": [{
+                "tiploc": "TEST-PUBNM-KGX-TP",
+                "kind": "Origin",
+                "booked_arrival": null,
+                "booked_departure": "12:00",
+                "is_half_minute_arrival": false,
+                "is_half_minute_departure": false
+            }]
+        }]))
+        .execute(&pool)
+        .await
+        .expect("seed schedule_line_population");
+
+        let app = test_app_with_schedule_index(
+            pool.clone(),
+            std::collections::HashMap::from([(
+                "KGX".to_string(),
+                vec!["east-coast-main-line".to_string()],
+            )]),
+        );
+        let router = test_router(app);
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/{train_uid}/{service_date}"),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert!(
+            body.get("originCrs").is_some_and(|v| v.is_null()),
+            "a second read within the negative-cache TTL must NOT re-attempt the schedule \
+             match, even though a schedule that would now match has since appeared -- if \
+             this fails with a populated originCrs, the negative cache did not suppress the \
+             retry: {body:?}"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query(
+            "DELETE FROM schedule_line_population WHERE line_id = 'east-coast-main-line' AND \
+             service_date = $1",
+        )
+        .bind(service_date)
+        .execute(&pool)
+        .await
+        .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-PUBNM-KGX'")
             .execute(&pool)
             .await
             .ok();

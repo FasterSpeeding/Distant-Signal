@@ -209,7 +209,16 @@ async fn get_line_schedule(
     Query(query): Query<ScheduleQuery>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let service_date = resolve_schedule_date(query.date, chrono::Utc::now().date_naive());
+    // London-local "today", not UTC -- see `routes::trains`'s `london_now`
+    // split (baa4e75) for the original incident: during the 00:00-01:00 BST
+    // window a UTC "today" is still yesterday in London, so this route
+    // would 404 or serve yesterday's CIF-derived line schedule for the
+    // first hour of every service day. `schedule_line_population` is keyed
+    // by London rail-day date, never UTC.
+    let london_today = chrono::Utc::now()
+        .with_timezone(&chrono_tz::Europe::London)
+        .date_naive();
+    let service_date = resolve_schedule_date(query.date, london_today);
     // No `custom-` id can reach `schedule_line_population` today: its only
     // producer iterates the static catalogue (`crates/schedule-reference`'s
     // `lines_to_publish`). That is a property of the producer, not of this
@@ -281,7 +290,11 @@ async fn get_line_trains(
     Query(query): Query<ScheduleQuery>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    let service_date = resolve_schedule_date(query.date, chrono::Utc::now().date_naive());
+    // Same London-local "today" as `get_line_schedule` above, same reason.
+    let london_today = chrono::Utc::now()
+        .with_timezone(&chrono_tz::Europe::London)
+        .date_naive();
+    let service_date = resolve_schedule_date(query.date, london_today);
     // Same gate, same rationale, same 404 as `get_line_schedule` above --
     // these two routes read the same table off the same caller-supplied id.
     if !readable_line_id(&app, &id, &user).await? {
@@ -2296,6 +2309,63 @@ mod db_tests {
         delete_schedule_population_fixture(&pool, "test-schedule-2a-stale").await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                schedule_uses_london_local_today_not_bare_utc -- --ignored`"]
+    async fn schedule_uses_london_local_today_not_bare_utc() {
+        // Regression for the 19-pass review's Medium finding: this route
+        // used to key its lookup off `chrono::Utc::now().date_naive()`,
+        // exactly the bug `routes::trains`'s `london_now` split (baa4e75)
+        // already fixed for `/trains/search` -- during the roughly-hour-
+        // long window where UTC's calendar day still lags London's (every
+        // night of British Summer Time, 23:00-00:00 UTC = 00:00-01:00
+        // London), a bare-UTC "today" is one day behind, so this route
+        // served yesterday's CIF-derived line schedule or 404'd for the
+        // first hour of every service day.
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-utc-gap").await;
+
+        let utc_today = chrono::Utc::now().date_naive();
+        let london_today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+
+        if utc_today == london_today {
+            // Outside the UTC/London date-boundary gap right now -- see
+            // `routes::departures::tests::schedule_departures_uses_london_local_today_not_bare_utc`
+            // for the identical, established skip pattern. True no-op, not
+            // lost coverage.
+            return;
+        }
+
+        // Inside the gap: seed a row keyed ONLY by the wrong, bare-UTC
+        // date. If the route regresses to `Utc::now().date_naive()` it
+        // will find this row and return 200; the fix must 404 instead.
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, '[]')",
+        )
+        .bind("test-schedule-2a-utc-gap")
+        .bind(utc_today)
+        .execute(&pool)
+        .await
+        .expect("seed a bare-UTC-dated fixture row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, _) = get_line_schedule(router, "test-schedule-2a-utc-gap", None).await;
+
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "a row keyed by bare UTC \"today\" must not satisfy a London-local \"today\" \
+             lookup during the UTC/London date gap; if this fails, the route has regressed \
+             to `Utc::now().date_naive()`"
+        );
+
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-utc-gap").await;
+    }
+
     /// Issues `GET /public/lines/{id}/trains`, with an optional `?date=`
     /// query string. Mirrors `get_line_schedule`'s own request-building.
     async fn get_line_trains(
@@ -2454,6 +2524,54 @@ mod db_tests {
             .await
             .ok();
         delete_schedule_population_fixture(&pool, "test-trains-3-live").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                trains_uses_london_local_today_not_bare_utc -- --ignored`"]
+    async fn trains_uses_london_local_today_not_bare_utc() {
+        // Same regression as `schedule_uses_london_local_today_not_bare_utc`
+        // above, for `get_line_trains`'s own independent
+        // `chrono::Utc::now().date_naive()` call.
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-trains-3-utc-gap").await;
+
+        let utc_today = chrono::Utc::now().date_naive();
+        let london_today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+
+        if utc_today == london_today {
+            // Outside the UTC/London date-boundary gap right now -- see
+            // `routes::departures::tests::schedule_departures_uses_london_local_today_not_bare_utc`
+            // for the identical, established skip pattern. True no-op, not
+            // lost coverage.
+            return;
+        }
+
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, '[]')",
+        )
+        .bind("test-trains-3-utc-gap")
+        .bind(utc_today)
+        .execute(&pool)
+        .await
+        .expect("seed a bare-UTC-dated fixture row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, _) = get_line_trains(router, "test-trains-3-utc-gap", None).await;
+
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "a row keyed by bare UTC \"today\" must not satisfy a London-local \"today\" \
+             lookup during the UTC/London date gap; if this fails, the route has regressed \
+             to `Utc::now().date_naive()`"
+        );
+
+        delete_schedule_population_fixture(&pool, "test-trains-3-utc-gap").await;
     }
 
     /// Regression test for the `ScheduleRouteEndpoints` half of the shared
