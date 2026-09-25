@@ -11,9 +11,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use chrono::NaiveDate;
-use schedule_query::{
-    CallingPointForConnections, Connection, FixedLink, InterchangeData, build_connections,
-};
+use schedule_query::{CallingPointForConnections, Connection, FixedLink, InterchangeData};
 use sqlx::PgPool;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -69,8 +67,31 @@ pub async fn fetch_calling_points_for_date(
     Ok(Some(by_uid))
 }
 
-/// [`fetch_calling_points_for_date`] plus [`schedule_query::build_connections`]
-/// in one call -- the single function Phase 5's route handler calls.
+/// The purely CPU-bound half of building a date's connections array: the
+/// borrow-shuffling plus [`schedule_query::build_connections`] itself (which
+/// sorts every connection of the whole day).
+///
+/// Split out of [`build_connections_for_date`] so a caller that must not block
+/// the async runtime can run THIS part on the blocking pool while keeping the
+/// database read (`fetch_calling_points_for_date`) async -- which is exactly
+/// what `routes::trips::get_trip_plan` does, per the 2026-09-25 review's High
+/// 4a finding. Takes its input by value for the same reason: `spawn_blocking`
+/// requires `'static`, so the map cannot be borrowed across the hop.
+pub fn build_connections(
+    by_uid: HashMap<String, Vec<CallingPointForConnections>>,
+) -> Vec<Connection> {
+    let schedules: Vec<(&str, &[CallingPointForConnections])> = by_uid
+        .iter()
+        .map(|(uid, points)| (uid.as_str(), points.as_slice()))
+        .collect();
+    schedule_query::build_connections(schedules)
+}
+
+/// [`fetch_calling_points_for_date`] plus [`build_connections`] in one call.
+/// Kept for callers that are not on a latency/blocking-sensitive path (this
+/// module's own tests, and any future non-HTTP consumer); the trip-planning
+/// route deliberately calls the two halves separately so the CPU-bound one
+/// can go through `spawn_blocking` -- see [`build_connections`].
 pub async fn build_connections_for_date(
     pool: &PgPool,
     date: NaiveDate,
@@ -78,11 +99,7 @@ pub async fn build_connections_for_date(
     let Some(by_uid) = fetch_calling_points_for_date(pool, date).await? else {
         return Ok(None);
     };
-    let schedules: Vec<(&str, &[CallingPointForConnections])> = by_uid
-        .iter()
-        .map(|(uid, points)| (uid.as_str(), points.as_slice()))
-        .collect();
-    Ok(Some(build_connections(schedules)))
+    Ok(Some(build_connections(by_uid)))
 }
 
 #[derive(Debug, sqlx::FromRow)]
