@@ -93,6 +93,7 @@ export const RenameTrainButton = forwardRef<
         setSaving(false);
         return;
       }
+      setSaving(false);
       close();
       router.refresh();
     } catch {

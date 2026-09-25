@@ -103,6 +103,28 @@ describe('RenameTicketButton', () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
+  // Bug: `router.refresh()` preserves client component state, so a `saving`
+  // flag left `true` when it fired stayed `true` forever -- `handleOpen`
+  // resets `value`/`error` but never touched `saving`, permanently
+  // disabling "Save" on every future open. See `RenameTrainButton.test.tsx`'s
+  // identical regression test for the full rationale.
+  it('Save is usable again on a later open, not stuck disabled from the previous save', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ customName: 'My ticket' }), { status: 200 }));
+
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    let input = await screen.findByLabelText('Custom name');
+    fireEvent.change(input, { target: { value: 'My ticket' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    input = await screen.findByLabelText('Custom name');
+    fireEvent.change(input, { target: { value: 'A new name' } });
+    expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
+  });
+
   it('a 401 shows a login prompt instead of the raw backend error text', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));

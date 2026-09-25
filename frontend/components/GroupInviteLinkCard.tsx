@@ -82,6 +82,7 @@ export function GroupInviteLinkCard({
         return;
       }
       router.refresh();
+      setBusy(false);
     } catch {
       setError('Could not create a new invite link.');
       setBusy(false);
@@ -104,6 +105,7 @@ export function GroupInviteLinkCard({
         return;
       }
       router.refresh();
+      setBusy(false);
     } catch {
       setError('Could not revoke the invite link.');
       setBusy(false);

@@ -83,6 +83,7 @@ export function AddCustomLineToGroupButton({
         setSubmitting(false);
         return;
       }
+      setSubmitting(false);
       close();
       router.refresh();
     } catch {

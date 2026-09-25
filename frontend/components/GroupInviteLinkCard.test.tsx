@@ -185,6 +185,51 @@ describe('GroupInviteLinkCard', () => {
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
   });
 
+  // Bug: `router.refresh()` preserves client component state (it re-runs
+  // Server Components, it does not remount this one), so a `busy` flag
+  // left `true` when it fires stayed `true` forever -- both "Regenerate"
+  // and "Revoke" render `loading={busy}`, so the clicked button (and its
+  // sibling, since they share one flag) was stuck spinning/disabled until a
+  // full page reload. The fix resets `busy` to `false` in the same
+  // synchronous continuation as the `router.refresh()` call rather than
+  // only in the `catch` branch.
+  it('Regenerate is clickable again once the refresh has fired, not stuck spinning', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ token: 'new', expiresAt: '2026-09-19T00:00:00Z' }), { status: 200 }),
+    );
+
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
+
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Regenerate' })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Revoke' })).not.toBeDisabled();
+  });
+
+  it('Revoke is clickable again once the refresh has fired, not stuck spinning', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Regenerate' })).not.toBeDisabled();
+  });
+
   it('a 401 on Regenerate shows a login prompt, not the generic error', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));

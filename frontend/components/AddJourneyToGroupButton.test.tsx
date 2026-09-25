@@ -91,4 +91,33 @@ describe('AddJourneyToGroupButton', () => {
     });
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
   });
+
+  // Bug: `router.refresh()` preserves client component state, so a
+  // `submitting` flag left `true` when it fired stayed `true` forever --
+  // `handleOpen` resets `selected`/`error` but never touched `submitting`,
+  // permanently disabling/spinning "Add to group" on every future open. See
+  // `AddTrainToGroupButton.test.tsx`'s identical regression test for the
+  // full rationale.
+  it('"Add to group" is usable again on a later open, not stuck disabled from the previous add', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url === '/api/Journeys/mine') return Promise.resolve(mineResponse());
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    renderWithMantine(<AddJourneyToGroupButton groupId="grp-1" excludeJourneyIds={[]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add one of my journeys' }));
+    let [select] = await screen.findAllByLabelText('Journey');
+    fireEvent.click(select);
+    fireEvent.click(await screen.findByText(/WOK → WAT/));
+    fireEvent.click(screen.getByRole('button', { name: 'Add to group' }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add one of my journeys' }));
+    [select] = await screen.findAllByLabelText('Journey');
+    fireEvent.click(select);
+    fireEvent.click(await screen.findByText(/WOK → WAT/));
+    expect(screen.getByRole('button', { name: 'Add to group' })).not.toBeDisabled();
+  });
 });
