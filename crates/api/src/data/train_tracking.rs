@@ -1196,11 +1196,27 @@ pub async fn list_pending_pins_for_backlog_match(
 }
 
 /// The public read-model for a tracked train, returned directly as JSON by
-/// `crates/api/src/routes/train.rs`'s `GET /Train/{trackingId}` and
-/// `GET /Train/by-uid/{train_uid}/{date}`. Unlike `TrackedTrainRow`/
-/// `TrackedTrainRef` above (poller-facing, private), this never leaks
-/// `user_id` -- see Task 5's brief for why these two reads deliberately
-/// stay public/unscoped despite `tracked_trains` having a real owner.
+/// `crates/api/src/routes/train.rs`'s `GET /Train/{trackingId}` (via
+/// `get_by_tracking_id` below). Unlike `TrackedTrainRow`/`TrackedTrainRef`
+/// above (poller-facing, private), this never leaks the raw `user_id`
+/// column -- see Task 5's brief for why that read deliberately stays
+/// public/unscoped despite `tracked_trains` having a real owner.
+///
+/// This module used to have a second `TRACKED_TRAIN_STATE_SELECT` reader,
+/// `get_by_uid_and_date`, keyed only on `(train_uid, service_date)` with no
+/// `user_id` filter at all. `GET /Train/by-uid/{uid}/{date}` stopped calling
+/// it as of Task 19 (it reads `trains::get_public_train_state` instead),
+/// which left it with zero callers anywhere in the workspace -- confirmed
+/// again by the 19-pass Signal Box Audit's trains-area Low finding. Unlike
+/// `get_by_tracking_id`, that query could match more than one
+/// `train_subscriptions` row (multiple users can each pin the same
+/// `train_uid`/`service_date`), so `fetch_optional` would return whichever
+/// one row Postgres happened to pick -- silently handing back that OTHER
+/// user's `custom_name`/`shared_group_count` (both genuinely per-user,
+/// despite this struct never exposing `user_id` itself) to whatever caller
+/// eventually got reconnected to it. Deleted outright rather than fixed,
+/// since dead code carrying a latent cross-user leak serves no purpose
+/// sitting around waiting to be reconnected.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackedTrainState {
@@ -1501,21 +1517,6 @@ pub async fn get_by_tracking_id(
         "{TRACKED_TRAIN_STATE_SELECT} WHERE tt.id = $1"
     ))
     .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row)
-}
-
-pub async fn get_by_uid_and_date(
-    pool: &PgPool,
-    train_uid: &str,
-    service_date: chrono::NaiveDate,
-) -> anyhow::Result<Option<TrackedTrainState>> {
-    let row = sqlx::query_as::<_, TrackedTrainState>(&format!(
-        "{TRACKED_TRAIN_STATE_SELECT} WHERE tr.train_uid = $1 AND tt.service_date = $2"
-    ))
-    .bind(train_uid)
-    .bind(service_date)
     .fetch_optional(pool)
     .await?;
     Ok(row)
@@ -4666,12 +4667,13 @@ mod db_tests {
     /// `String` and this call failed with "unexpected null; try decoding as
     /// an Option".
     ///
-    /// `get_by_uid_and_date` (this module's other
-    /// `TRACKED_TRAIN_STATE_SELECT` caller) is deliberately NOT covered
-    /// here: it no longer has a single caller anywhere in the workspace --
-    /// `GET /Train/by-uid/{uid}/{date}` reads
-    /// `trains::get_public_train_state` as of Task 19. See this fix's
-    /// report for that as a flagged, deliberate non-removal.
+    /// This module used to have a second `TRACKED_TRAIN_STATE_SELECT`
+    /// caller, `get_by_uid_and_date`, which is why no equivalent test for it
+    /// appears here. `GET /Train/by-uid/{uid}/{date}` reads
+    /// `trains::get_public_train_state` as of Task 19, so that reader had no
+    /// caller left anywhere in the workspace -- the Signal Box Audit's
+    /// trains-area Low finding on it, so it was deleted outright rather than
+    /// given a test.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 get_by_tracking_id_reads_a_subscription_with_null_pins \
