@@ -78,8 +78,21 @@ export function humanizeKey(key: string): string {
     .filter(Boolean);
   if (words.length === 0) return key;
   const [firstWord, ...restWords] = words;
-  const first = ACRONYM_WORDS[firstWord] ?? firstWord.charAt(0).toUpperCase() + firstWord.slice(1);
-  const rest = restWords.map((word) => ACRONYM_WORDS[word] ?? word);
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". `firstWord`/`word` are camelCase tokens split out
+  // of an arbitrary feed field name -- if one is literally `constructor`
+  // (or another `Object.prototype` key), a bare `ACRONYM_WORDS[word]` would
+  // resolve to `Object.prototype.constructor` (a function) rather than
+  // `undefined`, and `?? word`/`?? ...` would never fire because a function
+  // is neither `null` nor `undefined` -- this function is the generic
+  // fallback label generator for every unrecognised field this module
+  // renders (`pushField`'s `humanizeKey(key)`), so that function value would
+  // reach the page as a label. `hasOwnProperty` keeps both lookups to
+  // ACRONYM_WORDS' own three declared entries.
+  const acronym = (word: string): string | undefined =>
+    Object.prototype.hasOwnProperty.call(ACRONYM_WORDS, word) ? ACRONYM_WORDS[word] : undefined;
+  const first = acronym(firstWord) ?? firstWord.charAt(0).toUpperCase() + firstWord.slice(1);
+  const rest = restWords.map((word) => acronym(word) ?? word);
   return [first, ...rest].join(' ');
 }
 

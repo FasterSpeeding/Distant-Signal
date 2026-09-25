@@ -967,4 +967,23 @@ describe('review §3.5.11: label defects', () => {
     expect(humanizeKey('liftsInfo')).toBe('Lift details');
     expect(humanizeKey('names')).toBe('Named locations');
   });
+
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". A feed field literally named `constructor` (or
+  // another Object.prototype key) used to make the internal
+  // `ACRONYM_WORDS[word]` lookup resolve to `Object.prototype.constructor`
+  // (a function) instead of `undefined`, which `?? word` would not catch --
+  // producing a function where a string label is expected.
+  it('treats a field named "constructor" as an ordinary word, not a prototype method', () => {
+    expect(humanizeKey('constructor')).toBe('Constructor');
+    expect(typeof humanizeKey('constructor')).toBe('string');
+  });
+
+  it('treats "constructor" as an ordinary leading word even when it is the first of several', () => {
+    // `constructorInfo` splits into the tokens `['constructor', 'info']` --
+    // `constructor` lands in the same `ACRONYM_WORDS[firstWord]` lookup the
+    // bare-word case above exercises, just as the first of two words rather
+    // than the whole key.
+    expect(humanizeKey('constructorInfo')).toBe('Constructor info');
+  });
 });

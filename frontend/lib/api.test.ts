@@ -45,14 +45,34 @@ import {
   ApiUnauthorizedError,
 } from './api';
 
-// `getPreferences` reads the incoming request's cookies through
-// `next/headers` so it can forward them to the backend (a Server
-// Component's own fetch carries none of the browser's cookies by itself).
-// There is no Next.js request context in a unit test, so `cookies()` is
-// stubbed here; `incomingCookies` is what each test dials in.
+// `getPreferences` (and every other cookie-forwarding helper in lib/api.ts)
+// reads the incoming request's cookies through `next/headers` so it can
+// forward the session cookie to the backend (a Server Component's own fetch
+// carries none of the browser's cookies by itself). There is no Next.js
+// request context in a unit test, so `cookies()` is stubbed here;
+// `incomingCookies` is what each test dials in. `.get(name)` mirrors the
+// real `next/headers` `RequestCookies` API that `cookieForwardInit` now reads
+// (rather than `.toString()`, the whole-jar shape it used to read) --
+// parsing `incomingCookies.header` on every call keeps this stub honest about
+// which single cookie a test actually set.
 const incomingCookies = { header: '' };
+function parseIncomingCookie(name: string): string | undefined {
+  for (const part of incomingCookies.header.split(';')) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    if (trimmed.slice(0, eq) === name) return trimmed.slice(eq + 1);
+  }
+  return undefined;
+}
 vi.mock('next/headers', () => ({
-  cookies: async () => ({ toString: () => incomingCookies.header }),
+  cookies: async () => ({
+    toString: () => incomingCookies.header,
+    get: (name: string) => {
+      const value = parseIncomingCookie(name);
+      return value === undefined ? undefined : { name, value };
+    },
+  }),
 }));
 
 const sampleReport = {
@@ -424,9 +444,13 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: [], pinnedOperators: [] }), { status: 200 })),
     );
     await expect(getPreferences()).resolves.toEqual({ pinnedLines: ['wcml'], pinnedStations: [], pinnedOperators: [] });
+    // Only the session cookie is forwarded -- see the dedicated
+    // "forwards only the session cookie" suite below for the regression
+    // this asserts (Signal Box Audit, flib Low finding: "the entire cookie
+    // jar is forwarded on every SSR fetch"). `theme=dark` must NOT appear.
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/preferences',
-      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123; theme=dark' } }),
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
     );
   });
 
@@ -1109,6 +1133,27 @@ describe('api client', () => {
   it('getJourneyByShareToken throws ApiNotFoundError on a 404', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     await expect(getJourneyByShareToken('invalid-token')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  // Signal Box Audit, flib Low finding: "the entire cookie jar is forwarded
+  // on every SSR fetch". Every cookie-forwarding call site in this file goes
+  // through `cookieForwardInit()`, so one representative call site's own
+  // multi-cookie test (plus `getPreferences`'s own copy above) stands in for
+  // all of them -- the fix lives in the one shared helper, not per call site.
+  it('forwards only the session cookie to the backend, never the visitor\'s whole cookie jar', async () => {
+    incomingCookies.header = 'theme=dark; distant_signal_session=abc123; consent=1';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    await getAllLines();
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toEqual({ Cookie: 'distant_signal_session=abc123' });
+  });
+
+  it('sends no Cookie header when the visitor has other cookies but no session cookie', async () => {
+    incomingCookies.header = 'theme=dark; consent=1';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    await getAllLines();
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
   });
 });
 

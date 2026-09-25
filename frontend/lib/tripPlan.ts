@@ -46,11 +46,24 @@ export class TripPlanError extends Error {
  * value) and `404` (no CIF data published for this date yet) are real,
  * distinct, user-actionable outcomes (this plan's own Review Focus), so
  * the caller can render each differently rather than one generic failure
- * message. */
+ * message.
+ *
+ * Every OTHER status (a 500, a gateway timeout, an unreachable backend, ...)
+ * is not a backend-authored, user-actionable message -- it can be Next's own
+ * raw proxy error text (an HTML error page fragment, a stack trace line),
+ * which `PlanTripFlow` would otherwise show verbatim in its alert (Signal
+ * Box Audit, flib Low finding: "non-400/404 error bodies are shown to the
+ * user verbatim"). That looks broken and can leak implementation details, so
+ * those statuses get a generic, honest message instead -- the raw body is
+ * still logged to the console for debugging, just not shown to the visitor. */
 export async function fetchTripPlan(query: TripPlanQuery): Promise<TripPlanResponse> {
   const response = await fetch(`/api/Trips/plan?${buildTripPlanQuery(query)}`);
   if (!response.ok) {
     const body = await response.text();
+    if (response.status !== 400 && response.status !== 404) {
+      console.error(`fetchTripPlan: request failed with ${response.status}`, body);
+      throw new TripPlanError('Something went wrong planning this trip. Please try again.', response.status);
+    }
     throw new TripPlanError(body || 'Could not plan this trip.', response.status);
   }
   return response.json();

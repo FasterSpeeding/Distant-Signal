@@ -20,5 +20,17 @@ export const IMPACT_TYPE_LABELS: Record<string, string> = {
  * omitting an unrecognized value is safe. */
 export function impactTypeLabel(impactType: string | null | undefined): string | null {
   if (!impactType) return null;
-  return IMPACT_TYPE_LABELS[impactType] ?? null;
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". `impactType` is deliberately open-ended (this
+  // function's own doc comment anticipates "schema drift, a future taxonomy
+  // addition"), so a bare `IMPACT_TYPE_LABELS[impactType]` would resolve
+  // `impactType === 'constructor'` to `Object.prototype.constructor` (a
+  // function) instead of `undefined` -- `?? null` never fires because a
+  // function is neither `null` nor `undefined`, and `DisruptionDetail`/
+  // `IssueList` would render that function where they expect a string or
+  // `null`. Guarding with `hasOwnProperty` keeps the lookup to
+  // IMPACT_TYPE_LABELS' own declared keys.
+  return Object.prototype.hasOwnProperty.call(IMPACT_TYPE_LABELS, impactType)
+    ? IMPACT_TYPE_LABELS[impactType]
+    : null;
 }

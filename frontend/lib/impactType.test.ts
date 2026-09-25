@@ -20,6 +20,18 @@ describe('impactTypeLabel', () => {
     expect(impactTypeLabel('some_future_taxonomy_value')).toBeNull();
   });
 
+  // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
+  // function as a label". `impactType` is deliberately open-ended -- an
+  // `impactType` literally named "constructor" (or another Object.prototype
+  // key) used to make `IMPACT_TYPE_LABELS[impactType]` resolve to
+  // `Object.prototype.constructor` (a function), which `?? null` would not
+  // catch.
+  it('returns null for an impactType matching an Object.prototype key, not a function', () => {
+    expect(impactTypeLabel('constructor')).toBeNull();
+    expect(impactTypeLabel('toString')).toBeNull();
+    expect(impactTypeLabel('hasOwnProperty')).toBeNull();
+  });
+
   it('exposes exactly the three known keys', () => {
     expect(Object.keys(IMPACT_TYPE_LABELS).sort()).toEqual(
       ['diversion', 'no_scheduled_service', 'rail_replacement_bus'].sort(),
