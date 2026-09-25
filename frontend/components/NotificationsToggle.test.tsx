@@ -125,6 +125,87 @@ describe('NotificationsToggle', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /notifications enabled/i })).toBeInTheDocument());
   });
 
+  // Bug: `enable()` was a bare `try`/`finally` with no `catch` and no error
+  // state -- a rejected `pushManager.subscribe()` (common on Firefox/Brave
+  // with push disabled, or a malformed VAPID key) threw as an unhandled
+  // promise rejection, with the button just silently re-enabling and
+  // nothing shown to the user.
+  it('shows a clear error, not a raw exception, when pushManager.subscribe() rejects', async () => {
+    const fakeRegistration = {
+      pushManager: {
+        subscribe: vi.fn().mockRejectedValue(new DOMException('push service error', 'AbortError')),
+      },
+    };
+    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
+    global.navigator.serviceWorker = { ready: Promise.resolve(fakeRegistration) };
+    // @ts-expect-error -- see above.
+    global.window.PushManager = function () {};
+    // @ts-expect-error -- see above.
+    global.Notification = { requestPermission: vi.fn().mockResolvedValue('granted') };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('test-vapid-key', { status: 200 })));
+
+    renderWithMantine(<NotificationsToggle />);
+    const button = await screen.findByRole('button', { name: /enable notifications/i });
+    fireEvent.click(button);
+
+    expect(
+      await screen.findByText("Couldn't enable notifications. Check your browser's notification permissions."),
+    ).toBeInTheDocument();
+    // The button itself recovers rather than staying stuck disabled/loading
+    // forever -- the `finally` block already reset `busy`; what was missing
+    // was only the visible error.
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(screen.getByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
+  });
+
+  it('shows the same clear error on a non-ok vapid-key fetch', async () => {
+    stubPushApiSupport();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('boom', { status: 500 })));
+
+    renderWithMantine(<NotificationsToggle />);
+    const button = await screen.findByRole('button', { name: /enable notifications/i });
+    fireEvent.click(button);
+
+    expect(
+      await screen.findByText("Couldn't enable notifications. Check your browser's notification permissions."),
+    ).toBeInTheDocument();
+  });
+
+  // Bug: `enabled` was never seeded from the real subscription state
+  // (`pushManager.getSubscription()`), so a returning, already-subscribed
+  // visitor always saw "Enable notifications" and would call `subscribe()`
+  // again on every click instead of the button reflecting they're already
+  // subscribed.
+  it('seeds "Notifications enabled" on mount when a subscription already exists', async () => {
+    const fakeSubscription = { endpoint: 'https://push.example/existing' };
+    const fakeRegistration = {
+      pushManager: { getSubscription: vi.fn().mockResolvedValue(fakeSubscription) },
+    };
+    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
+    global.navigator.serviceWorker = { getRegistration: vi.fn().mockResolvedValue(fakeRegistration) };
+    // @ts-expect-error -- see above.
+    global.window.PushManager = function () {};
+
+    renderWithMantine(<NotificationsToggle />);
+
+    expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+  });
+
+  it('leaves "Enable notifications" on mount when getRegistration resolves with no subscription', async () => {
+    const fakeRegistration = {
+      pushManager: { getSubscription: vi.fn().mockResolvedValue(null) },
+    };
+    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
+    global.navigator.serviceWorker = { getRegistration: vi.fn().mockResolvedValue(fakeRegistration) };
+    // @ts-expect-error -- see above.
+    global.window.PushManager = function () {};
+
+    renderWithMantine(<NotificationsToggle />);
+    const button = await screen.findByRole('button', { name: /enable notifications/i });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(screen.queryByRole('button', { name: /notifications enabled/i })).not.toBeInTheDocument();
+  });
+
   it('does nothing further when the permission prompt is denied', async () => {
     stubPushApiSupport();
     // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
