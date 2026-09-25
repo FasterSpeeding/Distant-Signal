@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Chip, Group, SegmentedControl, Stack, Switch, Text, TextInput } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -9,6 +9,17 @@ import { TimeFilterInput } from './TimeFilterInput';
 import type { JourneyTemplateDetail, PutJourneyTemplateRequest, TemplateLegRequest } from '@/lib/types';
 
 interface EditableLeg {
+  // A stable, position-independent identity for this leg -- used for React
+  // `key`s and for tracking per-leg incomplete-time state (see
+  // `incompleteByLeg` below). Deliberately NOT the array index: this form
+  // lets a leg be removed from the middle of the list (`removeLeg`), and an
+  // index-keyed identity would silently re-point a later leg's still-open
+  // `TimeFilterInput` incomplete-state onto whatever leg slides into its old
+  // slot. A pre-existing leg keeps its real backend id (`server-{id}`,
+  // stable across the whole edit session); a leg added client-side via
+  // `addLeg` gets a monotonic counter value instead, since it has no
+  // backend id yet.
+  key: string;
   originCrs: string;
   destinationCrs: string;
   departFrom: string;
@@ -19,6 +30,7 @@ interface EditableLeg {
 
 function toEditableLeg(leg: JourneyTemplateDetail['legs'][number]): EditableLeg {
   return {
+    key: `server-${leg.id}`,
     originCrs: leg.originCrs ?? '',
     destinationCrs: leg.destinationCrs ?? '',
     departFrom: leg.departAfter ?? '',
@@ -27,6 +39,26 @@ function toEditableLeg(leg: JourneyTemplateDetail['legs'][number]): EditableLeg 
     arriveTo: leg.arriveBefore ?? '',
   };
 }
+
+/** Whether each of a single leg's four `TimeFilterInput`s is currently
+ * mid-entry (e.g. an hour typed with no minutes yet) -- see that
+ * component's own doc comment on why a half-typed time reports `value` as
+ * `''`, indistinguishable from untouched, unless the owner also listens for
+ * this. Mirrors `AddJourneyLegButton.tsx`'s own `incompleteTimes` shape,
+ * just one instance per leg instead of one for the whole form. */
+interface LegIncompleteFlags {
+  departFrom: boolean;
+  departTo: boolean;
+  arriveFrom: boolean;
+  arriveTo: boolean;
+}
+
+const NO_INCOMPLETE_TIMES: LegIncompleteFlags = {
+  departFrom: false,
+  departTo: false,
+  arriveFrom: false,
+  arriveTo: false,
+};
 
 /** Mon=bit 0 (value 1) .. Sun=bit 6 (value 64), mirroring the backend's
  * own `weekday_bit`/`due_templates_for` convention
@@ -74,6 +106,10 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
   const router = useRouter();
   const [customName, setCustomName] = useState(template.customName ?? '');
   const [legs, setLegs] = useState<EditableLeg[]>(template.legs.map(toEditableLeg));
+  // Per-leg incomplete-time tracking, keyed by `EditableLeg.key` (not array
+  // index -- see that field's own doc comment). Absent entries mean "no
+  // incomplete field reported yet", equivalent to `NO_INCOMPLETE_TIMES`.
+  const [incompleteByLeg, setIncompleteByLeg] = useState<Record<string, LegIncompleteFlags>>({});
   const [selectedDays, setSelectedDays] = useState<string[]>(daysOfWeekToKeys(template.daysOfWeek));
   const [matchMode, setMatchMode] = useState<'manual' | 'auto'>(template.defaultMatchMode);
   const [paused, setPaused] = useState(!template.active);
@@ -81,27 +117,61 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const needsLoginState = useNeedsLogin();
+  // Monotonic source of client-side-only leg keys (`addLeg` below) -- see
+  // `EditableLeg.key`'s own doc comment for why these can't just be the
+  // leg's array index.
+  const nextClientLegId = useRef(0);
 
-  function updateLeg(index: number, patch: Partial<EditableLeg>) {
+  function updateLeg(key: string, patch: Partial<EditableLeg>) {
     setSaved(false);
-    setLegs((current) => current.map((leg, i) => (i === index ? { ...leg, ...patch } : leg)));
+    setLegs((current) => current.map((leg) => (leg.key === key ? { ...leg, ...patch } : leg)));
+  }
+
+  function setLegIncomplete(key: string, field: keyof LegIncompleteFlags, value: boolean) {
+    setIncompleteByLeg((current) => ({
+      ...current,
+      [key]: { ...(current[key] ?? NO_INCOMPLETE_TIMES), [field]: value },
+    }));
   }
 
   function addLeg() {
     setSaved(false);
+    const key = `client-${nextClientLegId.current++}`;
     setLegs((current) => [
       ...current,
-      { originCrs: '', destinationCrs: '', departFrom: '', departTo: '', arriveFrom: '', arriveTo: '' },
+      { key, originCrs: '', destinationCrs: '', departFrom: '', departTo: '', arriveFrom: '', arriveTo: '' },
     ]);
   }
 
-  function removeLeg(index: number) {
+  function removeLeg(key: string) {
     setSaved(false);
-    setLegs((current) => current.filter((_, i) => i !== index));
+    setLegs((current) => current.filter((leg) => leg.key !== key));
+    // Drop the removed leg's own incomplete-time tracking along with it,
+    // rather than leaving it to be reassigned to whichever leg now sits in
+    // its old slot -- the whole point of keying this map by a stable `key`
+    // instead of position.
+    setIncompleteByLeg((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
   }
 
+  // A half-typed time in any leg (e.g. an hour with no minutes) blocks Save
+  // exactly like `AddJourneyLegButton.tsx`'s own `windowTimesComplete` --
+  // see that component and `TimeFilterInput`'s own doc comment for why this
+  // signal exists at all. Without it, a half-entered bound would silently
+  // report `value` as `''` and PUT as `null`, with the page showing a green
+  // "Saved." and no indication the bound was ever dropped.
+  const allTimesComplete = legs.every((leg) => {
+    const flags = incompleteByLeg[leg.key];
+    return !flags || !Object.values(flags).some(Boolean);
+  });
+
   const isValid =
-    legs.length > 0 && legs.every((leg) => leg.originCrs.trim() !== '' && leg.destinationCrs.trim() !== '');
+    legs.length > 0 &&
+    legs.every((leg) => leg.originCrs.trim() !== '' && leg.destinationCrs.trim() !== '') &&
+    allTimesComplete;
 
   async function handleSave() {
     if (!isValid) return;
@@ -209,7 +279,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
         }}
       />
       {legs.map((leg, index) => (
-        <Stack key={index} gap="xs" p="sm" style={{ border: '1px solid var(--mantine-color-gray-3)' }}>
+        <Stack key={leg.key} gap="xs" p="sm" style={{ border: '1px solid var(--mantine-color-gray-3)' }}>
           <Group justify="space-between">
             <Text size="sm" fw={600}>
               Leg {index + 1}
@@ -220,7 +290,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
                 color="red"
                 size="xs"
                 aria-label={`Remove leg ${index + 1}`}
-                onClick={() => removeLeg(index)}
+                onClick={() => removeLeg(leg.key)}
               >
                 Remove
               </Button>
@@ -230,12 +300,12 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
             <TextInput
               label="Origin CRS"
               value={leg.originCrs}
-              onChange={(event) => updateLeg(index, { originCrs: event.currentTarget.value })}
+              onChange={(event) => updateLeg(leg.key, { originCrs: event.currentTarget.value })}
             />
             <TextInput
               label="Destination CRS"
               value={leg.destinationCrs}
-              onChange={(event) => updateLeg(index, { destinationCrs: event.currentTarget.value })}
+              onChange={(event) => updateLeg(leg.key, { destinationCrs: event.currentTarget.value })}
             />
           </Group>
           <Group grow align="flex-start">
@@ -244,8 +314,8 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
               name={`leg-${index}-depart-from`}
               description="Only trains leaving at or after this time."
               value={leg.departFrom}
-              onChange={(v) => updateLeg(index, { departFrom: v })}
-              onIncompleteChange={() => {}}
+              onChange={(v) => updateLeg(leg.key, { departFrom: v })}
+              onIncompleteChange={(v) => setLegIncomplete(leg.key, 'departFrom', v)}
               error={null}
             />
             <TimeFilterInput
@@ -253,8 +323,8 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
               name={`leg-${index}-depart-to`}
               description="Only trains leaving at or before this time."
               value={leg.departTo}
-              onChange={(v) => updateLeg(index, { departTo: v })}
-              onIncompleteChange={() => {}}
+              onChange={(v) => updateLeg(leg.key, { departTo: v })}
+              onIncompleteChange={(v) => setLegIncomplete(leg.key, 'departTo', v)}
               error={null}
             />
           </Group>
@@ -264,8 +334,8 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
               name={`leg-${index}-arrive-from`}
               description="Only trains reaching the destination at or after this time."
               value={leg.arriveFrom}
-              onChange={(v) => updateLeg(index, { arriveFrom: v })}
-              onIncompleteChange={() => {}}
+              onChange={(v) => updateLeg(leg.key, { arriveFrom: v })}
+              onIncompleteChange={(v) => setLegIncomplete(leg.key, 'arriveFrom', v)}
               error={null}
             />
             <TimeFilterInput
@@ -273,8 +343,8 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
               name={`leg-${index}-arrive-to`}
               description="Only trains reaching the destination at or before this time."
               value={leg.arriveTo}
-              onChange={(v) => updateLeg(index, { arriveTo: v })}
-              onIncompleteChange={() => {}}
+              onChange={(v) => updateLeg(leg.key, { arriveTo: v })}
+              onIncompleteChange={(v) => setLegIncomplete(leg.key, 'arriveTo', v)}
               error={null}
             />
           </Group>
