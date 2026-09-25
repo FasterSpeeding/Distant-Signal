@@ -91,7 +91,16 @@ async fn get_station_schedule_departures(
     State(app): State<App>,
     Path(crs): Path<String>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    let today = chrono::Utc::now().date_naive();
+    // `today` is London-local, not UTC -- see `routes::trains`'s
+    // `london_now`/`today` split (baa4e75) for the original incident this
+    // mirrors: during the 00:00-01:00 BST window, `Utc::now().date_naive()`
+    // is still yesterday in London, so a UTC "today" served yesterday's
+    // CIF-derived schedule (or 404'd) for the first hour of every service
+    // day. `schedule_network_departures` is keyed by London rail-day date,
+    // never UTC, so the lookup key must be computed the same way.
+    let today = chrono::Utc::now()
+        .with_timezone(&chrono_tz::Europe::London)
+        .date_naive();
     let Some(departures) = queries::latest_schedule_network_departures(&app.database, &crs, today)
         .await
         .map_err(internal_error)?
@@ -484,6 +493,75 @@ mod db_tests {
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         delete_schedule_departures_fixture(&pool, "ZQY").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_uses_london_local_today_not_bare_utc() {
+        // Regression for the 19-pass review's Medium finding: this route
+        // used to key its lookup off `chrono::Utc::now().date_naive()`,
+        // exactly the bug `routes::trains`'s `london_now` split (baa4e75)
+        // already fixed for `/trains/search` -- during the roughly-hour-
+        // long window where UTC's calendar day still lags London's (every
+        // night of British Summer Time, 23:00-00:00 UTC = 00:00-01:00
+        // London), a bare-UTC "today" is one day behind, so this route
+        // served yesterday's CIF-derived schedule or 404'd for the first
+        // hour of every service day.
+        let pool = connect().await;
+        delete_schedule_departures_fixture(&pool, "ZQW").await;
+
+        let utc_today = chrono::Utc::now().date_naive();
+        let london_today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+
+        if utc_today == london_today {
+            // Outside the UTC/London date-boundary gap right now -- the
+            // two clocks agree on the calendar day, so a route reverted to
+            // bare UTC would compute the exact same date this test just
+            // computed and the assertion below would pass either way.
+            // Nothing this test COULD discriminate in that window; see
+            // `routes::trains::tests::trains_search_hides_a_departure_inside_the_utc_vs_london_gap`
+            // for the identical, established skip pattern. True no-op, not
+            // lost coverage.
+            return;
+        }
+
+        // Inside the gap: seed a row keyed ONLY by the wrong, bare-UTC
+        // date. If the route regresses to `Utc::now().date_naive()` it
+        // will find this row and return 200; the fix must 404 instead,
+        // since there is no row for the correct London-local date.
+        sqlx::query(
+            "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZQW', $1, '[]')",
+        )
+        .bind(utc_today)
+        .execute(&pool)
+        .await
+        .expect("seed a bare-UTC-dated fixture row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZQW/schedule-departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a row keyed by bare UTC \"today\" must not satisfy a London-local \"today\" \
+             lookup during the UTC/London date gap; if this fails, the route has regressed \
+             to `Utc::now().date_naive()`"
+        );
+
+        delete_schedule_departures_fixture(&pool, "ZQW").await;
     }
 
     #[tokio::test]
