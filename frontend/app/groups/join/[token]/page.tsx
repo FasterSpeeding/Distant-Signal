@@ -30,12 +30,31 @@ export const revalidate = 0;
  * for this path). An unfurler bot seeing generic site metadata instead of
  * a group-specific preview is a fine, minor degradation; a human visitor
  * silently losing the explanation this page exists to give them is not. */
+/** A real invite-link token is `crate::auth::generate_session_token()`'s
+ * own shape -- 32 random bytes, base64url (`URL_SAFE_NO_PAD`) encoded
+ * (`crates/api/src/data/groups.rs`'s `create_invite_link`). Checked BEFORE
+ * `token` ever reaches `getGroupJoinPreview`/`getGroup` below, both of
+ * which interpolate it unencoded into their target URL (`lib/api.ts`) -- a
+ * malformed value could otherwise redirect one of those fetches (one of
+ * them cookie-bearing, via `getGroup`) somewhere this route never
+ * intended. Treated exactly like an unknown/expired invite link (the same
+ * fallback each caller below already has for `ApiNotFoundError`), not as a
+ * distinct case -- a malformed token and one that just doesn't resolve
+ * read as the same fact to a visitor either way. */
+function isValidInviteToken(token: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(token);
+}
+
 export async function generateMetadata({
   params,
 }: {
   params: Promise<{ token: string }>;
 }): Promise<Metadata> {
   const { token } = await params;
+
+  if (!isValidInviteToken(token)) {
+    return {};
+  }
 
   let preview;
   try {
@@ -89,6 +108,15 @@ export async function generateMetadata({
  * anything, and the call would just throw its own `401`. */
 export default async function JoinGroupPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
+
+  if (!isValidInviteToken(token)) {
+    return (
+      <Stack p="lg" gap="md">
+        <Title order={1}>Invite link not found</Title>
+        <Alert color="red">This invite link is invalid or has expired. Ask the group for a new one.</Alert>
+      </Stack>
+    );
+  }
 
   let preview;
   try {

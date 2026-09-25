@@ -69,6 +69,28 @@ describe('GroupDetailPage', () => {
     expect(await screen.findByText('Group not found')).toBeInTheDocument();
   });
 
+  // Finding 3 of the 2026-09-24 security review: a malformed id (a `../`
+  // segment, an embedded `?`/`#`) used to reach `getGroup` -- which
+  // forwards the ambient session cookie -- completely unvalidated. This id
+  // shape check must reject it before `getGroup` is ever called at all.
+  it('shows the same not-found message for a malformed id, without ever calling getGroup', async () => {
+    // `getGroup` isn't reset by the shared `beforeEach` above (only its
+    // resolved/rejected value is set per test), so its call count carries
+    // over from earlier tests in this file -- clear it here so this
+    // assertion is about THIS test's render, not the whole file's history.
+    vi.mocked(getGroup).mockClear();
+    renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: '../secret' }) }));
+    expect(await screen.findByText('Group not found')).toBeInTheDocument();
+    expect(getGroup).not.toHaveBeenCalled();
+  });
+
+  it('accepts a real-shaped base64url group id (regression: valid ids must still work)', async () => {
+    vi.mocked(getGroup).mockRejectedValue(new ApiNotFoundError('404'));
+    const realShapedId = 'AbCd12_-34EfGh56IjKl78MnOp90QrSt12UvWx34Yz';
+    await GroupDetailPage({ params: Promise.resolve({ id: realShapedId }) });
+    expect(getGroup).toHaveBeenCalledWith(realShapedId);
+  });
+
   it('renders the group name, members, and shared trains', async () => {
     vi.mocked(getGroup).mockResolvedValue({
       id: 'grp-1',
