@@ -651,22 +651,46 @@ pub async fn add_window_leg_to_journey(
 }
 
 /// Binds (or re-binds) a leg to a real train working -- the `manual`-mode
-/// commit route's data function (design doc §2.3), reused UNCHANGED for
-/// both a leg's first pick and any later "Change train" re-pick: this is
-/// always a plain `UPDATE`, never a new `journey_legs` row, per the
-/// 2026-09-22 addendum's explicit decision that the leg's OLD
-/// `train_subscription_id` is simply orphaned from the leg once
-/// overwritten -- left exactly as today's `delete_tracked_train`/re-pin
-/// flows already leave an unreferenced row, no extra cleanup here. The
-/// leg's `depart_*`/`arrive_*` window is deliberately left untouched by
-/// this `UPDATE` -- it is what makes a later "Change train" possible at
-/// all (design doc §1.1/§2.3).
+/// commit route's data function (design doc §2.3), reused for both a leg's
+/// first pick and any later "Change train" re-pick: this is always a plain
+/// `UPDATE`, never a new `journey_legs` row. The leg's `depart_*`/
+/// `arrive_*` window is deliberately left untouched by this `UPDATE` -- it
+/// is what makes a later "Change train" possible at all (design doc
+/// §1.1/§2.3).
 ///
-/// Ownership-scoped via the same `journeys j` join `get_owned_leg` uses,
-/// folded directly into the `UPDATE` (not re-derived from a prior read
-/// alone) -- same paranoia as every other ownership-scoped write in this
-/// codebase. Returns `true` if a row was updated, `false` for "no such
-/// leg, or not this caller's" (the route maps this to `404`, never `403`).
+/// 2026-09-22 addendum's original decision that the leg's OLD
+/// `train_subscription_id` is simply orphaned once overwritten -- left
+/// exactly as `delete_tracked_train`/re-pin flows already leave an
+/// unreferenced row -- turned out to be a real bug, not merely a cosmetic
+/// leftover: 2026-09 security/bug review finding (Medium). An orphaned
+/// `train_subscriptions` row is NOT inert -- `notifier`'s
+/// `candidates_for_trains_id` fans out to every row in `train_subscriptions`
+/// for a given `trains_id` regardless of whether any `journey_legs` row
+/// still references it, so a "Change train" re-pick left the OLD
+/// subscription fully live: still `notifications_enabled`, still pushing
+/// notifications for a train the user is no longer tracking via this leg.
+/// Fixed here by deactivating the old subscription (`notifications_enabled
+/// = FALSE`, not a `DELETE` -- deleting would cascade through
+/// `tracked_train_tickets ... ON DELETE CASCADE`
+/// (`20260829090000_journey_ticket_tracking.sql`) and silently destroy any
+/// ticket the user attached to that subscription while it was still this
+/// leg's active train) whenever it becomes unreferenced by this update --
+/// but ONLY then: `create_subscription_for_train` is idempotent per
+/// `(user_id, trains_id)`, so the SAME `train_subscriptions` row can
+/// legitimately be shared by more than one leg, and deactivating it out
+/// from under a leg that still needs it would be its own bug. `notifier`'s
+/// own `candidates_for_trains_id` query was updated in the same review to
+/// actually filter on `notifications_enabled` -- until that fix, the
+/// column existed but nothing ever read it.
+///
+/// Runs as one transaction (a read of the leg's CURRENT
+/// `train_subscription_id`, ownership-scoped and row-locked via `FOR
+/// UPDATE`, then the `UPDATE`, then the conditional deactivation) --
+/// mirrors `delete_leg`'s own read-then-write-in-one-transaction shape
+/// immediately below, needed here for the same reason: the OLD value has
+/// to be read before it's overwritten, and the ownership check must cover
+/// both. Returns `true` if the leg was updated, `false` for "no such leg,
+/// or not this caller's" (the route maps this to `404`, never `403`).
 pub async fn set_leg_train_subscription(
     pool: &PgPool,
     journey_id: i64,
@@ -674,19 +698,57 @@ pub async fn set_leg_train_subscription(
     user_id: &str,
     train_subscription_id: i64,
 ) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
+
+    let owned: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT jl.train_subscription_id FROM journey_legs jl \
+         JOIN journeys j ON j.id = jl.journey_id \
+         WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3 \
+         FOR UPDATE OF jl",
+    )
+    .bind(leg_id)
+    .bind(journey_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((old_train_subscription_id,)) = owned else {
+        return Ok(false);
+    };
+
     let result = sqlx::query(
         "UPDATE journey_legs SET train_subscription_id = $1, match_mode = 'manual' \
-         FROM journeys j \
-         WHERE journey_legs.id = $2 AND journey_legs.journey_id = $3 \
-           AND j.id = journey_legs.journey_id AND j.user_id = $4",
+         WHERE journey_legs.id = $2 AND journey_legs.journey_id = $3",
     )
     .bind(train_subscription_id)
     .bind(leg_id)
     .bind(journey_id)
-    .bind(user_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(result.rows_affected() > 0)
+    if result.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    if let Some(old_id) = old_train_subscription_id
+        && old_id != train_subscription_id
+    {
+        let (still_referenced,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM journey_legs WHERE train_subscription_id = $1)",
+        )
+        .bind(old_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !still_referenced {
+            sqlx::query(
+                "UPDATE train_subscriptions SET notifications_enabled = FALSE WHERE id = $1",
+            )
+            .bind(old_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Removes one leg from a journey the caller owns -- the 2026-09-22 UX
@@ -1585,7 +1647,132 @@ mod db_tests {
         assert_eq!(leg.train_subscription_id, Some(second_tracking_id));
         assert_eq!(leg.depart_after, Some("08:00:00".parse().unwrap()));
 
+        // 2026-09 review finding (Medium): the OLD subscription, now
+        // unreferenced by any leg, must be deactivated -- not left fully
+        // live to keep generating notifications for a train this leg no
+        // longer tracks.
+        assert!(
+            !notifications_enabled_of(&pool, first_tracking_id).await,
+            "the orphaned old subscription must be deactivated"
+        );
+        assert!(
+            notifications_enabled_of(&pool, second_tracking_id).await,
+            "the new, currently-referenced subscription must stay active"
+        );
+
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT").await;
+    }
+
+    async fn notifications_enabled_of(pool: &PgPool, train_subscription_id: i64) -> bool {
+        sqlx::query_scalar("SELECT notifications_enabled FROM train_subscriptions WHERE id = $1")
+            .bind(train_subscription_id)
+            .fetch_one(pool)
+            .await
+            .expect("read notifications_enabled")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                set_leg_train_subscription -- --ignored --test-threads=1`"]
+    async fn set_leg_train_subscription_does_not_deactivate_a_still_shared_old_subscription() {
+        // The old subscription being replaced can legitimately still be
+        // referenced by a DIFFERENT leg -- `create_subscription_for_train`
+        // is idempotent per `(user_id, trains_id)`, so two legs can share
+        // one `train_subscriptions` row. Re-picking one leg's train must
+        // not deactivate notifications for the OTHER leg still relying on
+        // the shared subscription.
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-COMMIT-SHARED").await;
+        let (journey_id, leg_id) = create_journey_with_window_leg(
+            &pool,
+            "TEST-JOURNEY-COMMIT-SHARED",
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create first window leg");
+        let (_journey_id_two, other_leg_id) = create_journey_with_window_leg(
+            &pool,
+            "TEST-JOURNEY-COMMIT-SHARED",
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("09:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create second window leg (separate journey)");
+
+        let shared_tracking_id = crate::data::train_tracking::create_pin(
+            &pool,
+            &fixture_pin("WAT"),
+            "TEST-JOURNEY-COMMIT-SHARED",
+        )
+        .await
+        .expect("seed the shared candidate subscription");
+
+        assert!(
+            set_leg_train_subscription(
+                &pool,
+                journey_id,
+                leg_id,
+                "TEST-JOURNEY-COMMIT-SHARED",
+                shared_tracking_id,
+            )
+            .await
+            .expect("bind first leg to the shared subscription")
+        );
+        assert!(
+            set_leg_train_subscription(
+                &pool,
+                _journey_id_two,
+                other_leg_id,
+                "TEST-JOURNEY-COMMIT-SHARED",
+                shared_tracking_id,
+            )
+            .await
+            .expect("bind second leg to the SAME shared subscription")
+        );
+
+        // "Change train" on the FIRST leg only -- the second leg still
+        // points at `shared_tracking_id`.
+        let new_tracking_id = crate::data::train_tracking::create_pin(
+            &pool,
+            &fixture_pin("WAT"),
+            "TEST-JOURNEY-COMMIT-SHARED",
+        )
+        .await
+        .expect("seed a replacement subscription");
+        assert!(
+            set_leg_train_subscription(
+                &pool,
+                journey_id,
+                leg_id,
+                "TEST-JOURNEY-COMMIT-SHARED",
+                new_tracking_id,
+            )
+            .await
+            .expect("re-pick the first leg's train")
+        );
+
+        assert!(
+            notifications_enabled_of(&pool, shared_tracking_id).await,
+            "the shared subscription is still referenced by the OTHER leg -- must stay active"
+        );
+
+        cleanup_user(&pool, "TEST-JOURNEY-COMMIT-SHARED").await;
     }
 
     #[tokio::test]
