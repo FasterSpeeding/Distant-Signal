@@ -151,11 +151,19 @@ export function JourneyLegCard({
 }) {
   const router = useRouter();
   const [changingTrain, setChangingTrain] = useState(false);
-  const hasWindow =
-    leg.departAfter !== null ||
-    leg.departBefore !== null ||
-    leg.arriveAfter !== null ||
-    leg.arriveBefore !== null;
+  // Backend security/bug review fix (journeys area, Medium finding 1): this
+  // used to be derived from the four window bounds directly (`departAfter
+  // !== null || ...`), which could never tell "this leg was deliberately
+  // created with a fully-open, any-train-any-time search window" apart
+  // from "this leg was never window-searched at all" -- both leave every
+  // bound `null`. A time-flexible template leg (all four bounds
+  // intentionally left unset -- see
+  // `journey_templates::validate_template_leg`'s own doc comment) used to
+  // permanently lose "Change train" the moment it was first matched, with
+  // no recovery except removing the leg outright. `windowSearched` is now
+  // recorded server-side, at leg-creation time, precisely to make that
+  // distinction -- see `JourneyLegDetail.windowSearched`'s own doc comment.
+  const hasWindow = leg.windowSearched;
 
   if (leg.trackedTrainState === null) {
     // Review §2.5/I27 + review finding 2.9 (the two branches reached the

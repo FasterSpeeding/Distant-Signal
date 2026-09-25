@@ -115,6 +115,13 @@ function baseLeg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
     arriveAfter: null,
     arriveBefore: null,
     matchMode: 'manual',
+    // `false` by default -- matches a `pin`/`knownTrain`-mode leg with no
+    // window at all. Individual tests below pass `windowSearched: true`
+    // alongside a window-bound override wherever the fixture is meant to
+    // represent a real window search (see `JourneyLegDetail.windowSearched`'s
+    // own doc comment: this is what `hasWindow` reads now, not the raw
+    // bounds).
+    windowSearched: false,
     trackedTrainState: trackedState(),
     legSkip: null,
     ...overrides,
@@ -158,10 +165,31 @@ describe('JourneyLegCard', () => {
   // via the time-window search flow) with no way to be removed outright.
   it('shows both "Change train" AND "Remove leg" for a matched, windowed, owner-viewed leg', () => {
     renderWithMantine(
-      <JourneyLegCard journeyId={167} leg={baseLeg({ departAfter: '18:00:00' })} isOwner isOnlyLeg={false} />,
+      <JourneyLegCard
+        journeyId={167}
+        leg={baseLeg({ departAfter: '18:00:00', windowSearched: true })}
+        isOwner
+        isOnlyLeg={false}
+      />,
     );
     expect(screen.getByRole('button', { name: 'Change train' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove leg' })).toBeInTheDocument();
+  });
+
+  // Regression test for the 19-pass security/bug review's journeys-area
+  // Medium finding 1: a template leg with ALL FOUR window bounds
+  // deliberately left unset (a fully-open "any train, any time" search --
+  // `journey_templates::validate_template_leg`'s own doc comment) is
+  // byte-for-byte the same bounds shape as a `pin`/`knownTrain`-mode leg
+  // that never had a window at all. Before this fix, `hasWindow` was
+  // derived purely from those four bounds, so once such a leg was first
+  // matched, "Change train" vanished permanently. `windowSearched` now
+  // carries that distinction independently of the bounds themselves.
+  it('shows "Change train" for a matched leg with an intentionally fully-open window (no bounds, windowSearched true)', () => {
+    renderWithMantine(
+      <JourneyLegCard journeyId={167} leg={baseLeg({ windowSearched: true })} isOwner isOnlyLeg={false} />,
+    );
+    expect(screen.getByRole('button', { name: 'Change train' })).toBeInTheDocument();
   });
 
   // A no-window leg (a direct pin/known-train pick) has nothing to
@@ -193,7 +221,12 @@ describe('JourneyLegCard', () => {
 
   it('clicking "Change train" toggles the candidate picker open', () => {
     renderWithMantine(
-      <JourneyLegCard journeyId={167} leg={baseLeg({ departAfter: '18:00:00' })} isOwner isOnlyLeg={false} />,
+      <JourneyLegCard
+        journeyId={167}
+        leg={baseLeg({ departAfter: '18:00:00', windowSearched: true })}
+        isOwner
+        isOnlyLeg={false}
+      />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Change train' }));
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();

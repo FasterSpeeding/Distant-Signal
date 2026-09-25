@@ -81,11 +81,22 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
 /// resolved by the route handler's `AuthenticatedUser` extractor
 /// (`crates/api/src/routes/train.rs::post_track`, below), never taken from
 /// the request body itself.
-pub async fn create_pin(
-    pool: &PgPool,
+///
+/// Generic over `E: PgExecutor` (rather than `&PgPool`) -- same reason as
+/// `aggregator::queries::record_daily_stats`'s own doc comment: it lets
+/// `journeys::create_journey_with_pin_leg` call this with `&mut *tx` from
+/// inside its own transaction (19-pass security/bug review, journeys area,
+/// Medium finding 3), while every standalone caller (`routes::train::post_track`
+/// and this module's own tests) keeps passing a bare `&PgPool` unchanged --
+/// `&PgPool` implements `PgExecutor<'_>` too.
+pub async fn create_pin<'c, E>(
+    executor: E,
     pin: &TrackPinRequest,
     user_id: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO train_subscriptions \
             (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
@@ -102,7 +113,7 @@ pub async fn create_pin(
     .bind(&pin.skipped_stations)
     .bind(&pin.platform)
     .bind(&pin.planned_platform)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
 
     Ok(row.0)
@@ -199,11 +210,19 @@ pub async fn create_pin(
 /// closes that one the way every other mutating control in this app does,
 /// by disabling the button while its request is in flight
 /// (`frontend/components/TrackThisTrainButton.tsx`).
-pub async fn create_subscription_for_train(
-    pool: &PgPool,
+/// Generic over `E: PgExecutor` (rather than `&PgPool`) -- same reason as
+/// [`create_pin`]'s own doc comment: `journeys::create_journey_with_known_train_leg`
+/// calls this with `&mut *tx` from inside its own transaction (19-pass
+/// security/bug review, journeys area, Medium finding 3), while every
+/// standalone caller keeps passing a bare `&PgPool` unchanged.
+pub async fn create_subscription_for_train<'c, E>(
+    executor: E,
     trains_id: i64,
     user_id: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     // One statement, not a SELECT-then-INSERT round trip: the `inserted`
     // CTE's `NOT EXISTS (SELECT 1 FROM existing)` guard means the INSERT
     // never fires when a subscription is already there, and the final
@@ -228,7 +247,7 @@ pub async fn create_subscription_for_train(
     )
     .bind(user_id)
     .bind(trains_id)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
     Ok(row.0)
 }
