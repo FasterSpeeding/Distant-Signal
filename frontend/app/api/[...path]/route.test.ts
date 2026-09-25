@@ -1,6 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { GET, POST, PUT } from './route';
+
+// `getSiteOrigin()` (lib/siteOrigin.ts) -- used by this proxy's own new
+// Origin check on mutating methods -- reads `next/headers` when
+// `NEXT_PUBLIC_SITE_URL` isn't set. There is no Next request context in a
+// unit test (same stub shape `app/connect-claude/authorize/route.test.ts`'s
+// own `next/headers` mock uses). Left empty by default: with no `host`
+// header, `getSiteOrigin()` falls back to `http://localhost:3000` --
+// exactly the origin every request below is already built against, so
+// every pre-existing test needs no changes; only the tests below that care
+// about a *different* real origin set `host` explicitly.
+const incomingHeaders = new Map<string, string>();
+vi.mock('next/headers', () => ({
+  headers: async () => ({
+    get: (name: string) => incomingHeaders.get(name) ?? null,
+  }),
+}));
+
+import { GET, POST, PUT, DELETE } from './route';
 
 describe('/api/[...path] proxy', () => {
   beforeEach(() => {
@@ -20,6 +37,7 @@ describe('/api/[...path] proxy', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    incomingHeaders.clear();
   });
 
   // Typed off NextRequest's own constructor rather than the DOM lib's
@@ -190,5 +208,118 @@ describe('/api/[...path] proxy', () => {
     const forwardedBody = new TextDecoder().decode((init as { body: ArrayBuffer }).body);
     expect(forwardedHeaders['Content-Type']).toBe('application/json');
     expect(forwardedBody).toBe(JSON.stringify(['wcml']));
+  });
+
+  // Finding 5 of the 2026-09-24 security review: every browser mutation
+  // through this app (creating a group, promoting a member, generating a
+  // share link, logging out -- roughly 50 call sites) relied solely on the
+  // backend's `SameSite=Lax` session cookie for CSRF protection, with this
+  // proxy doing no Origin verification of its own before forwarding a
+  // POST/PUT/DELETE. Mirrors the Origin check
+  // `app/connect-claude/authorize/route.ts` already carries for its own
+  // single state-changing POST, applied here at the shared-proxy level.
+  describe('Origin check on mutating methods', () => {
+    it('403s a POST whose Origin does not match this app\'s real public origin', async () => {
+      const req = makeRequest('/api/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://evil.example.com' },
+        body: '{}',
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(403);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('403s a PUT whose Origin does not match', async () => {
+      const req = makeRequest('/api/preferences/pinned-lines', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', origin: 'https://evil.example.com' },
+        body: '[]',
+      });
+      const res = await PUT(req, { params: Promise.resolve({ path: ['preferences', 'pinned-lines'] }) });
+      expect(res.status).toBe(403);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('403s a DELETE whose Origin does not match', async () => {
+      const req = makeRequest('/api/Train/1', {
+        method: 'DELETE',
+        headers: { origin: 'https://evil.example.com' },
+      });
+      const res = await DELETE(req, { params: Promise.resolve({ path: ['Train', '1'] }) });
+      expect(res.status).toBe(403);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('accepts a POST whose Origin matches this app\'s real public origin', async () => {
+      const req = makeRequest('/api/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:3000' },
+        body: '{}',
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(200);
+      expect(fetch).toHaveBeenCalled();
+    });
+
+    // Not every legitimate same-origin request sends an Origin header
+    // (and this proxy has no CSRF-token convention to fall back on to
+    // require one) -- see `hasAcceptableOriginForMutation`'s own doc
+    // comment. Also the exact regression shape every pre-existing
+    // POST/PUT/DELETE test above already relies on (none of them set an
+    // Origin header at all).
+    it('accepts a POST with no Origin header at all', async () => {
+      const req = makeRequest('/api/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(200);
+      expect(fetch).toHaveBeenCalled();
+    });
+
+    // A GET is never subject to this check at all, matching header,
+    // mismatched header, or none.
+    it('never blocks a GET, regardless of Origin', async () => {
+      const req = makeRequest('/api/preferences', {
+        headers: { origin: 'https://evil.example.com' },
+      });
+      const res = await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(200);
+    });
+
+    // Regression for the same underlying bug Finding 1 describes for
+    // `connect-claude/authorize/route.ts`: this app's real public origin
+    // (from the `Host`/`X-Forwarded-Proto` headers `getSiteOrigin()`
+    // reads) can legitimately differ from `req.nextUrl.origin` (this
+    // app's bare bound host under plain `next start`) -- a mutating
+    // request whose Origin matches the REAL origin must be accepted even
+    // though it does not match `req.nextUrl.origin`.
+    it("accepts a POST whose real public origin (Host header) differs from req.nextUrl.origin", async () => {
+      incomingHeaders.set('host', 'ds.cursed.solutions');
+      incomingHeaders.set('x-forwarded-proto', 'https');
+      const req = makeRequest('/api/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://ds.cursed.solutions' },
+        body: '{}',
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(200);
+      expect(fetch).toHaveBeenCalled();
+    });
+
+    it('403s a POST whose Origin matches req.nextUrl.origin but not the real public origin', async () => {
+      incomingHeaders.set('host', 'ds.cursed.solutions');
+      incomingHeaders.set('x-forwarded-proto', 'https');
+      const req = makeRequest('/api/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:3000' },
+        body: '{}',
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(403);
+      expect(fetch).not.toHaveBeenCalled();
+    });
   });
 });

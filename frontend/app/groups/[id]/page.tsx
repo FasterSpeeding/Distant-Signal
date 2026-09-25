@@ -50,8 +50,35 @@ export const revalidate = 0;
  * un-sharing a train. This is presentational only -- the backend is still
  * the authority and refuses any of these regardless -- but showing a user
  * a button whose only possible outcome is a 403/404 is its own bug. */
+/** A real group id is `crate::auth::generate_session_token()`'s own
+ * shape -- 32 random bytes, base64url (`URL_SAFE_NO_PAD`) encoded
+ * (`crates/api/src/data/groups.rs`'s `create_group`) -- so this charset is
+ * exactly what a genuine id can ever contain. Checked BEFORE `id` ever
+ * reaches `getGroup`/`getGroupMembers`/etc below, all of which forward the
+ * ambient session cookie straight through to the backend
+ * (`cookieForwardInit()`, `lib/api.ts`) and interpolate `id` into the
+ * target URL unencoded -- a malformed value (a `../` segment, an embedded
+ * `?`/`#`) could otherwise redirect one of those cookie-bearing fetches
+ * somewhere this route never intended. Defense in depth alongside a
+ * separate encoding fix in `lib/api.ts` itself; this is the "never even
+ * build the request" half. Same posture `app/journeys/[id]/page.tsx` takes
+ * with its own `/^\d+$/` numeric check -- this route's id just isn't
+ * numeric, so the allowed charset differs. */
+function isValidGroupId(id: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(id);
+}
+
 export default async function GroupDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+
+  if (!isValidGroupId(id)) {
+    return (
+      <Stack p="lg" gap="md">
+        <Title order={1}>Group not found</Title>
+        <Text c="dimmed">This group doesn&apos;t exist, or you&apos;re not a member of it.</Text>
+      </Stack>
+    );
+  }
 
   let group;
   try {

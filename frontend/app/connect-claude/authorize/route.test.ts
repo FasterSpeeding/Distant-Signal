@@ -1,5 +1,23 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
+
+// `getSiteOrigin()` (lib/siteOrigin.ts) -- now used by both this route's
+// Origin/Referer CSRF check and its logged-out login redirect -- reads
+// `next/headers` when `NEXT_PUBLIC_SITE_URL` isn't set. There is no Next
+// request context in a unit test (same stub shape
+// `app/groups/[id]/page.test.tsx`'s own `next/headers` mock uses). Left
+// empty by default rather than pre-populated: with no `host` header,
+// `getSiteOrigin()` falls back to `http://localhost:3000` -- exactly the
+// origin every request below is already built against, so most existing
+// tests need no changes at all; only the tests that care about a
+// *different* real origin below set `host` explicitly.
+const incomingHeaders = new Map<string, string>();
+vi.mock('next/headers', () => ({
+  headers: async () => ({
+    get: (name: string) => incomingHeaders.get(name) ?? null,
+  }),
+}));
+
 import { GET, POST } from './route';
 
 // Typed off NextRequest's own constructor rather than the DOM lib's
@@ -28,10 +46,23 @@ describe('GET /connect-claude/authorize', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    incomingHeaders.clear();
   });
 
   it('400s when mcp_request_id is missing', async () => {
     const req = makeRequest('/connect-claude/authorize');
+    const res = await GET(req);
+    expect(res.status).toBe(400);
+  });
+
+  // Regression for Finding 4 of the 2026-09-24 security review:
+  // `mcp_request_id` used to reach the `railMcp`
+  // `/internal/pending-authorization/{id}` URL (carrying
+  // `X-Internal-Complete-Token`) completely unvalidated -- a crafted value
+  // containing `../` could redirect that internal fetch to an
+  // attacker-chosen path on the internal host.
+  it('400s when mcp_request_id contains characters outside its allowed shape', async () => {
+    const req = makeRequest('/connect-claude/authorize?mcp_request_id=' + encodeURIComponent('../evil'));
     const res = await GET(req);
     expect(res.status).toBe(400);
   });
@@ -44,6 +75,23 @@ describe('GET /connect-claude/authorize', () => {
     expect(location).toContain('/api/auth/login?return_to=');
     const returnTo = decodeURIComponent(new URL(location).searchParams.get('return_to')!);
     expect(returnTo).toBe('/connect-claude/authorize?mcp_request_id=req1');
+  });
+
+  // Regression for Finding 1/2 of the 2026-09-24 security review: this
+  // redirect used to be built from `req.url`, which resolves against
+  // `req.nextUrl.origin` -- always this app's bare bound host under plain
+  // `next start` (effectively `http://localhost:3000`), never the real
+  // public origin a reverse-proxied deployment is actually served from.
+  // Every logged-out visitor's browser was sent to
+  // `https://localhost:3000/api/auth/login?...` instead of the real host.
+  it("redirects to the app's real public origin (from the Host header), not req.url's bare bound host", async () => {
+    incomingHeaders.set('host', 'ds.cursed.solutions');
+    incomingHeaders.set('x-forwarded-proto', 'https');
+    const req = makeRequest('/connect-claude/authorize?mcp_request_id=req1');
+    const res = await GET(req);
+    expect(res.status).toBe(307);
+    const location = res.headers.get('location')!;
+    expect(location.startsWith('https://ds.cursed.solutions/api/auth/login?')).toBe(true);
   });
 
   it('renders a consent screen naming the requesting client when a session cookie is present', async () => {
@@ -127,6 +175,7 @@ describe('POST /connect-claude/authorize', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    incomingHeaders.clear();
   });
 
   function postRequest(
@@ -184,6 +233,64 @@ describe('POST /connect-claude/authorize', () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(307);
+  });
+
+  // Regression for Finding 1 of the 2026-09-24 security review, and the
+  // actual production bug: this check used to compare `Origin` against
+  // `req.nextUrl.origin`, which under plain `next start` (no explicit
+  // host/`trustHostHeader` config) is always this app's bare bound host --
+  // NOT the real public origin a reverse-proxied deployment is served
+  // from. A real browser's `Origin: https://ds.cursed.solutions` never
+  // matched `req.nextUrl.origin` (effectively `http://localhost:3000`),
+  // so every genuine Approve/Deny POST was rejected with a 403. Here,
+  // `req`'s own base URL stays `http://localhost:3000` (`postRequest`
+  // above builds every request against it, same as the rest of this
+  // suite) while the `Host`/`X-Forwarded-Proto` headers `getSiteOrigin()`
+  // reads say the real origin is `https://ds.cursed.solutions` -- exactly
+  // the shape a reverse-proxied production request actually has. A POST
+  // whose Origin matches that REAL origin must be accepted, not rejected.
+  it('accepts a same-origin POST whose real public origin (Host header) differs from req.nextUrl.origin', async () => {
+    incomingHeaders.set('host', 'ds.cursed.solutions');
+    incomingHeaders.set('x-forwarded-proto', 'https');
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {
+      origin: 'https://ds.cursed.solutions',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(307);
+  });
+
+  it('403s a POST whose Origin matches req.nextUrl.origin but not the real public origin', async () => {
+    incomingHeaders.set('host', 'ds.cursed.solutions');
+    incomingHeaders.set('x-forwarded-proto', 'https');
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {
+      origin: 'http://localhost:3000',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+  });
+
+  // Regression for Finding 4: same shape check GET already carries,
+  // applied to POST's own read of the same query param.
+  it('400s when mcp_request_id contains characters outside its allowed shape', async () => {
+    const req = new NextRequest(
+      `http://localhost:3000/connect-claude/authorize?mcp_request_id=${encodeURIComponent('../evil')}`,
+      {
+        method: 'POST',
+        headers: new Headers({
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: 'http://localhost:3000',
+          cookie: 'distant_signal_session=raw-token-value',
+        }),
+        body: new URLSearchParams({ decision: 'approve' }).toString(),
+      },
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(400);
   });
 
   it('on approval, forwards the RAW session cookie value to /internal/complete-authorization and redirects to the returned URL', async () => {

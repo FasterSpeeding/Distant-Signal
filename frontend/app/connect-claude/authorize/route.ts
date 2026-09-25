@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getSiteOrigin } from '@/lib/siteOrigin';
 
 // SESSION_COOKIE_NAME, crates/api/src/auth.rs:63 -- must match exactly. This
 // route is the one place in frontend/ that reads this cookie's raw value
@@ -40,16 +41,30 @@ function internalCompleteToken(): string {
  * Origin is absent, and refusing to guess when neither is present), the
  * standard OWASP-recommended Origin check for a state-changing handler like
  * this one. There's no CSRF-token convention anywhere else in this
- * codebase to reuse instead. */
-function isSameOriginRequest(req: NextRequest): boolean {
+ * codebase to reuse instead.
+ *
+ * The "this app's own origin" it compares against is `getSiteOrigin()`
+ * (lib/siteOrigin.ts), NOT `req.nextUrl.origin`. This app is served via
+ * `next start` with no explicit host/`trustHostHeader` config, so
+ * `req.nextUrl.origin` is always derived from whatever bare host Next
+ * itself bound to (effectively `https://localhost:3000`-shaped), never the
+ * real public origin a browser's `Origin`/`Referer` header actually
+ * carries -- comparing against it made this check reject every real
+ * Approve/Deny POST, not just cross-site ones. `getSiteOrigin()` is this
+ * app's one existing answer to "what's our real public origin" (already
+ * used by `app/groups/[id]/page.tsx`/`app/journeys/[id]/page.tsx` for
+ * building shareable absolute links), so this reuses it rather than
+ * inventing a second way to resolve the same fact. */
+async function isSameOriginRequest(req: NextRequest): Promise<boolean> {
+  const expectedOrigin = await getSiteOrigin();
   const origin = req.headers.get('origin');
   if (origin !== null) {
-    return origin === req.nextUrl.origin;
+    return origin === expectedOrigin;
   }
   const referer = req.headers.get('referer');
   if (referer !== null) {
     try {
-      return new URL(referer).origin === req.nextUrl.origin;
+      return new URL(referer).origin === expectedOrigin;
     } catch {
       return false;
     }
@@ -59,6 +74,21 @@ function isSameOriginRequest(req: NextRequest): boolean {
   // (or at best a client this check can't vouch for) rather than let it
   // through.
   return false;
+}
+
+/** `mcp_request_id` is an opaque identifier this route both interpolates
+ * into an internal URL (the `railMcp` `pending-authorization` lookup below,
+ * carrying `X-Internal-Complete-Token`) and echoes back into a `return_to`
+ * redirect target. Neither use ever encodes/escapes it beyond this shape
+ * check, so an attacker-crafted value (`../`, an embedded `?`/`#`, etc.)
+ * could otherwise redirect that internal fetch to an attacker-chosen path
+ * on the `railMcp` host with the internal completion token attached, or
+ * corrupt the `return_to` query string. The real values this route ever
+ * generates or receives from `railMcp` are opaque request ids with no
+ * reason to contain anything outside this set, so this rejects anything
+ * else outright rather than trying to sanitise it. */
+function isValidMcpRequestId(value: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 /** Escapes the only untrusted value this page ever interpolates into HTML --
@@ -103,15 +133,30 @@ export async function GET(req: NextRequest) {
   if (!mcpRequestId) {
     return new NextResponse('missing mcp_request_id', { status: 400 });
   }
+  if (!isValidMcpRequestId(mcpRequestId)) {
+    return new NextResponse('invalid mcp_request_id', { status: 400 });
+  }
+
+  // This app's own real public origin, NOT `req.url` -- `req.url` is
+  // resolved off the same bare-localhost-shaped base `req.nextUrl.origin`
+  // is (see `isSameOriginRequest`'s doc comment above), so building the
+  // login redirect from it sent every logged-out visitor's browser to
+  // `https://localhost:3000/api/auth/login?...` instead of this
+  // deployment's real host.
+  const origin = await getSiteOrigin();
 
   const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!sessionCookie) {
     // Same login entry point every other authenticated page uses
     // (LoginLink.tsx) -- return_to is a plain relative path with a query
     // string, exactly the shape crates/api/src/auth.rs's validate_return_to
-    // already accepts.
-    const returnTo = `/connect-claude/authorize?mcp_request_id=${mcpRequestId}`;
-    return NextResponse.redirect(new URL(`/api/auth/login?return_to=${encodeURIComponent(returnTo)}`, req.url));
+    // already accepts. `mcpRequestId` is encoded here too (on top of the
+    // shape check above) purely as defense in depth -- it's already
+    // validated to a safe charset, but an unencoded id interpolated
+    // straight into a query string is still the wrong habit to leave in
+    // place next to `encodeURIComponent(returnTo)` just below it.
+    const returnTo = `/connect-claude/authorize?mcp_request_id=${encodeURIComponent(mcpRequestId)}`;
+    return NextResponse.redirect(new URL(`/api/auth/login?return_to=${encodeURIComponent(returnTo)}`, origin));
   }
 
   // Fetch the requesting client's display name (if DCR captured one) for
@@ -137,7 +182,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isSameOriginRequest(req)) {
+  if (!(await isSameOriginRequest(req))) {
     return new NextResponse('cross-site request rejected', { status: 403 });
   }
 
@@ -145,6 +190,9 @@ export async function POST(req: NextRequest) {
   const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!mcpRequestId || !sessionCookie) {
     return new NextResponse('invalid request', { status: 400 });
+  }
+  if (!isValidMcpRequestId(mcpRequestId)) {
+    return new NextResponse('invalid mcp_request_id', { status: 400 });
   }
   const form = await req.formData();
   const approved = form.get('decision') === 'approve';

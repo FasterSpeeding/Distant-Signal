@@ -94,6 +94,19 @@ describe('SharedJourneyPage', () => {
     expect(getJourney).not.toHaveBeenCalled();
   });
 
+  // Finding 3 of the 2026-09-24 security review: a malformed token (a
+  // `../` segment, an embedded `?`/`#`) used to reach
+  // `getJourneyByShareToken` completely unvalidated. Treated the same as
+  // an unknown/expired token -- the same "Link not found" copy -- but
+  // without ever calling the API at all.
+  it('renders "Link not found" for a malformed token, without ever calling getJourneyByShareToken', async () => {
+    await renderPage('../evil');
+
+    expect(screen.getByRole('heading', { name: 'Link not found' })).toBeInTheDocument();
+    expect(getJourneyByShareToken).not.toHaveBeenCalled();
+    expect(getJourney).not.toHaveBeenCalled();
+  });
+
   it('redirects to the canonical journey page when the viewer is already authorized', async () => {
     vi.mocked(getJourneyByShareToken).mockResolvedValue(sharedJourney({ id: 167 }));
     vi.mocked(getJourney).mockResolvedValue(sharedJourney({ id: 167, isOwner: true }));

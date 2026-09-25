@@ -17,7 +17,11 @@ vi.mock('@/lib/api', async () => {
     getLineDailyCoverageStats: vi.fn(),
   };
 });
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// `notFound` mocked as a no-op (the real one throws a Next-internal,
+// digest-carrying error that only framework machinery above the page
+// recognises) -- same convention `app/lines/[id]/page.test.tsx`/
+// `app/journeys/[id]/page.test.tsx` already use for the same function.
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }), notFound: vi.fn() }));
 // Same rationale as TrendsResults.test.tsx's own mock -- this repo's
 // convention is not to assert on Recharts' SVG output.
 vi.mock('@mantine/charts', () => ({
@@ -94,6 +98,22 @@ describe('LineHistoryPage', () => {
     expect(screen.getByRole('tab', { name: 'Timeline', selected: true })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Trends' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Back to line' })).toHaveAttribute('href', '/lines/c2c');
+  });
+
+  // Finding 3 of the 2026-09-24 security review: a malformed id (a `../`
+  // segment, an embedded `?`/`#`) used to reach `getLineStatus`/
+  // `getLineStatusHistory` completely unvalidated. This page has no
+  // existing "id doesn't exist" render of its own to reuse -- `notFound()`
+  // is the fallback, same convention `app/lines/[id]/page.tsx`'s own
+  // identical check uses.
+  it('calls notFound() for a malformed id, before this page renders anything', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    await LineHistoryPage({
+      params: Promise.resolve({ id: '../evil' }),
+      searchParams: Promise.resolve({}),
+    });
+    expect(notFound).toHaveBeenCalled();
   });
 
   // Review §2.11: the Timeline panel's Suspense fallback used to be a
