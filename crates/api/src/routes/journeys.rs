@@ -523,6 +523,23 @@ async fn post_journey(
     user: AuthenticatedUser,
     Json(body): Json<CreateJourneyRequest>,
 ) -> Result<Json<CreateJourneyResponse>, (StatusCode, String)> {
+    // 2026-09 Signal Box Audit Low finding: `body.custom_name` used to be
+    // passed straight through to `create_journey_with_*` (`as_deref()`,
+    // unvalidated) -- unlike every other custom-name write path in this
+    // codebase (`train_tracking::validate_custom_name`, called by both
+    // tracked-train/ticket rename routes; `routes::groups`'s
+    // `validate_group_name`, same cap). That let a whitespace-only name
+    // persist a leftover-looking blank, or a multi-megabyte name get
+    // written to `journeys.custom_name` (no `CHECK` constraint on that
+    // column) and echoed back to every group member who can see this
+    // journey (design doc §6). Reuses `train_tracking::validate_custom_name`
+    // directly rather than duplicating it -- a journey's custom name is
+    // optional exactly like a tracked train's, so its "blank clears the
+    // name" semantics apply here unchanged, and `common::CUSTOM_NAME_MAX_LENGTH`
+    // is the one cap this codebase already established for a free-text
+    // display name.
+    let custom_name = train_tracking::validate_custom_name(body.custom_name.as_deref())
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     match body.leg {
         CreateJourneyLegRequest::Pin {
             origin_crs,
@@ -558,7 +575,7 @@ async fn post_journey(
             let (journey_id, leg_id, tracking_id) = journeys::create_journey_with_pin_leg(
                 &app.database,
                 &user.id,
-                body.custom_name.as_deref(),
+                custom_name.as_deref(),
                 &pin,
             )
             .await
@@ -669,7 +686,7 @@ async fn post_journey(
             let (journey_id, leg_id, tracking_id) = journeys::create_journey_with_known_train_leg(
                 &app.database,
                 &user.id,
-                body.custom_name.as_deref(),
+                custom_name.as_deref(),
                 trains_id,
                 service_date,
                 origin_override.as_deref(),
@@ -715,7 +732,7 @@ async fn post_journey(
             let (journey_id, leg_id) = journeys::create_journey_with_window_leg(
                 &app.database,
                 &user.id,
-                body.custom_name.as_deref(),
+                custom_name.as_deref(),
                 &origin_crs.trim().to_ascii_uppercase(),
                 &destination_crs.trim().to_ascii_uppercase(),
                 service_date,
@@ -1898,6 +1915,89 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK);
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey -- --ignored --test-threads=1`"]
+    // 2026-09 Signal Box Audit Low finding regression: `POST /Journeys`'s
+    // `customName` used to be written straight through with no trim or
+    // length cap, unlike every other custom-name write path in this
+    // codebase. An over-length name must 400, matching
+    // `train_tracking::validate_custom_name`'s own message, not persist a
+    // multi-megabyte string a group member would later have echoed to
+    // them.
+    async fn post_journey_rejects_an_overlong_custom_name() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let overlong_name = "a".repeat(common::CUSTOM_NAME_MAX_LENGTH + 1);
+        let (status, body) = post_json(
+            router,
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "customName": overlong_name,
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
+
+        cleanup_user(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_journey -- --ignored --test-threads=1`"]
+    // 2026-09 Signal Box Audit Low finding regression: a whitespace-only
+    // `customName` must clear to `null`, exactly like
+    // `train_tracking::validate_custom_name`'s established "blank clears
+    // the name" behavior elsewhere -- not persist a whitespace-only
+    // leftover string.
+    async fn post_journey_trims_a_whitespace_only_custom_name_to_null() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-CREATE-BLANK-NAME").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "customName": "   ",
+                "leg": {
+                    "mode": "window",
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "serviceDate": "2026-09-22",
+                    "departWindow": { "after": "08:00:00" }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+
+        let (status, detail) =
+            request(router, format!("/Journeys/{journey_id}"), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            detail["customName"].is_null(),
+            "a whitespace-only custom name must be stored as null, not persisted verbatim: \
+             {detail:?}"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-CREATE-BLANK-NAME").await;
     }
 
     #[tokio::test]

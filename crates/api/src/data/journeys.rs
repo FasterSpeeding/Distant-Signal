@@ -429,14 +429,33 @@ pub async fn add_known_train_leg_to_journey(
     let Some(next_leg_order) = owned_next_leg_order(pool, journey_id, user_id).await? else {
         return Ok(None);
     };
+    // 2026-09 Signal Box Audit Low finding: `create_subscription_for_train`
+    // used to run as its own bare statement against `pool`, committed
+    // immediately, BEFORE the `insert_leg` call below that actually
+    // attaches it to this leg. `journey_legs`'s own `UNIQUE (journey_id,
+    // leg_order)` constraint -- the very race `owned_next_leg_order`'s own
+    // doc comment already accepts as a known, stated limitation -- meant a
+    // losing `insert_leg` surfaced as a plain `anyhow::Error` (the route's
+    // blanket `internal_error` 500) with the subscription already
+    // permanently committed and nothing in `journey_legs` pointing at it:
+    // an orphaned `train_subscriptions` row, exactly the kind
+    // `set_leg_train_subscription`'s own doc comment describes as NOT
+    // inert (still `notifications_enabled`, still fanned out to by
+    // `notifier::candidates_for_trains_id`). Running both statements
+    // inside one transaction closes that: a losing `insert_leg` now rolls
+    // the subscription INSERT back too, instead of leaving it stranded.
+    // `create_subscription_for_train` is safe to run again on a retry
+    // either way -- it's idempotent per `(user_id, trains_id)` (its own
+    // doc comment).
+    let mut tx = pool.begin().await?;
     let tracking_id =
-        crate::data::train_tracking::create_subscription_for_train(pool, trains_id, user_id)
+        crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
             .await?;
     let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
     )
     .bind(tracking_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
     let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
     let origin_crs = origin_crs_override.map(str::to_string).or(pin_origin_crs);
@@ -444,7 +463,7 @@ pub async fn add_known_train_leg_to_journey(
         .map(str::to_string)
         .or(pin_destination_crs);
     let leg_id = insert_leg(
-        pool,
+        &mut *tx,
         journey_id,
         next_leg_order,
         origin_crs.as_deref(),
@@ -459,6 +478,7 @@ pub async fn add_known_train_leg_to_journey(
         false,
     )
     .await?;
+    tx.commit().await?;
     Ok(Some((leg_id, tracking_id)))
 }
 
@@ -486,13 +506,23 @@ pub fn validate_window_leg(
     depart_window: &TimeWindow,
     arrive_window: &TimeWindow,
 ) -> Result<(), String> {
-    if origin_crs.trim().len() != 3 {
+    // 2026-09 Signal Box Audit Low finding: this used to be
+    // `origin_crs.trim().len() != 3` -- a BYTE-length check, not a
+    // character check. `str::len` counts UTF-8 bytes, so a single
+    // multi-byte character (e.g. "é" is 2 bytes, plenty of 3-byte
+    // characters exist too) could pass this check while being nowhere
+    // near a real 3-letter CRS code. Fixed to match
+    // `routes::trains::normalize_crs`'s own check -- the established
+    // convention for validating a CRS code everywhere else in this
+    // codebase -- three ASCII alphabetic characters, case-insensitive
+    // (normalization to uppercase happens downstream, same as there).
+    if !is_three_letter_crs(origin_crs) {
         return Err(
             "Enter a valid origin station — CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
-    if destination_crs.trim().len() != 3 {
+    if !is_three_letter_crs(destination_crs) {
         return Err(
             "Enter a valid destination station — CRS codes are three letters, like WOK or \
              EUS."
@@ -506,7 +536,43 @@ pub fn validate_window_leg(
                 .to_string(),
         );
     }
+    // 2026-09 Signal Box Audit Low finding: neither window's `after`/
+    // `before` bounds were ever checked against each other. A backwards
+    // window (`after` later than `before`) isn't merely odd input -- every
+    // schedule query built from these bounds
+    // (`queries::search_schedule_calling_point_departures`'s
+    // `scheduled_from`/`to_time` pattern) is an inclusive range filter, so
+    // `after > before` can never match any real calling point. The leg
+    // would persist looking perfectly valid and just silently never
+    // resolve a train, with no error surfaced to the user who typed it.
+    // Reject it outright instead.
+    if let (Some(after), Some(before)) = (depart_window.after, depart_window.before)
+        && after > before
+    {
+        return Err(
+            "The earliest departure time must not be later than the latest departure time."
+                .to_string(),
+        );
+    }
+    if let (Some(after), Some(before)) = (arrive_window.after, arrive_window.before)
+        && after > before
+    {
+        return Err(
+            "The earliest arrival time must not be later than the latest arrival time.".to_string(),
+        );
+    }
     Ok(())
+}
+
+/// A real 3-letter CRS code, ASCII-alphabetic only, case-insensitive --
+/// same check as `routes::trains::normalize_crs` (that helper is private
+/// to `routes/trains.rs`, so this is a small duplicate rather than a
+/// cross-module reach). Deliberately a byte-length-agnostic character
+/// check -- see [`validate_window_leg`]'s doc comment for why
+/// `str::len() != 3` alone is not safe here.
+fn is_three_letter_crs(crs: &str) -> bool {
+    let trimmed = crs.trim();
+    trimmed.chars().count() == 3 && trimmed.chars().all(|c| c.is_ascii_alphabetic())
 }
 
 /// User-facing validation for a `knownTrain`-mode leg's OPTIONAL
@@ -538,13 +604,17 @@ pub fn validate_known_train_overrides(
     origin_crs: Option<&str>,
     destination_crs: Option<&str>,
 ) -> Result<(), String> {
-    if origin_crs.is_some_and(|origin_crs| origin_crs.trim().len() != 3) {
+    // 2026-09 Signal Box Audit Low finding: same byte-length-vs-character
+    // bug as [`validate_window_leg`]'s own fix -- `.trim().len() != 3` is a
+    // UTF-8 byte count, not a 3-letter check. Reuses the same
+    // [`is_three_letter_crs`] helper for consistency.
+    if origin_crs.is_some_and(|origin_crs| !is_three_letter_crs(origin_crs)) {
         return Err(
             "Enter a valid origin station — CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
-    if destination_crs.is_some_and(|destination_crs| destination_crs.trim().len() != 3) {
+    if destination_crs.is_some_and(|destination_crs| !is_three_letter_crs(destination_crs)) {
         return Err(
             "Enter a valid destination station — CRS codes are three letters, like WOK or EUS."
                 .to_string(),
@@ -700,15 +770,41 @@ pub async fn set_leg_train_subscription(
 ) -> anyhow::Result<bool> {
     let mut tx = pool.begin().await?;
 
+    // 2026-09 Signal Box Audit Low finding: this used to check ONLY that
+    // `leg_id`/`journey_id` belong to `user_id`, never that
+    // `train_subscription_id` does too. That made this an IDOR: nothing
+    // here stopped user A's leg from being pointed at user B's
+    // `train_subscriptions` row -- which would then surface user B's live
+    // train position/notifications inside user A's journey UI, and hand
+    // user A a `tracking_id` for a subscription they don't own. It was
+    // "safe" only by accident -- `post_leg_train` (this function's one
+    // caller) always mints a brand-new subscription via
+    // `create_subscription_for_train(&app.database, trains_id, &user.id)`
+    // immediately before calling in, so `train_subscription_id` is always
+    // already this same user's. But that's a property of today's ONE
+    // caller, not of this function -- any future caller that accepts a
+    // subscription id from elsewhere (e.g. a "reuse an existing pin"
+    // shortcut) would silently reintroduce the IDOR. The `EXISTS` clause
+    // below makes the ownership check a property of the function itself:
+    // if `train_subscription_id` isn't this `user_id`'s, the whole lookup
+    // comes back empty and this returns `Ok(false)`, which the route maps
+    // to `404` -- same "no such leg, or not this caller's" posture as
+    // every other failure mode here, never leaking whether the
+    // subscription id itself exists.
     let owned: Option<(Option<i64>,)> = sqlx::query_as(
         "SELECT jl.train_subscription_id FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
          WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3 \
+           AND EXISTS ( \
+               SELECT 1 FROM train_subscriptions ts \
+               WHERE ts.id = $4 AND ts.user_id = $3 \
+           ) \
          FOR UPDATE OF jl",
     )
     .bind(leg_id)
     .bind(journey_id)
     .bind(user_id)
+    .bind(train_subscription_id)
     .fetch_optional(&mut *tx)
     .await?;
     let Some((old_train_subscription_id,)) = owned else {
@@ -1494,6 +1590,80 @@ mod db_tests {
     }
 
     #[test]
+    // 2026-09 Signal Box Audit Low finding regression: CRS validation used
+    // to be `.trim().len() != 3`, a UTF-8 BYTE count. "é" alone is 2 bytes
+    // and a bare 3-byte multi-byte character (many exist, e.g. "€", U+20AC)
+    // would pass as if it were three ASCII letters. Pin down that a
+    // single 3-byte character is rejected, and that it's rejected for the
+    // right reason (not merely coincidentally too short/long).
+    fn validate_window_leg_rejects_a_three_byte_non_ascii_character_as_origin() {
+        let depart_window = common::TimeWindow {
+            after: Some("08:00:00".parse().unwrap()),
+            before: None,
+        };
+        // "€" (U+20AC) encodes to exactly 3 UTF-8 bytes but is one
+        // character -- the exact shape of value a byte-length check would
+        // have wrongly accepted.
+        let err = validate_window_leg("€", "RDG", &depart_window, &common::TimeWindow::default())
+            .unwrap_err();
+        assert!(err.contains("origin"));
+    }
+
+    #[test]
+    fn validate_window_leg_accepts_lowercase_crs() {
+        // Case-insensitive, matching `routes::trains::normalize_crs`'s own
+        // posture (normalization to uppercase happens downstream).
+        let depart_window = common::TimeWindow {
+            after: Some("08:00:00".parse().unwrap()),
+            before: None,
+        };
+        assert!(
+            validate_window_leg("wat", "rdg", &depart_window, &common::TimeWindow::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    // 2026-09 Signal Box Audit Low finding regression: a backwards window
+    // (`after` later than `before`) used to be accepted outright and
+    // would silently never match any real calling point once persisted.
+    fn validate_window_leg_rejects_a_backwards_depart_window() {
+        let depart_window = common::TimeWindow {
+            after: Some("10:00:00".parse().unwrap()),
+            before: Some("08:00:00".parse().unwrap()),
+        };
+        let err = validate_window_leg("WAT", "RDG", &depart_window, &common::TimeWindow::default())
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn validate_window_leg_rejects_a_backwards_arrive_window() {
+        let arrive_window = common::TimeWindow {
+            after: Some("10:00:00".parse().unwrap()),
+            before: Some("08:00:00".parse().unwrap()),
+        };
+        let err = validate_window_leg("WAT", "RDG", &common::TimeWindow::default(), &arrive_window)
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn validate_window_leg_accepts_after_equal_to_before() {
+        // A zero-width window (an exact single minute) is unusual but not
+        // backwards -- only `after > before` is rejected, not `after ==
+        // before`.
+        let depart_window = common::TimeWindow {
+            after: Some("08:00:00".parse().unwrap()),
+            before: Some("08:00:00".parse().unwrap()),
+        };
+        assert!(
+            validate_window_leg("WAT", "RDG", &depart_window, &common::TimeWindow::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn validate_window_leg_messages_carry_no_internal_field_names() {
         let messages = [
             validate_window_leg(
@@ -1533,6 +1703,14 @@ mod db_tests {
                 "user-facing copy leaked an identifier: {message}"
             );
         }
+    }
+
+    #[test]
+    // 2026-09 Signal Box Audit Low finding regression: same byte-length
+    // bug as `validate_window_leg`'s own regression test above.
+    fn validate_known_train_overrides_rejects_a_three_byte_non_ascii_character() {
+        let err = validate_known_train_overrides(Some("€"), None).unwrap_err();
+        assert!(err.contains("origin"));
     }
 
     #[test]
@@ -1825,6 +2003,76 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OWNER").await;
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                set_leg_train_subscription -- --ignored --test-threads=1`"]
+    // 2026-09 Signal Box Audit Low finding regression test: distinct from
+    // `set_leg_train_subscription_a_non_owner_cannot_bind_someone_elses_leg`
+    // above -- that test has a non-owner trying to bind THEIR OWN
+    // subscription to someone ELSE's leg. This test is the other half: the
+    // OWNER of the leg trying to bind SOMEONE ELSE's subscription to their
+    // own, legitimately-owned leg. Before this fix, this succeeded (the
+    // query only checked leg/journey ownership, never subscription
+    // ownership) -- a real IDOR, even though today's only caller
+    // (`post_leg_train`) never actually exercises it because it always
+    // mints a fresh subscription for the caller first.
+    async fn set_leg_train_subscription_cannot_bind_someone_elses_subscription() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-IDOR-OWNER").await;
+        seed_user(&pool, "TEST-JOURNEY-IDOR-OTHER").await;
+        let (journey_id, leg_id) = create_journey_with_window_leg(
+            &pool,
+            "TEST-JOURNEY-IDOR-OWNER",
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create window leg");
+        // The OTHER user's own subscription -- the owner of `leg_id` has
+        // no claim to this.
+        let others_tracking_id = crate::data::train_tracking::create_pin(
+            &pool,
+            &fixture_pin("WAT"),
+            "TEST-JOURNEY-IDOR-OTHER",
+        )
+        .await
+        .expect("seed the other user's candidate subscription");
+
+        let updated = set_leg_train_subscription(
+            &pool,
+            journey_id,
+            leg_id,
+            "TEST-JOURNEY-IDOR-OWNER",
+            others_tracking_id,
+        )
+        .await
+        .expect("attempt bind of someone else's subscription");
+        assert!(
+            !updated,
+            "binding a leg to another user's train_subscriptions row must fail"
+        );
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, "TEST-JOURNEY-IDOR-OWNER")
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(
+            leg.train_subscription_id, None,
+            "the leg must remain unbound, not silently linked to the other user's subscription"
+        );
+
+        cleanup_user(&pool, "TEST-JOURNEY-IDOR-OWNER").await;
+        cleanup_user(&pool, "TEST-JOURNEY-IDOR-OTHER").await;
     }
 
     #[tokio::test]
@@ -2204,6 +2452,124 @@ mod db_tests {
             .expect("leg exists");
         assert_eq!(leg.train_subscription_id, Some(tracking_id));
         assert_eq!(leg.match_mode, "manual");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_known_train_leg_to_journey_racing_leg_order_never_orphans_a_subscription -- \
+                --ignored --test-threads=1`"]
+    // 2026-09 Signal Box Audit Low finding regression test: before this
+    // fix, `create_subscription_for_train` committed as its own bare
+    // statement, separately from (and before) the `insert_leg` call that
+    // attaches it to a leg. `owned_next_leg_order`'s own doc comment
+    // already names the READ COMMITTED race two concurrent calls for the
+    // SAME journey can hit -- both computing the same `next_leg_order` and
+    // one losing to the `UNIQUE (journey_id, leg_order)` constraint. The
+    // bug: the LOSING call's subscription was left committed anyway, with
+    // no `journey_legs` row ever pointing at it -- a real orphan, exactly
+    // as inert-but-not-actually-inert as `set_leg_train_subscription`'s
+    // own doc comment describes. After this fix, the loser's subscription
+    // must not exist at all once its transaction rolls back.
+    async fn add_known_train_leg_to_journey_racing_leg_order_never_orphans_a_subscription() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-ADD-KNOWN-RACE";
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        let (journey_id, _first_leg_id) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            service_date,
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create initial window leg");
+
+        // Two DIFFERENT trains, so whichever call loses the leg_order race
+        // is identifiable afterwards by its own distinct `trains_id`.
+        let trains_id_a = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-TRAIN-ADD-KNOWN-RACE-A",
+            service_date,
+        )
+        .await
+        .expect("seed fixture train a");
+        let trains_id_b = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-TRAIN-ADD-KNOWN-RACE-B",
+            service_date,
+        )
+        .await
+        .expect("seed fixture train b");
+
+        let pool_a = pool.clone();
+        let pool_b = pool.clone();
+        let (result_a, result_b) = tokio::join!(
+            add_known_train_leg_to_journey(
+                &pool_a,
+                journey_id,
+                user_id,
+                trains_id_a,
+                service_date,
+                None,
+                None,
+            ),
+            add_known_train_leg_to_journey(
+                &pool_b,
+                journey_id,
+                user_id,
+                trains_id_b,
+                service_date,
+                None,
+                None,
+            ),
+        );
+
+        // Both calls read `next_leg_order` from the SAME starting point --
+        // at most one of them can have actually won the `leg_order` slot;
+        // the other either lost outright (`Err`, unique-constraint
+        // violation) or -- if this race didn't land this particular run --
+        // both succeeded with different leg_orders. Only the guaranteed
+        // invariant matters here: neither trains_id ends up with an
+        // orphaned subscription.
+        for (trains_id, result) in [(trains_id_a, result_a), (trains_id_b, result_b)] {
+            let subscription: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM train_subscriptions WHERE user_id = $1 AND trains_id = $2",
+            )
+            .bind(user_id)
+            .bind(trains_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("check for a subscription row");
+
+            match result {
+                Ok(Some(_)) => {
+                    // Succeeded: a subscription row for this trains_id is
+                    // expected and correct.
+                    assert!(subscription.is_some());
+                }
+                Err(_) => {
+                    // Lost the race: the fix means its subscription must
+                    // have been rolled back, not left orphaned.
+                    assert!(
+                        subscription.is_none(),
+                        "a losing call must not leave an orphaned train_subscriptions row \
+                         for trains_id {trains_id}"
+                    );
+                }
+                Ok(None) => panic!("journey_id is owned by user_id -- must never be Ok(None)"),
+            }
+        }
 
         cleanup_user(&pool, user_id).await;
     }
