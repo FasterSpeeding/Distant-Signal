@@ -301,6 +301,7 @@ export function TrackTrainForm({
   initialDestination = '',
   attachTicketId,
   initialMode = 'pick',
+  initialServiceDate,
   initialDepartAfter = '',
   initialDepartBefore = '',
   initialArriveAfter = '',
@@ -323,6 +324,17 @@ export function TrackTrainForm({
   // even `JourneyLegCard`'s own "Edit search" link. `track/page.tsx` reads
   // this off `?mode=window`, the same pattern its `?origin=` already uses.
   initialMode?: 'pick' | 'window';
+  /** "YYYY-MM-DD" -- window mode's own service-date field
+   * (`windowServiceDate`, below), which otherwise always defaults to
+   * today. `undefined` (the default) preserves that exact pre-existing
+   * behaviour. `CreateJourneyLegFromTicketButton.tsx`
+   * (`/track?serviceDate=...`) is the first caller of this prop: a
+   * ticket's proposed leg is dated by the ticket's own extracted departure
+   * date, not necessarily today. Deliberately has no pin-mode equivalent --
+   * pin mode's `scheduledDeparture` is a single full date+time field with
+   * its own "now" default, not a bare date, so there is nothing for this
+   * prop to feed there. */
+  initialServiceDate?: string;
   /** "HH:MM" -- same value contract `TimeFilterInput`'s own `onChange`
    * already uses for `departFrom`/`departTo`/`arriveFrom`/`arriveTo`. */
   initialDepartAfter?: string;
@@ -447,7 +459,9 @@ export function TrackTrainForm({
   // real value for the same reason -- this brings window mode in line with
   // it. Still `clearable` (below), and `submitWindow`'s `?? dayjs()...`
   // fallback stays as defence if a caller ever clears it back to `null`.
-  const [windowServiceDate, setWindowServiceDate] = useState<string | null>(() => dayjs().format('YYYY-MM-DD'));
+  const [windowServiceDate, setWindowServiceDate] = useState<string | null>(
+    () => initialServiceDate ?? dayjs().format('YYYY-MM-DD'),
+  );
   const [departFrom, setDepartFrom] = useState(initialDepartAfter);
   const [departTo, setDepartTo] = useState(initialDepartBefore);
   const [arriveFrom, setArriveFrom] = useState(initialArriveAfter);

@@ -1171,6 +1171,16 @@ export interface TrackedTrainTicket {
   // see `lib/stationLabel.ts`'s fallback.
   originName: string | null;
   destinationName: string | null;
+  // The ticket's own claimed departure INSTANT (RFC3339), when the source
+  // format carried one -- currently only ever populated from a `.pkpass`'s
+  // `semantics.currentDepartureDate`. A best-effort HINT for
+  // `GET /Train/tickets/{ticketId}/journey-leg-proposal`
+  // (`CreateJourneyLegFromTicketButton.tsx`), never a hard pin -- see
+  // `crates/api/src/data/ticket_extraction.rs::PartialTicket::current_departure_date`'s
+  // own doc comment. `null` for every ticket saved before this feature
+  // existed, every PDF-sourced ticket, and any `.pkpass` whose `semantics`
+  // dictionary doesn't populate this key.
+  currentDepartureDate: string | null;
   source: TicketSource;
   createdAt: string; // RFC3339
   // User-authored display label, or `null` for the computed default -- see
@@ -1195,6 +1205,10 @@ export interface TicketEntryRequest {
   ticket_type?: string;
   origin_crs?: string;
   destination_crs?: string;
+  // See `TrackedTrainTicket.currentDepartureDate`'s own comment -- same
+  // value, carried through unedited from whichever upload preview (if any)
+  // produced it. RFC3339.
+  current_departure_date?: string;
   source: TicketSource;
 }
 
@@ -1230,6 +1244,11 @@ export interface PartialTicket {
   ticketType: string | null;
   originCrs: string | null;
   destinationCrs: string | null;
+  // See `TrackedTrainTicket.currentDepartureDate`'s own comment -- same
+  // field, RFC3339, absent (not just `null`) from the wire whenever the
+  // parse didn't recover one (`#[serde(skip_serializing_if = "Option::is_none")]`
+  // on the Rust side).
+  currentDepartureDate?: string;
   source: TicketSource;
 }
 
@@ -1303,6 +1322,29 @@ export interface TicketListItem {
   disclaimer: string;
   // See `TrackedTrainTicket.customName`'s comment -- same contract.
   customName: string | null;
+}
+
+/** `GET /Train/tickets/{ticketId}/journey-leg-proposal`'s response
+ * (`crates/api/src/data/journey_leg_proposal.rs::JourneyLegProposal`,
+ * camelCase). A read-only, propose-and-confirm PREVIEW derived from an
+ * already-saved ticket's own fields -- never anything this route itself
+ * creates. `originCrs`/`destinationCrs` are echoed back exactly as the
+ * ticket stored them (unnormalized); `serviceDate`/`departAfter`/
+ * `departBefore` are `null` together whenever the ticket has no
+ * `currentDepartureDate` at all (no honest calendar day to propose without
+ * one) -- see `CreateJourneyLegFromTicketButton.tsx`, the one caller of
+ * this type, for how the non-null fields become a `/track?...` deep link
+ * into the EXISTING window-mode leg-creation form (`TrackTrainForm.tsx`),
+ * which the caller must still explicitly review and submit. No
+ * `arriveAfter`/`arriveBefore` -- a ticket's departure date/time never
+ * implies an arrival window, so there's nothing non-guessed to propose
+ * there (see the Rust type's own doc comment). */
+export interface JourneyLegProposal {
+  originCrs: string | null;
+  destinationCrs: string | null;
+  serviceDate: string | null; // "YYYY-MM-DD"
+  departAfter: string | null; // "HH:MM:SS"
+  departBefore: string | null; // "HH:MM:SS"
 }
 
 // ---------------------------------------------------------------------------

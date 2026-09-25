@@ -40,7 +40,8 @@ use serde::{Deserialize, Serialize};
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
 use crate::data::{
-    delay_repay_rules, eta_blend, schedule_matching, ticket_extraction, train_tracking,
+    delay_repay_rules, eta_blend, journey_leg_proposal, schedule_matching, ticket_extraction,
+    train_tracking,
 };
 
 pub fn router() -> Router {
@@ -82,6 +83,10 @@ pub fn router() -> Router {
         .route(
             "/Train/tickets/{ticket_id}/name",
             axum::routing::post(post_ticket_name),
+        )
+        .route(
+            "/Train/tickets/{ticket_id}/journey-leg-proposal",
+            axum::routing::get(get_ticket_journey_leg_proposal),
         )
         .route(
             "/Train/tickets/{ticket_id}",
@@ -358,6 +363,38 @@ async fn post_ticket_name(
     Ok(Json(RenameResponse {
         custom_name: normalized,
     }))
+}
+
+/// `GET /Train/tickets/{ticketId}/journey-leg-proposal` -- read-only, per
+/// `data::journey_leg_proposal`'s own module doc comment: given an
+/// already-saved ticket the caller owns, returns a PROPOSED window-mode
+/// journey leg (origin/destination CRS plus a search-window hint derived
+/// from the ticket's own `current_departure_date`, if it has one). Never
+/// creates anything -- the caller is expected to feed this straight into
+/// the EXISTING `POST /Journeys` window-mode leg flow (`TrackTrainForm.tsx`
+/// via `/track?...`), which still requires its own explicit review and
+/// submit.
+///
+/// Ownership-scoped exactly like `get_delay_repay_estimate` just below:
+/// `get_ticket_owned` folds `WHERE ... AND user_id = $2` directly into its
+/// own query (no join, no separate ownership lookup first), and a ticket
+/// that doesn't exist or isn't this caller's own both collapse to the same
+/// `404` -- this app's universal never-`403` convention.
+async fn get_ticket_journey_leg_proposal(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(ticket_id): Path<i64>,
+) -> Result<Json<journey_leg_proposal::JourneyLegProposal>, (StatusCode, String)> {
+    let ticket = train_tracking::get_ticket_owned(&app.database, ticket_id, &user.id)
+        .await
+        .map_err(internal_error("read ticket"))?
+        .ok_or((StatusCode::NOT_FOUND, "no ticket with that id".to_string()))?;
+
+    Ok(Json(journey_leg_proposal::propose_window_leg(
+        ticket.origin_crs.as_deref(),
+        ticket.destination_crs.as_deref(),
+        ticket.current_departure_date,
+    )))
 }
 
 async fn get_tickets(
@@ -1535,6 +1572,7 @@ mod tests {
             destination_crs: Some("EDB".to_string()),
             origin_name: Some("London Kings Cross".to_string()),
             destination_name: Some("Edinburgh Waverley".to_string()),
+            current_departure_date: None,
             source: "manual".to_string(),
             created_at: fixed_instant(),
             custom_name: None,
@@ -3027,6 +3065,7 @@ mod db_tests {
             ticket_type: Some("Off-Peak Day Single".to_string()),
             origin_crs: Some("KGX".to_string()),
             destination_crs: Some("EDB".to_string()),
+            current_departure_date: None,
             source: "manual".to_string(),
         };
         crate::data::train_tracking::create_ticket(pool, tracking_id, &entry, user_id)
@@ -3215,6 +3254,169 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-CASCADE-READS").await;
+    }
+
+    // --- get_ticket_journey_leg_proposal ---------------------------------
+
+    /// Same fixture shape as `seed_ticket` above, with an explicit
+    /// `current_departure_date` instead of always `None` -- this route is
+    /// the one reader anywhere in the app that does anything with that
+    /// field, so it needs a fixture that actually sets it.
+    async fn seed_ticket_with_departure_date(
+        pool: &PgPool,
+        user_id: &str,
+        current_departure_date: chrono::DateTime<chrono::Utc>,
+    ) -> i64 {
+        let entry = common::TicketEntryRequest {
+            operator: Some("LNER".to_string()),
+            ticket_type: Some("Off-Peak Day Single".to_string()),
+            origin_crs: Some("KGX".to_string()),
+            destination_crs: Some("EDB".to_string()),
+            current_departure_date: Some(current_departure_date),
+            source: "pkpass-semantics".to_string(),
+        };
+        crate::data::train_tracking::create_ticket(pool, None, &entry, user_id)
+            .await
+            .expect("insert fixture ticket")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_leg_proposal -- --ignored --test-threads=1`"]
+    async fn get_ticket_journey_leg_proposal_no_session_is_401() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-PROPOSAL-401-OWNER").await;
+        let ticket_id = seed_ticket(&pool, "TEST-PROPOSAL-401-OWNER", None).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router,
+            format!("/Train/tickets/{ticket_id}/journey-leg-proposal"),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body, Value::String("no session".to_string()));
+
+        cleanup_user(&pool, "TEST-PROPOSAL-401-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_leg_proposal -- --ignored --test-threads=1`"]
+    async fn get_ticket_journey_leg_proposal_a_non_owner_session_gets_the_same_404_as_unknown() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-PROPOSAL-404-OWNER").await;
+        let owner_ticket_id = seed_ticket(&pool, "TEST-PROPOSAL-404-OWNER", None).await;
+        let other_token = seed_session(&pool, "TEST-PROPOSAL-404-OTHER").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router,
+            format!("/Train/tickets/{owner_ticket_id}/journey-leg-proposal"),
+            Some(&other_token),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no ticket with that id".to_string()));
+
+        cleanup_user(&pool, "TEST-PROPOSAL-404-OWNER").await;
+        cleanup_user(&pool, "TEST-PROPOSAL-404-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_leg_proposal -- --ignored --test-threads=1`"]
+    async fn get_ticket_journey_leg_proposal_an_unknown_ticket_id_is_404() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-PROPOSAL-404-UNKNOWN").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router,
+            "/Train/tickets/999999999/journey-leg-proposal".to_string(),
+            Some(&token),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no ticket with that id".to_string()));
+
+        cleanup_user(&pool, "TEST-PROPOSAL-404-UNKNOWN").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_leg_proposal -- --ignored --test-threads=1`"]
+    async fn get_ticket_journey_leg_proposal_a_ticket_with_a_departure_date_proposes_stations_and_a_window()
+     {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-PROPOSAL-200-WITH-DATE").await;
+        let ticket_id = seed_ticket_with_departure_date(
+            &pool,
+            "TEST-PROPOSAL-200-WITH-DATE",
+            "2026-09-22T18:32:00Z".parse().unwrap(),
+        )
+        .await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router,
+            format!("/Train/tickets/{ticket_id}/journey-leg-proposal"),
+            Some(&token),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["originCrs"], "KGX");
+        assert_eq!(body["destinationCrs"], "EDB");
+        assert_eq!(body["serviceDate"], "2026-09-22");
+        // 18:32 UTC in September is 19:32 British Summer Time -- see
+        // `journey_leg_proposal::propose_window_leg`'s own tests for the
+        // exact +/-30-minute derivation this response's fields come from.
+        assert_eq!(body["departAfter"], "19:02:00");
+        assert_eq!(body["departBefore"], "20:02:00");
+
+        cleanup_user(&pool, "TEST-PROPOSAL-200-WITH-DATE").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_leg_proposal -- --ignored --test-threads=1`"]
+    async fn get_ticket_journey_leg_proposal_a_ticket_with_no_departure_date_proposes_stations_only()
+     {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-PROPOSAL-200-NO-DATE").await;
+        // `seed_ticket` (unlike `seed_ticket_with_departure_date`) leaves
+        // `current_departure_date: None` -- the ordinary case for every
+        // ticket saved before this feature existed, every PDF-sourced
+        // ticket, and any `.pkpass` whose `semantics` dictionary doesn't
+        // populate `currentDepartureDate`.
+        let ticket_id = seed_ticket(&pool, "TEST-PROPOSAL-200-NO-DATE", None).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router,
+            format!("/Train/tickets/{ticket_id}/journey-leg-proposal"),
+            Some(&token),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["originCrs"], "KGX");
+        assert_eq!(body["destinationCrs"], "EDB");
+        assert!(body["serviceDate"].is_null());
+        assert!(body["departAfter"].is_null());
+        assert!(body["departBefore"].is_null());
+
+        cleanup_user(&pool, "TEST-PROPOSAL-200-NO-DATE").await;
     }
 
     // --- get_by_uid_and_date -- PUBLIC and UNSCOPED (Task 19) -----------------

@@ -58,14 +58,24 @@ export default async function TrackPage({
     ticketId?: string | string[];
     mode?: string | string[];
     destination?: string | string[];
+    serviceDate?: string | string[];
     departAfter?: string | string[];
     departBefore?: string | string[];
     arriveAfter?: string | string[];
     arriveBefore?: string | string[];
   }>;
 }) {
-  const { origin, ticketId, mode, destination, departAfter, departBefore, arriveAfter, arriveBefore } =
-    await searchParams;
+  const {
+    origin,
+    ticketId,
+    mode,
+    destination,
+    serviceDate,
+    departAfter,
+    departBefore,
+    arriveAfter,
+    arriveBefore,
+  } = await searchParams;
   // Next.js supplies a `string[]` for a repeated query param (e.g.
   // `?origin=a&origin=b`) -- fall back to the first value rather than
   // letting `.toUpperCase()` throw on an array.
@@ -103,6 +113,17 @@ export default async function TrackPage({
   // introduce, so a malformed/repeated value degrades the same way a
   // malformed `?origin=` already does rather than throwing.
   const destinationParam = Array.isArray(destination) ? destination[0] : destination;
+  // `CreateJourneyLegFromTicketButton.tsx`'s own deep link -- see
+  // `TrackTrainForm`'s `initialServiceDate` prop for why this one field has
+  // no equivalent in `TrackJourneyAgainButton`/`trackAgainHref`'s five
+  // params. Same "malformed means absent" posture as every param here:
+  // shape-only, not full calendar validity (matching `departAfter`/etc.'s
+  // own bare `/^\d{2}:\d{2}$/` check just below) -- `TrackTrainForm`'s own
+  // `DatePickerInput` degrades a value it can't parse to empty rather than
+  // submitting anything unsafe.
+  const serviceDateParam = Array.isArray(serviceDate) ? serviceDate[0] : serviceDate;
+  const validServiceDateParam =
+    serviceDateParam && /^\d{4}-\d{2}-\d{2}$/.test(serviceDateParam) ? serviceDateParam : undefined;
   const departAfterParam = Array.isArray(departAfter) ? departAfter[0] : departAfter;
   const departBeforeParam = Array.isArray(departBefore) ? departBefore[0] : departBefore;
   const arriveAfterParam = Array.isArray(arriveAfter) ? arriveAfter[0] : arriveAfter;
@@ -149,6 +170,7 @@ export default async function TrackPage({
         initialDestination={destinationParam?.toUpperCase()}
         attachTicketId={attachTicketId}
         initialMode={initialMode}
+        initialServiceDate={validServiceDateParam}
         initialDepartAfter={validTimeParam(departAfterParam)}
         initialDepartBefore={validTimeParam(departBeforeParam)}
         initialArriveAfter={validTimeParam(arriveAfterParam)}
