@@ -54,7 +54,19 @@ async fn post_subscribe(
     user: AuthenticatedUser,
     Json(body): Json<SubscribeRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    notifications::upsert_push_subscription(
+    // SECURITY (2026-09 review): rejects a non-`https` endpoint or one
+    // whose host resolves to a private/loopback/link-local/multicast IP,
+    // BEFORE it ever reaches the database -- see
+    // `notifications::validate_push_endpoint`'s own doc comment. Without
+    // this, any logged-in user could register an arbitrary internal URL
+    // as their push endpoint, and `crates/notifier/src/send.rs` would
+    // later issue a VAPID-signed POST to it from inside the cluster on
+    // every notification: an SSRF vector.
+    notifications::validate_push_endpoint(&body.endpoint)
+        .await
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    match notifications::upsert_push_subscription(
         &app.database,
         &user.id,
         &body.endpoint,
@@ -62,12 +74,20 @@ async fn post_subscribe(
         &body.keys.auth,
     )
     .await
-    .map_err(|err| {
-        tracing::error!(error = ?err, "failed to upsert push subscription");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to save subscription".to_string(),
-        )
-    })?;
-    Ok(StatusCode::NO_CONTENT)
+    {
+        Ok(notifications::PushSubscriptionUpsert::Saved) => Ok(StatusCode::NO_CONTENT),
+        // SECURITY (2026-09 review): rejected, not silently reassigned --
+        // see `upsert_push_subscription`'s own doc comment.
+        Ok(notifications::PushSubscriptionUpsert::EndpointOwnedByAnotherUser) => Err((
+            StatusCode::CONFLICT,
+            "that push endpoint is already registered to a different account".to_string(),
+        )),
+        Err(err) => {
+            tracing::error!(error = ?err, "failed to upsert push subscription");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to save subscription".to_string(),
+            ))
+        }
+    }
 }
