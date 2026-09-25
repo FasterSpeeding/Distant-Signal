@@ -333,4 +333,35 @@ describe('POST /connect-claude/authorize', () => {
     const res = await POST(req);
     expect(res.status).toBe(502);
   });
+
+  // Finding 4 of the deferred fapp Low-severity batch (2026-09-24 security
+  // review): a malformed `redirectUrl` from `railMcp` used to reach
+  // `NextResponse.redirect()` unchecked, which throws a raw `TypeError` --
+  // an unhandled 500 raised only after the grant/denial had already taken
+  // effect. Validating the shape first turns that into a clean 400.
+  it('400s cleanly (not an unhandled 500) when the adapter returns a malformed redirectUrl', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'not a url' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value');
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+  });
+
+  // Explicit http(s)-only check, matching `isValidMcpRequestId`'s own
+  // "don't trust an external value's shape" posture -- a syntactically
+  // valid but non-http(s) scheme (e.g. `javascript:`) must not reach a
+  // `Location` header either, even though `new URL()` alone would accept it.
+  it('400s when the adapter returns a redirectUrl with a non-http(s) scheme', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'javascript:alert(1)' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value');
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+  });
 });
