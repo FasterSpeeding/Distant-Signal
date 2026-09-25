@@ -92,6 +92,42 @@ pub fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
     let valid_to = non_empty(&values, "E")?;
     let days_mask = non_empty(&values, "R")?;
 
+    // **2026-09-25 fix.** Every field above this point was validated to at
+    // least the extent of "present and non-empty"; `valid_from`/`valid_to`/
+    // `days_mask` were not -- ANY non-empty string, however malformed, used
+    // to sail straight through into the `fixed_links` table unchecked. That
+    // is not a cosmetic gap: `schedule_query::interchange::fixed_links_from`
+    // (the only place this app ever actually consults a link's validity
+    // window) compares `valid_from`/`valid_to` as plain `&str` -- not parsed
+    // `NaiveTime`s -- specifically because zero-padded 4-digit `HHMM` text
+    // sorts identically to the times it represents. A value that ISN'T
+    // exactly 4 zero-padded digits breaks that assumption silently: it
+    // doesn't reject the link, it makes the `<=`/`<=` window comparison
+    // compare wrong -- which can just as easily make a link that should have
+    // stopped applying keep comparing as always-in-window (i.e. "expired,
+    // but treated as permanent") as the reverse. Validating the real
+    // `HH`/`MM` shape here, at the one place this crate actually parses ALF
+    // text, closes that gap for good rather than leaving every read-side
+    // caller to defend against a write-side format it has no way to verify
+    // itself. `days_mask` gets the matching check -- `fixed_links_from`
+    // reads it as a `'1'`-or-not byte per weekday index (`interchange.rs`'s
+    // own `link.days_mask.as_bytes().get(day)`), which fails safe on a
+    // wrong-LENGTH mask (missing days silently never match) but not on a
+    // wrong-CHARACTER one, e.g. a mask using `'Y'`/`'N'` instead of `'1'`/
+    // `'0'` would silently decode as "never runs any day" instead of being
+    // caught as the malformed row it is.
+    //
+    // Matches this module's own established "skip malformed, never abort"
+    // posture (Judgment Call 5): an ALF row whose validity fields don't
+    // parse is simply not one of the links this cycle publishes, exactly
+    // like a row missing a required key outright.
+    if !is_valid_hhmm(&valid_from) || !is_valid_hhmm(&valid_to) {
+        return None;
+    }
+    if !is_valid_days_mask(&days_mask) {
+        return None;
+    }
+
     Some(ParsedFixedLink {
         mode,
         from_crs,
@@ -101,6 +137,32 @@ pub fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
         valid_to,
         days_mask,
     })
+}
+
+/// Is `value` a well-formed CIF fixed-link time-of-day: exactly 4 ASCII
+/// digits, `HH` in `00..=23` and `MM` in `00..=59`? The shape this module's
+/// own real quoted line's `S=0001`/`E=2359` values have, and the shape
+/// `schedule_query::interchange::fixed_links_from`'s read-side `&str`
+/// comparison needs in order to sort correctly against a same-format clock
+/// string -- see [`parse_alf_line`]'s own doc comment (2026-09-25 fix) for
+/// the failure this closes.
+fn is_valid_hhmm(value: &str) -> bool {
+    if value.len() != 4 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let hour: u32 = value[0..2].parse().unwrap_or(u32::MAX);
+    let minute: u32 = value[2..4].parse().unwrap_or(u32::MAX);
+    hour <= 23 && minute <= 59
+}
+
+/// Is `value` a well-formed CIF days-of-week bitmask: exactly 7 bytes, each
+/// literally `'0'` or `'1'`? Mirrors [`is_valid_hhmm`]'s own reasoning: the
+/// read side (`fixed_links_from`) indexes this string by weekday and checks
+/// the byte at that index against `b'1'` directly, so a mask using any other
+/// character to mean "runs" would silently decode as "never runs" instead of
+/// being caught as the malformed row it is.
+fn is_valid_days_mask(value: &str) -> bool {
+    value.len() == 7 && value.bytes().all(|b| b == b'0' || b == b'1')
 }
 
 /// Every successfully-parsed link in `text`, one call per already-read-into-memory
@@ -174,6 +236,96 @@ mod tests {
             parse_alf_line("M=WALK,O=AFK,D=ASI,T=-5,S=0001,E=2359,R=0000001"),
             None
         );
+    }
+
+    // --- Validity-window format validation (2026-09-25 fix) -------------
+    //
+    // Before this fix, `valid_from`/`valid_to`/`days_mask` were accepted as
+    // long as they were non-empty -- no check that they were actually the
+    // 4-digit `HHMM`/7-char `'0'`/`'1'` shape
+    // `schedule_query::interchange::fixed_links_from`'s read-side `&str`
+    // comparison depends on to sort/index correctly. A malformed value there
+    // doesn't fail loudly; it makes that comparison silently wrong, which
+    // can present as a link that should have expired continuing to compare
+    // as always-valid.
+
+    #[test]
+    fn a_valid_from_that_is_not_four_digits_is_rejected() {
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=1,E=2359,R=0000001"),
+            None,
+            "a 1-digit start time must not silently become a 4-digit comparison string"
+        );
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=001,E=2359,R=0000001"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_non_numeric_valid_from_is_rejected() {
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=AB01,E=2359,R=0000001"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_hour_or_minute_is_rejected() {
+        // `24xx` and `xx60` are not real clock times, however digit-shaped.
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=2400,E=2359,R=0000001"),
+            None,
+            "hour 24 does not exist"
+        );
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=0001,E=2360,R=0000001"),
+            None,
+            "minute 60 does not exist"
+        );
+    }
+
+    #[test]
+    fn a_valid_to_that_is_not_four_digits_is_rejected() {
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=0001,E=99,R=0000001"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_days_mask_that_is_not_seven_bits_is_rejected() {
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=0001,E=2359,R=000001"),
+            None,
+            "6 characters, one short of a real Monday-first week"
+        );
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=0001,E=2359,R=00000010"),
+            None,
+            "8 characters, one over"
+        );
+    }
+
+    #[test]
+    fn a_days_mask_with_a_non_bit_character_is_rejected() {
+        // A mask using e.g. 'Y'/'N' instead of '1'/'0' must not silently
+        // decode as "never runs any day" -- see this fix's own doc comment.
+        assert_eq!(
+            parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=0001,E=2359,R=0000Y00"),
+            None
+        );
+    }
+
+    #[test]
+    fn boundary_valid_times_0000_and_2359_are_accepted() {
+        // The exact values this module's own real quoted line uses --
+        // pinned here so the format check above can never regress into
+        // rejecting real, well-formed data.
+        let link = parse_alf_line("M=WALK,O=AFK,D=ASI,T=5,S=0000,E=2359,R=1111111")
+            .expect("0000/2359 are the real, valid boundary values");
+        assert_eq!(link.valid_from, "0000");
+        assert_eq!(link.valid_to, "2359");
     }
 
     #[test]

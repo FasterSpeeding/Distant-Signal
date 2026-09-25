@@ -1220,6 +1220,89 @@ async fn publish_schedule_destination_departures(
     }
 }
 
+/// Pure row-building logic split out of `publish_schedule_calling_points_full`,
+/// for the same "unit-testable without a mock HTTP server" reason
+/// `schedule_network_departures_rows`/`schedule_destination_departures_rows`
+/// exist as their own functions.
+///
+/// **Filters to genuinely public calling points (2026-09-25 fix).** Before
+/// this change, every `LO`/`LI`/`LT` calling point of every non-cancelled
+/// schedule was published here regardless of its CIF Activity code -- this
+/// is the feed `crates/trip-planner`'s connection-graph builders read (via
+/// `crates/api`'s `schedule_calling_points_full` table), so a request-stop,
+/// set-down-only, pickup-only or genuinely not-advertised-to-the-public stop
+/// was offered to the graph exactly like a real, boardable one, with no
+/// signal distinguishing them. Reuses [`schedule_query::records::CallingPoint::is_public_pickup`]
+/// -- the same Activity-code decode this crate's High/Medium pass already
+/// built and proved for the departure-board/search paths
+/// (`schedules_touching`, `departures_by_crs`, `departures_by_destination_crs`)
+/// -- rather than re-deriving a second copy of the same activity-code table.
+///
+/// **`Terminate` calling points are always kept, regardless of
+/// `is_public_pickup()`.** This is a deliberate asymmetry, not an oversight:
+/// `is_public_pickup` answers "can a passenger BOARD here," and a schedule's
+/// own terminating stop is where a passenger currently ON the train
+/// ALIGHTS, not somewhere anyone boards to continue on this same service --
+/// its real CIF Activity code is almost always `TF` ("train finishes"),
+/// which is not one of [`schedule_query::records::CallingPoint`]'s pickup
+/// codes (`T`/`TB`/`U`/`R`), so `is_public_pickup()` returns `false` for
+/// essentially every real `Terminate` calling point that exists. Filtering
+/// `Terminate` rows by boardability would therefore delete every schedule's
+/// own destination from this feed -- breaking
+/// `queries::list_schedule_calling_points_full_for_train`'s own documented
+/// contract that "the schedule's own terminating calling point is already
+/// one of these rows" (that function backs `journey::build_journey_stops`'s
+/// fallback source), which is a strictly worse regression than the gap this
+/// fix closes. A `Terminate` row genuinely marked not-advertised-to-the-public
+/// (CIF's `N` code) is a real, currently-unhandled edge case this fix does
+/// NOT attempt to solve -- this crate has no real-fixture evidence of one
+/// occurring (every real `LT` fixture in this codebase's own tests decodes
+/// `TF`), and inventing handling for an unverified shape would violate this
+/// crate's own "no invented API details" convention; it is left as a known,
+/// narrower gap rather than blessed as correct.
+///
+/// `seq` is re-numbered contiguously from 0 over the FILTERED sequence, not
+/// the original one -- its only documented job is to preserve true stopping
+/// order for `ORDER BY seq` (see `queries::ScheduleCallingPointsFullRow::seq`'s
+/// own doc comment: "NOT a real CIF field, assigned at publish time"), which
+/// a contiguous renumbering does exactly as well as a gappy one, with a
+/// simpler on-the-wire shape.
+fn schedule_calling_points_full_rows(
+    index: &schedule_query::ScheduleIndex,
+    date: chrono::NaiveDate,
+) -> Vec<serde_json::Value> {
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for uid in index.uids() {
+        let Some(resolved) = index.schedule_for_uid(uid, date) else {
+            continue;
+        };
+        if resolved.cancelled {
+            continue;
+        }
+        let public_calling_points = resolved.calling_points.iter().filter(|cp| {
+            cp.is_public_pickup() || cp.kind == schedule_query::CallingPointKind::Terminate
+        });
+        for (seq, cp) in public_calling_points.enumerate() {
+            let kind = match cp.kind {
+                schedule_query::CallingPointKind::Origin => "origin",
+                schedule_query::CallingPointKind::Intermediate => "intermediate",
+                schedule_query::CallingPointKind::Terminate => "terminate",
+            };
+            rows.push(serde_json::json!({
+                "service_date": date,
+                "uid": resolved.uid,
+                "seq": seq as i32,
+                "tiploc": schedule_query::normalize_tiploc(&cp.tiploc).to_string(),
+                "kind": kind,
+                "booked_arrival": cp.booked_arrival,
+                "booked_departure": cp.booked_departure,
+                "day_offset": cp.day_offset,
+            }));
+        }
+    }
+    rows
+}
+
 /// Publishes this cycle's whole-network resolved calling points for `date`
 /// -- the literal, un-bucketed persistence Phase 2 of the dynamic
 /// trip-planning plan adds (see that plan's Task 1). Unlike
@@ -1247,6 +1330,18 @@ async fn publish_schedule_destination_departures(
 /// contract -- already supported on the ingest side
 /// (`queries::upsert_schedule_calling_points_full_chunk`) -- that keeps
 /// chunking from turning into per-chunk data loss.
+///
+/// **Non-public calling points are filtered out before publish (2026-09-25;
+/// separate from and in addition to the 2026-09-25 chunking change above).**
+/// See [`schedule_calling_points_full_rows`], the pure row-building function
+/// this now delegates to, for the full reasoning -- this product feeds the
+/// dynamic trip-planning connections graph (`crates/trip-planner`), and
+/// before this fix it published every stop CIF marks non-public (a
+/// set-down-only, pickup-only, operational or not-advertised stop)
+/// alongside every genuinely boardable one, with nothing distinguishing
+/// them on the wire. A connections graph built directly off that feed could
+/// offer to route a passenger through a stop CIF says they can never
+/// actually board or alight at.
 async fn publish_schedule_calling_points_full(
     client: &Client,
     config: &Config,
@@ -1255,32 +1350,7 @@ async fn publish_schedule_calling_points_full(
     internal_oauth: &common::oauth_client::OAuthTokenCache,
     outcome: &mut CycleOutcome,
 ) {
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    for uid in index.uids() {
-        let Some(resolved) = index.schedule_for_uid(uid, date) else {
-            continue;
-        };
-        if resolved.cancelled {
-            continue;
-        }
-        for (seq, cp) in resolved.calling_points.iter().enumerate() {
-            let kind = match cp.kind {
-                schedule_query::CallingPointKind::Origin => "origin",
-                schedule_query::CallingPointKind::Intermediate => "intermediate",
-                schedule_query::CallingPointKind::Terminate => "terminate",
-            };
-            rows.push(serde_json::json!({
-                "service_date": date,
-                "uid": resolved.uid,
-                "seq": seq as i32,
-                "tiploc": schedule_query::normalize_tiploc(&cp.tiploc).to_string(),
-                "kind": kind,
-                "booked_arrival": cp.booked_arrival,
-                "booked_departure": cp.booked_departure,
-                "day_offset": cp.day_offset,
-            }));
-        }
-    }
+    let rows = schedule_calling_points_full_rows(index, date);
 
     if let Err(err) = post_date_scoped_rows_in_chunks(
         client,
@@ -2413,6 +2483,123 @@ mod poll_once_tests {
             "input order within a bucket is preserved verbatim; no sort happens here"
         );
         assert_eq!(rows[1]["train_uid"], "EARLY");
+    }
+
+    /// Regression tests for the 2026-09-25 non-public-stop filter on
+    /// `schedule_calling_points_full_rows` -- see that function's own doc
+    /// comment for the full reasoning (this is the feed the dynamic
+    /// trip-planning connections graph reads, and before this fix it
+    /// included every CIF calling point regardless of public/non-public
+    /// Activity code).
+    mod schedule_calling_points_full_rows_tests {
+        use super::*;
+
+        // Real `BS`/`LO`/`LT` lines, byte-verbatim, already quoted and
+        // verified in `schedule_query::parse`'s own tests.
+        const BS_C00573_PERMANENT: &str =
+            "BSNC005732605172612060000001 PXX1S003101121194800 DMU    125      S A T        P";
+        const LO_EUSTON: &str = "LOEUSTON  0822 08227  C      TB";
+        const LT_EUSTON: &str = "LTEUSTON  0804 08079     TF";
+        // Real `LI` fixture (`LICARLILE ...`, Activity `T`) with ONLY its
+        // Activity field overwritten to `D` (set-down only) -- same
+        // byte-verbatim-except-one-field technique
+        // `schedule_query::parse::activity_tests::with_activity` already
+        // established, applied here directly since that helper is private
+        // to its own crate.
+        const LI_CARLILE_SET_DOWN_ONLY: &str = "LICARLILE 1202 1213      120212131        D";
+        const LI_CARLILE_PUBLIC: &str = "LICARLILE 1202 1213      120212131        T";
+
+        fn service_date() -> chrono::NaiveDate {
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap()
+        }
+
+        #[test]
+        fn a_non_public_intermediate_stop_is_excluded_while_a_public_one_is_retained() {
+            let text = format!(
+                "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LI_CARLILE_SET_DOWN_ONLY}\n{LT_EUSTON}"
+            );
+            let index = schedule_query::ScheduleIndex::from_text(&text);
+
+            let rows = schedule_calling_points_full_rows(&index, service_date());
+
+            let tiplocs: Vec<&str> = rows.iter().map(|r| r["tiploc"].as_str().unwrap()).collect();
+            assert!(
+                !tiplocs.contains(&"CARLILE"),
+                "the set-down-only (non-public-pickup) intermediate stop must be excluded: {tiplocs:?}"
+            );
+            assert!(
+                tiplocs.contains(&"EUSTON"),
+                "the real, public Origin stop must still be published: {tiplocs:?}"
+            );
+
+            // Only Origin (EUSTON) and Terminate (EUSTON, the schedule loops
+            // back in this synthetic fixture -- irrelevant to this test)
+            // survive; the dropped LI leaves a real gap in `seq`.
+            assert_eq!(
+                rows.len(),
+                2,
+                "the non-public LI must not appear at all: {rows:?}"
+            );
+        }
+
+        #[test]
+        fn a_public_intermediate_stop_is_retained() {
+            let text =
+                format!("{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LI_CARLILE_PUBLIC}\n{LT_EUSTON}");
+            let index = schedule_query::ScheduleIndex::from_text(&text);
+
+            let rows = schedule_calling_points_full_rows(&index, service_date());
+
+            let tiplocs: Vec<&str> = rows.iter().map(|r| r["tiploc"].as_str().unwrap()).collect();
+            assert!(
+                tiplocs.contains(&"CARLILE"),
+                "a genuinely public (Activity `T`) intermediate stop must be published: {tiplocs:?}"
+            );
+            assert_eq!(
+                rows.len(),
+                3,
+                "Origin, the public LI, and Terminate all survive"
+            );
+        }
+
+        #[test]
+        fn the_terminate_stop_is_always_kept_even_though_tf_is_not_a_pickup_code() {
+            // `TF` ("train finishes") is real `LT_EUSTON`'s own Activity
+            // code and is NOT one of `is_public_pickup`'s pickup codes
+            // (`T`/`TB`/`U`/`R`) -- this is the exact case the Terminate
+            // carve-out in `schedule_calling_points_full_rows`'s own doc
+            // comment exists for. If this regressed, every schedule's own
+            // destination would silently vanish from this feed.
+            let text = format!("{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LT_EUSTON}");
+            let index = schedule_query::ScheduleIndex::from_text(&text);
+
+            let rows = schedule_calling_points_full_rows(&index, service_date());
+
+            let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+            assert_eq!(
+                kinds,
+                vec!["origin", "terminate"],
+                "the Terminate row must survive despite TF not being a pickup code"
+            );
+        }
+
+        #[test]
+        fn seq_is_renumbered_contiguously_over_the_filtered_sequence() {
+            let text = format!(
+                "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LI_CARLILE_SET_DOWN_ONLY}\n{LT_EUSTON}"
+            );
+            let index = schedule_query::ScheduleIndex::from_text(&text);
+
+            let rows = schedule_calling_points_full_rows(&index, service_date());
+
+            let seqs: Vec<i64> = rows.iter().map(|r| r["seq"].as_i64().unwrap()).collect();
+            assert_eq!(
+                seqs,
+                vec![0, 1],
+                "seq must stay contiguous over the surviving rows, not carry a gap for the \
+                 dropped LI"
+            );
+        }
     }
 
     /// Points EVERY one of this `Config`'s `*_URL` fields at `base`, on the

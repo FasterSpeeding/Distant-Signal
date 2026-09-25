@@ -769,9 +769,18 @@ pub async fn insert_schedule_reference_publish(pool: &PgPool, delivery: &str) ->
 
 /// Upserts a batch of resolved STANOX/CRS rows. Every daily delivery is a
 /// full refresh (see this table's migration comment), so this is always a
-/// complete-table upsert-by-`stanox`, never a delta -- no separate
-/// "delete rows missing from today's delivery" step is needed, since every
-/// successful run re-asserts every row it still resolves.
+/// complete-table upsert-by-`stanox`.
+///
+/// **This alone does NOT remove a stale row (2026-09-25 correction).** An
+/// earlier version of this doc comment claimed "no separate delete step is
+/// needed, since every successful run re-asserts every row it still
+/// resolves" -- true only for a STANOX still present in the source data. A
+/// STANOX a later delivery simply stops mentioning at all (decommissioned,
+/// renamed, a source correction) was never removed by this function alone,
+/// so a stale STANOX->CRS mapping accumulated in this table forever,
+/// silently diverging from the real network. See [`prune_stanox_crs_not_in`]
+/// for the cleanup half of a real publish cycle, and its own doc comment
+/// for why that is a SEPARATE function rather than folded into this one.
 pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord]) -> Result<u64> {
     let mut tx = pool.begin().await?;
     let mut count = 0u64;
@@ -804,6 +813,42 @@ pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord
 
     tx.commit().await?;
     Ok(count)
+}
+
+/// Deletes every `stanox_crs` row whose `stanox` is absent from
+/// `keep_stanoxes` -- the stale-row cleanup half of a real publish cycle
+/// that [`upsert_stanox_crs`] alone never covered (Signal Box Audit Low
+/// finding, 2026-09-25; see that function's own corrected doc comment).
+/// `routes::ingest::post_stanox_crs` calls this immediately after
+/// `upsert_stanox_crs`, in the same HTTP request, passing that SAME
+/// delivery's full STANOX set -- one publish cycle, two SQL statements.
+///
+/// **Deliberately its own function, not folded into `upsert_stanox_crs`
+/// itself.** `upsert_stanox_crs` is reused throughout this crate's own test
+/// suite (`journey.rs`, `train.rs`, this file's own other test modules) purely
+/// to seed a couple of synthetic STANOX/CRS rows for an unrelated feature
+/// test -- baking an unconditional "delete every OTHER row in the table"
+/// into it would turn every one of those call sites into a table-wide wipe
+/// of whatever fixture rows a DIFFERENT test already seeded, the exact
+/// "an empty/small batch wipes real data" hazard `upsert_fixed_links`'s own
+/// empty-batch guard exists to prevent, just triggered by a SMALL batch
+/// instead of an EMPTY one. Keeping the prune a separate, explicitly-called
+/// step confines it to the one real caller that actually represents a whole
+/// delivery: the ingest route.
+///
+/// `keep_stanoxes.is_empty()` is a no-op, not "delete everything" -- matches
+/// this crate's established "an empty batch must never be read as delete
+/// everything" posture ([`upsert_fixed_links`],
+/// [`upsert_schedule_destination_departures_chunk`]).
+pub async fn prune_stanox_crs_not_in(pool: &PgPool, keep_stanoxes: &[String]) -> Result<u64> {
+    if keep_stanoxes.is_empty() {
+        return Ok(0);
+    }
+    let result = sqlx::query("DELETE FROM stanox_crs WHERE NOT (stanox = ANY($1))")
+        .bind(keep_stanoxes)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Row shape for `list_stanox_crs`'s `SELECT` -- a dedicated `FromRow`
@@ -924,10 +969,15 @@ pub async fn list_stanox_crs_for_crs(
 /// `ON CONFLICT (tiploc) DO UPDATE SET ...` pattern for every column
 /// except `tiploc`/`updated_at`). Every daily delivery is a full refresh,
 /// same as `stanox_crs` (see this table's migration comment), so this is
-/// always a complete-table upsert-by-`tiploc`, never a delta. See
-/// `common::TiplocCrsRecord`'s own doc comment for why this table keeps
-/// EVERY TIPLOC as its own row rather than `stanox_crs`'s
-/// one-row-per-STANOX disambiguation.
+/// always a complete-table upsert-by-`tiploc`. See `common::TiplocCrsRecord`'s
+/// own doc comment for why this table keeps EVERY TIPLOC as its own row
+/// rather than `stanox_crs`'s one-row-per-STANOX disambiguation.
+///
+/// **This alone does NOT remove a stale row**, the identical gap
+/// `upsert_stanox_crs`'s own doc comment corrects (2026-09-25) -- a TIPLOC a
+/// later delivery stops mentioning was never removed. See
+/// [`prune_tiploc_crs_not_in`], the direct sibling of
+/// [`prune_stanox_crs_not_in`], for the cleanup half.
 pub async fn upsert_tiploc_crs(pool: &PgPool, records: &[common::TiplocCrsRecord]) -> Result<u64> {
     let mut tx = pool.begin().await?;
     let mut count = 0u64;
@@ -960,6 +1010,23 @@ pub async fn upsert_tiploc_crs(pool: &PgPool, records: &[common::TiplocCrsRecord
 
     tx.commit().await?;
     Ok(count)
+}
+
+/// Deletes every `tiploc_crs` row whose `tiploc` is absent from
+/// `keep_tiplocs` -- the direct sibling of [`prune_stanox_crs_not_in`],
+/// same reasoning, same "own function, not folded into the upsert" rationale
+/// (see that function's own doc comment), same "empty batch is a no-op"
+/// guard. `routes::ingest::post_tiploc_crs` calls this immediately after
+/// `upsert_tiploc_crs`, in the same HTTP request.
+pub async fn prune_tiploc_crs_not_in(pool: &PgPool, keep_tiplocs: &[String]) -> Result<u64> {
+    if keep_tiplocs.is_empty() {
+        return Ok(0);
+    }
+    let result = sqlx::query("DELETE FROM tiploc_crs WHERE NOT (tiploc = ANY($1))")
+        .bind(keep_tiplocs)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Row shape for `list_tiploc_crs`'s `SELECT` -- a dedicated `FromRow`
@@ -1017,7 +1084,26 @@ pub async fn list_tiploc_crs(pool: &PgPool) -> Result<Vec<common::TiplocCrsRecor
 /// cycle's rows in place rather than deleting them with nothing to
 /// replace them (this plan's Judgment Call 1's "degrade this one product,
 /// never wipe it for no reason" posture).
+///
+/// **An empty `records` is a no-op, and that is load-bearing (2026-09-25
+/// fix).** Before this guard, this was the one wholesale-replace publish
+/// function in this file WITHOUT it -- both `upsert_schedule_destination_departures_chunk`
+/// and `upsert_schedule_calling_points_full_chunk` already reject an empty
+/// batch before their own `DELETE`, for exactly this reason: a delete-then-insert
+/// upsert can wipe a whole product on a client mistake or an upstream
+/// parse failure that produces zero rows, in a way a per-row `ON CONFLICT`
+/// loop never could. `schedule-reference` itself only calls this when it
+/// found real ALF rows to publish, so an empty batch reaching here means
+/// something upstream sent (or the caller constructed) a batch it should
+/// not have -- exactly the same client-mistake shape the two sibling
+/// functions' own doc comments describe, not a legitimate "this cycle's
+/// ALF file was empty" signal (that case is `main.rs`'s `publish_fixed_links`
+/// never calling this function at all, per the paragraph above).
 pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecord]) -> Result<u64> {
+    if records.is_empty() {
+        return Ok(0);
+    }
+
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM fixed_links")
         .execute(&mut *tx)
@@ -6082,6 +6168,199 @@ mod stanox_crs_lookup_query_tests {
         assert_eq!(after_second[0].to_crs, "STP");
 
         sqlx::query("DELETE FROM fixed_links")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                upsert_fixed_links -- --ignored --test-threads=1`"]
+    async fn upsert_fixed_links_with_an_empty_batch_does_not_wipe_the_table() {
+        // Guards the one way a DELETE-then-INSERT upsert can destroy real
+        // data that a per-row ON CONFLICT loop never could: a call that
+        // carries no rows at all must be a no-op, NOT "delete every fixed
+        // link this app knows about" -- same posture and same reason as
+        // `upsert_with_an_empty_batch_does_not_wipe_the_day` (schedule_destination_departures)
+        // and `upsert_schedule_calling_points_full_chunk`'s own guard.
+        let pool = test_pool().await;
+        let seeded = vec![common::FixedLinkRecord {
+            mode: "TUBE".to_string(),
+            from_crs: "EUS".to_string(),
+            to_crs: "KGX".to_string(),
+            minutes: 5,
+            valid_from: "0500".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111100".to_string(),
+            source_sequence: 1,
+        }];
+        upsert_fixed_links(&pool, &seeded)
+            .await
+            .expect("seed a real row");
+
+        let upserted = upsert_fixed_links(&pool, &[])
+            .await
+            .expect("an empty batch must not error");
+        assert_eq!(upserted, 0);
+
+        let after_empty = list_fixed_links_from_crs(&pool, "EUS")
+            .await
+            .expect("read back");
+        assert_eq!(
+            after_empty.len(),
+            1,
+            "an empty batch must leave the previously-published row in place, never clear it"
+        );
+
+        sqlx::query("DELETE FROM fixed_links")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                prune_stanox_crs_not_in -- --ignored --test-threads=1`"]
+    async fn prune_stanox_crs_not_in_deletes_only_rows_absent_from_the_keep_set() {
+        // The Signal Box Audit Low finding this closes: `upsert_stanox_crs`
+        // alone never removed a STANOX a later delivery simply stopped
+        // mentioning, so a stale mapping accumulated forever. This proves
+        // the cleanup half on its own, independent of the ingest route.
+        let pool = test_pool().await;
+        upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-PRUNE-KEEP".to_string(),
+                    crs: "EUS".to_string(),
+                    tiploc: "TEST-PRUNE-EUSTON".to_string(),
+                    station_name: "EUSTON".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-PRUNE-STALE".to_string(),
+                    crs: "CRE".to_string(),
+                    tiploc: "TEST-PRUNE-CREWE".to_string(),
+                    station_name: "CREWE".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed two rows");
+
+        let deleted = prune_stanox_crs_not_in(&pool, &["TEST-PRUNE-KEEP".to_string()])
+            .await
+            .expect("prune");
+        assert_eq!(deleted, 1);
+
+        let remaining = list_stanox_crs_for_crs(&pool, "EUS")
+            .await
+            .expect("read back kept row");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].stanox, "TEST-PRUNE-KEEP");
+
+        let gone = list_stanox_crs_for_crs(&pool, "CRE")
+            .await
+            .expect("read back stale row");
+        assert!(
+            gone.is_empty(),
+            "the STANOX absent from the keep set must be gone"
+        );
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-PRUNE-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                prune_stanox_crs_not_in -- --ignored --test-threads=1`"]
+    async fn prune_stanox_crs_not_in_with_an_empty_keep_set_is_a_no_op() {
+        // Mirrors `upsert_fixed_links`'s own empty-batch guard: an empty
+        // keep set must never be read as "delete everything" -- that would
+        // just move the exact hazard this fix closes into the prune step
+        // itself.
+        let pool = test_pool().await;
+        upsert_stanox_crs(
+            &pool,
+            &[common::StanoxCrsRecord {
+                stanox: "TEST-PRUNE-EMPTY".to_string(),
+                crs: "EUS".to_string(),
+                tiploc: "TEST-PRUNE-EMPTY-TPL".to_string(),
+                station_name: "EUSTON".to_string(),
+                source_sequence: 1,
+                change_time_minutes: None,
+            }],
+        )
+        .await
+        .expect("seed a row");
+
+        let deleted = prune_stanox_crs_not_in(&pool, &[]).await.expect("prune");
+        assert_eq!(deleted, 0);
+
+        let remaining = list_stanox_crs_for_crs(&pool, "EUS")
+            .await
+            .expect("read back");
+        assert!(
+            remaining.iter().any(|r| r.stanox == "TEST-PRUNE-EMPTY"),
+            "an empty keep set must not delete the real row"
+        );
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-PRUNE-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                prune_tiploc_crs_not_in -- --ignored --test-threads=1`"]
+    async fn prune_tiploc_crs_not_in_deletes_only_rows_absent_from_the_keep_set() {
+        let pool = test_pool().await;
+        upsert_tiploc_crs(
+            &pool,
+            &[
+                common::TiplocCrsRecord {
+                    tiploc: "TEST-PRUNE-TPL-KEEP".to_string(),
+                    crs: "EUS".to_string(),
+                    station_name: "EUSTON".to_string(),
+                    stanox: "TEST-PRUNE-TPL-KEEP-STX".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+                common::TiplocCrsRecord {
+                    tiploc: "TEST-PRUNE-TPL-STALE".to_string(),
+                    crs: "CRE".to_string(),
+                    station_name: "CREWE".to_string(),
+                    stanox: "TEST-PRUNE-TPL-STALE-STX".to_string(),
+                    source_sequence: 1,
+                    change_time_minutes: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed two rows");
+
+        let deleted = prune_tiploc_crs_not_in(&pool, &["TEST-PRUNE-TPL-KEEP".to_string()])
+            .await
+            .expect("prune");
+        assert_eq!(deleted, 1);
+
+        let remaining = list_tiploc_crs(&pool).await.expect("read back");
+        assert!(
+            remaining.iter().any(|r| r.tiploc == "TEST-PRUNE-TPL-KEEP"),
+            "the kept TIPLOC must remain"
+        );
+        assert!(
+            !remaining.iter().any(|r| r.tiploc == "TEST-PRUNE-TPL-STALE"),
+            "the TIPLOC absent from the keep set must be gone"
+        );
+
+        sqlx::query("DELETE FROM tiploc_crs WHERE tiploc LIKE 'TEST-PRUNE-TPL-%'")
             .execute(&pool)
             .await
             .ok();
