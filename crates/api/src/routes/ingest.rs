@@ -76,6 +76,11 @@ pub fn router() -> Router {
             axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
         )
         .route(
+            "/schedule-reference-publishes",
+            axum::routing::get(get_schedule_reference_last_publish)
+                .post(post_schedule_reference_publish),
+        )
+        .route(
             "/stanox-crs",
             axum::routing::get(get_stanox_crs).post(post_stanox_crs),
         )
@@ -367,6 +372,44 @@ async fn post_schedule_feed_ingest(
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted: 1 }))
+}
+
+/// `crates/schedule-reference`'s OWN per-delivery completion marker -- the
+/// one route in this file where that producer both writes and reads back its
+/// own state, because the state IS its own (see
+/// `queries::insert_schedule_reference_publish`).
+///
+/// Distinct from `/schedule-feed-ingests` above, and the distinction is
+/// load-bearing: that route is `schedule-ingest`'s record of having
+/// EXTRACTED a delivery; this one is `schedule-reference`'s record of having
+/// PUBLISHED everything it derives from that delivery. `schedule-reference`
+/// used to seed its restart dedup from the former, which meant a restart
+/// mid-processing made it skip a delivery it had never actually published
+/// -- see `20260925130000_schedule_reference_publishes.sql`.
+async fn post_schedule_reference_publish(
+    State(app): State<App>,
+    Json(req): Json<common::ingest::ScheduleReferencePublishRequest>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    queries::insert_schedule_reference_publish(&app.database, &req.delivery)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted: 1 }))
+}
+
+/// The GET half of `/schedule-reference-publishes` -- read once at startup by
+/// `schedule-reference::main::seed_last_processed_delivery`. Returns the
+/// delivery directory name, NOT a timestamp, unlike every `last_*_fetch` GET
+/// in this file: see `common::ingest::ScheduleReferencePublishRequest`'s own
+/// doc comment for why the marker is the directory name verbatim.
+async fn get_schedule_reference_last_publish(
+    State(app): State<App>,
+) -> Result<Json<common::ingest::LastCompletedPublishResponse>, (StatusCode, String)> {
+    let delivery = queries::last_completed_schedule_reference_publish(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(common::ingest::LastCompletedPublishResponse {
+        delivery,
+    }))
 }
 
 /// `crates/schedule-reference`'s per-sequence batch of resolved

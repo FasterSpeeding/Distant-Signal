@@ -667,6 +667,54 @@ pub async fn insert_schedule_feed_ingest(
     Ok(())
 }
 
+/// The delivery directory name (`YYYYMMDDTHHMMSSZ`) whose `schedule-reference`
+/// publish cycle most recently COMPLETED -- every product for that delivery
+/// published successfully -- or `None` if that producer has never completed
+/// a full cycle (a fresh deployment).
+///
+/// Deliberately NOT [`last_schedule_feed_fetch`] above, and the difference is
+/// the whole point of this table existing: that one reports when a delivery
+/// was EXTRACTED by `schedule-ingest`, which says nothing about whether
+/// `schedule-reference` ever processed it. Backs `GET
+/// /private/schedule-reference-publishes`, which
+/// `schedule-reference::main::seed_last_processed_delivery` reads once at
+/// startup. See `20260925130000_schedule_reference_publishes.sql` for the
+/// production failure mode this replaced.
+///
+/// `ORDER BY completed_at DESC`, not `MAX(delivery)`: the delivery name
+/// happens to sort chronologically today, but ordering on the column that
+/// actually means "when did this finish" cannot be broken by a future change
+/// to the directory-name format.
+pub async fn last_completed_schedule_reference_publish(pool: &PgPool) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT delivery FROM schedule_reference_publishes ORDER BY completed_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(delivery,)| delivery))
+}
+
+/// Records that `schedule-reference` has completed a FULL successful publish
+/// cycle for `delivery` -- every product derived from that delivery landed.
+///
+/// `ON CONFLICT (delivery) DO UPDATE SET completed_at = now()`, not `DO
+/// NOTHING`: a re-POST for the same delivery means that delivery's whole
+/// cycle really did run to completion again (the marker was lost, or a
+/// previous cycle left it unset because a product had failed and the retry
+/// has now succeeded), and `completed_at` should reflect the latest such
+/// completion so [`last_completed_schedule_reference_publish`]'s ordering
+/// stays honest.
+pub async fn insert_schedule_reference_publish(pool: &PgPool, delivery: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO schedule_reference_publishes (delivery, completed_at) VALUES ($1, NOW()) \
+         ON CONFLICT (delivery) DO UPDATE SET completed_at = NOW()",
+    )
+    .bind(delivery)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Upserts a batch of resolved STANOX/CRS rows. Every daily delivery is a
 /// full refresh (see this table's migration comment), so this is always a
 /// complete-table upsert-by-`stanox`, never a delta -- no separate
@@ -8588,5 +8636,261 @@ mod journey_timetable_overlay_query_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+}
+
+/// DB-gated coverage for the 2026-09-25 schedule-pipeline fixes:
+///
+/// * the chunk-aware `replace_dates` contract on
+///   [`upsert_schedule_calling_points_full_chunk`] /
+///   [`upsert_schedule_destination_departures_chunk`], which is what makes it
+///   safe for `schedule-reference` to split an oversized per-date publish into
+///   several POSTs, and
+/// * [`insert_schedule_reference_publish`] /
+///   [`last_completed_schedule_reference_publish`], the completion marker that
+///   replaced "seed the restart dedup from `schedule-ingest`'s extraction
+///   record".
+///
+/// Far-future fixture dates (2099) and a `TEST-`-prefixed delivery name, so
+/// nothing here can be answered by, or damage, real data. Same posture as this
+/// file's other `*_query_tests` modules.
+#[cfg(test)]
+mod schedule_pipeline_integrity_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    fn fixture_date(day: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2099, 6, day).expect("valid fixture date")
+    }
+
+    fn time(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid fixture time")
+    }
+
+    fn calling_point(
+        service_date: chrono::NaiveDate,
+        uid: &str,
+        seq: i16,
+    ) -> ScheduleCallingPointsFullRow {
+        ScheduleCallingPointsFullRow {
+            service_date,
+            uid: uid.to_string(),
+            seq,
+            tiploc: "EUSTON".to_string(),
+            kind: "intermediate".to_string(),
+            booked_arrival: Some(time(8, 0)),
+            booked_departure: Some(time(8, 2)),
+            day_offset: 0,
+        }
+    }
+
+    async fn clear_calling_points(pool: &PgPool, service_date: chrono::NaiveDate) {
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = $1")
+            .bind(service_date)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture schedule_calling_points_full rows");
+    }
+
+    async fn stored_uids(pool: &PgPool, service_date: chrono::NaiveDate) -> Vec<String> {
+        sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT uid FROM schedule_calling_points_full WHERE service_date = $1 \
+             ORDER BY uid",
+        )
+        .bind(service_date)
+        .fetch_all(pool)
+        .await
+        .expect("read back fixture rows")
+        .into_iter()
+        .map(|(uid,)| uid)
+        .collect()
+    }
+
+    /// **The test that makes chunking safe.** Two chunks of the SAME service
+    /// date: the first clears the date, the second must add to it. If the
+    /// second chunk also ran the `DELETE`, the date would end up holding only
+    /// the last chunk -- silently losing every earlier chunk of the publish,
+    /// which is strictly worse than the oversized-body problem chunking exists
+    /// to solve.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_pipeline_integrity -- --ignored --test-threads=1`"]
+    async fn a_second_calling_points_chunk_adds_to_the_date_instead_of_wiping_the_first() {
+        let pool = test_pool().await;
+        let date = fixture_date(1);
+        clear_calling_points(&pool, date).await;
+
+        // Chunk 1 of 2: clears the date (there is a prior delivery's row to
+        // clear, seeded here so the DELETE is genuinely exercised).
+        upsert_schedule_calling_points_full(&pool, &[calling_point(date, "STALE1", 0)])
+            .await
+            .expect("seed a prior delivery's row");
+        upsert_schedule_calling_points_full_chunk(&pool, &[calling_point(date, "FRESH1", 0)], true)
+            .await
+            .expect("first chunk");
+        // Chunk 2 of 2: must NOT clear the date.
+        upsert_schedule_calling_points_full_chunk(
+            &pool,
+            &[calling_point(date, "FRESH2", 0)],
+            false,
+        )
+        .await
+        .expect("second chunk");
+
+        assert_eq!(
+            stored_uids(&pool, date).await,
+            vec!["FRESH1".to_string(), "FRESH2".to_string()],
+            "both chunks must survive, and the previous delivery's row must not"
+        );
+
+        clear_calling_points(&pool, date).await;
+    }
+
+    /// The other half of the same contract: a `replace_dates: true` batch is
+    /// still a wholesale replace, unchanged -- and so is the two-argument
+    /// wrapper every existing in-process caller uses.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_pipeline_integrity -- --ignored --test-threads=1`"]
+    async fn a_replacing_calling_points_chunk_still_clears_the_date_first() {
+        let pool = test_pool().await;
+        let date = fixture_date(2);
+        clear_calling_points(&pool, date).await;
+
+        upsert_schedule_calling_points_full(&pool, &[calling_point(date, "OLD", 0)])
+            .await
+            .expect("seed");
+        upsert_schedule_calling_points_full_chunk(&pool, &[calling_point(date, "NEW", 0)], true)
+            .await
+            .expect("replacing batch");
+
+        assert_eq!(
+            stored_uids(&pool, date).await,
+            vec!["NEW".to_string()],
+            "a replacing batch must supersede the whole date, exactly as before chunking existed"
+        );
+
+        clear_calling_points(&pool, date).await;
+    }
+
+    /// The same contract on the sibling product, which shares the chunked
+    /// publisher (`post_date_scoped_rows_in_chunks`) and therefore the same
+    /// per-chunk delete hazard.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_pipeline_integrity -- --ignored --test-threads=1`"]
+    async fn a_second_destination_departures_chunk_adds_to_the_date_instead_of_wiping_the_first() {
+        let pool = test_pool().await;
+        let date = fixture_date(3);
+        let clear = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+                .bind(date)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture schedule_destination_departures rows");
+        };
+        clear(pool.clone()).await;
+
+        let row = |uid: &str, scheduled: chrono::NaiveTime| ScheduleDestinationDeparturesRow {
+            service_date: date,
+            destination_crs: "ZRD".to_string(),
+            scheduled,
+            day_offset: 0,
+            train_uid: uid.to_string(),
+            origin_crs: "EUS".to_string(),
+            true_origin_crs: None,
+            calling_point_arrival: None,
+            destination_arrival: None,
+            destination_arrival_day_offset: 0,
+            operator_atoc: None,
+        };
+
+        upsert_schedule_destination_departures_chunk(&pool, &[row("FRESH1", time(8, 0))], true)
+            .await
+            .expect("first chunk");
+        upsert_schedule_destination_departures_chunk(&pool, &[row("FRESH2", time(9, 0))], false)
+            .await
+            .expect("second chunk");
+
+        let uids: Vec<String> = sqlx::query_as::<_, (String,)>(
+            "SELECT train_uid FROM schedule_destination_departures WHERE service_date = $1 \
+             ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back")
+        .into_iter()
+        .map(|(uid,)| uid)
+        .collect();
+        assert_eq!(uids, vec!["FRESH1".to_string(), "FRESH2".to_string()]);
+
+        clear(pool.clone()).await;
+    }
+
+    /// The completion marker `schedule-reference` seeds its restart dedup from
+    /// -- round-tripped, and confirmed to report the most recently COMPLETED
+    /// delivery rather than whatever happens to sort last.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_pipeline_integrity -- --ignored --test-threads=1`"]
+    async fn the_completion_marker_round_trips_and_reports_the_most_recent_completion() {
+        let pool = test_pool().await;
+        sqlx::query("DELETE FROM schedule_reference_publishes")
+            .execute(&pool)
+            .await
+            .expect("start from an empty marker table");
+
+        assert_eq!(
+            last_completed_schedule_reference_publish(&pool)
+                .await
+                .expect("read empty"),
+            None,
+            "an empty marker table must read as None -- the first-run case \
+             schedule-reference falls back on"
+        );
+
+        insert_schedule_reference_publish(&pool, "TEST-20990601T180000Z")
+            .await
+            .expect("first marker");
+        insert_schedule_reference_publish(&pool, "TEST-20990602T180000Z")
+            .await
+            .expect("second marker");
+
+        assert_eq!(
+            last_completed_schedule_reference_publish(&pool)
+                .await
+                .expect("read back"),
+            Some("TEST-20990602T180000Z".to_string()),
+            "must report the most recently completed delivery"
+        );
+
+        // Re-recording an earlier delivery (its publish cycle ran again, e.g.
+        // after a retry) must move it to the front -- `completed_at` is what
+        // is ordered on, and it is refreshed by the upsert.
+        insert_schedule_reference_publish(&pool, "TEST-20990601T180000Z")
+            .await
+            .expect("re-record");
+        assert_eq!(
+            last_completed_schedule_reference_publish(&pool)
+                .await
+                .expect("read back"),
+            Some("TEST-20990601T180000Z".to_string()),
+            "ON CONFLICT DO UPDATE must refresh completed_at, not silently do nothing"
+        );
+
+        sqlx::query("DELETE FROM schedule_reference_publishes WHERE delivery LIKE 'TEST-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }

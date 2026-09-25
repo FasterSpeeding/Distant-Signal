@@ -40,10 +40,11 @@ async fn main() -> anyhow::Result<()> {
     match &last_processed_delivery {
         Some(delivery) => tracing::info!(
             delivery = %delivery,
-            "seeded last_processed_delivery from api's persisted schedule-feed-ingests record; will not redundantly republish this delivery after a restart"
+            "seeded last_processed_delivery from this service's OWN persisted publish-completion \
+             marker; will not redundantly republish this delivery after a restart"
         ),
         None => tracing::info!(
-            "no prior schedule-feed delivery recorded by api yet; will process the next delivery poll_once finds (first-run behavior)"
+            "no completed schedule-reference publish cycle recorded by api yet; will process the next delivery poll_once finds (first-run behavior)"
         ),
     }
 
@@ -96,9 +97,100 @@ fn read_prefixed_lines_multi(path: &std::path::Path, prefixes: &[&str]) -> anyho
     Ok(out)
 }
 
+/// Every product one delivery's publish cycle is responsible for, and what
+/// happened to it -- the bookkeeping that decides whether
+/// `last_processed_delivery` may advance.
+///
+/// **The bug this type exists to fix.** `last_processed_delivery` used to be
+/// advanced immediately after the FIRST of seven publishes (`stanox_crs`),
+/// before any of the other six ran. Each of those six logged
+/// `"...; will retry next cycle"` on failure -- and none of them ever did:
+/// the very next cycle saw `last_processed_delivery == delivery.dir_name`,
+/// short-circuited on "no new delivery since last successful parse", and did
+/// not try again until a genuinely NEW delivery directory appeared, roughly
+/// 24 hours later. An `api` pod restarting mid-cycle, the client's 30s
+/// `REQUEST_TIMEOUT` expiring on a large body, one Postgres deadlock or one
+/// 413 was enough to lose a whole day of one (or several) products, with a
+/// single `error!` line and a log message that actively asserted the
+/// opposite.
+///
+/// So failures are now classified, because "retry the whole delivery next
+/// cycle" is only the right answer for some of them:
+///
+/// * `retryable` -- a later attempt at the SAME delivery could plausibly
+///   succeed: every HTTP publish failure (`api` unreachable or restarting, a
+///   timeout, a 413, a deadlock), and a failure to read the delivery's own
+///   files (a transient PVC/NFS blip). These hold `last_processed_delivery`
+///   where it was, so the next cycle reprocesses the whole delivery from
+///   scratch. That is safe because every one of the seven publishes is
+///   idempotent at the `api` end -- verified, not assumed: `upsert_stanox_crs`
+///   and `upsert_tiploc_crs` are per-key `INSERT ... ON CONFLICT DO UPDATE`;
+///   `upsert_fixed_links` is a whole-table `DELETE` + re-`INSERT` in one
+///   transaction; `upsert_schedule_line_population` is a per-`(line_id,
+///   service_date)` upsert; `upsert_schedule_network_departures` is a
+///   per-`(crs, service_date)` upsert; and
+///   `upsert_schedule_destination_departures`/
+///   `upsert_schedule_calling_points_full` each replace their own
+///   `service_date` in one transaction. None of them appends, none of them
+///   increments, none of them has a side effect outside its own table -- so
+///   re-publishing an already-successful product costs only the work, never
+///   correctness.
+/// * `permanent` -- a later attempt at the SAME delivery would fail
+///   identically, because the input itself is the problem (this delivery's
+///   ALF member parses to zero fixed links). Retrying that every 30 minutes
+///   for a day would re-parse a 700MB+ file and rebuild ~1.7M+ rows over and
+///   over to reach the same conclusion, so these are logged loudly and do
+///   NOT hold the marker back.
+///
+/// A delivery with no ALF file at all is neither: it is a legitimate,
+/// recorded state of that delivery (see `poll_once`'s own `warn!`), not a
+/// failure of this cycle.
+#[derive(Debug, Default)]
+struct CycleOutcome {
+    retryable_failures: Vec<String>,
+    permanent_failures: Vec<String>,
+}
+
+impl CycleOutcome {
+    /// Records a failure a later attempt at the same delivery could fix --
+    /// the classification that holds `last_processed_delivery` back.
+    fn retryable(&mut self, product: impl Into<String>) {
+        self.retryable_failures.push(product.into());
+    }
+
+    /// Records a failure that is deterministic in this delivery's own input
+    /// -- logged, but never worth reprocessing the delivery for.
+    fn permanent(&mut self, product: impl Into<String>) {
+        self.permanent_failures.push(product.into());
+    }
+
+    /// Whether this delivery may be marked processed. Deliberately keyed on
+    /// `retryable_failures` alone -- see this type's own doc comment.
+    fn may_advance_marker(&self) -> bool {
+        self.retryable_failures.is_empty()
+    }
+
+    /// Whether every single product published, with nothing logged against
+    /// it -- the only state that justifies writing the DURABLE completion
+    /// marker (`POST /private/schedule-reference-publishes`), as opposed to
+    /// merely advancing this process's in-memory marker.
+    ///
+    /// The two are not the same bar, on purpose. A permanent failure means
+    /// this process should stop re-attempting the delivery (so the in-memory
+    /// marker advances), but it must NOT claim in `api`'s durable record that
+    /// the delivery published completely -- that record is the one piece of
+    /// after-the-fact evidence anyone has, and a restart genuinely should
+    /// re-attempt a delivery whose last cycle did not fully publish.
+    fn fully_published(&self) -> bool {
+        self.retryable_failures.is_empty() && self.permanent_failures.is_empty()
+    }
+}
+
 /// Scans for the most recent complete delivery, skips if unchanged since
-/// `last_processed_delivery`, else reads+parses+POSTs it and only advances
-/// `last_processed_delivery` on a successful POST.
+/// `last_processed_delivery`, else reads+parses+POSTs every product it
+/// derives from that delivery, and only then advances
+/// `last_processed_delivery` -- see [`CycleOutcome`] for why "only then" is
+/// load-bearing and which failures hold it back.
 async fn poll_once(
     client: &Client,
     config: &Config,
@@ -155,32 +247,35 @@ async fn poll_once(
         })
         .collect();
 
-    common::ingest::post_batch(
+    let mut outcome = CycleOutcome::default();
+
+    // No longer `?`. A failed `stanox_crs` POST used to abort the whole
+    // cycle, which meant one transient failure on this ONE route also
+    // withheld the other six products that had nothing wrong with them. It
+    // is now recorded like every other publish: the remaining six still get
+    // their chance this cycle, and the unadvanced marker is what guarantees
+    // this one is retried on the next.
+    if let Err(err) = common::ingest::post_batch(
         client,
         &config.api_ingest_url,
         internal_oauth,
         &records,
         "stanox/crs rows",
     )
-    .await?;
-
-    // Only advance on a successful POST -- a failed POST just means the
-    // already-computed table is discarded and rebuilt from the same
-    // still-local, unchanged files next cycle (cheap), matching the
-    // spec's Error handling: "a failed POST just means the already-
-    // computed in-memory table is discarded and rebuilt... next cycle".
-    *last_processed_delivery = Some(delivery.dir_name.clone());
+    .await
+    {
+        tracing::error!(error = ?err, "failed to publish stanox/crs rows; this delivery will be retried next cycle");
+        outcome.retryable("stanox_crs");
+    }
 
     // `tiploc_crs` (Task 4 of
     // docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) is a
-    // strict superset of `stanox_crs` used for defense-in-depth, not the
-    // record `last_processed_delivery` advances on -- so this publish is
-    // deliberately best-effort, log-and-continue (matching
-    // `publish_fixed_links`'s own posture just below, NOT the stricter
-    // "abort the cycle on failure" posture the `stanox_crs` POST above
-    // has). A failed POST here must never prevent the `stanox_crs`
-    // POST/advance above (already done by this point) or any publish below
-    // it from proceeding.
+    // strict superset of `stanox_crs` used for defense-in-depth. Like every
+    // other publish in this cycle it is log-and-continue (a failure here
+    // must not stop the publishes below it from being attempted), but --
+    // unlike before this fix -- "continue" no longer means "and never try
+    // again": the failure is recorded on `outcome`, which is what actually
+    // makes the next cycle retry it.
     let tiploc_crs_records: Vec<common::TiplocCrsRecord> = tiploc_rows
         .into_iter()
         .map(|row| common::TiplocCrsRecord {
@@ -202,11 +297,20 @@ async fn poll_once(
     )
     .await
     {
-        tracing::error!(error = ?err, "failed to publish tiploc/crs rows; will retry next cycle");
+        tracing::error!(error = ?err, "failed to publish tiploc/crs rows; this delivery will be retried next cycle");
+        outcome.retryable("tiploc_crs");
     }
 
     if let Some(alf_path) = &delivery.alf_path {
-        publish_fixed_links(client, config, alf_path, internal_oauth, source_sequence).await;
+        publish_fixed_links(
+            client,
+            config,
+            alf_path,
+            internal_oauth,
+            source_sequence,
+            &mut outcome,
+        )
+        .await;
     } else {
         tracing::warn!(
             delivery = %delivery.dir_name,
@@ -222,10 +326,88 @@ async fn poll_once(
         internal_oauth,
         &records,
         &tiploc_crs_records,
+        &mut outcome,
     )
     .await;
 
+    if !outcome.may_advance_marker() {
+        // The marker stays exactly where it was, so the NEXT cycle sees this
+        // delivery as unprocessed and reruns the whole thing -- which is what
+        // the log line every one of these publishes prints has always
+        // claimed, and until this fix never did. Re-publishing the products
+        // that DID succeed is idempotent and cheap; see `CycleOutcome`.
+        tracing::error!(
+            delivery = %delivery.dir_name,
+            failed_products = ?outcome.retryable_failures,
+            permanently_failed_products = ?outcome.permanent_failures,
+            "not marking this delivery as processed: at least one product failed to publish this \
+             cycle, so the whole delivery will be reprocessed and republished on the next cycle"
+        );
+        return Ok(());
+    }
+
+    if !outcome.permanent_failures.is_empty() {
+        tracing::error!(
+            delivery = %delivery.dir_name,
+            permanently_failed_products = ?outcome.permanent_failures,
+            "marking this delivery as processed despite a product failing in a way that \
+             reprocessing the SAME delivery cannot fix -- that product's previous rows, if any, \
+             remain in place until the next delivery lands; the durable completion marker is \
+             deliberately NOT written, so a restart still re-attempts this delivery"
+        );
+    }
+
+    *last_processed_delivery = Some(delivery.dir_name.clone());
+
+    if outcome.fully_published() {
+        record_completed_publish(client, config, internal_oauth, &delivery.dir_name).await;
+    }
+
     Ok(())
+}
+
+/// Writes this service's OWN durable "delivery fully published" marker, the
+/// one `seed_last_processed_delivery` reads back on the next start.
+///
+/// Best-effort, and deliberately so: if this POST fails, the in-memory
+/// `last_processed_delivery` has already advanced (this process knows what it
+/// published), so nothing is republished now; the only consequence is that a
+/// restart before the next delivery falls back to first-run behavior and
+/// republishes a delivery that was already complete. Wasteful for one cycle,
+/// never data loss -- the exact same safe direction
+/// `seed_last_processed_delivery`'s own failure path already takes. Failing
+/// the cycle over it would be strictly worse: it would turn a bookkeeping
+/// blip into a retry of a publish that already succeeded.
+async fn record_completed_publish(
+    client: &Client,
+    config: &Config,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+    delivery: &str,
+) {
+    let body = common::ingest::ScheduleReferencePublishRequest {
+        delivery: delivery.to_string(),
+    };
+    match common::ingest::post_json(
+        client,
+        &config.schedule_reference_publishes_url,
+        internal_oauth,
+        &body,
+    )
+    .await
+    {
+        Ok(()) => tracing::info!(
+            delivery = %delivery,
+            "recorded this delivery's completed publish cycle with api; a restart will not \
+             redundantly republish it"
+        ),
+        Err(err) => tracing::warn!(
+            error = ?err,
+            delivery = %delivery,
+            "could not record this delivery's completed publish cycle with api; this process will \
+             still not republish it, but a restart before the next delivery will (wasteful, not \
+             incorrect)"
+        ),
+    }
 }
 
 /// Reads and parses `alf_path`'s already-local, read-only-mounted ALF
@@ -246,27 +428,34 @@ async fn poll_once(
 /// truncated, or format-changed ALF member). Without this guard, an empty
 /// batch would flow straight through to `post_batch` and `api`'s
 /// `upsert_fixed_links` (a full `DELETE` + zero `INSERT`s) would wipe the
-/// table -- and recovery would NOT be next-cycle, since
-/// `last_processed_delivery` is already advanced by the time this function
-/// runs (`poll_once`, above), so the next poll cycle short-circuits on "no
-/// new delivery" and won't retry until a genuinely new delivery directory
-/// appears (up to a full day for the CIF full timetable). So a zero-parsed
-/// batch is logged at `error` and this cycle's publish is skipped entirely,
-/// leaving the previous cycle's rows in place -- the same "leave the old
-/// rows rather than delete them with nothing to replace them" posture the
-/// absent-file case above already gets, just extended to cover this
-/// distinct, file-present-but-empty shape too.
+/// table. So a zero-parsed batch is logged at `error` and this cycle's
+/// publish is skipped entirely, leaving the previous cycle's rows in place --
+/// the same "leave the old rows rather than delete them with nothing to
+/// replace them" posture the absent-file case above already gets, just
+/// extended to cover this distinct, file-present-but-empty shape too. It is
+/// recorded as a [`CycleOutcome::permanent`] failure, not a retryable one:
+/// re-reading the same unchanged file on the same unchanged delivery would
+/// parse to zero links again, so holding the whole delivery back for it would
+/// only re-run a 700MB+ parse every 30 minutes to reach the same answer.
+///
+/// An ALF *read* failure, by contrast, is recorded as
+/// [`CycleOutcome::retryable`] -- a PVC/NFS read can fail transiently and
+/// succeed on the next attempt, and this product going stale for a whole day
+/// over one such blip is exactly the failure class this file's 2026-09-25
+/// rework exists to close.
 async fn publish_fixed_links(
     client: &Client,
     config: &Config,
     alf_path: &std::path::Path,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
     source_sequence: i32,
+    outcome: &mut CycleOutcome,
 ) {
     let text = match std::fs::read_to_string(alf_path) {
         Ok(text) => text,
         Err(err) => {
             tracing::error!(error = ?err, path = ?alf_path, "failed to read ALF file; skipping fixed-links publish this cycle");
+            outcome.retryable("fixed_links (ALF read failed)");
             return;
         }
     };
@@ -276,6 +465,7 @@ async fn publish_fixed_links(
     if records.is_empty() {
         tracing::error!(path = ?alf_path, "ALF file parsed to zero fixed links; \
             skipping publish rather than wiping the table");
+        outcome.permanent("fixed_links (ALF parsed to zero links)");
         return;
     }
 
@@ -304,50 +494,52 @@ async fn publish_fixed_links(
     )
     .await
     {
-        tracing::error!(error = ?err, "failed to publish fixed links; will retry next cycle");
+        tracing::error!(error = ?err, "failed to publish fixed links; this delivery will be retried next cycle");
+        outcome.retryable("fixed_links");
     }
 }
 
-/// Renders `delivered_at` in the exact directory-name shape
-/// `schedule-ingest::delivery::delivery_dir_name` uses for its
-/// timestamp-named delivery directories under `storage_dir`:
-/// `YYYYMMDDTHHMMSSZ`. Kept as a small local copy rather than a cross-crate
-/// import -- that function is private to `schedule-ingest`, and the two
-/// crates already communicate a delivery's identity purely by string shape
-/// (see `discovery::CompleteDelivery::dir_name`'s own doc comment), not a
-/// shared Rust type, the same posture `schedule-ingest::main`'s own
-/// `ScheduleFeedIngestRequest` documents for its mirrored struct. Both this
-/// function and the real `delivery_dir_name` derive their output from the
-/// SAME underlying timestamp (the delivery zip's own mtime, recorded as
-/// `schedule_feed_ingests.delivered_at`), via the same `chrono` format
-/// string, so the two are guaranteed to agree.
-fn dir_name_from_delivered_at(delivered_at: chrono::DateTime<chrono::Utc>) -> String {
-    delivered_at.format("%Y%m%dT%H%M%SZ").to_string()
-}
-
-/// Seeds `last_processed_delivery` from `api`'s own persisted record of the
-/// most recently successfully-ingested CIF delivery (`GET
-/// /private/schedule-feed-ingests` -- the same route `schedule-ingest`
-/// POSTs to, and the same GET-a-freshness-marker-at-startup pattern
-/// `common::ingest::time_until_next_poll` already establishes for every
-/// other poller in this workspace), rather than always starting at `None`
-/// on a process restart.
+/// Seeds `last_processed_delivery` from THIS SERVICE'S OWN persisted record
+/// of the most recent delivery whose publish cycle actually completed (`GET
+/// /private/schedule-reference-publishes`), rather than always starting at
+/// `None` on a process restart.
 ///
-/// Without this, restarting this container (the `reference` sibling in the
-/// `schedulefeed` Pod) always re-triggers a full, redundant republish of
-/// `schedule_destination_departures` for the whole 7-day forward window --
-/// ~1.7-2 million rows torn down and rebuilt in Postgres -- even when the
-/// underlying delivery was already fully processed hours earlier, because
-/// `last_processed_delivery` lived only in this process's memory. Confirmed
-/// directly against production: a delivery reprocessed at a real restart
-/// had already been ingested 8.5 hours earlier per `schedule_feed_ingests`.
+/// Without any seeding at all, restarting this container (the `reference`
+/// sibling in the `schedulefeed` Pod) always re-triggers a full, redundant
+/// republish of `schedule_destination_departures` for the whole forward
+/// window -- ~1.7-2 million rows torn down and rebuilt in Postgres -- even
+/// when the underlying delivery was already fully processed hours earlier,
+/// because `last_processed_delivery` lives only in this process's memory.
+/// Confirmed directly against production: a delivery reprocessed at a real
+/// restart had already been ingested 8.5 hours earlier.
+///
+/// **This reads a marker `schedule-reference` writes for itself, NOT
+/// `schedule-ingest`'s `/schedule-feed-ingests` record, and that change is
+/// the fix for a real, latent day-of-data-loss bug.** This function used to
+/// read `MAX(delivered_at) FROM schedule_feed_ingests` -- which the SIBLING
+/// container writes the instant it has EXTRACTED and verified a delivery zip,
+/// before this service has read a single byte of it. The two are different
+/// facts, and treating "extracted" as "published" meant that a restart of
+/// this container between those two moments (an OOM kill during the
+/// in-memory CIF parse of a 700MB+ file, a rolling deploy, any crash) seeded
+/// `last_processed_delivery` to a delivery this service had never published.
+/// `poll_once` then short-circuited on "no new delivery since last successful
+/// parse", and every product for that delivery -- both CRS crosswalks, fixed
+/// links, per-line population, network departures, and up to 8 days each of
+/// destination departures and full calling points -- silently never
+/// published until the next delivery landed, roughly 24 hours later. The
+/// restart-dedup optimization was, in that window, a
+/// lose-a-whole-day-of-data mechanism. See `poll_once`/[`CycleOutcome`] for
+/// the other half of the same fix (what "completed" now has to mean before
+/// the marker is written at all).
 ///
 /// Returns `None` -- this service's pre-existing, still-correct
 /// first-run/fallback behavior (`poll_once` processes the next delivery it
 /// finds) -- in two distinct cases:
-/// * `api` has never recorded a delivery at all (`fetched_at: None`) -- a
-///   genuine, valid, once-ever case (a fresh deployment's
-///   `schedule_feed_ingests` table starts empty), not an error.
+/// * `api` has never recorded a completed publish cycle (`delivery: None`)
+///   -- a genuine, valid case (a fresh deployment's
+///   `schedule_reference_publishes` table starts empty, and so does an
+///   existing deployment's on the release that introduces it), not an error.
 /// * The GET itself fails (network error, `api` not yet reachable, a bad
 ///   response) -- logged at `warn`, but never propagated as a hard startup
 ///   failure: this service must still be able to start and make forward
@@ -357,9 +549,9 @@ async fn seed_last_processed_delivery(
     config: &Config,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) -> Option<String> {
-    let response: common::ingest::LastFetchedResponse = match common::ingest::get_json(
+    let response: common::ingest::LastCompletedPublishResponse = match common::ingest::get_json(
         client,
-        &config.schedule_feed_ingests_url,
+        &config.schedule_reference_publishes_url,
         internal_oauth,
     )
     .await
@@ -368,12 +560,12 @@ async fn seed_last_processed_delivery(
         Err(err) => {
             tracing::warn!(
                 error = ?err,
-                "could not fetch last schedule-feed delivery from api on startup; falling back to first-run behavior for this process lifetime"
+                "could not fetch this service's own last completed publish cycle from api on startup; falling back to first-run behavior for this process lifetime"
             );
             return None;
         }
     };
-    response.fetched_at.map(dir_name_from_delivered_at)
+    response.delivery
 }
 
 /// Forward publish window, in days, for `schedule_destination_departures`:
@@ -524,6 +716,7 @@ async fn publish_cif_derived_products(
     internal_oauth: &common::oauth_client::OAuthTokenCache,
     stanox_crs_records: &[common::StanoxCrsRecord],
     tiploc_crs_records: &[common::TiplocCrsRecord],
+    outcome: &mut CycleOutcome,
 ) {
     let mca_schedule_text = match read_prefixed_lines_multi(
         mca_path,
@@ -532,6 +725,10 @@ async fn publish_cif_derived_products(
         Ok(text) => text,
         Err(err) => {
             tracing::error!(error = ?err, "failed to read CIF SCHEDULE records from delivery; skipping this cycle's CIF-derived publishes");
+            // Retryable, not permanent: a read of the read-only-mounted PVC
+            // can fail transiently, and this branch means FIVE of this
+            // service's seven products published nothing at all this cycle.
+            outcome.retryable("all CIF-derived products (MCA SCHEDULE read failed)");
             return;
         }
     };
@@ -539,12 +736,25 @@ async fn publish_cif_derived_products(
     let index = schedule_query::ScheduleIndex::from_text(&mca_schedule_text);
     // schedule-reference has no rail-day concept of its own yet --
     // publishing against the plain calendar date is deliberate and
-    // sufficient here, UNCHANGED from before this restructuring:
+    // sufficient here:
     // `schedules_touching`/`departures_by_crs` both resolve STP overlays
     // per calendar date already, and `full-coverage-consumer`'s OWN
     // rail-day gating is what decides Pending/Available for the line
     // population, not this publish step.
-    let today = chrono::Utc::now().date_naive();
+    //
+    // LONDON-local, not UTC. This was `chrono::Utc::now().date_naive()`
+    // until 2026-09-25, which meant that during the 00:00-01:00 BST window
+    // this container and its `schedule-ingest` sibling -- which has always
+    // used London-local time for the equivalent decision, see
+    // `schedule-ingest::main`'s own `Utc::now().with_timezone(&London)` --
+    // disagreed about which rail day a delivery belonged to, and every
+    // product published in that hour landed under YESTERDAY's date: stale
+    // for the day it was published for, and overwriting a date whose own
+    // data was already complete. The CIF times these products carry are
+    // Europe/London civil time throughout (see `london_local_time_at`'s
+    // own doc comment), so London-local is also the only date that makes
+    // those times mean what they say.
+    let today = london_local_date_now();
 
     log_new_unresolved_booked_tiplocs(&index, today, tiploc_crs_records);
 
@@ -556,6 +766,7 @@ async fn publish_cif_derived_products(
         stanox_crs_records,
         tiploc_crs_records,
         internal_oauth,
+        outcome,
     )
     .await;
     publish_schedule_network_departures(
@@ -565,6 +776,7 @@ async fn publish_cif_derived_products(
         today,
         tiploc_crs_records,
         internal_oauth,
+        outcome,
     )
     .await;
     // Third CIF-derived product off the SAME one-per-cycle ScheduleIndex --
@@ -591,13 +803,15 @@ async fn publish_cif_derived_products(
             date,
             tiploc_crs_records,
             internal_oauth,
+            outcome,
         )
         .await;
         // Fourth CIF-derived product off the SAME one-per-cycle
         // ScheduleIndex and the SAME per-date loop as the sibling call
         // directly above -- one pass, multiple outputs, this file's own
         // established precedent.
-        publish_schedule_calling_points_full(client, config, &index, date, internal_oauth).await;
+        publish_schedule_calling_points_full(client, config, &index, date, internal_oauth, outcome)
+            .await;
     }
 }
 
@@ -630,7 +844,15 @@ async fn publish_cif_derived_products(
 /// `index` is `&ScheduleIndex` (caller-supplied) rather than an owned
 /// `ScheduleIndex` built locally, so the loop body's `&index` trips
 /// `clippy::needless_borrow`.
-#[allow(clippy::needless_borrow)]
+///
+/// `too_many_arguments` is allowed for the same reason every sibling
+/// `publish_*` in this file takes its inputs individually: they are all
+/// caller-supplied, built once per cycle by `publish_cif_derived_products`,
+/// and bundling them into a struct purely to satisfy an argument count would
+/// hide which of them each publish actually reads. The eighth argument is
+/// `outcome`, the per-cycle failure ledger the 2026-09-25 retry fix threads
+/// through every publish -- see [`CycleOutcome`].
+#[allow(clippy::needless_borrow, clippy::too_many_arguments)]
 async fn publish_schedule_line_population(
     client: &Client,
     config: &Config,
@@ -639,6 +861,7 @@ async fn publish_schedule_line_population(
     stanox_crs_records: &[common::StanoxCrsRecord],
     tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    outcome: &mut CycleOutcome,
 ) {
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
     for line in lines_to_publish(&config.lines, &crs_to_tiploc) {
@@ -659,7 +882,8 @@ async fn publish_schedule_line_population(
         )
         .await
         {
-            tracing::error!(error = ?err, line_id = %line.id, "failed to publish schedule line population; will retry next cycle");
+            tracing::error!(error = ?err, line_id = %line.id, "failed to publish schedule line population; this delivery will be retried next cycle");
+            outcome.retryable(format!("schedule_line_population (line {})", line.id));
         }
     }
 }
@@ -774,6 +998,7 @@ async fn publish_schedule_network_departures(
     today: chrono::NaiveDate,
     tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    outcome: &mut CycleOutcome,
 ) {
     let tiploc_to_crs: std::collections::HashMap<String, String> = tiploc_crs_records
         .iter()
@@ -798,7 +1023,8 @@ async fn publish_schedule_network_departures(
     )
     .await
     {
-        tracing::error!(error = ?err, "failed to publish schedule-derived network departures; will retry next cycle");
+        tracing::error!(error = ?err, "failed to publish schedule-derived network departures; this delivery will be retried next cycle");
+        outcome.retryable("schedule_network_departures");
     }
 }
 
@@ -961,6 +1187,7 @@ async fn publish_schedule_destination_departures(
     today: chrono::NaiveDate,
     tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    outcome: &mut CycleOutcome,
 ) {
     let tiploc_to_crs: std::collections::HashMap<String, String> = tiploc_crs_records
         .iter()
@@ -979,25 +1206,17 @@ async fn publish_schedule_destination_departures(
         schedule_query::departures_by_destination_crs(index, today, now, &tiploc_to_crs);
     let rows = schedule_destination_departures_rows(by_destination, today);
 
-    // This function sends exactly one call per date, so it is always that
-    // date's first (and only) chunk -- `first_chunk=true` tells the ingest
-    // handler to clear the date before inserting, same behavior this route
-    // has always had. See this function's own doc comment, point 2, for the
-    // documented multi-chunk fallback this parameter exists for.
-    let url = format!(
-        "{}?first_chunk=true",
-        config.schedule_destination_departures_url
-    );
-    if let Err(err) = common::ingest::post_batch(
+    if let Err(err) = post_date_scoped_rows_in_chunks(
         client,
-        &url,
+        &config.schedule_destination_departures_url,
         internal_oauth,
         &rows,
         "schedule-derived destination departures rows",
     )
     .await
     {
-        tracing::error!(error = ?err, "failed to publish schedule-derived destination departures; will retry next cycle");
+        tracing::error!(error = ?err, %today, "failed to publish schedule-derived destination departures; this delivery will be retried next cycle");
+        outcome.retryable("schedule_destination_departures");
     }
 }
 
@@ -1013,24 +1232,28 @@ async fn publish_schedule_destination_departures(
 /// `publish_schedule_destination_departures`'s own `NaiveTime::MIN`, see
 /// that function's doc comment, point 1).
 ///
-/// Real-delivery body-size measurement (Task 1 Step 5) is a documented
-/// follow-up, not done here -- there is no live CIF delivery reachable in
-/// this development environment. If a future measurement against a real
-/// delivery pushes this past a comfortable fraction of
-/// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`),
-/// apply the same `for chunk in rows.chunks(50_000)` fallback
-/// `publish_schedule_destination_departures`'s own doc comment already
-/// documents, including its `?first_chunk=` query parameter on each chunk's
-/// URL -- the ingest side already supports it
-/// (`queries::upsert_schedule_calling_points_full_chunk`,
-/// `post_schedule_calling_points_full`'s own `?first_chunk=` parameter), so
-/// turning this fallback on is just this loop change.
+/// **Chunked as of 2026-09-25**, via [`post_date_scoped_rows_in_chunks`] --
+/// the `rows.chunks(50_000)` fallback this doc comment previously described as
+/// a follow-up "just this loop change" away is now what actually runs, on every
+/// publish, rather than waiting for a measurement to force it. This is the
+/// largest product this service publishes (every `LO`/`LI`/`LT` calling point
+/// of every non-cancelled schedule, including the passing points and junction
+/// TIPLOCs its departure-bearing sibling excludes, so realistically 2-3x that
+/// sibling's ~377,000 rows per date) and it publishes eight dates per cycle,
+/// which put a single un-chunked POST plausibly at or over `api`'s
+/// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`)
+/// and/or this crate's 30s `REQUEST_TIMEOUT`. See [`PUBLISH_CHUNK_ROWS`] for
+/// the sizing and [`post_date_scoped_rows_in_chunks`] for the `?first_chunk=`
+/// contract -- already supported on the ingest side
+/// (`queries::upsert_schedule_calling_points_full_chunk`) -- that keeps
+/// chunking from turning into per-chunk data loss.
 async fn publish_schedule_calling_points_full(
     client: &Client,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     date: chrono::NaiveDate,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    outcome: &mut CycleOutcome,
 ) {
     let mut rows: Vec<serde_json::Value> = Vec::new();
     for uid in index.uids() {
@@ -1059,23 +1282,17 @@ async fn publish_schedule_calling_points_full(
         }
     }
 
-    // Same "always this date's first and only chunk today" posture as
-    // `publish_schedule_destination_departures` above -- see that
-    // function's own doc comment.
-    let url = format!(
-        "{}?first_chunk=true",
-        config.schedule_calling_points_full_url
-    );
-    if let Err(err) = common::ingest::post_batch(
+    if let Err(err) = post_date_scoped_rows_in_chunks(
         client,
-        &url,
+        &config.schedule_calling_points_full_url,
         internal_oauth,
         &rows,
         "schedule-derived full calling-point rows",
     )
     .await
     {
-        tracing::error!(error = ?err, %date, "failed to publish schedule calling points; will retry next cycle");
+        tracing::error!(error = ?err, %date, "failed to publish schedule calling points; this delivery will be retried next cycle");
+        outcome.retryable("schedule_calling_points_full");
     }
 }
 
@@ -1096,6 +1313,36 @@ fn london_local_time_at(instant: chrono::DateTime<chrono::Utc>) -> chrono::Naive
 
 fn london_local_time_now() -> chrono::NaiveTime {
     london_local_time_at(chrono::Utc::now())
+}
+
+/// The London-local CALENDAR DATE at `instant` -- the date half of
+/// [`london_local_time_at`] directly above, and the date every CIF-derived
+/// product is published under (`publish_cif_derived_products`'s `today`).
+///
+/// `publish_cif_derived_products` used `chrono::Utc::now().date_naive()` until
+/// 2026-09-25. For the ~7 months of British Summer Time that is the WRONG
+/// DATE for a full hour every night: between 00:00 and 01:00 BST the UTC date
+/// is still yesterday's. The sibling `schedule-ingest` container has always
+/// decided its own equivalent day question in London-local time
+/// (`Utc::now().with_timezone(&London)`), so for that hour the two containers
+/// in the same Pod disagreed about which rail day a delivery belonged to, and
+/// a cycle that ran inside it published today's timetable under yesterday's
+/// `service_date` -- overwriting a complete day with a day of data that does
+/// not belong to it, and leaving the real current day unpublished. Not
+/// theoretical for the products in question: `schedule-ingest`'s deliveries
+/// genuinely land in the evening/overnight window.
+///
+/// Same `DateTime::with_timezone` direction as [`london_local_time_at`], so
+/// the same "always exactly one unambiguous answer" reasoning applies -- no
+/// `LocalResult` handling is needed here either.
+fn london_local_date_at(instant: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
+    instant
+        .with_timezone(&chrono_tz::Europe::London)
+        .date_naive()
+}
+
+fn london_local_date_now() -> chrono::NaiveDate {
+    london_local_date_at(chrono::Utc::now())
 }
 
 /// Every catalogued line with at least one station resolvable to a real,
@@ -1125,6 +1372,114 @@ fn lines_to_publish<'a>(
             .iter()
             .any(|s| crs_to_tiploc.contains_key(&s.crs.to_uppercase()))
     })
+}
+
+/// How many rows go in one POST to a date-scoped, wholesale-replace ingest
+/// route (`/schedule-destination-departures`,
+/// `/schedule-calling-points-full`).
+///
+/// 50,000 is the figure both those products' own doc comments have carried as
+/// the documented-but-unimplemented fallback since they were written
+/// (`for chunk in rows.chunks(50_000)`), now implemented. At the ~100 bytes
+/// per destination-departures row that product's sizing design measured, one
+/// chunk is roughly 5MB of JSON -- about 5% of `api`'s
+/// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`)
+/// and small enough that a single chunk comfortably fits inside this crate's
+/// 30-second [`REQUEST_TIMEOUT`], which is the limit that actually binds
+/// first.
+///
+/// **Why this was closed proactively rather than after a failure.**
+/// `schedule_calling_points_full` emits every `LO`/`LI`/`LT` calling point of
+/// every non-cancelled schedule -- including passing points and junction
+/// TIPLOCs that its sibling `schedule_destination_departures` (departure-
+/// bearing calling points only) excludes -- so it is realistically 2-3x that
+/// product's ~377,000 rows per date, and it publishes EIGHT dates per cycle.
+/// A single un-chunked POST of that was plausibly at or over the 100MB body
+/// limit and/or the 30s client timeout, and the failure mode was invisible:
+/// one `error!` line, then (before this same commit's `CycleOutcome` fix) no
+/// retry until the next delivery.
+const PUBLISH_CHUNK_ROWS: usize = 50_000;
+
+/// POSTs `rows` to a date-scoped, wholesale-replace ingest route in
+/// [`PUBLISH_CHUNK_ROWS`]-sized chunks, telling the route explicitly which
+/// chunk is allowed to clear the date.
+///
+/// **The contract, and the data-loss bug it exists to avoid.** Both target
+/// routes replace a service date by `DELETE ... WHERE service_date =
+/// ANY(...)` followed by an `INSERT ... UNNEST(...)`, in one transaction. If
+/// every chunk of one date ran that unchanged, chunk 2 would delete
+/// everything chunk 1 had just inserted and the date would end up holding
+/// only the LAST chunk -- a far worse bug than the oversized body this
+/// chunking exists to prevent. So `?first_chunk=true` is sent on the FIRST
+/// chunk of a date only (clear the date, then insert), and
+/// `?first_chunk=false` on every chunk after it (insert only).
+///
+/// `first_chunk` is `api`'s OWN already-landed parameter name for exactly this
+/// (`routes::ingest::ScheduleChunkParams`,
+/// `queries::upsert_schedule_calling_points_full_chunk`) -- the ingest side
+/// added it ahead of a publisher that would use it, and this is that
+/// publisher. Getting the name wrong here would be silent and catastrophic:
+/// `api` would ignore the unknown parameter, every chunk would take the
+/// `DELETE` branch, and each date would keep only its last chunk.
+///
+/// **Partial-date exposure, and why it is the right trade.** A failure part
+/// way through a date (chunk 5 of 12 times out) leaves that date holding
+/// chunks 1-4 instead of either the old data or the complete new data -- the
+/// one thing the previous single-transaction shape could not do. That is
+/// bounded and self-healing: the failure is recorded on [`CycleOutcome`], the
+/// delivery marker does not advance, and the next cycle (≤ `poll_interval_secs`
+/// later) republishes the whole date starting from a `first_chunk=true` chunk.
+/// The alternative -- a body that never lands at all, for a whole day, with
+/// one log line -- is not better, it is just less visible.
+async fn post_date_scoped_rows_in_chunks(
+    client: &Client,
+    url: &str,
+    tokens: &common::oauth_client::OAuthTokenCache,
+    rows: &[serde_json::Value],
+    noun: &str,
+) -> anyhow::Result<()> {
+    // An empty publish is still POSTed, exactly once, rather than skipped:
+    // both receiving routes treat an empty batch as a deliberate no-op that
+    // must NOT delete the date (see `queries::upsert_schedule_calling_points_full`'s
+    // own "an empty `rows` is a no-op, and that is load-bearing"), and
+    // sending it keeps this cycle's `posted 0 <noun>` log line -- the only
+    // evidence that the publish ran at all and genuinely had nothing to say.
+    if rows.is_empty() {
+        return common::ingest::post_batch(client, &first_chunk_url(url, true), tokens, rows, noun)
+            .await;
+    }
+
+    let chunk_count = rows.len().div_ceil(PUBLISH_CHUNK_ROWS);
+    for (index, chunk) in rows.chunks(PUBLISH_CHUNK_ROWS).enumerate() {
+        let first_chunk = index == 0;
+        common::ingest::post_batch(
+            client,
+            &first_chunk_url(url, first_chunk),
+            tokens,
+            chunk,
+            noun,
+        )
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "chunk {}/{chunk_count} ({} rows, first_chunk={first_chunk}) failed: {err}",
+                index + 1,
+                chunk.len(),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Appends the `first_chunk` query parameter
+/// [`post_date_scoped_rows_in_chunks`] uses to tell a date-scoped ingest route
+/// whether this chunk is the one that clears the date -- `api`'s own parameter
+/// name for it, see that function's doc comment. Handles a URL that already
+/// carries a query string, since these URLs come from configuration and
+/// nothing stops an operator setting one.
+fn first_chunk_url(url: &str, first_chunk: bool) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}first_chunk={first_chunk}")
 }
 
 /// A single-object POST (not a batch array) -- `common::ingest::post_batch`
@@ -2061,30 +2416,32 @@ mod poll_once_tests {
         assert_eq!(rows[1]["train_uid"], "EARLY");
     }
 
-    /// Every field but `schedule_feed_ingests_url` is an inert placeholder
-    /// -- these tests exercise only `seed_last_processed_delivery`, which
-    /// touches that one field plus the `client`/`internal_oauth` arguments
-    /// passed in alongside it. Same "config fixture with one caller-supplied
-    /// knob" convention as this crate's sibling crates' own `test_config`
-    /// helpers (e.g. `schedule-ingest::main::tests::test_config`).
-    fn test_config(schedule_feed_ingests_url: &str) -> Config {
+    /// Points EVERY one of this `Config`'s `*_URL` fields at `base`, on the
+    /// real route paths, so a `poll_once` test can mount per-route mocks and
+    /// see exactly which products published and which did not. `lines` is
+    /// empty on purpose: `publish_schedule_line_population` then has nothing
+    /// to publish, keeping these tests about the six whole-network products.
+    pub(super) fn test_config_for_server(base: &str) -> Config {
         Config {
             storage_dir: std::path::PathBuf::from("/tmp/schedule-reference-test-does-not-exist"),
             poll_interval_secs: 1800,
-            api_ingest_url: "http://127.0.0.1:1/stanox-crs".to_string(),
-            schedule_line_population_url: "http://127.0.0.1:1/schedule-line-population".to_string(),
-            schedule_network_departures_url: "http://127.0.0.1:1/schedule-network-departures"
-                .to_string(),
-            schedule_destination_departures_url:
-                "http://127.0.0.1:1/schedule-destination-departures".to_string(),
-            fixed_links_url: "http://127.0.0.1:1/fixed-links".to_string(),
-            schedule_calling_points_full_url: "http://127.0.0.1:1/schedule-calling-points-full"
-                .to_string(),
-            tiploc_crs_url: "http://127.0.0.1:1/tiploc-crs".to_string(),
-            schedule_feed_ingests_url: schedule_feed_ingests_url.to_string(),
+            api_ingest_url: format!("{base}/private/stanox-crs"),
+            schedule_line_population_url: format!("{base}/private/schedule-line-population"),
+            schedule_network_departures_url: format!("{base}/private/schedule-network-departures"),
+            schedule_destination_departures_url: format!(
+                "{base}/private/schedule-destination-departures"
+            ),
+            fixed_links_url: format!("{base}/private/fixed-links"),
+            schedule_calling_points_full_url: format!(
+                "{base}/private/schedule-calling-points-full"
+            ),
+            tiploc_crs_url: format!("{base}/private/tiploc-crs"),
+            schedule_reference_publishes_url: format!(
+                "{base}/private/schedule-reference-publishes"
+            ),
             lines: common::config::LineCatalogue(vec![]),
             internal_oauth: common::oauth_client::InternalOAuthArgs {
-                internal_oauth_token_url: "placeholder-set-per-test-below".to_string(),
+                internal_oauth_token_url: format!("{base}/token/"),
                 internal_oauth_client_id: "test-client".to_string(),
                 internal_oauth_scope: "groups".to_string(),
                 internal_oauth_username: "test-user".to_string(),
@@ -2100,11 +2457,11 @@ mod poll_once_tests {
     /// Mounts a token-issuing mock onto `server` and returns a token cache
     /// pointed at it -- mirrors `common::poller_loop::tests::token_cache`
     /// and `common::ingest::tests`' own mock-Authentik setup exactly (same
-    /// `/token/` path, same fake-JWT response shape), so
-    /// `seed_last_processed_delivery`'s real `common::ingest::get_json`
-    /// call succeeds its bearer-token fetch before hitting whichever
-    /// `/schedule-feed-ingests` mock each test below mounts separately.
-    async fn mock_token_cache(
+    /// `/token/` path, same fake-JWT response shape), so the real
+    /// `common::ingest::get_json`/`post_batch` calls under test succeed their
+    /// bearer-token fetch before hitting whichever per-route mock each test
+    /// mounts separately.
+    pub(super) async fn mock_token_cache(
         server: &wiremock::MockServer,
     ) -> common::oauth_client::OAuthTokenCache {
         wiremock::Mock::given(wiremock::matchers::method("POST"))
@@ -2126,29 +2483,56 @@ mod poll_once_tests {
         })
     }
 
-    #[test]
-    fn dir_name_from_delivered_at_matches_schedule_ingests_own_directory_name_format() {
-        // Mirrors schedule-ingest::delivery::delivery_dir_name's own fixture
-        // (`delivery_dir_name_matches_the_expected_compact_sortable_format`)
-        // byte-for-byte -- the whole point of this function is that the two
-        // crates agree on this exact string for the exact same instant, so
-        // a seeded `last_processed_delivery` actually matches the real
-        // `discovery::CompleteDelivery::dir_name` a fresh disk scan finds.
-        let delivered_at: chrono::DateTime<chrono::Utc> = "2026-09-03T17:28:30Z".parse().unwrap();
-        assert_eq!(dir_name_from_delivered_at(delivered_at), "20260903T172830Z");
-    }
-
-    /// The actual regression test for this fix (2026-09-12): after a
-    /// restart, this service must seed its dedup state from `api`'s real,
-    /// persisted delivery record instead of unconditionally starting at
-    /// `None`, so it doesn't redundantly republish `schedule_destination_departures`'
-    /// whole 7-day forward window for a delivery already processed hours
-    /// earlier.
+    /// The seeding half of the 2026-09-25 restart-dedup fix: after a restart,
+    /// this service must seed its dedup state from ITS OWN completion marker,
+    /// so it neither redundantly republishes a delivery it already finished
+    /// nor skips one it never finished.
     #[tokio::test]
-    async fn seed_last_processed_delivery_seeds_from_a_real_prior_record_when_one_exists() {
+    async fn seed_last_processed_delivery_seeds_from_its_own_completion_marker() {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/schedule-feed-ingests"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-reference-publishes",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "delivery": "20260903T172830Z"
+                })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config_for_server(&server.uri());
+
+        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
+
+        assert_eq!(
+            seeded,
+            Some("20260903T172830Z".to_string()),
+            "must seed the exact dir_name a real discovery::latest_complete_delivery scan finds"
+        );
+    }
+
+    /// **The regression test for finding #1 (High).** The dedup marker must
+    /// come from `schedule-reference`'s own completion record, NOT from
+    /// `schedule-ingest`'s extraction record.
+    ///
+    /// The shape reproduced here is the exact production one: `schedule-ingest`
+    /// HAS recorded a delivery (so `/private/schedule-feed-ingests` would
+    /// happily answer with it, and is mounted here to prove it is not read),
+    /// but `schedule-reference` never finished publishing it -- it was
+    /// restarted mid-cycle. Seeding from the ingest record made `poll_once`
+    /// short-circuit on "no new delivery" and silently skip every product for
+    /// that delivery until the next one landed ~24 hours later. Seeding from
+    /// its own (absent) completion marker must instead fall back to first-run
+    /// behavior, i.e. process the delivery.
+    #[tokio::test]
+    async fn seed_last_processed_delivery_does_not_seed_from_schedule_ingests_extraction_record() {
+        let server = wiremock::MockServer::start().await;
+        // schedule-ingest DID extract and record a delivery.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/private/schedule-feed-ingests"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "fetchedAt": "2026-09-03T17:28:30Z"
@@ -2156,44 +2540,66 @@ mod poll_once_tests {
             )
             .mount(&server)
             .await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config(&format!("{}/schedule-feed-ingests", server.uri()));
-
-        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
-
-        assert_eq!(
-            seeded,
-            Some("20260903T172830Z".to_string()),
-            "must seed the exact dir_name a real discovery::latest_complete_delivery scan would find for this delivered_at"
-        );
-    }
-
-    /// The other half of this fix's binding contract: a genuinely fresh
-    /// deployment (an empty `schedule_feed_ingests` table, `fetchedAt:
-    /// null`) is a real, valid, once-ever case -- not an error -- and must
-    /// still fall back to this service's pre-existing first-run behavior.
-    #[tokio::test]
-    async fn seed_last_processed_delivery_falls_back_to_none_when_no_prior_record_exists() {
-        let server = wiremock::MockServer::start().await;
+        // schedule-reference never completed a publish cycle for it.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/schedule-feed-ingests"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-reference-publishes",
+            ))
             .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "fetchedAt": null
-                })),
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "delivery": null })),
             )
             .mount(&server)
             .await;
         let tokens = mock_token_cache(&server).await;
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config(&format!("{}/schedule-feed-ingests", server.uri()));
+        let config = test_config_for_server(&server.uri());
 
         let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
 
         assert_eq!(
             seeded, None,
-            "an empty schedule_feed_ingests table must fall back to None/first-run behavior, not error or panic"
+            "a delivery schedule-ingest extracted but schedule-reference never published must NOT \
+             be treated as already processed -- that is the bug that silently loses a whole day of \
+             every published product"
+        );
+        let ingest_reads = server
+            .received_requests()
+            .await
+            .expect("wiremock records requests")
+            .into_iter()
+            .filter(|req| req.url.path() == "/private/schedule-feed-ingests")
+            .count();
+        assert_eq!(
+            ingest_reads, 0,
+            "schedule-reference must not read schedule-ingest's extraction record at all any more"
+        );
+    }
+
+    /// A genuinely fresh deployment (an empty `schedule_reference_publishes`
+    /// table, `delivery: null`) is a real, valid case -- not an error -- and
+    /// must fall back to this service's pre-existing first-run behavior.
+    #[tokio::test]
+    async fn seed_last_processed_delivery_falls_back_to_none_when_no_prior_record_exists() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-reference-publishes",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "delivery": null })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config_for_server(&server.uri());
+
+        assert_eq!(
+            seed_last_processed_delivery(&client, &config, &tokens).await,
+            None,
+            "an empty schedule_reference_publishes table must fall back to None/first-run behavior"
         );
     }
 
@@ -2207,10 +2613,461 @@ mod poll_once_tests {
         let server = wiremock::MockServer::start().await;
         let tokens = mock_token_cache(&server).await;
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config(&format!("{}/schedule-feed-ingests", server.uri()));
+        let config = test_config_for_server(&server.uri());
 
-        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
+        assert_eq!(
+            seed_last_processed_delivery(&client, &config, &tokens).await,
+            None
+        );
+    }
+}
 
-        assert_eq!(seeded, None);
+/// End-to-end `poll_once` coverage for finding #2 (High): six of this
+/// service's seven publishes logged `"will retry next cycle"` and never did,
+/// because `last_processed_delivery` advanced after the FIRST one.
+///
+/// These drive the real `poll_once` against a real delivery directory on disk
+/// and a mock `api`, because that is the only place the bug was observable:
+/// every individual publish function already "worked", and what was broken was
+/// the sequencing between them.
+#[cfg(test)]
+mod poll_once_retry_tests {
+    use super::*;
+
+    /// One real, minimal delivery directory of the exact shape
+    /// `schedule-ingest` produces and `discovery::latest_complete_delivery`
+    /// accepts: a timestamp-named directory holding an `RJTTF<n>MCA.txt` and
+    /// an `RJTTF<n>MSN.txt`.
+    ///
+    /// The MCA carries a byte-verbatim real `TI` record (so the STANOX/CRS and
+    /// TIPLOC/CRS publishes have something real to resolve) plus one
+    /// `BS`/`LO`/`LT` schedule block whose date range is generated around
+    /// `today` so the CIF-derived products resolve it for the dates this
+    /// service actually publishes. The `BS` line is the byte-verbatim real
+    /// `C00573` record from `schedule_query::parse`'s own fixtures with only
+    /// its UID, date range and days-run field replaced.
+    fn write_fixture_delivery(root: &std::path::Path, dir_name: &str) {
+        const TI_EUSTON: &str =
+            "TIEUSTON 00144400NLONDON EUSTON             724102893EUSLONDON EUSTON           ";
+        const BS_REAL: &str =
+            "BSNC005732605172612060000001 PXX1S003101121194800 DMU    125      S A T        P";
+        const LO_EUSTON: &str = "LOEUSTON  0822 08227  C      TB";
+        const LT_EUSTON: &str = "LTEUSTON  0904 09079     TF";
+        const A_WATRLMN: &str = "A    LONDON WATERLOO               3WATRLMNWAT   WAT15312 6179815";
+
+        let today = london_local_date_now();
+        let from = (today - chrono::Duration::days(1))
+            .format("%y%m%d")
+            .to_string();
+        // Wider than the publish window (`DESTINATION_DEPARTURES_FORWARD_DAYS`)
+        // so every date this cycle publishes resolves the schedule, not just
+        // the first.
+        let to = (today + chrono::Duration::days(30))
+            .format("%y%m%d")
+            .to_string();
+        let bs = format!("BSNT00001{from}{to}1111111{}", &BS_REAL[28..]);
+
+        let dir = root.join(dir_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("RJTTF942MCA.txt"),
+            format!("{TI_EUSTON}\n{bs}\n{LO_EUSTON}\n{LT_EUSTON}\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("RJTTF942MSN.txt"), format!("{A_WATRLMN}\n")).unwrap();
+    }
+
+    /// Mounts a 200-answering POST mock for every publish route, then lets the
+    /// caller override individual routes by mounting a mock FIRST (wiremock
+    /// matches in mount order, so anything mounted before this call wins).
+    async fn mount_all_publishes_ok(server: &wiremock::MockServer) {
+        for path in [
+            "/private/stanox-crs",
+            "/private/tiploc-crs",
+            "/private/schedule-line-population",
+            "/private/schedule-network-departures",
+            "/private/schedule-destination-departures",
+            "/private/schedule-calling-points-full",
+            "/private/schedule-reference-publishes",
+        ] {
+            wiremock::Mock::given(wiremock::matchers::method("POST"))
+                .and(wiremock::matchers::path(path))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "upserted": 1 })),
+                )
+                .mount(server)
+                .await;
+        }
+    }
+
+    async fn posts_to(server: &wiremock::MockServer, path: &str) -> usize {
+        server
+            .received_requests()
+            .await
+            .expect("wiremock records requests")
+            .into_iter()
+            .filter(|req| req.url.path() == path)
+            .count()
+    }
+
+    /// **The regression test for finding #2.** The LAST of the seven publishes
+    /// fails; the delivery must NOT be recorded as processed, so the next
+    /// cycle retries it -- which is exactly what every one of those publishes'
+    /// own log lines has always claimed and, before this fix, never did.
+    #[tokio::test]
+    async fn a_failing_late_publish_leaves_the_delivery_unprocessed_so_the_next_cycle_retries_it() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        // Mounted BEFORE the catch-all 200s, so this route's 500 wins.
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-calling-points-full",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), "20260925T180000Z");
+        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        config.storage_dir = storage.path().to_path_buf();
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+
+        let mut last_processed_delivery: Option<String> = None;
+        poll_once(&client, &config, &mut last_processed_delivery, &tokens)
+            .await
+            .expect("a failed publish is logged and accumulated, never a hard cycle error");
+
+        assert_eq!(
+            last_processed_delivery, None,
+            "one failed publish must leave the dedup marker untouched, so the NEXT cycle \
+             reprocesses and republishes the whole delivery"
+        );
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            0,
+            "a cycle that did not fully publish must not write the durable completion marker"
+        );
+        // The products AFTER the failing one in the cycle must still have been
+        // attempted this cycle -- a failure is log-and-continue, not abort.
+        assert!(
+            posts_to(&server, "/private/schedule-destination-departures").await > 0,
+            "the sibling product published in the same per-date loop must still be attempted"
+        );
+    }
+
+    /// The mirror image: every publish succeeds, so the delivery IS recorded
+    /// as processed both in memory and durably, and a second `poll_once` with
+    /// no new delivery does nothing.
+    #[tokio::test]
+    async fn a_fully_successful_cycle_advances_the_marker_and_records_the_durable_completion() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        mount_all_publishes_ok(&server).await;
+
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), "20260925T180000Z");
+        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        config.storage_dir = storage.path().to_path_buf();
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+
+        let mut last_processed_delivery: Option<String> = None;
+        poll_once(&client, &config, &mut last_processed_delivery, &tokens)
+            .await
+            .expect("cycle");
+
+        assert_eq!(
+            last_processed_delivery,
+            Some("20260925T180000Z".to_string()),
+            "a fully successful cycle must advance the dedup marker"
+        );
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            1,
+            "a fully successful cycle must write exactly one durable completion marker"
+        );
+
+        let stanox_posts_after_first_cycle = posts_to(&server, "/private/stanox-crs").await;
+        poll_once(&client, &config, &mut last_processed_delivery, &tokens)
+            .await
+            .expect("second cycle");
+        assert_eq!(
+            posts_to(&server, "/private/stanox-crs").await,
+            stanox_posts_after_first_cycle,
+            "a second cycle with no new delivery must publish nothing at all"
+        );
+    }
+
+    /// A publish failure that reprocessing the SAME delivery cannot fix (this
+    /// delivery's ALF member parses to zero fixed links) must NOT hold the
+    /// delivery back -- otherwise this service would re-parse a 700MB+ file
+    /// and rebuild millions of rows every `poll_interval_secs`, forever, to
+    /// reach the same conclusion. It must also not write the durable
+    /// completion marker, since the cycle genuinely did not fully publish.
+    #[tokio::test]
+    async fn a_permanently_failing_product_does_not_trap_the_delivery_in_a_retry_loop() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        mount_all_publishes_ok(&server).await;
+
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), "20260925T180000Z");
+        // A present-but-unparseable ALF member: reads fine, parses to zero
+        // links. `publish_fixed_links` refuses to publish an empty batch
+        // (it would wipe the table) and records a PERMANENT failure.
+        std::fs::write(
+            storage.path().join("20260925T180000Z/RJTTF942ALF.txt"),
+            "not an ALF record at all\n",
+        )
+        .unwrap();
+        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        config.storage_dir = storage.path().to_path_buf();
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+
+        let mut last_processed_delivery: Option<String> = None;
+        poll_once(&client, &config, &mut last_processed_delivery, &tokens)
+            .await
+            .expect("cycle");
+
+        assert_eq!(
+            last_processed_delivery,
+            Some("20260925T180000Z".to_string()),
+            "a failure reprocessing cannot fix must not hold the delivery back"
+        );
+        assert_eq!(
+            posts_to(&server, "/private/fixed-links").await,
+            0,
+            "an ALF that parses to zero links must not be published (it would wipe the table)"
+        );
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            0,
+            "a cycle with any failed product must not claim a complete publish in api's durable \
+             record -- a restart should still re-attempt this delivery"
+        );
+    }
+}
+
+/// Coverage for finding #3 (High): the largest published product
+/// (`schedule_calling_points_full`) was sent as one POST per date, plausibly
+/// at or over `api`'s 100MB body limit and this crate's 30s
+/// `REQUEST_TIMEOUT`, eight times per cycle -- and the `rows.chunks(50_000)`
+/// fallback its own doc comment described was never implemented.
+///
+/// The tests that matter here are the ones about the CONTRACT, not the split:
+/// chunking a wholesale-replace publish is only safe if exactly one chunk per
+/// date is allowed to clear the date.
+#[cfg(test)]
+mod chunked_publish_tests {
+    use super::*;
+
+    fn rows(count: usize) -> Vec<serde_json::Value> {
+        (0..count)
+            .map(|i| serde_json::json!({ "service_date": "2026-09-25", "seq": i }))
+            .collect()
+    }
+
+    async fn capture_posts(server: &wiremock::MockServer, path: &str) -> Vec<(usize, String)> {
+        server
+            .received_requests()
+            .await
+            .expect("wiremock records requests")
+            .into_iter()
+            .filter(|req| req.url.path() == path)
+            .map(|req| {
+                let query = req.url.query().unwrap_or_default().to_string();
+                let body: Vec<serde_json::Value> =
+                    serde_json::from_slice(&req.body).expect("body is a JSON array");
+                (body.len(), query)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn first_chunk_url_marks_only_the_chunk_that_may_clear_the_date() {
+        assert_eq!(
+            first_chunk_url("http://api:8080/private/schedule-calling-points-full", true),
+            "http://api:8080/private/schedule-calling-points-full?first_chunk=true"
+        );
+        assert_eq!(
+            first_chunk_url(
+                "http://api:8080/private/schedule-calling-points-full",
+                false
+            ),
+            "http://api:8080/private/schedule-calling-points-full?first_chunk=false"
+        );
+    }
+
+    #[test]
+    fn first_chunk_url_appends_to_a_url_that_already_has_a_query_string() {
+        assert_eq!(
+            first_chunk_url("http://api:8080/private/x?trace=1", true),
+            "http://api:8080/private/x?trace=1&first_chunk=true"
+        );
+    }
+
+    /// **The core contract test.** Several chunks per date, and exactly ONE of
+    /// them -- the first -- carries `first_chunk=true`. If every chunk carried it,
+    /// each chunk's `DELETE ... WHERE service_date = ANY(...)` would delete
+    /// the chunks before it and the date would end up holding only the last
+    /// chunk: a far worse bug than the oversized body this chunking prevents.
+    #[tokio::test]
+    async fn only_the_first_chunk_of_a_date_is_allowed_to_clear_that_date() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/private/chunked"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+
+        post_date_scoped_rows_in_chunks(
+            &client,
+            &url,
+            &tokens,
+            &rows(PUBLISH_CHUNK_ROWS * 2 + 1),
+            "test rows",
+        )
+        .await
+        .expect("all chunks accepted");
+
+        let posts = capture_posts(&server, "/private/chunked").await;
+        assert_eq!(posts.len(), 3, "2*chunk+1 rows must be split into 3 POSTs");
+        assert_eq!(
+            posts[0],
+            (PUBLISH_CHUNK_ROWS, "first_chunk=true".to_string())
+        );
+        assert_eq!(
+            posts[1],
+            (PUBLISH_CHUNK_ROWS, "first_chunk=false".to_string())
+        );
+        assert_eq!(posts[2], (1, "first_chunk=false".to_string()));
+    }
+
+    /// A publish small enough to fit in one chunk must be byte-for-byte the
+    /// same single wholesale-replace POST it always was -- chunking must not
+    /// change the common case.
+    #[tokio::test]
+    async fn a_publish_that_fits_in_one_chunk_is_still_exactly_one_replacing_post() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/private/chunked"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+
+        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(10), "test rows")
+            .await
+            .expect("accepted");
+
+        assert_eq!(
+            capture_posts(&server, "/private/chunked").await,
+            vec![(10, "first_chunk=true".to_string())]
+        );
+    }
+
+    /// An empty publish is still exactly one POST -- the receiving route
+    /// treats an empty batch as a deliberate no-op that must NOT delete the
+    /// date, and sending it keeps the `posted 0 <noun>` log line that is the
+    /// only evidence the publish ran and had nothing to say.
+    #[tokio::test]
+    async fn an_empty_publish_is_one_post_and_never_silently_skipped() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/private/chunked"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+
+        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &[], "test rows")
+            .await
+            .expect("accepted");
+
+        assert_eq!(
+            capture_posts(&server, "/private/chunked").await,
+            vec![(0, "first_chunk=true".to_string())]
+        );
+    }
+
+    /// A failing chunk must surface as an error naming WHICH chunk failed, so
+    /// the caller records a retryable failure and the next cycle republishes
+    /// the whole date from a `first_chunk=true` chunk.
+    #[tokio::test]
+    async fn a_failing_chunk_is_an_error_that_names_the_chunk() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/private/chunked"))
+            .respond_with(wiremock::ResponseTemplate::new(413))
+            .mount(&server)
+            .await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+
+        let err = post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(5), "test rows")
+            .await
+            .expect_err("a 413 must not be swallowed");
+        let message = format!("{err}");
+        assert!(
+            message.contains("chunk 1/1") && message.contains("first_chunk=true"),
+            "error must identify the chunk and its first_chunk flag; got: {message}"
+        );
+    }
+}
+
+/// Coverage for finding #4 (Medium): `publish_cif_derived_products` computed
+/// "today" in UTC while its `schedule-ingest` sibling has always used
+/// London-local time for the equivalent decision, so during the 00:00-01:00
+/// BST window the two containers disagreed about which rail day a delivery
+/// belonged to and published data landed under the wrong date.
+#[cfg(test)]
+mod london_local_date_tests {
+    use super::*;
+
+    #[test]
+    fn a_summer_instant_just_after_london_midnight_is_already_the_next_london_date() {
+        // 23:30 UTC on 1 July is 00:30 BST on 2 July -- the exact hour the bug
+        // lived in. UTC says the 1st; London (and `schedule-ingest`) say the
+        // 2nd, and the 2nd is the rail day the data belongs to.
+        let instant: chrono::DateTime<chrono::Utc> = "2026-07-01T23:30:00Z".parse().unwrap();
+        assert_eq!(
+            london_local_date_at(instant),
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 2).unwrap()
+        );
+        assert_ne!(
+            london_local_date_at(instant),
+            instant.date_naive(),
+            "this is the hour the old UTC computation got wrong; if these are equal the fixture \
+             no longer exercises the bug"
+        );
+    }
+
+    #[test]
+    fn a_winter_instant_matches_utc_because_london_is_utc_then() {
+        let instant: chrono::DateTime<chrono::Utc> = "2026-01-01T23:30:00Z".parse().unwrap();
+        assert_eq!(
+            london_local_date_at(instant),
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+        );
+        assert_eq!(london_local_date_at(instant), instant.date_naive());
+    }
+
+    #[test]
+    fn a_summer_instant_in_the_middle_of_the_day_is_unaffected() {
+        let instant: chrono::DateTime<chrono::Utc> = "2026-07-01T12:00:00Z".parse().unwrap();
+        assert_eq!(
+            london_local_date_at(instant),
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
+        );
     }
 }
