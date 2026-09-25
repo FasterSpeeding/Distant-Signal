@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import nextConfig from './next.config.mjs';
 
 // Finding 6 of the 2026-09-24 security review: this app kept a billable
