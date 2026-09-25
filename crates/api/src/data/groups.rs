@@ -925,10 +925,12 @@ struct GroupJourneyRow {
     journey_id: i64,
     custom_name: Option<String>,
     leg_count: i64,
-    // First-leg (leg_order = 1) identity + live status -- Judgment Call 2:
-    // a journey always has at least one leg (Phase 1's migration
-    // guarantees this), so this join can never come back NULL for a
-    // well-formed journey.
+    // First-leg (lowest surviving `leg_order`, not necessarily `= 1` --
+    // see `list_group_journeys`'s own doc comment) identity + live status
+    // -- Judgment Call 2: a journey always has at least one leg (Phase 1's
+    // migration guarantees this, and `journeys::delete_leg` deletes the
+    // whole journey rather than leaving it leg-less), so this join can
+    // never come back NULL for a well-formed journey.
     pin_origin_crs: Option<String>,
     pin_destination_crs: Option<String>,
     pin_origin_name: Option<String>,
@@ -1037,10 +1039,27 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
 /// "is the caller even a member," the same split [`list_group_trains`]
 /// already uses.
 ///
-/// The first-leg join (`jl.leg_order = 1`) and the `leg_count` subquery
-/// are this function's one real divergence from `list_group_trains` --
-/// see `GroupJourney`'s own doc comment (Judgment Call 2 in this
-/// feature's plan) for why.
+/// The first-leg join and the `leg_count` subquery are this function's one
+/// real divergence from `list_group_trains` -- see `GroupJourney`'s own
+/// doc comment (Judgment Call 2 in this feature's plan) for why.
+///
+/// The first-leg join is `jl.leg_order = (SELECT MIN(...))`, NOT
+/// `jl.leg_order = 1` -- 2026-09 review finding (Medium): `leg_order`
+/// values are assigned once at leg-creation time and never renumbered
+/// (`journeys::delete_leg` deletes a leg outright, with no compensating
+/// `UPDATE` to the survivors' `leg_order`), so a journey whose original
+/// leg 1 was deleted has no row with `leg_order = 1` at all -- a plain
+/// `jl.leg_order = 1` INNER JOIN would then match zero rows and silently
+/// drop the whole journey from this listing, even though it is still
+/// directly readable and still has a first (now `leg_order = 2`, `3`, ...)
+/// leg. `MIN(leg_order)` is correct regardless of which specific leg(s)
+/// were ever deleted; renumbering `leg_order` on delete was the
+/// alternative fix considered and rejected here as the larger, riskier
+/// change for the same result -- `leg_order` is never shown to the
+/// frontend (only used for `ORDER BY` and this "first leg" join) and
+/// nothing else in this codebase assumes it starts at 1 or has no gaps
+/// (`owned_next_leg_order` already computes `MAX(leg_order) + 1`, gaps and
+/// all).
 pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<GroupJourney>> {
     let rows: Vec<GroupJourneyRow> = sqlx::query_as(
         "SELECT gj.journey_id, j.custom_name, \
@@ -1052,7 +1071,8 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_journeys gj \
          JOIN journeys j ON j.id = gj.journey_id \
-         JOIN journey_legs jl ON jl.journey_id = j.id AND jl.leg_order = 1 \
+         JOIN journey_legs jl ON jl.journey_id = j.id \
+             AND jl.leg_order = (SELECT MIN(jl3.leg_order) FROM journey_legs jl3 WHERE jl3.journey_id = j.id) \
          JOIN users u ON u.id = gj.added_by \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
@@ -1318,6 +1338,11 @@ impl From<SharedJourneyRow> for SharedJourney {
 /// that function's own doc comment for the full justification, which
 /// applies here unchanged with `journeys`/`group_journeys` in place of
 /// `train_subscriptions`/`group_trains`.
+///
+/// The first-leg join uses `MIN(leg_order)`, not `leg_order = 1` -- same
+/// 2026-09 review finding and reasoning as [`list_group_journeys`]'s own
+/// doc comment; this query is the second (and only other) place that
+/// assumption was made.
 pub async fn list_shared_journeys_for_user(
     pool: &PgPool,
     user_id: &str,
@@ -1335,7 +1360,8 @@ pub async fn list_shared_journeys_for_user(
          JOIN groups g ON g.id = me.group_id \
          JOIN group_journeys gj ON gj.group_id = g.id \
          JOIN journeys j ON j.id = gj.journey_id \
-         JOIN journey_legs jl ON jl.journey_id = j.id AND jl.leg_order = 1 \
+         JOIN journey_legs jl ON jl.journey_id = j.id \
+             AND jl.leg_order = (SELECT MIN(jl3.leg_order) FROM journey_legs jl3 WHERE jl3.journey_id = j.id) \
          JOIN users u ON u.id = gj.added_by \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
@@ -3159,6 +3185,187 @@ mod db_tests {
             .await
             .ok();
         cleanup(&pool, &["TEST-GROUPS-LISTJOURNEY-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_group_journeys_survives_deletion_of_the_journeys_first_leg -- --ignored`"]
+    async fn list_group_journeys_survives_deletion_of_the_journeys_first_leg() {
+        // 2026-09 review finding (Medium): `journeys::delete_leg` never
+        // renumbers `leg_order` for the legs left behind, so a journey
+        // whose ORIGINAL leg_order=1 leg gets deleted has no row with
+        // `leg_order = 1` at all afterwards. This pins down that such a
+        // journey still shows up here (via `MIN(leg_order)`), not
+        // silently dropped by the old `jl.leg_order = 1` inner join.
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-LISTJOURNEY-GAP-1").await;
+        let group_id = create_group(
+            &pool,
+            "List Journey Gap Test",
+            "TEST-GROUPS-LISTJOURNEY-GAP-1",
+        )
+        .await
+        .expect("create group");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-LISTJOURNEY-GAP-1").await;
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 2, 'WAT', 'PAD', CURRENT_DATE, 'manual')",
+        )
+        .bind(journey_id)
+        .execute(&pool)
+        .await
+        .expect("seed second leg");
+        let (first_leg_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM journey_legs WHERE journey_id = $1 AND leg_order = 1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read first leg id");
+
+        add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-GROUPS-LISTJOURNEY-GAP-1",
+        )
+        .await
+        .expect("add");
+
+        // Delete the journey's ORIGINAL leg 1 via the real production
+        // function, not a raw SQL `DELETE`, so this exercises the exact
+        // code path the finding names.
+        let journey_also_deleted = crate::data::journeys::delete_leg(
+            &pool,
+            journey_id,
+            first_leg_id,
+            "TEST-GROUPS-LISTJOURNEY-GAP-1",
+        )
+        .await
+        .expect("delete leg 1")
+        .expect("leg existed");
+        assert!(
+            !journey_also_deleted,
+            "the journey has a second leg, it must survive the delete"
+        );
+
+        let journeys = list_group_journeys(&pool, &group_id)
+            .await
+            .expect("list group journeys");
+        assert_eq!(
+            journeys.len(),
+            1,
+            "the journey must still be listed after its leg_order=1 leg was deleted"
+        );
+        assert_eq!(journeys[0].journey_id, journey_id);
+        assert_eq!(journeys[0].leg_count, 1);
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-LISTJOURNEY-GAP-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_shared_journeys_for_user_survives_deletion_of_the_journeys_first_leg \
+                -- --ignored`"]
+    async fn list_shared_journeys_for_user_survives_deletion_of_the_journeys_first_leg() {
+        // Same finding as `list_group_journeys_survives_deletion_of_the_
+        // journeys_first_leg` immediately above, exercised against this
+        // query's own copy of the `jl.leg_order = 1` join instead --
+        // both were fixed, so both need their own regression coverage.
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-LISTJOURNEY-GAP-OWNER").await;
+        seed_user(&pool, "TEST-GROUPS-LISTJOURNEY-GAP-VIEWER").await;
+        let group_id = create_group(
+            &pool,
+            "Shared Journey Gap Test",
+            "TEST-GROUPS-LISTJOURNEY-GAP-OWNER",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-LISTJOURNEY-GAP-VIEWER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let journey_id = seed_journey(&pool, "TEST-GROUPS-LISTJOURNEY-GAP-OWNER").await;
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 2, 'WAT', 'PAD', CURRENT_DATE, 'manual')",
+        )
+        .bind(journey_id)
+        .execute(&pool)
+        .await
+        .expect("seed second leg");
+        let (first_leg_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM journey_legs WHERE journey_id = $1 AND leg_order = 1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read first leg id");
+
+        add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-GROUPS-LISTJOURNEY-GAP-OWNER",
+        )
+        .await
+        .expect("add");
+
+        crate::data::journeys::delete_leg(
+            &pool,
+            journey_id,
+            first_leg_id,
+            "TEST-GROUPS-LISTJOURNEY-GAP-OWNER",
+        )
+        .await
+        .expect("delete leg 1")
+        .expect("leg existed");
+
+        let journeys = list_shared_journeys_for_user(&pool, "TEST-GROUPS-LISTJOURNEY-GAP-VIEWER")
+            .await
+            .expect("list shared journeys");
+        assert_eq!(
+            journeys.len(),
+            1,
+            "the journey must still be listed after its leg_order=1 leg was deleted"
+        );
+        assert_eq!(journeys[0].journey_id, journey_id);
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-LISTJOURNEY-GAP-OWNER",
+                "TEST-GROUPS-LISTJOURNEY-GAP-VIEWER",
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]
