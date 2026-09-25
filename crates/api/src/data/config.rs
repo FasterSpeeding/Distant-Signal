@@ -322,6 +322,24 @@ pub struct ServiceArguments {
     /// backlog row landing mid-day is picked up within the same rail day.
     #[arg(long, env, default_value_t = 300)]
     pub backlog_match_sweep_interval_secs: u64,
+
+    /// How often `api`'s own background session-cleanup sweep deletes
+    /// expired `sessions` rows (`data::users::prune_expired_sessions`).
+    /// Nothing else in this crate ever prunes that table --
+    /// `get_session_with_user` already excludes an expired row from every
+    /// lookup (`WHERE s.expires_at > NOW()`), so a stale row is never
+    /// usable as a live session; this sweep exists purely to keep the
+    /// table (and its `sessions_expires_at` index, added alongside this
+    /// field) from growing without bound on a long-lived deployment. Same
+    /// "plain interval, no jitter" shape as
+    /// `schedule_match_interval_secs`/`reconciliation_sweep_interval_secs`/
+    /// `backlog_match_sweep_interval_secs` above. 3600s (1 hour) default --
+    /// deleting expired rows is cheap and idempotent at this cadence, and
+    /// there is no correctness reason to run it any more often than that
+    /// (unlike the other three sweeps, this one never resolves anything a
+    /// user is waiting on).
+    #[arg(long, env, default_value_t = 3600)]
+    pub session_cleanup_interval_secs: u64,
 }
 
 /// The one invariant this crate cannot check at compile time and that has now

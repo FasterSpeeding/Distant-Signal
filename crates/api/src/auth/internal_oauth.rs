@@ -20,6 +20,7 @@
 //! base64/JSON plumbing and string comparisons.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -85,23 +86,77 @@ pub enum VerifyError {
 /// use, not construction), mirroring `OidcClient`'s own documented
 /// posture, so a briefly-unreachable Authentik at `api` startup cannot
 /// fail construction or crash-loop the pod.
+/// How long a single unauthenticated request to the OIDC discovery
+/// document or the JWKS endpoint may take before `reqwest` gives up.
+/// Before this existed, `http_client` had NO timeout at all -- a hung
+/// Authentik (or a network partition to it) meant a request to any
+/// `/private/*` route carrying an unknown `kid` would hang the handling
+/// task indefinitely, one task per request, since `verify()` is on the
+/// hot path for every such request (see `UNKNOWN_KID_NEGATIVE_CACHE_TTL`
+/// below for the other half of that same amplification concern). 30s
+/// matches this workspace's established outbound-HTTP-client convention
+/// (`REQUEST_TIMEOUT` in `crates/poller-incidents/src/main.rs` and every
+/// sibling poller/ingest crate).
+const JWKS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a `kid` that just missed the JWKS (including a refetch that
+/// itself failed) is remembered as "don't bother refetching for this
+/// one yet." Without this, ANY caller -- no credential required at all,
+/// since the `kid` is read from the unverified JWT header before
+/// signature verification -- could send a bearer token with a
+/// forged/random `kid` and force an outbound GET to Authentik's JWKS on
+/// every single request: a cache miss on every request, forever, however
+/// many requests per second the caller chooses to send. 30s bounds that
+/// to at most one outbound fetch per 30s per distinct `kid`, while still
+/// being short enough that a REAL, just-rotated Authentik signing key
+/// becomes usable again well within any reasonable rollout window.
+const UNKNOWN_KID_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Upper bound on how many distinct never-matched `kid`s
+/// `unknown_kid_cache` remembers at once, past which it's swept of
+/// already-expired entries before inserting another. Caps the memory an
+/// attacker sending a fresh random `kid` on every request can make this
+/// process hold onto -- the negative-cache TTL above already caps the
+/// OUTBOUND request rate that same attacker can cause; this caps the
+/// unbounded-growth side of the same attack.
+const UNKNOWN_KID_CACHE_SWEEP_THRESHOLD: usize = 1024;
+
 pub struct ServiceTokenVerifier {
     issuer_url: String,
     expected_audience: String,
     http_client: reqwest::Client,
     jwks_uri: tokio::sync::OnceCell<JsonWebKeySetUrl>,
     keys: tokio::sync::RwLock<HashMap<String, CoreJsonWebKey>>,
+    /// `kid` -> when it was last confirmed absent from the JWKS (even
+    /// after a refetch). See `UNKNOWN_KID_NEGATIVE_CACHE_TTL`.
+    unknown_kid_cache: tokio::sync::RwLock<HashMap<String, Instant>>,
 }
 
 impl ServiceTokenVerifier {
     pub fn new(issuer_url: String, expected_audience: String) -> Result<Self> {
+        Self::new_with_timeout(issuer_url, expected_audience, JWKS_HTTP_TIMEOUT)
+    }
+
+    /// Same as `new`, with an overridable HTTP timeout. The production
+    /// constructor above always uses `JWKS_HTTP_TIMEOUT` (30s); this
+    /// exists so a test proving the timeout is actually enforced can use
+    /// a much shorter one instead of waiting 30 real seconds to see it
+    /// fire (see `internal_oauth::tests::the_jwks_fetch_times_out_instead_of_hanging_forever`).
+    fn new_with_timeout(
+        issuer_url: String,
+        expected_audience: String,
+        timeout: Duration,
+    ) -> Result<Self> {
         IssuerUrl::new(issuer_url.clone()).context("invalid internal_oauth_issuer_url")?;
         // Same redirect-policy rationale as `OidcClient::new` -- an HTTP
         // client that transparently follows redirects during discovery or
         // the JWKS fetch could be tricked into fetching an unintended
-        // internal URL.
+        // internal URL. `.timeout` bounds how long a hung/unreachable
+        // Authentik can hold up the request handling this JWKS fetch --
+        // see `JWKS_HTTP_TIMEOUT`.
         let http_client = reqwest::ClientBuilder::new()
             .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
             .build()
             .context("failed to build internal-oauth JWKS HTTP client")?;
         Ok(Self {
@@ -110,6 +165,7 @@ impl ServiceTokenVerifier {
             http_client,
             jwks_uri: tokio::sync::OnceCell::new(),
             keys: tokio::sync::RwLock::new(HashMap::new()),
+            unknown_kid_cache: tokio::sync::RwLock::new(HashMap::new()),
         })
     }
 
@@ -144,18 +200,48 @@ impl ServiceTokenVerifier {
         if let Some(key) = self.keys.read().await.get(kid) {
             return Ok(key.clone());
         }
-        // kid not cached -- refetch exactly once. Guards against an
-        // infinite refetch loop on a persistently-unknown kid (e.g. a
-        // forged token), and matches Decision 2's stated caching design.
-        if self.refresh_keys().await.is_err() {
+        // Negative-cache check: a `kid` confirmed absent within the last
+        // `UNKNOWN_KID_NEGATIVE_CACHE_TTL` is rejected without touching
+        // the network at all -- the fix for the unauthenticated JWKS-
+        // refetch amplification described on `UNKNOWN_KID_NEGATIVE_CACHE_TTL`'s
+        // own doc comment. `kid` is read from the JWT header before any
+        // signature check, so this short-circuit happens before this
+        // caller has proven anything at all about its identity.
+        if let Some(checked_at) = self.unknown_kid_cache.read().await.get(kid)
+            && checked_at.elapsed() < UNKNOWN_KID_NEGATIVE_CACHE_TTL
+        {
             return Err(VerifyError::UnknownKey);
         }
-        self.keys
-            .read()
-            .await
-            .get(kid)
-            .cloned()
-            .ok_or(VerifyError::UnknownKey)
+        // kid not cached, and not (or no longer) negative-cached --
+        // refetch exactly once. Guards against an infinite refetch loop
+        // on a persistently-unknown kid (e.g. a forged token), and
+        // matches Decision 2's stated caching design.
+        if self.refresh_keys().await.is_err() {
+            self.record_unknown_kid(kid).await;
+            return Err(VerifyError::UnknownKey);
+        }
+        match self.keys.read().await.get(kid).cloned() {
+            Some(key) => Ok(key),
+            None => {
+                self.record_unknown_kid(kid).await;
+                Err(VerifyError::UnknownKey)
+            }
+        }
+    }
+
+    /// Records `kid` as just-confirmed-absent, sweeping already-expired
+    /// entries out of the cache first if it's grown past
+    /// `UNKNOWN_KID_CACHE_SWEEP_THRESHOLD` -- see that constant's own doc
+    /// comment for why an unbounded map here would just trade one
+    /// amplification vector (outbound JWKS refetches) for another
+    /// (unbounded local memory growth) against the same unauthenticated
+    /// caller.
+    async fn record_unknown_kid(&self, kid: &str) {
+        let mut cache = self.unknown_kid_cache.write().await;
+        if cache.len() >= UNKNOWN_KID_CACHE_SWEEP_THRESHOLD {
+            cache.retain(|_, checked_at| checked_at.elapsed() < UNKNOWN_KID_NEGATIVE_CACHE_TTL);
+        }
+        cache.insert(kid.to_string(), Instant::now());
     }
 
     /// Verifies `token`'s signature against the cached (or freshly
@@ -446,6 +532,104 @@ mod tests {
         assert_eq!(
             verifier.verify(&retagged).await,
             Err(VerifyError::UnknownKey)
+        );
+    }
+
+    /// The fix for the unauthenticated JWKS-refetch amplification: an
+    /// unauthenticated caller (no credential required -- `kid` is read
+    /// from the JWT header before any signature check) presenting a
+    /// forged/random `kid` used to force a fresh outbound GET to
+    /// Authentik's JWKS on EVERY request carrying it, since a `kid` that
+    /// still isn't found after a refetch was never remembered. Sending
+    /// the same forged `kid` repeatedly must now hit the mocked JWKS
+    /// endpoint at most once (the first, unavoidable refetch), with every
+    /// subsequent request within the negative-cache TTL rejected locally.
+    #[tokio::test]
+    async fn repeated_requests_with_an_unknown_kid_only_refetch_the_jwks_once_within_the_backoff_window()
+     {
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |_| {}));
+        let header = json!({"alg": "RS256", "kid": "kid-nobody-has", "typ": "JWT"});
+        let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let mut parts: Vec<&str> = token.split('.').collect();
+        parts[0] = &header_b64;
+        let retagged = parts.join(".");
+
+        for _ in 0..5 {
+            assert_eq!(
+                verifier.verify(&retagged).await,
+                Err(VerifyError::UnknownKey)
+            );
+        }
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("wiremock request recording is enabled by default");
+        let jwks_hits = requests.iter().filter(|r| r.url.path() == "/jwks").count();
+        assert_eq!(
+            jwks_hits, 1,
+            "5 requests with the same never-matched kid must cause at most 1 JWKS refetch, \
+             not 5 -- got {jwks_hits}"
+        );
+    }
+
+    /// The fix for `http_client` previously having NO `.timeout()` at
+    /// all: a hung/unreachable Authentik would otherwise hang `verify()`
+    /// (and therefore the request-handling task calling it) indefinitely.
+    /// Uses `new_with_timeout` with a short override so this test doesn't
+    /// have to wait out the real 30s production timeout to prove it's
+    /// enforced.
+    #[tokio::test]
+    async fn a_hanging_jwks_endpoint_times_out_instead_of_hanging_forever() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let issuer = server.uri();
+
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "authorization_endpoint": format!("{issuer}/authorize"),
+                "jwks_uri": format!("{issuer}/jwks"),
+                "response_types_supported": ["token"],
+                "subject_types_supported": ["public"],
+                "id_token_signing_alg_values_supported": ["RS256"],
+            })))
+            .mount(&server)
+            .await;
+
+        // The JWKS endpoint never responds within this test's timeout --
+        // standing in for a hung/unreachable Authentik.
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+
+        let verifier = ServiceTokenVerifier::new_with_timeout(
+            issuer.clone(),
+            "some-audience".to_string(),
+            Duration::from_millis(200),
+        )
+        .expect("construct verifier with a short test timeout");
+
+        let token = sign_token(&valid_claims(&issuer, |_| {}));
+        let started = Instant::now();
+        let result = verifier.verify(&token).await;
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "verify() should time out around 200ms, not hang for the mock's full 5s delay \
+             (took {:?})",
+            started.elapsed()
+        );
+        assert_eq!(
+            result,
+            Err(VerifyError::UnknownKey),
+            "a timed-out JWKS fetch is treated the same as any other fetch failure"
         );
     }
 

@@ -523,9 +523,11 @@ pub struct SessionUser {
 
 /// Looks up a session by its *hashed* token and joins the owning user, but
 /// only if it hasn't expired -- an expired row reads back identically to
-/// no row at all. Expired rows are never explicitly pruned by a
-/// background job in this plan (a small table; left as a documented
-/// follow-up, same posture as not implementing RP-initiated logout).
+/// no row at all. Expired rows are additionally, actually deleted (not
+/// just excluded from lookups) by `prune_expired_sessions`'s own periodic
+/// sweep (`main.rs`'s `session_cleanup_sweep_loop`) -- this function's own
+/// `WHERE ... expires_at > NOW()` doesn't depend on that sweep having run
+/// recently, it's just what keeps the table from growing without bound.
 pub async fn get_session_with_user(
     pool: &PgPool,
     hashed_token: &str,
@@ -547,6 +549,28 @@ pub async fn delete_session(pool: &PgPool, hashed_token: &str) -> Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Deletes every `sessions` row whose `expires_at` has already passed.
+/// `get_session_with_user` already excludes an expired row from every
+/// lookup (`WHERE s.expires_at > NOW()`), so a row this deletes was never
+/// usable as a live session anyway -- this exists purely so the table
+/// doesn't grow without bound on a long-lived deployment, backed by the
+/// `sessions_expires_at` index (`migrations/20260925090000_sessions_expires_at_index.sql`)
+/// so the sweep that calls this stays a cheap, index-only-ish DELETE
+/// rather than a full scan as the table grows. Called periodically by
+/// `main.rs`'s `session_cleanup_sweep_loop`, mirroring the "a
+/// request/response server also runs one background interval loop"
+/// pattern already established there for the schedule-match/
+/// reconciliation/backlog-match sweeps.
+///
+/// Returns the number of rows deleted (for logging only -- callers should
+/// never branch on this).
+pub async fn prune_expired_sessions(pool: &PgPool) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM sessions WHERE expires_at <= NOW()")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Deliberately derives NEITHER `Debug` nor `Clone`, unlike the other row
@@ -679,6 +703,91 @@ mod db_tests {
         // Cleanup -- cascades to sessions via ON DELETE CASCADE, though
         // the session row above was already explicitly deleted.
         sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-ROUND-TRIP'")
+            .execute(&pool)
+            .await
+            .expect("cleanup test user");
+    }
+
+    /// Reproduces the real gap this fixes: before `prune_expired_sessions`
+    /// existed, an expired `sessions` row was excluded from every LOOKUP
+    /// (`get_session_with_user`'s own `WHERE expires_at > NOW()`) but
+    /// never actually deleted by anything -- the table only ever grew.
+    /// Inserts one already-expired row and one still-live row directly
+    /// (bypassing `insert_session`, which only ever writes a
+    /// future-dated `expires_at`), then asserts the sweep deletes exactly
+    /// the expired one and leaves the live one alone.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                prune_expired_sessions_deletes_only_rows_past_their_expiry -- --ignored`"]
+    async fn prune_expired_sessions_deletes_only_rows_past_their_expiry() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let identity = OidcIdentity {
+            sub: "TEST-USER-SESSION-PRUNE".to_string(),
+            email: Some("test@example.com".to_string()),
+            email_verified: true,
+            name: Some("Test Rider".to_string()),
+            preferred_username: Some("test-rider".to_string()),
+            groups: Vec::new(),
+        };
+        let user = upsert_user(&pool, &identity).await.expect("upsert user");
+
+        // An already-expired row -- what a session that outlived its TTL
+        // and was never cleaned up looks like today.
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at) \
+             VALUES ($1, $2, NULL, NOW() - INTERVAL '20 days', NOW() - INTERVAL '6 days')",
+        )
+        .bind("test-expired-session-token")
+        .bind(&user.id)
+        .execute(&pool)
+        .await
+        .expect("insert expired session");
+
+        // A still-live row that must survive the sweep untouched.
+        insert_session(&pool, "test-live-session-token", &user.id, 14)
+            .await
+            .expect("insert live session");
+
+        let deleted = prune_expired_sessions(&pool)
+            .await
+            .expect("prune expired sessions");
+        assert_eq!(
+            deleted, 1,
+            "exactly the one already-expired row should be deleted"
+        );
+
+        let expired_gone = get_session_with_user(&pool, "test-expired-session-token")
+            .await
+            .expect("lookup after prune");
+        assert!(expired_gone.is_none());
+
+        let live_still_there = get_session_with_user(&pool, "test-live-session-token")
+            .await
+            .expect("lookup after prune")
+            .expect("live session must survive the sweep");
+        assert_eq!(live_still_there.id, "TEST-USER-SESSION-PRUNE");
+
+        // Running the sweep again must be a no-op -- idempotent, not an
+        // error, and must not touch the surviving live row.
+        let deleted_again = prune_expired_sessions(&pool)
+            .await
+            .expect("prune expired sessions a second time");
+        assert_eq!(deleted_again, 0);
+
+        // Cleanup.
+        delete_session(&pool, "test-live-session-token")
+            .await
+            .expect("delete live session");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-SESSION-PRUNE'")
             .execute(&pool)
             .await
             .expect("cleanup test user");
