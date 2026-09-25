@@ -890,9 +890,19 @@ mod reject_pdf_compression_bombs_tests {
     fn a_highly_compressed_bomb_stream_is_rejected() {
         let bomb_plaintext = vec![0u8; MAX_TOTAL_INFLATED_BYTES + 1024 * 1024];
         let compressed = zlib_compress(&bomb_plaintext);
+        // Ratio-based, not an absolute byte count: at this fixture's size
+        // (257 MiB of zeros) DEFLATE's own match-length cap means the
+        // compressed form is a couple of MiB, not the "well under 1 MiB" an
+        // earlier version of this check assumed -- still a >100x ratio, and
+        // still the point of this sanity check: prove the fixture really is
+        // a small upload that decompresses to something enormous, not
+        // (accidentally) a large upload to begin with.
         assert!(
-            compressed.len() < 1024 * 1024,
-            "fixture sanity check: an all-zero buffer must compress to well under 1 MiB"
+            compressed.len() < bomb_plaintext.len() / 20,
+            "fixture sanity check: an all-zero buffer must compress to a small fraction of its \
+             original size, got {} bytes compressed from {} bytes",
+            compressed.len(),
+            bomb_plaintext.len()
         );
         let pdf_like = wrap_stream(&compressed);
 
