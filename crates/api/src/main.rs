@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(schedule_match_sweep_loop(app.clone()));
     tokio::spawn(reconciliation_sweep_loop(app.clone()));
     tokio::spawn(backlog_match_sweep_loop(app.clone()));
+    tokio::spawn(session_cleanup_sweep_loop(app.clone()));
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public,
@@ -215,6 +216,37 @@ async fn backlog_match_sweep_loop(app: App) {
             Ok(_) => {}
             Err(err) => {
                 tracing::error!(error = ?err, "backlog-match sweep failed; will retry next interval");
+            }
+        }
+    }
+}
+
+/// Periodic sweep deleting `sessions` rows past their `expires_at`
+/// (`data::users::prune_expired_sessions`) -- part of the fix for "no
+/// server-side session revocation" (2026-09-25 security review): an
+/// expired row was already excluded from every lookup
+/// (`get_session_with_user`'s own `WHERE expires_at > NOW()`), but
+/// nothing ever actually deleted it, so the table only ever grew.
+/// Mirrors `schedule_match_sweep_loop`'s own shape exactly -- same "a
+/// request/response server also runs a background interval loop" pattern
+/// this workspace already established, and the same one this crate's own
+/// three sibling sweeps above already follow. Unlike those three, this
+/// sweep never resolves anything a user is waiting on, so its own
+/// `session_cleanup_interval_secs` defaults to a much coarser cadence
+/// (1 hour) than theirs (5 minutes).
+async fn session_cleanup_sweep_loop(app: App) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        app.config.session_cleanup_interval_secs,
+    ));
+    loop {
+        interval.tick().await;
+        match data::users::prune_expired_sessions(&app.database).await {
+            Ok(deleted) if deleted > 0 => {
+                tracing::info!(deleted, "session-cleanup sweep pruned expired sessions");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "session-cleanup sweep failed; will retry next interval");
             }
         }
     }

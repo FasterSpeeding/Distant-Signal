@@ -232,6 +232,7 @@ mod db_tests {
             reconciliation_sweep_interval_secs: 300,
             schedule_enrichment_grace_minutes: 30,
             backlog_match_sweep_interval_secs: 300,
+            session_cleanup_interval_secs: 3600,
         };
 
         std::sync::Arc::new(AppState {
