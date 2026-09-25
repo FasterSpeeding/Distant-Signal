@@ -454,17 +454,17 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
         .fetch_optional(&mut *tx)
         .await?;
 
-        if let Some((owner, _)) = &existing_owner {
-            if owner != "tfl" {
-                anyhow::bail!(
-                    "refusing to upsert TfL line status for line_id {:?}: that line_id is \
-                     already owned by source {:?}, not 'tfl' -- this is a naming collision \
-                     between two independent line-id schemes (see upsert_tfl_line_status's \
-                     doc comment), not a legitimate TfL update",
-                    report.id,
-                    owner
-                );
-            }
+        if let Some((owner, _)) = &existing_owner
+            && owner != "tfl"
+        {
+            anyhow::bail!(
+                "refusing to upsert TfL line status for line_id {:?}: that line_id is \
+                 already owned by source {:?}, not 'tfl' -- this is a naming collision \
+                 between two independent line-id schemes (see upsert_tfl_line_status's \
+                 doc comment), not a legitimate TfL update",
+                report.id,
+                owner
+            );
         }
         let existing = existing_owner.and_then(|(_, statuses)| statuses);
 

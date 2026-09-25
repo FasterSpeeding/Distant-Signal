@@ -467,10 +467,38 @@ async fn get_line_definition(
     }))
 }
 
+/// `Cache-Control` for `GET /lines` when the caller is anonymous --
+/// same rationale/value as `routes::stanox_crs::STANOX_CRS_CACHE_CONTROL`
+/// (see that constant's doc comment): the catalogue+TfL portion of this
+/// route's output is a slow-changing whole-table dump served with no cache
+/// header at all (finding "Whole-table dumps served uncached to anonymous
+/// callers"). Only used for the anonymous branch -- see
+/// [`LINES_PRIVATE_CACHE_CONTROL`] for why an authenticated response must
+/// never share this value.
+const LINES_PUBLIC_CACHE_CONTROL: &str = "public, max-age=3600";
+
+/// `Cache-Control` for `GET /lines` when the caller IS authenticated. Unlike
+/// `stanox_crs`/`island_of_ireland`'s catalogue dumps, this route's body
+/// varies per caller once logged in -- it splices in the caller's own
+/// private custom lines (see the `if let Some(user)` block below) -- so a
+/// shared/public cache header here would risk one user's browser or an
+/// intermediary cache serving another user's private custom-line list back
+/// to them. `private, no-store` + `Vary: Cookie` mirrors
+/// `routes::incidents::get_incident`'s existing precedent for the same
+/// "session-dependent body on an otherwise-public-looking path" shape (see
+/// that route's own doc comment).
+const LINES_PRIVATE_CACHE_CONTROL: &str = "private, no-store";
+
 async fn list_lines(
     State(app): State<App>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
-) -> Result<Json<Vec<LineSummary>>, (StatusCode, String)> {
+) -> Result<
+    (
+        [(axum::http::header::HeaderName, &'static str); 2],
+        Json<Vec<LineSummary>>,
+    ),
+    (StatusCode, String),
+> {
     let mut out: Vec<LineSummary> = app
         .config
         .lines
@@ -535,7 +563,18 @@ async fn list_lines(
             }),
     );
 
-    Ok(Json(out))
+    let cache_control = if user.is_some() {
+        LINES_PRIVATE_CACHE_CONTROL
+    } else {
+        LINES_PUBLIC_CACHE_CONTROL
+    };
+    Ok((
+        [
+            (axum::http::header::CACHE_CONTROL, cache_control),
+            (axum::http::header::VARY, "Cookie"),
+        ],
+        Json(out),
+    ))
 }
 
 /// Whether a TfL line's summary should be omitted from `/public/lines`
@@ -1017,6 +1056,7 @@ mod db_tests {
     use sqlx::PgPool;
     use tower::ServiceExt;
 
+    use super::{LINES_PRIVATE_CACHE_CONTROL, LINES_PUBLIC_CACHE_CONTROL};
     use crate::app::{App, AppState};
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
@@ -2155,6 +2195,74 @@ mod db_tests {
 
         cleanup_tfl_line(&pool, "test-list-lines-anon-tfl").await;
         cleanup_user(&pool, "TEST-LIST-LINES-ANON-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_lines_cache_control_is_public_for_anonymous_and_private_for_authenticated_callers \
+                -- --ignored`"]
+    async fn list_lines_cache_control_is_public_for_anonymous_and_private_for_authenticated_callers()
+     {
+        // Regression for "Whole-table dumps served uncached to anonymous
+        // callers": the anonymous response (catalogue + TfL only) is a
+        // slow-changing whole-table dump, safe to cache publicly. But this
+        // route's body varies per caller once authenticated -- it splices
+        // in the caller's own private custom lines (see `list_lines`'s own
+        // doc comment) -- so an authenticated response must never carry
+        // that same public, shared-cacheable header: doing so would risk
+        // one user's private custom-line list being served back to a
+        // different caller by an intermediary cache.
+        let pool = connect().await;
+        let raw_token = seed_session(&pool, "TEST-LIST-LINES-CACHE-CONTROL-USER").await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+
+        let anon_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/public/lines")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anon_response.status(), StatusCode::OK);
+        assert_eq!(
+            anon_response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some(LINES_PUBLIC_CACHE_CONTROL),
+            "an anonymous request must get a public, positive-max-age Cache-Control"
+        );
+
+        let auth_response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/public/lines")
+                    .header(
+                        header::COOKIE,
+                        format!("distant_signal_session={raw_token}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(auth_response.status(), StatusCode::OK);
+        assert_eq!(
+            auth_response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some(LINES_PRIVATE_CACHE_CONTROL),
+            "an authenticated request's session-dependent body must never be marked publicly \
+             cacheable"
+        );
+
+        cleanup_user(&pool, "TEST-LIST-LINES-CACHE-CONTROL-USER").await;
     }
 
     #[tokio::test]

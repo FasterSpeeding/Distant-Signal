@@ -10,7 +10,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use common::island_of_ireland::{
     IslandOfIrelandDeparture, IslandOfIrelandLineDefinition, IslandOfIrelandNetwork,
     IslandOfIrelandStation,
@@ -19,6 +19,18 @@ use serde::Deserialize;
 
 use crate::app::{App, Router};
 use crate::data::island_of_ireland;
+
+/// `Cache-Control` for the two whole-catalogue dumps below
+/// (`list_stations`/`list_lines`) -- same rationale and value as
+/// `routes::stanox_crs::STANOX_CRS_CACHE_CONTROL` (see that constant's doc
+/// comment): a slow-changing reference catalogue served in full to
+/// anonymous callers with no cache header at all is cheap bandwidth/DB
+/// amplification (finding "Whole-table dumps served uncached to anonymous
+/// callers"). Deliberately NOT applied to `get_station_departures` below --
+/// that route is a live departure board (`island_of_ireland_station_samples`),
+/// re-polled continuously, not a reference table, so caching it would show
+/// stale live data instead of merely saving a cheap query.
+const CATALOGUE_CACHE_CONTROL: &str = "public, max-age=3600";
 
 pub fn router() -> Router {
     Router::new()
@@ -56,23 +68,41 @@ fn parse_network(
 async fn list_stations(
     State(app): State<App>,
     Query(filter): Query<NetworkFilter>,
-) -> Result<Json<Vec<IslandOfIrelandStation>>, (StatusCode, String)> {
+) -> Result<
+    (
+        [(header::HeaderName, &'static str); 1],
+        Json<Vec<IslandOfIrelandStation>>,
+    ),
+    (StatusCode, String),
+> {
     let network = parse_network(&filter.network)?;
     let stations = island_of_ireland::list_stations(&app.database, network)
         .await
         .map_err(internal_error)?;
-    Ok(Json(stations))
+    Ok((
+        [(header::CACHE_CONTROL, CATALOGUE_CACHE_CONTROL)],
+        Json(stations),
+    ))
 }
 
 async fn list_lines(
     State(app): State<App>,
     Query(filter): Query<NetworkFilter>,
-) -> Result<Json<Vec<IslandOfIrelandLineDefinition>>, (StatusCode, String)> {
+) -> Result<
+    (
+        [(header::HeaderName, &'static str); 1],
+        Json<Vec<IslandOfIrelandLineDefinition>>,
+    ),
+    (StatusCode, String),
+> {
     let network = parse_network(&filter.network)?;
     let lines = island_of_ireland::list_lines(&app.database, network)
         .await
         .map_err(internal_error)?;
-    Ok(Json(lines))
+    Ok((
+        [(header::CACHE_CONTROL, CATALOGUE_CACHE_CONTROL)],
+        Json(lines),
+    ))
 }
 
 /// 404 when `island_of_ireland_station_samples` has no row for `id` at
@@ -175,5 +205,130 @@ mod tests {
                 "dueInMinutes": 5,
             })
         );
+    }
+}
+
+/// HTTP-layer tests exercised against a live database -- mirrors
+/// `routes::stanox_crs::db_tests`'s `test_app` helper (colocated per-file
+/// rather than shared, matching this crate's established convention -- see
+/// that module's own doc comment for the same reasoning stated the first
+/// time this was copied).
+#[cfg(test)]
+mod db_tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::app::{App, AppState};
+    use crate::auth::oidc::{OidcClient, OidcConfig};
+    use crate::data::config::{LineCatalogue, ServiceArguments};
+
+    fn test_app(pool: PgPool) -> App {
+        let config = ServiceArguments {
+            bind_url: "0.0.0.0:0".to_string(),
+            database_url: String::new(),
+            redis_url: "redis://127.0.0.1:0".to_string(),
+            internal_oauth_issuer_url: "https://example.invalid".to_string(),
+            internal_oauth_client_id: "test-internal-oauth-client".to_string(),
+            internal_oauth_group_incidents: "svc-poller-incidents".to_string(),
+            internal_oauth_group_stations: "svc-poller-stations".to_string(),
+            internal_oauth_group_tocs: "svc-poller-tocs".to_string(),
+            internal_oauth_group_ldbws: "svc-poller-ldbws".to_string(),
+            internal_oauth_group_tfl: "svc-poller-tfl".to_string(),
+            internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
+            internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
+            internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
+            internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
+            internal_oauth_group_trust_backlog: "svc-trust-backlog-consumer".to_string(),
+            internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
+            internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
+            internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
+            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
+            sso_issuer_url: "https://example.invalid".to_string(),
+            sso_client_id: "test-client".to_string(),
+            sso_client_secret: "test-secret".to_string(),
+            sso_redirect_url: "https://example.invalid/callback".to_string(),
+            sso_post_login_redirect_url: "https://example.invalid/".to_string(),
+            session_ttl_days: 14,
+            history_retention_days: 7,
+            daily_stats_retention_days: 300,
+            half_hourly_stats_retention_hours: 840,
+            metrics_enabled: false,
+            defaults_file: None,
+            lines: LineCatalogue(vec![]),
+            vapid_public_key: "test-vapid-public-key".to_string(),
+            full_coverage_enabled_default: false,
+            schedule_match_interval_secs: 300,
+            reconciliation_sweep_interval_secs: 300,
+            schedule_enrichment_grace_minutes: 30,
+            backlog_match_sweep_interval_secs: 300,
+            session_cleanup_interval_secs: 3600,
+        };
+
+        std::sync::Arc::new(AppState {
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
+            config,
+            database: pool,
+            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
+            oidc: OidcClient::new(OidcConfig {
+                issuer_url: "https://example.invalid".to_string(),
+                client_id: "test-client".to_string(),
+                client_secret: "test-secret".to_string(),
+                redirect_url: "https://example.invalid/callback".to_string(),
+            })
+            .expect("construct placeholder oidc client"),
+            internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
+                "https://example.invalid".to_string(),
+                "test-internal-oauth-client".to_string(),
+            )
+            .expect("construct placeholder internal-oauth verifier"),
+            internal_oauth_routes: Vec::new(),
+            schedule_crs_line_index: std::collections::HashMap::new(),
+        })
+    }
+
+    async fn connect() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    /// Regression for "Whole-table dumps served uncached to anonymous
+    /// callers": both whole-catalogue routes must carry a public,
+    /// positive-max-age `Cache-Control`, independent of whether the
+    /// underlying tables have any rows -- an empty catalogue is still a
+    /// catalogue dump, not a per-caller answer.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                island_of_ireland_catalogue_routes_set_cache_control \
+                -- --ignored --test-threads=1`"]
+    async fn island_of_ireland_catalogue_routes_set_cache_control() {
+        let pool = connect().await;
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+
+        for uri in ["/island-of-ireland/stations", "/island-of-ireland/lines"] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "uri: {uri}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some(CATALOGUE_CACHE_CONTROL),
+                "uri {uri} must carry a public, positive-max-age Cache-Control"
+            );
+        }
     }
 }
