@@ -69,6 +69,44 @@ describe('/api/[...path] proxy', () => {
     expect((init as { headers: Record<string, string> }).headers.Cookie).toBe('nr_session=abc123');
   });
 
+  // Regression: api's own strict same-origin check on POST /auth/logout
+  // (2026-09-25 Low-severity auth-core review) reads Origin/Referer off
+  // whatever request IT receives -- this proxy's own server-side fetch,
+  // not the browser's original request -- and fails closed (403) when
+  // BOTH are absent. Node's fetch doesn't fabricate either header the way
+  // a browser does, so without forwarding them explicitly, every single
+  // proxied request looked origin-less to api regardless of what the
+  // browser actually sent, and every real logout was rejected.
+  it('forwards the browser\'s Origin and Referer headers through to the backend', async () => {
+    const req = makeRequest('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        // Matches makeRequest's own base URL -- this app's real public
+        // origin as far as hasAcceptableOriginForMutation is concerned in
+        // this test file's default (no `host` header) setup, same as
+        // every other passing Origin-check test above.
+        origin: 'http://localhost:3000',
+        referer: 'http://localhost:3000/settings',
+        cookie: 'nr_session=abc123',
+      },
+    });
+    await POST(req, { params: Promise.resolve({ path: ['auth', 'logout'] }) });
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    expect(calledUrl.toString()).toBe('http://test-api:8080/public/auth/logout');
+    const headers = (init as { headers: Record<string, string> }).headers;
+    expect(headers.Origin).toBe('http://localhost:3000');
+    expect(headers.Referer).toBe('http://localhost:3000/settings');
+  });
+
+  it('omits Origin/Referer from the outbound fetch when the browser sent neither', async () => {
+    const req = makeRequest('/api/auth/logout', { method: 'POST' });
+    await POST(req, { params: Promise.resolve({ path: ['auth', 'logout'] }) });
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const headers = (init as { headers: Record<string, string> }).headers;
+    expect(headers.Origin).toBeUndefined();
+    expect(headers.Referer).toBeUndefined();
+  });
+
   it('a path outside public/, Train/, and Journeys/ still 400s', async () => {
     // Not reachable through this app's own links today (every catch-all
     // segment this app generates comes from a literal string, never raw

@@ -165,6 +165,26 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   if (cookie) {
     headers.Cookie = cookie;
   }
+  // Forward the browser's own Origin/Referer through verbatim -- api's
+  // own strict same-origin check on POST /auth/logout (2026-09-25
+  // Low-severity auth-core review) reads these headers directly off the
+  // request IT receives, which is THIS proxy's own server-side fetch, not
+  // the browser's original request. A browser always sends Origin (and
+  // usually Referer) on a same-origin POST/PUT/DELETE per the fetch spec
+  // -- `hasAcceptableOriginForMutation` above already relies on exactly
+  // that fact -- but Node's own `fetch` does not fabricate either header
+  // on an outbound call the way a browser does, so without this the
+  // backend saw neither header on every single proxied request and its
+  // strict check (fails closed when both are absent) rejected every real
+  // logout with a 403.
+  const origin = req.headers.get('origin');
+  if (origin) {
+    headers.Origin = origin;
+  }
+  const referer = req.headers.get('referer');
+  if (referer) {
+    headers.Referer = referer;
+  }
 
   const init: RequestInit = {
     method: req.method,
