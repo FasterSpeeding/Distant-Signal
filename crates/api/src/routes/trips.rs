@@ -92,11 +92,14 @@ fn default_results() -> String {
 /// [&results=fastest|options][&maxChanges=0..4]`.
 ///
 /// - `results=fastest` (default): one earliest-arrival itinerary per segment
-///   (CSA). It is returned even if it needs more than `maxChanges` changes,
-///   flagged `exceedsRecommendedChanges: true`; `cappedByMaxChanges` is
-///   always `false` in this mode.
+///   (CSA). In this mode `maxChanges` is NOT a hard limit: the fastest
+///   itinerary is returned even if it needs more than `maxChanges` changes,
+///   and is then flagged `exceedsRecommendedChanges: true` (`false` when
+///   within the cap). `cappedByMaxChanges` is always `false` in this mode.
+///   Callers that need a strict limit must use `results=options`.
 /// - `results=options`: a Pareto set (arrival time vs. changes, RAPTOR) of
-///   itineraries with at most `maxChanges` changes each, plus
+///   itineraries with at most `maxChanges` changes each (a hard limit;
+///   over-cap itineraries are never returned), plus
 ///   `cappedByMaxChanges: true` when a strictly faster itinerary needing more
 ///   changes exists.
 /// - `maxChanges`: integer `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]
@@ -1022,7 +1025,8 @@ mod db_tests {
     /// returns nothing but flags `cappedByMaxChanges`, and an explicit
     /// `maxChanges=2` is byte-for-byte the same response as omitting it; at
     /// `maxChanges=3` the real 3-change itinerary comes back, uncapped.
-    /// `fastest` mode's `exceedsRecommendedChanges` follows the same cap.
+    /// `fastest` mode ignores the cap as a limit (the over-cap route is still
+    /// returned) and only uses it as the `exceedsRecommendedChanges` threshold.
     /// Synthetic CRS codes/TIPLOCs for the same isolation reason as
     /// `a_real_seeded_connection_is_found_end_to_end`.
     #[tokio::test]
