@@ -722,10 +722,43 @@ pub async fn insert_login_state(
     Ok(())
 }
 
+/// Read-only counterpart to `consume_login_state` below -- does NOT delete
+/// the row. `routes::auth::callback` (2026-09-26 Repeater Signal review,
+/// L3) calls this FIRST and only calls `consume_login_state` to actually
+/// delete the row after successfully comparing `csrf_state` against the
+/// incoming request's own `state` parameter. Before that reordering, the
+/// row was deleted unconditionally before the comparison ever ran, so a
+/// cross-site top-level GET to `/auth/callback` carrying the victim's own
+/// `login_state_id` cookie (Lax cookies still ride along on a top-level
+/// GET) and ANY `state` value burned the victim's real, in-flight login
+/// attempt for free -- the attacker's request didn't need to guess the
+/// correct `state` at all, just to arrive before the victim's own
+/// callback did. Leaving the row in place on a mismatch means a
+/// mismatched/attacker-triggered request costs the victim nothing: their
+/// own subsequent legitimate callback still finds its login state intact.
+/// `None` under the exact same conditions `consume_login_state` returns
+/// `None` for: unknown id, or older than the 15-minute window
+/// `insert_login_state` also sweeps on.
+pub async fn peek_login_state(pool: &PgPool, id: &str) -> Result<Option<LoginState>> {
+    let row = sqlx::query_as::<_, LoginState>(
+        "SELECT pkce_verifier, nonce, csrf_state, return_to FROM oidc_login_state \
+         WHERE id = $1 AND created_at > NOW() - INTERVAL '15 minutes'",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// Fetches and deletes in one step -- login state is single-use by
 /// construction (a replayed callback with the same state must not
 /// succeed twice). `None` if the id is unknown, already consumed, or
 /// older than the 15-minute window `insert_login_state` also sweeps on.
+///
+/// Callers should call `peek_login_state` first and only reach for this
+/// once the comparison against the incoming `state` parameter has already
+/// succeeded -- see that function's own doc comment (L3) for why deleting
+/// unconditionally, before that comparison, is itself the bug.
 pub async fn consume_login_state(pool: &PgPool, id: &str) -> Result<Option<LoginState>> {
     let row = sqlx::query_as::<_, LoginState>(
         "DELETE FROM oidc_login_state \
@@ -736,6 +769,71 @@ pub async fn consume_login_state(pool: &PgPool, id: &str) -> Result<Option<Login
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// L3 (2026-09-26 Repeater Signal review): `peek_login_state` must never
+/// burn the row, so a mismatched/attacker-triggered callback (which only
+/// ever reaches the peek, never the consume -- see `routes::auth::callback`)
+/// leaves the victim's in-flight login attempt intact, while
+/// `consume_login_state` keeps its single-use guarantee.
+#[cfg(test)]
+mod login_state_db_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                peeking_login_state_never_consumes_it_but_consuming_is_still_single_use -- \
+                --ignored`"]
+    async fn peeking_login_state_never_consumes_it_but_consuming_is_still_single_use() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let id = "test-login-state-peek-then-consume";
+        insert_login_state(&pool, id, "verifier", "nonce", "real-csrf-state", None)
+            .await
+            .expect("insert login state");
+
+        // Stands in for a cross-site callback carrying the victim's cookie
+        // and a WRONG `state`: `callback` peeks, sees the mismatch, and
+        // returns without consuming. Repeat it to prove it's truly
+        // non-destructive, not just "survives once".
+        for _ in 0..3 {
+            let peeked = peek_login_state(&pool, id)
+                .await
+                .expect("peek login state")
+                .expect("login state must still be there after a peek");
+            assert_ne!(peeked.csrf_state, "attacker-guessed-state");
+        }
+
+        // The victim's own legitimate callback then consumes it...
+        let consumed = consume_login_state(&pool, id)
+            .await
+            .expect("consume login state")
+            .expect("the victim's real login state must survive the attacker's attempts");
+        assert_eq!(consumed.csrf_state, "real-csrf-state");
+
+        // ...exactly once: a replay finds nothing, via either path.
+        assert!(
+            consume_login_state(&pool, id)
+                .await
+                .expect("second consume")
+                .is_none(),
+            "login state must remain single-use"
+        );
+        assert!(
+            peek_login_state(&pool, id)
+                .await
+                .expect("peek after consume")
+                .is_none()
+        );
+    }
 }
 
 #[cfg(test)]

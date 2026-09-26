@@ -182,7 +182,16 @@ async fn callback(
     let Some(login_state_id) = auth::parse_cookie(&headers, auth::LOGIN_STATE_COOKIE_NAME) else {
         return (StatusCode::BAD_REQUEST, "missing login state cookie").into_response();
     };
-    let stored = match users::consume_login_state(&app.database, &login_state_id).await {
+    // Peek (read-only) FIRST, and only actually consume (delete) the row
+    // once `state` has been compared successfully below -- 2026-09-26
+    // Repeater Signal review, L3. The previous ordering deleted the row
+    // unconditionally before ever comparing it, so a cross-site top-level
+    // GET to this callback (Lax cookies still ride along, carrying the
+    // victim's own login-state cookie) with ANY `state` value -- the
+    // attacker need not guess the correct one -- burned the victim's real,
+    // in-flight login attempt for free, forcing them to restart it. See
+    // `users::peek_login_state`'s own doc comment.
+    let stored = match users::peek_login_state(&app.database, &login_state_id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             return (
@@ -198,8 +207,33 @@ async fn callback(
     };
     if stored.csrf_state != state {
         tracing::warn!("OIDC callback state mismatch -- possible CSRF attempt or stale link");
+        // Deliberately does NOT consume the row: a mismatched `state` here
+        // -- whether a stale link or a cross-site attempt that never had
+        // to guess the real value -- must not cost the legitimate,
+        // in-flight login attempt this row belongs to. Only a successful
+        // comparison (below) consumes it.
         return (StatusCode::BAD_REQUEST, "state mismatch").into_response();
     }
+    // The comparison succeeded -- now, and only now, actually consume the
+    // row (single-use enforcement). `Ok(None)` here means it vanished
+    // between the peek above and this delete (e.g. a concurrent duplicate
+    // request, with the same valid state, already consumed it, or the
+    // 15-minute window elapsed in between) -- treated identically to the
+    // peek's own "expired or already used" case.
+    match users::consume_login_state(&app.database, &login_state_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "login state expired or already used",
+            )
+                .into_response();
+        }
+        Err(err) => {
+            tracing::error!(error = ?err, "login state consumption failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+        }
+    };
 
     let exchange_result = app
         .oidc
