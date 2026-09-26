@@ -285,6 +285,15 @@ replay safe"), carried over unchanged.
   - RDB `save` is off; AOF alone persists.
   - `msg_type` stays: measured on 100k real envelopes, it adds no memory.
   - See values.yaml's `redis:` block for the arithmetic.
+- **Revised again 2026-09-26: chart default doubled to ~24h.** Production
+  had already been running a larger cap through its own values overrides;
+  those were moved into the chart defaults. `movementRelay.streamMaxLen`
+  now defaults to a **1 GiB budget at 1 KiB per entry = 1,048,576 entries**
+  (about 24h at ~1M entries/day), with `maxmemory 1536mb` in a
+  1536Mi/2560Mi pod. The 12h reasoning above still holds as the floor; the
+  extra window is cover for a consumer that stays down through a whole
+  day. The AOF can reach 1-2 GB on disk at this size, past the default
+  1Gi `redis.persistence.size`.
 - **A consumer that falls behind past the trim window WILL lose entries it
   never read — by design, given oldest-first eviction above, not merely as
   an edge case under sustained load — so this must be a detected, handled
