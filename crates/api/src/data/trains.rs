@@ -14,11 +14,25 @@ use sqlx::PgPool;
 /// returning its surrogate `id`. `DO UPDATE` (never `DO NOTHING`) is what
 /// makes `RETURNING id` reliable on a re-run against a row that already
 /// exists -- safe to call more than once for the same identity.
-pub async fn find_or_create_train(
-    pool: &PgPool,
+///
+/// Generic over `E: PgExecutor` (rather than `&PgPool`) -- same reason as
+/// `train_tracking::create_pin`'s own doc comment: it lets
+/// `train_tracking::flip_legacy_resolution` (2026-09-26 review, Medium
+/// finding 6) call this with `&mut *tx` from inside its own transaction, so
+/// a downstream `mark_train_resolved` failure (e.g. a
+/// `trains_train_id_service_date` unique-index collision) rolls back
+/// alongside the `resolution_status = 'resolved'` write that transaction
+/// also makes, rather than leaving that write committed on its own with
+/// nothing to show for it. Every standalone caller keeps passing a bare
+/// `&PgPool`/`&pool` unchanged -- `&PgPool` implements `PgExecutor<'_>` too.
+pub async fn find_or_create_train<'c, E>(
+    executor: E,
     train_uid: &str,
     service_date: NaiveDate,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO trains (train_uid, service_date) \
          VALUES ($1, $2) \
@@ -27,7 +41,7 @@ pub async fn find_or_create_train(
     )
     .bind(train_uid)
     .bind(service_date)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
     Ok(row.0)
 }
@@ -161,15 +175,24 @@ pub async fn find_or_create_train_with_schedule_match(
 /// touch at all. Safe to call more than once for the same `trains_id`
 /// (a later Movement re-supplying the same `train_id` is a harmless
 /// no-op overwrite of identical values).
-pub async fn mark_train_resolved(
-    pool: &PgPool,
+///
+/// Generic over `E: PgExecutor` (rather than `&PgPool`) -- see
+/// [`find_or_create_train`]'s own doc comment: this is the write whose
+/// possible `trains_train_id_service_date` unique-index collision must roll
+/// back together with `flip_legacy_resolution`'s `resolution_status`
+/// write, not land (or fail) on its own.
+pub async fn mark_train_resolved<'c, E>(
+    executor: E,
     trains_id: i64,
     train_id: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     sqlx::query("UPDATE trains SET train_id = $2, resolved_at = NOW() WHERE id = $1")
         .bind(trains_id)
         .bind(train_id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
