@@ -512,6 +512,9 @@ export interface ScheduleCallingPoint {
   bookedDeparture: string | null;
   isHalfMinuteArrival: boolean;
   isHalfMinuteDeparture: boolean;
+  // CIF booked (timetabled) platform -- `null` when the CIF field is blank;
+  // absent on a row stored before the API started carrying it.
+  platform?: string | null;
 }
 
 export type JourneyStopKind = 'Origin' | 'Intermediate' | 'Terminate';
@@ -592,6 +595,14 @@ export interface JourneyStop {
   // showing a changed platform (WCAG 1.4.1). Always `false` when either is
   // `null` -- there is nothing to have changed.
   platformChanged: boolean;
+  // The TIMETABLED platform from the CIF schedule itself (independent of
+  // Darwin) -- see `crates/api/src/data/journey.rs`'s
+  // `JourneyStop::booked_platform`. Deliberately separate from
+  // `plannedPlatform` (Darwin's earliest-observed reconstruction) and never
+  // part of `platformChanged`. `null` when the CIF field is blank or the
+  // schedule row predates it. Optional only so older fixtures stay valid;
+  // the API always sends it.
+  bookedPlatform?: string | null;
 }
 
 /** `GET /Train/{trackingId}`'s response shape

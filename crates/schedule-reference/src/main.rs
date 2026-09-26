@@ -1321,6 +1321,9 @@ fn schedule_calling_points_full_rows(
                 "booked_arrival": cp.booked_arrival,
                 "booked_departure": cp.booked_departure,
                 "day_offset": cp.day_offset,
+                // CIF booked platform (`None` -> JSON null) -- see
+                // `schedule_query::records::CallingPoint::platform`.
+                "platform": cp.platform,
             }));
         }
     }
@@ -2581,6 +2584,33 @@ mod poll_once_tests {
                 rows.len(),
                 2,
                 "the non-public LI must not appear at all: {rows:?}"
+            );
+        }
+
+        /// Each published row carries its calling point's CIF booked
+        /// platform (`LO`/`LT` `19..22`, `LI` `33..36`) -- JSON `null` when
+        /// the CIF field is blank -- which `api`'s ingest writes to
+        /// `schedule_calling_points_full.platform`.
+        #[test]
+        fn each_row_carries_its_cif_booked_platform_or_null() {
+            // The public LI with its platform bytes (`33..36`) blanked.
+            const LI_CARLILE_NO_PLATFORM: &str = "LICARLILE 1202 1213      12021213         T";
+            let text = format!(
+                "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LI_CARLILE_NO_PLATFORM}\n{LT_EUSTON}"
+            );
+            let index = schedule_query::ScheduleIndex::from_text(&text);
+
+            let rows = schedule_calling_points_full_rows(&index, service_date());
+
+            let platforms: Vec<&serde_json::Value> = rows.iter().map(|r| &r["platform"]).collect();
+            assert_eq!(
+                platforms,
+                [
+                    &serde_json::json!("7"),
+                    &serde_json::Value::Null,
+                    &serde_json::json!("9")
+                ],
+                "{rows:?}"
             );
         }
 

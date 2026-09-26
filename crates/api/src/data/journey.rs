@@ -39,6 +39,12 @@ struct RawCallingPoint {
     /// failing outright.
     #[serde(default)]
     day_offset: u8,
+    /// Mirrors `schedule_matching::ScheduleCallingPointDto::platform` /
+    /// `schedule_query::CallingPoint::platform` -- the CIF booked platform.
+    /// `#[serde(default)]` for the same pre-existing-row reason as
+    /// `day_offset` above: an older row reads as `None` ("not known").
+    #[serde(default)]
+    platform: Option<String>,
 }
 
 /// The single lookup key both sides of the TIPLOC->CRS join must agree on:
@@ -275,6 +281,19 @@ pub struct JourneyStop {
     /// derivation for `StationDeparture`. Always `false` for a stop with no
     /// platform signal at all (there is nothing to have changed).
     pub platform_changed: bool,
+    /// The TIMETABLED platform from the CIF schedule itself
+    /// (`schedule_query::CallingPoint::platform`: `LO`/`LT` `19..22`, `LI`
+    /// `33..36`), independent of any Darwin data -- known for every calling
+    /// point whose CIF record carries one, including stops at stations
+    /// `poller-ldbws` never samples and the terminating stop. Deliberately a
+    /// SEPARATE field from `planned_platform` (Darwin's earliest-observed
+    /// reconstruction) and never folded into `platform_changed`: the two
+    /// "planned" notions come from different systems, and a CIF platform
+    /// can legitimately differ in form from Darwin's (e.g. a sub-platform
+    /// suffix), so comparing them would risk a false "platform changed".
+    /// `None` when the CIF field is blank, or the schedule row predates this
+    /// field -- "not known", never guessed.
+    pub booked_platform: Option<String>,
 }
 
 impl JourneyStop {
@@ -325,6 +344,7 @@ impl JourneyStop {
             platform: None,
             planned_platform: None,
             platform_changed: false,
+            booked_platform: cp.platform.clone(),
         }
     }
 }
@@ -507,6 +527,7 @@ fn raw_calling_point_from_full_row(
         // comment) -- `unwrap_or(0)` degrades a genuinely-impossible
         // negative or oversized value to "same day" rather than panicking.
         day_offset: u8::try_from(row.day_offset).unwrap_or(0),
+        platform: row.platform.clone(),
     })
 }
 
@@ -1454,6 +1475,7 @@ mod tests {
             platform: None,
             planned_platform: None,
             platform_changed: false,
+            booked_platform: None,
         }
     }
 
@@ -1467,6 +1489,7 @@ mod tests {
             booked_arrival: "08:00:00".parse().ok(),
             booked_departure: "08:01:00".parse().ok(),
             day_offset: 0,
+            platform: None,
         }
     }
 
@@ -1899,6 +1922,7 @@ mod tests {
             booked_arrival: None,
             booked_departure: None,
             day_offset: 0,
+            platform: None,
         };
 
         let stops = stops_from_calling_points(&[cp], &tiploc_to_crs, service_date);
@@ -1979,6 +2003,7 @@ mod tests {
                 booked_arrival: None,
                 booked_departure: None,
                 day_offset: 0,
+                platform: None,
             };
             assert!(!is_unresolved_booked_stop(&cp, None));
         }
@@ -2076,6 +2101,7 @@ mod tests {
             booked_arrival: "17:08:00".parse().ok(),
             booked_departure: "17:18:00".parse().ok(),
             day_offset: 0,
+            platform: None,
         };
 
         let cp = raw_calling_point_from_full_row(&row).expect("a valid kind converts");
@@ -2095,6 +2121,7 @@ mod tests {
             booked_arrival: None,
             booked_departure: "16:06:00".parse().ok(),
             day_offset: 0,
+            platform: None,
         };
         let terminate = queries::ScheduleCallingPointFullRowForTrain {
             tiploc: "EUSTON".to_string(),
@@ -2102,6 +2129,7 @@ mod tests {
             booked_arrival: "18:18:00".parse().ok(),
             booked_departure: None,
             day_offset: 0,
+            platform: None,
         };
 
         assert_eq!(
@@ -2131,6 +2159,7 @@ mod tests {
             booked_arrival: None,
             booked_departure: None,
             day_offset: 0,
+            platform: None,
         };
 
         assert!(raw_calling_point_from_full_row(&row).is_none());
@@ -3713,7 +3742,7 @@ mod db_tests {
 
         let calling_points = serde_json::json!([
             { "tiploc": "TEST-JRNP-A", "kind": "Origin",
-              "bookedArrival": null, "bookedDeparture": "09:00:00" },
+              "bookedArrival": null, "bookedDeparture": "09:00:00", "platform": "6" },
             { "tiploc": "TEST-JRNP-B", "kind": "Intermediate",
               "bookedArrival": "09:09:00", "bookedDeparture": "09:10:00" },
             { "tiploc": "TEST-JRNP-C", "kind": "Terminate",
@@ -3743,6 +3772,11 @@ mod db_tests {
         assert!(!stops[1].platform_changed);
         assert_eq!(stops[2].platform, None);
         assert_eq!(stops[2].planned_platform, None);
+        // CIF booked platform off `trains.calling_points`: present where the
+        // stored JSON carries one, `None` where it doesn't (an older row).
+        assert_eq!(stops[0].booked_platform.as_deref(), Some("6"));
+        assert_eq!(stops[1].booked_platform, None);
+        assert_eq!(stops[2].booked_platform, None);
 
         sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZPA', 'ZPB')")
             .execute(&pool)
@@ -3934,6 +3968,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: Some("4".to_string()),
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -3944,6 +3979,7 @@ mod db_tests {
                     booked_arrival: Some("08:19:00".parse().unwrap()),
                     booked_departure: Some("08:20:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: None,
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -3954,6 +3990,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: None,
                     day_offset: 0,
+                    platform: Some("12".to_string()),
                 },
             ],
         )
@@ -3999,6 +4036,15 @@ mod db_tests {
             stops[2].scheduled_arrival.is_none(),
             "no arrival time known from this source yet"
         );
+        // CIF booked platform, straight off `schedule_calling_points_full.platform`
+        // -- a blank CIF field (the SLO row) stays `None`, and none of it
+        // leaks into the separate Darwin `platform`/`planned_platform` pair.
+        assert_eq!(stops[0].booked_platform.as_deref(), Some("4"));
+        assert_eq!(stops[1].booked_platform, None);
+        assert_eq!(stops[2].booked_platform.as_deref(), Some("12"));
+        assert!(stops.iter().all(|stop| stop.platform.is_none()
+            && stop.planned_platform.is_none()
+            && !stop.platform_changed));
 
         sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-FB'")
             .execute(&pool)
@@ -4052,6 +4098,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: None,
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4062,6 +4109,7 @@ mod db_tests {
                     booked_arrival: Some("08:19:00".parse().unwrap()),
                     booked_departure: Some("08:20:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: None,
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4072,6 +4120,7 @@ mod db_tests {
                     booked_arrival: Some("09:15:00".parse().unwrap()),
                     booked_departure: None,
                     day_offset: 0,
+                    platform: None,
                 },
             ],
         )
@@ -4188,6 +4237,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: None,
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4198,6 +4248,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: None,
                     day_offset: 0,
+                    platform: None,
                 },
             ],
         )
@@ -4441,6 +4492,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: None,
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4451,6 +4503,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: None,
                     day_offset: 0,
+                    platform: None,
                 },
             ],
         )
@@ -4556,6 +4609,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: None,
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4566,6 +4620,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: None,
                     day_offset: 0,
+                    platform: None,
                 },
             ],
         )
