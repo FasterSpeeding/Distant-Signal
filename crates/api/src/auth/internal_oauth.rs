@@ -151,6 +151,36 @@ const UNKNOWN_KID_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
 /// unbounded-growth side of the same attack.
 const UNKNOWN_KID_CACHE_SWEEP_THRESHOLD: usize = 1024;
 
+/// Global cooldown between actual outbound JWKS refetches, independent of
+/// which `kid` triggered the attempt -- closes the gap left by
+/// `UNKNOWN_KID_NEGATIVE_CACHE_TTL` above (2026-09-26 Repeater Signal
+/// review, M1): that cache is keyed on `kid`, so it only throttles REPEATED
+/// requests carrying the SAME never-matched `kid`. A forged bearer token
+/// with a FRESH random `kid` on every request never once hits that cache --
+/// every single request looks like a brand-new, never-before-seen `kid` --
+/// and used to force its own fresh discovery+JWKS GET, however many
+/// distinct fake `kid`s the attacker cared to mint, at whatever rate they
+/// chose to send them.
+///
+/// `refresh_keys` below enforces this by holding `last_refresh_attempt`'s
+/// mutex across both the cooldown check AND the fetch itself, which gives
+/// this constant a second job for free: coalescing concurrent in-flight
+/// refetches. A caller that arrives while another is already mid-fetch
+/// blocks on that same mutex rather than issuing its own redundant request;
+/// once it acquires the lock, the just-completed attempt is already within
+/// the cooldown window, so it takes the early-return path below instead of
+/// firing a second HTTP request for work another caller just finished.
+///
+/// Set well below `UNKNOWN_KID_NEGATIVE_CACHE_TTL` (30s): this bounds the
+/// worst-case added latency for a REAL, just-rotated Authentik signing key
+/// to become usable (a legitimate token with a genuinely new `kid` arriving
+/// just after an attacker's forged request already spent this window's one
+/// refetch has to wait out the rest of it) -- 5s is a small, tolerable
+/// window for that, while still capping outbound JWKS traffic to at most
+/// one fetch every 5s regardless of how many distinct `kid`s a caller
+/// throws at this process.
+const GLOBAL_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
+
 /// Clock-skew tolerance applied to every time-based claim check in
 /// `verify` (`exp`, `nbf`, `iat`) -- added in the 2026-09-25 Low-severity
 /// auth-core review, which found none of the three had any tolerance at
@@ -174,6 +204,13 @@ pub struct ServiceTokenVerifier {
     /// `kid` -> when it was last confirmed absent from the JWKS (even
     /// after a refetch). See `UNKNOWN_KID_NEGATIVE_CACHE_TTL`.
     unknown_kid_cache: tokio::sync::RwLock<HashMap<String, Instant>>,
+    /// When the last actual outbound JWKS refetch attempt started
+    /// (regardless of which `kid` triggered it, or whether it succeeded).
+    /// Held locked across the whole of `refresh_keys` -- both the cooldown
+    /// check and the fetch itself -- so this single field enforces
+    /// `GLOBAL_REFRESH_COOLDOWN` AND coalesces concurrent in-flight
+    /// refetches into one. See that constant's own doc comment.
+    last_refresh_attempt: tokio::sync::Mutex<Option<Instant>>,
 }
 
 impl ServiceTokenVerifier {
@@ -210,6 +247,7 @@ impl ServiceTokenVerifier {
             jwks_uri: tokio::sync::OnceCell::new(),
             keys: tokio::sync::RwLock::new(HashMap::new()),
             unknown_kid_cache: tokio::sync::RwLock::new(HashMap::new()),
+            last_refresh_attempt: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -225,7 +263,32 @@ impl ServiceTokenVerifier {
             .await
     }
 
+    /// Fetches a fresh JWKS and replaces `self.keys` wholesale -- unless
+    /// another attempt (this same call's caller racing a concurrent one, or
+    /// simply a previous call) already did so within
+    /// `GLOBAL_REFRESH_COOLDOWN`, in which case this returns `Ok(())`
+    /// immediately without touching the network at all. See
+    /// `GLOBAL_REFRESH_COOLDOWN`'s own doc comment for why holding
+    /// `last_refresh_attempt`'s lock across the ENTIRE fetch (not just the
+    /// cooldown check) is what makes this also coalesce concurrent
+    /// in-flight refetches, not just throttle sequential ones.
     async fn refresh_keys(&self) -> Result<()> {
+        let mut last_attempt = self.last_refresh_attempt.lock().await;
+        if let Some(attempted_at) = *last_attempt
+            && attempted_at.elapsed() < GLOBAL_REFRESH_COOLDOWN
+        {
+            return Ok(());
+        }
+        // Recorded BEFORE the fetch, not after: a concurrent caller queued
+        // on this same mutex must see "an attempt is already underway/just
+        // finished" the instant it acquires the lock, even if THIS fetch
+        // itself is slow (bounded by `JWKS_HTTP_TIMEOUT`) or ultimately
+        // fails below -- a hung/erroring Authentik must not be retried
+        // more than once per cooldown window either, or the timeout alone
+        // becomes the only throttle on outbound requests to an
+        // already-struggling upstream.
+        *last_attempt = Some(Instant::now());
+
         let uri = self.jwks_uri().await?.clone();
         let jwks = CoreJsonWebKeySet::fetch_async(&uri, &self.http_client)
             .await
@@ -669,6 +732,136 @@ mod tests {
             "4 more requests with the same never-matched kid must cause zero additional JWKS \
              traffic beyond the first call's own refresh episode ({jwks_hits_after_first_call} \
              hit(s)) -- got {jwks_hits_after_five_calls} after all 5 calls"
+        );
+    }
+
+    /// Re-tags an already-signed token with a different `kid` in its
+    /// header, leaving the (now-mismatched) signature bytes untouched --
+    /// the same "swap the kid" shape every unknown-kid test in this module
+    /// uses, factored out so the `GLOBAL_REFRESH_COOLDOWN` tests below don't
+    /// each re-duplicate it for a THIRD and FOURTH never-before-seen `kid`.
+    fn retag_kid(token: &str, kid: &str) -> String {
+        let header = json!({"alg": "RS256", "kid": kid, "typ": "JWT"});
+        let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let mut parts: Vec<&str> = token.split('.').collect();
+        parts[0] = &header_b64;
+        parts.join(".")
+    }
+
+    fn jwks_hit_count(requests: &[wiremock::Request]) -> usize {
+        requests.iter().filter(|r| r.url.path() == "/jwks").count()
+    }
+
+    /// M1 (2026-09-26 Repeater Signal review): the per-`kid` negative cache
+    /// alone does NOT stop a forged token that carries a FRESH random `kid`
+    /// on every request -- each one is a genuine cache miss, since none of
+    /// them has ever been seen before. Two entirely DISTINCT never-matched
+    /// `kid`s, presented back to back within `GLOBAL_REFRESH_COOLDOWN`, must
+    /// still cause only the first call's own refresh episode of JWKS
+    /// traffic -- the second call's own attempt to refetch (triggered
+    /// because ITS kid isn't negative-cached either) must be suppressed by
+    /// the global cooldown instead of hitting the network again.
+    #[tokio::test]
+    async fn distinct_never_before_seen_kids_within_the_cooldown_only_refetch_the_jwks_once() {
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |_| {}));
+
+        assert_eq!(
+            verifier
+                .verify(&retag_kid(&token, "kid-a-nobody-has"))
+                .await,
+            Err(VerifyError::UnknownKey)
+        );
+        let hits_after_first_kid = jwks_hit_count(
+            &server
+                .received_requests()
+                .await
+                .expect("wiremock request recording is enabled by default"),
+        );
+
+        // A SECOND, entirely different kid the negative cache has never
+        // heard of -- without the global cooldown, this alone would force
+        // a fresh refetch.
+        assert_eq!(
+            verifier
+                .verify(&retag_kid(&token, "kid-b-nobody-has"))
+                .await,
+            Err(VerifyError::UnknownKey)
+        );
+        let hits_after_second_kid = jwks_hit_count(
+            &server
+                .received_requests()
+                .await
+                .expect("wiremock request recording is enabled by default"),
+        );
+
+        assert_eq!(
+            hits_after_second_kid, hits_after_first_kid,
+            "a second, never-before-seen kid presented within the cooldown window must cause \
+             zero additional JWKS traffic beyond the first kid's own refresh episode \
+             ({hits_after_first_kid} hit(s)) -- got {hits_after_second_kid} after the second kid"
+        );
+    }
+
+    /// The other half of M1's fix: concurrent in-flight refetches must be
+    /// coalesced, not just sequential ones throttled. Fires several
+    /// `verify()` calls -- each with its OWN never-before-seen `kid`, so
+    /// each independently decides it needs to refetch -- at the same time
+    /// via `futures::future::join_all`, and asserts the JWKS endpoint is
+    /// still hit only as many times as ONE refresh episode accounts for,
+    /// not once per concurrent caller.
+    #[tokio::test]
+    async fn concurrent_calls_with_distinct_unknown_kids_are_coalesced_into_one_refetch() {
+        let (server, verifier) = mock_authentik().await;
+        let token = sign_token(&valid_claims(&server.uri(), |_| {}));
+        let tokens = [
+            retag_kid(&token, "kid-concurrent-a"),
+            retag_kid(&token, "kid-concurrent-b"),
+            retag_kid(&token, "kid-concurrent-c"),
+            retag_kid(&token, "kid-concurrent-d"),
+        ];
+
+        let (r0, r1, r2, r3) = tokio::join!(
+            verifier.verify(&tokens[0]),
+            verifier.verify(&tokens[1]),
+            verifier.verify(&tokens[2]),
+            verifier.verify(&tokens[3]),
+        );
+        for result in [r0, r1, r2, r3] {
+            assert_eq!(result, Err(VerifyError::UnknownKey));
+        }
+
+        // Establish this environment's own "how many raw GETs does ONE
+        // refresh episode actually cost" baseline (see the sibling
+        // sequential test's own comment on why that's the library's
+        // internal behaviour, not a fixed constant to hardcode), then
+        // confirm a further never-before-seen kid still adds nothing --
+        // proving the four concurrent calls above already collapsed onto
+        // that same one episode rather than each paying for their own.
+        let hits_after_concurrent_batch = jwks_hit_count(
+            &server
+                .received_requests()
+                .await
+                .expect("wiremock request recording is enabled by default"),
+        );
+        assert_eq!(
+            verifier
+                .verify(&retag_kid(&token, "kid-concurrent-e"))
+                .await,
+            Err(VerifyError::UnknownKey)
+        );
+        let hits_after_one_more = jwks_hit_count(
+            &server
+                .received_requests()
+                .await
+                .expect("wiremock request recording is enabled by default"),
+        );
+        assert_eq!(
+            hits_after_one_more, hits_after_concurrent_batch,
+            "4 concurrent calls, each with its own never-before-seen kid, plus one more \
+             sequential never-before-seen kid, must all collapse onto the first refresh \
+             episode's own JWKS traffic ({hits_after_concurrent_batch} hit(s)) -- got \
+             {hits_after_one_more} after the fifth (sequential) kid"
         );
     }
 
