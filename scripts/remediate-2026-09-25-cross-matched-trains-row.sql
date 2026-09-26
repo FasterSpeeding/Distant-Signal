@@ -2,6 +2,21 @@
 -- Remediation: unglue the 2026-09-25 cross-matched `trains` row(s)
 -- =============================================================================
 --
+-- SUPERSEDED: `crates/api/migrations/20260925221500_close_out_trains_train_id_service_date_collisions.sql`
+-- (which runs immediately before
+-- `20260925222000_trains_train_id_service_date_unique.sql`'s unique index
+-- build) now closes out this exact incident (and every other `(train_id,
+-- service_date)` collision, present or future) itself, as part of the
+-- deploy, by deleting the colliding `trains` row(s) outright rather than
+-- surgically clearing just the wrongly-glued `train_id`/`resolved_at` the
+-- way this script does. Running this script is no longer necessary before
+-- that migration deploys, and this script is harmless to run either way
+-- (its own affected-row query requires `train_id IS NOT NULL`, so it finds
+-- nothing once the migration has already deleted the row). Kept in the
+-- repo as a historical record of the incident and as a worked, more
+-- surgical example of the narrower "TRUST Activation contradicts identity"
+-- corruption signature -- not because it still needs to be run.
+--
 -- BACKGROUND
 -- ----------
 -- On 2026-09-25 a CRS+time matching heuristic (both the live TRUST-consumer
