@@ -584,6 +584,17 @@ pub struct SessionUser {
 /// sweep (`main.rs`'s `session_cleanup_sweep_loop`) -- this function's own
 /// `WHERE ... expires_at > NOW()` doesn't depend on that sweep having run
 /// recently, it's just what keeps the table from growing without bound.
+///
+/// Also rejects a session whose `created_at` predates the owning user's
+/// own `sessions_invalidated_at` marker (M14/L6, 2026-09-26 Repeater
+/// Signal review) -- see that column's own doc comment
+/// (`migrations/20260926130000_users_sessions_invalidated_at.sql`) for why
+/// this is `>=` rather than `>`, and
+/// `invalidate_all_sessions_and_reissue` below for the one path that sets
+/// it today. A `NULL` marker (every user who has never triggered a
+/// revocation) never rejects anything -- `IS NULL OR ...` short-circuits
+/// to "trust every session row normally", matching this table's behavior
+/// before this column existed.
 pub async fn get_session_with_user(
     pool: &PgPool,
     hashed_token: &str,
@@ -591,12 +602,74 @@ pub async fn get_session_with_user(
     let row = sqlx::query_as::<_, SessionUser>(
         "SELECT u.id, u.email, u.name, u.groups \
          FROM sessions s JOIN users u ON u.id = s.user_id \
-         WHERE s.id = $1 AND s.expires_at > NOW()",
+         WHERE s.id = $1 AND s.expires_at > NOW() \
+           AND (u.sessions_invalidated_at IS NULL OR s.created_at >= u.sessions_invalidated_at)",
     )
     .bind(hashed_token)
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// The "log out everywhere" action (M14/L6, 2026-09-26 Repeater Signal
+/// review): ends every session this user currently holds -- including,
+/// implicitly, the very session making this call -- and immediately
+/// reissues a brand-new one for the caller's own current browser, so the
+/// visitor triggering this from their account menu isn't logged out of
+/// their own request along with everything else.
+///
+/// Three things happen in one transaction, so a failure partway through
+/// can't leave the user in a half-revoked state (marker set but old
+/// sessions still live, or old sessions gone but no marker and no new
+/// session to replace them):
+///
+/// 1. `users.sessions_invalidated_at` is set to `NOW()` -- the marker
+///    `get_session_with_user` checks on every future authenticated
+///    request, kept as defense in depth for any future revocation path
+///    that sets it WITHOUT itself deleting rows (e.g. a hypothetical
+///    admin action or IdP-webhook-driven revocation, neither of which
+///    this fix implements -- see this finding's own scope note).
+/// 2. Every existing `sessions` row for this user is deleted outright,
+///    rather than left to expire naturally or to be caught by the marker
+///    check above on their next request -- what actually makes "log out
+///    everywhere" immediate rather than eventually-consistent.
+/// 3. A fresh session is inserted for the SAME user, so the caller's own
+///    browser can carry on logged in under a new token. Its `created_at`
+///    comes from the same transaction's `NOW()` as the marker written in
+///    step 1 -- see `get_session_with_user`'s own doc comment for why
+///    that function's comparison is `>=`, not `>`, specifically so this
+///    reissued session isn't rejected by the very marker this call just
+///    set.
+///
+/// Returns the new session's plaintext token (never stored -- see
+/// `crate::auth::hash_session_token`); the caller sets this as the new
+/// `distant_signal_session` cookie.
+pub async fn invalidate_all_sessions_and_reissue(
+    pool: &PgPool,
+    user_id: &str,
+    ttl_days: i64,
+) -> Result<String> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE users SET sessions_invalidated_at = NOW() WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    let token = crate::auth::generate_session_token();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at) \
+         VALUES ($1, $2, NULL, NOW(), NOW() + make_interval(days => $3))",
+    )
+    .bind(crate::auth::hash_session_token(&token))
+    .bind(user_id)
+    .bind(session_ttl_days_i32(ttl_days))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(token)
 }
 
 pub async fn delete_session(pool: &PgPool, hashed_token: &str) -> Result<()> {
@@ -722,10 +795,43 @@ pub async fn insert_login_state(
     Ok(())
 }
 
+/// Read-only counterpart to `consume_login_state` below -- does NOT delete
+/// the row. `routes::auth::callback` (2026-09-26 Repeater Signal review,
+/// L3) calls this FIRST and only calls `consume_login_state` to actually
+/// delete the row after successfully comparing `csrf_state` against the
+/// incoming request's own `state` parameter. Before that reordering, the
+/// row was deleted unconditionally before the comparison ever ran, so a
+/// cross-site top-level GET to `/auth/callback` carrying the victim's own
+/// `login_state_id` cookie (Lax cookies still ride along on a top-level
+/// GET) and ANY `state` value burned the victim's real, in-flight login
+/// attempt for free -- the attacker's request didn't need to guess the
+/// correct `state` at all, just to arrive before the victim's own
+/// callback did. Leaving the row in place on a mismatch means a
+/// mismatched/attacker-triggered request costs the victim nothing: their
+/// own subsequent legitimate callback still finds its login state intact.
+/// `None` under the exact same conditions `consume_login_state` returns
+/// `None` for: unknown id, or older than the 15-minute window
+/// `insert_login_state` also sweeps on.
+pub async fn peek_login_state(pool: &PgPool, id: &str) -> Result<Option<LoginState>> {
+    let row = sqlx::query_as::<_, LoginState>(
+        "SELECT pkce_verifier, nonce, csrf_state, return_to FROM oidc_login_state \
+         WHERE id = $1 AND created_at > NOW() - INTERVAL '15 minutes'",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// Fetches and deletes in one step -- login state is single-use by
 /// construction (a replayed callback with the same state must not
 /// succeed twice). `None` if the id is unknown, already consumed, or
 /// older than the 15-minute window `insert_login_state` also sweeps on.
+///
+/// Callers should call `peek_login_state` first and only reach for this
+/// once the comparison against the incoming `state` parameter has already
+/// succeeded -- see that function's own doc comment (L3) for why deleting
+/// unconditionally, before that comparison, is itself the bug.
 pub async fn consume_login_state(pool: &PgPool, id: &str) -> Result<Option<LoginState>> {
     let row = sqlx::query_as::<_, LoginState>(
         "DELETE FROM oidc_login_state \
@@ -736,6 +842,71 @@ pub async fn consume_login_state(pool: &PgPool, id: &str) -> Result<Option<Login
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// L3 (2026-09-26 Repeater Signal review): `peek_login_state` must never
+/// burn the row, so a mismatched/attacker-triggered callback (which only
+/// ever reaches the peek, never the consume -- see `routes::auth::callback`)
+/// leaves the victim's in-flight login attempt intact, while
+/// `consume_login_state` keeps its single-use guarantee.
+#[cfg(test)]
+mod login_state_db_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                peeking_login_state_never_consumes_it_but_consuming_is_still_single_use -- \
+                --ignored`"]
+    async fn peeking_login_state_never_consumes_it_but_consuming_is_still_single_use() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let id = "test-login-state-peek-then-consume";
+        insert_login_state(&pool, id, "verifier", "nonce", "real-csrf-state", None)
+            .await
+            .expect("insert login state");
+
+        // Stands in for a cross-site callback carrying the victim's cookie
+        // and a WRONG `state`: `callback` peeks, sees the mismatch, and
+        // returns without consuming. Repeat it to prove it's truly
+        // non-destructive, not just "survives once".
+        for _ in 0..3 {
+            let peeked = peek_login_state(&pool, id)
+                .await
+                .expect("peek login state")
+                .expect("login state must still be there after a peek");
+            assert_ne!(peeked.csrf_state, "attacker-guessed-state");
+        }
+
+        // The victim's own legitimate callback then consumes it...
+        let consumed = consume_login_state(&pool, id)
+            .await
+            .expect("consume login state")
+            .expect("the victim's real login state must survive the attacker's attempts");
+        assert_eq!(consumed.csrf_state, "real-csrf-state");
+
+        // ...exactly once: a replay finds nothing, via either path.
+        assert!(
+            consume_login_state(&pool, id)
+                .await
+                .expect("second consume")
+                .is_none(),
+            "login state must remain single-use"
+        );
+        assert!(
+            peek_login_state(&pool, id)
+                .await
+                .expect("peek after consume")
+                .is_none()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -955,5 +1126,221 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+
+    /// M14/L6 (2026-09-26 Repeater Signal review), first half: a session
+    /// whose `created_at` predates the owning user's
+    /// `sessions_invalidated_at` marker must be rejected by
+    /// `get_session_with_user` even though it hasn't expired (`expires_at`
+    /// is still far in the future) and the row itself is untouched --
+    /// proving the marker check is a REAL, independent rejection path, not
+    /// just documentation. Manipulates `sessions_invalidated_at` directly
+    /// via raw SQL (bypassing `invalidate_all_sessions_and_reissue`, which
+    /// also deletes the row this test needs to keep in place) so this
+    /// test isolates the marker comparison alone.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                a_session_created_before_the_invalidation_marker_is_rejected_after_it -- \
+                --ignored`"]
+    async fn a_session_created_before_the_invalidation_marker_is_rejected_after_it() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let identity = OidcIdentity {
+            sub: "TEST-USER-SESSION-REVOKE-BEFORE".to_string(),
+            email: Some("test@example.com".to_string()),
+            email_verified: true,
+            name: Some("Test Rider".to_string()),
+            preferred_username: Some("test-rider".to_string()),
+            groups: Vec::new(),
+        };
+        let user = upsert_user(&pool, &identity).await.expect("upsert user");
+
+        insert_session(&pool, "test-session-before-revocation", &user.id, 14)
+            .await
+            .expect("insert session");
+
+        // Sanity check: valid before any revocation at all.
+        assert!(
+            get_session_with_user(&pool, "test-session-before-revocation")
+                .await
+                .expect("lookup before revocation")
+                .is_some(),
+            "session must be valid before any revocation happens"
+        );
+
+        // Simulate a "log out everywhere" (or any future revocation path)
+        // that sets the marker to a time AFTER this session's own
+        // created_at, without touching the sessions row itself -- proving
+        // the marker check alone is what rejects it, independent of
+        // expires_at or the row's continued existence.
+        sqlx::query("UPDATE users SET sessions_invalidated_at = NOW() WHERE id = $1")
+            .bind(&user.id)
+            .execute(&pool)
+            .await
+            .expect("set invalidation marker");
+
+        let rejected = get_session_with_user(&pool, "test-session-before-revocation")
+            .await
+            .expect("lookup after revocation");
+        assert!(
+            rejected.is_none(),
+            "a session created before sessions_invalidated_at must be rejected after it is set"
+        );
+
+        // Cleanup -- cascades sessions via ON DELETE CASCADE.
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-SESSION-REVOKE-BEFORE'")
+            .execute(&pool)
+            .await
+            .expect("cleanup test user");
+    }
+
+    /// M14/L6, second half: a session created AFTER the marker (e.g. a
+    /// fresh login/reissue that happens once revocation has already been
+    /// set) must NOT be rejected -- the marker is a "sessions before this
+    /// instant are dead" cutoff, not a permanent lockout for the whole
+    /// account.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                a_session_created_after_the_invalidation_marker_is_not_rejected -- --ignored`"]
+    async fn a_session_created_after_the_invalidation_marker_is_not_rejected() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let identity = OidcIdentity {
+            sub: "TEST-USER-SESSION-REVOKE-AFTER".to_string(),
+            email: Some("test@example.com".to_string()),
+            email_verified: true,
+            name: Some("Test Rider".to_string()),
+            preferred_username: Some("test-rider".to_string()),
+            groups: Vec::new(),
+        };
+        let user = upsert_user(&pool, &identity).await.expect("upsert user");
+
+        // A revocation that happened in the past...
+        sqlx::query(
+            "UPDATE users SET sessions_invalidated_at = NOW() - INTERVAL '1 hour' WHERE id = $1",
+        )
+        .bind(&user.id)
+        .execute(&pool)
+        .await
+        .expect("set invalidation marker in the past");
+
+        // ...followed by a brand-new session, created_at defaulting to
+        // NOW() (see insert_session), which is strictly after that marker.
+        insert_session(&pool, "test-session-after-revocation", &user.id, 14)
+            .await
+            .expect("insert session");
+
+        let found = get_session_with_user(&pool, "test-session-after-revocation")
+            .await
+            .expect("lookup after revocation");
+        assert!(
+            found.is_some(),
+            "a session created after sessions_invalidated_at must not be rejected by it"
+        );
+
+        // Cleanup.
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-SESSION-REVOKE-AFTER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup test user");
+    }
+
+    /// End to end: `invalidate_all_sessions_and_reissue` (the "log out
+    /// everywhere" action's backing function) actually ends every prior
+    /// session for the user AND hands back a new one that itself resolves
+    /// -- proving the same-transaction `NOW()` tie between the marker and
+    /// the reissued session's own `created_at` really is resolved by
+    /// `get_session_with_user`'s `>=` comparison (see that function's own
+    /// doc comment), not just asserted in a comment.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                invalidate_all_sessions_and_reissue_ends_every_prior_session_and_reissues_a_working_one \
+                -- --ignored`"]
+    async fn invalidate_all_sessions_and_reissue_ends_every_prior_session_and_reissues_a_working_one()
+     {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let identity = OidcIdentity {
+            sub: "TEST-USER-LOGOUT-EVERYWHERE".to_string(),
+            email: Some("test@example.com".to_string()),
+            email_verified: true,
+            name: Some("Test Rider".to_string()),
+            preferred_username: Some("test-rider".to_string()),
+            groups: Vec::new(),
+        };
+        let user = upsert_user(&pool, &identity).await.expect("upsert user");
+
+        // Two prior sessions -- standing in for two different devices/
+        // browsers the user is currently logged in on.
+        insert_session(&pool, "test-device-one", &user.id, 14)
+            .await
+            .expect("insert session one");
+        insert_session(&pool, "test-device-two", &user.id, 14)
+            .await
+            .expect("insert session two");
+
+        let new_token = invalidate_all_sessions_and_reissue(&pool, &user.id, 14)
+            .await
+            .expect("invalidate and reissue");
+
+        // Both prior sessions are gone -- not merely marker-rejected, but
+        // actually deleted (immediate, not eventually-consistent).
+        assert!(
+            get_session_with_user(&pool, "test-device-one")
+                .await
+                .expect("lookup device one")
+                .is_none(),
+            "every prior session must be gone after logging out everywhere"
+        );
+        assert!(
+            get_session_with_user(&pool, "test-device-two")
+                .await
+                .expect("lookup device two")
+                .is_none(),
+            "every prior session must be gone after logging out everywhere"
+        );
+
+        // The freshly reissued session, for the very request that
+        // triggered this, must itself resolve -- not be rejected by the
+        // marker this same call just set.
+        let hashed_new_token = crate::auth::hash_session_token(&new_token);
+        let found = get_session_with_user(&pool, &hashed_new_token)
+            .await
+            .expect("lookup reissued session");
+        assert!(
+            found.is_some(),
+            "the reissued session must itself be valid immediately, not rejected by the very \
+             sessions_invalidated_at marker this call just set"
+        );
+
+        // Cleanup -- cascades the reissued session via ON DELETE CASCADE.
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-LOGOUT-EVERYWHERE'")
+            .execute(&pool)
+            .await
+            .expect("cleanup test user");
     }
 }

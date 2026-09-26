@@ -117,6 +117,41 @@ describe('AccountMenu', () => {
     });
   });
 
+  it('logging out other sessions posts to /api/auth/sessions/revoke-others and refreshes the router', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
+    openMenu();
+    fireEvent.click(await menuItem('Log out other sessions'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/auth/sessions/revoke-others', { method: 'POST' });
+    });
+    // The reissued session cookie means the router refresh should still
+    // show this visitor logged in -- unlike `logout`, this does not log
+    // the current browser out.
+    await waitFor(() => {
+      expect(refresh).toHaveBeenCalled();
+    });
+  });
+
+  it('surfaces an error instead of refreshing when logging out other sessions fails', async () => {
+    // Deliberately NOT the same "swallow and refresh anyway" behaviour
+    // `useLogout` has for a failed logout -- a failed revoke-others
+    // request means nothing was actually revoked, which is worth telling
+    // the visitor rather than silently pretending it worked.
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+
+    renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
+    openMenu();
+    fireEvent.click(await menuItem('Log out other sessions'));
+
+    expect(await menuItem('Could not log out other sessions -- try again')).toBeInTheDocument();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it('still refreshes when the logout request fails', async () => {
     // `/auth/logout` is idempotent and the cookie is gone either way, so
     // a failed request must not leave the nav showing a stale signed-in

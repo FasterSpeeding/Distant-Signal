@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Avatar, Menu, UnstyledButton } from '@mantine/core';
 import { useLogout } from './useLogout';
+import { useLogoutOtherSessions } from './useLogoutOtherSessions';
 import type { NavDestination } from '@/lib/navLinks';
 
 /** The authenticated visitor's account control: an avatar in the nav bar
@@ -43,6 +44,11 @@ export function AccountMenu({
   destinations: readonly NavDestination[];
 }) {
   const { logout, loggingOut } = useLogout();
+  const {
+    logoutOtherSessions,
+    loggingOut: loggingOutOtherSessions,
+    error: logoutOtherSessionsError,
+  } = useLogoutOtherSessions();
 
   return (
     <Menu
@@ -93,6 +99,22 @@ export function AccountMenu({
           </Menu.Item>
         ))}
         <Menu.Divider />
+        {/* Ends every OTHER session this account holds (a lost/stolen
+            device, a shared computer, a login the visitor doesn't
+            recognise) without logging this browser out too -- the
+            user-reachable half of the M14/L6 session-revocation fix. Same
+            `closeMenuOnClick={false}` reasoning as "Log out" below: the
+            request is in flight, and on success `router.refresh()`
+            re-renders the page under the freshly-reissued cookie rather
+            than dismissing the menu itself. */}
+        <Menu.Item
+          onClick={logoutOtherSessions}
+          disabled={loggingOutOtherSessions}
+          closeMenuOnClick={false}
+          color={logoutOtherSessionsError ? 'red' : undefined}
+        >
+          {logoutOtherSessionsError ? 'Could not log out other sessions -- try again' : 'Log out other sessions'}
+        </Menu.Item>
         {/* `closeMenuOnClick={false}`: the request is in flight and the
             item shows a disabled/busy state while it is, so closing the
             dropdown out from under the press would hide the only

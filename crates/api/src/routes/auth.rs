@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
-use crate::auth::{self, OptionalAuthenticatedUser};
+use crate::auth::{self, AuthenticatedUser, OptionalAuthenticatedUser};
 use crate::data::users;
 
 pub fn router() -> Router {
@@ -21,6 +21,10 @@ pub fn router() -> Router {
         .route("/auth/callback", axum::routing::get(callback))
         .route("/auth/logout", axum::routing::post(logout))
         .route("/auth/session", axum::routing::get(session))
+        .route(
+            "/auth/sessions/revoke-others",
+            axum::routing::post(revoke_other_sessions),
+        )
 }
 
 /// Whether the `Secure` cookie attribute is appropriate for the browser
@@ -182,7 +186,16 @@ async fn callback(
     let Some(login_state_id) = auth::parse_cookie(&headers, auth::LOGIN_STATE_COOKIE_NAME) else {
         return (StatusCode::BAD_REQUEST, "missing login state cookie").into_response();
     };
-    let stored = match users::consume_login_state(&app.database, &login_state_id).await {
+    // Peek (read-only) FIRST, and only actually consume (delete) the row
+    // once `state` has been compared successfully below -- 2026-09-26
+    // Repeater Signal review, L3. The previous ordering deleted the row
+    // unconditionally before ever comparing it, so a cross-site top-level
+    // GET to this callback (Lax cookies still ride along, carrying the
+    // victim's own login-state cookie) with ANY `state` value -- the
+    // attacker need not guess the correct one -- burned the victim's real,
+    // in-flight login attempt for free, forcing them to restart it. See
+    // `users::peek_login_state`'s own doc comment.
+    let stored = match users::peek_login_state(&app.database, &login_state_id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             return (
@@ -198,8 +211,33 @@ async fn callback(
     };
     if stored.csrf_state != state {
         tracing::warn!("OIDC callback state mismatch -- possible CSRF attempt or stale link");
+        // Deliberately does NOT consume the row: a mismatched `state` here
+        // -- whether a stale link or a cross-site attempt that never had
+        // to guess the real value -- must not cost the legitimate,
+        // in-flight login attempt this row belongs to. Only a successful
+        // comparison (below) consumes it.
         return (StatusCode::BAD_REQUEST, "state mismatch").into_response();
     }
+    // The comparison succeeded -- now, and only now, actually consume the
+    // row (single-use enforcement). `Ok(None)` here means it vanished
+    // between the peek above and this delete (e.g. a concurrent duplicate
+    // request, with the same valid state, already consumed it, or the
+    // 15-minute window elapsed in between) -- treated identically to the
+    // peek's own "expired or already used" case.
+    match users::consume_login_state(&app.database, &login_state_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "login state expired or already used",
+            )
+                .into_response();
+        }
+        Err(err) => {
+            tracing::error!(error = ?err, "login state consumption failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+        }
+    };
 
     let exchange_result = app
         .oidc
@@ -314,6 +352,71 @@ async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Respo
         header::SET_COOKIE,
         HeaderValue::from_str(&auth::clear_cookie_header(
             auth::SESSION_COOKIE_NAME,
+            cookie_secure(&app),
+        ))
+        .expect("cookie header value is always valid ASCII"),
+    );
+    response
+}
+
+/// "Log out everywhere" (M14/L6, 2026-09-26 Repeater Signal review): ends
+/// every session the caller currently holds -- other devices/browsers
+/// included -- and reissues a fresh one for the request making this call,
+/// so the visitor isn't logged out of their own account-settings action
+/// along with everything else. The real fix for two related gaps this
+/// review found: authz data (`groups`) was frozen at login for the full
+/// `session_ttl_days` session lifetime with no way to end it early, and
+/// there was no user-reachable "log out everywhere" action at all -- only
+/// waiting out a session's own TTL.
+///
+/// Same strict Origin/Referer CSRF guard as `logout` above, and for the
+/// same reason: a state-changing `POST` acting on the caller's own
+/// account, backed by nothing but `SameSite=Lax` otherwise.
+async fn revoke_other_sessions(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let expected_origin = auth::expected_browser_origin(&app.config.sso_redirect_url);
+    if let Some(expected_origin) = expected_origin.as_deref()
+        && !auth::is_same_origin(
+            headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()),
+            headers.get(header::REFERER).and_then(|v| v.to_str().ok()),
+            expected_origin,
+        )
+    {
+        tracing::warn!(
+            "logout-everywhere rejected: Origin/Referer did not match this app's own origin"
+        );
+        return (StatusCode::FORBIDDEN, "cross-site request rejected").into_response();
+    }
+
+    let new_token = match users::invalidate_all_sessions_and_reissue(
+        &app.database,
+        &user.id,
+        app.config.session_ttl_days,
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::error!(error = ?err, "failed to invalidate and reissue sessions");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to log out other sessions",
+            )
+                .into_response();
+        }
+    };
+
+    let max_age = app.config.session_ttl_days * 24 * 60 * 60;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&auth::set_cookie_header(
+            auth::SESSION_COOKIE_NAME,
+            &new_token,
+            max_age,
             cookie_secure(&app),
         ))
         .expect("cookie header value is always valid ASCII"),
