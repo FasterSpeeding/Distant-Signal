@@ -749,6 +749,16 @@ async fn get_by_uid_and_date(
     State(app): State<App>,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
 ) -> Result<Json<crate::data::trains::PublicTrainState>, (StatusCode, String)> {
+    // 2026-09-26 review, Low finding 11: CIF's own convention (confirmed
+    // against `schedule-reference`'s own fixtures/tests, e.g. `"C11052"`)
+    // is an uppercase `train_uid` -- every `trains`/schedule row this app
+    // ever writes carries one. Every downstream lookup here is exact-case,
+    // so a hand-typed lowercase uid in this URL would just never match any
+    // of them, 404ing a perfectly real, already-published train. Normalized
+    // here, matching the same trim+uppercase this codebase already applies
+    // to caller-typed CRS codes (e.g. `post_journey`'s `Window` arm, just
+    // below in `routes/journeys.rs`).
+    let train_uid = train_uid.trim().to_ascii_uppercase();
     let mut state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
         .await
         .map_err(internal_error("read public train state"))?;
@@ -833,6 +843,14 @@ async fn post_track_by_uid(
     user: AuthenticatedUser,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
 ) -> Result<Json<TrackByUidResponse>, (StatusCode, String)> {
+    // 2026-09-26 review, Low finding 11 -- see `get_by_uid_and_date`'s own
+    // doc comment, just above: without this, a hand-typed lowercase uid
+    // here mints a brand-new `trains` row under that exact lowercase
+    // string, distinct from (and never resolved by) the uppercase row
+    // every real TRUST/CIF event for the same physical train actually
+    // targets -- an unattributable row that silently never receives an
+    // event.
+    let train_uid = train_uid.trim().to_ascii_uppercase();
     let trains_id = crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
         .await
         .map_err(internal_error("find or create train"))?;
@@ -4393,6 +4411,84 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-TWICE").await;
         cleanup_public_train(&pool, "TEST-TRACK-BY-UID-TWICE-UID").await;
+    }
+
+    /// 2026-09-26 review, Low finding 11: CIF's own convention is an
+    /// uppercase `train_uid`, but this route used to take the URL path
+    /// segment completely as-is. A hand-typed lowercase uid used to mint a
+    /// SEPARATE, unattributable `trains` row under that exact lowercase
+    /// string -- distinct from (and never resolved by) the uppercase row
+    /// every real TRUST/CIF event for the same physical train actually
+    /// targets. Proves the fix: a lowercase call and an uppercase call for
+    /// the "same" uid now resolve to the SAME `trains_id`/subscription,
+    /// exactly like `post_track_by_uid_called_twice_returns_the_same_subscription`
+    /// above already proves for two calls with identical casing.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_by_uid_normalizes_the_uids_case -- --ignored --test-threads=1`"]
+    async fn post_track_by_uid_normalizes_the_uids_case() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-TRACK-BY-UID-CASE").await;
+        let router = test_router(test_app(pool.clone()));
+        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+
+        let (status1, body1) = post_json(
+            router.clone(),
+            format!("/Train/by-uid/testcasec21373/{service_date}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::OK, "first (lowercase) call: {body1:?}");
+        let first_tracking_id = body1
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present on first call");
+
+        let (status2, body2) = post_json(
+            router,
+            format!("/Train/by-uid/TESTCASEC21373/{service_date}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            status2,
+            StatusCode::OK,
+            "second (uppercase) call: {body2:?}"
+        );
+        let second_tracking_id = body2
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present on second call");
+
+        assert_eq!(
+            first_tracking_id, second_tracking_id,
+            "a lowercase and an uppercase call for the same uid must resolve to the SAME \
+             subscription, not mint two unattributable trains rows"
+        );
+
+        let (uid_row_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = 'TESTCASEC21373'")
+                .fetch_one(&pool)
+                .await
+                .expect("count the uppercase trains row");
+        assert_eq!(
+            uid_row_count, 1,
+            "exactly one, uppercase-normalized trains row must exist"
+        );
+        let (lowercase_row_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = 'testcasec21373'")
+                .fetch_one(&pool)
+                .await
+                .expect("count any stray lowercase trains row");
+        assert_eq!(
+            lowercase_row_count, 0,
+            "no separate lowercase-cased trains row should ever be created"
+        );
+
+        cleanup_user(&pool, "TEST-TRACK-BY-UID-CASE").await;
+        cleanup_public_train(&pool, "TESTCASEC21373").await;
     }
 
     // --- legacy POST /Train/track: validation unaffected by Task 20's own

@@ -704,6 +704,15 @@ async fn post_journey(
                 destination_crs.as_deref(),
             )
             .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            // 2026-09-26 review, Low finding 11: CIF's own convention is an
+            // uppercase `train_uid` (every row this app writes carries
+            // one), but every downstream lookup keyed on it is exact-case
+            // -- so a hand-typed lowercase uid here would mint a fresh,
+            // unattributable `trains` row that no real TRUST/CIF event for
+            // the same physical train would ever resolve to. Normalized
+            // the same way `origin_crs`/`destination_crs` just below
+            // already are.
+            let train_uid = train_uid.trim().to_ascii_uppercase();
 
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
@@ -815,6 +824,13 @@ async fn post_journey_leg(
                 destination_crs.as_deref(),
             )
             .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            // 2026-09-26 review, Low finding 11 -- see `post_journey`'s own
+            // `KnownTrain` arm's identical comment, above: CIF's own
+            // convention is an uppercase `train_uid`, every downstream
+            // lookup is exact-case, so this normalizes a hand-typed
+            // lowercase uid before it can mint an unattributable `trains`
+            // row.
+            let train_uid = train_uid.trim().to_ascii_uppercase();
 
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
@@ -1548,14 +1564,17 @@ async fn post_leg_train(
         ))?;
 
     journeys::validate_train_uid(&body.train_uid).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    // 2026-09-26 review, Low finding 11 -- see `post_journey`'s `KnownTrain`
+    // arm's identical comment: CIF's own convention is an uppercase
+    // `train_uid`, every downstream lookup is exact-case, so this
+    // normalizes a hand-typed lowercase uid before it can mint an
+    // unattributable `trains` row.
+    let train_uid = body.train_uid.trim().to_ascii_uppercase();
 
-    let trains_id = crate::data::trains::find_or_create_train(
-        &app.database,
-        &body.train_uid,
-        body.service_date,
-    )
-    .await
-    .map_err(internal_error("find or create train"))?;
+    let trains_id =
+        crate::data::trains::find_or_create_train(&app.database, &train_uid, body.service_date)
+            .await
+            .map_err(internal_error("find or create train"))?;
     let tracking_id =
         train_tracking::create_subscription_for_train(&app.database, trains_id, &user.id)
             .await
@@ -1565,7 +1584,7 @@ async fn post_leg_train(
         &app,
         tracking_id,
         trains_id,
-        &body.train_uid,
+        &train_uid,
         body.service_date,
     )
     .await;
