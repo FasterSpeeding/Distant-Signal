@@ -280,6 +280,31 @@ fn spawn_metrics_listener(
     });
 }
 
+/// Builds a background-sweep-loop `tokio::time::Interval`, ticking every
+/// `interval_secs` -- with `MissedTickBehavior::Delay` rather than the
+/// default `Burst`. Shared by all four sweep loops below (they mirror
+/// each other's shape exactly, per their own doc comments).
+///
+/// `Burst` fires every missed tick back-to-back with zero gap once a cycle
+/// overruns its own interval (a slow DB sweep query, a stuck connection) --
+/// exactly when the database is already struggling, it would pile up a
+/// burst of immediate follow-up sweeps instead of settling back into its
+/// normal cadence. `Delay` instead waits a fresh `interval_secs` from
+/// whenever the overrun tick actually completes, so a slow cycle degrades
+/// to a slower cadence, never a thundering-herd burst. Same fix, same
+/// rationale, as `common::poller_loop`'s own
+/// `poll_interval_with_delay_on_overrun`/`aggregator`'s own
+/// `cycle_interval`/`enricher`'s own `ticking_interval`. Split into its own
+/// function so the configuration is directly assertable in a unit test via
+/// `Interval::missed_tick_behavior()`, since the missed-tick BEHAVIOR
+/// itself (skipping ticks under a real overrun) isn't practically
+/// observable without a slow, flaky, real-time test.
+fn sweep_interval(interval_secs: u64) -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
 /// Periodic retry of Decision 3's schedule-first match against every
 /// still-`pending`, never-schedule-matched tracked-train row -- the
 /// mechanism that makes this feature retroactive-capable for a pin
@@ -290,9 +315,7 @@ fn spawn_metrics_listener(
 /// established precedent in this workspace for "a service that is mostly
 /// a request/response server also runs one background interval loop."
 async fn schedule_match_sweep_loop(app: App) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-        app.config.schedule_match_interval_secs,
-    ));
+    let mut interval = sweep_interval(app.config.schedule_match_interval_secs);
     loop {
         interval.tick().await;
         match data::schedule_matching::run_schedule_match_sweep(
@@ -319,9 +342,7 @@ async fn schedule_match_sweep_loop(app: App) {
 /// request/response server also runs a background interval loop" pattern
 /// this workspace already established.
 async fn reconciliation_sweep_loop(app: App) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-        app.config.reconciliation_sweep_interval_secs,
-    ));
+    let mut interval = sweep_interval(app.config.reconciliation_sweep_interval_secs);
     let grace_period = chrono::Duration::minutes(app.config.schedule_enrichment_grace_minutes);
     loop {
         interval.tick().await;
@@ -361,9 +382,7 @@ async fn reconciliation_sweep_loop(app: App) {
 /// background interval loop" pattern this workspace already established
 /// for both sibling sweeps above.
 async fn backlog_match_sweep_loop(app: App) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-        app.config.backlog_match_sweep_interval_secs,
-    ));
+    let mut interval = sweep_interval(app.config.backlog_match_sweep_interval_secs);
     loop {
         interval.tick().await;
         match data::trust_event_backlog_match::run_backlog_match_sweep(&app.database).await {
@@ -392,9 +411,7 @@ async fn backlog_match_sweep_loop(app: App) {
 /// `session_cleanup_interval_secs` defaults to a much coarser cadence
 /// (1 hour) than theirs (5 minutes).
 async fn session_cleanup_sweep_loop(app: App) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-        app.config.session_cleanup_interval_secs,
-    ));
+    let mut interval = sweep_interval(app.config.session_cleanup_interval_secs);
     loop {
         interval.tick().await;
         match data::users::prune_expired_sessions(&app.database).await {
@@ -406,6 +423,27 @@ async fn session_cleanup_sweep_loop(app: App) {
                 tracing::error!(error = ?err, "session-cleanup sweep failed; will retry next interval");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod sweep_interval_tests {
+    use super::sweep_interval;
+
+    /// Regression for the "L1 -- MissedTickBehavior::Burst still default"
+    /// finding: every sweep loop above shares this one interval builder, so
+    /// asserting it here covers all four (`schedule_match_sweep_loop`,
+    /// `reconciliation_sweep_loop`, `backlog_match_sweep_loop`,
+    /// `session_cleanup_sweep_loop`) -- each must opt into `Delay`, not
+    /// leave `Burst` as the default, so an overrun sweep doesn't fire a
+    /// burst of back-to-back catch-up cycles against the database.
+    #[tokio::test]
+    async fn sweep_interval_defaults_to_delay_not_burst_on_a_missed_tick() {
+        let interval = sweep_interval(60);
+        assert_eq!(
+            interval.missed_tick_behavior(),
+            tokio::time::MissedTickBehavior::Delay
+        );
     }
 }
 
