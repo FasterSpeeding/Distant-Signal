@@ -796,6 +796,26 @@ async fn flip_legacy_resolution(
     resolved_train_uid: Option<&str>,
     resolved_train_id: &str,
 ) -> anyhow::Result<LegacyResolution> {
+    // **Single-transaction fix (2026-09-26 review, Medium finding 6).**
+    // Before this fix, the `resolution_status = 'resolved'` write below and
+    // the shared-row write in the match arms that follow it (`mark_train_
+    // resolved`/`find_or_create_train`) were two independent statements
+    // against the bare pool -- so a failure in the SECOND write (most
+    // plausibly a `trains_train_id_service_date` unique-index collision:
+    // two subscriptions' cross-matched resolutions both claiming the same
+    // `(train_id, service_date)`) left the FIRST write's
+    // `resolution_status = 'resolved'` permanently committed with nothing
+    // to back it up. That reads as "resolved" everywhere this subscription
+    // is displayed, while `trains_id` may still be NULL (or pointing at a
+    // row that never actually got this `train_id`) -- and because neither
+    // sweep re-selects an already-`'resolved'` row, nothing would ever
+    // retry it. Doing both writes inside one transaction, committed only
+    // once every arm below has succeeded, means a failure in the shared-row
+    // write rolls the status flip back too, leaving the subscription
+    // exactly where it started (still `'pending'`/`'schedule_matched'`, still
+    // picked up by the next sweep/event) instead of stranded.
+    let mut tx = pool.begin().await?;
+
     // The scalar subquery reads the ALREADY-LINKED shared row's own
     // `train_uid` in the same round trip as the status flip -- the value the
     // `UidMismatch` guard below compares against. Cheap (`trains.id` is the
@@ -808,13 +828,14 @@ async fn flip_legacy_resolution(
                    (SELECT tr.train_uid FROM trains tr WHERE tr.id = tt.trains_id)",
     )
     .bind(tracked_train_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
     let Some((existing_trains_id, service_date, existing_train_uid)) = row else {
+        tx.commit().await?;
         return Ok(LegacyResolution::NoIdentity);
     };
 
-    match (existing_trains_id, resolved_train_uid) {
+    let outcome = match (existing_trains_id, resolved_train_uid) {
         // **The uid-disagreement guard (2026-09-25 review finding, High 2).**
         // This subscription is already linked to a shared `trains` row for
         // one identity, and this resolution claims a DIFFERENT one. Before
@@ -830,9 +851,9 @@ async fn flip_legacy_resolution(
         // (`schedule_matching::attempt_schedule_match_for_shared_train`):
         // warn with both uids and decline, rather than write something we
         // know to be wrong. The status flip above is deliberately left in
-        // place -- it is this user's own per-subscription bookkeeping and
-        // carries no cross-subscriber identity claim, unlike the shared-row
-        // writes this arm refuses.
+        // place (it still commits below) -- it is this user's own
+        // per-subscription bookkeeping and carries no cross-subscriber
+        // identity claim, unlike the shared-row writes this arm refuses.
         (Some(existing_id), Some(resolved))
             if existing_train_uid
                 .as_deref()
@@ -847,25 +868,33 @@ async fn flip_legacy_resolution(
                 "live TRUST resolution disagrees with the train_uid this subscription's shared \
                  row already carries; refusing to attribute this train's movements to it"
             );
-            Ok(LegacyResolution::UidMismatch)
+            LegacyResolution::UidMismatch
         }
         (Some(id), _) => {
-            crate::data::trains::mark_train_resolved(pool, id, resolved_train_id).await?;
-            Ok(LegacyResolution::Applied(id))
+            crate::data::trains::mark_train_resolved(&mut *tx, id, resolved_train_id).await?;
+            LegacyResolution::Applied(id)
         }
         (None, Some(train_uid)) => {
-            let id =
-                crate::data::trains::find_or_create_train(pool, train_uid, service_date).await?;
+            let id = crate::data::trains::find_or_create_train(&mut *tx, train_uid, service_date)
+                .await?;
             sqlx::query("UPDATE train_subscriptions SET trains_id = $2 WHERE id = $1")
                 .bind(tracked_train_id)
                 .bind(id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
-            crate::data::trains::mark_train_resolved(pool, id, resolved_train_id).await?;
-            Ok(LegacyResolution::Applied(id))
+            crate::data::trains::mark_train_resolved(&mut *tx, id, resolved_train_id).await?;
+            LegacyResolution::Applied(id)
         }
-        (None, None) => Ok(LegacyResolution::NoIdentity),
-    }
+        (None, None) => LegacyResolution::NoIdentity,
+    };
+
+    // Only reached once every write above has succeeded -- any `?` earlier
+    // in this function (most importantly a unique-index violation from
+    // `mark_train_resolved`) returns before this point and drops `tx`
+    // un-committed, rolling back the `resolution_status = 'resolved'` write
+    // alongside whatever partial shared-row write also failed.
+    tx.commit().await?;
+    Ok(outcome)
 }
 
 /// [`flip_legacy_resolution`]'s outcome. A bare `Option<i64>` could not
@@ -4759,6 +4788,124 @@ mod db_tests {
             Some(trains_id),
             "both subscribers must end up linked to the exact SAME shared trains row"
         );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, first_user_id).await;
+        cleanup_user(&pool, second_user_id).await;
+    }
+
+    /// 2026-09-26 review, Medium finding 6: reproduces the cross-match
+    /// residual this task's transaction fix closes. Two DIFFERENT physical
+    /// trains (different `train_uid`s) end up reported under the SAME
+    /// TRUST `train_id` for the SAME `service_date` -- a real-world
+    /// cross-matching incident, not a contrived input (see
+    /// `20260925221500_close_out_trains_train_id_service_date_collisions.sql`'s
+    /// own header for the 2026-09-25 incident this exact shape came from).
+    /// The second subscriber's own resolution hits
+    /// `trains_train_id_service_date`'s unique index the moment
+    /// `mark_train_resolved` tries to write the SAME `train_id` onto a
+    /// SECOND `trains` row for that date.
+    ///
+    /// Before this task's fix, `flip_legacy_resolution` first committed
+    /// `resolution_status = 'resolved'` on the second subscriber's row as
+    /// its own independent statement, then attempted the colliding write
+    /// separately -- so the second subscriber's row was left reading
+    /// `'resolved'` forever, with `trains_id` still `NULL`: "resolved" but
+    /// never actually claimed, and invisible to every sweep that only
+    /// re-checks still-`'pending'` rows. This proves that can no longer
+    /// happen: the second call must fail outright (surfacing the
+    /// collision instead of burying it), and the second subscriber's row
+    /// must come back completely unchanged -- still `'pending'`, still no
+    /// `trains_id` -- so a later, correct resolution can still claim it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_cross_matched_second_resolution_does_not_strand_the_subscription_as_resolved_with_no_trains_id \
+                -- --ignored --test-threads=1`"]
+    async fn a_cross_matched_second_resolution_does_not_strand_the_subscription_as_resolved_with_no_trains_id()
+     {
+        let pool = connect().await;
+        let first_user_id = "TEST-M6-COLLISION-USER-1";
+        let second_user_id = "TEST-M6-COLLISION-USER-2";
+        seed_user(&pool, first_user_id).await;
+        seed_user(&pool, second_user_id).await;
+
+        let first_tracking_id = seed_tracked_train(&pool, first_user_id).await;
+        let second_tracking_id = seed_tracked_train(&pool, second_user_id).await;
+
+        // First subscriber resolves cleanly to its own physical train.
+        let mut first_event = fixture_event(first_tracking_id, "dedup-m6-collision-1");
+        first_event.resolved_train_uid = Some("TEST-M6-UID-A".to_string());
+        first_event.resolved_train_id = Some("TEST-M6-SHARED-TRAIN-ID".to_string());
+        upsert_train_event(&pool, &first_event)
+            .await
+            .expect("the first subscriber's live-TRUST resolution must succeed");
+
+        // Second subscriber resolves to a DIFFERENT physical train (a
+        // different `train_uid`) but the SAME `train_id` and the same
+        // `service_date` (both fixtures share `seed_tracked_train`'s
+        // hardcoded "2026-09-02") -- the cross-match collision. This must
+        // fail: `find_or_create_train` mints a fresh, distinct `trains` row
+        // for `TEST-M6-UID-B` (a different `train_uid` never collides on
+        // its own upsert), but the subsequent `mark_train_resolved` write
+        // that stamps `TEST-M6-SHARED-TRAIN-ID` onto THAT row collides with
+        // the first subscriber's row for the same `(train_id, service_date)`.
+        let mut second_event = fixture_event(second_tracking_id, "dedup-m6-collision-2");
+        second_event.resolved_train_uid = Some("TEST-M6-UID-B".to_string());
+        second_event.resolved_train_id = Some("TEST-M6-SHARED-TRAIN-ID".to_string());
+        let second_result = upsert_train_event(&pool, &second_event).await;
+        assert!(
+            second_result.is_err(),
+            "a genuine cross-match collision must surface as an error, not be silently \
+             swallowed"
+        );
+
+        // The heart of this fix: the second subscriber's OWN row must be
+        // completely unaffected by its own failed resolution attempt --
+        // never left reading 'resolved' with no trains_id to back it up.
+        let (second_status, second_trains_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = $1",
+        )
+        .bind(second_tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back second subscriber's row");
+        assert_eq!(
+            second_status, "pending",
+            "a failed resolution must not leave the subscription stuck reading 'resolved'"
+        );
+        assert!(
+            second_trains_id.is_none(),
+            "a failed resolution must not leave a dangling trains_id link either"
+        );
+
+        // The doomed candidate `trains` row itself must not have survived
+        // the rollback -- proving the INSERT inside the same failed
+        // transaction was undone, not merely orphaned.
+        let (uid_b_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = 'TEST-M6-UID-B'")
+                .fetch_one(&pool)
+                .await
+                .expect("count TEST-M6-UID-B rows");
+        assert_eq!(
+            uid_b_count, 0,
+            "the rolled-back transaction must not leave behind the candidate trains row either"
+        );
+
+        // The FIRST subscriber, unrelated to the second's failed attempt,
+        // must remain completely unaffected.
+        let (first_status, first_trains_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = $1",
+        )
+        .bind(first_tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back first subscriber's row");
+        assert_eq!(first_status, "resolved");
+        let trains_id = first_trains_id.expect("first subscriber must have a linked trains_id");
 
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
