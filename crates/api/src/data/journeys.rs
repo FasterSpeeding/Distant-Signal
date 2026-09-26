@@ -2043,6 +2043,123 @@ mod db_tests {
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-SHARED").await;
     }
 
+    /// 2026-09-26 review, Medium finding 10: `set_leg_train_subscription`
+    /// ("Change train") deactivating an orphaned subscription is meant to
+    /// be scoped to the journey-leg context it was replacing, not a
+    /// permanent verdict on the underlying `(user_id, trains_id)` pin --
+    /// `train_tracking::create_subscription_for_train` is idempotent on
+    /// that exact key, so before this fix a disabled row, once created,
+    /// could never come back: ANY later, unrelated call for the same user
+    /// and the same physical train (a brand-new journey leg auto-matching
+    /// to it, a standalone "Track this train", a second journey) just
+    /// silently inherited the disabled row forever.
+    ///
+    /// Reproduces the disable via the real "Change train" path
+    /// (`set_leg_train_subscription`), then calls
+    /// `create_subscription_for_train` directly for the SAME `(user_id,
+    /// trains_id)` -- exactly what a brand-new, unrelated journey/tracking
+    /// use case does -- and asserts it comes back re-enabled.
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                a_disabled_subscription_is_reactivated_by_a_later_unrelated_use -- --ignored \
+                --test-threads=1`"]
+    async fn a_disabled_subscription_is_reactivated_by_a_later_unrelated_use() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-M10-REACTIVATE";
+        seed_user(&pool, user_id).await;
+        let (journey_id, leg_id) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create window leg");
+
+        let service_date: chrono::NaiveDate = "2026-09-22".parse().unwrap();
+        let first_trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-M10-UID-FIRST", service_date)
+                .await
+                .expect("seed the first physical train");
+        let first_tracking_id = crate::data::train_tracking::create_subscription_for_train(
+            &pool,
+            first_trains_id,
+            user_id,
+        )
+        .await
+        .expect("create the first candidate subscription");
+        assert!(
+            set_leg_train_subscription(&pool, journey_id, leg_id, user_id, first_tracking_id)
+                .await
+                .expect("commit first pick")
+        );
+
+        // "Change train" re-pick onto a DIFFERENT physical train -- this is
+        // what deactivates the first subscription, exactly as the sibling
+        // test above proves.
+        let second_trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-M10-UID-SECOND", service_date)
+                .await
+                .expect("seed the second physical train");
+        let second_tracking_id = crate::data::train_tracking::create_subscription_for_train(
+            &pool,
+            second_trains_id,
+            user_id,
+        )
+        .await
+        .expect("create the second candidate subscription");
+        assert!(
+            set_leg_train_subscription(&pool, journey_id, leg_id, user_id, second_tracking_id)
+                .await
+                .expect("commit re-pick")
+        );
+        assert!(
+            !notifications_enabled_of(&pool, first_tracking_id).await,
+            "the orphaned old subscription must be deactivated by 'Change train'"
+        );
+
+        // The new use case: a LATER, unrelated call for the SAME
+        // `(user_id, trains_id)` as the disabled subscription -- e.g. a
+        // fresh "Track this train" or a different journey's leg
+        // auto-matching onto the same physical train. This has nothing to
+        // do with the journey/leg above; it must not silently inherit a
+        // notification stream the "Change train" action killed for a
+        // different reason entirely.
+        let reused_tracking_id = crate::data::train_tracking::create_subscription_for_train(
+            &pool,
+            first_trains_id,
+            user_id,
+        )
+        .await
+        .expect("re-establish a subscription for the same physical train");
+        assert_eq!(
+            reused_tracking_id, first_tracking_id,
+            "create_subscription_for_train's own (user_id, trains_id) idempotency must still \
+             return the SAME row, not a duplicate"
+        );
+        assert!(
+            notifications_enabled_of(&pool, first_tracking_id).await,
+            "a new, unrelated use of the same physical train must re-enable notifications, not \
+             inherit the stale disabled flag forever"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(first_trains_id)
+            .bind(second_trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \

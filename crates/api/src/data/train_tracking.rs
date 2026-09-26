@@ -215,6 +215,23 @@ where
 /// calls this with `&mut *tx` from inside its own transaction (19-pass
 /// security/bug review, journeys area, Medium finding 3), while every
 /// standalone caller keeps passing a bare `&PgPool` unchanged.
+///
+/// **Re-enables a previously-deactivated row (2026-09-26 review, Medium
+/// finding 10).** `journeys::set_leg_train_subscription` ("Change train")
+/// sets `notifications_enabled = FALSE` on a subscription once it becomes
+/// unreferenced by any leg -- but that's scoped to the journey-leg context
+/// it was meant for, not a permanent verdict on the underlying
+/// `(user_id, trains_id)` pin. Before this fix, THIS function's idempotency
+/// meant a disabled row, once created, could never be re-enabled: any
+/// later, unrelated call for the same user and physical train (a brand-new
+/// journey leg auto-matching to it, a standalone "Track this train", even a
+/// direct re-pin) just got the same disabled row back unchanged, silently
+/// never notifying again for a use case that has nothing to do with the
+/// "Change train" action that disabled it. Reaching this function at all
+/// (new call, existing row) IS the new use case re-establishing the pin, so
+/// it re-enables notifications for it -- an `UPDATE ... WHERE
+/// notifications_enabled = FALSE` alongside the existing lookup, in the
+/// same statement, so a fresh call always returns a live subscription.
 pub async fn create_subscription_for_train<'c, E>(
     executor: E,
     trains_id: i64,
@@ -229,11 +246,23 @@ where
     // UNION ALL yields exactly one row either way -- so `fetch_one` still
     // errors (RowNotFound) for a `trains_id` that names no `trains` row,
     // exactly as the previous plain `INSERT ... SELECT` did.
+    //
+    // `reactivated` is a data-modifying CTE never read by the final SELECT
+    // -- per Postgres's own documented behavior for `WITH`, a data-modifying
+    // statement always runs to completion exactly once, regardless of
+    // whether anything references its output, so this still executes on
+    // every call. The `AND notifications_enabled = FALSE` guard makes it a
+    // no-op write (no row touched) on the overwhelmingly common path where
+    // the existing subscription is already enabled.
     let row: (i64,) = sqlx::query_as(
         "WITH existing AS ( \
              SELECT id FROM train_subscriptions \
              WHERE user_id = $1 AND trains_id = $2 \
              ORDER BY id LIMIT 1 \
+         ), \
+         reactivated AS ( \
+             UPDATE train_subscriptions SET notifications_enabled = TRUE \
+             WHERE id IN (SELECT id FROM existing) AND notifications_enabled = FALSE \
          ), \
          inserted AS ( \
              INSERT INTO train_subscriptions \
