@@ -571,19 +571,19 @@ export interface JourneyStop {
   delayMinutes: number | null;
   stopStatus: StopStatus;
   skipSource: SkipSource | null;
-  // Platform is `null` for every stop except (today) the ORIGIN -- Darwin/
+  // The CURRENT (live/expected) Darwin platform for this stop. Darwin/
   // LDBWS's live departure board only ever reports a station's OWN
-  // platform for a service actually departing FROM it, never a
-  // per-calling-point platform for the rest of the route, so this codebase
-  // genuinely has no platform signal for any other calling point. See
-  // `crates/api/src/data/journey.rs`'s `apply_origin_platform` for the full
-  // reasoning. `null` here means exactly "not known", never a fabricated
-  // value.
+  // platform for a service departing FROM it, so this is known only for a
+  // departing stop whose station is sampled by `poller-ldbws` and whose
+  // board currently lists this service (or the origin's pin-time snapshot)
+  // -- see `crates/api/src/data/journey.rs`'s `apply_origin_platform` and
+  // `apply_station_sample_platforms`. A terminating stop is always `null`.
+  // `null` here means exactly "not known", never a fabricated value.
   platform: string | null;
-  // The EARLIEST platform observed for the origin call -- Darwin has no
+  // The EARLIEST Darwin platform observed for this stop -- Darwin has no
   // separate "planned platform" field of its own, so this is reconstructed
   // by `poller-ldbws::platform_history::PlatformHistory` from repeated
-  // polls of the origin station's own board. `null` under the same
+  // polls of the stop's own station board. `null` under the same
   // conditions as `platform` above, or when no platform has been observed
   // more than once yet.
   plannedPlatform: string | null;

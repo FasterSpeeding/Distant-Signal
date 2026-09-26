@@ -424,6 +424,73 @@ mod db_tests {
         delete_fixture(&pool, "ZQU").await;
     }
 
+    /// End-to-end (storage -> route -> render) proof of the platform fields
+    /// the Distant-Signal-MCP `boards` tool reads: a stored departure whose
+    /// JSONB carries `platform`/`planned_platform` (exactly what
+    /// `poller-ldbws` persists via `common::StationDeparture`'s serde shape,
+    /// `PlatformHistory` having filled `planned_platform`) renders both as
+    /// camelCase strings, and one whose JSONB omits them (the poller's
+    /// `skip_serializing_if = "Option::is_none"` for an unallocated
+    /// platform) renders explicit `null`s, never an absent key.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                departures -- --ignored --test-threads=1`"]
+    async fn departures_render_stored_platform_fields_or_explicit_null() {
+        let pool = connect().await;
+        delete_fixture(&pool, "ZQP").await;
+
+        let departures = serde_json::json!([
+            {
+                "service_id": "svc-plat", "operator": "SW", "destination_crs": "WAT",
+                "scheduled": "10:00", "estimated": "On time", "is_cancelled": false,
+                "delay_minutes": 0, "skipped_stations": [],
+                "platform": "9", "planned_platform": "6"
+            },
+            {
+                "service_id": "svc-noplat", "operator": "SW", "destination_crs": "WAT",
+                "scheduled": "10:30", "estimated": "On time", "is_cancelled": false,
+                "delay_minutes": 0, "skipped_stations": []
+            }
+        ]);
+        sqlx::query(
+            "INSERT INTO station_samples (crs, polled_at, departures) VALUES ('ZQP', NOW(), $1)",
+        )
+        .bind(departures)
+        .execute(&pool)
+        .await
+        .expect("seed platform fixture row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZQP/departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json[0]["platform"], "9");
+        assert_eq!(json[0]["plannedPlatform"], "6");
+        assert_eq!(json[0]["platformChanged"], true);
+
+        let second = json[1].as_object().unwrap();
+        assert!(second.contains_key("platform") && second["platform"].is_null());
+        assert!(second.contains_key("plannedPlatform") && second["plannedPlatform"].is_null());
+        assert_eq!(second["platformChanged"], false);
+
+        delete_fixture(&pool, "ZQP").await;
+    }
+
     async fn delete_schedule_departures_fixture(pool: &PgPool, crs: &str) {
         sqlx::query("DELETE FROM schedule_network_departures WHERE crs = $1")
             .bind(crs)

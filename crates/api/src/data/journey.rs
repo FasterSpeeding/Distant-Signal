@@ -252,21 +252,23 @@ pub struct JourneyStop {
     /// [`SkipSource`]'s own doc comment for why this lives here rather than
     /// nested inside `stop_status` itself.
     pub skip_source: Option<SkipSource>,
-    /// The CURRENT platform, `None` for every stop except (today) the
-    /// ORIGIN -- see `build_journey_stops`'s `platform`/`planned_platform`
-    /// params for why: Darwin/LDBWS's live departure board only ever
-    /// reports a station's OWN platform for a service actually departing
-    /// FROM it, never a per-calling-point platform for the rest of the
-    /// route (`poller-ldbws/src/schema.rs`'s `RdmCallingPoint` carries no
-    /// platform field at all), so this codebase genuinely has no platform
-    /// signal to show for any other calling point. `None` here means
-    /// exactly that -- "not known" -- never a fabricated value, same
-    /// posture as every other `Option` field on this struct.
+    /// The CURRENT (live/expected) Darwin platform for this stop, from two
+    /// sources: the origin's pin-time snapshot (`apply_origin_platform`)
+    /// and, for ANY calling point whose station `poller-ldbws` samples, that
+    /// station's own current departure board (`apply_station_sample_platforms`,
+    /// which wins when it matches). Darwin/LDBWS's board only ever reports a
+    /// station's OWN platform for a service departing FROM it
+    /// (`poller-ldbws/src/schema.rs`'s `RdmCallingPoint` carries no
+    /// platform field at all), so a terminating stop, a stop at an
+    /// unsampled station, or a service that has already left a station's
+    /// board is `None` -- exactly "not known", never a fabricated value,
+    /// same posture as every other `Option` field on this struct.
     pub platform: Option<String>,
-    /// The EARLIEST platform observed for the origin call, reconstructing
+    /// The EARLIEST Darwin platform observed for this stop, reconstructing
     /// "planned" the same way `common::StationDeparture.planned_platform`
-    /// does -- see that field's own doc comment. `None` under the same
-    /// conditions as `platform` above.
+    /// does -- see that field's own doc comment. NOT the CIF timetable's
+    /// booked platform. `None` under the same conditions as `platform`
+    /// above.
     pub planned_platform: Option<String>,
     /// `true` only when both `platform` and `planned_platform` are known
     /// AND differ -- see `api::render::station_departure_json`'s identical
@@ -539,9 +541,10 @@ fn raw_calling_point_from_full_row(
 /// origin-platform snapshot (`trains.platform`/`planned_platform`, read off
 /// `TrackedTrainState`/`PublicTrainState`'s `schedule_platform`/
 /// `schedule_planned_platform`) -- applied to the ORIGIN stop only by
-/// `apply_origin_platform`, below; see that function's own doc comment for
-/// why every other stop's `platform` genuinely cannot be known from this
-/// codebase's data sources today.
+/// `apply_origin_platform`, below. Every calling point (origin included)
+/// is then overlaid with its own station's current Darwin departure board,
+/// where `poller-ldbws` samples that station, by
+/// `apply_station_sample_platforms`.
 #[allow(clippy::too_many_arguments)]
 pub async fn build_journey_stops(
     pool: &PgPool,
@@ -599,6 +602,13 @@ pub async fn build_journey_stops(
     apply_stop_status(&mut stops, skipped_stations);
 
     apply_origin_platform(&mut stops, platform, planned_platform);
+
+    // Every calling point's own CURRENT departure board (one batched
+    // query), for `apply_station_sample_platforms` -- see its own doc
+    // comment. Deliberately after `apply_origin_platform`: a live board
+    // row is fresher than the origin's pin-time snapshot, so it wins.
+    let samples = queries::latest_station_samples_for_crs_batch(pool, &stop_crs).await?;
+    apply_station_sample_platforms(&mut stops, &samples);
 
     apply_delay_estimates(&mut stops, current_delay_minutes);
 
@@ -795,20 +805,12 @@ fn apply_stop_status(stops: &mut [JourneyStop], skipped_stations: &[String]) {
 
 /// Attaches the shared `trains` row's captured origin-platform snapshot
 /// (`trains.platform`/`planned_platform`, see `build_journey_stops`'s own
-/// `platform`/`planned_platform` params) to the ORIGIN calling point only --
-/// every other stop is left with `platform: None`, `planned_platform: None`,
-/// `platform_changed: false`, the values every freshly-built `JourneyStop`
-/// already carries. This is a real, honest data-availability limit, not a
-/// shortcut: Darwin/LDBWS's live departure board only ever reports a
-/// station's OWN platform for a service actually departing FROM it, never a
-/// per-calling-point platform for the rest of the route -- see
-/// `common::StationDeparture.platform`'s own doc comment and
-/// `poller-ldbws/src/schema.rs`'s `RdmCallingPoint`, which carries no
-/// platform field at all. There is no live cross-station correlation
-/// system in this codebase that could source platform for any other stop
-/// without either guessing (risky for a travel app -- a wrong platform is
-/// worse than none) or a materially larger feature (continuous per-station
-/// polling correlated across a train's whole route).
+/// `platform`/`planned_platform` params) to the ORIGIN calling point only.
+/// Every other stop's platform can only come from that stop's OWN station
+/// board -- Darwin/LDBWS never reports a per-calling-point platform for the
+/// rest of a route (`poller-ldbws/src/schema.rs`'s `RdmCallingPoint`
+/// carries no platform field) -- which is
+/// [`apply_station_sample_platforms`]'s job, run after this one.
 ///
 /// A no-op when `platform` is `None` (nothing was ever captured, e.g. a
 /// CIF-picker/manual-entry pin, or an NR-primary subscription with no
@@ -838,6 +840,93 @@ fn apply_origin_platform(
     // for `StationDeparture` -- see that function's own comment.
     origin.platform_changed =
         origin.planned_platform.is_some() && origin.planned_platform.as_deref() != Some(platform);
+}
+
+/// How far a departure-board row's own scheduled (`std`) time may sit from
+/// a calling point's CIF-booked departure and still be treated as the same
+/// service -- the same 2-minute window `eta_blend::find_darwin_eta` uses
+/// (Darwin's `std` is the PUBLIC time, while `JourneyStop.scheduled_departure`
+/// comes from the CIF WORKING time, which can differ by a minute or a
+/// half-minute).
+const SAMPLE_PLATFORM_MATCH_TOLERANCE: Duration = Duration::minutes(2);
+
+/// Fills in `platform`/`planned_platform`/`platform_changed` for every
+/// calling point whose own station's CURRENT Darwin/LDBWS departure board
+/// (`station_samples`, polled by `poller-ldbws`) lists this service.
+///
+/// Darwin's board only ever reports a station's OWN platform for a service
+/// departing FROM it (`RdmCallingPoint` carries no platform), so this looks
+/// at each calling point's own board rather than at any one board's
+/// calling-point list. A row is identified as THIS service by
+/// [`common::match_darwin_departure_near_time`]: same destination CRS (this
+/// journey's own terminating stop) AND a scheduled time within
+/// [`SAMPLE_PLATFORM_MATCH_TOLERANCE`] of this stop's own booked departure.
+/// Board `"HH:MM"` values are dated by anchoring on the sample's own
+/// `polled_at` (never on the stop's own time), so a stale board -- a
+/// station the poller stopped sampling yesterday -- dates its rows to
+/// yesterday and can never match today's train at the same clock time.
+///
+/// Only stops with a booked DEPARTURE are considered (a terminating stop is
+/// not on any departure board), and a stop only changes when a matched row
+/// actually carries a platform -- so a stop with no match, or a matched row
+/// whose platform is still unallocated, keeps whatever it already had
+/// (`None`, or the origin's pin-time snapshot from
+/// [`apply_origin_platform`]). A match, when one exists, replaces that
+/// snapshot wholesale: the board is the fresher of the two. `planned_platform`
+/// keeps `common::StationDeparture.planned_platform`'s meaning (earliest
+/// platform the poller has observed for that row, reconstructed by
+/// `poller-ldbws::platform_history`), never the CIF timetable's booked one.
+///
+/// Coverage is limited to whichever stations `poller-ldbws` samples
+/// (`GET /private/sample-stations`); every other stop stays `None` -- "not
+/// known", never guessed.
+fn apply_station_sample_platforms(
+    stops: &mut [JourneyStop],
+    samples: &HashMap<String, common::StationSample>,
+) {
+    if samples.is_empty() {
+        return;
+    }
+    let Some(destination_crs) = stops
+        .iter()
+        .rev()
+        .find(|stop| stop.kind == Some(schedule_query::CallingPointKind::Terminate))
+        .and_then(|stop| stop.crs.clone())
+    else {
+        return;
+    };
+
+    for stop in stops.iter_mut() {
+        let (Some(crs), Some(scheduled_departure)) =
+            (stop.crs.as_deref(), stop.scheduled_departure)
+        else {
+            continue;
+        };
+        let Some(sample) = samples.get(&crs.trim().to_uppercase()) else {
+            continue;
+        };
+        let polled_at = sample.polled_at;
+        let Some(matched) = common::match_darwin_departure_near_time(
+            &sample.departures,
+            Some(&destination_crs),
+            scheduled_departure,
+            SAMPLE_PLATFORM_MATCH_TOLERANCE,
+            |time| crate::data::eta_blend::resolve_london_time_near(polled_at, time),
+        ) else {
+            continue;
+        };
+        let Some(platform) = matched.platform.clone() else {
+            continue;
+        };
+        stop.planned_platform = matched.planned_platform.clone();
+        // Mirrors `api::render::station_departure_json`'s identical
+        // derivation for `StationDeparture`.
+        stop.platform_changed = stop
+            .planned_platform
+            .as_deref()
+            .is_some_and(|planned| planned != platform);
+        stop.platform = Some(platform);
+    }
 }
 
 /// The instant a movement event actually describes -- its reported
@@ -2590,6 +2679,155 @@ mod tests {
         assert!(!stops[0].platform_changed);
     }
 
+    // --- Per-calling-point Darwin board platforms (`apply_station_sample_platforms`) ---
+
+    fn departing_stop(
+        crs: &str,
+        kind: schedule_query::CallingPointKind,
+        departs: Option<&str>,
+    ) -> JourneyStop {
+        JourneyStop {
+            scheduled_departure: departs.map(|at| at.parse().unwrap()),
+            ..stop_at(crs, kind)
+        }
+    }
+
+    fn board_row(
+        destination: &str,
+        scheduled: &str,
+        platform: Option<&str>,
+        planned: Option<&str>,
+    ) -> common::StationDeparture {
+        common::StationDeparture {
+            service_id: format!("svc-{destination}-{scheduled}"),
+            operator: "SW".to_string(),
+            destination_crs: destination.to_string(),
+            scheduled: scheduled.to_string(),
+            estimated: "On time".to_string(),
+            is_cancelled: false,
+            delay_minutes: 0,
+            cancel_reason: None,
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: Vec::new(),
+            platform: platform.map(str::to_string),
+            planned_platform: planned.map(str::to_string),
+        }
+    }
+
+    fn board(
+        crs: &str,
+        polled_at: &str,
+        departures: Vec<common::StationDeparture>,
+    ) -> (String, common::StationSample) {
+        (
+            crs.to_string(),
+            common::StationSample {
+                crs: crs.to_string(),
+                polled_at: polled_at.parse().unwrap(),
+                departures,
+            },
+        )
+    }
+
+    /// WAT 10:00 -> CLJ 10:07 -> WOK (BST, so 09:00Z/09:07Z). Both
+    /// departing stops' own boards list the service; the terminating stop
+    /// is on no departure board at all and must stay unknown.
+    fn wat_clj_wok() -> Vec<JourneyStop> {
+        use schedule_query::CallingPointKind::{Intermediate, Origin, Terminate};
+        vec![
+            departing_stop("WAT", Origin, Some("2026-09-26T09:00:00Z")),
+            departing_stop("CLJ", Intermediate, Some("2026-09-26T09:07:00Z")),
+            departing_stop("WOK", Terminate, None),
+        ]
+    }
+
+    #[test]
+    fn apply_station_sample_platforms_fills_every_departing_calling_point_from_its_own_board() {
+        let mut stops = wat_clj_wok();
+        // Pin-time origin snapshot, then a fresher board showing a change.
+        apply_origin_platform(&mut stops, Some("6"), Some("6"));
+        let samples: HashMap<_, _> = [
+            board(
+                "WAT",
+                "2026-09-26T08:50:00Z",
+                vec![
+                    // Same time, different destination -- must not match.
+                    board_row("GLD", "10:00", Some("1"), Some("1")),
+                    board_row("WOK", "10:00", Some("9"), Some("6")),
+                ],
+            ),
+            board(
+                "CLJ",
+                "2026-09-26T08:55:00Z",
+                // Board `std` a minute off the CIF working time -- within tolerance.
+                vec![board_row("WOK", "10:08", Some("10"), None)],
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        apply_station_sample_platforms(&mut stops, &samples);
+
+        assert_eq!(stops[0].platform.as_deref(), Some("9"));
+        assert_eq!(stops[0].planned_platform.as_deref(), Some("6"));
+        assert!(stops[0].platform_changed);
+        assert_eq!(stops[1].platform.as_deref(), Some("10"));
+        assert_eq!(stops[1].planned_platform, None);
+        assert!(!stops[1].platform_changed);
+        assert_eq!(stops[2].platform, None);
+        assert_eq!(stops[2].planned_platform, None);
+    }
+
+    #[test]
+    fn apply_station_sample_platforms_never_matches_a_different_time_or_a_stale_board() {
+        let mut stops = wat_clj_wok();
+        let samples: HashMap<_, _> = [
+            // Same destination, but the NEXT service (10:30) -- outside tolerance.
+            board(
+                "WAT",
+                "2026-09-26T08:50:00Z",
+                vec![board_row("WOK", "10:30", Some("4"), Some("4"))],
+            ),
+            // Exactly the right clock time, but on a board polled YESTERDAY:
+            // dated against its own `polled_at`, it is yesterday's 10:07.
+            board(
+                "CLJ",
+                "2026-09-25T08:55:00Z",
+                vec![board_row("WOK", "10:07", Some("10"), Some("10"))],
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        apply_station_sample_platforms(&mut stops, &samples);
+
+        for stop in &stops {
+            assert_eq!(stop.platform, None, "{:?}", stop.crs);
+            assert_eq!(stop.planned_platform, None);
+            assert!(!stop.platform_changed);
+        }
+    }
+
+    #[test]
+    fn apply_station_sample_platforms_keeps_the_origin_snapshot_when_the_board_row_has_no_platform()
+    {
+        let mut stops = wat_clj_wok();
+        apply_origin_platform(&mut stops, Some("6"), Some("6"));
+        let samples: HashMap<_, _> = [board(
+            "WAT",
+            "2026-09-26T08:50:00Z",
+            vec![board_row("WOK", "10:00", None, None)],
+        )]
+        .into_iter()
+        .collect();
+
+        apply_station_sample_platforms(&mut stops, &samples);
+
+        assert_eq!(stops[0].platform.as_deref(), Some("6"));
+        assert_eq!(stops[0].planned_platform.as_deref(), Some("6"));
+    }
+
     /// The inverse, and the reason a "has it finished?" check can't just
     /// read the last stop's timestamps blind: while a loop train is still
     /// out on the circuit, the CRS-keyed overlay put its ORIGIN departure
@@ -3394,6 +3632,123 @@ mod db_tests {
         assert!(stops[1].scheduled_arrival.is_some());
 
         sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// End-to-end (real Postgres) proof of `apply_station_sample_platforms`
+    /// through `build_journey_stops`: the origin and an intermediate stop
+    /// whose stations have a current `station_samples` board listing this
+    /// service get that board's `platform`/`planned_platform`; the
+    /// terminating stop (on no departure board) stays `None`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_attaches_each_calling_points_own_board_platform \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_attaches_each_calling_points_own_board_platform() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PLAT", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        let records: Vec<common::StanoxCrsRecord> = [
+            ("TEST-JRNP-1", "ZPA", "TEST-JRNP-A"),
+            ("TEST-JRNP-2", "ZPB", "TEST-JRNP-B"),
+            ("TEST-JRNP-3", "ZPC", "TEST-JRNP-C"),
+        ]
+        .into_iter()
+        .map(|(stanox, crs, tiploc)| common::StanoxCrsRecord {
+            stanox: stanox.to_string(),
+            crs: crs.to_string(),
+            tiploc: tiploc.to_string(),
+            station_name: crs.to_string(),
+            source_sequence: 1,
+            change_time_minutes: None,
+        })
+        .collect();
+        crate::data::queries::upsert_stanox_crs(&pool, &records)
+            .await
+            .expect("seed stanox_crs");
+
+        let row = |scheduled: &str, platform: Option<&str>, planned: Option<&str>| {
+            serde_json::json!([{
+                "service_id": "svc-plat", "operator": "SW", "destination_crs": "ZPC",
+                "scheduled": scheduled, "estimated": "On time", "is_cancelled": false,
+                "delay_minutes": 0, "skipped_stations": [],
+                "platform": platform, "planned_platform": planned
+            }])
+        };
+        for (crs, polled_at, departures) in [
+            (
+                "ZPA",
+                "2026-09-08T07:50:00Z",
+                row("09:00", Some("9"), Some("6")),
+            ),
+            (
+                "ZPB",
+                "2026-09-08T07:55:00Z",
+                row("09:10", Some("2"), Some("2")),
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO station_samples (crs, polled_at, departures) VALUES ($1, $2, $3) \
+                 ON CONFLICT (crs) DO UPDATE SET polled_at = EXCLUDED.polled_at, \
+                 departures = EXCLUDED.departures",
+            )
+            .bind(crs)
+            .bind(polled_at.parse::<DateTime<Utc>>().unwrap())
+            .bind(departures)
+            .execute(&pool)
+            .await
+            .expect("seed station_samples");
+        }
+
+        let calling_points = serde_json::json!([
+            { "tiploc": "TEST-JRNP-A", "kind": "Origin",
+              "bookedArrival": null, "bookedDeparture": "09:00:00" },
+            { "tiploc": "TEST-JRNP-B", "kind": "Intermediate",
+              "bookedArrival": "09:09:00", "bookedDeparture": "09:10:00" },
+            { "tiploc": "TEST-JRNP-C", "kind": "Terminate",
+              "bookedArrival": "09:30:00", "bookedDeparture": null }
+        ]);
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-PLAT",
+            service_date,
+            Some(&calling_points),
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
+
+        assert_eq!(stops[0].platform.as_deref(), Some("9"));
+        assert_eq!(stops[0].planned_platform.as_deref(), Some("6"));
+        assert!(stops[0].platform_changed);
+        assert_eq!(stops[1].platform.as_deref(), Some("2"));
+        assert_eq!(stops[1].planned_platform.as_deref(), Some("2"));
+        assert!(!stops[1].platform_changed);
+        assert_eq!(stops[2].platform, None);
+        assert_eq!(stops[2].planned_platform, None);
+
+        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZPA', 'ZPB')")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRNP-%'")
             .execute(&pool)
             .await
             .ok();

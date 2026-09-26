@@ -2897,6 +2897,45 @@ pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<St
     .transpose()
 }
 
+/// [`latest_station_sample`]'s batched sibling: the current
+/// `station_samples` row for every CRS in `crs_codes` that has one, keyed
+/// by `UPPER(TRIM(crs))` (the same key normalization as
+/// [`station_names_for_crs_batch`]). A CRS with no row is simply absent
+/// from the map. One query regardless of how many calling points a train
+/// has -- backs `journey::apply_station_sample_platforms`, which needs every
+/// calling point's own departure board at once.
+pub async fn latest_station_samples_for_crs_batch(
+    pool: &PgPool,
+    crs_codes: &[String],
+) -> Result<HashMap<String, StationSample>> {
+    use sqlx::Row;
+    if crs_codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let upper: Vec<String> = crs_codes.iter().map(|c| c.trim().to_uppercase()).collect();
+    let rows = sqlx::query(
+        "SELECT UPPER(TRIM(crs)) AS key, crs, polled_at, departures FROM station_samples \
+         WHERE UPPER(TRIM(crs)) = ANY($1)",
+    )
+    .bind(&upper)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let departures_json: serde_json::Value = row.try_get("departures")?;
+            Ok((
+                row.try_get("key")?,
+                StationSample {
+                    crs: row.try_get("crs")?,
+                    polled_at: row.try_get("polled_at")?,
+                    departures: serde_json::from_value(departures_json)?,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// Every `station_full_coverage_samples` row for one CRS, one per
 /// operator that has resolved this cycle. Full-coverage analog of
 /// `latest_station_sample`, one level finer -- design doc Decision 2.
