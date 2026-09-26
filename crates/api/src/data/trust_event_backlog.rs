@@ -579,6 +579,65 @@ mod db_tests {
             .expect("cleanup");
     }
 
+    /// Regression test: trust-backlog-consumer forwards `0005`
+    /// (Reinstatement) since the H4 fix, but the table's msg_type CHECK
+    /// still only allowed `0001`/`0002`/`0003`, so any batch containing
+    /// one failed as a whole -- dropping the valid Movements alongside it
+    /// -- until migration 20260926210000 widened the constraint.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_batch_with_a_reinstatement_inserts_every_row -- --ignored`"]
+    async fn a_batch_with_a_reinstatement_inserts_every_row() {
+        let pool = connect().await;
+        let reinstatement = TrustBacklogEventMessage {
+            crs: None,
+            event_type: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            msg_type: "0005".to_string(),
+            ..fixture_event("TEST-TRUST-BACKLOG-0005", "test-dedup-key-0005-reinstate")
+        };
+        let events = vec![
+            fixture_event("TEST-TRUST-BACKLOG-0005", "test-dedup-key-0005-movement"),
+            reinstatement,
+        ];
+
+        let inserted = upsert_trust_event_backlog_batch(&pool, &events).await;
+
+        sqlx::query("DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-dedup-key-0005-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+        assert_eq!(inserted.expect("insert"), 2);
+    }
+
+    /// The widened CHECK still rejects the message types neither backlog
+    /// replay path handles (`0006`/`0007` carry no location or timing).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                the_msg_type_check_still_rejects_change_of_origin -- --ignored`"]
+    async fn the_msg_type_check_still_rejects_change_of_origin() {
+        let pool = connect().await;
+        let change_of_origin = TrustBacklogEventMessage {
+            msg_type: "0006".to_string(),
+            ..fixture_event("TEST-TRUST-BACKLOG-0006", "test-dedup-key-0006")
+        };
+
+        let result = upsert_trust_event_backlog_batch(&pool, &[change_of_origin]).await;
+
+        sqlx::query("DELETE FROM trust_event_backlog WHERE dedup_key = 'test-dedup-key-0006'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+        let err = result.expect_err("0006 must violate the msg_type CHECK");
+        assert!(
+            format!("{err:#}").contains("trust_event_backlog_msg_type_check"),
+            "unexpected error: {err:#}"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 a_redelivered_batch_inserts_nothing_twice -- --ignored`"]
