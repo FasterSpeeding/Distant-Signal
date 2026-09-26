@@ -6,15 +6,23 @@ import { runChatTurn } from './chatTurn';
 // -- this loop's own control flow (drain text deltas, drain tool results
 // between iterations, yield `done`) is what's under test here, not the
 // real API integration (that's Task 11's Playwright coverage's job).
+//
+// `Client` is constructed with `new` by chatTurn.ts, so its mock
+// implementation must be a `function` (not an arrow): since Vitest 4, a
+// `vi.fn()` invoked with `new` calls its implementation with `new` too, and
+// arrow functions aren't constructible. Returning an object from a
+// constructor function makes `new Client(...)` evaluate to that object.
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
-  Client: vi.fn().mockImplementation(() => ({
-    connect: vi.fn(),
-    listTools: vi.fn().mockResolvedValue({
-      tools: [{ name: 'resolve_station', description: 'resolve a station', inputSchema: { type: 'object' } }],
-    }),
-    callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'York' }], structuredContent: { kind: 'station' } }),
-    close: vi.fn(),
-  })),
+  Client: vi.fn().mockImplementation(function () {
+    return {
+      connect: vi.fn(),
+      listTools: vi.fn().mockResolvedValue({
+        tools: [{ name: 'resolve_station', description: 'resolve a station', inputSchema: { type: 'object' } }],
+      }),
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'York' }], structuredContent: { kind: 'station' } }),
+      close: vi.fn(),
+    };
+  }),
 }));
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
   StreamableHTTPClientTransport: vi.fn(),

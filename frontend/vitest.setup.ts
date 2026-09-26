@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { vi } from 'vitest';
+import { afterAll, vi } from 'vitest';
 
 // Note on theme parity: this file runs once before test *modules* load, so
 // it can't inject props into a component tree — there's no JSX here to
@@ -93,3 +93,34 @@ if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined')
   });
 }
 
+
+// Let any Mantine transition timer a test file leaked finish BEFORE Vitest
+// tears the jsdom environment down (which deletes `window` from the
+// global scope).
+//
+// Mantine's `useTransition` (Modal, Popover, Menu, Collapse, ...) runs each
+// transition as rAF -> `flushSync(setStatus)` -> rAF -> `setTimeout(setStatus,
+// duration)`. If that `flushSync` re-render unmounts the transitioning
+// component, the unmount cleanup cancels only the rAF that is already
+// running, so the second rAF still fires and schedules a real `setTimeout`
+// nothing ever clears. When it fires, React's `dispatchSetState` reads
+// `window.event` -- harmless while the environment is alive, but an
+// uncaught `ReferenceError: window is not defined` (an "Unhandled Error"
+// that fails `npm test`) if the file's environment has already been torn
+// down. The leak predates Vitest 4, but only under Vitest 4 does the
+// worker stay alive past teardown long enough for such a timer to fire
+// there (intermittently, under CPU load: a same-load A/B of `components/`
+// gave 0 such errors on Vitest 3.2.7 vs 2 on 4.1.11).
+//
+// Node fires timers in expiry order, so waiting out a timer registered
+// after every leaked one, with a longer delay than any Mantine transition
+// (the longest default is `Transition`'s 250ms), guarantees they have all
+// run first. The initial short wait lets a still-pending second rAF (jsdom
+// drives rAF from a ~16ms interval) schedule its timer before the long
+// wait is registered. Skipped under fake timers: a leaked timer is then a
+// fake one that never fires on its own, and a real wait couldn't resolve.
+afterAll(async () => {
+  if (vi.isFakeTimers()) return;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+});
