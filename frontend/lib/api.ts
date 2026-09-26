@@ -488,12 +488,66 @@ export async function getPreferences(): Promise<Preferences> {
  * request's cookies). Unlike `/public/preferences`, though,
  * `/public/auth/session` never 401s — an anonymous visitor gets a normal
  * 200 with `authenticated: false` — so this can go through the shared
- * `fetchJson` instead of needing its own 401-tolerant branch. */
+ * `fetchJson` instead of needing its own 401-tolerant branch.
+ *
+ * Because it never 401s, EVERY rejection this throws is a genuine failure
+ * to answer the question at all (network error, timeout, or a 5xx --
+ * including a real DB error during the session lookup now that
+ * `OptionalAuthenticatedUser` correctly propagates one instead of
+ * collapsing it into `Ok(None)`), never a confirmed "not logged in". Do
+ * not let a caller's `.catch()` treat that the same as a confirmed
+ * `authenticated: false` -- see `getSessionOrLoggedOut()` below, which is
+ * what every "degrade rather than crash" caller in this app should call
+ * instead of writing its own `.catch()` around this. */
 export async function getSession(): Promise<SessionInfo> {
   return fetchJson<SessionInfo>(`${baseUrl()}/public/auth/session`, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
+}
+
+/** The shape `getSession()` returns for a visitor with no session, and the
+ * fallback `getSessionOrLoggedOut()` below degrades to when the session
+ * check fails outright. Exported so every caller that needs a "render as
+ * logged out" value -- confirmed or not -- shares this one object rather
+ * than each hand-rolling its own copy (`app/layout.tsx`'s `<Suspense>`
+ * fallback, rendered before the check has even started, is the one
+ * legitimate reason to reference this directly instead of going through
+ * `getSessionOrLoggedOut()`). */
+export const LOGGED_OUT_SESSION: SessionInfo = {
+  authenticated: false,
+  id: null,
+  email: null,
+  name: null,
+};
+
+/** The one place `getSession()`'s failure mode is turned into a UI-safe
+ * fallback -- every page/component below that used to write its own
+ * `getSession().catch(() => ({ authenticated: false, ... }))` (or collapse
+ * a rejection into `null`/`true` further down the chain) now calls this
+ * instead. That used to be entirely silent: a network error, a timeout, or
+ * a backend 5xx (see `getSession()`'s own doc comment above for why the
+ * last of those just became newly reachable) rendered EXACTLY the same nav
+ * link and page state as a visitor who was genuinely, confirmedly never
+ * logged in -- no log line, no distinct state, anywhere. A logged-in user
+ * whose session check merely had a bad moment saw themselves logged out,
+ * indistinguishable from someone who never signed in at all.
+ *
+ * The fix keeps the same fail-safe UI (there is no positively-confirmed
+ * identity to show, so degrading to the logged-out nav/page state is still
+ * the only safe default -- this is not a redesign of the auth UI) but adds
+ * the one thing that was missing: a `console.error` so the failure leaves
+ * an actual trace in server logs instead of vanishing, matching this
+ * codebase's existing pattern for a tolerated-but-unexpected fetch failure
+ * (see e.g. `app/lines/[id]/history/page.tsx`'s `console.error` on a failed
+ * history load, or `app/error.tsx`'s on an unhandled render error). */
+export async function getSessionOrLoggedOut(): Promise<SessionInfo> {
+  try {
+    return await getSession();
+  } catch (err) {
+    console.error('getSession() failed; rendering as logged out, but this is NOT a confirmed logged-out state', err);
+    return LOGGED_OUT_SESSION;
+  }
 }
 
 /** `/chat`'s own three-state page-load gate (embedded-chatbot-option-b

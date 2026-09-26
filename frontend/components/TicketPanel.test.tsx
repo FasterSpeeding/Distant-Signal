@@ -25,7 +25,7 @@ describe('TicketPanel', () => {
   });
 
   it('401 (not logged in): shows a login nudge to attach a ticket', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(false));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(false));
     renderWithMantine(await TicketPanel({ trackingId: 1 }));
     expect(screen.getByRole('link', { name: 'Log in to attach a ticket to this journey' })).toHaveAttribute(
       'href',
@@ -34,7 +34,7 @@ describe('TicketPanel', () => {
   });
 
   it('404 (logged in, not the owner): renders nothing', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(true));
     vi.mocked(api.getTicketsForTrackedTrain).mockResolvedValue(null);
     const element = await TicketPanel({ trackingId: 1 });
     renderWithMantine(element);
@@ -49,14 +49,14 @@ describe('TicketPanel', () => {
   });
 
   it('200 with an empty array (owner, no ticket yet): shows the add-a-ticket entry point', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(true));
     vi.mocked(api.getTicketsForTrackedTrain).mockResolvedValue([]);
     renderWithMantine(await TicketPanel({ trackingId: 1 }));
     expect(screen.getByRole('button', { name: 'Add a ticket for this journey' })).toBeInTheDocument();
   });
 
   it('200 with tickets: renders each ticket and its own delay-repay estimate, plus an add-another affordance', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(true));
     vi.mocked(api.getTicketsForTrackedTrain).mockResolvedValue([
       {
         id: 1,
@@ -88,7 +88,7 @@ describe('TicketPanel', () => {
   });
 
   it('clicking Delete for a ticket DELETEs that exact ticket id', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(true));
     vi.mocked(api.getTicketsForTrackedTrain).mockResolvedValue([
       {
         id: 7,
@@ -119,7 +119,7 @@ describe('TicketPanel', () => {
   });
 
   it('multiple tickets: fetches a delay-repay estimate per ticket, not just the first', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(true));
     vi.mocked(api.getTicketsForTrackedTrain).mockResolvedValue([
       { id: 1, trackedTrainId: 1, operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, originName: null, destinationName: null, currentDepartureDate: null, source: 'manual', createdAt: '2026-08-29T12:00:00Z', customName: null },
       { id: 2, trackedTrainId: 1, operator: 'CrossCountry', ticketType: null, originCrs: null, destinationCrs: null, originName: null, destinationName: null, currentDepartureDate: null, source: 'manual', createdAt: '2026-08-29T13:00:00Z', customName: null },

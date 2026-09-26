@@ -11,6 +11,9 @@ import {
   getLineDailyCoverageStats,
   getLineHalfHourlyCoverageStats,
   getPreferences,
+  getSession,
+  getSessionOrLoggedOut,
+  LOGGED_OUT_SESSION,
   getAllLines,
   getAllOperators,
   getAllTocs,
@@ -496,6 +499,105 @@ describe('api client', () => {
     );
     await expect(getAllLines()).rejects.toThrow(/401/);
     await expect(getAllLines()).rejects.not.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getSession fetches the correct URL with no caching, forwarding cookies', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ authenticated: false, id: null, email: null, name: null }), { status: 200 })),
+    );
+    await getSession();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/auth/session',
+      expect.objectContaining({ cache: 'no-store', headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  // `/public/auth/session` never 401s (an anonymous visitor gets a normal
+  // 200 with `authenticated: false`), so unlike getPreferences this has no
+  // special-cased status at all -- every non-ok response, including one a
+  // genuine backend/DB error now produces (see OptionalAuthenticatedUser,
+  // crates/api/src/auth.rs), is a real, unswallowed rejection here. This is
+  // the premise `getSessionOrLoggedOut` below exists to handle -- getSession
+  // itself must NOT quietly return a logged-out-shaped value on failure, or
+  // there would be nothing left to distinguish.
+  it('getSession rejects (does not swallow) on a 5xx', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('db error', { status: 500 })));
+    await expect(getSession()).rejects.toThrow(/500/);
+  });
+
+  it('getSession rejects on a network failure (fetch itself throwing)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
+    await expect(getSession()).rejects.toThrow('fetch failed');
+  });
+
+  // The actual bug this plan fixes: every caller that used to write its own
+  // `getSession().catch(() => ({ authenticated: false, ... }))` treated a
+  // genuine failure to check (network error, timeout, 5xx) EXACTLY like a
+  // confirmed "not logged in" response -- rendering the identical
+  // logged-out UI with no log, no distinct state, anywhere. A real user
+  // with a valid session saw themselves logged out any time the session
+  // check merely had a bad moment. `getSessionOrLoggedOut` is the one place
+  // that degrading now happens, and the tests below are what actually pins
+  // the fix: the two cases must still resolve to the same UI-safe value
+  // (there is no redesign of the auth UI here), but only the genuine
+  // failure leaves a trace.
+  describe('getSessionOrLoggedOut', () => {
+    it('returns the confirmed session as-is on success, logging nothing', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' }), { status: 200 })),
+      );
+      await expect(getSessionOrLoggedOut()).resolves.toEqual({
+        authenticated: true,
+        id: 'u1',
+        email: 'a@b.com',
+        name: 'A',
+      });
+      expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    // A confirmed anonymous visitor is not a failure -- `getSession()`
+    // resolves normally with `authenticated: false`, so this must be as
+    // silent as the authenticated case above. If this ever logged too, the
+    // one signal distinguishing "definitely logged out" from "we don't
+    // actually know" would be worthless noise on every anonymous page load.
+    it('returns a confirmed logged-out session as-is, logging nothing', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify(LOGGED_OUT_SESSION), { status: 200 })),
+      );
+      await expect(getSessionOrLoggedOut()).resolves.toEqual(LOGGED_OUT_SESSION);
+      expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    // The regression this plan exists to fix: a network error used to
+    // become indistinguishable, everywhere downstream, from a real
+    // logged-out visitor. It still degrades to the same safe UI value (no
+    // redesign), but it now logs -- the trace that was entirely missing
+    // before.
+    it('degrades to LOGGED_OUT_SESSION AND logs when getSession() rejects on a network failure', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
+      await expect(getSessionOrLoggedOut()).resolves.toEqual(LOGGED_OUT_SESSION);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      expect(consoleError.mock.calls[0][0]).toMatch(/getSession\(\) failed/);
+    });
+
+    // The specific trigger this plan's diagnosis names: a genuine DB error
+    // during the session lookup now correctly propagates as a real 5xx
+    // (OptionalAuthenticatedUser, crates/api/src/auth.rs) instead of
+    // silently collapsing to `Ok(None)`. That is progress, but only if the
+    // newly-visible failure is actually surfaced instead of swallowed here.
+    it('degrades to LOGGED_OUT_SESSION AND logs when the backend responds 5xx', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('db error', { status: 500 })));
+      await expect(getSessionOrLoggedOut()).resolves.toEqual(LOGGED_OUT_SESSION);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('getAllLines fetches the correct URL with no caching', async () => {

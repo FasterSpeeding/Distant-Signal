@@ -12,7 +12,13 @@ vi.mock('@/lib/api', async () => {
     ...actual,
     getAllOperators: vi.fn(),
     getPreferences: vi.fn(),
-    getSession: vi.fn(),
+    // `getSessionOrLoggedOut`, not `getSession`: the page now calls the
+    // former (`lib/api.ts` centralizes the "degrade to logged-out, but log
+    // it first" fallback there). Overriding `getSession` alone wouldn't
+    // reach it -- `getSessionOrLoggedOut`'s internal `await getSession()`
+    // is a lexical reference to this module's own real implementation, not
+    // a lookup through the exports object this factory returns.
+    getSessionOrLoggedOut: vi.fn(),
   };
 });
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -72,7 +78,7 @@ describe('OperatorsPage', () => {
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(api.getAllOperators).mockResolvedValue(operators);
     vi.mocked(api.getPreferences).mockResolvedValue(preferences);
-    vi.mocked(api.getSession).mockResolvedValue(sessionInfo);
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(sessionInfo);
   });
 
   it('renders one OperatorStatusCard per operator', async () => {

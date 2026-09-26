@@ -9,9 +9,9 @@ import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
-import { getChatbotAccess, getDataFreshness, getMyGroups, getSession } from '@/lib/api';
+import { getChatbotAccess, getDataFreshness, getMyGroups, getSessionOrLoggedOut, LOGGED_OUT_SESSION } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
-import type { DataFreshness, SessionInfo } from '@/lib/types';
+import type { DataFreshness } from '@/lib/types';
 
 // Site-wide fallback metadata, and still the live fallback for every route
 // that has not overridden it (`/chat`, `/connect-claude`, and the smaller
@@ -91,26 +91,23 @@ export const viewport: Viewport = {
 // case (the one this whole design exists for) we specifically need the
 // outcome before first paint.
 
-/** The shape `getSession()` returns for a visitor with no session, and
- * the fallback this layout degrades to when the session check fails
- * outright. Named once because it is used twice below — as
- * `NavBarWithSession`'s `.catch()` value and as the `<Suspense>`
- * fallback's session — and the two must agree: both mean "render the nav
- * as if logged out". */
-const LOGGED_OUT_SESSION: SessionInfo = {
-  authenticated: false,
-  id: null,
-  email: null,
-  name: null,
-};
-
 // The nav's one session fetch, in a separate async Server Component so
 // `<Suspense>` can stream the check in without blocking the rest of the
 // shell, and so an uncaught fetch failure here (this root layout has no
 // route-level `error.tsx`) can't take down every page. Falls back to a
 // logged-out session rather than rethrowing — an auth-status glitch
 // should degrade to "show the log in link", not break navigation for
-// every visitor, logged in or not.
+// every visitor, logged in or not. That fallback is `getSessionOrLoggedOut()`
+// (`lib/api.ts`), not a bare `.catch()` here: a `getSession()` rejection is
+// never a confirmed "not logged in" (it never 401s -- see that function's
+// own doc comment), so the fallback logs the failure via `console.error`
+// before degrading, rather than swallowing it into indistinguishable
+// "logged out" silence the way this used to.
+//
+// `LOGGED_OUT_SESSION` itself (imported from `lib/api.ts`, shared with
+// `getSessionOrLoggedOut()`'s own fallback value) is used once more below,
+// as the `<Suspense>` fallback's session -- the two must agree: both mean
+// "render the nav as if logged out".
 //
 // ONE fetch, where there used to be two: the old `AuthNavItem` and
 // `GroupsNavItem` each called `getSession()` behind their own
@@ -134,10 +131,7 @@ const LOGGED_OUT_SESSION: SessionInfo = {
 // response -- see `lib/api.ts`), so unlike `session` this needs no
 // `.catch()` of its own.
 async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
-  const [session, chatAccess] = await Promise.all([
-    getSession().catch(() => LOGGED_OUT_SESSION),
-    getChatbotAccess(),
-  ]);
+  const [session, chatAccess] = await Promise.all([getSessionOrLoggedOut(), getChatbotAccess()]);
   return <AppNavBar session={session} freshness={freshness} chatAllowed={chatAccess === 'allowed'} />;
 }
 

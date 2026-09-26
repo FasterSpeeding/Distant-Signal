@@ -1,5 +1,5 @@
 import { Divider, Group, Stack } from '@mantine/core';
-import { getSession, getTicketsForTrackedTrain, getDelayRepayEstimate } from '@/lib/api';
+import { getSessionOrLoggedOut, getTicketsForTrackedTrain, getDelayRepayEstimate } from '@/lib/api';
 import { LoginLink } from './LoginLink';
 import { TicketEntryForm } from './TicketEntryForm';
 import { DelayRepayEstimate } from './DelayRepayEstimate';
@@ -37,12 +37,10 @@ export async function TicketPanel({ trackingId }: { trackingId: number }) {
   // visitor. This component has no route-level `error.tsx` boundary of its
   // own (`app/error.tsx` is the root boundary), so an uncaught rejection
   // here would otherwise take down the entire tracked-train page.
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
+  // `getSessionOrLoggedOut()` (`lib/api.ts`) is what does the degrading --
+  // it still logs the failure first, since it is never a confirmed "not
+  // logged in", just an inability to confirm either way.
+  const session = await getSessionOrLoggedOut();
   if (!session.authenticated) {
     // Worded as "attach a ticket," not "see your ticket" -- logging in
     // doesn't guarantee this viewer owns this particular pin, so the copy

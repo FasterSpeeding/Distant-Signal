@@ -1,7 +1,7 @@
 import { Alert, Button, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { getGroup, getGroupJoinPreview, getSession, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
+import { getGroup, getGroupJoinPreview, getSessionOrLoggedOut, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 
@@ -133,12 +133,7 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
     throw err;
   }
 
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
+  const session = await getSessionOrLoggedOut();
 
   let alreadyMember = false;
   if (session.authenticated) {

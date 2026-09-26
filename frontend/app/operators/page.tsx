@@ -1,6 +1,6 @@
 import { Stack, Text, SimpleGrid, Title } from '@mantine/core';
 import type { Metadata } from 'next';
-import { getAllOperators, getPreferences, getSession } from '@/lib/api';
+import { getAllOperators, getPreferences, getSessionOrLoggedOut } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { severityRank } from '@/lib/severity';
@@ -43,9 +43,11 @@ export default async function OperatorsPage() {
   const [operators, preferences, viewerIsAnonymous] = await Promise.all([
     withStaleFallback('allOperators', () => getAllOperators()),
     getPreferences().catch(() => NO_PREFERENCES),
-    getSession()
-      .then((session) => !session.authenticated)
-      .catch(() => true),
+    // `getSessionOrLoggedOut()` (`lib/api.ts`) already degrades a failed
+    // check to the logged-out `SessionInfo` shape (logging it first) --
+    // `!session.authenticated` on that result is `true`, so this needs no
+    // `.catch()` of its own the way the old direct `getSession()` call did.
+    getSessionOrLoggedOut().then((session) => !session.authenticated),
   ]);
 
   const pinnedSet = new Set(preferences.pinnedOperators);

@@ -1,6 +1,6 @@
 import { Group, Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
-import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences, getSession } from '@/lib/api';
+import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences, getSessionOrLoggedOut } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
 import { isSeverityGroup } from '@/lib/severity';
@@ -110,10 +110,12 @@ export default async function AllLinesPage({
     // account. A failed session check degrades to "treat as anonymous" --
     // an extra hint shown to someone who is in fact logged in is harmless,
     // where hiding a real hint from an anonymous visitor is the failure
-    // this feature exists to fix.
-    getSession()
-      .then((session) => !session.authenticated)
-      .catch(() => true),
+    // this feature exists to fix. `getSessionOrLoggedOut()` (`lib/api.ts`)
+    // is what does that degrading now -- it logs the failure first, and
+    // already resolves (never rejects) to the logged-out shape, so this
+    // needs no `.catch()` of its own the way the old direct `getSession()`
+    // call did.
+    getSessionOrLoggedOut().then((session) => !session.authenticated),
   ]);
 
   return (

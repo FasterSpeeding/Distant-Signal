@@ -7,7 +7,7 @@ import {
   getLineStatusForMode,
   getMyTrackedTrains,
   getPreferences,
-  getSession,
+  getSessionOrLoggedOut,
   getSharedGroupCustomLines,
   getSharedGroupTrains,
   getStationName,
@@ -161,13 +161,11 @@ export default async function DashboardPage() {
   // Same defensive fallback as app/layout.tsx and TicketPanel.tsx: an
   // auth-status glitch degrades to "treat as anonymous", not a broken
   // homepage. See docs/superpowers/specs/2026-08-31-anonymous-user-ux-design.md
-  // §Home page redesign.
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
+  // §Home page redesign. `getSessionOrLoggedOut()` (`lib/api.ts`) is what
+  // actually degrades this -- unlike a bare `.catch()`, it logs the
+  // failure first, since a `getSession()` rejection here is never a
+  // confirmed "not logged in", just an inability to confirm either way.
+  const session = await getSessionOrLoggedOut();
 
   // Concurrent, independent fetches -- getPreferences()/getMyTrackedTrains()
   // have no data dependency on each other or on line status.
