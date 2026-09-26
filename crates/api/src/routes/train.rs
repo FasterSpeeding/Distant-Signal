@@ -3862,6 +3862,7 @@ mod db_tests {
                     booked_arrival: None,
                     booked_departure: Some("12:00:00".parse().unwrap()),
                     day_offset: 0,
+                    platform: None,
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -3872,6 +3873,7 @@ mod db_tests {
                     booked_arrival: Some("16:00:00".parse().unwrap()),
                     booked_departure: None,
                     day_offset: 0,
+                    platform: None,
                 },
             ],
         )

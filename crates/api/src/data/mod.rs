@@ -25,6 +25,7 @@ pub mod station_stats;
 pub mod ticket_extraction;
 pub mod train_tracking;
 pub mod trains;
+pub mod trip_leg_details;
 pub mod trip_planning;
 pub mod trip_planning_itinerary;
 pub mod trust_event_backlog;

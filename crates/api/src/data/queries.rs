@@ -1845,6 +1845,12 @@ pub struct ScheduleCallingPointsFullRow {
     pub booked_arrival: Option<chrono::NaiveTime>,
     pub booked_departure: Option<chrono::NaiveTime>,
     pub day_offset: i16,
+    /// CIF booked platform -- see
+    /// `schedule_query::records::CallingPoint::platform`. `#[serde(default)]`
+    /// so a `schedule-reference` build that predates this field still
+    /// ingests (as NULL, "not known") during a rolling deploy.
+    #[serde(default)]
+    pub platform: Option<String>,
 }
 
 /// Replaces one service date's worth of whole-network resolved calling
@@ -1912,6 +1918,7 @@ pub async fn upsert_schedule_calling_points_full_chunk(
     let booked_departures: Vec<Option<chrono::NaiveTime>> =
         rows.iter().map(|r| r.booked_departure).collect();
     let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
+    let platforms: Vec<Option<&str>> = rows.iter().map(|r| r.platform.as_deref()).collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1935,8 +1942,8 @@ pub async fn upsert_schedule_calling_points_full_chunk(
 
     let result = sqlx::query(
         "INSERT INTO schedule_calling_points_full \
-            (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::smallint[], $4::text[], $5::text[], $6::time[], $7::time[], $8::smallint[]) \
+            (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::smallint[], $4::text[], $5::text[], $6::time[], $7::time[], $8::smallint[], $9::text[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1947,6 +1954,7 @@ pub async fn upsert_schedule_calling_points_full_chunk(
     .bind(&booked_arrivals)
     .bind(&booked_departures)
     .bind(&day_offsets)
+    .bind(&platforms)
     .execute(&mut *tx)
     .await?;
 
@@ -2073,6 +2081,9 @@ pub struct ScheduleCallingPointFullRowForTrain {
     pub booked_arrival: Option<chrono::NaiveTime>,
     pub booked_departure: Option<chrono::NaiveTime>,
     pub day_offset: i16,
+    /// CIF booked platform, NULL when blank or not yet published -- see the
+    /// `20260926170000_schedule_calling_points_full_platform` migration.
+    pub platform: Option<String>,
 }
 
 /// Every calling point of `train_uid`'s resolved (non-cancelled) schedule on
@@ -2106,7 +2117,7 @@ pub async fn list_schedule_calling_points_full_for_train(
     service_date: chrono::NaiveDate,
 ) -> Result<Vec<ScheduleCallingPointFullRowForTrain>> {
     let rows = sqlx::query_as::<_, ScheduleCallingPointFullRowForTrain>(
-        "SELECT tiploc, kind, booked_arrival, booked_departure, day_offset \
+        "SELECT tiploc, kind, booked_arrival, booked_departure, day_offset, platform \
          FROM schedule_calling_points_full \
          WHERE service_date = $1 AND uid = $2 \
          ORDER BY seq",
@@ -2895,6 +2906,45 @@ pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<St
         })
     })
     .transpose()
+}
+
+/// [`latest_station_sample`]'s batched sibling: the current
+/// `station_samples` row for every CRS in `crs_codes` that has one, keyed
+/// by `UPPER(TRIM(crs))` (the same key normalization as
+/// [`station_names_for_crs_batch`]). A CRS with no row is simply absent
+/// from the map. One query regardless of how many calling points a train
+/// has -- backs `journey::apply_station_sample_platforms`, which needs every
+/// calling point's own departure board at once.
+pub async fn latest_station_samples_for_crs_batch(
+    pool: &PgPool,
+    crs_codes: &[String],
+) -> Result<HashMap<String, StationSample>> {
+    use sqlx::Row;
+    if crs_codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let upper: Vec<String> = crs_codes.iter().map(|c| c.trim().to_uppercase()).collect();
+    let rows = sqlx::query(
+        "SELECT UPPER(TRIM(crs)) AS key, crs, polled_at, departures FROM station_samples \
+         WHERE UPPER(TRIM(crs)) = ANY($1)",
+    )
+    .bind(&upper)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let departures_json: serde_json::Value = row.try_get("departures")?;
+            Ok((
+                row.try_get("key")?,
+                StationSample {
+                    crs: row.try_get("crs")?,
+                    polled_at: row.try_get("polled_at")?,
+                    departures: serde_json::from_value(departures_json)?,
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Every `station_full_coverage_samples` row for one CRS, one per
@@ -8557,6 +8607,7 @@ mod schedule_destination_departures_query_tests {
                     booked_arrival: None,
                     booked_departure: "10:15:00".parse().ok(),
                     day_offset: 0,
+                    platform: None,
                 },
                 ScheduleCallingPointsFullRow {
                     service_date,
@@ -8571,6 +8622,7 @@ mod schedule_destination_departures_query_tests {
                     booked_arrival: None,
                     booked_departure: None,
                     day_offset: 0,
+                    platform: None,
                 },
                 ScheduleCallingPointsFullRow {
                     service_date,
@@ -8581,6 +8633,7 @@ mod schedule_destination_departures_query_tests {
                     booked_arrival: "10:32:00".parse().ok(),
                     booked_departure: None,
                     day_offset: 0,
+                    platform: None,
                 },
             ],
         )
@@ -8642,6 +8695,7 @@ mod schedule_destination_departures_query_tests {
             booked_arrival: None,
             booked_departure: "10:15:00".parse().ok(),
             day_offset: 0,
+            platform: None,
         }];
         let inserted = upsert_schedule_calling_points_full_chunk(&pool, &first_chunk_rows, true)
             .await
@@ -8660,6 +8714,7 @@ mod schedule_destination_departures_query_tests {
             booked_arrival: None,
             booked_departure: "11:00:00".parse().ok(),
             day_offset: 0,
+            platform: None,
         }];
         let inserted = upsert_schedule_calling_points_full_chunk(&pool, &second_chunk_rows, false)
             .await
@@ -9389,6 +9444,7 @@ mod schedule_pipeline_integrity_tests {
             booked_arrival: Some(time(8, 0)),
             booked_departure: Some(time(8, 2)),
             day_offset: 0,
+            platform: None,
         }
     }
 
