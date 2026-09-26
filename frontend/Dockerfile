@@ -6,7 +6,9 @@
 #   docker build -f frontend/Dockerfile -t frontend .
 #
 # Two runtime targets, selected via docker-compose's `build.target`:
-#   runtime-prod (default) - optimized `next build` + `next start`.
+#   runtime-prod (default) - optimized `next build` (via `output:
+#                            'standalone'`, next.config.mjs) + the
+#                            generated `node server.js`.
 #                            Selected by docker-compose.yml.
 #   runtime-dev             - skips `next build` entirely (ships full
 #                              source + node_modules) and runs `next dev`.
@@ -26,8 +28,9 @@ FROM node:22-bookworm-slim AS builder-base
 # of three places that need it, not one: ENV set in a stage is only
 # inherited by stages built `FROM` it, and runtime-prod/runtime-dev below
 # both start fresh `FROM node:22-bookworm-slim`, so each of the three
-# stages that actually invoke the `next` CLI (this one, via builder-prod's
-# `npm run build`; runtime-prod's `npm run start`; runtime-dev's
+# stages that actually invoke Next's telemetry-checking code (this one, via
+# builder-prod's `npm run build`; runtime-prod's standalone `server.js`,
+# which still boots next-server internals directly; runtime-dev's
 # `npm run dev`) sets it independently. Hardcoded rather than left
 # configurable: there's no legitimate reason a contributor would want this
 # ON. Next 16 defaults to Turbopack for both dev and build (no separate
@@ -64,8 +67,11 @@ RUN --mount=type=cache,id=next-cache,target=/app/.next/cache npm run build
 FROM node:22-bookworm-slim AS runtime-prod
 
 # See builder-base's identical ENV above for why this is repeated per stage
-# rather than set once: `next start` runs the `next` CLI too, and this
-# stage starts a fresh base image rather than building FROM builder-base.
+# rather than set once: the standalone `server.js` below still boots
+# next-server internals (telemetry check included) directly rather than
+# going through the `next` CLI the way `next start` did, but the same
+# opt-out env var still applies -- and this stage starts a fresh base image
+# rather than building FROM builder-base either way.
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # NOT a `useradd`-created `frontend` user (this stage's previous
@@ -83,12 +89,28 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # WORKDIR creates /app as root before any COPY runs, and --chown on a COPY
 # only affects the copied entries -- not a pre-existing directory -- so
 # there is no bare `chown` step here the way runtime-dev needs one:
-# runtime-prod's `next start` only reads the prebuilt output copied in
+# runtime-prod's `server.js` only reads the prebuilt output copied in
 # below, it never needs to write into /app itself.
 WORKDIR /app
-COPY --from=builder-prod --chown=node:node /app/.next ./.next
-COPY --from=builder-prod --chown=node:node /app/node_modules ./node_modules
-COPY --from=builder-prod --chown=node:node /app/package.json ./package.json
+# `output: 'standalone'` (next.config.mjs) makes `next build` emit
+# .next/standalone: a traced, minimal dependency tree containing only what
+# the built app actually imports at runtime (not devDependencies, not
+# unused transitive deps -- unlike the full /app/node_modules this used to
+# COPY), its own package.json, and a generated server.js entrypoint. It
+# also mirrors the app's own directory layout, which is why this is COPY'd
+# to `./` (not `./.next/standalone`) -- server.js lands directly at
+# /app/server.js, matching the ENTRYPOINT below. This is the entire point
+# of switching to standalone: a meaningfully smaller final image than
+# shipping the whole node_modules tree.
+COPY --from=builder-prod --chown=node:node /app/.next/standalone ./
+# `output: 'standalone'` deliberately does NOT bundle .next/static into
+# .next/standalone on its own (a well-documented Next.js gotcha) -- that
+# directory holds the client-side JS/CSS bundles every page's browser-side
+# <script>/<link> tags request under /_next/static/*. It must land at
+# .next/standalone/.next/static specifically (./.next/static from this
+# WORKDIR): that is the exact path the standalone server.js resolves those
+# requests against.
+COPY --from=builder-prod --chown=node:node /app/.next/static ./.next/static
 # public/ now holds real, load-bearing static assets: the PWA manifest
 # icons (icon-192.png/icon-512.png, commit 86b26b6) and, as of
 # docs/superpowers/plans/2026-09-02-pwa-service-worker.md, sw.js/
@@ -100,6 +122,15 @@ COPY --from=builder-prod --chown=node:node /app/package.json ./package.json
 # regardless of this Dockerfile). See
 # docs/superpowers/specs/2026-09-02-pwa-service-worker-design.md's
 # "Current relevant state," last bullet.
+#
+# Same `output: 'standalone'` gotcha as .next/static above -- public/ is
+# also not bundled automatically and must be copied in manually. Copying
+# from builder-prod's /app/public here (rather than, say, straight from the
+# build context) matters: this runs AFTER builder-prod's `npm run build`
+# (`next build && node scripts/stamp-sw-version.mjs`), and that second step
+# rewrites public/sw.js IN PLACE with the real per-deploy BUILD_ID -- so
+# what lands in this image is the stamped file, not the `__BUILD_ID__`
+# placeholder checked into git.
 COPY --from=builder-prod --chown=node:node /app/public ./public
 
 # Numeric USER, not `node`: Kubernetes' runAsNonRoot admission check (this
@@ -115,8 +146,14 @@ COPY --from=builder-prod --chown=node:node /app/public ./public
 # image's built-in `node` user/group (see above), not an arbitrary choice.
 USER 1000:1000
 
+# `output: 'standalone'`'s generated server.js is a self-contained Node
+# HTTP server -- Next's own documented replacement for `next start` under
+# this output mode -- so it is invoked directly rather than through
+# `npm run start` -> `next start`. This also means the standalone
+# node_modules copied in above doesn't need to carry the full `next`
+# package/CLI just to have something to exec.
 EXPOSE 3000
-ENTRYPOINT ["npm", "run", "start"]
+ENTRYPOINT ["node", "server.js"]
 
 FROM node:22-bookworm-slim AS runtime-dev
 

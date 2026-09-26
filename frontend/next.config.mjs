@@ -90,6 +90,17 @@ function contentSecurityPolicy() {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Emits `.next/standalone` -- a traced, minimal dependency tree (only
+  // what the built app actually imports, not the full `npm ci` output)
+  // plus a self-contained `server.js` entrypoint -- so frontend/Dockerfile's
+  // runtime-prod stage can ship a much smaller final image than copying
+  // the whole node_modules directory in. Two things this mode does NOT
+  // bundle automatically (both documented Next.js gotchas): `.next/static`
+  // and `public/` -- the Dockerfile copies both in manually alongside
+  // `.next/standalone`. No custom server, no monorepo/workspace root here,
+  // so none of `output: 'standalone'`'s other edge cases (custom
+  // `outputFileTracingRoot`, workspace-relative tracing) apply.
+  output: 'standalone',
   ...(devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
   // /track/tickets and /track/mine were two separate pages
   // (docs/superpowers/specs/2026-08-31-tickets-list-design.md,
