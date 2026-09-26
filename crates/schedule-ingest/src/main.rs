@@ -50,6 +50,33 @@ use serde::Serialize;
 /// minutes between scans).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Builds the scan-cycle `tokio::time::Interval`, ticking every
+/// `poll_interval_secs` -- with `MissedTickBehavior::Delay` rather than the
+/// default `Burst`.
+///
+/// `Burst` fires every missed tick back-to-back with zero gap once a cycle
+/// overruns its interval (a slow extraction, a slow POST to `api`) --
+/// exactly when the dependency it's calling is already struggling, it
+/// would pile up a burst of immediate follow-up scans instead of settling
+/// back into its normal cadence. `Delay` instead waits a fresh
+/// `poll_interval_secs` from whenever the overrun tick actually completes,
+/// so a slow cycle degrades to a slower cadence, never a thundering-herd
+/// burst. Same fix, same rationale, as `common::poller_loop`'s own
+/// `poll_interval_with_delay_on_overrun`/`aggregator`'s own
+/// `cycle_interval`/`enricher`'s own `ticking_interval`. This does not
+/// change the "first tick fires immediately" property relied on above --
+/// that's governed by the interval's start instant, not its missed-tick
+/// behavior, which only applies once the loop is already running. Split
+/// into its own function so the configuration is directly assertable in a
+/// unit test via `Interval::missed_tick_behavior()`, since the missed-tick
+/// BEHAVIOR itself (skipping ticks under a real overrun) isn't practically
+/// observable without a slow, flaky, real-time test.
+fn scan_interval(poll_interval_secs: u64) -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
@@ -95,11 +122,12 @@ async fn main() -> anyhow::Result<()> {
     let mut last_ingested_mtime: Option<SystemTime> = None;
     let mut pending_post: Option<ScheduleFeedIngestRequest> = None;
 
-    // `tokio::time::interval`'s first `tick()` fires immediately (its
-    // default `MissedTickBehavior::Burst`), so every run -- including the
-    // very first -- scans right away with no special-cased bypass needed;
-    // subsequent ticks are `poll_interval_secs` apart.
-    let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
+    // `tokio::time::interval`'s first `tick()` fires immediately regardless
+    // of missed-tick behavior, so every run -- including the very first --
+    // scans right away with no special-cased bypass needed; subsequent
+    // ticks are `poll_interval_secs` apart. See `scan_interval`'s own doc
+    // comment for why it also sets `MissedTickBehavior::Delay`.
+    let mut interval = scan_interval(config.poll_interval_secs);
 
     loop {
         interval.tick().await;
@@ -495,6 +523,19 @@ fn prune_old_deliveries(storage_dir: &std::path::Path, keep: u32) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for the "L1 -- MissedTickBehavior::Burst still default"
+    /// finding: this scan loop's own interval must opt into `Delay`, not
+    /// leave `Burst` as the default, so an overrun cycle doesn't fire a
+    /// burst of back-to-back catch-up scans.
+    #[tokio::test]
+    async fn scan_interval_defaults_to_delay_not_burst_on_a_missed_tick() {
+        let interval = scan_interval(60);
+        assert_eq!(
+            interval.missed_tick_behavior(),
+            tokio::time::MissedTickBehavior::Delay
+        );
+    }
 
     #[test]
     fn parse_check_times_parses_and_preserves_configured_order() {
