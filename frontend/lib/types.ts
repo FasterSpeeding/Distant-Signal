@@ -720,7 +720,13 @@ export interface PublicTrainState {
   destinationName: string | null;
   scheduledDeparture: string | null; // RFC3339
   callingPoints: ScheduleCallingPoint[] | null;
+  // TRUST's 10-character movement-feed train id (e.g. "721S00MF25"),
+  // `null` until TRUST activates the train. NOT the headcode.
   trainId: string | null;
+  // The CIF `BS` Train Identity -- the 4-character signalling headcode
+  // (e.g. "1S00") -- from the published schedule. `null` when unknown or
+  // ambiguous; optional so an older backend without it still type-checks.
+  headcode?: string | null;
   status: JourneyStatus | null;
   lastReportedLocation: string | null;
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
@@ -893,6 +899,10 @@ export type TripPlanLeg =
       // The schedule's CIF `BX` ATOC operator code (e.g. "SW"); `null` when
       // unknown.
       operator?: string | null;
+      // The schedule's CIF `BS` Train Identity -- the 4-character signalling
+      // headcode (e.g. "1S00"). `null` when unknown or ambiguous. Not the
+      // TRUST 10-character train id.
+      headcode?: string | null;
     }
   | {
       kind: 'transfer';

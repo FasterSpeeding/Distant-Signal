@@ -7,12 +7,12 @@
 //! / `build_connections` / the CSA/RAPTOR searches) on purpose: the search
 //! reads every calling point of the whole day, while only the handful of
 //! schedules that actually appear in a returned itinerary need this, so it
-//! is two small, uid-scoped batch reads after the search instead of widening
+//! is a few small, uid-scoped batch reads after the search instead of widening
 //! the whole-day read. Only CIF data is used -- never Darwin/live platform.
 //!
-//! Headcode is deliberately NOT here: the CIF `BS` Train Identity field is
-//! not decoded by `schedule_query` nor stored in any table, so surfacing it
-//! would need new parse + publish + storage plumbing.
+//! The schedule's headcode (the CIF `BS` Train Identity -- NOT the TRUST
+//! 10-character `train_id`) is read the same way as the operator, from
+//! `schedule_destination_departures.headcode`.
 
 use std::collections::HashMap;
 
@@ -50,9 +50,10 @@ fn row_day_offset(row: &LegCallingPointRow) -> u8 {
 }
 
 /// Pure half of [`attach_leg_details`]: fills every train leg's
-/// `booked_departure_platform`/`booked_arrival_platform`/`operator` from the
-/// already-fetched rows. A leg whose calling point or operator has no row
-/// is left `None` -- "not known", never guessed.
+/// `booked_departure_platform`/`booked_arrival_platform`/`operator`/
+/// `headcode` from the already-fetched rows. A leg whose calling point,
+/// operator or headcode has no row is left `None` -- "not known", never
+/// guessed (see [`unambiguous_headcodes`] for conflicting headcodes).
 ///
 /// A leg's TIPLOCs are not carried on `PlannedLeg` (only its CRS pair), so
 /// the boarding/alighting calling point is identified by `(uid, time)`:
@@ -64,6 +65,7 @@ pub fn apply_leg_details(
     segments: &mut [SegmentResult],
     rows: &[LegCallingPointRow],
     operators: &HashMap<String, String>,
+    headcodes: &HashMap<String, String>,
 ) {
     let mut departures: HashMap<(String, u32), Option<String>> = HashMap::new();
     let mut arrivals: HashMap<(String, u32), Option<String>> = HashMap::new();
@@ -108,6 +110,7 @@ pub fn apply_leg_details(
                     booked_departure_platform,
                     booked_arrival_platform,
                     operator,
+                    headcode,
                     ..
                 } = leg
                 else {
@@ -132,13 +135,35 @@ pub fn apply_leg_details(
                     .cloned()
                     .flatten();
                 *operator = operators.get(train_uid.as_str()).cloned();
+                *headcode = headcodes.get(train_uid.as_str()).cloned();
             }
         }
     }
 }
 
-/// Fetches the calling points and operator of every schedule appearing in
-/// `segments`' train legs on `date` (two batched, uid-scoped queries) and
+/// Collapses distinct `(train_uid, headcode)` pairs into one headcode per
+/// schedule, dropping any schedule whose stored rows disagree (e.g. a
+/// half-replaced publish) -- conflicting means "not known", never a guess.
+pub fn unambiguous_headcodes(pairs: Vec<(String, String)>) -> HashMap<String, String> {
+    let mut by_uid: HashMap<String, Option<String>> = HashMap::new();
+    for (uid, headcode) in pairs {
+        by_uid
+            .entry(uid)
+            .and_modify(|existing| {
+                if existing.as_deref() != Some(headcode.as_str()) {
+                    *existing = None;
+                }
+            })
+            .or_insert(Some(headcode));
+    }
+    by_uid
+        .into_iter()
+        .filter_map(|(uid, headcode)| headcode.map(|h| (uid, h)))
+        .collect()
+}
+
+/// Fetches the calling points, operator and headcode of every schedule appearing in
+/// `segments`' train legs on `date` (three batched, uid-scoped queries) and
 /// applies them via [`apply_leg_details`]. A no-op with no train legs.
 pub async fn attach_leg_details(
     pool: &PgPool,
@@ -182,7 +207,24 @@ pub async fn attach_leg_details(
     .fetch_all(pool)
     .await?;
 
-    apply_leg_details(segments, &rows, &operators.into_iter().collect());
+    // Headcode is likewise per schedule; every distinct non-null value is
+    // fetched so disagreeing rows can be detected and reported as unknown.
+    let headcodes: Vec<(String, String)> = sqlx::query_as(
+        "SELECT DISTINCT train_uid, headcode \
+         FROM schedule_destination_departures \
+         WHERE service_date = $1 AND train_uid = ANY($2) AND headcode IS NOT NULL",
+    )
+    .bind(date)
+    .bind(&uids)
+    .fetch_all(pool)
+    .await?;
+
+    apply_leg_details(
+        segments,
+        &rows,
+        &operators.into_iter().collect(),
+        &unambiguous_headcodes(headcodes),
+    );
     Ok(())
 }
 
@@ -203,6 +245,7 @@ mod tests {
             booked_departure_platform: None,
             booked_arrival_platform: None,
             operator: None,
+            headcode: None,
         }
     }
 
@@ -266,13 +309,15 @@ mod tests {
             row("U2", None, Some("08:10:00"), 0, Some("9")),
         ];
         let operators = HashMap::from([("U1".to_string(), "SW".to_string())]);
+        let headcodes = HashMap::from([("U1".to_string(), "1S00".to_string())]);
 
-        apply_leg_details(&mut segments, &rows, &operators);
+        apply_leg_details(&mut segments, &rows, &operators, &headcodes);
 
         assert_eq!(
             details(&segments[0].itineraries[0].legs[0]),
             (Some("2A"), Some("7"), Some("SW"))
         );
+        assert_eq!(headcode(&segments[0].itineraries[0].legs[0]), Some("1S00"));
     }
 
     #[test]
@@ -290,11 +335,42 @@ mod tests {
             row("U1", Some("08:50:00"), Some("08:51:00"), 0, Some("5")),
         ];
 
-        apply_leg_details(&mut segments, &rows, &HashMap::new());
+        apply_leg_details(&mut segments, &rows, &HashMap::new(), &HashMap::new());
 
         let legs = &segments[0].itineraries[0].legs;
         assert_eq!(details(&legs[0]), (None, None, None));
         // No rows at all for U3.
         assert_eq!(details(&legs[1]), (None, None, None));
+        assert_eq!(headcode(&legs[0]), None);
+        assert_eq!(headcode(&legs[1]), None);
+    }
+
+    fn headcode(leg: &PlannedLeg) -> Option<&str> {
+        let PlannedLeg::Train { headcode, .. } = leg else {
+            panic!("expected a train leg");
+        };
+        headcode.as_deref()
+    }
+
+    #[test]
+    fn conflicting_headcodes_for_one_schedule_are_dropped() {
+        let pairs = vec![
+            ("U1".to_string(), "1S00".to_string()),
+            ("U1".to_string(), "1S00".to_string()),
+            ("U2".to_string(), "2E88".to_string()),
+            ("U2".to_string(), "2E89".to_string()),
+        ];
+        let headcodes = unambiguous_headcodes(pairs);
+        assert_eq!(headcodes.get("U1").map(String::as_str), Some("1S00"));
+        assert_eq!(headcodes.get("U2"), None);
+
+        let mut segments = segments(vec![
+            train_leg("U1", "08:00:00", "08:50:00", 0),
+            train_leg("U2", "09:00:00", "09:30:00", 0),
+        ]);
+        apply_leg_details(&mut segments, &[], &HashMap::new(), &headcodes);
+        let legs = &segments[0].itineraries[0].legs;
+        assert_eq!(headcode(&legs[0]), Some("1S00"));
+        assert_eq!(headcode(&legs[1]), None);
     }
 }

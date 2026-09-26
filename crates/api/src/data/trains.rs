@@ -348,7 +348,15 @@ pub struct PublicTrainState {
     pub destination_name: Option<String>,
     pub scheduled_departure: Option<DateTime<Utc>>,
     pub calling_points: Option<serde_json::Value>,
+    /// TRUST's 10-character movement-feed train id (`trains.train_id`, e.g.
+    /// `"721S00MF25"`) -- set on TRUST activation. NOT the headcode, even
+    /// though it embeds one; see `headcode` below for that.
     pub train_id: Option<String>,
+    /// The CIF `BS` Train Identity -- the 4-character signalling headcode
+    /// (e.g. `"1S00"`) -- read from the published schedule
+    /// (`schedule_destination_departures.headcode`), not from TRUST. `None`
+    /// when no row carries one or the rows disagree.
+    pub headcode: Option<String>,
     pub status: Option<String>,
     pub last_reported_location: Option<String>,
     pub last_event_type: Option<String>,
@@ -445,7 +453,11 @@ pub async fn get_public_train_state(
     let row = sqlx::query_as::<_, PublicTrainState>(
         "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
                 tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
-                tr.calling_points, tr.train_id, tr.skipped_stations, tr.platform, tr.planned_platform, \
+                tr.calling_points, tr.train_id, \
+                (SELECT CASE WHEN COUNT(DISTINCT sdd.headcode) = 1 THEN MIN(sdd.headcode) END \
+                   FROM schedule_destination_departures sdd \
+                  WHERE sdd.train_uid = tr.train_uid AND sdd.service_date = tr.service_date) AS headcode, \
+                tr.skipped_stations, tr.platform, tr.planned_platform, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
@@ -490,7 +502,11 @@ pub async fn get_public_train_states_for_line(
     let rows = sqlx::query_as::<_, PublicTrainState>(
         "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
                 tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
-                tr.calling_points, tr.train_id, tr.skipped_stations, tr.platform, tr.planned_platform, \
+                tr.calling_points, tr.train_id, \
+                (SELECT CASE WHEN COUNT(DISTINCT sdd.headcode) = 1 THEN MIN(sdd.headcode) END \
+                   FROM schedule_destination_departures sdd \
+                  WHERE sdd.train_uid = tr.train_uid AND sdd.service_date = tr.service_date) AS headcode, \
+                tr.skipped_stations, tr.platform, tr.planned_platform, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
@@ -793,6 +809,8 @@ mod db_tests {
         assert_eq!(state.origin_crs, Some("EUS".to_string()));
         assert_eq!(state.destination_crs, Some("MKC".to_string()));
         assert_eq!(state.train_id, Some("1A23".to_string()));
+        // No schedule_destination_departures rows for this uid.
+        assert_eq!(state.headcode, None);
         assert_eq!(state.status, Some("en_route".to_string()));
         assert_eq!(
             state.last_reported_location,
@@ -801,6 +819,73 @@ mod db_tests {
         assert_eq!(state.delay_minutes, Some(4));
         assert_eq!(state.next_calling_point, Some("MKC".to_string()));
 
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_public_train_state_reads_the_cif_headcode_not_the_trust_train_id -- --ignored"]
+    async fn get_public_train_state_reads_the_cif_headcode_not_the_trust_train_id() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let uid = "TEST-PUBLIC-HEADCODE-UID";
+        let trains_id = find_or_create_train(&pool, uid, service_date)
+            .await
+            .expect("seed a trains row");
+        // A real-shaped TRUST 10-character train id -- NOT the headcode.
+        mark_train_resolved(&pool, trains_id, "721S00MF07")
+            .await
+            .expect("mark_train_resolved");
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, headcode) \
+             VALUES ($1, 'EDB', '12:00:00', $2, 'KGX', '1S00'), \
+                    ($1, 'EDB', '13:00:00', $2, 'YRK', '1S00')",
+        )
+        .bind(service_date)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed schedule_destination_departures rows");
+
+        let state = get_public_train_state(&pool, uid, service_date)
+            .await
+            .expect("get_public_train_state")
+            .expect("row should be found");
+        assert_eq!(state.train_id.as_deref(), Some("721S00MF07"));
+        assert_eq!(state.headcode.as_deref(), Some("1S00"));
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["headcode"], "1S00");
+        assert_eq!(json["trainId"], "721S00MF07");
+
+        // Rows that disagree are "not known", never a guess.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, headcode) \
+             VALUES ($1, 'EDB', '14:00:00', $2, 'NCL', '1S01')",
+        )
+        .bind(service_date)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed a conflicting row");
+        let state = get_public_train_state(&pool, uid, service_date)
+            .await
+            .expect("get_public_train_state")
+            .expect("row should be found");
+        assert_eq!(state.headcode, None);
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json.as_object().unwrap().contains_key("headcode") && json["headcode"].is_null());
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
             .execute(&pool)

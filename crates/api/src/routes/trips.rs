@@ -1143,12 +1143,12 @@ mod db_tests {
 
     /// `/Trips/plan` train legs carry the CIF booked platform at the
     /// boarding and alighting calling points and the schedule's ATOC
-    /// operator (`trip_leg_details::attach_leg_details`) -- present when the
+    /// operator and headcode (`trip_leg_details::attach_leg_details`) -- present when the
     /// CIF-derived tables have them, explicit `null` when not.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
-    async fn train_legs_carry_booked_platforms_and_operator_or_null() {
+    async fn train_legs_carry_booked_platforms_operator_and_headcode_or_null() {
         let pool = connect().await;
         let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
         sqlx::query(
@@ -1164,8 +1164,8 @@ mod db_tests {
         .expect("seed calling points");
         sqlx::query(
             "INSERT INTO schedule_destination_departures \
-             (service_date, destination_crs, scheduled, train_uid, origin_crs, operator_atoc) \
-             VALUES ($1, 'ZYB', '08:00:00', 'TESTPLAT1', 'ZYA', 'SW') ON CONFLICT DO NOTHING",
+             (service_date, destination_crs, scheduled, train_uid, origin_crs, operator_atoc, headcode) \
+             VALUES ($1, 'ZYB', '08:00:00', 'TESTPLAT1', 'ZYA', 'SW', '1S00') ON CONFLICT DO NOTHING",
         )
         .bind(date)
         .execute(&pool)
@@ -1195,6 +1195,29 @@ mod db_tests {
         assert!(
             leg.contains_key("bookedArrivalPlatform") && leg["bookedArrivalPlatform"].is_null()
         );
+        assert_eq!(leg["operator"], "SW");
+        assert_eq!(leg["headcode"], "1S00");
+
+        // A blank CIF Train Identity (stored NULL) renders as an explicit
+        // `"headcode": null`, not an omitted key.
+        sqlx::query(
+            "UPDATE schedule_destination_departures SET headcode = NULL \
+             WHERE train_uid = 'TESTPLAT1' AND service_date = $1",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("blank the headcode");
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            format!("/Trips/plan?origin=ZYA&destination=ZYB&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let leg = body["segments"][0]["itineraries"][0]["legs"][0]
+            .as_object()
+            .unwrap();
+        assert!(leg.contains_key("headcode") && leg["headcode"].is_null());
         assert_eq!(leg["operator"], "SW");
 
         sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TESTPLAT1'")

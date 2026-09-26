@@ -1639,6 +1639,14 @@ pub struct ScheduleDestinationDeparturesRow {
     /// existed still deserializes, as `None`.
     #[serde(default)]
     pub operator_atoc: Option<String>,
+    /// The schedule's CIF `BS` Train Identity (4-character signalling
+    /// headcode, e.g. `"1S00"`), mirroring
+    /// `schedule_query::records::DestinationDeparture::headcode`: once per
+    /// schedule, copied onto every row. NOT the TRUST 10-char
+    /// `trains.train_id`. `#[serde(default)]` so a publisher that predates
+    /// the field still deserializes (as `None`).
+    #[serde(default)]
+    pub headcode: Option<String>,
 }
 
 /// An opaque-to-the-caller position in one station's ordered results: the
@@ -1772,6 +1780,7 @@ pub async fn upsert_schedule_destination_departures_chunk(
         .collect();
     let operator_atoc: Vec<Option<&str>> =
         rows.iter().map(|r| r.operator_atoc.as_deref()).collect();
+    let headcode: Vec<Option<&str>> = rows.iter().map(|r| r.headcode.as_deref()).collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1794,8 +1803,8 @@ pub async fn upsert_schedule_destination_departures_chunk(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[]) \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1809,6 +1818,7 @@ pub async fn upsert_schedule_destination_departures_chunk(
     .bind(&destination_arrival)
     .bind(&destination_arrival_day_offsets)
     .bind(&operator_atoc)
+    .bind(&headcode)
     .execute(&mut *tx)
     .await?;
 
@@ -6867,6 +6877,7 @@ mod schedule_destination_departures_query_tests {
             true_origin_crs: true_origin_crs.map(str::to_string),
             calling_point_arrival,
             operator_atoc: None,
+            headcode: None,
         }
     }
 
@@ -7163,6 +7174,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
                     operator_atoc: Some("SR".to_string()),
+                    headcode: Some("1S00".to_string()),
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date: date,
@@ -7176,6 +7188,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival: None,
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
+                    headcode: None,
                 },
             ],
         )
@@ -7197,6 +7210,23 @@ mod schedule_destination_departures_query_tests {
             stored[1],
             ("C80002".to_string(), None),
             "an absent operator_atoc must round-trip as SQL NULL, not an empty string"
+        );
+
+        let headcodes: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT train_uid, headcode FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back headcodes");
+        assert_eq!(
+            headcodes,
+            vec![
+                ("C80001".to_string(), Some("1S00".to_string())),
+                ("C80002".to_string(), None),
+            ],
+            "a blank CIF Train Identity must round-trip as SQL NULL"
         );
 
         delete_day(&pool, date).await;
@@ -7695,6 +7725,7 @@ mod schedule_destination_departures_query_tests {
                             true_origin_crs: Some("WAT".to_string()),
                             calling_point_arrival: calling_point_arrival.map(|(h, m)| time(h, m)),
                             operator_atoc: None,
+                            headcode: None,
                         }
                     },
                 )
@@ -8541,6 +8572,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
                     operator_atoc: None,
+                    headcode: None,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -8554,6 +8586,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
                     operator_atoc: None,
+                    headcode: None,
                 },
             ],
         )
@@ -8780,6 +8813,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
                     operator_atoc: None,
+                    headcode: None,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -8793,6 +8827,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival_day_offset: 0,
                     calling_point_arrival: None,
                     operator_atoc: None,
+                    headcode: None,
                 },
             ],
         )
@@ -9108,6 +9143,7 @@ LTSTAFFRD 1630         TF";
                         destination_arrival: d.destination_arrival,
                         destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
                         operator_atoc: d.operator_atoc,
+                        headcode: d.headcode,
                     })
             })
             .collect();
@@ -9232,6 +9268,7 @@ LTSTAFFRD 1630         TF";
                         destination_arrival: d.destination_arrival,
                         destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
                         operator_atoc: d.operator_atoc,
+                        headcode: d.headcode,
                     })
             })
             .collect();
@@ -9567,6 +9604,7 @@ mod schedule_pipeline_integrity_tests {
             destination_arrival: None,
             destination_arrival_day_offset: 0,
             operator_atoc: None,
+            headcode: None,
         };
 
         upsert_schedule_destination_departures_chunk(&pool, &[row("FRESH1", time(8, 0))], true)
@@ -9647,5 +9685,39 @@ mod schedule_pipeline_integrity_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+}
+
+#[cfg(test)]
+mod schedule_destination_departures_row_serde_tests {
+    use super::ScheduleDestinationDeparturesRow;
+
+    fn base() -> serde_json::Value {
+        serde_json::json!({
+            "service_date": "2026-09-26",
+            "destination_crs": "EDB",
+            "scheduled": "09:00:00",
+            "train_uid": "C00573",
+            "origin_crs": "KGX",
+        })
+    }
+
+    #[test]
+    fn a_payload_from_a_publisher_predating_headcode_deserializes_as_none() {
+        let row: ScheduleDestinationDeparturesRow = serde_json::from_value(base()).unwrap();
+        assert_eq!(row.headcode, None);
+    }
+
+    #[test]
+    fn a_published_headcode_and_an_explicit_null_both_deserialize() {
+        let mut with = base();
+        with["headcode"] = serde_json::json!("1S00");
+        let row: ScheduleDestinationDeparturesRow = serde_json::from_value(with).unwrap();
+        assert_eq!(row.headcode.as_deref(), Some("1S00"));
+
+        let mut null = base();
+        null["headcode"] = serde_json::Value::Null;
+        let row: ScheduleDestinationDeparturesRow = serde_json::from_value(null).unwrap();
+        assert_eq!(row.headcode, None);
     }
 }

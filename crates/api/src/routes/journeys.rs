@@ -2576,6 +2576,7 @@ mod db_tests {
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
+                    headcode: None,
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -2589,6 +2590,7 @@ mod db_tests {
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
+                    headcode: None,
                 },
             ]
         }
@@ -2755,6 +2757,7 @@ mod db_tests {
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
                     operator_atoc: operator_atoc.map(str::to_string),
+                    headcode: None,
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -2768,6 +2771,7 @@ mod db_tests {
                     destination_arrival: Some(arrives),
                     destination_arrival_day_offset: 0,
                     operator_atoc: operator_atoc.map(str::to_string),
+                    headcode: None,
                 },
             ]
         }

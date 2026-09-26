@@ -1432,6 +1432,7 @@ mod tests {
             scheduled_departure: Some("2026-09-09T08:00:00Z".parse().unwrap()),
             calling_points: None,
             train_id: Some("1A11".to_string()),
+            headcode: None,
             status: Some("en_route".to_string()),
             last_reported_location: Some("Watford Junction".to_string()),
             last_event_type: Some("DEPARTURE".to_string()),
