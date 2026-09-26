@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ReactElement } from 'react';
 import { screen, fireEvent, waitFor, act } from '@testing-library/react';
-import dayjs from 'dayjs';
+import { nowInLondon } from '@/lib/londonWallClock';
 import { renderWithMantine } from '@/test/render';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { TrackTrainForm } from './TrackTrainForm';
@@ -131,7 +131,7 @@ vi.mock('@mantine/dates', async (importOriginal) => ({
 }));
 
 // A fixed "now" well before every fixture departure time used below
-// (earliest is '08:22') -- `scheduledDeparture` now defaults to `dayjs()`
+// (earliest is '08:22') -- `scheduledDeparture` now defaults to `nowInLondon()`
 // at mount (this task's own "default to now" fix), and the picker now
 // filters rows by it (`matchesScheduledDeparture`), so every test that
 // asserts a fixture row is visible without itself setting
@@ -229,11 +229,13 @@ describe('TrackTrainForm', () => {
   it('defaults the scheduled-departure field to the current time on mount, not null', () => {
     // Per the repo owner's own stated expectation ("which should be
     // defaulting to now tbh") -- `FIXED_NOW` is pinned above, so this
-    // compares against the exact same `dayjs()` read the component's own
-    // lazy `useState` initializer makes, not a fuzzy "close to now" check.
+    // compares against the exact same `nowInLondon()` read the component's
+    // own lazy `useState` initializer makes (Europe/London wall clock, not
+    // bare `dayjs()`'s host zone -- 2026-09-26 review, finding M8), not a
+    // fuzzy "close to now" check.
     renderWithMantine(<TrackTrainForm />);
     const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
-    expect(picker.value).toBe(dayjs().format('YYYY-MM-DD HH:mm:ss'));
+    expect(picker.value).toBe(nowInLondon().format('YYYY-MM-DD HH:mm:ss'));
   });
 
   it('shows a field error for a non-3-letter origin code', () => {
@@ -598,6 +600,68 @@ describe('TrackTrainForm', () => {
     });
     const body = journeyCallBody(fetchMock);
     expect(body.leg.serviceDate).toBe('2026-08-29');
+  });
+
+  // 2026-09-26 "Repeater Signal" review, finding M8: the picker's bare
+  // 'YYYY-MM-DD HH:mm:ss' value used to be turned into `scheduledDeparture`
+  // via `new Date(...)`, which parses a zone-less string in the HOST's zone
+  // -- so a visitor outside the UK sent the wrong instant, and near midnight
+  // the "now" default (and so `serviceDate`) could land on the wrong day.
+  // Each test flips the process zone (Node re-reads `process.env.TZ` for
+  // subsequent `Date` operations -- same technique `lib/dateFormat.test.ts`
+  // uses) and restores it afterwards, with `delete` when it was unset (see
+  // that file's comment on why assigning `undefined` is wrong).
+  describe('Europe/London wall-clock handling for a visitor outside the UK', () => {
+    const originalTz = process.env.TZ;
+    afterEach(() => {
+      if (originalTz === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = originalTz;
+      }
+    });
+
+    it('sends a picked 10:00 as 10:00 London time (09:00Z in BST), not 10:00 in the browser\'s own UTC+2 zone', async () => {
+      process.env.TZ = 'Etc/GMT-2'; // POSIX sign convention: this is UTC+2
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+        target: { value: '2026-09-05 10:00:00' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
+      });
+      const body = journeyCallBody(fetchMock);
+      // Pre-fix this was '2026-09-05T08:00:00.000Z' (10:00 at UTC+2).
+      expect(body.leg.scheduledDeparture).toBe('2026-09-05T09:00:00.000Z');
+      expect(body.leg.serviceDate).toBe('2026-09-05');
+    });
+
+    it('defaults "now" to the London calendar day even when the browser\'s own zone has already rolled over', async () => {
+      process.env.TZ = 'Asia/Tokyo'; // UTC+9
+      // 16:30Z is 17:30 on 5 Sep in London (BST) but already 01:30 on 6 Sep
+      // in Tokyo -- pre-fix the default read '2026-09-06 01:30:00' and a
+      // straight submit sent serviceDate '2026-09-06', a whole day off.
+      vi.setSystemTime(new Date('2026-09-05T16:30:00.000Z'));
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      expect(picker.value).toBe('2026-09-05 17:30:00');
+
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
+      });
+      const body = journeyCallBody(fetchMock);
+      expect(body.leg.serviceDate).toBe('2026-09-05');
+      expect(body.leg.scheduledDeparture).toBe('2026-09-05T16:30:00.000Z');
+    });
   });
 
   it('the Now button fills the picker with a well-formed local wall-clock value and enables submit', async () => {
@@ -1042,7 +1106,7 @@ describe('TrackTrainForm', () => {
       // sibling needs a stand-in but this one, being asserted on its
       // rendered text rather than driven via `fireEvent.change`, does not.
       const dateButton = screen.getByLabelText('Date');
-      expect(dateButton).toHaveTextContent(dayjs().format('MMMM D, YYYY'));
+      expect(dateButton).toHaveTextContent(nowInLondon().format('MMMM D, YYYY'));
       expect(dateButton).not.toHaveTextContent('Today');
     });
 
@@ -1178,10 +1242,10 @@ describe('TrackTrainForm', () => {
       const onTimeRow = await screen.findByRole('button', { name: /10:40/ });
       // Reuses this file's existing "Now"-button test's technique (see
       // that test above) for reading "today" deterministically: rather
-      // than mocking `dayjs()`/system time, compute the expected date via
-      // the same `dayjs()` call the component itself makes, at the moment
+      // than mocking `nowInLondon()`/system time, compute the expected date via
+      // the same `nowInLondon()` call the component itself makes, at the moment
       // of the assertion.
-      const today = dayjs().format('YYYY-MM-DD');
+      const today = nowInLondon().format('YYYY-MM-DD');
       fireEvent.click(onTimeRow);
 
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('BSK');
@@ -1268,10 +1332,17 @@ describe('TrackTrainForm', () => {
     // picked row is actually tomorrow relative to when the live board was
     // viewed (e.g. viewing the board at 23:50 and picking a "00:07" row,
     // a real, near-term, 17-minutes-away departure). `resolveLdbwsDepartureDate`
-    // fixes this by comparing against real wall-clock "now" (`dayjs()`,
+    // fixes this by comparing against real wall-clock "now" (`nowInLondon()`,
     // pinned via `vi.setSystemTime` below), not the typed `scheduledDeparture`
     // field -- see that function's own doc comment for the exact threshold
     // and why.
+    //
+    // Every "now" below is a Europe/London wall-clock time (2026-09-26
+    // review, finding M8): 5 Sep 2026 is in BST (UTC+1), so "London 10:00"
+    // is pinned as `09:00Z` and "London 23:50" as `22:50Z`. These used to be
+    // pinned as the bare UTC instant (`10:00Z`/`23:50Z`), which only meant
+    // the intended wall-clock time because the component used to read the
+    // host zone (UTC in CI) instead of London.
     describe('LDBWS midnight-wraparound day resolution', () => {
       function ldbwsRow(scheduled: string) {
         return [
@@ -1294,13 +1365,13 @@ describe('TrackTrainForm', () => {
       }
 
       it('a normal same-day pick close to "now" stays on today\'s date', async () => {
-        vi.setSystemTime(new Date('2026-09-05T10:00:00.000Z'));
+        vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
         const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('10:15')), { status: 200 }) });
         vi.stubGlobal('fetch', fetchMock);
 
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
         const row = await screen.findByRole('button', { name: /10:15/ });
-        const today = dayjs().format('YYYY-MM-DD');
+        const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(row);
 
         const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
@@ -1308,7 +1379,7 @@ describe('TrackTrainForm', () => {
       });
 
       it('the concrete failure case -- now 23:50, scheduled 00:07 -- resolves to tomorrow, not today', async () => {
-        vi.setSystemTime(new Date('2026-09-05T23:50:00.000Z'));
+        vi.setSystemTime(new Date('2026-09-05T22:50:00.000Z'));
         const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('00:07')), { status: 200 }) });
         vi.stubGlobal('fetch', fetchMock);
 
@@ -1318,7 +1389,7 @@ describe('TrackTrainForm', () => {
         // default `scheduledDeparture` of "today 23:50") would read as
         // already-passed and never even appear here to click.
         const row = await screen.findByRole('button', { name: /00:07/ });
-        const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+        const tomorrow = nowInLondon().add(1, 'day').format('YYYY-MM-DD');
         fireEvent.click(row);
 
         const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
@@ -1341,7 +1412,7 @@ describe('TrackTrainForm', () => {
       // weakening what the pair proves -- a specific, reasoned cutover, not
       // an arbitrary/off-by-one one.
       it('a same-day combination just inside the threshold (3h59m before "now") is NOT corrected', async () => {
-        vi.setSystemTime(new Date('2026-09-05T10:00:00.000Z'));
+        vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
         const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('06:01')), { status: 200 }) });
         vi.stubGlobal('fetch', fetchMock);
 
@@ -1354,10 +1425,10 @@ describe('TrackTrainForm', () => {
         // never actually show an already-departed row like this one, so
         // this step is test scaffolding, not something real usage needs.
         fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
-          target: { value: `${dayjs().format('YYYY-MM-DD')} 00:00:00` },
+          target: { value: `${nowInLondon().format('YYYY-MM-DD')} 00:00:00` },
         });
         const row = await screen.findByRole('button', { name: /06:01/ });
-        const today = dayjs().format('YYYY-MM-DD');
+        const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(row);
 
         const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
@@ -1365,7 +1436,7 @@ describe('TrackTrainForm', () => {
       });
 
       it('a same-day combination just outside the threshold (4h01m before "now") IS corrected to tomorrow', async () => {
-        vi.setSystemTime(new Date('2026-09-05T10:00:00.000Z'));
+        vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
         const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('05:59')), { status: 200 }) });
         vi.stubGlobal('fetch', fetchMock);
 
@@ -1373,10 +1444,10 @@ describe('TrackTrainForm', () => {
         // See the previous test's comment on why this is widened to
         // midnight first -- same reasoning.
         fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
-          target: { value: `${dayjs().format('YYYY-MM-DD')} 00:00:00` },
+          target: { value: `${nowInLondon().format('YYYY-MM-DD')} 00:00:00` },
         });
         const row = await screen.findByRole('button', { name: /05:59/ });
-        const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+        const tomorrow = nowInLondon().add(1, 'day').format('YYYY-MM-DD');
         fireEvent.click(row);
 
         const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
@@ -1476,7 +1547,7 @@ describe('TrackTrainForm', () => {
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
       const row = await screen.findByRole('button', { name: /08:22/ });
-      const today = dayjs().format('YYYY-MM-DD');
+      const today = nowInLondon().format('YYYY-MM-DD');
       fireEvent.click(row);
 
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('CRE');
@@ -1534,10 +1605,10 @@ describe('TrackTrainForm', () => {
       });
       expect(screen.getByRole('button', { name: /00:07/ })).toBeInTheDocument();
 
-      // The same `dayjs()` read `pickCifDeparture` itself makes, at the
+      // The same `nowInLondon()` read `pickCifDeparture` itself makes, at the
       // moment of picking -- not a parse of the typed '2026-09-05' value
       // above, which only drives the filter check, not the pick.
-      const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+      const tomorrow = nowInLondon().add(1, 'day').format('YYYY-MM-DD');
       fireEvent.click(row);
 
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
@@ -1632,7 +1703,7 @@ describe('TrackTrainForm', () => {
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
       fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
-        target: { value: `${dayjs().format('YYYY-MM-DD')} 00:00:00` },
+        target: { value: `${nowInLondon().format('YYYY-MM-DD')} 00:00:00` },
       });
       await screen.findByRole('button', { name: /10:40/ });
 
@@ -1724,8 +1795,8 @@ describe('TrackTrainForm', () => {
       await screen.findByRole('button', { name: /08:22/ });
       // Reuses this file's existing technique (see the "clicking a
       // non-cancelled row" test above) for reading "today" deterministically
-      // via the same `dayjs()` call the component itself makes.
-      const today = dayjs().format('YYYY-MM-DD');
+      // via the same `nowInLondon()` call the component itself makes.
+      const today = nowInLondon().format('YYYY-MM-DD');
 
       const links = screen.getAllByRole('link', { name: 'View live status' });
       expect(links).toHaveLength(2);
@@ -1752,7 +1823,7 @@ describe('TrackTrainForm', () => {
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
       await screen.findByRole('button', { name: /08:22/ });
-      const today = dayjs().format('YYYY-MM-DD');
+      const today = nowInLondon().format('YYYY-MM-DD');
 
       // Two CIF fixture rows both render this link -- the first is C11052's.
       const link = screen.getAllByRole('link', { name: 'View live status' })[0];
@@ -1764,7 +1835,7 @@ describe('TrackTrainForm', () => {
       // from this row -- it must not have run.
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
-      expect(picker.value).toBe(dayjs().format('YYYY-MM-DD HH:mm:ss'));
+      expect(picker.value).toBe(nowInLondon().format('YYYY-MM-DD HH:mm:ss'));
     });
 
     it('pressing Enter on a focused "View live status" link does not also select the row for tracking', async () => {
@@ -1931,7 +2002,7 @@ describe('TrackTrainForm', () => {
         // The 10th row -- roughly 280px down the list, well past where
         // the old 220px clip cut it off and made it unclickable.
         const last = await screen.findByRole('button', { name: /10:55/ });
-        const today = dayjs().format('YYYY-MM-DD');
+        const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(last);
 
         expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
@@ -1953,7 +2024,7 @@ describe('TrackTrainForm', () => {
         expect(last).toHaveAttribute('tabindex', '0');
         last.focus();
         expect(document.activeElement).toBe(last);
-        const today = dayjs().format('YYYY-MM-DD');
+        const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.keyDown(last, { key: 'Enter' });
 
         expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
@@ -1979,7 +2050,7 @@ describe('TrackTrainForm', () => {
         expect(list.contains(last)).toBe(true);
         expectNoClippingAncestor();
 
-        const today = dayjs().format('YYYY-MM-DD');
+        const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(last);
         expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
           `${today} 10:55:00`,

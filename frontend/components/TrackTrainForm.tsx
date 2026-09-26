@@ -27,6 +27,7 @@ import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
+import { nowInLondon, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
 import type { CreateJourneyResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -98,11 +99,25 @@ const LDBWS_PAST_THRESHOLD_HOURS = 4;
  * direction here. Deliberately compares against `now` (real wall-clock
  * time), not whatever `scheduledDeparture` the user may have already typed
  * -- the two are unrelated: this answers "what calendar day is this row
- * really on", not "has the user's chosen time already passed it". */
+ * really on", not "has the user's chosen time already passed it".
+ *
+ * `now` is converted to Europe/London (`.tz(LONDON_TZ)`) before either its
+ * calendar date is read or the row's `"HH:MM"` is combined with it --
+ * `scheduled` is Darwin's own Europe/London wall-clock reading, so "today"
+ * must mean the London calendar day, and the combined same-day guess must
+ * be interpreted in that same zone, not whatever zone `now` itself happens
+ * to carry (`dayjs()`'s host zone, if a caller passes one unconverted). This
+ * makes the function correct regardless of what `now` the caller passes in
+ * -- see `lib/londonWallClock.ts`'s own doc comment (2026-09-26 "Repeater
+ * Signal" review, finding M8) for the bug this closes: a visitor outside
+ * the UK combining today's BROWSER-local date with a London-wall-clock
+ * `"HH:MM"` could misjudge a near-midnight row's real day by up to a whole
+ * day. */
 function ldbwsDayOffset(scheduled: string, now: dayjs.Dayjs): 0 | 1 {
   const [hh, mm] = scheduled.split(':');
-  const sameDay = dayjs(`${now.format('YYYY-MM-DD')} ${hh}:${mm}:00`);
-  return now.diff(sameDay, 'hour', true) > LDBWS_PAST_THRESHOLD_HOURS ? 1 : 0;
+  const nowLondon = now.tz(LONDON_TZ);
+  const sameDay = dayjs.tz(`${nowLondon.format('YYYY-MM-DD')} ${hh}:${mm}:00`, LONDON_TZ);
+  return nowLondon.diff(sameDay, 'hour', true) > LDBWS_PAST_THRESHOLD_HOURS ? 1 : 0;
 }
 
 /** Resolves the real calendar date (`'YYYY-MM-DD'`) an LDBWS
@@ -110,9 +125,13 @@ function ldbwsDayOffset(scheduled: string, now: dayjs.Dayjs): 0 | 1 {
  * ldbwsDayOffset(scheduled, now), 'day')`, formatted. See `ldbwsDayOffset`'s
  * own doc comment for the reasoning; this is the piece `pickDeparture` and
  * the LDBWS branch of `matchesScheduledDeparture`'s filtering both need,
- * factored out so they can't drift out of sync with each other. */
+ * factored out so they can't drift out of sync with each other.
+ *
+ * `now` is converted to Europe/London before its calendar date is read, same
+ * reasoning and same fix as `ldbwsDayOffset` immediately above (whose own
+ * internal London conversion this relies on for the day-offset itself). */
 function resolveLdbwsDepartureDate(scheduled: string, now: dayjs.Dayjs): string {
-  return now.add(ldbwsDayOffset(scheduled, now), 'day').format('YYYY-MM-DD');
+  return now.tz(LONDON_TZ).add(ldbwsDayOffset(scheduled, now), 'day').format('YYYY-MM-DD');
 }
 
 /** True unless `scheduledDeparture` is resolved AND the row's own
@@ -122,8 +141,12 @@ function resolveLdbwsDepartureDate(scheduled: string, now: dayjs.Dayjs): string 
  * BOTH sources identically (unlike the Destination/Operator split): both
  * `DepartureRow.scheduled` and `ScheduleDepartureRow.scheduled` are the
  * same `"HH:MM"` shape. Combines the row's `"HH:MM"` with `rowDayOffset`
- * days past *today's* browser-local date into the exact same
- * `'YYYY-MM-DD HH:mm:ss'` string shape `scheduledDeparture` itself holds
+ * days past *today's Europe/London* date (`nowInLondon()`, not `dayjs()`'s
+ * host-zone "today" -- 2026-09-26 review, finding M8: `scheduled` is itself
+ * a London wall-clock reading, so "today" must mean the London calendar day
+ * or this comparison drifts by a day near midnight for a visitor outside
+ * the UK) into the exact same `'YYYY-MM-DD HH:mm:ss'` string shape
+ * `scheduledDeparture` itself holds
  * -- same construction `pickDeparture`/`pickCifDeparture`/the "Now" button
  * already use -- so the two can be compared with a plain string comparison
  * rather than round-tripping through `Date`/UTC (this format sorts
@@ -157,7 +180,7 @@ function matchesScheduledDeparture(
 ): boolean {
   if (scheduledDeparture === null) return true;
   const [hh, mm] = rowScheduled.split(':');
-  const date = dayjs().add(rowDayOffset, 'day').format('YYYY-MM-DD');
+  const date = nowInLondon().add(rowDayOffset, 'day').format('YYYY-MM-DD');
   const rowDateTime = `${date} ${hh}:${mm}:00`;
   return rowDateTime >= scheduledDeparture;
 }
@@ -362,12 +385,18 @@ export function TrackTrainForm({
   const [operator, setOperator] = useState('');
   // Defaults to "now" (the repo owner's own stated expectation), not
   // `null` -- computed once via lazy `useState` initializer, in the exact
-  // local-wall-clock `'YYYY-MM-DD HH:mm:ss'` string shape the "Now" button
-  // (below) and `pickDeparture`/`pickCifDeparture` already construct, so
-  // it round-trips through `handleSubmit`'s own parsing identically to a
-  // value the user picked by hand.
+  // Europe/London-wall-clock `'YYYY-MM-DD HH:mm:ss'` string shape the "Now"
+  // button (below) and `pickDeparture`/`pickCifDeparture` already construct,
+  // so it round-trips through `handleSubmit`'s own parsing identically to a
+  // value the user picked by hand. `nowInLondon()`, not `dayjs()` -- this
+  // value feeds `handleSubmit`'s `serviceDate`/`scheduled_departure`
+  // computation directly, so it must be pinned to the London wall clock this
+  // whole app treats train times as being in, not whatever zone the
+  // visitor's own browser happens to be in (2026-09-26 review, finding M8;
+  // contrast the trip planner's "Depart after" field, an ordinary filter
+  // input correctly left in plain browser-local time).
   const [scheduledDeparture, setScheduledDeparture] = useState<string | null>(() =>
-    dayjs().format('YYYY-MM-DD HH:mm:ss'),
+    nowInLondon().format('YYYY-MM-DD HH:mm:ss'),
   );
   // Darwin's own explicit skipped-calling-point snapshot for whichever
   // live departure-board row the user picked (`pickDeparture`, below) --
@@ -457,10 +486,13 @@ export function TrackTrainForm({
   // already resolves a `null` to today. Pin-mode's own `scheduledDeparture`
   // field, twenty pixels away in the other branch, shows its default as a
   // real value for the same reason -- this brings window mode in line with
-  // it. Still `clearable` (below), and `submitWindow`'s `?? dayjs()...`
+  // it. Still `clearable` (below), and `submitWindow`'s `?? nowInLondon()...`
   // fallback stays as defence if a caller ever clears it back to `null`.
+  // `nowInLondon()`, not `dayjs()` -- this is a `serviceDate` sent straight
+  // to the backend (same reasoning as `scheduledDeparture`'s own default
+  // just above; 2026-09-26 review, finding M8).
   const [windowServiceDate, setWindowServiceDate] = useState<string | null>(
-    () => initialServiceDate ?? dayjs().format('YYYY-MM-DD'),
+    () => initialServiceDate ?? nowInLondon().format('YYYY-MM-DD'),
   );
   const [departFrom, setDepartFrom] = useState(initialDepartAfter);
   const [departTo, setDepartTo] = useState(initialDepartBefore);
@@ -557,13 +589,16 @@ export function TrackTrainForm({
 
   /** Fills Destination/Operator/Scheduled-departure from a picked, real
    * live departure -- without submitting, so the user can still review/
-   * edit before tracking. Combines the departure's `"HH:MM"` with its
-   * REAL browser-local calendar date, via `resolveLdbwsDepartureDate`, into
-   * the exact `'YYYY-MM-DD HH:mm:ss'` string shape `scheduledDeparture`
-   * already expects -- same construction as the "Now" button above
-   * (`dayjs().format('YYYY-MM-DD HH:mm:ss')`), and the same
-   * browser-local-date assumption it already makes (not Europe/London
-   * specifically) -- not a new limitation this picker introduces.
+   * edit before tracking. Combines the departure's `"HH:MM"` with its REAL
+   * Europe/London calendar date, via `resolveLdbwsDepartureDate`, into the
+   * exact `'YYYY-MM-DD HH:mm:ss'` string shape `scheduledDeparture` already
+   * expects -- same construction as the "Now" button above
+   * (`nowInLondon().format('YYYY-MM-DD HH:mm:ss')`). `resolveLdbwsDepartureDate`
+   * itself converts whatever `now` it's given to Europe/London internally
+   * (see that function's own doc comment), so the plain `dayjs()` passed
+   * below is fine as an absolute instant -- what would NOT be fine is
+   * reading a calendar date or combining it with `row.scheduled` (a London
+   * wall-clock reading) anywhere else without going through it.
    *
    * Not always literally "today": a row picked from a live board viewed
    * near local midnight can genuinely be tomorrow (e.g. viewing the board
@@ -590,8 +625,11 @@ export function TrackTrainForm({
    * Destination field is left untouched too, for the same "never guess,
    * never clobber with a blank" reason.
    *
-   * Adds `row.dayOffset` days to *today's* browser-local date, rather than
-   * always assuming "today" the way `pickDeparture` (LDBWS, below) still
+   * Adds `row.dayOffset` days to *today's Europe/London* date
+   * (`nowInLondon()`, not `dayjs()` -- 2026-09-26 review, finding M8: this
+   * feeds `scheduledDeparture`/`serviceDate` directly, so "today" must mean
+   * the London calendar day, not the visitor's own browser zone), rather
+   * than always assuming "today" the way `pickDeparture` (LDBWS, below) still
    * does -- a post-midnight CIF calling point (`dayOffset: 1`, e.g. `00:07`)
    * is genuinely TOMORROW relative to when the search itself ran, and
    * combining it with bare "today" would create a pin dated the WRONG
@@ -618,7 +656,7 @@ export function TrackTrainForm({
     // rolled independently of `frontend`) omitting `dayOffset` from the JSON
     // entirely during a rollout, which would otherwise reach dayjs as
     // `undefined` and produce an Invalid Date.
-    const date = dayjs().add(row.dayOffset ?? 0, 'day').format('YYYY-MM-DD');
+    const date = nowInLondon().add(row.dayOffset ?? 0, 'day').format('YYYY-MM-DD');
     setScheduledDeparture(`${date} ${hh}:${mm}:00`);
   }
 
@@ -633,20 +671,43 @@ export function TrackTrainForm({
     needsLoginState.reset();
     setFieldError(null);
     try {
-      // `scheduledDeparture` is the DateTimePicker's own local-wall-clock
+      // `scheduledDeparture` is the DateTimePicker's own bare-wall-clock
       // string, `'YYYY-MM-DD HH:mm:ss'` (@mantine/dates' `assign-time.mjs`
       // formats it via `date.format('YYYY-MM-DD HH:mm:ss')`) -- not ISO
-      // 8601. Its first 10 characters are already the local calendar date
-      // the user picked, so `service_date` is read directly off the raw
-      // string rather than round-tripped through `Date`/UTC, which would
-      // give the wrong day for any departure in the first hour after local
-      // midnight while the local UTC offset is positive (e.g. BST). The
-      // space-separated form also isn't one of the ECMAScript-guaranteed-
-      // parseable date formats (only a `T` separator is), so it's
-      // normalized to `'YYYY-MM-DDTHH:mm:ss'` before being handed to `Date`
-      // for the (correctly UTC) `scheduled_departure` field.
+      // 8601, and with no zone/offset of its own. Every value that ever
+      // lands in this state (the "now" default, the "Now" button, a picked
+      // live-departure-board row, a picked CIF schedule row -- see each of
+      // their own doc comments) is built to represent an Europe/London
+      // wall-clock reading, matching the departure times themselves (a
+      // train's scheduled departure is always stated in Europe/London terms
+      // in this app, `lib/dateFormat.ts`'s own stated convention), NOT
+      // whatever zone the visitor's own browser happens to be in.
+      //
+      // `service_date` is `serviceDate`'s first 10 characters, read directly
+      // off the raw string rather than round-tripped through `Date` --
+      // that's already the London calendar date the string represents, and
+      // a round-trip would risk exactly the kind of local-midnight/DST
+      // day-off-by-one this comment is about avoiding for the timestamp
+      // below.
+      //
+      // `scheduled_departure`, unlike `service_date`, DOES need the real UTC
+      // instant, so it can't just take the string as-is -- but a bare
+      // `new Date(scheduledDeparture.replace(' ', 'T'))` (this function's own
+      // shape until the 2026-09-26 "Repeater Signal" review, finding M8)
+      // parses a zone-less date-time string in the HOST's own timezone per
+      // the ECMAScript spec -- the browser's, for a value built client-side.
+      // That is only ever correct for a visitor whose own browser happens to
+      // be on Europe/London; anyone else (a UK-based visitor travelling
+      // abroad, someone tracking a train for a UK-based relative from a
+      // different zone) got the wrong instant, silently -- close enough most
+      // of the day to go unnoticed, but capable of computing a `/train/
+      // {uid}/{date}` link a whole day off `serviceDate` near the London
+      // midnight boundary. `londonWallClockToUtc` (`lib/londonWallClock.ts`)
+      // is the fix: it explicitly resolves the string against Europe/London
+      // (via `dayjs`'s `utc`/`timezone` plugins) rather than relying on
+      // whatever zone the runtime happens to be in.
       const serviceDate = scheduledDeparture.slice(0, 10);
-      const departure = new Date(scheduledDeparture.replace(' ', 'T'));
+      const departure = londonWallClockToUtc(scheduledDeparture);
       const body = {
         customName: null,
         leg: {
@@ -746,7 +807,7 @@ export function TrackTrainForm({
           mode: 'window' as const,
           originCrs: originCrs.trim().toUpperCase(),
           destinationCrs: destinationCrs.trim().toUpperCase(),
-          serviceDate: windowServiceDate ?? dayjs().format('YYYY-MM-DD'),
+          serviceDate: windowServiceDate ?? nowInLondon().format('YYYY-MM-DD'),
           departWindow: { after: departFrom || null, before: departTo || null },
           arriveWindow: { after: arriveFrom || null, before: arriveTo || null },
         },
@@ -1078,9 +1139,14 @@ export function TrackTrainForm({
                     public train page is keyed by `(train_uid,
                     service_date)`, and a post-midnight row's real
                     service_date is tomorrow, not today (same reasoning as
-                    `pickCifDeparture` itself). */}
+                    `pickCifDeparture` itself). `nowInLondon()`, not
+                    `dayjs()` -- `service_date` is a London calendar day, so
+                    "today" here must mean London's, not the visitor's own
+                    browser zone (2026-09-26 review, finding M8: this is the
+                    exact `/train/{uid}/{date}` link that finding's own
+                    motivating example describes). */}
                 <TextLink
-                  href={`/train/${encodeURIComponent(row.uid)}/${dayjs()
+                  href={`/train/${encodeURIComponent(row.uid)}/${nowInLondon()
                     .add(row.dayOffset ?? 0, 'day')
                     .format('YYYY-MM-DD')}`}
                   onClick={(event) => event.stopPropagation()}
@@ -1311,16 +1377,18 @@ export function TrackTrainForm({
                 like `DatePicker`'s "Today"/"Yesterday" presets) -- it has no
                 way to also fill in a time-of-day, so it can't produce "right
                 now" on its own; a plain Button next to the picker is the clean
-                fit here instead. `dayjs().format('YYYY-MM-DD HH:mm:ss')`
-                deliberately matches the exact local-wall-clock string shape
+                fit here instead. `nowInLondon().format('YYYY-MM-DD HH:mm:ss')`
+                deliberately matches the exact bare-wall-clock string shape
                 the picker itself produces (`assign-time.mjs`'s own
                 `date.format('YYYY-MM-DD HH:mm:ss')`) -- see this file's own
                 `handleSubmit` comment on why that shape, not an ISO string,
-                is required to avoid an around-local-midnight day-off-by-one. */}
+                is required to avoid an around-midnight day-off-by-one, and
+                why it's anchored to Europe/London rather than `dayjs()`'s
+                host zone (2026-09-26 review, finding M8). */}
             <Button
               variant="default"
               style={{ flexShrink: 0 }}
-              onClick={() => setScheduledDeparture(dayjs().format('YYYY-MM-DD HH:mm:ss'))}
+              onClick={() => setScheduledDeparture(nowInLondon().format('YYYY-MM-DD HH:mm:ss'))}
             >
               Now
             </Button>
