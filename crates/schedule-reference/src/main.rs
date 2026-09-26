@@ -121,6 +121,41 @@ fn read_prefixed_lines_multi(path: &std::path::Path, prefixes: &[&str]) -> anyho
     Ok(out)
 }
 
+/// Builds the whole-network `ScheduleIndex` from the `MCA` file at `path`,
+/// one line at a time, never holding the file's text in memory.
+///
+/// **Why (2026-09-26 production OOM).** This used to be
+/// `read_prefixed_lines_multi(path, &["BS", "BX", "LO", "LI", "CR", "LT"])`
+/// followed by `ScheduleIndex::from_text`, which kept ~700MB of schedule
+/// text (plus `String` doubling slack) alive for the whole of
+/// `publish_cif_derived_products` -- index build, every per-date publish and
+/// all -- on top of the index itself. With the index at ~2.3GiB that put the
+/// `reference` container over its 3Gi limit on every run.
+///
+/// Every line is fed to the parser unfiltered: it already ignores every
+/// record type other than `BS`/`BX`/`LO`/`LI`/`LT` (`CR` included), so the old
+/// prefix filter changed nothing but cost a copy. Line terminators are
+/// stripped exactly as `BufRead::lines` did (`\n`, then one `\r`), and a
+/// non-UTF-8 line is still an error for the whole read, as it was.
+fn build_schedule_index_from_file(
+    path: &std::path::Path,
+) -> anyhow::Result<schedule_query::ScheduleIndex> {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut builder = schedule_query::ScheduleIndexBuilder::default();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let trimmed = line.strip_suffix('\n').unwrap_or(&line);
+        let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+        builder.push_line(trimmed);
+    }
+    Ok(builder.finish())
+}
+
 /// Every product one delivery's publish cycle is responsible for, and what
 /// happened to it -- the bookkeeping that decides whether
 /// `last_processed_delivery` may advance.
@@ -743,11 +778,10 @@ async fn publish_cif_derived_products(
     tiploc_crs_records: &[common::TiplocCrsRecord],
     outcome: &mut CycleOutcome,
 ) {
-    let mca_schedule_text = match read_prefixed_lines_multi(
-        mca_path,
-        &["BS", "BX", "LO", "LI", "CR", "LT"],
-    ) {
-        Ok(text) => text,
+    // Streamed straight off disk into the index -- see
+    // `build_schedule_index_from_file` for the OOM this replaced.
+    let index = match build_schedule_index_from_file(mca_path) {
+        Ok(index) => index,
         Err(err) => {
             tracing::error!(error = ?err, "failed to read CIF SCHEDULE records from delivery; skipping this cycle's CIF-derived publishes");
             // Retryable, not permanent: a read of the read-only-mounted PVC
@@ -757,8 +791,6 @@ async fn publish_cif_derived_products(
             return;
         }
     };
-
-    let index = schedule_query::ScheduleIndex::from_text(&mca_schedule_text);
     // schedule-reference has no rail-day concept of its own yet --
     // publishing against the plain calendar date is deliberate and
     // sufficient here:
@@ -1131,16 +1163,28 @@ fn schedule_network_departures_rows(
 /// one, and the later `rsid` field (the `BX` Retail Service ID, see
 /// `schedule_query::records::BasicSchedule::rsid`) a nullable 8-char one;
 /// none moves that estimate much (~15-20 bytes each with the key).
+// Test-only since 2026-09-26: production streams the lazy form below
+// (`post_date_scoped_row_stream`); the existing tests pin both through this.
+#[cfg(test)]
 fn schedule_destination_departures_rows(
-    mut by_destination: std::collections::HashMap<
-        String,
-        Vec<schedule_query::DestinationDeparture>,
-    >,
+    by_destination: std::collections::HashMap<String, Vec<schedule_query::DestinationDeparture>>,
     today: chrono::NaiveDate,
 ) -> Vec<serde_json::Value> {
+    schedule_destination_departures_row_iter(by_destination, today).collect()
+}
+
+/// [`schedule_destination_departures_rows`], lazily: each row is built only
+/// when the publish pulls it into a chunk (see
+/// [`post_date_scoped_row_stream`] for why that matters), and each
+/// destination's `Vec<DestinationDeparture>` is freed as soon as its rows
+/// have been produced.
+fn schedule_destination_departures_row_iter(
+    by_destination: std::collections::HashMap<String, Vec<schedule_query::DestinationDeparture>>,
+    today: chrono::NaiveDate,
+) -> impl Iterator<Item = serde_json::Value> {
     by_destination
-        .drain()
-        .flat_map(|(destination_crs, departures)| {
+        .into_iter()
+        .flat_map(move |(destination_crs, departures)| {
             departures.into_iter().map(move |d| {
                 serde_json::json!({
                     "service_date": today,
@@ -1159,7 +1203,6 @@ fn schedule_destination_departures_rows(
                 })
             })
         })
-        .collect()
 }
 
 /// The destination-keyed sibling of `publish_schedule_network_departures`
@@ -1224,13 +1267,13 @@ async fn publish_schedule_destination_departures(
 
     let by_destination =
         schedule_query::departures_by_destination_crs(index, today, now, &tiploc_to_crs);
-    let rows = schedule_destination_departures_rows(by_destination, today);
+    let rows = schedule_destination_departures_row_iter(by_destination, today);
 
-    if let Err(err) = post_date_scoped_rows_in_chunks(
+    if let Err(err) = post_date_scoped_row_stream(
         client,
         &config.schedule_destination_departures_url,
         internal_oauth,
-        &rows,
+        rows,
         "schedule-derived destination departures rows",
     )
     .await
@@ -1287,43 +1330,56 @@ async fn publish_schedule_destination_departures(
 /// own doc comment: "NOT a real CIF field, assigned at publish time"), which
 /// a contiguous renumbering does exactly as well as a gappy one, with a
 /// simpler on-the-wire shape.
+// Test-only since 2026-09-26: production streams the lazy form below
+// (`post_date_scoped_row_stream`); the existing tests pin both through this.
+#[cfg(test)]
 fn schedule_calling_points_full_rows(
     index: &schedule_query::ScheduleIndex,
     date: chrono::NaiveDate,
 ) -> Vec<serde_json::Value> {
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    for uid in index.uids() {
-        let Some(resolved) = index.schedule_for_uid(uid, date) else {
-            continue;
-        };
-        if resolved.cancelled {
-            continue;
-        }
-        let public_calling_points = resolved.calling_points.iter().filter(|cp| {
-            cp.is_public_pickup() || cp.kind == schedule_query::CallingPointKind::Terminate
-        });
-        for (seq, cp) in public_calling_points.enumerate() {
-            let kind = match cp.kind {
-                schedule_query::CallingPointKind::Origin => "origin",
-                schedule_query::CallingPointKind::Intermediate => "intermediate",
-                schedule_query::CallingPointKind::Terminate => "terminate",
-            };
-            rows.push(serde_json::json!({
-                "service_date": date,
-                "uid": resolved.uid,
-                "seq": seq as i32,
-                "tiploc": schedule_query::normalize_tiploc(&cp.tiploc).to_string(),
-                "kind": kind,
-                "booked_arrival": cp.booked_arrival,
-                "booked_departure": cp.booked_departure,
-                "day_offset": cp.day_offset,
-                // CIF booked platform (`None` -> JSON null) -- see
-                // `schedule_query::records::CallingPoint::platform`.
-                "platform": cp.platform,
-            }));
-        }
-    }
-    rows
+    schedule_calling_points_full_row_iter(index, date).collect()
+}
+
+/// [`schedule_calling_points_full_rows`], lazily -- one schedule is resolved
+/// at a time, as the publish pulls rows into a chunk (see
+/// [`post_date_scoped_row_stream`]).
+fn schedule_calling_points_full_row_iter(
+    index: &schedule_query::ScheduleIndex,
+    date: chrono::NaiveDate,
+) -> impl Iterator<Item = serde_json::Value> + '_ {
+    index
+        .uids()
+        .filter_map(move |uid| index.schedule_for_uid(uid, date))
+        .filter(|resolved| !resolved.cancelled)
+        .flat_map(move |resolved| {
+            let public_calling_points = resolved.calling_points.iter().filter(|cp| {
+                cp.is_public_pickup() || cp.kind == schedule_query::CallingPointKind::Terminate
+            });
+            let rows: Vec<serde_json::Value> = public_calling_points
+                .enumerate()
+                .map(|(seq, cp)| {
+                    let kind = match cp.kind {
+                        schedule_query::CallingPointKind::Origin => "origin",
+                        schedule_query::CallingPointKind::Intermediate => "intermediate",
+                        schedule_query::CallingPointKind::Terminate => "terminate",
+                    };
+                    serde_json::json!({
+                        "service_date": date,
+                        "uid": resolved.uid,
+                        "seq": seq as i32,
+                        "tiploc": schedule_query::normalize_tiploc(&cp.tiploc).to_string(),
+                        "kind": kind,
+                        "booked_arrival": cp.booked_arrival,
+                        "booked_departure": cp.booked_departure,
+                        "day_offset": cp.day_offset,
+                        // CIF booked platform (`None` -> JSON null) -- see
+                        // `schedule_query::records::CallingPoint::platform`.
+                        "platform": cp.platform,
+                    })
+                })
+                .collect();
+            rows
+        })
 }
 
 /// Publishes this cycle's whole-network resolved calling points for `date`
@@ -1372,13 +1428,13 @@ async fn publish_schedule_calling_points_full(
     internal_oauth: &common::oauth_client::OAuthTokenCache,
     outcome: &mut CycleOutcome,
 ) {
-    let rows = schedule_calling_points_full_rows(index, date);
+    let rows = schedule_calling_points_full_row_iter(index, date);
 
-    if let Err(err) = post_date_scoped_rows_in_chunks(
+    if let Err(err) = post_date_scoped_row_stream(
         client,
         &config.schedule_calling_points_full_url,
         internal_oauth,
-        &rows,
+        rows,
         "schedule-derived full calling-point rows",
     )
     .await
@@ -1524,6 +1580,9 @@ const PUBLISH_CHUNK_ROWS: usize = 50_000;
 /// delivery marker does not advance, and the next cycle republishes the
 /// whole date under a new `publish_id` (whose first chunk discards the
 /// abandoned publish's staged keys).
+// Test-only since 2026-09-26: production streams the lazy form below
+// (`post_date_scoped_row_stream`); the existing tests pin both through this.
+#[cfg(test)]
 async fn post_date_scoped_rows_in_chunks(
     client: &Client,
     url: &str,
@@ -1531,27 +1590,82 @@ async fn post_date_scoped_rows_in_chunks(
     rows: &[serde_json::Value],
     noun: &str,
 ) -> anyhow::Result<()> {
+    post_date_scoped_row_stream(client, url, tokens, rows.iter(), noun).await
+}
+
+/// [`post_date_scoped_rows_in_chunks`], pulling rows from an iterator one
+/// chunk at a time instead of from a fully materialized slice -- the same
+/// chunks, URLs and contract, byte for byte.
+///
+/// **Why (2026-09-26 production OOM).** Each per-date publish used to build
+/// EVERY row for the date as a `serde_json::Value` (~2KB apiece once every
+/// key is its own heap `String` in its own map) before POSTing the first
+/// chunk -- several hundred MB per date for
+/// `schedule_destination_departures`, on top of the resident
+/// `ScheduleIndex`, and the exact point production's `reference` container
+/// was OOMKilled. Built lazily, at most one [`PUBLISH_CHUNK_ROWS`] chunk of
+/// rows exists at a time.
+///
+/// `total_rows` on the last chunk is the running count, which is exact:
+/// a chunk is known to be the last when the iterator has nothing left after
+/// filling it. The chunk count in an error message is exact when the
+/// iterator's size hint is (always, for the slice wrapper above) and `?`
+/// otherwise.
+async fn post_date_scoped_row_stream<T: serde::Serialize>(
+    client: &Client,
+    url: &str,
+    tokens: &common::oauth_client::OAuthTokenCache,
+    rows: impl Iterator<Item = T>,
+    noun: &str,
+) -> anyhow::Result<()> {
+    let mut rows = rows.peekable();
+    let exact_total = match rows.size_hint() {
+        (lower, Some(upper)) if lower == upper => Some(lower),
+        _ => None,
+    };
+
     // An empty publish is still POSTed, exactly once, rather than skipped:
     // both receiving routes treat an empty batch as a deliberate no-op that
     // must NOT delete the date (see `queries::upsert_schedule_calling_points_full`'s
     // own "an empty `rows` is a no-op, and that is load-bearing"), and
     // sending it keeps this cycle's `posted 0 <noun>` log line -- the only
     // evidence that the publish ran at all and genuinely had nothing to say.
-    if rows.is_empty() {
-        return common::ingest::post_batch(client, &first_chunk_url(url, true), tokens, rows, noun)
-            .await;
+    if rows.peek().is_none() {
+        let empty: [T; 0] = [];
+        return common::ingest::post_batch(
+            client,
+            &first_chunk_url(url, true),
+            tokens,
+            &empty,
+            noun,
+        )
+        .await;
     }
 
     let publish_id = new_publish_id();
-    let chunk_count = rows.len().div_ceil(PUBLISH_CHUNK_ROWS);
-    for (index, chunk) in rows.chunks(PUBLISH_CHUNK_ROWS).enumerate() {
+    let mut posted_rows = 0usize;
+    let mut index = 0usize;
+    let mut chunk: Vec<T> = Vec::with_capacity(PUBLISH_CHUNK_ROWS);
+    loop {
+        chunk.clear();
+        chunk.extend(rows.by_ref().take(PUBLISH_CHUNK_ROWS));
+        let last_chunk = rows.peek().is_none();
         let first_chunk = index == 0;
-        let final_total_rows = (index + 1 == chunk_count).then_some(rows.len());
+        posted_rows += chunk.len();
+        let final_total_rows = last_chunk.then_some(posted_rows);
+        let chunk_count = if last_chunk {
+            (index + 1).to_string()
+        } else {
+            exact_total.map_or_else(
+                || "?".to_string(),
+                |total| total.div_ceil(PUBLISH_CHUNK_ROWS).to_string(),
+            )
+        };
         common::ingest::post_batch(
             client,
             &diff_chunk_url(url, &publish_id, first_chunk, final_total_rows),
             tokens,
-            chunk,
+            &chunk,
             noun,
         )
         .await
@@ -1563,8 +1677,11 @@ async fn post_date_scoped_rows_in_chunks(
                 chunk.len(),
             )
         })?;
+        if last_chunk {
+            return Ok(());
+        }
+        index += 1;
     }
-    Ok(())
 }
 
 /// A publish id for [`post_date_scoped_rows_in_chunks`]: unique per publish
@@ -3449,5 +3566,56 @@ mod london_local_date_tests {
             london_local_date_at(instant),
             chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod schedule_index_from_file_tests {
+    use super::*;
+
+    const BS_C00573_PERMANENT: &str =
+        "BSNC005732605172612060000001 PXX1S003101121194800 DMU    125      S A T        P";
+    const BX_SR: &str = "BX         SRYSR408800";
+    const LO_EUSTON: &str = "LOEUSTON  0822 08227  C      TB";
+    const LI_CARLILE: &str = "LICARLILE 1202 1213      120212131        T";
+    const LT_EUSTON: &str = "LTEUSTON  0804 08079     TF";
+    const TI_LINE: &str = "TIEUSTON 00598400EUSTON                    98400   EUS EUSTON";
+
+    /// The streamed-from-disk index must be the same index the old
+    /// read-whole-text-then-`from_text` path built: CRLF terminators, a
+    /// missing final newline and unrelated record types (`TI`) interleaved
+    /// all included.
+    #[test]
+    fn streaming_from_a_file_matches_from_text() {
+        let lines = [
+            TI_LINE,
+            BS_C00573_PERMANENT,
+            BX_SR,
+            LO_EUSTON,
+            LI_CARLILE,
+            LT_EUSTON,
+        ];
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), lines.join("\r\n")).unwrap();
+
+        let streamed = build_schedule_index_from_file(file.path()).unwrap();
+        let from_text = schedule_query::ScheduleIndex::from_text(&lines.join("\n"));
+
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let resolved = streamed.schedule_for_uid("C00573", date);
+        assert!(resolved.is_some());
+        assert_eq!(resolved, from_text.schedule_for_uid("C00573", date));
+        let streamed_resolved = resolved.unwrap();
+        assert_eq!(streamed_resolved.calling_points.len(), 3);
+        assert_eq!(streamed_resolved.operator_atoc.as_deref(), Some("SR"));
+        assert_eq!(
+            schedule_calling_points_full_rows(&streamed, date),
+            schedule_calling_points_full_rows(&from_text, date)
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_an_error_not_an_empty_index() {
+        assert!(build_schedule_index_from_file(std::path::Path::new("/nonexistent/mca")).is_err());
     }
 }
