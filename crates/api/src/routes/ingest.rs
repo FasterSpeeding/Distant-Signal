@@ -1519,9 +1519,13 @@ mod db_tests {
         )
     }
 
+    /// With the same 100 MB body limit `routes::private_router` layers over
+    /// the real `/private/*` routes (axum's own 2 MB default would 413 the
+    /// multi-MB fixture).
     fn population_router(pool: &PgPool) -> axum::Router {
         crate::app::Router::new()
             .merge(router())
+            .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
             .with_state(test_app(pool.clone()))
     }
 
