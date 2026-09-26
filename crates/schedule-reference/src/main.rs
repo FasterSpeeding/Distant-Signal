@@ -154,8 +154,9 @@ fn read_prefixed_lines_multi(path: &std::path::Path, prefixes: &[&str]) -> anyho
 ///   service_date)` upsert; `upsert_schedule_network_departures` is a
 ///   per-`(crs, service_date)` upsert; and
 ///   `upsert_schedule_destination_departures`/
-///   `upsert_schedule_calling_points_full` each replace their own
-///   `service_date` in one transaction. None of them appends, none of them
+///   `upsert_schedule_calling_points_full` each converge their own
+///   `service_date` to exactly the published set (a diff publish keyed by a
+///   per-publish `publish_id`, see `post_date_scoped_rows_in_chunks`). None of them appends, none of them
 ///   increments, none of them has a side effect outside its own table -- so
 ///   re-publishing an already-successful product costs only the work, never
 ///   correctness.
@@ -1190,20 +1191,9 @@ fn schedule_destination_departures_rows(
 ///    `schedule_destination_departures_rows`), so this is a much larger
 ///    body than the sibling's: ~377,000 objects, ~30MB. That is inside
 ///    `DefaultBodyLimit::max(100 * 1024 * 1024)`
-///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom. If a future
-///    measurement pushes it past ~60MB, chunk it with
-///    `for chunk in rows.chunks(50_000)`, calling
-///    `common::ingest::post_batch` once per chunk with
-///    `?first_chunk=true` on the URL for the first chunk and
-///    `?first_chunk=false` for every chunk after it (see the single call
-///    below, which always sends `?first_chunk=true` today since this
-///    function still sends exactly one call per date) -- addendum §3's
-///    documented fallback, and Task 1 Step 3 of this plan. The ingest side
-///    of "the first chunk clears the day" already exists
-///    (`queries::upsert_schedule_destination_departures_chunk`,
-///    `crates/api/src/routes/ingest.rs::post_schedule_destination_departures`'s
-///    `?first_chunk=` query parameter) -- turning this fallback on is then
-///    just this loop change, no further API-side work.
+///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom, but it is
+///    sent in [`PUBLISH_CHUNK_ROWS`]-row chunks anyway, as one diff publish
+///    -- see [`post_date_scoped_rows_in_chunks`] for the chunk contract.
 async fn publish_schedule_destination_departures(
     client: &Client,
     config: &Config,
@@ -1353,10 +1343,9 @@ fn schedule_calling_points_full_rows(
 /// which put a single un-chunked POST plausibly at or over `api`'s
 /// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`)
 /// and/or this crate's 30s `REQUEST_TIMEOUT`. See [`PUBLISH_CHUNK_ROWS`] for
-/// the sizing and [`post_date_scoped_rows_in_chunks`] for the `?first_chunk=`
-/// contract -- already supported on the ingest side
-/// (`queries::upsert_schedule_calling_points_full_chunk`) -- that keeps
-/// chunking from turning into per-chunk data loss.
+/// the sizing and [`post_date_scoped_rows_in_chunks`] for the chunk contract
+/// (`publish_id`/`last_chunk`/`total_rows`, plus the legacy `first_chunk`)
+/// that keeps chunking from turning into per-chunk data loss.
 ///
 /// **Non-public calling points are filtered out before publish (2026-09-25;
 /// separate from and in addition to the 2026-09-25 chunking change above).**
@@ -1498,36 +1487,37 @@ fn lines_to_publish<'a>(
 const PUBLISH_CHUNK_ROWS: usize = 50_000;
 
 /// POSTs `rows` to a date-scoped, wholesale-replace ingest route in
-/// [`PUBLISH_CHUNK_ROWS`]-sized chunks, telling the route explicitly which
-/// chunk is allowed to clear the date.
+/// [`PUBLISH_CHUNK_ROWS`]-sized chunks, as ONE publish that `api` applies as
+/// a diff.
 ///
-/// **The contract, and the data-loss bug it exists to avoid.** Both target
-/// routes replace a service date by `DELETE ... WHERE service_date =
-/// ANY(...)` followed by an `INSERT ... UNNEST(...)`, in one transaction. If
-/// every chunk of one date ran that unchanged, chunk 2 would delete
-/// everything chunk 1 had just inserted and the date would end up holding
-/// only the LAST chunk -- a far worse bug than the oversized body this
-/// chunking exists to prevent. So `?first_chunk=true` is sent on the FIRST
-/// chunk of a date only (clear the date, then insert), and
-/// `?first_chunk=false` on every chunk after it (insert only).
+/// **The contract (diff protocol, 2026-09-26).** Every chunk carries the same
+/// freshly generated `publish_id` (see [`new_publish_id`]); the last chunk
+/// additionally carries `last_chunk=true&total_rows=<rows.len()>`. `api`
+/// upserts each chunk's rows without rewriting the ones that did not change,
+/// remembers every chunk's keys under `publish_id`, and -- on the last chunk
+/// only, and only if it staged exactly `total_rows` keys -- deletes the
+/// date's rows this publish did not carry (`queries::SchedulePublishPart` in
+/// `crates/api`). This replaced a delete-the-whole-date-then-reinsert publish
+/// that left the target tables' indexes 52-66% bloated in production.
 ///
-/// `first_chunk` is `api`'s OWN already-landed parameter name for exactly this
-/// (`routes::ingest::ScheduleChunkParams`,
-/// `queries::upsert_schedule_calling_points_full_chunk`) -- the ingest side
-/// added it ahead of a publisher that would use it, and this is that
-/// publisher. Getting the name wrong here would be silent and catastrophic:
-/// `api` would ignore the unknown parameter, every chunk would take the
-/// `DELETE` branch, and each date would keep only its last chunk.
+/// **`first_chunk` is still sent, for rolling-deploy compatibility.** An
+/// `api` that predates `publish_id` ignores the new parameters and applies
+/// its own legacy contract: `first_chunk=true` clears the date then inserts,
+/// `first_chunk=false` only inserts. That is still correct for exactly this
+/// sequence of calls (it is what this function sent before the diff
+/// protocol existed), so either service can deploy first. Getting that name
+/// wrong would be silent and catastrophic against such an `api`: it would
+/// default every chunk to `first_chunk=true`, each chunk's `DELETE` would
+/// wipe the chunks before it, and each date would keep only its last chunk.
 ///
-/// **Partial-date exposure, and why it is the right trade.** A failure part
-/// way through a date (chunk 5 of 12 times out) leaves that date holding
-/// chunks 1-4 instead of either the old data or the complete new data -- the
-/// one thing the previous single-transaction shape could not do. That is
-/// bounded and self-healing: the failure is recorded on [`CycleOutcome`], the
-/// delivery marker does not advance, and the next cycle (≤ `poll_interval_secs`
-/// later) republishes the whole date starting from a `first_chunk=true` chunk.
-/// The alternative -- a body that never lands at all, for a whole day, with
-/// one log line -- is not better, it is just less visible.
+/// **Partial-date exposure.** Each chunk is its own transaction on the `api`
+/// side. Under the diff protocol a failure part way through a date (chunk 5
+/// of 12 times out) leaves the date holding the previous publish's rows plus
+/// chunks 1-4's upserts, with nothing deleted -- never an emptied or
+/// half-populated date. The failure is recorded on [`CycleOutcome`], the
+/// delivery marker does not advance, and the next cycle republishes the
+/// whole date under a new `publish_id` (whose first chunk discards the
+/// abandoned publish's staged keys).
 async fn post_date_scoped_rows_in_chunks(
     client: &Client,
     url: &str,
@@ -1546,12 +1536,14 @@ async fn post_date_scoped_rows_in_chunks(
             .await;
     }
 
+    let publish_id = new_publish_id();
     let chunk_count = rows.len().div_ceil(PUBLISH_CHUNK_ROWS);
     for (index, chunk) in rows.chunks(PUBLISH_CHUNK_ROWS).enumerate() {
         let first_chunk = index == 0;
+        let final_total_rows = (index + 1 == chunk_count).then_some(rows.len());
         common::ingest::post_batch(
             client,
-            &first_chunk_url(url, first_chunk),
+            &diff_chunk_url(url, &publish_id, first_chunk, final_total_rows),
             tokens,
             chunk,
             noun,
@@ -1559,7 +1551,8 @@ async fn post_date_scoped_rows_in_chunks(
         .await
         .map_err(|err| {
             anyhow::anyhow!(
-                "chunk {}/{chunk_count} ({} rows, first_chunk={first_chunk}) failed: {err}",
+                "chunk {}/{chunk_count} ({} rows, first_chunk={first_chunk}, \
+                 publish_id={publish_id}) failed: {err}",
                 index + 1,
                 chunk.len(),
             )
@@ -1568,15 +1561,45 @@ async fn post_date_scoped_rows_in_chunks(
     Ok(())
 }
 
-/// Appends the `first_chunk` query parameter
-/// [`post_date_scoped_rows_in_chunks`] uses to tell a date-scoped ingest route
-/// whether this chunk is the one that clears the date -- `api`'s own parameter
-/// name for it, see that function's doc comment. Handles a URL that already
-/// carries a query string, since these URLs come from configuration and
-/// nothing stops an operator setting one.
+/// A publish id for [`post_date_scoped_rows_in_chunks`]: unique per publish
+/// (wall-clock nanoseconds plus a per-process counter, so two publishes in
+/// the same nanosecond -- or after a clock step -- still differ), and made of
+/// URL-safe characters only, so it needs no percent-encoding.
+fn new_publish_id() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    format!("sr-{nanos}-{}-{sequence}", std::process::id())
+}
+
+/// Appends the `first_chunk` query parameter -- the legacy (pre-`publish_id`)
+/// half of [`post_date_scoped_rows_in_chunks`]'s contract, telling an older
+/// `api` whether this chunk is the one that clears the date. Handles a URL
+/// that already carries a query string, since these URLs come from
+/// configuration and nothing stops an operator setting one.
 fn first_chunk_url(url: &str, first_chunk: bool) -> String {
     let separator = if url.contains('?') { '&' } else { '?' };
     format!("{url}{separator}first_chunk={first_chunk}")
+}
+
+/// The full per-chunk URL for [`post_date_scoped_rows_in_chunks`]:
+/// [`first_chunk_url`] plus the diff protocol's `publish_id`, and on the
+/// final chunk (`final_total_rows: Some(total)`) `last_chunk=true` and
+/// `total_rows`.
+fn diff_chunk_url(
+    url: &str,
+    publish_id: &str,
+    first_chunk: bool,
+    final_total_rows: Option<usize>,
+) -> String {
+    let mut chunk_url = format!(
+        "{}&publish_id={publish_id}",
+        first_chunk_url(url, first_chunk)
+    );
+    if let Some(total_rows) = final_total_rows {
+        chunk_url.push_str(&format!("&last_chunk=true&total_rows={total_rows}"));
+    }
+    chunk_url
 }
 
 /// A single-object POST (not a batch array) -- `common::ingest::post_batch`
@@ -3195,20 +3218,78 @@ mod chunked_publish_tests {
 
         let posts = capture_posts(&server, "/private/chunked").await;
         assert_eq!(posts.len(), 3, "2*chunk+1 rows must be split into 3 POSTs");
+        let (publish_id, posts) = one_publish_id(posts);
         assert_eq!(
-            posts[0],
-            (PUBLISH_CHUNK_ROWS, "first_chunk=true".to_string())
+            posts,
+            vec![
+                (
+                    PUBLISH_CHUNK_ROWS,
+                    "first_chunk=true&publish_id=<id>".to_string()
+                ),
+                (
+                    PUBLISH_CHUNK_ROWS,
+                    "first_chunk=false&publish_id=<id>".to_string()
+                ),
+                (
+                    1,
+                    format!(
+                        "first_chunk=false&publish_id=<id>&last_chunk=true&total_rows={}",
+                        PUBLISH_CHUNK_ROWS * 2 + 1
+                    )
+                ),
+            ],
+            "only the first chunk may clear the date for a legacy api, and only the last \
+             chunk (carrying the whole publish's row count) may delete missing rows for a \
+             diff-protocol api (publish_id {publish_id})"
         );
-        assert_eq!(
-            posts[1],
-            (PUBLISH_CHUNK_ROWS, "first_chunk=false".to_string())
-        );
-        assert_eq!(posts[2], (1, "first_chunk=false".to_string()));
     }
 
-    /// A publish small enough to fit in one chunk must be byte-for-byte the
-    /// same single wholesale-replace POST it always was -- chunking must not
-    /// change the common case.
+    /// Asserts every captured POST carries the SAME non-empty `publish_id`
+    /// (every chunk of one publish must share it, or the final chunk's staged
+    /// key count can never match), and returns it together with the posts'
+    /// query strings with that id replaced by `<id>`.
+    fn one_publish_id(posts: Vec<(usize, String)>) -> (String, Vec<(usize, String)>) {
+        let ids: Vec<String> = posts
+            .iter()
+            .map(|(_, query)| {
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("publish_id="))
+                    .expect("every diff-protocol chunk carries a publish_id")
+                    .to_string()
+            })
+            .collect();
+        let publish_id = ids[0].clone();
+        assert!(!publish_id.is_empty());
+        assert!(
+            ids.iter().all(|id| *id == publish_id),
+            "every chunk of one publish must carry the same publish_id; got {ids:?}"
+        );
+        let posts = posts
+            .into_iter()
+            .map(|(len, query)| (len, query.replace(&publish_id, "<id>")))
+            .collect();
+        (publish_id, posts)
+    }
+
+    /// Two publishes (two dates, or the same date on two cycles) must never
+    /// share a `publish_id` -- otherwise one publish's final chunk would count
+    /// and diff against the other's staged keys.
+    #[test]
+    fn every_publish_gets_a_distinct_url_safe_publish_id() {
+        let ids: std::collections::HashSet<String> = (0..1000).map(|_| new_publish_id()).collect();
+        assert_eq!(ids.len(), 1000);
+        for id in &ids {
+            assert!(
+                id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+                "publish ids go on the URL unencoded, so must be URL-safe: {id}"
+            );
+        }
+    }
+
+    /// A publish small enough to fit in one chunk is exactly one POST that is
+    /// both the first chunk (clears the date on a legacy api) and the last
+    /// (deletes missing rows on a diff-protocol api).
     #[tokio::test]
     async fn a_publish_that_fits_in_one_chunk_is_still_exactly_one_replacing_post() {
         let server = wiremock::MockServer::start().await;
@@ -3225,9 +3306,13 @@ mod chunked_publish_tests {
             .await
             .expect("accepted");
 
+        let (_, posts) = one_publish_id(capture_posts(&server, "/private/chunked").await);
         assert_eq!(
-            capture_posts(&server, "/private/chunked").await,
-            vec![(10, "first_chunk=true".to_string())]
+            posts,
+            vec![(
+                10,
+                "first_chunk=true&publish_id=<id>&last_chunk=true&total_rows=10".to_string()
+            )]
         );
     }
 

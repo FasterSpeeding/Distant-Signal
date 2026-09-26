@@ -1691,74 +1691,84 @@ pub struct CallingPointDeparturePage {
     pub next_cursor: Option<CallingPointDepartureCursor>,
 }
 
-/// Replaces one CIF delivery's worth of per-destination departures.
+/// Replaces one CIF delivery's worth of per-destination departures -- `rows`
+/// is the COMPLETE new set for every service date it touches.
 ///
-/// **Deliberately NOT shaped like `upsert_schedule_network_departures`
-/// above.** That one loops a single-row `INSERT ... ON CONFLICT` per row
-/// inside a transaction, which is correct for its ~2,500 rows and would be
-/// ~377,000 round trips here. This is instead, in ONE transaction:
+/// **A diff, not a delete-then-insert (2026-09-26).** This used to clear the
+/// touched dates and re-insert every row, which in production left the
+/// table's B-tree indexes 52-66% bloated (a delivery covers each date of the
+/// 8-day window several times over, and most re-published rows were
+/// byte-identical to what was already there). It is now, in ONE transaction,
+/// exactly [`upsert_schedule_destination_departures_publish_part`] run as a
+/// single first-and-final chunk:
 ///
-/// 1. `DELETE FROM schedule_destination_departures WHERE service_date =
-///    ANY(...)` over the batch's distinct service dates, then
-/// 2. one multi-row `INSERT ... SELECT * FROM UNNEST(...)`.
+/// 1. one multi-row `INSERT ... SELECT FROM UNNEST(...) ON CONFLICT (pk) DO
+///    UPDATE ... WHERE (<non-key columns>) IS DISTINCT FROM (EXCLUDED...)`
+///    -- an unchanged row produces no new tuple and no index entry, a changed
+///    row is updated in place (no indexed column is a non-key column, so
+///    that is usually a HOT update), a new row is inserted; then
+/// 2. `DELETE` every row of the touched dates whose key is not in `rows`.
 ///
-/// The pair preserves the same "wholesale replace, never merged" posture
-/// both existing CIF-derived products document, just at day granularity
-/// instead of per-key. `UNNEST` follows this crate's own established batch
-/// pattern -- see `crate::data::trains::find_or_create_trains_batch` and
-/// `mark_trains_resolved_batch` for the identical
-/// build-parallel-Vecs-then-bind style. Ten bind parameters regardless of
-/// row count, so the 65,535-parameter protocol ceiling is not in play.
+/// The observable result is identical to the old wholesale replace: after
+/// the call, each touched date holds exactly `rows`. `UNNEST` follows this
+/// crate's own established batch pattern -- see
+/// `crate::data::trains::find_or_create_trains_batch` -- so bind-parameter
+/// count is independent of row count, and there are no per-row round trips.
 ///
 /// **An empty `rows` is a no-op, and that is load-bearing.** A publish that
 /// produced nothing (an upstream parse failure, a delivery with no
 /// schedules) must not be allowed to delete a service date's real
-/// timetable. The per-row `ON CONFLICT` loop it replaces could not have
-/// this bug; a DELETE-then-INSERT can, so it is guarded and tested
-/// (`upsert_with_an_empty_batch_does_not_wipe_the_day`).
+/// timetable -- step 2 above would otherwise delete the whole date. Guarded
+/// and tested (`upsert_with_an_empty_batch_does_not_wipe_the_day`).
 ///
-/// `ON CONFLICT DO NOTHING` on the insert: the primary key covers all five
-/// columns, so a conflict can only mean the publisher emitted a
-/// byte-identical duplicate. Dropping it silently is strictly better than
-/// failing a ~377,000-row batch over one pathological schedule. The return
-/// value is therefore rows actually INSERTED, which may be under
-/// `rows.len()` in that case.
+/// Rows sharing a primary key within one batch (the publisher can emit a
+/// byte-identical duplicate for a pathological schedule) are collapsed to
+/// the FIRST such row -- the same row the previous `ON CONFLICT DO NOTHING`
+/// insert kept -- rather than failing a ~377,000-row batch (`ON CONFLICT DO
+/// UPDATE` cannot touch one row twice in one statement). The return value
+/// is rows actually inserted or changed; an unchanged row is not counted.
 ///
-/// Always clears the touched dates first -- this is the "one call is the
-/// whole day" entry point every existing caller (this file's own tests,
-/// `crates/api/src/routes/journeys.rs`'s fixtures) uses. The ingest route
+/// This is the "one call is the whole day" entry point every in-process
+/// caller (this file's own tests, `crates/api/src/routes/journeys.rs`'s
+/// fixtures) uses. The ingest route
 /// (`crates/api/src/routes/ingest.rs::post_schedule_destination_departures`)
-/// instead calls [`upsert_schedule_destination_departures_chunk`], which lets
-/// the caller say whether THIS call is the first one touching these dates in
-/// the current publish cycle -- see that function's doc comment for why a
-/// second variant exists rather than a parameter added here (it would force
-/// every one of those unrelated call sites to pass a redundant `true`).
+/// receives a day in several chunks and so calls
+/// [`upsert_schedule_destination_departures_publish_part`] directly (or, for
+/// an older `schedule-reference` that sends no `publish_id`, the legacy
+/// [`upsert_schedule_destination_departures_chunk`]).
 pub async fn upsert_schedule_destination_departures(
     pool: &PgPool,
     rows: &[ScheduleDestinationDeparturesRow],
 ) -> Result<u64> {
-    upsert_schedule_destination_departures_chunk(pool, rows, true).await
+    let publish_id = in_process_publish_id();
+    upsert_schedule_destination_departures_publish_part(
+        pool,
+        rows,
+        SchedulePublishPart {
+            publish_id: &publish_id,
+            first_chunk: true,
+            final_total_rows: Some(rows.len() as u64),
+        },
+    )
+    .await
 }
 
-/// Chunk-aware core of [`upsert_schedule_destination_departures`]. `rows` is
-/// one call's worth of a publish cycle that may, in the future, split one
-/// day's ~377,000 rows across multiple calls (`rows.chunks(50_000)`, see
-/// `crates/schedule-reference/src/main.rs::publish_schedule_destination_departures`'s
-/// own doc comment) -- `first_chunk` says whether THIS call is the first one
-/// touching `rows`' dates in the current cycle.
+/// **Legacy** chunk-aware delete-then-insert, kept only for the
+/// pre-2026-09-26 ingest contract: an older `schedule-reference` that sends
+/// `?first_chunk=` but no `?publish_id=` (see
+/// `routes::ingest::ScheduleChunkParams`). Every current caller uses the
+/// diff-based [`upsert_schedule_destination_departures_publish_part`]
+/// instead; this path exists so a rolling deploy that lands `api` before
+/// `schedule-reference` keeps publishing correctly (with the old index
+/// churn) until the new publisher arrives. It can be deleted once no
+/// publisher predating `publish_id` can be running.
 ///
-/// `first_chunk = true` clears the touched dates first, identical to
-/// `upsert_schedule_destination_departures` above (in fact that function is
-/// just this one called with `true`). `first_chunk = false` skips the
-/// DELETE and only inserts -- so a later chunk's call does not wipe out an
-/// earlier chunk's just-inserted rows for the same date, which a per-call
-/// unconditional DELETE would do the moment more than one chunk is ever sent
-/// for the same date in one cycle. `crates/api/src/routes/ingest.rs`'s
-/// `post_schedule_destination_departures` is the only caller that passes
-/// `false` (via its `?first_chunk=` query parameter) -- today it always
-/// passes `true`, since `schedule-reference` sends exactly one call per
-/// date; the flag exists so that story stays correct the day chunking
-/// actually gets turned on, without a further schema/contract change.
+/// `first_chunk = true` clears the touched dates first, then inserts;
+/// `first_chunk = false` skips the DELETE and only inserts -- so a later
+/// chunk's call does not wipe out an earlier chunk's just-inserted rows for
+/// the same date. `ON CONFLICT DO NOTHING` on the insert (a conflict can
+/// only be a duplicate within the same publish). An empty `rows` is a
+/// no-op. Returns rows actually inserted.
 pub async fn upsert_schedule_destination_departures_chunk(
     pool: &PgPool,
     rows: &[ScheduleDestinationDeparturesRow],
@@ -1830,6 +1840,289 @@ pub async fn upsert_schedule_destination_departures_chunk(
     Ok(result.rows_affected())
 }
 
+/// One HTTP chunk of a diff-based, possibly multi-chunk schedule publish --
+/// the unit [`upsert_schedule_destination_departures_publish_part`] and
+/// [`upsert_schedule_calling_points_full_publish_part`] work in.
+///
+/// # How a multi-chunk diff publish stays correct
+///
+/// Each chunk upserts its own rows immediately (unchanged rows untouched,
+/// changed rows updated, new rows inserted) and records their primary keys
+/// in the table's `*_publish_keys` staging table under `publish_id`
+/// (migration `20260926183000_schedule_publish_keys.sql`). Only the FINAL
+/// chunk (`final_total_rows: Some(n)`) deletes anything: every row of the
+/// publish's staged service dates whose key was not staged by any chunk of
+/// this publish. That is the one point at which "absent from the new
+/// publish" is actually known -- a per-chunk delete of "rows not in THIS
+/// chunk" would delete every earlier chunk's rows.
+///
+/// The final chunk first checks that exactly `n` keys are staged for
+/// `publish_id` (one per row the publisher sent, across all chunks). Any
+/// mismatch -- a chunk handled by an older `api` that doesn't stage keys, a
+/// replayed chunk, staging truncated by a crash (the tables are UNLOGGED), a
+/// newer publish for the same date having superseded this one -- skips the
+/// delete and only logs a warning. Failing closed that way can only leave
+/// stale rows in place until the next publish; it can never delete a live
+/// row the publish meant to keep.
+///
+/// `first_chunk` discards staged keys left by any OTHER publish of the same
+/// dates (an abandoned, failed-part-way publish, or a concurrent publisher
+/// that has now been superseded) and anything staged more than a day ago,
+/// so the staging tables hold at most about one in-flight publish per date.
+///
+/// # Visibility
+///
+/// Each chunk is its own transaction. While a publish is in flight a reader
+/// sees the previous publish's rows plus whatever the new publish has
+/// upserted so far -- a date is never emptied or half-populated, which the
+/// old per-date DELETE-then-reinsert could do between chunks. The one
+/// transient oddity is that a row whose KEY changed (e.g. a retimed
+/// departure) is briefly present under both its old and new key until the
+/// final chunk's delete commits.
+#[derive(Debug, Clone, Copy)]
+pub struct SchedulePublishPart<'a> {
+    /// Chosen by the publisher, constant across one publish's chunks, unique
+    /// per publish.
+    pub publish_id: &'a str,
+    /// This is the publish's first chunk.
+    pub first_chunk: bool,
+    /// `Some(total rows across every chunk of the publish)` on the final
+    /// chunk only.
+    pub final_total_rows: Option<u64>,
+}
+
+/// A publish id for an in-process "one call is the whole set" publish --
+/// never shared with another call, so it can never collide with a real
+/// publisher's id or with a concurrent in-process call.
+fn in_process_publish_id() -> String {
+    format!("in-process-{:016x}", rand::random::<u64>())
+}
+
+/// Per-table SQL for the staging half of a diff publish -- see
+/// [`SchedulePublishPart`]. Each statement takes `$1` = publish id.
+struct PublishKeysSql {
+    /// Human-readable product name, for logs.
+    product: &'static str,
+    /// `$2` = the chunk's distinct service dates.
+    discard_superseded: &'static str,
+    /// Returns `(staged row count, distinct staged service dates)`.
+    summarize: &'static str,
+    /// `$2` = the publish's staged service dates.
+    delete_missing: &'static str,
+    drop_publish: &'static str,
+}
+
+const DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
+    product: "schedule_destination_departures",
+    discard_superseded: "DELETE FROM schedule_destination_departures_publish_keys \
+         WHERE (service_date = ANY($2::date[]) AND publish_id <> $1) \
+            OR staged_at < now() - interval '1 day'",
+    summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
+         FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
+    delete_missing: "DELETE FROM schedule_destination_departures d \
+         WHERE d.service_date = ANY($2::date[]) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM schedule_destination_departures_publish_keys k \
+               WHERE k.publish_id = $1 \
+                 AND k.service_date = d.service_date \
+                 AND k.destination_crs = d.destination_crs \
+                 AND k.scheduled = d.scheduled \
+                 AND k.train_uid = d.train_uid \
+                 AND k.origin_crs = d.origin_crs)",
+    drop_publish: "DELETE FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
+};
+
+const CALLING_POINTS_FULL_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
+    product: "schedule_calling_points_full",
+    discard_superseded: "DELETE FROM schedule_calling_points_full_publish_keys \
+         WHERE (service_date = ANY($2::date[]) AND publish_id <> $1) \
+            OR staged_at < now() - interval '1 day'",
+    summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
+         FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
+    delete_missing: "DELETE FROM schedule_calling_points_full c \
+         WHERE c.service_date = ANY($2::date[]) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM schedule_calling_points_full_publish_keys k \
+               WHERE k.publish_id = $1 \
+                 AND k.service_date = c.service_date \
+                 AND k.uid = c.uid \
+                 AND k.seq = c.seq)",
+    drop_publish: "DELETE FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
+};
+
+/// The start-of-chunk half of [`SchedulePublishPart`]'s protocol: on the
+/// first chunk, discard staged keys from any other publish of these dates.
+async fn discard_superseded_publish_keys(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sql: &PublishKeysSql,
+    part: SchedulePublishPart<'_>,
+    distinct_dates: &[chrono::NaiveDate],
+) -> Result<()> {
+    if part.first_chunk {
+        sqlx::query(sql.discard_superseded)
+            .bind(part.publish_id)
+            .bind(distinct_dates)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
+}
+
+/// The end-of-chunk half of [`SchedulePublishPart`]'s protocol: on the final
+/// chunk, verify the staged key count, delete the rows the publish did not
+/// carry, and drop the publish's staged keys. Returns rows deleted.
+async fn finish_publish_part(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sql: &PublishKeysSql,
+    part: SchedulePublishPart<'_>,
+) -> Result<u64> {
+    let Some(expected) = part.final_total_rows else {
+        return Ok(0);
+    };
+
+    let (staged, dates): (i64, Vec<chrono::NaiveDate>) = sqlx::query_as(sql.summarize)
+        .bind(part.publish_id)
+        .fetch_one(&mut **tx)
+        .await?;
+
+    let deleted = if u64::try_from(staged).ok() == Some(expected) && !dates.is_empty() {
+        sqlx::query(sql.delete_missing)
+            .bind(part.publish_id)
+            .bind(&dates)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected()
+    } else {
+        tracing::warn!(
+            product = sql.product,
+            publish_id = part.publish_id,
+            staged,
+            expected,
+            "schedule publish finished with a staged key count that does not match the \
+             publisher's total; NOT deleting rows missing from this publish (stale rows stay \
+             until the next complete publish)"
+        );
+        0
+    };
+
+    sqlx::query(sql.drop_publish)
+        .bind(part.publish_id)
+        .execute(&mut **tx)
+        .await?;
+
+    Ok(deleted)
+}
+
+/// One chunk of a diff-based `schedule_destination_departures` publish --
+/// see [`SchedulePublishPart`] for the multi-chunk protocol and
+/// [`upsert_schedule_destination_departures`] for the per-row upsert
+/// semantics (that function is exactly this one, called once as a first and
+/// final chunk). One transaction per call. An empty `rows` is a no-op (it
+/// neither stages nor finalizes). Returns rows inserted or changed.
+pub async fn upsert_schedule_destination_departures_publish_part(
+    pool: &PgPool,
+    rows: &[ScheduleDestinationDeparturesRow],
+    part: SchedulePublishPart<'_>,
+) -> Result<u64> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
+    let destination_crs: Vec<&str> = rows.iter().map(|r| r.destination_crs.as_str()).collect();
+    let scheduled: Vec<chrono::NaiveTime> = rows.iter().map(|r| r.scheduled).collect();
+    let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
+    let train_uids: Vec<&str> = rows.iter().map(|r| r.train_uid.as_str()).collect();
+    let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
+    let true_origin_crs: Vec<Option<&str>> =
+        rows.iter().map(|r| r.true_origin_crs.as_deref()).collect();
+    let calling_point_arrival: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.calling_point_arrival).collect();
+    let destination_arrival: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.destination_arrival).collect();
+    let destination_arrival_day_offsets: Vec<i16> = rows
+        .iter()
+        .map(|r| r.destination_arrival_day_offset)
+        .collect();
+    let operator_atoc: Vec<Option<&str>> =
+        rows.iter().map(|r| r.operator_atoc.as_deref()).collect();
+
+    let mut distinct_dates = service_dates.clone();
+    distinct_dates.sort_unstable();
+    distinct_dates.dedup();
+
+    let sql = &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL;
+    let mut tx = pool.begin().await?;
+
+    discard_superseded_publish_keys(&mut tx, sql, part, &distinct_dates).await?;
+
+    // One staged key per incoming row, duplicates included -- the final
+    // chunk's count check compares against the publisher's raw row total.
+    sqlx::query(
+        "INSERT INTO schedule_destination_departures_publish_keys \
+            (publish_id, service_date, destination_crs, scheduled, train_uid, origin_crs) \
+         SELECT $1, * FROM UNNEST($2::date[], $3::text[], $4::time[], $5::text[], $6::text[])",
+    )
+    .bind(part.publish_id)
+    .bind(&service_dates)
+    .bind(&destination_crs)
+    .bind(&scheduled)
+    .bind(&train_uids)
+    .bind(&origin_crs)
+    .execute(&mut *tx)
+    .await?;
+
+    // DISTINCT ON ... ORDER BY key, ordinality keeps the FIRST of any
+    // same-key rows in the batch (`ON CONFLICT DO UPDATE` cannot affect one
+    // row twice). The `WHERE ... IS DISTINCT FROM` guard is what keeps an
+    // unchanged row from being rewritten: it is read, not written.
+    let result = sqlx::query(
+        "INSERT INTO schedule_destination_departures AS d \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc) \
+         SELECT DISTINCT ON (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+                service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc \
+         FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[]) \
+              WITH ORDINALITY AS t(service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, ord) \
+         ORDER BY service_date, destination_crs, scheduled, train_uid, origin_crs, ord \
+         ON CONFLICT (service_date, destination_crs, scheduled, train_uid, origin_crs) DO UPDATE SET \
+            day_offset = EXCLUDED.day_offset, \
+            true_origin_crs = EXCLUDED.true_origin_crs, \
+            calling_point_arrival = EXCLUDED.calling_point_arrival, \
+            destination_arrival = EXCLUDED.destination_arrival, \
+            destination_arrival_day_offset = EXCLUDED.destination_arrival_day_offset, \
+            operator_atoc = EXCLUDED.operator_atoc \
+         WHERE (d.day_offset, d.true_origin_crs, d.calling_point_arrival, d.destination_arrival, d.destination_arrival_day_offset, d.operator_atoc) \
+               IS DISTINCT FROM \
+               (EXCLUDED.day_offset, EXCLUDED.true_origin_crs, EXCLUDED.calling_point_arrival, EXCLUDED.destination_arrival, EXCLUDED.destination_arrival_day_offset, EXCLUDED.operator_atoc)",
+    )
+    .bind(&service_dates)
+    .bind(&destination_crs)
+    .bind(&scheduled)
+    .bind(&day_offsets)
+    .bind(&train_uids)
+    .bind(&origin_crs)
+    .bind(&true_origin_crs)
+    .bind(&calling_point_arrival)
+    .bind(&destination_arrival)
+    .bind(&destination_arrival_day_offsets)
+    .bind(&operator_atoc)
+    .execute(&mut *tx)
+    .await?;
+
+    let deleted = finish_publish_part(&mut tx, sql, part).await?;
+
+    tx.commit().await?;
+    if part.final_total_rows.is_some() {
+        tracing::debug!(
+            publish_id = part.publish_id,
+            upserted = result.rows_affected(),
+            deleted,
+            "finished schedule_destination_departures publish"
+        );
+    }
+    Ok(result.rows_affected())
+}
+
 /// One `schedule_calling_points_full` row -- the literal, un-bucketed
 /// "ordered stop_times per trip" shape, one row per calling point of one
 /// resolved (non-cancelled) schedule on one service date. Mirrors
@@ -1868,51 +2161,56 @@ pub struct ScheduleCallingPointsFullRow {
 }
 
 /// Replaces one service date's worth of whole-network resolved calling
-/// points. Same shape as `upsert_schedule_destination_departures` directly
-/// above -- one transaction, `DELETE ... WHERE service_date = ANY(...)`
-/// over the batch's distinct service dates followed by one multi-row
-/// `INSERT ... SELECT * FROM UNNEST(...)` -- for the identical reason: a
-/// per-row `ON CONFLICT` loop would be one round trip per calling point,
-/// and this product is every calling point of every non-cancelled schedule
-/// for the day.
+/// points -- `rows` is the COMPLETE new set for every service date it
+/// touches. Same diff shape as [`upsert_schedule_destination_departures`]
+/// (see its doc comment for the 2026-09-26 index-bloat measurement that
+/// motivated it): one transaction, one `INSERT ... SELECT FROM UNNEST(...)
+/// ON CONFLICT (service_date, uid, seq) DO UPDATE ... WHERE (<non-key
+/// columns>) IS DISTINCT FROM (...)` so unchanged calling points are never
+/// rewritten, then a `DELETE` of every row of the touched dates whose key is
+/// not in `rows`. Observably identical to the wholesale replace it
+/// supersedes.
 ///
 /// **An empty `rows` is a no-op, and that is load-bearing**, same posture
 /// and same reason as `upsert_schedule_destination_departures`: a publish
 /// that produced nothing must not be allowed to delete a service date's
 /// real data.
 ///
-/// `ON CONFLICT DO NOTHING` on the insert: the primary key
-/// (`service_date, uid, seq`) covers every row this publisher can produce
-/// once per cycle, so a conflict can only mean a byte-identical duplicate
-/// within the same batch -- dropping it silently is strictly better than
-/// failing the whole batch over one pathological schedule.
+/// Same-key rows within one batch collapse to the first of them. Returns
+/// rows inserted or changed.
 ///
-/// Always clears the touched dates first -- the "one call is the whole day"
-/// entry point every existing caller (this file's own tests,
-/// `crates/api/src/routes/train.rs` and `crates/api/src/data/journey.rs`'s
-/// fixtures) uses. The ingest route
+/// The "one call is the whole day" entry point every in-process caller
+/// (this file's own tests, `crates/api/src/routes/train.rs` and
+/// `crates/api/src/data/journey.rs`'s fixtures) uses. The ingest route
 /// (`crates/api/src/routes/ingest.rs::post_schedule_calling_points_full`)
-/// instead calls [`upsert_schedule_calling_points_full_chunk`] -- see that
-/// function's doc comment, and
-/// `upsert_schedule_destination_departures`/`upsert_schedule_destination_departures_chunk`
-/// directly above for the identical split and why it exists as two
-/// functions rather than one with an added parameter.
+/// instead calls [`upsert_schedule_calling_points_full_publish_part`] (or,
+/// for a publisher that predates `publish_id`, the legacy
+/// [`upsert_schedule_calling_points_full_chunk`]).
 pub async fn upsert_schedule_calling_points_full(
     pool: &PgPool,
     rows: &[ScheduleCallingPointsFullRow],
 ) -> Result<u64> {
-    upsert_schedule_calling_points_full_chunk(pool, rows, true).await
+    let publish_id = in_process_publish_id();
+    upsert_schedule_calling_points_full_publish_part(
+        pool,
+        rows,
+        SchedulePublishPart {
+            publish_id: &publish_id,
+            first_chunk: true,
+            final_total_rows: Some(rows.len() as u64),
+        },
+    )
+    .await
 }
 
-/// Chunk-aware core of [`upsert_schedule_calling_points_full`] -- same
-/// `first_chunk` contract as
-/// [`upsert_schedule_destination_departures_chunk`]'s own doc comment:
-/// `true` (every caller today) clears the touched dates first; `false`
-/// skips the DELETE and only inserts, so a later chunk in the same publish
-/// cycle cannot wipe out an earlier chunk's just-inserted rows for the same
-/// date. `crates/api/src/routes/ingest.rs`'s `post_schedule_calling_points_full`
-/// is the only caller that can pass `false`, via its `?first_chunk=` query
-/// parameter.
+/// **Legacy** chunk-aware delete-then-insert for the pre-2026-09-26 ingest
+/// contract (`?first_chunk=` with no `?publish_id=`) -- same status and same
+/// contract as [`upsert_schedule_destination_departures_chunk`]: `true`
+/// clears the touched dates first; `false` skips the DELETE and only
+/// inserts, so a later chunk in the same publish cycle cannot wipe out an
+/// earlier chunk's just-inserted rows for the same date. Only
+/// `crates/api/src/routes/ingest.rs`'s `post_schedule_calling_points_full`
+/// calls it, and only for a publisher that sends no `publish_id`.
 pub async fn upsert_schedule_calling_points_full_chunk(
     pool: &PgPool,
     rows: &[ScheduleCallingPointsFullRow],
@@ -1973,6 +2271,100 @@ pub async fn upsert_schedule_calling_points_full_chunk(
     .await?;
 
     tx.commit().await?;
+    Ok(result.rows_affected())
+}
+
+/// One chunk of a diff-based `schedule_calling_points_full` publish -- see
+/// [`SchedulePublishPart`] for the multi-chunk protocol and
+/// [`upsert_schedule_calling_points_full`] for the per-row upsert semantics
+/// (that function is exactly this one, called once as a first and final
+/// chunk). One transaction per call. An empty `rows` is a no-op. Returns
+/// rows inserted or changed.
+pub async fn upsert_schedule_calling_points_full_publish_part(
+    pool: &PgPool,
+    rows: &[ScheduleCallingPointsFullRow],
+    part: SchedulePublishPart<'_>,
+) -> Result<u64> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
+    let uids: Vec<&str> = rows.iter().map(|r| r.uid.as_str()).collect();
+    let seqs: Vec<i16> = rows.iter().map(|r| r.seq).collect();
+    let tiplocs: Vec<&str> = rows.iter().map(|r| r.tiploc.as_str()).collect();
+    let kinds: Vec<&str> = rows.iter().map(|r| r.kind.as_str()).collect();
+    let booked_arrivals: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.booked_arrival).collect();
+    let booked_departures: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.booked_departure).collect();
+    let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
+    let platforms: Vec<Option<&str>> = rows.iter().map(|r| r.platform.as_deref()).collect();
+
+    let mut distinct_dates = service_dates.clone();
+    distinct_dates.sort_unstable();
+    distinct_dates.dedup();
+
+    let sql = &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL;
+    let mut tx = pool.begin().await?;
+
+    discard_superseded_publish_keys(&mut tx, sql, part, &distinct_dates).await?;
+
+    sqlx::query(
+        "INSERT INTO schedule_calling_points_full_publish_keys (publish_id, service_date, uid, seq) \
+         SELECT $1, * FROM UNNEST($2::date[], $3::text[], $4::smallint[])",
+    )
+    .bind(part.publish_id)
+    .bind(&service_dates)
+    .bind(&uids)
+    .bind(&seqs)
+    .execute(&mut *tx)
+    .await?;
+
+    // See `upsert_schedule_destination_departures_publish_part` for the
+    // DISTINCT ON / IS DISTINCT FROM reasoning -- identical here.
+    let result = sqlx::query(
+        "INSERT INTO schedule_calling_points_full AS c \
+            (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform) \
+         SELECT DISTINCT ON (service_date, uid, seq) \
+                service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform \
+         FROM UNNEST($1::date[], $2::text[], $3::smallint[], $4::text[], $5::text[], $6::time[], $7::time[], $8::smallint[], $9::text[]) \
+              WITH ORDINALITY AS t(service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform, ord) \
+         ORDER BY service_date, uid, seq, ord \
+         ON CONFLICT (service_date, uid, seq) DO UPDATE SET \
+            tiploc = EXCLUDED.tiploc, \
+            kind = EXCLUDED.kind, \
+            booked_arrival = EXCLUDED.booked_arrival, \
+            booked_departure = EXCLUDED.booked_departure, \
+            day_offset = EXCLUDED.day_offset, \
+            platform = EXCLUDED.platform \
+         WHERE (c.tiploc, c.kind, c.booked_arrival, c.booked_departure, c.day_offset, c.platform) \
+               IS DISTINCT FROM \
+               (EXCLUDED.tiploc, EXCLUDED.kind, EXCLUDED.booked_arrival, EXCLUDED.booked_departure, EXCLUDED.day_offset, EXCLUDED.platform)",
+    )
+    .bind(&service_dates)
+    .bind(&uids)
+    .bind(&seqs)
+    .bind(&tiplocs)
+    .bind(&kinds)
+    .bind(&booked_arrivals)
+    .bind(&booked_departures)
+    .bind(&day_offsets)
+    .bind(&platforms)
+    .execute(&mut *tx)
+    .await?;
+
+    let deleted = finish_publish_part(&mut tx, sql, part).await?;
+
+    tx.commit().await?;
+    if part.final_total_rows.is_some() {
+        tracing::debug!(
+            publish_id = part.publish_id,
+            upserted = result.rows_affected(),
+            deleted,
+            "finished schedule_calling_points_full publish"
+        );
+    }
     Ok(result.rows_affected())
 }
 
@@ -9661,5 +10053,622 @@ mod schedule_pipeline_integrity_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+}
+
+/// The diff-based schedule publish (`SchedulePublishPart`,
+/// `upsert_schedule_destination_departures_publish_part`,
+/// `upsert_schedule_calling_points_full_publish_part`): an unchanged row is
+/// never physically rewritten, a changed row is updated, a row missing from
+/// the new publish is deleted -- but only once the whole publish has
+/// arrived -- and nothing outside the publish's own dates is touched.
+///
+/// "Physically untouched" is asserted through each row's `xmin` (the
+/// inserting/updating transaction id) and `ctid` (its heap location): an
+/// `UPDATE` -- even a no-op one -- writes a new tuple version with a new
+/// `xmin` and, since the new version lives somewhere else, a new `ctid`.
+/// Both staying equal means no tuple (and so no index entry) was written.
+///
+/// Fixture dates are July 2099, used by no other test module.
+#[cfg(test)]
+mod schedule_publish_diff_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    fn fixture_date(day: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2099, 7, day).expect("valid fixture date")
+    }
+
+    fn time(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid fixture time")
+    }
+
+    fn departure(
+        service_date: chrono::NaiveDate,
+        uid: &str,
+        scheduled: chrono::NaiveTime,
+        operator_atoc: Option<&str>,
+    ) -> ScheduleDestinationDeparturesRow {
+        ScheduleDestinationDeparturesRow {
+            service_date,
+            destination_crs: "ZRD".to_string(),
+            scheduled,
+            day_offset: 0,
+            train_uid: uid.to_string(),
+            origin_crs: "EUS".to_string(),
+            true_origin_crs: None,
+            calling_point_arrival: None,
+            destination_arrival: Some(time(12, 0)),
+            destination_arrival_day_offset: 0,
+            operator_atoc: operator_atoc.map(str::to_string),
+        }
+    }
+
+    fn calling_point(
+        service_date: chrono::NaiveDate,
+        uid: &str,
+        seq: i16,
+        platform: Option<&str>,
+    ) -> ScheduleCallingPointsFullRow {
+        ScheduleCallingPointsFullRow {
+            service_date,
+            uid: uid.to_string(),
+            seq,
+            tiploc: "EUSTON".to_string(),
+            kind: "intermediate".to_string(),
+            booked_arrival: Some(time(8, 0)),
+            booked_departure: Some(time(8, 2)),
+            day_offset: 0,
+            platform: platform.map(str::to_string),
+        }
+    }
+
+    async fn clear_dates(pool: &PgPool, dates: &[chrono::NaiveDate]) {
+        for table in [
+            "schedule_destination_departures",
+            "schedule_calling_points_full",
+            "schedule_destination_departures_publish_keys",
+            "schedule_calling_points_full_publish_keys",
+        ] {
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE service_date = ANY($1::date[])"
+            ))
+            .bind(dates)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture rows");
+        }
+    }
+
+    /// `(train_uid, scheduled, operator_atoc, xmin, ctid)` for every
+    /// departure row of `date`, in key order.
+    type DepartureTuple = (String, chrono::NaiveTime, Option<String>, String, String);
+
+    async fn departure_tuples(pool: &PgPool, date: chrono::NaiveDate) -> Vec<DepartureTuple> {
+        sqlx::query_as(
+            "SELECT train_uid, scheduled, operator_atoc, xmin::text, ctid::text \
+             FROM schedule_destination_departures WHERE service_date = $1 \
+             ORDER BY train_uid, scheduled",
+        )
+        .bind(date)
+        .fetch_all(pool)
+        .await
+        .expect("read back departures")
+    }
+
+    /// `(uid, seq, platform, xmin, ctid)` for every calling-point row of
+    /// `date`, in key order.
+    type CallingPointTuple = (String, i16, Option<String>, String, String);
+
+    async fn calling_point_tuples(
+        pool: &PgPool,
+        date: chrono::NaiveDate,
+    ) -> Vec<CallingPointTuple> {
+        sqlx::query_as(
+            "SELECT uid, seq, platform, xmin::text, ctid::text \
+             FROM schedule_calling_points_full WHERE service_date = $1 ORDER BY uid, seq",
+        )
+        .bind(date)
+        .fetch_all(pool)
+        .await
+        .expect("read back calling points")
+    }
+
+    fn uids<T>(tuples: &[(String, T, Option<String>, String, String)]) -> Vec<&str> {
+        tuples.iter().map(|t| t.0.as_str()).collect()
+    }
+
+    async fn staged_key_count(pool: &PgPool, table: &str, publish_id: &str) -> i64 {
+        sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {table} WHERE publish_id = $1"
+        ))
+        .bind(publish_id)
+        .fetch_one(pool)
+        .await
+        .expect("count staged keys")
+    }
+
+    /// **The point of the change.** Republishing a byte-identical set writes
+    /// nothing: every row keeps its `xmin` and `ctid`, and the call reports
+    /// zero rows upserted.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn republishing_identical_departures_leaves_every_row_physically_untouched() {
+        let pool = test_pool().await;
+        let date = fixture_date(1);
+        clear_dates(&pool, &[date]).await;
+
+        let rows = vec![
+            departure(date, "DIFF-A", time(8, 0), Some("VT")),
+            departure(date, "DIFF-B", time(9, 0), None),
+            departure(date, "DIFF-C", time(10, 0), Some("LM")),
+        ];
+        assert_eq!(
+            upsert_schedule_destination_departures(&pool, &rows)
+                .await
+                .expect("first publish"),
+            3
+        );
+        let before = departure_tuples(&pool, date).await;
+
+        let upserted = upsert_schedule_destination_departures(&pool, &rows)
+            .await
+            .expect("identical republish");
+        let after = departure_tuples(&pool, date).await;
+
+        assert_eq!(upserted, 0, "an identical republish changes no row");
+        assert_eq!(
+            after, before,
+            "an identical republish must not write a single tuple (xmin/ctid unchanged)"
+        );
+
+        clear_dates(&pool, &[date]).await;
+    }
+
+    /// The same property for `schedule_calling_points_full`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn republishing_identical_calling_points_leaves_every_row_physically_untouched() {
+        let pool = test_pool().await;
+        let date = fixture_date(2);
+        clear_dates(&pool, &[date]).await;
+
+        let rows = vec![
+            calling_point(date, "DIFF-A", 0, Some("1")),
+            calling_point(date, "DIFF-A", 1, None),
+            calling_point(date, "DIFF-B", 0, Some("4A")),
+        ];
+        upsert_schedule_calling_points_full(&pool, &rows)
+            .await
+            .expect("first publish");
+        let before = calling_point_tuples(&pool, date).await;
+
+        let upserted = upsert_schedule_calling_points_full(&pool, &rows)
+            .await
+            .expect("identical republish");
+
+        assert_eq!(upserted, 0);
+        assert_eq!(calling_point_tuples(&pool, date).await, before);
+
+        clear_dates(&pool, &[date]).await;
+    }
+
+    /// A republish that changes one row, drops one and adds one: the changed
+    /// row is updated in place, the dropped one is deleted, the new one is
+    /// inserted, the unchanged one is not rewritten -- and a second date the
+    /// publish does not touch is left physically alone.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_departures_republish_updates_changed_deletes_missing_and_spares_other_dates() {
+        let pool = test_pool().await;
+        let date = fixture_date(3);
+        let other_date = fixture_date(4);
+        clear_dates(&pool, &[date, other_date]).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                departure(date, "KEEP", time(8, 0), Some("VT")),
+                departure(date, "CHANGE", time(9, 0), Some("VT")),
+                departure(date, "DROP", time(10, 0), Some("VT")),
+            ],
+        )
+        .await
+        .expect("seed date");
+        upsert_schedule_destination_departures(
+            &pool,
+            &[departure(other_date, "OTHER", time(8, 0), Some("VT"))],
+        )
+        .await
+        .expect("seed other date");
+        let before = departure_tuples(&pool, date).await;
+        let other_before = departure_tuples(&pool, other_date).await;
+
+        let upserted = upsert_schedule_destination_departures(
+            &pool,
+            &[
+                departure(date, "KEEP", time(8, 0), Some("VT")),
+                departure(date, "CHANGE", time(9, 0), Some("LM")),
+                departure(date, "NEW", time(11, 0), None),
+            ],
+        )
+        .await
+        .expect("republish");
+        let after = departure_tuples(&pool, date).await;
+
+        assert_eq!(upserted, 2, "one update plus one insert");
+        assert_eq!(uids(&after), vec!["CHANGE", "KEEP", "NEW"]);
+        let change = &after[0];
+        assert_eq!(
+            change.2.as_deref(),
+            Some("LM"),
+            "the changed row is updated"
+        );
+        assert_ne!(
+            change.3, before[0].3,
+            "the changed row got a new tuple version"
+        );
+        let keep_before = before.iter().find(|t| t.0 == "KEEP").unwrap();
+        assert_eq!(
+            (&after[1].3, &after[1].4),
+            (&keep_before.3, &keep_before.4),
+            "the unchanged row is not rewritten"
+        );
+        assert_eq!(
+            departure_tuples(&pool, other_date).await,
+            other_before,
+            "a date outside the publish is untouched"
+        );
+
+        clear_dates(&pool, &[date, other_date]).await;
+    }
+
+    /// **The multi-chunk contract.** A publish split over three chunks ends
+    /// with exactly the union of the chunks: rows from an earlier chunk are
+    /// not lost to a later one, and the previous publish's rows that no chunk
+    /// carried are deleted -- but only by the FINAL chunk, so a reader never
+    /// sees the date shrink mid-publish. A row carried unchanged by a later
+    /// chunk is never rewritten.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_multi_chunk_departures_publish_ends_with_exactly_the_union_of_its_chunks() {
+        let pool = test_pool().await;
+        let date = fixture_date(5);
+        let other_date = fixture_date(6);
+        clear_dates(&pool, &[date, other_date]).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                departure(date, "SAME", time(8, 0), Some("VT")),
+                departure(date, "STALE", time(9, 0), Some("VT")),
+            ],
+        )
+        .await
+        .expect("previous publish");
+        upsert_schedule_destination_departures(
+            &pool,
+            &[departure(other_date, "OTHER", time(8, 0), None)],
+        )
+        .await
+        .expect("seed other date");
+        let same_before = departure_tuples(&pool, date).await[0].clone();
+        let other_before = departure_tuples(&pool, other_date).await;
+
+        let publish_id = "test-multi-chunk-departures";
+        let part = |first_chunk, final_total_rows| SchedulePublishPart {
+            publish_id,
+            first_chunk,
+            final_total_rows,
+        };
+        upsert_schedule_destination_departures_publish_part(
+            &pool,
+            &[
+                departure(date, "C1-A", time(6, 0), None),
+                departure(date, "C1-B", time(6, 30), None),
+            ],
+            part(true, None),
+        )
+        .await
+        .expect("chunk 1");
+        upsert_schedule_destination_departures_publish_part(
+            &pool,
+            &[departure(date, "C2-A", time(7, 0), None)],
+            part(false, None),
+        )
+        .await
+        .expect("chunk 2");
+
+        assert_eq!(
+            uids(&departure_tuples(&pool, date).await),
+            vec!["C1-A", "C1-B", "C2-A", "SAME", "STALE"],
+            "mid-publish, nothing is deleted yet: old rows plus the chunks so far"
+        );
+
+        upsert_schedule_destination_departures_publish_part(
+            &pool,
+            &[
+                departure(date, "SAME", time(8, 0), Some("VT")),
+                departure(date, "C3-A", time(12, 0), None),
+            ],
+            part(false, Some(5)),
+        )
+        .await
+        .expect("final chunk");
+
+        let after = departure_tuples(&pool, date).await;
+        assert_eq!(
+            uids(&after),
+            vec!["C1-A", "C1-B", "C2-A", "C3-A", "SAME"],
+            "exactly the union of the chunks: no chunk lost, the stale row gone"
+        );
+        let same_after = after.iter().find(|t| t.0 == "SAME").unwrap();
+        assert_eq!(
+            same_after, &same_before,
+            "an unchanged row is never rewritten"
+        );
+        assert_eq!(departure_tuples(&pool, other_date).await, other_before);
+        assert_eq!(
+            staged_key_count(
+                &pool,
+                "schedule_destination_departures_publish_keys",
+                publish_id
+            )
+            .await,
+            0,
+            "the final chunk drops its publish's staged keys"
+        );
+
+        clear_dates(&pool, &[date, other_date]).await;
+    }
+
+    /// The calling-points sibling of the multi-chunk contract, including an
+    /// in-place update carried by a later chunk.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_multi_chunk_calling_points_publish_ends_with_exactly_the_union_of_its_chunks() {
+        let pool = test_pool().await;
+        let date = fixture_date(7);
+        clear_dates(&pool, &[date]).await;
+
+        upsert_schedule_calling_points_full(
+            &pool,
+            &[
+                calling_point(date, "SAME", 0, Some("1")),
+                calling_point(date, "SAME", 1, Some("2")),
+                calling_point(date, "STALE", 0, None),
+            ],
+        )
+        .await
+        .expect("previous publish");
+        let before = calling_point_tuples(&pool, date).await;
+
+        let publish_id = "test-multi-chunk-calling-points";
+        let part = |first_chunk, final_total_rows| SchedulePublishPart {
+            publish_id,
+            first_chunk,
+            final_total_rows,
+        };
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &[
+                calling_point(date, "C1", 0, None),
+                calling_point(date, "SAME", 0, Some("1")),
+            ],
+            part(true, None),
+        )
+        .await
+        .expect("chunk 1");
+        let upserted = upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &[
+                calling_point(date, "SAME", 1, Some("3")),
+                calling_point(date, "C2", 0, None),
+            ],
+            part(false, Some(4)),
+        )
+        .await
+        .expect("final chunk");
+        assert_eq!(upserted, 2, "one platform change plus one new row");
+
+        let after = calling_point_tuples(&pool, date).await;
+        let keys: Vec<(&str, i16)> = after.iter().map(|t| (t.0.as_str(), t.1)).collect();
+        assert_eq!(keys, vec![("C1", 0), ("C2", 0), ("SAME", 0), ("SAME", 1)]);
+        assert_eq!(after[2], before[0], "SAME/0 unchanged, so never rewritten");
+        assert_eq!(
+            after[3].2.as_deref(),
+            Some("3"),
+            "SAME/1's platform updated"
+        );
+
+        clear_dates(&pool, &[date]).await;
+    }
+
+    /// **Fail closed.** If the final chunk finds fewer (or more) staged keys
+    /// than the publisher's `total_rows` -- a chunk went to an `api` that
+    /// doesn't stage keys, a chunk was replayed, staging was lost -- it must
+    /// NOT delete anything: "rows not in this publish" is not actually known.
+    /// Stale rows survive to the next complete publish; no live row is lost.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_final_chunk_whose_staged_count_does_not_match_deletes_nothing() {
+        let pool = test_pool().await;
+        let date = fixture_date(8);
+        clear_dates(&pool, &[date]).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                departure(date, "UNSTAGED", time(8, 0), None),
+                departure(date, "STALE", time(9, 0), None),
+            ],
+        )
+        .await
+        .expect("previous publish");
+
+        // Two-chunk publish whose first chunk never staged (as if handled by
+        // an older api): only the final chunk's one row is staged, but the
+        // publisher says the publish had two.
+        let publish_id = "test-count-mismatch";
+        upsert_schedule_destination_departures_publish_part(
+            &pool,
+            &[departure(date, "FINAL", time(10, 0), None)],
+            SchedulePublishPart {
+                publish_id,
+                first_chunk: false,
+                final_total_rows: Some(2),
+            },
+        )
+        .await
+        .expect("final chunk");
+
+        assert_eq!(
+            uids(&departure_tuples(&pool, date).await),
+            vec!["FINAL", "STALE", "UNSTAGED"],
+            "a mismatched count must leave every existing row in place"
+        );
+        assert_eq!(
+            staged_key_count(
+                &pool,
+                "schedule_destination_departures_publish_keys",
+                publish_id
+            )
+            .await,
+            0,
+            "staged keys are dropped even when the delete is skipped"
+        );
+
+        clear_dates(&pool, &[date]).await;
+    }
+
+    /// A newer publish of the same date supersedes an older in-flight one:
+    /// the newer publish's first chunk discards the older publish's staged
+    /// keys, so the older publish's final chunk fails closed rather than
+    /// deleting the newer publish's rows as "missing".
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_newer_publish_of_the_same_date_supersedes_an_older_in_flight_one() {
+        let pool = test_pool().await;
+        let date = fixture_date(9);
+        clear_dates(&pool, &[date]).await;
+
+        let part = |publish_id, first_chunk, final_total_rows| SchedulePublishPart {
+            publish_id,
+            first_chunk,
+            final_total_rows,
+        };
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &[calling_point(date, "OLD-PUB", 0, None)],
+            part("test-older", true, None),
+        )
+        .await
+        .expect("older publish, chunk 1");
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &[calling_point(date, "NEW-PUB", 0, None)],
+            part("test-newer", true, None),
+        )
+        .await
+        .expect("newer publish, chunk 1");
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &[calling_point(date, "OLD-PUB", 1, None)],
+            part("test-older", false, Some(2)),
+        )
+        .await
+        .expect("older publish, final chunk");
+
+        let keys: Vec<(String, i16)> = calling_point_tuples(&pool, date)
+            .await
+            .into_iter()
+            .map(|t| (t.0, t.1))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("NEW-PUB".to_string(), 0),
+                ("OLD-PUB".to_string(), 0),
+                ("OLD-PUB".to_string(), 1),
+            ],
+            "the superseded publish must not delete the newer publish's rows"
+        );
+
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &[calling_point(date, "NEW-PUB", 1, None)],
+            part("test-newer", false, Some(2)),
+        )
+        .await
+        .expect("newer publish, final chunk");
+        let keys: Vec<(String, i16)> = calling_point_tuples(&pool, date)
+            .await
+            .into_iter()
+            .map(|t| (t.0, t.1))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![("NEW-PUB".to_string(), 0), ("NEW-PUB".to_string(), 1)],
+            "the newer publish completes normally"
+        );
+
+        clear_dates(&pool, &[date]).await;
+    }
+
+    /// Same-key rows within one batch collapse to the first of them instead
+    /// of failing the whole batch (`ON CONFLICT DO UPDATE` cannot touch one
+    /// row twice in one statement) -- the same row the previous
+    /// `ON CONFLICT DO NOTHING` insert kept.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn duplicate_keys_within_one_batch_keep_the_first_row() {
+        let pool = test_pool().await;
+        let date = fixture_date(10);
+        clear_dates(&pool, &[date]).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                departure(date, "DUP", time(8, 0), Some("FIRST")),
+                departure(date, "DUP", time(8, 0), Some("SECOND")),
+            ],
+        )
+        .await
+        .expect("a duplicate key must not fail the batch");
+        upsert_schedule_calling_points_full(
+            &pool,
+            &[
+                calling_point(date, "DUP", 0, Some("FIRST")),
+                calling_point(date, "DUP", 0, Some("SECOND")),
+            ],
+        )
+        .await
+        .expect("a duplicate key must not fail the batch");
+
+        let departures = departure_tuples(&pool, date).await;
+        assert_eq!(departures.len(), 1);
+        assert_eq!(departures[0].2.as_deref(), Some("FIRST"));
+        let calling_points = calling_point_tuples(&pool, date).await;
+        assert_eq!(calling_points.len(), 1);
+        assert_eq!(calling_points[0].2.as_deref(), Some("FIRST"));
+
+        clear_dates(&pool, &[date]).await;
     }
 }
