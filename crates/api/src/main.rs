@@ -46,6 +46,65 @@ fn redact_share_token_uri(uri: &axum::http::Uri) -> String {
     uri.to_string()
 }
 
+/// Collapses every request that didn't match a registered route onto one
+/// constant Prometheus `endpoint` label, instead of `axum_prometheus`'s
+/// default behaviour of reporting the raw, verbatim request path.
+///
+/// **The bug this closes.** `axum_prometheus`'s `EndpointLabel::MatchedPath`
+/// (the crate's own default, still in effect here until this function is
+/// wired in below) tries `axum::extract::MatchedPath` first, but --
+/// unavoidably, since a request that matches no route has no `MatchedPath`
+/// at all -- falls back to `EndpointLabel::Exact`: the exact,
+/// attacker/caller-controlled request URI, verbatim, as the `endpoint`
+/// label on THREE metric families at once
+/// (`distant_signal_http_requests_total`,
+/// `distant_signal_http_requests_pending`,
+/// `distant_signal_http_requests_duration_seconds`). `api`'s own listener
+/// sits behind the chart's Ingress under a catch-all `path: /` rule (see
+/// `spawn_metrics_listener`'s own doc comment above, which cites this same
+/// fact for a different, already-fixed exposure), so it is reachable by
+/// the ordinary background noise every public HTTP endpoint on the
+/// internet receives -- scanners and bots probing `/wp-login.php`,
+/// `/.env`, `/.git/config`, `/actuator/health`, random exploit paths, and
+/// so on, none of which match any route this app registers. Each ONE of
+/// those is a distinct string, so `metrics_exporter_prometheus`'s
+/// in-process registry -- which never evicts a label set once created --
+/// grows one brand-new permanent time series (three, actually: one per
+/// metric family above, the two histograms carrying a full bucket array
+/// each) for every distinct junk path the pod has ever been probed with,
+/// for the rest of that process's life. That is unbounded memory growth
+/// with no natural ceiling, driven entirely by traffic this app has zero
+/// control over -- a textbook Prometheus/axum cardinality footgun, and a
+/// highly plausible match for a live incident where `api` (1) sits over
+/// its 1536Mi chart limit and (2) shows a restart cadence consistent with
+/// "grows until OOM-killed, restarts, registry resets to empty, repeats."
+///
+/// `api` is the only one of this workspace's eight binaries that wires up
+/// `axum_prometheus`'s per-HTTP-request auto-instrumentation at all (the
+/// other seven have no comparable HTTP surface, per
+/// docs/superpowers/specs/2026-08-29-metrics-design.md's own binary
+/// table) -- so this is the only place in the workspace this footgun can
+/// fire, and nothing in that spec's otherwise cardinality-conscious
+/// review (it explicitly calls out and rejects per-line/per-station
+/// labels elsewhere) considered THIS source of cardinality.
+///
+/// **The fix.** `axum_prometheus::EndpointLabel::MatchedPathWithFallbackFn`
+/// makes the fallback a caller-supplied function instead of "verbatim
+/// URI." Returning the same constant string for every input, regardless
+/// of what was requested, bounds the `endpoint` label's cardinality to
+/// "one entry per real route this app registers, plus exactly one more
+/// for everything that didn't match" -- closing the leak without losing
+/// any per-route granularity for legitimate traffic. A single shared
+/// bucket for all unmatched paths is also strictly more useful for an
+/// operator than either alternative: unlike `EndpointLabel::Exact`'s
+/// per-junk-path explosion, "how many requests per second are hitting
+/// nothing at all" is exactly the aggregate scanner-noise signal worth
+/// having, and it costs three fixed time series total instead of three
+/// per distinct probe.
+fn unmatched_route_endpoint_label(_exact_path: &str) -> String {
+    "/{unmatched}".to_string()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
@@ -94,6 +153,18 @@ async fn main() -> anyhow::Result<()> {
     let (metrics_layer, metrics_handle) = PrometheusMetricLayerBuilder::new()
         .with_prefix("distant_signal")
         .with_default_metrics()
+        // Unbounded Prometheus label cardinality fix (found investigating a
+        // live 2026-09-26 OOM incident: the `api` pod running over its
+        // 1536Mi chart limit and cycling through repeated restarts). See
+        // `unmatched_route_endpoint_label`'s own doc comment for the full
+        // mechanism -- this line is what actually installs the bounded
+        // fallback instead of `axum_prometheus`'s default
+        // `EndpointLabel::MatchedPath`, which silently falls back to
+        // `EndpointLabel::Exact` (the raw, unbounded request URI) for any
+        // request that doesn't match a route at all.
+        .with_endpoint_label_type(axum_prometheus::EndpointLabel::MatchedPathWithFallbackFn(
+            unmatched_route_endpoint_label,
+        ))
         .build_pair();
 
     let mut router = Router::new()
@@ -335,6 +406,49 @@ async fn session_cleanup_sweep_loop(app: App) {
                 tracing::error!(error = ?err, "session-cleanup sweep failed; will retry next interval");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod unmatched_route_endpoint_label_tests {
+    use super::unmatched_route_endpoint_label;
+
+    // 2026-09-26 unbounded-metric-cardinality regression: the whole point
+    // of this function is that its OUTPUT never varies with its input --
+    // that's what caps the `endpoint` label to one extra value instead of
+    // one per distinct request path a caller can make up.
+    #[test]
+    fn always_returns_the_same_constant_label() {
+        let inputs = [
+            "/",
+            "/wp-login.php",
+            "/.env",
+            "/.git/config",
+            "/actuator/health",
+            "/Journeys/shared/some-real-looking-token",
+            "",
+        ];
+        let labels: std::collections::HashSet<String> = inputs
+            .iter()
+            .map(|path| unmatched_route_endpoint_label(path))
+            .collect();
+        assert_eq!(
+            labels.len(),
+            1,
+            "every distinct unmatched path must collapse to the same label, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn does_not_echo_a_long_adversarial_path_into_the_label() {
+        // A caller can make the raw request path arbitrarily long (up to
+        // whatever axum/hyper's own URI-length limits allow) -- proving
+        // this stays a short constant, not something sized by the input,
+        // is the other half of "bounded," not just "same for every input."
+        let adversarial = "/".to_string() + &"x".repeat(8192);
+        let label = unmatched_route_endpoint_label(&adversarial);
+        assert_eq!(label, "/{unmatched}");
+        assert!(label.len() < 32);
     }
 }
 
