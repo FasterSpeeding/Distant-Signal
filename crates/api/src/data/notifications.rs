@@ -8,8 +8,18 @@
 //! ownership of an existing row on an `endpoint` conflict. Both are fixed
 //! here -- see [`validate_push_endpoint`] and [`upsert_push_subscription`]'s
 //! own doc comments for each half of the fix.
-
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+//!
+//! **L9 follow-up (2026-09-26 review):** [`validate_push_endpoint`] only
+//! ever ran once, at registration time. A DNS name that resolved to a
+//! public IP that day can rebind to an internal/private address by the
+//! time `crates/notifier` actually sends to it -- registration-time
+//! validation alone doesn't catch that. The actual resolve-and-check logic
+//! moved to `common::outbound_endpoint_guard::validate_outbound_url` (this
+//! function is now a thin, same-signature wrapper over it) specifically so
+//! `crates/notifier` -- which has no dependency on this crate -- can run
+//! the identical check again immediately before its own send, closing that
+//! window. See `common::outbound_endpoint_guard`'s own module doc and
+//! `crates/notifier/src/send.rs`'s send-time call for the other half.
 
 use anyhow::Result;
 use sqlx::PgPool;
@@ -19,123 +29,12 @@ use sqlx::PgPool;
 /// land somewhere inside the cluster's own network instead of at a real
 /// push service -- an SSRF vector, since that POST is issued server-side
 /// on every notification, using whatever URL this function let through.
-///
-/// Two checks, both required:
-///   1. Scheme must be `https` -- the Push API never issues a plain-`http`
-///      endpoint, and requiring TLS also means the host below is at least
-///      nominally reachable as a real internet service.
-///   2. The host must resolve -- via a REAL DNS lookup, not a string
-///      pattern match on the hostname -- to only public IP addresses.
-///      Resolving is deliberate, not merely parsing an IP literal out of
-///      the URL: a hostname like `attacker.example` can resolve to
-///      `10.0.0.7` just as easily as an IP-literal URL can name it
-///      directly, and a string check on the HOSTNAME alone (e.g. "does it
-///      look like `10.x.x.x`") would miss that entirely -- exactly the
-///      DNS-rebinding gap this function is written to close. Every IPv4
-///      and IPv6 private/loopback/link-local/multicast (and a few other
-///      non-public) range is rejected; see [`is_disallowed_ip`].
-///
-/// Deliberately NOT also restricted to a small allowlist of known
-/// push-service hosts (Mozilla autopush's `updates.push.services.
-/// mozilla.com`, FCM's `fcm.googleapis.com`, Apple's `web.push.apple.com`,
-/// etc.) -- that list is neither small nor stable in practice. Browsers
-/// that route push through microG/UnifiedPush distributors (common on
-/// de-Googled Android) or self-hosted relays (ntfy, Gotify, a
-/// self-hosted UnifiedPush distributor) legitimately use arbitrary
-/// operator-chosen hosts, so a hard allowlist would silently break real
-/// subscriptions for exactly the privacy-conscious users this app should
-/// not be turning away. The scheme + real-DNS-resolved-private-range check
-/// above is judged sufficient on its own.
+/// Thin wrapper over `common::outbound_endpoint_guard::validate_outbound_url`
+/// -- see that function's own doc comment for the full scheme/DNS-rebinding
+/// rationale, shared verbatim with `crates/notifier`'s own send-time
+/// re-check (this module's doc comment above).
 pub async fn validate_push_endpoint(endpoint: &str) -> Result<(), String> {
-    let url = url::Url::parse(endpoint).map_err(|_| "endpoint must be a valid URL".to_string())?;
-
-    if url.scheme() != "https" {
-        return Err("endpoint must use https".to_string());
-    }
-
-    let host = url
-        .host()
-        .ok_or_else(|| "endpoint must have a host".to_string())?
-        .to_owned();
-    let port = url.port_or_known_default().unwrap_or(443);
-
-    // `url::Host` is matched on directly (an already-typed IPv4/IPv6
-    // literal needs no resolution at all -- and skipping `lookup_host` for
-    // those avoids any ambiguity around whether the OS resolver treats an
-    // IPv6 literal's `[...]` bracket syntax as part of the hostname). A
-    // domain name gets a REAL async DNS resolution, not a hostname string
-    // match -- see this function's own doc comment on why that distinction
-    // matters (DNS rebinding).
-    let addrs: Vec<IpAddr> = match host {
-        url::Host::Ipv4(v4) => vec![IpAddr::V4(v4)],
-        url::Host::Ipv6(v6) => vec![IpAddr::V6(v6)],
-        url::Host::Domain(domain) => tokio::net::lookup_host((domain.as_str(), port))
-            .await
-            .map_err(|_| "endpoint host does not resolve".to_string())?
-            .map(|socket_addr| socket_addr.ip())
-            .collect(),
-    };
-    if addrs.is_empty() {
-        return Err("endpoint host does not resolve".to_string());
-    }
-
-    if addrs.iter().any(|addr| is_disallowed_ip(*addr)) {
-        return Err("endpoint host resolves to a disallowed address".to_string());
-    }
-    Ok(())
-}
-
-/// Every IPv4 and IPv6 non-public range worth rejecting an SSRF-candidate
-/// URL over. An IPv6 address that is really an IPv4-mapped address
-/// (`::ffff:a.b.c.d`) is unwrapped and re-checked against the IPv4 rules
-/// below rather than sailing through the IPv6 branch unexamined -- the
-/// same "attacker picks the representation that evades the filter" concern
-/// [`validate_push_endpoint`]'s own doc comment raises about DNS
-/// rebinding, applied to address FORM instead of resolution timing.
-fn is_disallowed_ip(addr: IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(v4) => is_disallowed_ipv4(v4),
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(mapped) => is_disallowed_ipv4(mapped),
-            None => {
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_multicast()
-                    || is_unique_local_v6(v6)
-                    || is_link_local_v6(v6)
-            }
-        },
-    }
-}
-
-fn is_disallowed_ipv4(v4: Ipv4Addr) -> bool {
-    v4.is_private() // RFC1918: 10/8, 172.16/12, 192.168/16
-        || v4.is_loopback() // 127/8
-        || v4.is_link_local() // 169.254/16
-        || v4.is_multicast()
-        || v4.is_broadcast()
-        || v4.is_unspecified() // 0.0.0.0
-        || v4.is_documentation() // 192.0.2/24, 198.51.100/24, 203.0.113/24
-        || is_carrier_grade_nat_v4(v4) // 100.64/10 (RFC6598)
-}
-
-/// `std::net::Ipv4Addr` has no stable `is_shared` yet -- this is that
-/// range's own check, kept as a tiny standalone function rather than an
-/// inline expression so its RFC citation has somewhere to live.
-fn is_carrier_grade_nat_v4(v4: Ipv4Addr) -> bool {
-    let [a, b, ..] = v4.octets();
-    a == 100 && (64..=127).contains(&b) // 100.64.0.0/10
-}
-
-/// fc00::/7 -- IPv6 Unique Local Addresses (RFC4193), the IPv6 rough
-/// equivalent of RFC1918.
-fn is_unique_local_v6(v6: Ipv6Addr) -> bool {
-    (v6.segments()[0] & 0xfe00) == 0xfc00
-}
-
-/// fe80::/10 -- IPv6 link-local (RFC4291).
-fn is_link_local_v6(v6: Ipv6Addr) -> bool {
-    (v6.segments()[0] & 0xffc0) == 0xfe80
+    common::outbound_endpoint_guard::validate_outbound_url(endpoint).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,6 +257,10 @@ mod db_tests {
 
 #[cfg(test)]
 mod validate_push_endpoint_tests {
+    use std::net::IpAddr;
+
+    use common::outbound_endpoint_guard::is_disallowed_ip;
+
     use super::*;
 
     #[tokio::test]

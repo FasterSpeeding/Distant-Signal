@@ -209,7 +209,6 @@ dependencies = [
  "tracing-subscriber",
  "trip-planner",
  "trust-schema",
- "url",
  "wiremock",
  "zip",
 ]
@@ -725,6 +724,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "url",
  "wiremock",
 ]
 

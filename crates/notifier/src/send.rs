@@ -51,6 +51,35 @@ pub async fn send_to_subscription(
     subscription: &PushSubscriptionRow,
     payload: &NotificationPayload,
 ) -> SendOutcome {
+    // L9 (2026-09-26 review): `crates/api::data::notifications::
+    // validate_push_endpoint` only ever validates an `endpoint` once, at
+    // registration time. A DNS-rebinding-capable attacker can register a
+    // subscription whose hostname resolves to a public IP that day, then
+    // repoint the same name at an internal/private/loopback address by the
+    // time this send actually runs -- possibly hours or days later, on a
+    // completely different notifier pod invocation, with no further
+    // opportunity for `api` to catch it. Re-running the SAME check here,
+    // immediately before the real send, closes that window: this is a
+    // fresh, real DNS resolution against the endpoint's CURRENT state, not
+    // a cached judgment from registration time. See
+    // `common::outbound_endpoint_guard`'s own module doc for the shared
+    // implementation both crates now call.
+    if let Err(err) =
+        common::outbound_endpoint_guard::validate_outbound_url(&subscription.endpoint).await
+    {
+        tracing::error!(
+            endpoint = %subscription.endpoint,
+            error = %err,
+            "push endpoint failed send-time re-validation -- it passed registration-time \
+             validation but now resolves to a disallowed (private/internal/loopback) address; \
+             refusing to send rather than risk an SSRF via DNS rebinding. Not treated as \
+             Expired: this may be a transient resolver issue rather than a genuinely hostile \
+             endpoint, so the subscription is kept and retried on the next real transition \
+             rather than deleted"
+        );
+        return SendOutcome::TransientFailure;
+    }
+
     let subscription_info = SubscriptionInfo::new(
         subscription.endpoint.clone(),
         subscription.p256dh.clone(),
@@ -214,6 +243,51 @@ mod tests {
         assert_eq!(
             classify_web_push_error(&web_push_error_for(http::StatusCode::BAD_REQUEST)),
             SendOutcome::TransientFailure
+        );
+    }
+
+    fn payload() -> NotificationPayload {
+        NotificationPayload {
+            title: "title".to_string(),
+            body: "body".to_string(),
+            url: "https://example.com/".to_string(),
+            tag: "tag".to_string(),
+        }
+    }
+
+    /// **L9 regression test.** A subscription whose `endpoint` resolves to
+    /// a private/internal address at SEND time -- imagine it passed
+    /// `crates/api`'s registration-time check when the DNS name still
+    /// pointed at a public IP, then got rebound -- must never reach the
+    /// real web-push send at all: `send_to_subscription` has to catch it
+    /// and refuse, not merely rely on `crates/api` having caught it once
+    /// in the past. Using a bare private IPv4 literal (not a hostname)
+    /// means this needs no real DNS/network access to fail the check --
+    /// `common::outbound_endpoint_guard::validate_outbound_url` parses an
+    /// IP literal locally.
+    #[tokio::test]
+    async fn refuses_to_send_when_the_endpoint_now_resolves_to_a_private_address() {
+        let subscription = PushSubscriptionRow {
+            id: 1,
+            endpoint: "https://10.0.0.7/push".to_string(),
+            p256dh: "p256dh".to_string(),
+            auth: "auth".to_string(),
+        };
+
+        let outcome = send_to_subscription(
+            "not-a-real-vapid-key",
+            "mailto:test@example.com",
+            &subscription,
+            &payload(),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            SendOutcome::TransientFailure,
+            "a send-time-disallowed endpoint must be refused before any VAPID/web-push work \
+             happens, and must not be classified as Expired (it might be a transient resolver \
+             blip, not a genuinely dead subscription)"
         );
     }
 }
