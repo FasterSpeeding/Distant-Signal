@@ -214,9 +214,7 @@ async fn get_line_schedule(
     // would 404 or serve yesterday's CIF-derived line schedule for the
     // first hour of every service day. `schedule_line_population` is keyed
     // by London rail-day date, never UTC.
-    let london_today = chrono::Utc::now()
-        .with_timezone(&chrono_tz::Europe::London)
-        .date_naive();
+    let london_today = super::london_today();
     let service_date = resolve_schedule_date(query.date, london_today);
     // No `custom-` id can reach `schedule_line_population` today: its only
     // producer iterates the static catalogue (`crates/schedule-reference`'s
@@ -294,9 +292,7 @@ async fn get_line_trains(
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<LineTrainJson>>, (StatusCode, String)> {
     // Same London-local "today" as `get_line_schedule` above, same reason.
-    let london_today = chrono::Utc::now()
-        .with_timezone(&chrono_tz::Europe::London)
-        .date_naive();
+    let london_today = super::london_today();
     let service_date = resolve_schedule_date(query.date, london_today);
     // Same gate, same rationale, same 404 as `get_line_schedule` above --
     // these two routes read the same table off the same caller-supplied id.
@@ -2588,7 +2584,7 @@ mod db_tests {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-schedule-2a-today").await;
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let population = serde_json::json!([
             {
                 "uid": "C12345",
@@ -2666,7 +2662,7 @@ mod db_tests {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-schedule-2a-stale").await;
 
-        let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        let yesterday = crate::routes::london_today() - chrono::Duration::days(1);
         sqlx::query(
             "INSERT INTO schedule_line_population (line_id, service_date, population) \
              VALUES ($1, $2, '[]')",
@@ -2703,9 +2699,7 @@ mod db_tests {
         delete_schedule_population_fixture(&pool, "test-schedule-2a-utc-gap").await;
 
         let utc_today = chrono::Utc::now().date_naive();
-        let london_today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let london_today = crate::routes::london_today();
 
         if utc_today == london_today {
             // Outside the UTC/London date-boundary gap right now -- see
@@ -2800,7 +2794,7 @@ mod db_tests {
             .await
             .ok();
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let population = serde_json::json!([
             {"uid": "TEST-TRAINS-3-A", "calling_points": [{"tiploc": "PADTON", "kind": "Origin", "booked_arrival": null, "booked_departure": "08:15:00", "is_half_minute_arrival": false, "is_half_minute_departure": false}]},
             {"uid": "TEST-TRAINS-3-B", "calling_points": []},
@@ -2847,7 +2841,7 @@ mod db_tests {
             .await
             .ok();
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let population = serde_json::json!([
             {"uid": "TEST-TRAINS-3-LIVE", "calling_points": []},
         ]);
@@ -2914,9 +2908,7 @@ mod db_tests {
         delete_schedule_population_fixture(&pool, "test-trains-3-utc-gap").await;
 
         let utc_today = chrono::Utc::now().date_naive();
-        let london_today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let london_today = crate::routes::london_today();
 
         if utc_today == london_today {
             // Outside the UTC/London date-boundary gap right now -- see
@@ -2980,7 +2972,7 @@ mod db_tests {
         .await
         .expect("seed tiploc_crs");
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let population = serde_json::json!([{
             "uid": "TEST-TRAINS-3-XVR",
             "calling_points": [
@@ -3045,7 +3037,7 @@ mod db_tests {
         .await
         .expect("seed stanox_crs");
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let population = serde_json::json!([{
             "uid": "TEST-TRAINS-3-REALDEST",
             "calling_points": [

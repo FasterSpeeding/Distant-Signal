@@ -139,9 +139,7 @@ async fn get_station_schedule_departures(
     // CIF-derived schedule (or 404'd) for the first hour of every service
     // day. `schedule_network_departures` is keyed by London rail-day date,
     // never UTC, so the lookup key must be computed the same way.
-    let today = chrono::Utc::now()
-        .with_timezone(&chrono_tz::Europe::London)
-        .date_naive();
+    let today = super::london_today();
     let Some(departures) = queries::latest_schedule_network_departures(&app.database, &crs, today)
         .await
         .map_err(internal_error)?
@@ -578,7 +576,7 @@ mod db_tests {
         let pool = connect().await;
         delete_schedule_departures_fixture(&pool, "ZQY").await;
 
-        let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        let yesterday = crate::routes::london_today() - chrono::Duration::days(1);
         sqlx::query(
             "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZQY', $1, '[]')",
         )
@@ -621,9 +619,7 @@ mod db_tests {
         delete_schedule_departures_fixture(&pool, "ZQW").await;
 
         let utc_today = chrono::Utc::now().date_naive();
-        let london_today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let london_today = crate::routes::london_today();
 
         if utc_today == london_today {
             // Outside the UTC/London date-boundary gap right now -- the
@@ -680,7 +676,7 @@ mod db_tests {
         let pool = connect().await;
         delete_schedule_departures_fixture(&pool, "ZQZ").await;
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         sqlx::query(
             "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZQZ', $1, '[]')",
         )
@@ -719,7 +715,7 @@ mod db_tests {
         let pool = connect().await;
         delete_schedule_departures_fixture(&pool, "ZRA").await;
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let departures = serde_json::json!([
             {"uid": "C11052", "scheduled": "08:22:00", "destination_crs": "CRE"},
             {"uid": "C99999", "scheduled": "09:00:00", "destination_crs": null},
@@ -781,7 +777,7 @@ mod db_tests {
         let pool = connect().await;
         delete_schedule_departures_fixture(&pool, "ZRB").await;
 
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let departures = serde_json::json!([
             {"uid": "C11052", "scheduled": "08:22:00", "day_offset": 0, "destination_crs": "CRE"},
             {"uid": "F49687", "scheduled": "00:07:00", "day_offset": 1, "destination_crs": "SNF"},

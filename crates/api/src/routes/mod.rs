@@ -30,6 +30,24 @@ pub mod train;
 pub mod trains;
 pub mod trips;
 
+/// The current instant on the Europe/London wall clock.
+///
+/// Every rail-day-keyed table this API reads (`schedule_network_departures`,
+/// `schedule_line_population`, `schedule_destination_departures`, ...) is
+/// keyed by London service date, never UTC: for an hour every night (all of
+/// 23:00-00:00 UTC during BST) `Utc::now().date_naive()` is still London's
+/// yesterday. Routes -- and the db tests that seed "today" for them -- must
+/// all derive "today"/"now" from this one function so they can never
+/// disagree about which day it is.
+pub(crate) fn london_now() -> chrono::DateTime<chrono_tz::Tz> {
+    chrono::Utc::now().with_timezone(&chrono_tz::Europe::London)
+}
+
+/// London-local "today" -- see [`london_now`].
+pub(crate) fn london_today() -> chrono::NaiveDate {
+    london_now().date_naive()
+}
+
 pub fn public_router() -> Router {
     // `health::router()` already declares its own `/health` route, so this
     // must `merge` (mount directly under `/public`) rather than `nest`
