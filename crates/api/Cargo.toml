@@ -26,6 +26,10 @@ glob = "0.3.3"
 # directly rather than reaching through sqlx's own re-export surface (which
 # doesn't expose it).
 log = "0.4"
+# Hand-emitted counters (e.g. `api_trust_event_backlog_rejected_rows_total`).
+# Same facade `axum-prometheus` already records through, so they reach the
+# same recorder and `/metrics` listener.
+metrics = "0.24"
 oauth2 = "5.0"
 openidconnect = "4.0"
 pdf-extract = "0.12"

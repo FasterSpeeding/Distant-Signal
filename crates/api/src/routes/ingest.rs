@@ -316,14 +316,48 @@ async fn post_train_forward_signals(
 /// `trust-backlog-consumer`'s per-cycle batch of key-journey-point TRUST
 /// events, scoped to catalogued-line CRSs -- see
 /// `crate::data::trust_event_backlog::upsert_trust_event_backlog_batch`.
+///
+/// **A partially rejected batch is still a 200.** Rows refused for a data
+/// error (a constraint violation or invalid input) are listed in the
+/// response's `rejected` field, and every other row is inserted. Returning
+/// an error status instead would make the consumer retry a batch that can
+/// never fully succeed -- the production failure this shape exists to end
+/// (one bad row in a batch, replayed every 30 seconds for days, with over a
+/// thousand good rows stuck behind it). A 200 keeps the route
+/// backward-compatible too: a consumer that predates `rejected` ACKs the
+/// batch and moves on. Because such a consumer never looks at `rejected`,
+/// this route logs every rejected row itself (with the whole event, so it
+/// can be recovered by hand) and counts it in
+/// `distant_signal_api_trust_event_backlog_rejected_rows_total{reason}`.
+///
+/// A transient failure (connection, pool timeout, serialization failure,
+/// lock or statement timeout, or any unexpected SQLSTATE) is still a 500,
+/// so the consumer keeps retrying.
 async fn post_trust_event_backlog(
     State(app): State<App>,
     Json(events): Json<Vec<common::TrustBacklogEventMessage>>,
-) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let inserted =
+) -> Result<Json<common::TrustBacklogIngestResponse>, (StatusCode, String)> {
+    let outcome =
         crate::data::trust_event_backlog::upsert_trust_event_backlog_batch(&app.database, &events)
             .await
             .map_err(internal_error)?;
+    for rejected in &outcome.rejected {
+        tracing::warn!(
+            index = rejected.index,
+            dedup_key = %rejected.dedup_key,
+            sqlstate = %rejected.sqlstate,
+            reason = %rejected.reason,
+            constraint = ?rejected.constraint,
+            message = %rejected.message,
+            event = ?events.get(rejected.index),
+            "rejected trust-event-backlog row; inserted the rest of its batch"
+        );
+        metrics::counter!(
+            common::metrics::metric_name("api_trust_event_backlog_rejected_rows_total"),
+            "reason" => rejected.reason.clone()
+        )
+        .increment(1);
+    }
 
     // Additional, parallel write onto the shared trains/train_movement_events/
     // train_current_state tables -- see ingest_shared_movements_batch's own
@@ -342,7 +376,10 @@ async fn post_trust_event_backlog(
         }
     }
 
-    Ok(Json(UpsertResponse { upserted: inserted }))
+    Ok(Json(common::TrustBacklogIngestResponse {
+        upserted: outcome.inserted,
+        rejected: outcome.rejected,
+    }))
 }
 
 /// `trust-consumer`'s periodic reference reload -- pending and
@@ -2265,6 +2302,72 @@ mod db_tests {
         );
 
         delete_destination_departures_fixture(&pool, "2099-02-01").await;
+    }
+
+    /// The route-level contract for a partially rejected batch: still a
+    /// 200 (so a consumer that predates `rejected` ACKs it), the valid row
+    /// lands, and the bad row is named in `rejected`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                trust_event_backlog_post_with_one_bad_row -- --ignored --test-threads=1`"]
+    async fn trust_event_backlog_post_with_one_bad_row_is_a_200_that_reports_it() {
+        let pool = connect().await;
+        let cleanup = "DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-route-poison-%'";
+        sqlx::query(cleanup)
+            .execute(&pool)
+            .await
+            .expect("pre-clean");
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let row = |msg_type: &str, dedup_key: &str| {
+            json!({
+                "train_id": "TEST-ROUTE-POISON",
+                "service_date": "2026-09-05",
+                "msg_type": msg_type,
+                "dedup_key": dedup_key,
+            })
+        };
+        let body = json!([
+            row("0003", "test-route-poison-good"),
+            row("0009", "test-route-poison-bad"),
+        ]);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/trust-event-backlog")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let landed: Vec<String> = sqlx::query_scalar(
+            "SELECT dedup_key FROM trust_event_backlog WHERE dedup_key LIKE 'test-route-poison-%'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+        sqlx::query(cleanup).execute(&pool).await.expect("cleanup");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(landed, vec!["test-route-poison-good".to_string()]);
+        let parsed: common::TrustBacklogIngestResponse =
+            serde_json::from_slice(&body).expect("response parses");
+        assert_eq!(parsed.upserted, 1);
+        assert_eq!(parsed.rejected.len(), 1);
+        assert_eq!(parsed.rejected[0].index, 1);
+        assert_eq!(parsed.rejected[0].dedup_key, "test-route-poison-bad");
+        assert_eq!(parsed.rejected[0].reason, "check_violation");
+        // The old wire field is still there for old consumers.
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["upserted"], 1);
     }
 
     #[tokio::test]

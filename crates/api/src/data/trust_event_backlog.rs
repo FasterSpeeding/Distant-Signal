@@ -12,44 +12,204 @@ use sqlx::PgPool;
 use trust_schema::journey::{self, DerivedState};
 use trust_schema::schema::Movement;
 
+/// What [`upsert_trust_event_backlog_batch`] did with one batch.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BacklogBatchOutcome {
+    /// Rows this call actually inserted -- not the batch length: a
+    /// redelivered batch legitimately inserts 0.
+    pub inserted: u64,
+    /// Rows refused because of a data error. Empty on the fast path.
+    pub rejected: Vec<common::RejectedTrustBacklogRow>,
+}
+
 /// Blind, at-least-once-safe batch insert -- `ON CONFLICT DO NOTHING` on
 /// `dedup_key` (the same posture `train_movement_events` already uses for
 /// the same reason: Redis Streams' own at-least-once delivery means a
 /// redelivered batch after a crash-before-XACK is expected, not
-/// exceptional). Returns how many rows this call actually inserted (for
-/// the caller's own logging), not the batch length -- a redelivered batch
-/// legitimately inserts 0.
+/// exceptional).
+///
+/// **One bad row no longer fails the batch.** The whole batch is first
+/// inserted in one transaction, exactly as before. If that fails with a
+/// *data* error (see [`classify_data_error`]: a constraint violation or
+/// invalid input, which no retry can ever fix), the batch is inserted again
+/// row by row, each row behind its own savepoint, so every valid row lands
+/// and only the offending rows come back in
+/// [`BacklogBatchOutcome::rejected`]. Before this, a batch holding one row
+/// the table's msg_type CHECK refused (TRUST `0005`, before migration
+/// 20260926210000) failed as a whole; trust-backlog-consumer never XACKed
+/// it, and XAUTOCLAIM replayed the same failing batch every 30 seconds,
+/// holding more than a thousand valid rows hostage until the capped stream
+/// trimmed them.
+///
+/// Any other error -- a dropped connection, a pool timeout, a serialization
+/// failure, a lock or statement timeout, or an unexpected SQLSTATE -- still
+/// fails the whole call (with nothing committed), so the caller answers 500
+/// and the consumer retries the batch later.
 pub async fn upsert_trust_event_backlog_batch(
     pool: &PgPool,
     events: &[TrustBacklogEventMessage],
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<BacklogBatchOutcome> {
+    match insert_batch_in_one_transaction(pool, events).await {
+        Ok(inserted) => Ok(BacklogBatchOutcome {
+            inserted,
+            rejected: Vec::new(),
+        }),
+        Err(err) if classify_data_error(&err).is_some() => {
+            tracing::warn!(
+                error = %err,
+                batch_len = events.len(),
+                "trust-event-backlog batch insert hit a data error; retrying row by row so the valid rows land"
+            );
+            insert_rows_individually(pool, events).await
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn insert_backlog_row(
+    event: &TrustBacklogEventMessage,
+) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(
+        "INSERT INTO trust_event_backlog \
+            (crs, train_uid, train_id, service_date, msg_type, event_type, \
+             planned_timestamp, actual_timestamp, variation_status, delay_minutes, dedup_key) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+         ON CONFLICT (dedup_key) DO NOTHING",
+    )
+    .bind(&event.crs)
+    .bind(&event.train_uid)
+    .bind(&event.train_id)
+    .bind(event.service_date)
+    .bind(&event.msg_type)
+    .bind(&event.event_type)
+    .bind(event.planned_timestamp)
+    .bind(event.actual_timestamp)
+    .bind(&event.variation_status)
+    .bind(event.delay_minutes)
+    .bind(&event.dedup_key)
+}
+
+/// The fast path: the whole batch in one transaction.
+async fn insert_batch_in_one_transaction(
+    pool: &PgPool,
+    events: &[TrustBacklogEventMessage],
+) -> Result<u64, sqlx::Error> {
     let mut inserted = 0u64;
     let mut tx = pool.begin().await?;
     for event in events {
-        let result = sqlx::query(
-            "INSERT INTO trust_event_backlog \
-                (crs, train_uid, train_id, service_date, msg_type, event_type, \
-                 planned_timestamp, actual_timestamp, variation_status, delay_minutes, dedup_key) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
-             ON CONFLICT (dedup_key) DO NOTHING",
-        )
-        .bind(&event.crs)
-        .bind(&event.train_uid)
-        .bind(&event.train_id)
-        .bind(event.service_date)
-        .bind(&event.msg_type)
-        .bind(&event.event_type)
-        .bind(event.planned_timestamp)
-        .bind(event.actual_timestamp)
-        .bind(&event.variation_status)
-        .bind(event.delay_minutes)
-        .bind(&event.dedup_key)
-        .execute(&mut *tx)
-        .await?;
-        inserted += result.rows_affected();
+        inserted += insert_backlog_row(event)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
     }
     tx.commit().await?;
     Ok(inserted)
+}
+
+/// The fallback path: still one transaction, but each row behind its own
+/// savepoint, so a data error rolls back only that row. A non-data error
+/// returns straight away, dropping (and so rolling back) the transaction:
+/// the caller retries the whole batch, and `ON CONFLICT (dedup_key) DO
+/// NOTHING` makes that retry safe either way.
+async fn insert_rows_individually(
+    pool: &PgPool,
+    events: &[TrustBacklogEventMessage],
+) -> anyhow::Result<BacklogBatchOutcome> {
+    let mut outcome = BacklogBatchOutcome::default();
+    let mut tx = pool.begin().await?;
+    for (index, event) in events.iter().enumerate() {
+        sqlx::query("SAVEPOINT backlog_row")
+            .execute(&mut *tx)
+            .await?;
+        match insert_backlog_row(event).execute(&mut *tx).await {
+            Ok(result) => {
+                sqlx::query("RELEASE SAVEPOINT backlog_row")
+                    .execute(&mut *tx)
+                    .await?;
+                outcome.inserted += result.rows_affected();
+            }
+            Err(err) => {
+                let Some(data_error) = classify_data_error(&err) else {
+                    return Err(err.into());
+                };
+                sqlx::query("ROLLBACK TO SAVEPOINT backlog_row")
+                    .execute(&mut *tx)
+                    .await?;
+                outcome.rejected.push(common::RejectedTrustBacklogRow {
+                    index,
+                    dedup_key: event.dedup_key.clone(),
+                    sqlstate: data_error.sqlstate,
+                    reason: data_error.reason.to_string(),
+                    constraint: data_error.constraint,
+                    message: data_error.message,
+                });
+            }
+        }
+    }
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+/// A Postgres error caused by the row itself rather than by the database
+/// or the connection -- see [`classify_data_error`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DataError {
+    pub sqlstate: String,
+    pub reason: &'static str,
+    pub constraint: Option<String>,
+    pub message: String,
+}
+
+/// `Some` only for a data error: SQLSTATE class 23 (integrity constraint
+/// violation: check, not-null, unique, foreign-key, exclusion) or class 22
+/// (data exception: invalid text representation, out-of-range value, a NUL
+/// byte in text, and so on). Resending such a row can never succeed.
+///
+/// Everything else is `None` and must fail the request so the consumer
+/// retries: connection and I/O errors, pool timeouts, class 40
+/// (serialization failure, deadlock), class 57 (query canceled / statement
+/// timeout, admin shutdown), 55P03 (lock timeout), class 53 (out of
+/// memory/disk), and any SQLSTATE this function does not expect, such as a
+/// class 42 schema mismatch during a rolling deploy.
+pub(crate) fn classify_data_error(err: &sqlx::Error) -> Option<DataError> {
+    let sqlx::Error::Database(db) = err else {
+        return None;
+    };
+    let sqlstate = db.code()?.into_owned();
+    let reason = data_error_reason(&sqlstate)?;
+    Some(DataError {
+        reason,
+        constraint: db.constraint().map(str::to_string),
+        message: db.message().to_string(),
+        sqlstate,
+    })
+}
+
+/// Maps a class 22/23 SQLSTATE to its Postgres condition name (from the
+/// Postgres "Error Codes" appendix); `None` for any other class. Unlisted
+/// codes in either class fall back to the class name, so the result is
+/// always one of a fixed set -- it is used as a metric label.
+fn data_error_reason(sqlstate: &str) -> Option<&'static str> {
+    let reason = match sqlstate {
+        "23000" => "integrity_constraint_violation",
+        "23001" => "restrict_violation",
+        "23502" => "not_null_violation",
+        "23503" => "foreign_key_violation",
+        "23505" => "unique_violation",
+        "23514" => "check_violation",
+        "23P01" => "exclusion_violation",
+        "22001" => "string_data_right_truncation",
+        "22003" => "numeric_value_out_of_range",
+        "22007" => "invalid_datetime_format",
+        "22008" => "datetime_field_overflow",
+        "22021" => "character_not_in_repertoire",
+        "22P02" => "invalid_text_representation",
+        "22P05" => "untranslatable_character",
+        code if code.starts_with("23") => "integrity_constraint_violation",
+        code if code.starts_with("22") => "data_exception",
+        _ => return None,
+    };
+    Some(reason)
 }
 
 /// Mirrors one `TrustBacklogEventMessage` onto the shared `trains`/
@@ -571,7 +731,8 @@ mod db_tests {
         let inserted = upsert_trust_event_backlog_batch(&pool, &events)
             .await
             .expect("insert");
-        assert_eq!(inserted, 2);
+        assert_eq!(inserted.inserted, 2);
+        assert!(inserted.rejected.is_empty());
 
         sqlx::query("DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-dedup-key-%'")
             .execute(&pool)
@@ -610,11 +771,14 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
-        assert_eq!(inserted.expect("insert"), 2);
+        let outcome = inserted.expect("insert");
+        assert_eq!(outcome.inserted, 2);
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
     }
 
     /// The widened CHECK still rejects the message types neither backlog
     /// replay path handles (`0006`/`0007` carry no location or timing).
+    /// The row is now reported as rejected instead of failing the call.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 the_msg_type_check_still_rejects_change_of_origin -- --ignored`"]
@@ -631,11 +795,161 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
-        let err = result.expect_err("0006 must violate the msg_type CHECK");
-        assert!(
-            format!("{err:#}").contains("trust_event_backlog_msg_type_check"),
+        let outcome = result.expect("a data error is reported per row, not as an Err");
+        assert_eq!(outcome.inserted, 0);
+        assert_eq!(outcome.rejected.len(), 1);
+        assert_eq!(
+            outcome.rejected[0].constraint.as_deref(),
+            Some("trust_event_backlog_msg_type_check"),
+            "unexpected rejection: {:?}",
+            outcome.rejected[0]
+        );
+    }
+
+    /// The production incident: one row the msg_type CHECK refuses used to
+    /// fail the whole batch, and every valid row beside it with it. Now the
+    /// valid rows land and only the bad one is reported. `0009` is not a
+    /// TRUST message type at all, so it stays invalid however the CHECK is
+    /// widened in future.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_batch_with_one_bad_row_inserts_the_rest -- --ignored`"]
+    async fn a_batch_with_one_bad_row_inserts_the_rest_and_reports_the_bad_one() {
+        let pool = connect().await;
+        sqlx::query(
+            "DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-dedup-key-poison-%'",
+        )
+        .execute(&pool)
+        .await
+        .expect("pre-clean");
+        let bad = TrustBacklogEventMessage {
+            msg_type: "0009".to_string(),
+            ..fixture_event("TEST-TRUST-BACKLOG-POISON", "test-dedup-key-poison-bad")
+        };
+        let events = vec![
+            fixture_event("TEST-TRUST-BACKLOG-POISON", "test-dedup-key-poison-1"),
+            bad,
+            fixture_event("TEST-TRUST-BACKLOG-POISON", "test-dedup-key-poison-2"),
+        ];
+
+        let result = upsert_trust_event_backlog_batch(&pool, &events).await;
+        let landed: Vec<String> = sqlx::query_scalar(
+            "SELECT dedup_key FROM trust_event_backlog \
+             WHERE dedup_key LIKE 'test-dedup-key-poison-%' ORDER BY dedup_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+        // A redelivery of the same batch: the good rows now conflict (not
+        // rejected, not inserted twice) and the bad row is rejected again.
+        let redelivered = upsert_trust_event_backlog_batch(&pool, &events).await;
+        sqlx::query(
+            "DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-dedup-key-poison-%'",
+        )
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+
+        let outcome = result.expect("a data error must not fail the batch");
+        assert_eq!(outcome.inserted, 2, "both valid rows land");
+        assert_eq!(
+            landed,
+            vec!["test-dedup-key-poison-1", "test-dedup-key-poison-2"]
+        );
+        assert_eq!(outcome.rejected.len(), 1);
+        let rejected = &outcome.rejected[0];
+        assert_eq!(rejected.index, 1);
+        assert_eq!(rejected.dedup_key, "test-dedup-key-poison-bad");
+        assert_eq!(rejected.sqlstate, "23514");
+        assert_eq!(rejected.reason, "check_violation");
+        assert_eq!(
+            rejected.constraint.as_deref(),
+            Some("trust_event_backlog_msg_type_check")
+        );
+
+        let redelivered = redelivered.expect("redelivery");
+        assert_eq!(
+            redelivered.inserted, 0,
+            "ON CONFLICT DO NOTHING still holds"
+        );
+        assert_eq!(redelivered.rejected.len(), 1);
+        assert_eq!(redelivered.rejected[0].index, 1);
+    }
+
+    /// A transient failure is not a data error: it must still fail the
+    /// whole call, so the route answers 500 and the consumer retries, and
+    /// it must commit nothing. Simulated with a lock timeout (SQLSTATE
+    /// 55P03): another transaction holds the table exclusively while this
+    /// pool's connections give up after 200ms.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_transient_failure_still_fails_the_whole_batch -- --ignored`"]
+    async fn a_transient_failure_still_fails_the_whole_batch() {
+        let pool = connect().await;
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let impatient = PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("SET lock_timeout = '200ms'")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .expect("connect impatient pool");
+
+        let mut blocker = pool.begin().await.expect("begin blocker");
+        sqlx::query("LOCK TABLE trust_event_backlog IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *blocker)
+            .await
+            .expect("lock table");
+
+        let events = vec![fixture_event(
+            "TEST-TRUST-BACKLOG-TRANSIENT",
+            "test-dedup-key-transient",
+        )];
+        let result = upsert_trust_event_backlog_batch(&impatient, &events).await;
+        blocker.rollback().await.expect("release lock");
+
+        let err = result.expect_err("a lock timeout must fail the batch, not reject rows");
+        let sqlstate = err
+            .downcast_ref::<sqlx::Error>()
+            .and_then(|e| e.as_database_error())
+            .and_then(|db| db.code())
+            .map(|c| c.into_owned());
+        assert_eq!(
+            sqlstate.as_deref(),
+            Some("55P03"),
             "unexpected error: {err:#}"
         );
+        let landed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM trust_event_backlog WHERE dedup_key = 'test-dedup-key-transient'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(landed, 0);
+    }
+
+    /// A connection that cannot be established at all is the plainest
+    /// transient failure.
+    #[tokio::test]
+    async fn an_unreachable_database_fails_the_whole_batch() {
+        let unreachable = PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(2))
+            .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let events = vec![fixture_event(
+            "TEST-TRUST-BACKLOG-DOWN",
+            "test-dedup-key-down",
+        )];
+
+        let result = upsert_trust_event_backlog_batch(&unreachable, &events).await;
+
+        assert!(result.is_err(), "got {result:?}");
     }
 
     #[tokio::test]
@@ -648,12 +962,16 @@ mod db_tests {
         let first = upsert_trust_event_backlog_batch(&pool, std::slice::from_ref(&event))
             .await
             .expect("first insert");
-        assert_eq!(first, 1);
+        assert_eq!(first.inserted, 1);
 
         let redelivered = upsert_trust_event_backlog_batch(&pool, &[event])
             .await
             .expect("redelivered insert");
-        assert_eq!(redelivered, 0, "same dedup_key must not insert twice");
+        assert_eq!(
+            redelivered,
+            BacklogBatchOutcome::default(),
+            "same dedup_key must not insert twice, and a conflict is not a rejection"
+        );
 
         sqlx::query("DELETE FROM trust_event_backlog WHERE dedup_key = 'test-dedup-key-3'")
             .execute(&pool)
@@ -1606,5 +1924,50 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    #[test]
+    fn constraint_violations_and_invalid_input_are_data_errors() {
+        assert_eq!(data_error_reason("23514"), Some("check_violation"));
+        assert_eq!(data_error_reason("23502"), Some("not_null_violation"));
+        assert_eq!(
+            data_error_reason("22P02"),
+            Some("invalid_text_representation")
+        );
+        assert_eq!(
+            data_error_reason("22021"),
+            Some("character_not_in_repertoire")
+        );
+        assert_eq!(
+            data_error_reason("23999"),
+            Some("integrity_constraint_violation")
+        );
+        assert_eq!(data_error_reason("22999"), Some("data_exception"));
+    }
+
+    #[test]
+    fn transient_and_unexpected_sqlstates_are_not_data_errors() {
+        for code in [
+            "40001", // serialization_failure
+            "40P01", // deadlock_detected
+            "57014", // query_canceled (statement_timeout)
+            "55P03", // lock_not_available (lock_timeout)
+            "08006", // connection_failure
+            "53300", // too_many_connections
+            "42703", // undefined_column, e.g. mid rolling deploy
+        ] {
+            assert_eq!(data_error_reason(code), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn non_database_errors_are_not_data_errors() {
+        assert!(classify_data_error(&sqlx::Error::PoolTimedOut).is_none());
+        assert!(classify_data_error(&sqlx::Error::Io(std::io::Error::other("reset"))).is_none());
     }
 }
