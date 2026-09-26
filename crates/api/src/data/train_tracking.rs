@@ -583,6 +583,27 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
 /// Movements stream -- the only feed this set exists to recognize messages
 /// from -- still carries anything for a service (`MAX_PIN_AGE` is 6 hours;
 /// an overnight service spans one calendar boundary, not two).
+///
+/// **`service_date` ceiling, added for the 2026-09-26 review finding H3.**
+/// The floor above bounds the PAST but this `WHERE` clause had no bound on
+/// the FUTURE at all: a recurring daily `train_uid` (a Mon-Fri commute, or
+/// any "track tomorrow's departure" journey template) gets its NEXT running
+/// pinned well before that running's own day arrives, and with no ceiling
+/// that subscription was already "active" -- already sitting in
+/// `trust-consumer`'s `by_train_uid` direct-match index -- for however many
+/// days out it was created. Combined with `activation_is_for_service_date`'s
+/// now-closed D+1 date-arithmetic gap, TODAY's Activation of that same uid
+/// could claim TOMORROW's subscription outright. `CURRENT_DATE + INTERVAL
+/// '1 day'` is the right ceiling rather than `CURRENT_DATE` itself: it is
+/// exactly the window `activation_is_for_service_date`'s legitimate D+1
+/// (post-midnight-service) branch needs a subscription to already be
+/// present for, and finding H3's OWN fix (this subscription's
+/// `pin_scheduled_departure` must itself fall in the Activation's rail day)
+/// is what now keeps an ordinary tomorrow-daytime subscription from being
+/// misattributed while still `service_date <= CURRENT_DATE + 1`. A
+/// subscription for several days out has no legitimate reason to be in this
+/// set yet; it becomes "active" the day this floor/ceiling window reaches
+/// it, same as any other.
 pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<TrackedTrainRef>> {
     let rows = sqlx::query_as::<_, TrackedTrainRow>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
@@ -593,6 +614,7 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          WHERE tt.resolution_status != 'unresolved' \
            AND tt.service_date >= CURRENT_DATE - INTERVAL '2 days' \
+           AND tt.service_date <= CURRENT_DATE + INTERVAL '1 day' \
            AND (cs.status IS NULL OR cs.status NOT IN ('completed', 'cancelled'))",
     )
     .fetch_all(pool)
@@ -5610,6 +5632,85 @@ mod db_tests {
             !refs.iter().any(|r| r.id == stale_id),
             "a ten-day-old subscription has nothing left for trust-consumer's live stream to \
              say about it and must not stay in the active set forever"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// **The 2026-09-26 review's finding H3 regression test**, the future
+    /// half of the same gap: the floor above bounds the past, but nothing
+    /// bounded the future, so a subscription for a recurring uid's running
+    /// several days from now was already "active" -- already reachable via
+    /// `trust-consumer`'s `by_train_uid` direct-match index -- long before
+    /// its own day arrived. Combined with `activation_is_for_service_date`'s
+    /// now-fixed D+1 gap this let TODAY's Activation of a shared `train_uid`
+    /// misattribute a completely different, not-yet-run day's subscription.
+    ///
+    /// Three subscriptions asserted: today's is active (as ever), TOMORROW's
+    /// stays active too (finding H3's OWN fix, the `pin_scheduled_departure`
+    /// timing check in `activation_is_for_service_date`, is what now keeps
+    /// that legitimately in-range without being misattributed), and one ten
+    /// days out is excluded.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_active_tracked_trains_excludes_a_far_future_service_date \
+                -- --ignored --test-threads=1`"]
+    async fn list_active_tracked_trains_excludes_a_far_future_service_date() {
+        let pool = connect().await;
+        let user_id = "TEST-ACTIVE-FUTURE";
+        seed_user(&pool, user_id).await;
+
+        let today = chrono::Utc::now().date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+        let far_future = today + chrono::Duration::days(10);
+        let today_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            today,
+            Some("WAT"),
+            Some(today.and_hms_opt(18, 32, 0).unwrap().and_utc()),
+            "resolved",
+            None,
+        )
+        .await;
+        let tomorrow_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            tomorrow,
+            Some("WAT"),
+            Some(tomorrow.and_hms_opt(17, 30, 0).unwrap().and_utc()),
+            "resolved",
+            None,
+        )
+        .await;
+        let far_future_id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            far_future,
+            Some("WAT"),
+            Some(far_future.and_hms_opt(18, 32, 0).unwrap().and_utc()),
+            "resolved",
+            None,
+        )
+        .await;
+
+        let refs = list_active_tracked_trains(&pool)
+            .await
+            .expect("list_active_tracked_trains");
+        assert!(
+            refs.iter().any(|r| r.id == today_id),
+            "today's subscription is exactly what this set exists for"
+        );
+        assert!(
+            refs.iter().any(|r| r.id == tomorrow_id),
+            "tomorrow's subscription must stay in range -- the legitimate D+1 case needs it, \
+             and finding H3's timing check (not this floor/ceiling) is what keeps it from being \
+             misattributed"
+        );
+        assert!(
+            !refs.iter().any(|r| r.id == far_future_id),
+            "a subscription several days out has no legitimate reason to already be in the \
+             active set and must not sit there until its own day arrives"
         );
 
         cleanup_user(&pool, user_id).await;
