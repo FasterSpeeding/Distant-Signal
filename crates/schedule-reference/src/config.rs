@@ -159,7 +159,50 @@ pub struct Config {
 
     #[command(flatten)]
     pub metrics: common::service_args::MetricsArgs,
+
+    /// Backoff for the startup read of this service's own completion marker
+    /// (`main::seed_last_processed_delivery`), retried until it succeeds.
+    /// Not a CLI/env flag: fixed in production, overridden only by tests.
+    #[arg(skip = STARTUP_SEED_BACKOFF)]
+    pub startup_backoff: common::backoff::Backoff,
+
+    /// How each product publish is retried within one cycle before it is
+    /// recorded as failed (`main::publish_with_retry`). Not a CLI/env flag:
+    /// fixed in production, overridden only by tests.
+    #[arg(skip = PUBLISH_RETRY)]
+    pub publish_retry: PublishRetry,
 }
+
+/// Production value of [`Config::startup_backoff`]: 1s doubling to a 60s cap,
+/// so a dependency that comes back after the ~1 minute the 2026-09-26 node
+/// reboot's SSO outage lasted is noticed within seconds, while a long outage
+/// costs one GET a minute.
+pub const STARTUP_SEED_BACKOFF: common::backoff::Backoff = common::backoff::Backoff::new(
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(60),
+);
+
+/// Bounded, in-cycle retry of one product publish -- see
+/// `main::publish_with_retry`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishRetry {
+    /// Total attempts, including the first (so `1` means "no retry").
+    pub attempts: u32,
+    pub backoff: common::backoff::Backoff,
+}
+
+/// Production value of [`Config::publish_retry`]: three attempts, waiting
+/// ~5-10s then ~10-20s. Long enough to ride out an `api` pod restart or an
+/// IdP blip, short enough that a genuinely broken product does not hold the
+/// cycle for minutes -- and a product that still fails is picked up again
+/// by the next cycle (`main::PublishState`), on its own.
+pub const PUBLISH_RETRY: PublishRetry = PublishRetry {
+    attempts: 3,
+    backoff: common::backoff::Backoff::new(
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(60),
+    ),
+};
 
 /// The one invariant this crate cannot check at compile time and that has now
 /// been broken twice in production: **every `*_URL` env var this `Config`
