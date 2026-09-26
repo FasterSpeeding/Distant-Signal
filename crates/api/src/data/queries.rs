@@ -10151,6 +10151,7 @@ mod schedule_publish_diff_tests {
             destination_arrival: Some(time(12, 0)),
             destination_arrival_day_offset: 0,
             operator_atoc: operator_atoc.map(str::to_string),
+            headcode: None,
         }
     }
 
