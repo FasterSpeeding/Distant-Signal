@@ -73,27 +73,70 @@ struct TripPlanParams {
     depart_after: Option<NaiveTime>,
     #[serde(default = "default_results")]
     results: String,
+    /// Optional interchange cap, `?maxChanges=0`..`=4` (inclusive). Absent
+    /// or empty means [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (2),
+    /// exactly this route's behaviour before the parameter existed. Kept as
+    /// a raw string and validated by [`parse_max_changes`] rather than
+    /// deserialized straight into an integer, so a bad value gets this
+    /// route's own clear 400 message rather than axum's generic
+    /// query-rejection text.
+    #[serde(default)]
+    max_changes: Option<String>,
 }
 
 fn default_results() -> String {
     "fastest".to_string()
 }
 
+/// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&departAfter=]
+/// [&results=fastest|options][&maxChanges=0..4]`.
+///
+/// - `results=fastest` (default): one earliest-arrival itinerary per segment
+///   (CSA). It is returned even if it needs more than `maxChanges` changes,
+///   flagged `exceedsRecommendedChanges: true`; `cappedByMaxChanges` is
+///   always `false` in this mode.
+/// - `results=options`: a Pareto set (arrival time vs. changes, RAPTOR) of
+///   itineraries with at most `maxChanges` changes each, plus
+///   `cappedByMaxChanges: true` when a strictly faster itinerary needing more
+///   changes exists.
+/// - `maxChanges`: integer `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]
+///   (4); absent/empty => [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`]
+///   (2). Anything else (out of range, negative, non-integer) is a 400 naming
+///   the allowed range, rejected before any database read. The effective
+///   value is echoed back as the response's top-level `maxChanges`.
+///
 /// **Read this before adding work to this handler.** One request here reads
 /// every `schedule_calling_points_full` row for the requested date (hundreds
 /// of thousands), builds and sorts the whole day's connections graph in
 /// memory, and then runs one graph search per leg. That is by far the most
-/// expensive thing this unauthenticated API can be asked to do, so three
+/// expensive thing this unauthenticated API can be asked to do, so four
 /// separate bounds apply, all of them load-bearing (2026-09-25 review, High
 /// 4) and none of them a substitute for another:
 ///
 /// 1. [`MAX_WAYPOINTS`], checked BEFORE any database read -- bounds how many
 ///    graph searches one request can ask for. Rejected requests cost a string
 ///    split, not a query.
-/// 2. [`PLAN_SLOTS`], held across the whole read-plus-compute body -- bounds
+/// 2. [`trip_planning_itinerary::MAX_CHANGES_LIMIT`], also checked before any
+///    database read -- bounds how deep each `options`-mode search can go.
+///    RAPTOR does one full sweep of the day's connections per round, and runs
+///    `maxChanges + 2` rounds at most (fewer if a round improves nothing), so
+///    the worst case per request is `(MAX_WAYPOINTS + 1) * (4 + 2)` = 54
+///    sweeps at `maxChanges=4`, versus 36 at the default of 2 -- a bounded
+///    1.5x on the search phase alone (the whole-day read and graph build,
+///    which dominate memory, are unchanged, and `fastest` mode's single CSA
+///    scan per segment doesn't depend on `maxChanges` at all). Per-search
+///    memory grows the same bounded 1.5x (one arrival map per round), and
+///    segments are solved one after another, never at once.
+/// 3. [`PLAN_SLOTS`], held across the whole read-plus-compute body -- bounds
 ///    how many of these can be in flight at once, so the peak is a few
-///    graphs' worth of memory and a few threads, not one per connection.
-/// 3. `spawn_blocking` around the graph build and the searches -- keeps
+///    graphs' worth of memory and a few threads, not one per connection. The
+///    permit is MOVED INTO the blocking task rather than held by this async
+///    fn: `spawn_blocking` work can't be cancelled, so if a client
+///    disconnected and axum dropped this handler's future mid-search, a
+///    permit held here would be released while the search kept burning a
+///    blocking thread -- letting connect-then-disconnect callers stack up
+///    unbounded concurrent searches past the cap.
+/// 4. `spawn_blocking` around the graph build and the searches -- keeps
 ///    minutes of synchronous CPU off the tokio worker threads. Without it, a
 ///    handful of concurrent requests starved every async task in the process,
 ///    including `/public/health`, so the API looked dead rather than slow and
@@ -111,6 +154,7 @@ async fn get_trip_plan(
     }
 
     let waypoints = parse_waypoints(params.waypoints.as_deref())?;
+    let max_changes = parse_max_changes(params.max_changes.as_deref())?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -118,7 +162,7 @@ async fn get_trip_plan(
     // that and only serialising the CPU afterwards would still let a few
     // callers exhaust this process's memory. `try_acquire`, so an overloaded
     // process sheds load immediately instead of queueing unboundedly.
-    let Ok(_permit) = PLAN_SLOTS.try_acquire() else {
+    let Ok(permit) = PLAN_SLOTS.try_acquire() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "too many trip plans are being computed right now; please retry in a moment"
@@ -155,6 +199,9 @@ async fn get_trip_plan(
     let depart_after = params.depart_after.unwrap_or(NaiveTime::MIN);
     let results = params.results.clone();
     let segments = tokio::task::spawn_blocking(move || {
+        // Held until the search itself finishes, not until this handler's
+        // future does -- see bound 3 in this fn's doc comment.
+        let _permit = permit;
         let connections = trip_planning::build_connections(calling_points);
         trip_planning_itinerary::plan_via_waypoints(
             &connections,
@@ -165,6 +212,7 @@ async fn get_trip_plan(
             &destination,
             depart_after,
             &results,
+            max_changes,
         )
     })
     .await
@@ -179,6 +227,7 @@ async fn get_trip_plan(
 
     Ok(Json(serde_json::json!({
         "results": params.results,
+        "maxChanges": max_changes,
         "segments": segments.iter().map(|segment| serde_json::json!({
             "originCrs": segment.origin_crs,
             "destinationCrs": segment.destination_crs,
@@ -215,6 +264,34 @@ fn parse_waypoints(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String
         ));
     }
     Ok(waypoints)
+}
+
+/// Validates `?maxChanges=`: absent, empty or whitespace-only means the
+/// default ([`trip_planning_itinerary::DEFAULT_MAX_CHANGES`], matching how an
+/// empty `?waypoints=` means "none"); otherwise it must be an integer in
+/// `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]. Like
+/// [`parse_waypoints`], this is a pure function checked before the permit and
+/// any database read, so a rejected request costs a string parse, not a
+/// query -- and it's a 400 naming the allowed range, never a silent clamp: a
+/// plan computed under a different cap than the one asked for answers a
+/// different question.
+fn parse_max_changes(raw: Option<&str>) -> Result<u32, (StatusCode, String)> {
+    use trip_planning_itinerary::{DEFAULT_MAX_CHANGES, MAX_CHANGES_LIMIT};
+
+    let raw = raw.unwrap_or("").trim();
+    if raw.is_empty() {
+        return Ok(DEFAULT_MAX_CHANGES);
+    }
+    match raw.parse::<u32>() {
+        Ok(value) if value <= MAX_CHANGES_LIMIT => Ok(value),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "maxChanges must be a whole number from 0 to {MAX_CHANGES_LIMIT} \
+                 (default {DEFAULT_MAX_CHANGES}), not '{raw}'"
+            ),
+        )),
+    }
 }
 
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
@@ -320,6 +397,61 @@ mod tests {
             parse_waypoints(Some(" ,, ")).expect("empty entries are dropped"),
             Vec::<String>::new()
         );
+    }
+
+    /// Omitted (or empty) `?maxChanges=` must mean exactly the pre-parameter
+    /// cap of 2, so existing callers see no behaviour change.
+    #[test]
+    fn max_changes_defaults_to_two_when_omitted_or_empty() {
+        assert_eq!(trip_planning_itinerary::DEFAULT_MAX_CHANGES, 2);
+        assert_eq!(parse_max_changes(None), Ok(2));
+        assert_eq!(parse_max_changes(Some("")), Ok(2));
+        assert_eq!(parse_max_changes(Some("  ")), Ok(2));
+    }
+
+    #[test]
+    fn max_changes_accepts_every_value_from_zero_to_the_limit() {
+        assert_eq!(trip_planning_itinerary::MAX_CHANGES_LIMIT, 4);
+        for value in 0..=trip_planning_itinerary::MAX_CHANGES_LIMIT {
+            assert_eq!(parse_max_changes(Some(&value.to_string())), Ok(value));
+        }
+        assert_eq!(parse_max_changes(Some(" 3 ")), Ok(3));
+    }
+
+    #[test]
+    fn max_changes_out_of_range_or_non_integer_is_a_400_naming_the_range() {
+        for bad in [
+            "5",
+            "99",
+            "-1",
+            "abc",
+            "2.5",
+            "1e1",
+            "3x",
+            "99999999999999999999",
+        ] {
+            let (status, message) =
+                parse_max_changes(Some(bad)).expect_err(&format!("'{bad}' must be rejected"));
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+            assert!(
+                message.contains("maxChanges") && message.contains("0 to 4"),
+                "the error must name the parameter and its range: {message}"
+            );
+        }
+    }
+
+    /// `maxChanges` must be read from its camelCase wire name (the same
+    /// silent-ignore trap `depart_after_is_read_from_its_camel_case_wire_name`
+    /// guards against).
+    #[test]
+    fn max_changes_is_read_from_its_camel_case_wire_name() {
+        let uri: axum::http::Uri = "http://example.com/Trips/plan?origin=EUS&destination=MKC&\
+                                     date=2026-09-23&maxChanges=4"
+            .parse()
+            .expect("parse uri");
+        let Query(params) =
+            Query::<TripPlanParams>::try_from_uri(&uri).expect("valid query string");
+        assert_eq!(params.max_changes.as_deref(), Some("4"));
     }
 }
 
@@ -809,7 +941,7 @@ mod db_tests {
         for itinerary in itineraries {
             assert!(
                 itinerary["changeCount"].as_u64().unwrap()
-                    <= u64::from(trip_planning_itinerary::MAX_CHANGES),
+                    <= u64::from(trip_planning_itinerary::DEFAULT_MAX_CHANGES),
                 "{itinerary:?}"
             );
         }
@@ -846,6 +978,160 @@ mod db_tests {
                 .ok();
         }
         sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANCAP-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// `?maxChanges=` validation is enforced by the real route BEFORE the
+    /// "no schedule data published for this date" read -- proven, like
+    /// `a_waypoint_flood_is_rejected_before_the_date_is_even_looked_up`, by
+    /// using a date nothing is published for (which would otherwise 404).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn an_invalid_max_changes_is_a_clear_400_before_the_date_is_looked_up() {
+        let pool = connect().await;
+        for bad in ["5", "-1", "abc", "2.5", "4294967296"] {
+            let router = test_router(test_app(pool.clone()));
+            let (status, body) = get(
+                router,
+                format!("/Trips/plan?origin=EUS&destination=MKC&date=2099-01-01&maxChanges={bad}"),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "maxChanges={bad}: {body:?}"
+            );
+            let message = body.as_str().expect("plain-text error body");
+            assert!(
+                message.contains("maxChanges") && message.contains("0 to 4"),
+                "the error must name the parameter and its range: {message}"
+            );
+        }
+    }
+
+    /// The end-to-end proof for `?maxChanges=`: a synthetic network whose
+    /// ONLY route needs exactly 3 changes (4 legs,
+    /// ORIGIN -> P -> Q -> R -> DEST). At the default cap `options` mode
+    /// returns nothing but flags `cappedByMaxChanges`, and an explicit
+    /// `maxChanges=2` is byte-for-byte the same response as omitting it; at
+    /// `maxChanges=3` the real 3-change itinerary comes back, uncapped.
+    /// `fastest` mode's `exceedsRecommendedChanges` follows the same cap.
+    /// Synthetic CRS codes/TIPLOCs for the same isolation reason as
+    /// `a_real_seeded_connection_is_found_end_to_end`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn max_changes_lifts_the_cap_only_when_asked() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
+        // Every gap is exactly `DEFAULT_CHANGE_TIME` (5 minutes) -- see
+        // `options_mode_excludes_results_over_the_cap_but_flags_when_capped`.
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTPLANMXA', 0, 'TESTMXO', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANMXA', 1, 'TESTMXP', 'terminate', '08:10:00', NULL, 0), \
+                    ($1, 'TESTPLANMXB', 0, 'TESTMXP', 'origin', NULL, '08:15:00', 0), \
+                    ($1, 'TESTPLANMXB', 1, 'TESTMXQ', 'terminate', '08:20:00', NULL, 0), \
+                    ($1, 'TESTPLANMXC', 0, 'TESTMXQ', 'origin', NULL, '08:25:00', 0), \
+                    ($1, 'TESTPLANMXC', 1, 'TESTMXR', 'terminate', '08:30:00', NULL, 0), \
+                    ($1, 'TESTPLANMXD', 0, 'TESTMXR', 'origin', NULL, '08:35:00', 0), \
+                    ($1, 'TESTPLANMXD', 1, 'TESTMXD', 'terminate', '08:45:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPLANMX-ZZE', 'ZZE', 'TESTMXO', 'TEST MAXCHANGES ORIGIN', 1), \
+                    ('TESTPLANMX-ZZF', 'ZZF', 'TESTMXD', 'TEST MAXCHANGES DESTINATION', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let plan = |query: &'static str| {
+            let router = test_router(test_app(pool.clone()));
+            async move {
+                get(
+                    router,
+                    format!("/Trips/plan?origin=ZZE&destination=ZZF&date={date}{query}"),
+                )
+                .await
+            }
+        };
+
+        // options, omitted => the pre-parameter default of 2.
+        let (status, omitted) = plan("&results=options").await;
+        assert_eq!(status, StatusCode::OK, "{omitted:?}");
+        assert_eq!(omitted["maxChanges"], 2, "{omitted:?}");
+        let segment = &omitted["segments"][0];
+        assert_eq!(
+            segment["itineraries"]
+                .as_array()
+                .expect("itineraries array")
+                .len(),
+            0,
+            "the only route needs 3 changes, over the default cap: {omitted:?}"
+        );
+        assert_eq!(segment["cappedByMaxChanges"], true, "{omitted:?}");
+
+        // options, explicit 2 => identical to omitted.
+        let (status, explicit_two) = plan("&results=options&maxChanges=2").await;
+        assert_eq!(status, StatusCode::OK, "{explicit_two:?}");
+        assert_eq!(explicit_two, omitted);
+
+        // options, 3 => the real 3-change itinerary, not capped.
+        let (status, three) = plan("&results=options&maxChanges=3").await;
+        assert_eq!(status, StatusCode::OK, "{three:?}");
+        assert_eq!(three["maxChanges"], 3, "{three:?}");
+        let segment = &three["segments"][0];
+        let itineraries = segment["itineraries"]
+            .as_array()
+            .expect("itineraries array");
+        assert_eq!(itineraries.len(), 1, "{three:?}");
+        assert_eq!(itineraries[0]["changeCount"], 3, "{three:?}");
+        let uids: Vec<&str> = itineraries[0]["legs"]
+            .as_array()
+            .expect("legs array")
+            .iter()
+            .filter_map(|leg| leg["trainUid"].as_str())
+            .collect();
+        assert_eq!(
+            uids,
+            ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"],
+            "{three:?}"
+        );
+        assert_eq!(segment["cappedByMaxChanges"], false, "{three:?}");
+
+        // fastest: the same route either way, flagged against the cap in effect.
+        let (status, fastest_default) = plan("").await;
+        assert_eq!(status, StatusCode::OK, "{fastest_default:?}");
+        let itinerary = &fastest_default["segments"][0]["itineraries"][0];
+        assert_eq!(itinerary["changeCount"], 3, "{fastest_default:?}");
+        assert_eq!(itinerary["exceedsRecommendedChanges"], true);
+        assert_eq!(fastest_default["segments"][0]["cappedByMaxChanges"], false);
+
+        let (status, fastest_three) = plan("&maxChanges=3").await;
+        assert_eq!(status, StatusCode::OK, "{fastest_three:?}");
+        let itinerary = &fastest_three["segments"][0]["itineraries"][0];
+        assert_eq!(itinerary["changeCount"], 3, "{fastest_three:?}");
+        assert_eq!(itinerary["exceedsRecommendedChanges"], false);
+
+        for uid in ["TESTPLANMXA", "TESTPLANMXB", "TESTPLANMXC", "TESTPLANMXD"] {
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANMX-%'")
             .execute(&pool)
             .await
             .ok();

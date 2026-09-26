@@ -816,6 +816,14 @@ in others:
   complexity for `'fastest'` mode; RAPTOR's own round count for `'options'`
   mode uses the same cap (per the sibling project's `PLAN_MAX_CHANGES`
   config precedent) rather than a separate, undiscussed limit.
+  *(Update 2026-09-26: 2 is now the default, not the only option.
+  `GET /Trips/plan` takes an optional `maxChanges=0..4` query parameter —
+  omitted means 2, unchanged — so the sibling `Distant-Signal-MCP`'s
+  `plan_journey`, whose own `PLAN_MAX_CHANGES` default is 4, can route
+  every query through this endpoint. RAPTOR's round count is derived from
+  the requested value (`maxChanges + 2`), not from a fixed constant; see
+  `routes::trips::get_trip_plan`'s doc comment for the parameter contract
+  and how its worst-case cost stays bounded.)*
 - **Walking transfers between differently-named stations are required, not
   a later phase.** v1 must be able to route via a cross-London (or
   equivalent) walk/tube/bus/tram/ferry hop between two different CRS
@@ -938,6 +946,8 @@ For an *n*-leg computed itinerary the user picks:
 ### 5.2 What the planner itself needs to expose, distinct from journey-tracking's own surface
 
 A new, separate read-only endpoint, e.g. `GET /Trips/plan?origin=&destination=&waypoints=&date=&departAfter=&results=fastest|options`
+(plus, as shipped, an optional `maxChanges=0..4`, default 2 — see §4's
+2026-09-26 update)
 (exact naming a product/API-design decision, not resolved here — see §7),
 returning candidate itineraries per §4's cap (a single itinerary for
 `results: 'fastest'`, a Pareto set for `results: 'options'`), each
