@@ -1661,6 +1661,14 @@ pub struct ScheduleDestinationDeparturesRow {
     /// the field still deserializes (as `None`).
     #[serde(default)]
     pub headcode: Option<String>,
+    /// The schedule's CIF `BX` Retail Service ID (8 characters, e.g.
+    /// `"SR408800"`), mirroring
+    /// `schedule_query::records::DestinationDeparture::rsid`: once per
+    /// schedule (the STP-resolved winner's value), copied onto every row.
+    /// Backs `GET /public/trains/resolve`. `#[serde(default)]` so a
+    /// publisher that predates the field still deserializes (as `None`).
+    #[serde(default)]
+    pub rsid: Option<String>,
 }
 
 /// An opaque-to-the-caller position in one station's ordered results: the
@@ -1805,6 +1813,7 @@ pub async fn upsert_schedule_destination_departures_chunk(
     let operator_atoc: Vec<Option<&str>> =
         rows.iter().map(|r| r.operator_atoc.as_deref()).collect();
     let headcode: Vec<Option<&str>> = rows.iter().map(|r| r.headcode.as_deref()).collect();
+    let rsid: Vec<Option<&str>> = rows.iter().map(|r| r.rsid.as_deref()).collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1827,8 +1836,8 @@ pub async fn upsert_schedule_destination_departures_chunk(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[]) \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[], $13::text[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1843,6 +1852,7 @@ pub async fn upsert_schedule_destination_departures_chunk(
     .bind(&destination_arrival_day_offsets)
     .bind(&operator_atoc)
     .bind(&headcode)
+    .bind(&rsid)
     .execute(&mut *tx)
     .await?;
 
@@ -2057,6 +2067,7 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     let operator_atoc: Vec<Option<&str>> =
         rows.iter().map(|r| r.operator_atoc.as_deref()).collect();
     let headcode: Vec<Option<&str>> = rows.iter().map(|r| r.headcode.as_deref()).collect();
+    let rsid: Vec<Option<&str>> = rows.iter().map(|r| r.rsid.as_deref()).collect();
 
     let mut distinct_dates = service_dates.clone();
     distinct_dates.sort_unstable();
@@ -2089,11 +2100,11 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     // unchanged row from being rewritten: it is read, not written.
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures AS d \
-            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode) \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid) \
          SELECT DISTINCT ON (service_date, destination_crs, scheduled, train_uid, origin_crs) \
-                service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode \
-         FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[]) \
-              WITH ORDINALITY AS t(service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, ord) \
+                service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid \
+         FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[], $13::text[]) \
+              WITH ORDINALITY AS t(service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, ord) \
          ORDER BY service_date, destination_crs, scheduled, train_uid, origin_crs, ord \
          ON CONFLICT (service_date, destination_crs, scheduled, train_uid, origin_crs) DO UPDATE SET \
             day_offset = EXCLUDED.day_offset, \
@@ -2102,10 +2113,11 @@ pub async fn upsert_schedule_destination_departures_publish_part(
             destination_arrival = EXCLUDED.destination_arrival, \
             destination_arrival_day_offset = EXCLUDED.destination_arrival_day_offset, \
             operator_atoc = EXCLUDED.operator_atoc, \
-            headcode = EXCLUDED.headcode \
-         WHERE (d.day_offset, d.true_origin_crs, d.calling_point_arrival, d.destination_arrival, d.destination_arrival_day_offset, d.operator_atoc, d.headcode) \
+            headcode = EXCLUDED.headcode, \
+            rsid = EXCLUDED.rsid \
+         WHERE (d.day_offset, d.true_origin_crs, d.calling_point_arrival, d.destination_arrival, d.destination_arrival_day_offset, d.operator_atoc, d.headcode, d.rsid) \
                IS DISTINCT FROM \
-               (EXCLUDED.day_offset, EXCLUDED.true_origin_crs, EXCLUDED.calling_point_arrival, EXCLUDED.destination_arrival, EXCLUDED.destination_arrival_day_offset, EXCLUDED.operator_atoc, EXCLUDED.headcode)",
+               (EXCLUDED.day_offset, EXCLUDED.true_origin_crs, EXCLUDED.calling_point_arrival, EXCLUDED.destination_arrival, EXCLUDED.destination_arrival_day_offset, EXCLUDED.operator_atoc, EXCLUDED.headcode, EXCLUDED.rsid)",
     )
     .bind(&service_dates)
     .bind(&destination_crs)
@@ -2119,6 +2131,7 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     .bind(&destination_arrival_day_offsets)
     .bind(&operator_atoc)
     .bind(&headcode)
+    .bind(&rsid)
     .execute(&mut *tx)
     .await?;
 
@@ -7287,6 +7300,7 @@ mod schedule_destination_departures_query_tests {
             calling_point_arrival,
             operator_atoc: None,
             headcode: None,
+            rsid: None,
         }
     }
 
@@ -7584,6 +7598,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: Some("SR".to_string()),
                     headcode: Some("1S00".to_string()),
+                    rsid: Some("SR408800".to_string()),
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date: date,
@@ -7598,6 +7613,7 @@ mod schedule_destination_departures_query_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
             ],
         )
@@ -7636,6 +7652,23 @@ mod schedule_destination_departures_query_tests {
                 ("C80002".to_string(), None),
             ],
             "a blank CIF Train Identity must round-trip as SQL NULL"
+        );
+
+        let rsids: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT train_uid, rsid FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back rsids");
+        assert_eq!(
+            rsids,
+            vec![
+                ("C80001".to_string(), Some("SR408800".to_string())),
+                ("C80002".to_string(), None),
+            ],
+            "a blank CIF Retail Service ID must round-trip as SQL NULL"
         );
 
         delete_day(&pool, date).await;
@@ -8135,6 +8168,7 @@ mod schedule_destination_departures_query_tests {
                             calling_point_arrival: calling_point_arrival.map(|(h, m)| time(h, m)),
                             operator_atoc: None,
                             headcode: None,
+                            rsid: None,
                         }
                     },
                 )
@@ -8982,6 +9016,7 @@ mod schedule_destination_departures_query_tests {
                     calling_point_arrival: None,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -8996,6 +9031,7 @@ mod schedule_destination_departures_query_tests {
                     calling_point_arrival: None,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
             ],
         )
@@ -9223,6 +9259,7 @@ mod schedule_destination_departures_query_tests {
                     calling_point_arrival: None,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -9237,6 +9274,7 @@ mod schedule_destination_departures_query_tests {
                     calling_point_arrival: None,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
             ],
         )
@@ -9553,6 +9591,7 @@ LTSTAFFRD 1630         TF";
                         destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
                         operator_atoc: d.operator_atoc,
                         headcode: d.headcode,
+                        rsid: d.rsid,
                     })
             })
             .collect();
@@ -9678,6 +9717,7 @@ LTSTAFFRD 1630         TF";
                         destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
                         operator_atoc: d.operator_atoc,
                         headcode: d.headcode,
+                        rsid: d.rsid,
                     })
             })
             .collect();
@@ -10014,6 +10054,7 @@ mod schedule_pipeline_integrity_tests {
             destination_arrival_day_offset: 0,
             operator_atoc: None,
             headcode: None,
+            rsid: None,
         };
 
         upsert_schedule_destination_departures_chunk(&pool, &[row("FRESH1", time(8, 0))], true)
@@ -10152,6 +10193,7 @@ mod schedule_publish_diff_tests {
             destination_arrival_day_offset: 0,
             operator_atoc: operator_atoc.map(str::to_string),
             headcode: None,
+            rsid: None,
         }
     }
 
@@ -10375,6 +10417,100 @@ mod schedule_publish_diff_tests {
         );
 
         clear_dates(&pool, &[date, other_date]).await;
+    }
+
+    async fn stored_rsids(pool: &PgPool, date: chrono::NaiveDate) -> Vec<(String, Option<String>)> {
+        sqlx::query_as(
+            "SELECT train_uid, rsid FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(pool)
+        .await
+        .expect("read back rsids")
+    }
+
+    /// `rsid` is part of the diff: a republish that changes ONLY a row's
+    /// Retail Service ID updates it (it is in the `IS DISTINCT FROM` guard),
+    /// and an identical republish after that still writes nothing.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_departures_republish_that_only_changes_rsid_updates_the_row() {
+        let pool = test_pool().await;
+        let date = fixture_date(11);
+        clear_dates(&pool, &[date]).await;
+
+        let with_rsid = |rsid: Option<&str>| ScheduleDestinationDeparturesRow {
+            rsid: rsid.map(str::to_string),
+            ..departure(date, "RSID-A", time(8, 0), Some("VT"))
+        };
+        let untouched = departure(date, "RSID-B", time(9, 0), Some("VT"));
+
+        upsert_schedule_destination_departures(&pool, &[with_rsid(None), untouched.clone()])
+            .await
+            .expect("first publish");
+        assert_eq!(
+            stored_rsids(&pool, date).await,
+            vec![("RSID-A".to_string(), None), ("RSID-B".to_string(), None)]
+        );
+
+        let changed = [with_rsid(Some("VT123401")), untouched];
+        assert_eq!(
+            upsert_schedule_destination_departures(&pool, &changed)
+                .await
+                .expect("rsid-only republish"),
+            1,
+            "a changed rsid alone must count as a changed row"
+        );
+        assert_eq!(
+            stored_rsids(&pool, date).await,
+            vec![
+                ("RSID-A".to_string(), Some("VT123401".to_string())),
+                ("RSID-B".to_string(), None),
+            ]
+        );
+        let before = departure_tuples(&pool, date).await;
+        assert_eq!(
+            upsert_schedule_destination_departures(&pool, &changed)
+                .await
+                .expect("identical republish"),
+            0
+        );
+        assert_eq!(departure_tuples(&pool, date).await, before);
+
+        clear_dates(&pool, &[date]).await;
+    }
+
+    /// The legacy (pre-`publish_id`) chunk path stores `rsid` too, NULL
+    /// included.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn the_legacy_chunk_upsert_round_trips_rsid_including_a_null_value() {
+        let pool = test_pool().await;
+        let date = fixture_date(12);
+        clear_dates(&pool, &[date]).await;
+
+        let rows = [
+            ScheduleDestinationDeparturesRow {
+                rsid: Some("SR408800".to_string()),
+                ..departure(date, "LEGACY-A", time(8, 0), Some("SR"))
+            },
+            departure(date, "LEGACY-B", time(9, 0), None),
+        ];
+        upsert_schedule_destination_departures_chunk(&pool, &rows, true)
+            .await
+            .expect("legacy chunk publish");
+        assert_eq!(
+            stored_rsids(&pool, date).await,
+            vec![
+                ("LEGACY-A".to_string(), Some("SR408800".to_string())),
+                ("LEGACY-B".to_string(), None),
+            ]
+        );
+
+        clear_dates(&pool, &[date]).await;
     }
 
     /// **The multi-chunk contract.** A publish split over three chunks ends
@@ -10746,5 +10882,21 @@ mod schedule_destination_departures_row_serde_tests {
         null["headcode"] = serde_json::Value::Null;
         let row: ScheduleDestinationDeparturesRow = serde_json::from_value(null).unwrap();
         assert_eq!(row.headcode, None);
+    }
+
+    #[test]
+    fn rsid_is_optional_on_the_wire_and_accepts_a_value_or_null() {
+        let row: ScheduleDestinationDeparturesRow = serde_json::from_value(base()).unwrap();
+        assert_eq!(row.rsid, None);
+
+        let mut with = base();
+        with["rsid"] = serde_json::json!("SR408800");
+        let row: ScheduleDestinationDeparturesRow = serde_json::from_value(with).unwrap();
+        assert_eq!(row.rsid.as_deref(), Some("SR408800"));
+
+        let mut null = base();
+        null["rsid"] = serde_json::Value::Null;
+        let row: ScheduleDestinationDeparturesRow = serde_json::from_value(null).unwrap();
+        assert_eq!(row.rsid, None);
     }
 }
