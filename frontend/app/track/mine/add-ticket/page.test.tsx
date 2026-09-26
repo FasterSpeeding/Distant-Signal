@@ -22,7 +22,7 @@ function session(authenticated: boolean) {
 
 describe('AddTicketPage', () => {
   it('not logged in: shows an auto-opened login prompt modal, no form', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(false));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(false));
     renderWithMantine(await AddTicketPage());
 
     expect(screen.getByText('Log in required')).toBeInTheDocument();
@@ -35,7 +35,7 @@ describe('AddTicketPage', () => {
   });
 
   it('not logged in: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(false));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(false));
     renderWithMantine(await AddTicketPage());
 
     const link = screen.getByRole('link', { name: 'Log in to add a ticket' });
@@ -43,7 +43,7 @@ describe('AddTicketPage', () => {
   });
 
   it('logged in: shows the heading, the standalone-ticket explainer sentence, a Back link, and TicketEntryForm expanded with no click needed', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(true));
     renderWithMantine(await AddTicketPage());
 
     expect(screen.getByRole('heading', { name: 'Add a ticket', level: 1 })).toBeInTheDocument();
@@ -65,7 +65,7 @@ describe('AddTicketPage', () => {
   });
 
   it('the rendered TicketEntryForm has no trackingId: a save posts to the flat /api/Train/tickets route', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(true));
     // Routes the Operator field's own debounced `/api/tocs?q=` suggestion
     // fetch (`TicketEntryForm.tsx`'s Task 3.6.4 Autocomplete) away from the
     // single mocked ticket-save response -- same hazard, same fix, as

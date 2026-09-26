@@ -7,7 +7,7 @@ import {
   getGroupMembers,
   getGroupTrains,
   getLineStatus,
-  getSession,
+  getSessionOrLoggedOut,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from '@/lib/api';
@@ -114,7 +114,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
     getGroupTrains(id),
     getGroupCustomLines(id),
     getGroupJourneys(id),
-    getSession().catch(() => ({ authenticated: false, id: null, email: null, name: null })),
+    getSessionOrLoggedOut(),
   ]);
 
   // Live status for the shared custom lines, read through the ordinary

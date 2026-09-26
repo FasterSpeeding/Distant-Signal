@@ -7,9 +7,10 @@ import { viewport, metadata } from './layout';
 // unit test, and nothing here should reach the network at all.
 vi.mock('@/lib/api', () => ({
   getDataFreshness: vi.fn(),
-  getSession: vi.fn(),
+  getSessionOrLoggedOut: vi.fn(),
   getMyGroups: vi.fn(),
   getChatbotAccess: vi.fn(),
+  LOGGED_OUT_SESSION: { authenticated: false, id: null, email: null, name: null },
 }));
 
 describe('viewport.themeColor', () => {
@@ -125,26 +126,30 @@ describe('backend reachability threading', () => {
     expect(source).toMatch(/<Suspense fallback=\{<AppNavBar[^>]*>\}>\s*<NavBarWithSession/);
   });
 
-  it('makes exactly one getSession() call for the whole nav', () => {
+  it('makes exactly one getSessionOrLoggedOut() call for the whole nav', () => {
     // Was two -- one for the account control, one for the "Groups" link
-    // -- and `getSession()` is `cache: 'no-store'`, so that was two real
-    // round trips per page load. The account menu collapsed both
-    // decisions into one component; this pins the saving.
-    // Matches the invoking CALL specifically (its trailing `.catch(`,
-    // unique to the real call site), not the bare identifier: the import
-    // and this file's own prose both mention `getSession()` without
-    // invoking it. No longer `await getSession()` verbatim -- review
-    // §3.1.3 made this one of two concurrent `Promise.all` legs (alongside
-    // `getChatbotAccess()`), so the call itself is no longer directly
-    // preceded by `await`, only the `Promise.all(...)` as a whole is.
+    // -- and `getSession()` (which this wraps) is `cache: 'no-store'`, so
+    // that was two real round trips per page load. The account menu
+    // collapsed both decisions into one component; this pins the saving.
+    // No longer a bare `getSession().catch(...)` -- that fallback is now
+    // centralized in `getSessionOrLoggedOut()` itself (`lib/api.ts`), which
+    // logs a genuine failure (network error, timeout, 5xx -- never a
+    // confirmed "not logged in") instead of silently rendering the same nav
+    // as someone who really is logged out. See lib/api.test.ts for that
+    // behaviour's own coverage.
+    // Matches the invoking CALL specifically (immediately followed by the
+    // `,` that separates it from the `getChatbotAccess()` leg inside
+    // `Promise.all([...])`), not the bare identifier: this file's own doc
+    // comments above also mention `getSessionOrLoggedOut()` in prose
+    // without invoking it.
     const source = readFileSync('app/layout.tsx', 'utf8');
-    expect(source.match(/getSession\(\)\.catch\(/g)).toHaveLength(1);
+    expect(source.match(/getSessionOrLoggedOut\(\),/g)).toHaveLength(1);
   });
 
   // Review §3.1.3: /chat was undiscoverable -- getChatbotAccess() now rides
-  // alongside getSession() in the same fetch/Suspense boundary, rather than
-  // adding a third sequential wait of its own.
-  it('fetches getChatbotAccess() concurrently with getSession(), inside the same Suspense boundary', () => {
+  // alongside the session check in the same fetch/Suspense boundary, rather
+  // than adding a third sequential wait of its own.
+  it('fetches getChatbotAccess() concurrently with getSessionOrLoggedOut(), inside the same Suspense boundary', () => {
     const source = readFileSync('app/layout.tsx', 'utf8');
     // Both calls sit inside the SAME `Promise.all([...])` -- not a second,
     // separately-awaited call outside it, which would be a sequential wait
@@ -152,7 +157,7 @@ describe('backend reachability threading', () => {
     const promiseAllMatch = source.match(/Promise\.all\(\[([\s\S]*?)\]\)/);
     expect(promiseAllMatch).not.toBeNull();
     const body = promiseAllMatch![1];
-    expect(body).toMatch(/getSession\(\)\.catch\(/);
+    expect(body).toMatch(/getSessionOrLoggedOut\(\)/);
     expect(body).toMatch(/getChatbotAccess\(\)/);
   });
 });

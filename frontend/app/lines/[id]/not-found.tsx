@@ -1,7 +1,7 @@
 import { Group, Stack, Title, Text } from '@mantine/core';
 import { TextLink } from '@/components/TextLink';
 import { LoginLink } from '@/components/LoginLink';
-import { getSession } from '@/lib/api';
+import { getSessionOrLoggedOut } from '@/lib/api';
 
 // Task 3.4.10: an async Server Component, same as any other route file --
 // Next.js's special `not-found.tsx` supports this the same way `page.tsx`
@@ -17,9 +17,11 @@ export default async function LineNotFound() {
   // claiming the line does or doesn't exist. A failed session check
   // degrades to showing the link: an extra "Log in" offered to someone
   // already signed in is harmless, where hiding it from someone genuinely
-  // logged out strands them.
-  const session = await getSession().catch(() => null);
-  const isAnonymous = !session?.authenticated;
+  // logged out strands them. `getSessionOrLoggedOut()` (`lib/api.ts`) is
+  // what does the degrading -- it still logs the failure first, since a
+  // failed check here is never a confirmed "not logged in".
+  const session = await getSessionOrLoggedOut();
+  const isAnonymous = !session.authenticated;
 
   return (
     <Stack p="lg" gap="md">

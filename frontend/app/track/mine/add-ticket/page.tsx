@@ -1,5 +1,5 @@
 import { Stack, Text, Title } from '@mantine/core';
-import { getSession } from '@/lib/api';
+import { getSessionOrLoggedOut } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '../AutoOpenLoginPrompt';
 import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
@@ -20,23 +20,19 @@ export const revalidate = 0;
  * to an already-tracked, specific train) are a different, narrower
  * context and are untouched by this page.
  *
- * Proactive `getSession()` gate, same defensive `.catch()` fallback
- * `TicketPanel.tsx` already uses for an identical purpose: `/track/mine`'s
- * own entry-point Group (including the link to this page) only ever
- * renders for a visitor `getMyTrackedTrains()` has already confirmed is
- * logged in, so this page keeps that promise rather than only discovering
- * "actually, you're not logged in" reactively at submit time -- e.g. a
- * session that expired between loading /track/mine and clicking through.
- * `AutoOpenLoginPrompt` is reused as-is from the sibling /track/mine route
- * (relative import) rather than duplicated -- it already takes arbitrary
- * `children` and has no dependency on which page renders it. */
+ * Proactive `getSession()` gate, same defensive `getSessionOrLoggedOut()`
+ * fallback `TicketPanel.tsx` already uses for an identical purpose:
+ * `/track/mine`'s own entry-point Group (including the link to this page)
+ * only ever renders for a visitor `getMyTrackedTrains()` has already
+ * confirmed is logged in, so this page keeps that promise rather than
+ * only discovering "actually, you're not logged in" reactively at submit
+ * time -- e.g. a session that expired between loading /track/mine and
+ * clicking through. `AutoOpenLoginPrompt` is reused as-is from the
+ * sibling /track/mine route (relative import) rather than duplicated --
+ * it already takes arbitrary `children` and has no dependency on which
+ * page renders it. */
 export default async function AddTicketPage() {
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
+  const session = await getSessionOrLoggedOut();
 
   if (!session.authenticated) {
     return (

@@ -10,7 +10,7 @@ import {
   getGroupMembers,
   getGroupTrains,
   getLineStatus,
-  getSession,
+  getSessionOrLoggedOut,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from '@/lib/api';
@@ -33,7 +33,13 @@ vi.mock('@/lib/api', async () => {
     getGroupMembers: vi.fn(),
     getGroupTrains: vi.fn(),
     getLineStatus: vi.fn(),
-    getSession: vi.fn(),
+    // `getSessionOrLoggedOut`, not `getSession`: the page now calls the
+    // former (`lib/api.ts` centralizes the "degrade to logged-out, but log
+    // it first" fallback there). Overriding `getSession` alone wouldn't
+    // reach it -- `getSessionOrLoggedOut`'s internal `await getSession()`
+    // is a lexical reference to this module's own real implementation, not
+    // a lookup through the exports object this factory returns.
+    getSessionOrLoggedOut: vi.fn(),
   };
 });
 
@@ -125,7 +131,7 @@ describe('GroupDetailPage', () => {
         addedByTag: null,
       },
     ]);
-    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
@@ -190,7 +196,7 @@ describe('GroupDetailPage', () => {
         addedByTag: null,
       },
     ]);
-    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
@@ -240,7 +246,7 @@ describe('GroupDetailPage', () => {
         addedByTag: 'd4e5f6',
       },
     ]);
-    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: null });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: null });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
@@ -272,7 +278,7 @@ describe('GroupDetailPage', () => {
       { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
-    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     expect(screen.getByRole('link', { name: '← Groups' })).toHaveAttribute('href', '/groups');
@@ -298,7 +304,7 @@ describe('GroupDetailPage', () => {
       { userId: 'user-2', displayName: 'Sam', displayTag: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
-    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     expect(screen.getAllByText('(you)')).toHaveLength(1);
@@ -320,7 +326,7 @@ describe('GroupDetailPage', () => {
       { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
-    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
@@ -407,7 +413,7 @@ describe('GroupDetailPage', () => {
       });
       vi.mocked(getGroupMembers).mockResolvedValue([OWNER, ADMIN, PLAIN]);
       vi.mocked(getGroupTrains).mockResolvedValue(trains);
-      vi.mocked(getSession).mockResolvedValue({
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: viewer.userId,
         email: null,
@@ -516,7 +522,7 @@ describe('GroupDetailPage', () => {
       });
       vi.mocked(getGroupMembers).mockResolvedValue([OWNER]);
       vi.mocked(getGroupTrains).mockResolvedValue([]);
-      vi.mocked(getSession).mockResolvedValue({
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: OWNER.userId,
         email: null,
@@ -561,7 +567,7 @@ describe('GroupDetailPage', () => {
       });
       vi.mocked(getGroupMembers).mockResolvedValue([OWNER]);
       vi.mocked(getGroupTrains).mockResolvedValue([]);
-      vi.mocked(getSession).mockResolvedValue({
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: OWNER.userId,
         email: null,
@@ -641,7 +647,7 @@ describe('GroupDetailPage', () => {
       });
       vi.mocked(getGroupMembers).mockResolvedValue([]);
       vi.mocked(getGroupTrains).mockResolvedValue([]);
-      vi.mocked(getSession).mockResolvedValue({
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: viewerId,
         email: null,
@@ -780,7 +786,7 @@ describe('GroupDetailPage', () => {
       });
       vi.mocked(getGroupMembers).mockResolvedValue([]);
       vi.mocked(getGroupTrains).mockResolvedValue([]);
-      vi.mocked(getSession).mockResolvedValue({
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: viewerId,
         email: null,
