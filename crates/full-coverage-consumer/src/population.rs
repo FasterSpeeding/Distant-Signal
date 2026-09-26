@@ -278,7 +278,10 @@ mod tests {
         // the stale validator rather than leaving it describing old data.
         population.insert_with_etag("waterloo-reading", today, vec![entry("C99999")], None);
         assert_eq!(population.etag_for("waterloo-reading", today), None);
-        assert_eq!(population.uids_for("waterloo-reading", today), vec!["C99999"]);
+        assert_eq!(
+            population.uids_for("waterloo-reading", today),
+            vec!["C99999"]
+        );
 
         population.retain_from(tomorrow);
         assert_eq!(population.etag_for("waterloo-reading", today), None);

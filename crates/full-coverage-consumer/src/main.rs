@@ -729,8 +729,14 @@ mod tests {
         for _ in 0..2 {
             reload_population(&client, &config, &tokens, &lines, &mut population, today).await;
             for date in [today, tomorrow] {
-                assert_eq!(population.uids_for("waterloo-reading", date), vec!["C11052"]);
-                assert_eq!(population.etag_for("waterloo-reading", date), Some("\"slp-7\""));
+                assert_eq!(
+                    population.uids_for("waterloo-reading", date),
+                    vec!["C11052"]
+                );
+                assert_eq!(
+                    population.etag_for("waterloo-reading", date),
+                    Some("\"slp-7\"")
+                );
             }
         }
         server.verify().await;
@@ -766,7 +772,10 @@ mod tests {
 
         for _ in 0..2 {
             reload_population(&client, &config, &tokens, &lines, &mut population, today).await;
-            assert_eq!(population.uids_for("waterloo-reading", today), vec!["C11052"]);
+            assert_eq!(
+                population.uids_for("waterloo-reading", today),
+                vec!["C11052"]
+            );
             assert_eq!(population.etag_for("waterloo-reading", today), None);
         }
         server.verify().await;

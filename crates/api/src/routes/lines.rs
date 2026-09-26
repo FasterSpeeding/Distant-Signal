@@ -1089,8 +1089,8 @@ mod db_tests {
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
-    use crate::data::queries;
     use crate::data::custom_lines::{self, NewCustomLine};
+    use crate::data::queries;
     use crate::data::users::insert_session;
 
     /// Every `ServiceArguments` field filled with an inert placeholder
@@ -2447,7 +2447,6 @@ mod db_tests {
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_line_train_entries_projects -- --ignored`"]
     async fn list_line_train_entries_projects_uid_calling_points_and_endpoint_tiplocs() {
-        use crate::data::queries;
         use serde_json::json;
 
         const LINE: &str = "test-line-train-entries-projection";
@@ -2503,7 +2502,12 @@ mod db_tests {
             })
             .collect();
         let entries = population.as_array().unwrap();
-        let cps = |i: usize| entries[i].get("calling_points").cloned().unwrap_or(Value::Null);
+        let cps = |i: usize| {
+            entries[i]
+                .get("calling_points")
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
         assert_eq!(
             got,
             vec![

@@ -250,9 +250,10 @@ mod tests {
         let client = reqwest::Client::new();
         let url = format!("{}/private/schedule-line-population", server.uri());
 
-        let fetched = fetch_line_population(&client, &url, &tokens, "waterloo-reading", date(), None)
-            .await
-            .expect("fetch");
+        let fetched =
+            fetch_line_population(&client, &url, &tokens, "waterloo-reading", date(), None)
+                .await
+                .expect("fetch");
         let LinePopulationFetch::Fetched { body, etag } = fetched else {
             panic!("expected a 200");
         };
