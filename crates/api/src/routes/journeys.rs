@@ -985,7 +985,12 @@ struct JourneyDetailResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShareLinkResponse {
-    token: String,
+    /// `Some` ONLY in the response to the `POST .../share-link` that just
+    /// minted it. Tokens are stored hashed (2026-09-26 review, L14,
+    /// `unlisted_links::hash_link_token`), so `GET /Journeys/{id}` can say
+    /// that an active link exists and when it expires, but can never show
+    /// its URL again -- the owner regenerates to get a fresh copyable one.
+    token: Option<String>,
     expires_at: Option<DateTime<Utc>>,
 }
 
@@ -1109,7 +1114,7 @@ async fn create_journey_share_link(
     .map_err(internal_error("create journey share link"))?;
 
     Ok(Json(ShareLinkResponse {
-        token: link.token,
+        token: Some(link.token),
         expires_at: link.expires_at,
     }))
 }
@@ -1324,7 +1329,7 @@ async fn build_journey_detail_response(
         .await
         .map_err(internal_error("read journey share link"))?
         .map(|link| ShareLinkResponse {
-            token: link.token,
+            token: None,
             expires_at: link.expires_at,
         })
     } else {
@@ -4078,7 +4083,14 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "owner get journey: {body:?}");
-        assert_eq!(body["shareLink"]["token"], token);
+        // Tokens are hashed at rest (L14): the owner sees that a link is
+        // active, never its token again.
+        assert!(
+            body["shareLink"].is_object(),
+            "owner should see the active link: {body:?}"
+        );
+        assert!(body["shareLink"]["token"].is_null());
+        let _ = token;
 
         // Share the journey into a group both the owner and the member are
         // in -- same seeding as

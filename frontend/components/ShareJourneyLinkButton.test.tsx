@@ -100,7 +100,21 @@ describe('ShareJourneyLinkButton', () => {
     // permanently unclickable once a link has been created, since
     // `router.refresh()` reconciles this client component in place rather
     // than remounting it.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Create link' })).toBeEnabled());
+    // Tokens are hashed at rest (L14): the ONLY time a copyable URL exists
+    // is right after this POST, so the component shows it from the
+    // response itself (and the button flips to Regenerate).
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Regenerate' })).toBeEnabled());
+    expect(screen.getByRole('textbox', { name: 'Share link' })).toHaveValue(`${ORIGIN}/journeys/shared/new`);
+  });
+
+  it('an existing link whose token is not returned (hashed at rest) is described, not shown', async () => {
+    renderWithMantine(
+      <ShareJourneyLinkButton journeyId={167} shareLink={{ token: null, expiresAt: null }} origin={ORIGIN} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
+    expect(await screen.findByText(/can.t be shown again/)).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Share link' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Revoke' })).toBeInTheDocument();
   });
 
   it('Regenerate POSTs and refreshes', async () => {

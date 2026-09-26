@@ -7,6 +7,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { JourneyShareLink } from '@/lib/types';
+import { freshTokenFromResponse } from '@/lib/freshLinkToken';
 
 const COPIED_LABEL = 'Copied!';
 const COPIED_TIMEOUT_MS = 2000;
@@ -65,7 +66,13 @@ export function ShareJourneyLinkButton({
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
 
-  const url = shareLink ? `${origin}/journeys/shared/${shareLink.token}` : null;
+  // Tokens are hashed at rest (L14): the server-rendered `shareLink` never
+  // carries one, so a copyable URL exists only right after this session's
+  // own Create/Regenerate, taken from the POST response.
+  const [freshToken, setFreshToken] = useState<string | null>(null);
+  const token = freshToken ?? shareLink?.token ?? null;
+  const url = token ? `${origin}/journeys/shared/${token}` : null;
+  const hasActiveLink = shareLink !== null || freshToken !== null;
 
   function handleOpen() {
     setError(null);
@@ -109,6 +116,7 @@ export function ShareJourneyLinkButton({
         setBusy(false);
         return;
       }
+      setFreshToken(await freshTokenFromResponse(response));
       router.refresh();
       setBusy(false);
     } catch {
@@ -132,6 +140,7 @@ export function ShareJourneyLinkButton({
         setBusy(false);
         return;
       }
+      setFreshToken(null);
       router.refresh();
       setBusy(false);
     } catch {
@@ -160,6 +169,11 @@ export function ShareJourneyLinkButton({
                 </ActionIcon>
               </Tooltip>
             </Group>
+          ) : hasActiveLink ? (
+            <Text size="sm" c="dimmed">
+              A share link is active, but for security it can&apos;t be shown again. Regenerate to get a new link to
+              copy.
+            </Text>
           ) : (
             <Text size="sm" c="dimmed">
               No active share link.
@@ -171,9 +185,9 @@ export function ShareJourneyLinkButton({
           )}
           <Group gap="xs">
             <Button variant="default" size="xs" onClick={createOrRegenerate} loading={busy}>
-              {shareLink ? 'Regenerate' : 'Create link'}
+              {hasActiveLink ? 'Regenerate' : 'Create link'}
             </Button>
-            {shareLink && (
+            {hasActiveLink && (
               <Button variant="outline" color="red" size="xs" onClick={revoke} loading={busy}>
                 Revoke
               </Button>

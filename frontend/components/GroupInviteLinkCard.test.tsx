@@ -37,6 +37,33 @@ describe('GroupInviteLinkCard', () => {
     expect(screen.queryByRole('button', { name: 'Revoke' })).not.toBeInTheDocument();
   });
 
+  // L14: tokens are hashed at rest, so a server-rendered existing link has
+  // `token: null` -- the card must describe it (with Revoke), not render a
+  // broken `/groups/join/null` URL.
+  it('describes an active link whose token cannot be shown again', () => {
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: null, expiresAt: '2026-10-03T12:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
+    expect(screen.getByText(/can.t be shown again/)).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Invite link' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Revoke' })).toBeInTheDocument();
+  });
+
+  it('shows the freshly minted link from the Regenerate response', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ token: 'fresh-tok', expiresAt: '2026-10-03T12:00:00Z' }), { status: 200 }),
+    );
+    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Invite link' })).toHaveValue(`${ORIGIN}/groups/join/fresh-tok`),
+    );
+  });
+
   // Review §3.2.2: the card never said the link expires (spec §2.3 gives
   // every link a 7-day life), so an owner had no way to know a link they'd
   // shared or bookmarked had gone stale until a joiner's click 404'd.

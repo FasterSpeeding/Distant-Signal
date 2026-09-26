@@ -24,6 +24,11 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
+/// A freshly minted link, as returned by [`rotate_link`] -- the ONLY point
+/// at which the plaintext `token` exists server-side. See
+/// [`hash_link_token`]: the table stores only its SHA-256, so an
+/// already-existing link's token can never be read back again (see
+/// [`ActiveLink`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnlistedLink {
@@ -31,10 +36,24 @@ pub struct UnlistedLink {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct UnlistedLinkRow {
-    token: String,
-    expires_at: Option<DateTime<Utc>>,
+/// What [`get_active_link`] can say about an already-existing link: that it
+/// exists, and when it expires -- never its token, which isn't stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveLink {
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// `unlisted_links.token_hash` (and `group_invite_links.token_hash`, see
+/// `groups::rotate_invite_link`) store THIS, never the raw token
+/// (2026-09-26 review, L14) -- exactly the scheme `sessions.id` already
+/// uses, by calling the very same function (`auth::hash_session_token`,
+/// SHA-256, lowercase hex): the token is 32 random bytes, so an unsalted
+/// fast hash is sufficient (nothing to brute-force), and a database
+/// read -- a backup, a replica, a leaked dump -- no longer hands out
+/// working share/invite links. Every lookup hashes the incoming token and
+/// compares hashes; nothing compares or stores plaintext.
+pub fn hash_link_token(token: &str) -> String {
+    crate::auth::hash_session_token(token)
 }
 
 /// Revokes any currently-active link for `(resource_type, resource_id)` and
@@ -81,10 +100,10 @@ pub async fn rotate_link(
     let expires_at = ttl.map(|d| Utc::now() + d);
     sqlx::query(
         "INSERT INTO unlisted_links \
-            (token, resource_type, resource_id, created_by, created_at, expires_at) \
+            (token_hash, resource_type, resource_id, created_by, created_at, expires_at) \
          VALUES ($1, $2, $3, $4, NOW(), $5)",
     )
-    .bind(&token)
+    .bind(hash_link_token(&token))
     .bind(resource_type)
     .bind(resource_id)
     .bind(created_by)
@@ -123,9 +142,9 @@ pub async fn get_active_link(
     pool: &PgPool,
     resource_type: &str,
     resource_id: &str,
-) -> anyhow::Result<Option<UnlistedLink>> {
-    let row: Option<UnlistedLinkRow> = sqlx::query_as(
-        "SELECT token, expires_at FROM unlisted_links \
+) -> anyhow::Result<Option<ActiveLink>> {
+    let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(
+        "SELECT expires_at FROM unlisted_links \
          WHERE resource_type = $1 AND resource_id = $2 AND revoked_at IS NULL \
            AND (expires_at IS NULL OR expires_at > NOW()) \
          ORDER BY created_at DESC LIMIT 1",
@@ -134,10 +153,7 @@ pub async fn get_active_link(
     .bind(resource_id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| UnlistedLink {
-        token: r.token,
-        expires_at: r.expires_at,
-    }))
+    Ok(row.map(|(expires_at,)| ActiveLink { expires_at }))
 }
 
 /// One resolved `(resource_type, resource_id)` pair for a token -- `None`
@@ -154,10 +170,10 @@ pub struct ResolvedLink {
 pub async fn resolve_link(pool: &PgPool, token: &str) -> anyhow::Result<Option<ResolvedLink>> {
     let row: Option<(String, String)> = sqlx::query_as(
         "SELECT resource_type, resource_id FROM unlisted_links \
-         WHERE token = $1 AND revoked_at IS NULL \
+         WHERE token_hash = $1 AND revoked_at IS NULL \
            AND (expires_at IS NULL OR expires_at > NOW())",
     )
-    .bind(token)
+    .bind(hash_link_token(token))
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(resource_type, resource_id)| ResolvedLink {
@@ -240,6 +256,43 @@ mod db_tests {
         }
     }
 
+    /// L14: only SHA-256(token) is stored, and it's the exact same value
+    /// the migration (`20260926150000_hash_share_and_invite_tokens.sql`)
+    /// computes in SQL for pre-existing rows -- so a link minted before
+    /// that migration keeps resolving after it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                link_tokens_are_stored_hashed_matching_the_migrations_sql_hash -- --ignored --test-threads=1`"]
+    async fn link_tokens_are_stored_hashed_matching_the_migrations_sql_hash() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-UNLISTED-LINKS-L14").await;
+        let link = rotate_link(&pool, "widget-l14", "1", "TEST-UNLISTED-LINKS-L14", None)
+            .await
+            .expect("rotate");
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT token_hash FROM unlisted_links WHERE resource_type = 'widget-l14'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read stored hash");
+        assert_ne!(stored, link.token, "plaintext token must never be stored");
+        assert_eq!(stored, hash_link_token(&link.token));
+
+        let sql_hash: String =
+            sqlx::query_scalar("SELECT encode(sha256(convert_to($1, 'UTF8')), 'hex')")
+                .bind(&link.token)
+                .fetch_one(&pool)
+                .await
+                .expect("sql hash");
+        assert_eq!(
+            sql_hash, stored,
+            "migration's SQL hash must match the Rust hash"
+        );
+
+        cleanup(&pool, "widget-l14", &["TEST-UNLISTED-LINKS-L14"]).await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 rotate_link_creates_a_link_and_revokes_any_previous_active_one -- --ignored --test-threads=1`"]
@@ -255,12 +308,20 @@ mod db_tests {
             .expect("second rotate");
         assert_ne!(first.token, second.token);
 
-        let active = get_active_link(&pool, "widget", "42")
+        get_active_link(&pool, "widget", "42")
             .await
             .expect("query")
             .expect("should have an active link");
+        assert!(
+            resolve_link(&pool, &second.token)
+                .await
+                .expect("query")
+                .is_some(),
+            "the newest link should be active"
+        );
         assert_eq!(
-            active.token, second.token,
+            resolve_link(&pool, &first.token).await.expect("query"),
+            None,
             "only the newest link should be active"
         );
 
@@ -312,7 +373,7 @@ mod db_tests {
 
         let racing_insert = sqlx::query(
             "INSERT INTO unlisted_links \
-                (token, resource_type, resource_id, created_by, created_at, expires_at) \
+                (token_hash, resource_type, resource_id, created_by, created_at, expires_at) \
              VALUES ($1, 'widget', '99', $2, NOW(), NULL)",
         )
         .bind("TEST-CONCURRENT-RACE-TOKEN")
@@ -339,12 +400,11 @@ mod db_tests {
             "exactly one active token must survive a concurrent rotation, never two"
         );
 
-        let active = get_active_link(&pool, "widget", "99")
-            .await
-            .expect("query")
-            .expect("should still have an active link");
-        assert_eq!(
-            active.token, first.token,
+        assert!(
+            resolve_link(&pool, &first.token)
+                .await
+                .expect("query")
+                .is_some(),
             "the first rotation's own token must remain the sole active one"
         );
 
@@ -388,10 +448,10 @@ mod db_tests {
         let token = "test-expired-unlisted-token";
         sqlx::query(
             "INSERT INTO unlisted_links \
-                (token, resource_type, resource_id, created_by, expires_at) \
+                (token_hash, resource_type, resource_id, created_by, expires_at) \
              VALUES ($1, $2, $3, $4, NOW() - INTERVAL '1 hour')",
         )
-        .bind(token)
+        .bind(hash_link_token(token))
         .bind("widget")
         .bind("42")
         .bind("TEST-UNLISTED-LINKS-OWNER-3")

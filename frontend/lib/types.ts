@@ -1388,8 +1388,12 @@ export interface RenderedTrainLeg {
 
 export type GroupRole = 'owner' | 'admin' | 'member';
 
+/** `token` is only ever non-null in the `POST .../invite-link` response
+ * that just minted it: tokens are stored hashed server-side (2026-09-26
+ * review, L14), so `GroupDetail.inviteLink` can say a link is active and
+ * when it expires, but can never hand its token back. */
 export interface GroupInviteLink {
-  token: string;
+  token: string | null;
   expiresAt: string; // RFC3339
 }
 
@@ -1400,7 +1404,10 @@ export interface GroupInviteLink {
  * as `string | null` rather than always-`null` so the type doesn't lie if
  * that choice is ever revisited. */
 export interface JourneyShareLink {
-  token: string;
+  /** Non-null only in the `POST` response that minted it -- see
+   * `GroupInviteLink.token`: tokens are hashed at rest, so an existing
+   * link's URL can't be shown again. */
+  token: string | null;
   expiresAt: string | null;
 }
 

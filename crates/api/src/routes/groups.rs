@@ -1810,13 +1810,16 @@ mod db_tests {
             owner_link.is_object(),
             "the owner must receive the invite link, got {owner_link:?}"
         );
+        // Tokens are hashed at rest (2026-09-26 review, L14): the owner
+        // learns that a link is active and when it expires, never its token.
         assert!(
             owner_link
-                .get("token")
+                .get("expiresAt")
                 .and_then(Value::as_str)
-                .is_some_and(|token| !token.is_empty()),
-            "the owner's invite link must carry a non-empty token"
+                .is_some(),
+            "the owner's invite link must carry its expiry"
         );
+        assert_eq!(owner_link.get("token"), Some(&Value::Null));
 
         cleanup(
             &pool,
