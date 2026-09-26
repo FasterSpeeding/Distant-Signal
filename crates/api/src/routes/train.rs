@@ -30,6 +30,8 @@
 //! find-or-creates the shared `trains` row and links a subscription to it
 //! in the same request.
 
+use std::sync::{Arc, LazyLock};
+
 use axum::Json;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
@@ -1397,17 +1399,39 @@ async fn post_pkpass_upload_standalone(
 /// the parse takes, exactly the general "don't block the executor" hazard
 /// `routes::trips`'s own `spawn_blocking` doc comment names. Moved onto the
 /// blocking pool via `spawn_blocking`, with the same wall-clock budget
-/// pattern `handle_pdf_upload` already uses just below, so a pathological
-/// upload degrades to one failed request rather than a stalled worker
-/// thread.
+/// pattern `handle_pdf_upload` already uses just below.
+///
+/// **That budget bounds this request's own wait, not the thread (M13,
+/// 2026-09-26 review).** `tokio::time::timeout` dropping the `JoinHandle` on
+/// expiry only stops THIS function from continuing to await a result -- the
+/// spawned closure keeps running on its blocking-pool thread to completion
+/// regardless, since neither the `zip` crate nor this module's own parsing
+/// exposes any cooperative cancellation point a caller can hook into. See
+/// [`TICKET_PARSE_SLOTS`]'s doc comment for why that matters and what
+/// actually bounds it (a fixed concurrency cap, not this timeout).
 async fn handle_pkpass_upload(
     mut multipart: Multipart,
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
 
+    // See `TICKET_PARSE_SLOTS`'s doc comment: this permit is moved INTO the
+    // spawned closure below (not merely held across this `.await`), so it
+    // stays held for as long as the blocking-pool thread itself is
+    // occupied -- including past this function's own return on a timeout.
+    let Ok(permit) = Arc::clone(&TICKET_PARSE_SLOTS).try_acquire_owned() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many ticket uploads are being processed right now; please retry in a moment"
+                .to_string(),
+        ));
+    };
+
     let parsed = tokio::time::timeout(
         PKPASS_PARSE_TIMEOUT,
-        tokio::task::spawn_blocking(move || ticket_extraction::parse_pkpass(&bytes)),
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            ticket_extraction::parse_pkpass(&bytes)
+        }),
     )
     .await;
 
@@ -1433,9 +1457,17 @@ async fn handle_pkpass_upload(
 
 /// Wall-clock budget for a single `.pkpass`'s parse -- mirrors
 /// `PDF_PARSE_TIMEOUT`'s own reasoning: generous for any legitimate ticket
-/// pass (a `pass.json` a few KB, parsed in well under a second), bounded
-/// against a pathological upload tying up a blocking-pool thread
-/// indefinitely.
+/// pass (a `pass.json` a few KB, parsed in well under a second).
+///
+/// **This bounds only how long a single request waits (M13, 2026-09-26
+/// review).** On expiry, `handle_pkpass_upload` stops awaiting and answers
+/// `GATEWAY_TIMEOUT` immediately, but the underlying blocking-pool thread is
+/// NOT freed or interrupted by that -- it keeps running the abandoned parse
+/// to completion (or, for a sufficiently pathological input, effectively
+/// forever) regardless, since dropping a `spawn_blocking` task's
+/// `JoinHandle` never stops the OS thread executing it. What actually
+/// bounds how many such threads can ever be tied up at once is
+/// [`TICKET_PARSE_SLOTS`], not this constant.
 const PKPASS_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Same contract as `post_pkpass_upload` (Task 7) -- see that handler's
@@ -1449,8 +1481,11 @@ const PKPASS_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// synchronous work that would otherwise stall a tokio worker thread for
 /// the whole API, not just this route, if called directly from this async
 /// handler. It's pushed onto a blocking-pool thread via `spawn_blocking`
-/// and given a hard wall-clock budget via `timeout` so a pathological
-/// upload degrades to one failed request, not a stuck worker thread.
+/// and given a hard wall-clock budget via `timeout`, but (M13, 2026-09-26
+/// review) that budget alone does NOT prevent a stuck worker thread -- see
+/// [`TICKET_PARSE_SLOTS`]'s doc comment for why, and for the mechanism (a
+/// fixed concurrency cap, not this timeout) that actually bounds how many
+/// threads a pathological upload can tie up.
 async fn post_pdf_upload(
     _user: AuthenticatedUser,
     Path(_tracking_id): Path<i64>,
@@ -1474,9 +1509,24 @@ async fn handle_pdf_upload(
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
 
+    // See `TICKET_PARSE_SLOTS`'s doc comment: this permit is moved INTO the
+    // spawned closure below (not merely held across this `.await`), so it
+    // stays held for as long as the blocking-pool thread itself is
+    // occupied -- including past this function's own return on a timeout.
+    let Ok(permit) = Arc::clone(&TICKET_PARSE_SLOTS).try_acquire_owned() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many ticket uploads are being processed right now; please retry in a moment"
+                .to_string(),
+        ));
+    };
+
     let parsed = tokio::time::timeout(
         PDF_PARSE_TIMEOUT,
-        tokio::task::spawn_blocking(move || ticket_extraction::parse_pdf(&bytes)),
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            ticket_extraction::parse_pdf(&bytes)
+        }),
     )
     .await;
 
@@ -1502,9 +1552,65 @@ async fn handle_pdf_upload(
 
 /// Wall-clock budget for a single PDF's text extraction (Finding 2 of the
 /// final review of this plan) -- generous for any legitimate ticket PDF
-/// (typically well under a second), bounded against a pathological upload
-/// tying up a blocking-pool thread indefinitely.
+/// (typically well under a second).
+///
+/// **This bounds only how long a single request waits (M13, 2026-09-26
+/// review).** On expiry, `handle_pdf_upload` stops awaiting and answers
+/// `GATEWAY_TIMEOUT` immediately, but the underlying blocking-pool thread is
+/// NOT freed or interrupted by that -- `pdf_extract`/`lopdf` are synchronous
+/// third-party code with no cooperative cancellation point this app can
+/// call into, so the abandoned parse keeps running to completion (or,
+/// for a sufficiently pathological input, effectively forever) regardless.
+/// What actually bounds how many such threads can ever be tied up at once
+/// is [`TICKET_PARSE_SLOTS`], not this constant.
 const PDF_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Per-process concurrency gate on ticket-file parsing (M13, 2026-09-26
+/// review), shared by both `handle_pdf_upload` and `handle_pkpass_upload`.
+///
+/// **Why a timeout alone is not protection here.** Both handlers wrap their
+/// `spawn_blocking` call in a `tokio::time::timeout`, but dropping the
+/// `JoinHandle` on expiry does not stop the underlying blocking-pool OS
+/// thread: `pdf_extract`/`lopdf` (PDF) and the `zip` crate (`.pkpass`) are
+/// synchronous, third-party code with no cooperative cancellation hook this
+/// app can call into, so an abandoned parse keeps running on its own thread
+/// regardless of what the awaiting request does. A caller who keeps
+/// re-uploading a pathological file after each `GATEWAY_TIMEOUT` could
+/// therefore accumulate an UNBOUNDED number of permanently-stuck
+/// blocking-pool threads over time, eventually starving every other
+/// `spawn_blocking` consumer in the process (this route's own other parse
+/// kind, `routes::trips`'s graph search, sqlx's own blocking callouts) even
+/// though each individual request "failed" promptly.
+///
+/// This semaphore bounds that to a small, FIXED number instead:
+/// [`TICKET_PARSE_PERMITS`] blocking-pool threads can ever be occupied by a
+/// ticket parse at once, stuck or not, so the worst case is contained
+/// rather than unbounded. Same shedding posture as
+/// `routes::trips::PLAN_SLOTS` (`try_acquire`, not a queueing layer -- see
+/// that constant's own doc comment for why queueing would make this worse,
+/// not better): once exhausted, a new upload is refused immediately with a
+/// `503`, not queued behind the stuck ones.
+///
+/// **The permit MUST be an OWNED one, acquired via `try_acquire_owned`
+/// through this `Arc` and moved INTO the `spawn_blocking` closure itself --
+/// not just held across the `.await` in the async handler. The two are not
+/// equivalent:** a permit held only by the async function's own stack frame
+/// is dropped the instant that function returns, which on the timeout path
+/// happens WHILE the abandoned parse is still running on its blocking-pool
+/// thread. That would only bound how many requests are concurrently
+/// *awaited*, not how many threads are concurrently *stuck*, which is the
+/// actual resource this gate exists to protect. Tying the permit's lifetime
+/// to the closure itself means it is only released when that thread's work
+/// genuinely finishes, however long that takes.
+static TICKET_PARSE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(TICKET_PARSE_PERMITS)));
+
+/// See [`TICKET_PARSE_SLOTS`]. 8: generous for ordinary interactive use (a
+/// user uploads one boarding pass at a time, occasionally), small enough
+/// that even a sustained flood of pathological uploads -- each one a
+/// permanently-stuck thread this bound cannot un-stick, only cap -- leaves
+/// the rest of the blocking pool free for every other route.
+const TICKET_PARSE_PERMITS: usize = 8;
 
 /// Shared by this route and Task 9's PDF upload route: reads the single
 /// multipart field named `field_name` (expected to be `"file"` for both)
