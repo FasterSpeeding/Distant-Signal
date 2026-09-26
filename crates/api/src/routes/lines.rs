@@ -2447,8 +2447,6 @@ mod db_tests {
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_line_train_entries_projects -- --ignored`"]
     async fn list_line_train_entries_projects_uid_calling_points_and_endpoint_tiplocs() {
-        use serde_json::json;
-
         const LINE: &str = "test-line-train-entries-projection";
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, LINE).await;
@@ -2489,7 +2487,9 @@ mod db_tests {
                 .map(|t| serde_json::from_str(t).unwrap())
                 .unwrap_or(Value::Null)
         };
-        let got: Vec<(Value, Option<String>, Value, Option<String>, Option<String>)> = rows
+        // (uid, string uid, calling points, first tiploc, last tiploc)
+        type Projected = (Value, Option<String>, Value, Option<String>, Option<String>);
+        let got: Vec<Projected> = rows
             .iter()
             .map(|r| {
                 (
