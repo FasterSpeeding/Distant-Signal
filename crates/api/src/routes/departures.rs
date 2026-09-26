@@ -32,6 +32,41 @@ pub fn router() -> Router {
 /// honesty split to `station_stats.rs::get_station_sample_stats`. `200 []`
 /// is the same "row exists, board is genuinely empty right now" fact that
 /// route already draws.
+///
+/// **Resolving a row to `GET /Train/by-uid/{uid}/{date}`.** A row's
+/// `serviceId` is RDM/LDBWS's opaque, board-relative token (see
+/// `common::StationDeparture::service_id`) -- this app stores no Darwin
+/// `rid` and no CIF `train_uid` for it, and the public LDBWS board this is
+/// sampled from supplies neither, so there is deliberately no
+/// `serviceId`- or `rid`-keyed train lookup and no `trainUid` on these
+/// rows. A caller holding only a board row (from here, or from its own
+/// LDBWS `GetDepBoardWithDetails` call) resolves it through the CIF
+/// timetable instead:
+///
+/// 1. `GET /public/trains/search?station={crs}&date={serviceDate}&from={std-2m}&to={std+2m}`
+///    -- `station` is the board's own CRS, `serviceDate` the London-local
+///    rail day. Pad the window by a couple of minutes: `scheduled` there is
+///    the CIF WORKING (booked) departure, which can sit a minute or so off
+///    the PUBLIC `std` a board shows.
+/// 2. Keep the `results` whose `destinationCrs` equals the row's
+///    `destinationCrs` and whose `operator` (ATOC code, nullable) equals
+///    the row's `operator`. Exactly one distinct `uid` left -> that's the
+///    train; none or several -> treat as unresolved rather than guessing.
+/// 3. `GET /Train/by-uid/{uid}/{serviceDate}`.
+///
+/// For a board `std` shortly after midnight, the service may belong to the
+/// PREVIOUS day's `service_date` (CIF dates a service by where it starts),
+/// so retry step 1 with yesterday's date before giving up. This is a
+/// timetable match, not an exact join -- the same best-effort
+/// `(date, station, time, destination)` correlation the train-tracking
+/// design already accepts (docs/superpowers/specs/2026-08-28-train-tracking-design.md,
+/// "Darwin RID").
+///
+/// The CIF-derived sibling route, `GET /public/stations/{crs}/schedule-departures`
+/// (below), DOES carry `uid` per row, keyed on today's London service date
+/// (`dayOffset` only moves the departure's calendar day, never the service
+/// date), so a caller that can pick from that board instead of the live one
+/// needs no resolution step: `GET /Train/by-uid/{uid}/{today}` directly.
 async fn get_station_departures(
     State(app): State<App>,
     Path(crs): Path<String>,
