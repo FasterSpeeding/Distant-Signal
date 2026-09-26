@@ -107,8 +107,27 @@ pub fn find_darwin_eta(
 /// the scheduled-time match and the estimate derived from it.
 ///
 /// `None` only if the wall-clock time exists on none of the three candidate
-/// days -- see [`london_to_utc`], whose `LocalResult::None` case this
-/// inherits.
+/// days -- the `LocalResult::None` (spring-forward gap) case below.
+///
+/// **L12 finding, 2026-09-26 review: the autumn-fallback AMBIGUOUS case
+/// (`LocalResult::Ambiguous`) is resolved HERE, against `anchor`, rather
+/// than delegated to [`london_to_utc`].** That shared function (still used
+/// unmodified by every OTHER caller in this crate, none of which have an
+/// anchor of their own to disambiguate against) always takes the earlier
+/// (BST) candidate for an ambiguous reading -- fine for a caller with no
+/// better information, but wrong here: this function already has the one
+/// thing needed to pick correctly, `anchor`, and simply feeding each
+/// candidate day's ambiguous reading through `london_to_utc` before the
+/// `min_by_key` below would silently always resolve to the BST candidate
+/// regardless of which one `anchor` actually sits next to -- exactly the
+/// same bug `common::trust_timestamp::reinterpret_as_london_local` was
+/// fixed for (its own doc comment: "always picking the earlier candidate
+/// only ever moves the result earlier... a GMT-side instant in the
+/// ambiguous overlap hour... could be silently, undetectably shifted an
+/// hour early"). The fix mirrors that one exactly: whichever of the two
+/// candidate UTC instants is genuinely NEARER `anchor` is the one this
+/// picks, for every one of the three candidate days, before the overall
+/// `min_by_key` chooses among days.
 pub(crate) fn resolve_london_time_near(
     anchor: DateTime<Utc>,
     time: NaiveTime,
@@ -119,7 +138,22 @@ pub(crate) fn resolve_london_time_near(
     [-1i64, 0, 1]
         .into_iter()
         .filter_map(|day_offset| {
-            london_to_utc((anchor_local_date + Duration::days(day_offset)).and_time(time))
+            let naive = (anchor_local_date + Duration::days(day_offset)).and_time(time);
+            match chrono_tz::Europe::London.from_local_datetime(&naive) {
+                chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
+                chrono::LocalResult::Ambiguous(earliest, latest) => {
+                    let earliest_utc = earliest.with_timezone(&Utc);
+                    let latest_utc = latest.with_timezone(&Utc);
+                    Some(
+                        if (earliest_utc - anchor).abs() <= (latest_utc - anchor).abs() {
+                            earliest_utc
+                        } else {
+                            latest_utc
+                        },
+                    )
+                }
+                chrono::LocalResult::None => None,
+            }
         })
         .filter(|candidate| (*candidate - anchor).abs() <= MAX_ANCHOR_DISTANCE)
         .min_by_key(|candidate| (*candidate - anchor).abs())
@@ -151,6 +185,17 @@ const MAX_ANCHOR_DISTANCE: Duration = Duration::hours(12);
 /// own ETA in place -- this whole overlay is best-effort, so declining to
 /// guess costs nothing. (The aggregator's variant panics on those cases
 /// instead, but it only ever resolves local 02:00, which is never ambiguous.)
+///
+/// **Not used for [`resolve_london_time_near`]'s own ambiguous case as of
+/// the L12 fix (2026-09-26 review)** -- that function has a real `anchor`
+/// to disambiguate against and picks the genuinely nearer candidate itself
+/// rather than reaching for this function's fixed "always BST" rule (see
+/// its own doc comment). This function's fixed rule remains exactly right
+/// for every OTHER caller in this crate (`journey.rs`, `reconciliation.rs`,
+/// `schedule_matching.rs`, `routes::train`), none of which have an anchor
+/// instant of their own to pick a nearer candidate against -- they resolve
+/// a bare CIF/schedule date+time with no better information available,
+/// same posture this function has always taken.
 pub(crate) fn london_to_utc(naive: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
     match chrono_tz::Europe::London.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
@@ -276,13 +321,23 @@ mod tests {
         );
     }
 
-    /// 01:30 on the autumn Sunday happens twice; the first (BST) occurrence
-    /// wins, matching `poller-tfl`'s timetable resolution.
+    /// 01:30 on the autumn Sunday happens twice; here the pin's own anchor
+    /// sits right next to the EARLIER (BST) occurrence, so that's the one
+    /// `resolve_london_time_near` must pick.
+    ///
+    /// **L12 finding, 2026-09-26 review.** Before this fix, the ambiguous
+    /// case was always resolved to the earlier (BST) candidate regardless of
+    /// `anchor` -- ONLY correct by coincidence for a BST-side anchor like
+    /// this one. `an_ambiguous_local_time_resolves_to_the_later_occurrence_when_the_anchor_is_nearer_it_gmt_case`
+    /// below is the case that would previously have gotten this wrong.
     #[test]
-    fn an_ambiguous_local_time_takes_the_first_occurrence() {
+    fn an_ambiguous_local_time_resolves_to_the_earlier_occurrence_when_the_anchor_is_nearer_it_bst_case()
+     {
         // BST ends at 02:00 on 2026-10-25. The pin is the 01:00 BST
         // departure (00:00Z), so the ambiguous 01:30 estimate is only half an
-        // hour away and well inside MAX_ANCHOR_DISTANCE.
+        // hour away and well inside MAX_ANCHOR_DISTANCE -- and much closer to
+        // the BST candidate (00:30Z, 30 minutes away) than the GMT one
+        // (01:30Z, 91 minutes away).
         let samples = vec![departure_at("01:00", "WOK", "01:30", false)];
         let eta = find_darwin_eta(
             &samples,
@@ -291,6 +346,40 @@ mod tests {
             pin("2026-10-25T01:00:00+01:00"),
         );
         assert_eq!(eta, Some("2026-10-25T00:30:00Z".parse().unwrap()));
+    }
+
+    /// The counterpart to the test above, proving the resolution genuinely
+    /// depends on `anchor` rather than always picking the same (earlier/BST)
+    /// branch -- the exact bug the L12 fix (2026-09-26 review) closed. Same
+    /// ambiguous board-row shape, but the pin's own anchor now sits right
+    /// next to the LATER (GMT) occurrence instead: a train running badly
+    /// late, tracked well past the clock change.
+    ///
+    /// Both the board row's own `scheduled` field ("01:33") and its
+    /// `estimated` field ("01:40") are themselves ambiguous local times --
+    /// exercising the fix in both of `resolve_london_time_near`'s real call
+    /// sites within `find_darwin_eta` (the scheduled-time match `common::
+    /// match_darwin_departure_near_time` performs, and the ETA conversion
+    /// applied to whatever row that match returns).
+    #[test]
+    fn an_ambiguous_local_time_resolves_to_the_later_occurrence_when_the_anchor_is_nearer_it_gmt_case()
+     {
+        // The pin's own anchor: 01:35 GMT (2026-10-25T01:35:00Z is
+        // unambiguous as a UTC instant, even though 01:35 LOCAL occurs
+        // twice that day) -- 2 minutes from "01:33"'s GMT candidate
+        // (01:33Z) but 62 minutes from its BST one (00:33Z), and 5 minutes
+        // from "01:40"'s GMT candidate (01:40Z) but 55 minutes from its BST
+        // one (00:40Z). Before this fix both would have resolved to their
+        // (much farther) BST candidates instead, regardless of `anchor`.
+        let samples = vec![departure_at("01:33", "WOK", "01:40", false)];
+        let eta = find_darwin_eta(&samples, Some("WOK"), None, pin("2026-10-25T01:35:00Z"));
+        assert_eq!(
+            eta,
+            Some("2026-10-25T01:40:00Z".parse().unwrap()),
+            "both the scheduled-time match and the resulting ETA must resolve to the GMT \
+             occurrence, genuinely nearer this anchor -- not the earlier BST one a fixed \
+             always-pick-BST rule would have wrongly chosen"
+        );
     }
 
     #[test]
