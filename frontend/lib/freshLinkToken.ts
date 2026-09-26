@@ -17,3 +17,22 @@ export async function freshTokenFromResponse(response: Response): Promise<string
   }
   return null;
 }
+
+/** Like {@link freshTokenFromResponse}, but also reads `expiresAt` -- for
+ * the journey share-link POSTs (create/regenerate/extend), whose expiry the
+ * UI shows immediately rather than waiting for a refresh. */
+export async function readShareLinkBody(
+  response: Response,
+): Promise<{ token: string | null; expiresAt: string | null }> {
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === 'object') {
+      const token = 'token' in body && typeof body.token === 'string' ? body.token : null;
+      const expiresAt = 'expiresAt' in body && typeof body.expiresAt === 'string' ? body.expiresAt : null;
+      return { token, expiresAt };
+    }
+  } catch {
+    // Fall through.
+  }
+  return { token: null, expiresAt: null };
+}

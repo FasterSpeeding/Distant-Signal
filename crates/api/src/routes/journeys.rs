@@ -33,6 +33,20 @@ use crate::data::{journeys, schedule_matching, train_tracking, unlisted_links};
 /// and never will.
 const JOURNEY_RESOURCE_TYPE: &str = "journey";
 
+/// How long a journey share link lives before it stops resolving
+/// (2026-09-26 review, L17). Originally `None` (design doc §5: "no forced
+/// expiry"), but the token is the ENTIRE access control for an
+/// unauthenticated URL that inevitably lands in places this app can't clean
+/// up -- ingress access logs, browser history, `Referer` headers -- so a
+/// forgotten link used to grant read access forever. 30 days comfortably
+/// covers a journey's real lifetime (a trip, or a stretch of commuting
+/// someone is following) and is still bounded; an owner whose link is still
+/// in active use extends it in place (`extend_journey_share_link`, same
+/// token, so recipients' copies keep working) rather than regenerating.
+/// Longer than `groups::INVITE_LINK_TTL`'s 7 days on purpose: an invite is
+/// a one-off action, a journey link is something recipients revisit.
+const JOURNEY_SHARE_LINK_TTL: chrono::Duration = chrono::Duration::days(30);
+
 pub fn router() -> Router {
     Router::new()
         .route("/Journeys", axum::routing::post(post_journey))
@@ -77,6 +91,10 @@ pub fn router() -> Router {
         .route(
             "/Journeys/{journey_id}/share-link",
             axum::routing::post(create_journey_share_link).delete(revoke_journey_share_link),
+        )
+        .route(
+            "/Journeys/{journey_id}/share-link/extend",
+            axum::routing::post(extend_journey_share_link),
         )
 }
 
@@ -1093,9 +1111,11 @@ async fn get_journey(
 /// non-owner, matching every other write route's own 404-never-403
 /// posture. Used for both the first "Share" click and a later
 /// "Regenerate" -- `unlisted_links::rotate_link` already has this dual
-/// role built in. The `None` TTL is the journeys-specific choice from
-/// design doc §5: no forced expiry, explicit revoke/regenerate are the
-/// owner's only two levers.
+/// role built in. Every link now expires after [`JOURNEY_SHARE_LINK_TTL`]
+/// (2026-09-26 review, L17 -- this used to pass `None`, per design doc §5's
+/// original "no forced expiry" choice; see that constant's doc for why it
+/// changed). A regenerate starts a fresh window; see
+/// `extend_journey_share_link` for pushing out the CURRENT link's expiry.
 async fn create_journey_share_link(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -1108,7 +1128,7 @@ async fn create_journey_share_link(
         JOURNEY_RESOURCE_TYPE,
         &journey_id.to_string(),
         &user.id,
-        None,
+        Some(JOURNEY_SHARE_LINK_TTL),
     )
     .await
     .map_err(internal_error("create journey share link"))?;
@@ -1116,6 +1136,41 @@ async fn create_journey_share_link(
     Ok(Json(ShareLinkResponse {
         token: Some(link.token),
         expires_at: link.expires_at,
+    }))
+}
+
+/// `POST /Journeys/{journeyId}/share-link/extend` -- owner-only, same
+/// ownership check as `create_journey_share_link`. Resets the ACTIVE link's
+/// expiry to [`JOURNEY_SHARE_LINK_TTL`] from now WITHOUT changing its
+/// token (2026-09-26 review, L17): the way to keep a link that's still in
+/// active use alive, since regenerating would break every copy recipients
+/// already hold (and tokens are hashed at rest, so the owner can't even
+/// re-copy the old URL). An already-expired or revoked link can't be
+/// revived this way -- `404`, the owner regenerates instead. No request
+/// body.
+async fn extend_journey_share_link(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+) -> Result<Json<ShareLinkResponse>, (StatusCode, String)> {
+    require_journey_ownership(&app, journey_id, &user.id).await?;
+
+    let expires_at = unlisted_links::extend_link(
+        &app.database,
+        JOURNEY_RESOURCE_TYPE,
+        &journey_id.to_string(),
+        JOURNEY_SHARE_LINK_TTL,
+    )
+    .await
+    .map_err(internal_error("extend journey share link"))?
+    .ok_or((
+        StatusCode::NOT_FOUND,
+        "this journey has no active share link to extend".to_string(),
+    ))?;
+
+    Ok(Json(ShareLinkResponse {
+        token: None,
+        expires_at: Some(expires_at),
     }))
 }
 
@@ -3737,7 +3792,29 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK, "create share link: {body:?}");
         let token = body["token"].as_str().expect("token present").to_string();
         assert!(!token.is_empty());
-        assert!(body["expiresAt"].is_null());
+        // L17: every journey share link now carries a 30-day expiry.
+        let expires_at: chrono::DateTime<chrono::Utc> = body["expiresAt"]
+            .as_str()
+            .expect("expiresAt present")
+            .parse()
+            .expect("RFC3339 expiresAt");
+        let ttl_left = expires_at - chrono::Utc::now();
+        assert!(
+            ttl_left > chrono::Duration::days(29) && ttl_left <= super::JOURNEY_SHARE_LINK_TTL,
+            "unexpected expiry {expires_at}"
+        );
+
+        // The owner can extend the SAME link in place.
+        let (status, extended) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link/extend"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "extend share link: {extended:?}");
+        assert!(extended["token"].is_null());
+        assert!(extended["expiresAt"].is_string());
 
         // No cookie at all -- the whole point of the public token route.
         let (status, body) = request(router, format!("/Journeys/shared/{token}"), None).await;

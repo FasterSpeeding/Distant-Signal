@@ -63,7 +63,7 @@ describe('ShareJourneyLinkButton', () => {
     expect(screen.queryByRole('button', { name: 'Create link' })).not.toBeInTheDocument();
   });
 
-  it('states the no-expiry, revoke-only guarantee', async () => {
+  it('states that the link works until it expires or is revoked', async () => {
     renderWithMantine(
       <ShareJourneyLinkButton
         journeyId={167}
@@ -74,7 +74,7 @@ describe('ShareJourneyLinkButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
     expect(
       await screen.findByText(
-        'Anyone with this link can view this journey (read-only) without logging in, until you revoke it.',
+        /until it expires or you\s+revoke it\./,
       ),
     ).toBeInTheDocument();
   });
@@ -105,6 +105,29 @@ describe('ShareJourneyLinkButton', () => {
     // response itself (and the button flips to Regenerate).
     await waitFor(() => expect(screen.getByRole('button', { name: 'Regenerate' })).toBeEnabled());
     expect(screen.getByRole('textbox', { name: 'Share link' })).toHaveValue(`${ORIGIN}/journeys/shared/new`);
+  });
+
+  it('shows the expiry and Extend keeps the same link, updating the expiry', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ token: null, expiresAt: '2026-11-20T12:00:00Z' }), { status: 200 }),
+    );
+    renderWithMantine(
+      <ShareJourneyLinkButton
+        journeyId={167}
+        shareLink={{ token: 'tok123', expiresAt: '2026-10-20T12:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
+    expect(await screen.findByText(/^Expires /)).toBeInTheDocument();
+    const before = screen.getByText(/^Expires /).textContent;
+    fireEvent.click(screen.getByRole('button', { name: 'Extend 30 days' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/167/share-link/extend', { method: 'POST' });
+    });
+    await waitFor(() => expect(screen.getByText(/^Expires /).textContent).not.toBe(before));
+    expect(screen.getByDisplayValue(`${ORIGIN}/journeys/shared/tok123`)).toBeInTheDocument();
   });
 
   it('an existing link whose token is not returned (hashed at rest) is described, not shown', async () => {

@@ -1397,12 +1397,11 @@ export interface GroupInviteLink {
   expiresAt: string; // RFC3339
 }
 
-/** `POST /Journeys/{id}/share-link`'s response, and the `shareLink` field
- * embedded on `JourneyDetail` for the owner only. `expiresAt` is always
- * `null` today -- journeys choose no forced TTL (design doc
- * docs/superpowers/specs/2026-09-23-unlisted-links-design.md §5) -- kept
- * as `string | null` rather than always-`null` so the type doesn't lie if
- * that choice is ever revisited. */
+/** `POST /Journeys/{id}/share-link`'s (and `.../share-link/extend`'s)
+ * response, and the `shareLink` field embedded on `JourneyDetail` for the
+ * owner only. `expiresAt` is set on every link minted since the 2026-09-26
+ * review's L17 fix (30-day TTL, extendable); still typed nullable because
+ * the column itself is nullable for other resource types. */
 export interface JourneyShareLink {
   /** Non-null only in the `POST` response that minted it -- see
    * `GroupInviteLink.token`: tokens are hashed at rest, so an existing

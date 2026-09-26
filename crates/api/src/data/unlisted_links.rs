@@ -156,6 +156,31 @@ pub async fn get_active_link(
     Ok(row.map(|(expires_at,)| ActiveLink { expires_at }))
 }
 
+/// Resets the ACTIVE (unrevoked, unexpired) link's `expires_at` for
+/// `(resource_type, resource_id)` to `NOW() + ttl`, keeping its token --
+/// so every copy already handed out keeps working (2026-09-26 review,
+/// L17). `None` if there is no active link: an expired or revoked link is
+/// never revived. Returns the new expiry.
+pub async fn extend_link(
+    pool: &PgPool,
+    resource_type: &str,
+    resource_id: &str,
+    ttl: Duration,
+) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let expires_at = Utc::now() + ttl;
+    let result = sqlx::query(
+        "UPDATE unlisted_links SET expires_at = $3 \
+         WHERE resource_type = $1 AND resource_id = $2 AND revoked_at IS NULL \
+           AND (expires_at IS NULL OR expires_at > NOW())",
+    )
+    .bind(resource_type)
+    .bind(resource_id)
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+    Ok((result.rows_affected() > 0).then_some(expires_at))
+}
+
 /// One resolved `(resource_type, resource_id)` pair for a token -- `None`
 /// if the token doesn't exist or fails the same validity predicate above.
 /// Never mutates (this module has no `consume`-shaped function at all --
@@ -437,6 +462,47 @@ mod db_tests {
         );
 
         cleanup(&pool, "widget", &["TEST-UNLISTED-LINKS-OWNER-2"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                extend_link_pushes_out_expiry_keeping_the_token -- --ignored --test-threads=1`"]
+    async fn extend_link_pushes_out_expiry_keeping_the_token() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-UNLISTED-LINKS-L17").await;
+        let link = rotate_link(
+            &pool,
+            "widget-l17",
+            "1",
+            "TEST-UNLISTED-LINKS-L17",
+            Some(Duration::minutes(5)),
+        )
+        .await
+        .expect("rotate");
+
+        let extended = extend_link(&pool, "widget-l17", "1", Duration::days(30))
+            .await
+            .expect("extend")
+            .expect("an active link should be extendable");
+        assert!(extended > link.expires_at.expect("ttl set") + Duration::days(29));
+        assert!(
+            resolve_link(&pool, &link.token)
+                .await
+                .expect("query")
+                .is_some(),
+            "extending must keep the SAME token working"
+        );
+
+        revoke_link(&pool, "widget-l17", "1").await.expect("revoke");
+        assert_eq!(
+            extend_link(&pool, "widget-l17", "1", Duration::days(30))
+                .await
+                .expect("extend revoked"),
+            None,
+            "a revoked link must never be revived"
+        );
+
+        cleanup(&pool, "widget-l17", &["TEST-UNLISTED-LINKS-L17"]).await;
     }
 
     #[tokio::test]

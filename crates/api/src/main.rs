@@ -18,23 +18,12 @@ use api::{data, routes};
 /// route, so leaking it anywhere is equivalent to leaking the resource
 /// itself.
 ///
-/// A full TTL mechanism for journey share links already exists at the
-/// data layer -- `unlisted_links::rotate_link`'s own `ttl: Option<Duration>`
-/// parameter, backed by `unlisted_links.expires_at` and honored by
-/// `resolve_link`/`get_active_link` -- but journeys deliberately pass
-/// `None` today, a DOCUMENTED product decision
-/// (`docs/superpowers/specs/2026-09-23-unlisted-links-design.md` §5: a
-/// journey's link grants read-only access to one already-bounded
-/// resource, not an ever-growing membership boundary, so explicit
-/// revoke/regenerate are its only two owner-facing levers). Silently
-/// overriding that as a side effect of a Low-severity logging fix would be
-/// a bigger, product-level change than this finding calls for -- forcing
-/// every existing share link to start expiring is a UX change worth its
-/// own decision, not something to sneak in here. Redacting the token from
-/// tracing output is the smaller, purely-defensive fix instead: it closes
-/// the log-exposure channel without changing the feature's behavior at
-/// all, and if a TTL mechanism is wanted later, the plumbing is already
-/// there waiting for it.
+/// Complements, rather than replaces, the share link's own TTL: as of the
+/// 2026-09-26 review's L17 fix every journey share link expires after
+/// `routes::journeys::JOURNEY_SHARE_LINK_TTL` (30 days, extendable by the
+/// owner), which bounds how long a token leaked through any of the channels
+/// above stays useful -- but a token that's still live must not be written
+/// into this service's own logs either, so the redaction stays.
 fn redact_share_token_uri(uri: &axum::http::Uri) -> String {
     let path = uri.path();
     if let Some(token) = path.strip_prefix("/Journeys/shared/")
