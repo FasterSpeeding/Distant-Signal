@@ -20,6 +20,7 @@
 //! mints is unconditionally `match_mode = 'unmatched'`.
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use common::TimeWindow;
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -83,7 +84,7 @@ pub struct JourneyTemplateListItem {
 }
 
 /// User-facing validation for a manually-entered template leg's
-/// origin/destination -- same 3-letter CRS check as
+/// origin/destination/window bounds -- same 3-letter CRS check as
 /// `journeys::validate_window_leg`, deliberately WITHOUT that function's
 /// "at least one window bound set" requirement. See this plan's Judgment
 /// Call 2 for the full reasoning: a template leg is never itself
@@ -91,7 +92,25 @@ pub struct JourneyTemplateListItem {
 /// journey leg doesn't apply here. Not called at all for a leg produced by
 /// the promote-from-journey path (Task 3's route handles that leg
 /// separately -- see [`create_template`]'s own doc comment).
-pub fn validate_template_leg(origin_crs: &str, destination_crs: &str) -> Result<(), String> {
+///
+/// The `after > before` check on each window IS shared with
+/// `journeys::validate_window_leg`, however -- 2026-09 security/bug review
+/// (Repeater Signal) Medium finding M12: this function used to validate
+/// only the CRS codes, never the window bounds a template leg carries
+/// (`depart_window`/`arrive_window`, the same fields `validate_window_leg`
+/// checks). A backwards window (`after` later than `before`) is exactly as
+/// dead here as it is for an ordinary journey leg -- every schedule query
+/// built from these bounds is an inclusive range filter, so `after >
+/// before` can never match any real calling point -- but a template leg
+/// silently persisting one meant it would sweep-mint a fresh occurrence
+/// every single day that could never resolve a train, with no error ever
+/// surfaced to the user who typed it.
+pub fn validate_template_leg(
+    origin_crs: &str,
+    destination_crs: &str,
+    depart_window: &TimeWindow,
+    arrive_window: &TimeWindow,
+) -> Result<(), String> {
     // 2026-09 Signal Box Audit Low finding: this was `.trim().len() != 3`,
     // a UTF-8 BYTE-length check, not a character check -- a multi-byte
     // character could pass while not being a real CRS code. Fixed to
@@ -109,6 +128,24 @@ pub fn validate_template_leg(origin_crs: &str, destination_crs: &str) -> Result<
             "Enter a valid destination station — CRS codes are three letters, like WOK or \
              EUS."
                 .to_string(),
+        );
+    }
+    // Deliberately no "at least one bound set" check here -- see this
+    // function's own doc comment -- but a bound that IS set on both ends
+    // of the same window must still be a real, matchable range.
+    if let (Some(after), Some(before)) = (depart_window.after, depart_window.before)
+        && after > before
+    {
+        return Err(
+            "The earliest departure time must not be later than the latest departure time."
+                .to_string(),
+        );
+    }
+    if let (Some(after), Some(before)) = (arrive_window.after, arrive_window.before)
+        && after > before
+    {
+        return Err(
+            "The earliest arrival time must not be later than the latest arrival time.".to_string(),
         );
     }
     Ok(())
@@ -491,7 +528,54 @@ pub async fn materialize_template(
     user_id: &str,
     service_date: NaiveDate,
 ) -> anyhow::Result<Option<MaterializedJourney>> {
+    let mut tx = pool.begin().await?;
+
+    // 2026-09 Signal Box Audit Low finding, closed here for `delete_template`
+    // racing a concurrent read: row-lock the template FIRST, before this
+    // function ever reads the template's own fields or its legs.
+    //
+    // 2026-09 security/bug review (Repeater Signal) Medium finding M12
+    // widens that same fix: this lock used to be acquired AFTER
+    // `get_owned_template`/`list_template_legs` had already run (against
+    // `pool` directly, outside any transaction, further up this
+    // function) -- a TOCTOU gap the earlier fix's own row lock never
+    // actually closed, since the data it was meant to protect had already
+    // been read before the lock existed. A concurrent `replace_template`
+    // (which both renames the template AND wholesale-replaces its legs)
+    // landing in that window meant this function could still silently
+    // materialize the template's OLD name/legs, mismatched against
+    // whatever the replace just committed -- not a crash, but a real lost-
+    // update: the minted journey would reflect neither the pre- nor the
+    // post-replace state consistently. Acquiring the lock before ANY read
+    // closes that too: `replace_template`'s own `UPDATE journey_templates
+    // ... WHERE id = $1` needs this exact same row lock before it can touch
+    // the template OR its legs, so it now either lands before this lock is
+    // taken (whatever we read next is its post-replace result) or blocks
+    // until this transaction commits or rolls back (whatever we read next
+    // is still its pre-replace result, but a CONSISTENT one, not a mix of
+    // both). `delete_template`'s own `DELETE` needs the same lock too, so
+    // it either lands before this recheck (caught below, clean 404) or
+    // blocks the same way (materialization proceeds; the template
+    // deletion, which only detaches `journeys.source_template_id` via `ON
+    // DELETE SET NULL`, applies afterwards as normal).
+    let still_owned: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM journey_templates WHERE id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(template_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if still_owned.is_none() {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+
     let Some(template) = get_owned_template(pool, template_id, user_id).await? else {
+        // Unreachable in practice given the lock just taken above (the row
+        // cannot have vanished between that lock and this plain read on
+        // the same still-open transaction's guarantee), but kept as a
+        // defensive fallback to the same clean 404 rather than an unwrap.
+        tx.rollback().await?;
         return Ok(None);
     };
     let legs = list_template_legs(pool, template_id).await?;
@@ -502,36 +586,6 @@ pub async fn materialize_template(
     // rather than minting a zero-leg journeys row nothing else in this
     // codebase expects to see (journeys::delete_leg's own doc comment).
     if legs.is_empty() {
-        return Ok(None);
-    }
-
-    let mut tx = pool.begin().await?;
-
-    // 2026-09 Signal Box Audit Low finding: `get_owned_template`/
-    // `list_template_legs` above both run against `pool` directly, BEFORE
-    // this transaction opens -- leaving a window, between that read and
-    // this transaction's own writes, where a concurrent `delete_template`
-    // could remove the row just read. `journeys.source_template_id`
-    // references `journey_templates(id)`, so a template deleted in that
-    // window turned the `INSERT` below into a foreign-key-violation
-    // database error -- which the route's blanket `internal_error` mapping
-    // surfaces as a confusing 500, when the honest answer is the same
-    // clean 404 this function already returns for "no such template" up
-    // above. Re-confirming existence (and ownership) here, row-locked via
-    // `FOR UPDATE`, closes that window: `delete_template`'s own `DELETE`
-    // needs the same row lock, so it either lands before this recheck
-    // (caught here, clean 404) or blocks until this transaction commits or
-    // rolls back (materialization proceeds; the template deletion, which
-    // only detaches `journeys.source_template_id` via `ON DELETE SET
-    // NULL`, applies afterwards as normal).
-    let still_owned: Option<(i64,)> = sqlx::query_as(
-        "SELECT id FROM journey_templates WHERE id = $1 AND user_id = $2 FOR UPDATE",
-    )
-    .bind(template_id)
-    .bind(user_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if still_owned.is_none() {
         tx.rollback().await?;
         return Ok(None);
     }
@@ -611,17 +665,26 @@ mod validate_template_leg_tests {
 
     #[test]
     fn a_well_formed_leg_is_accepted() {
-        assert!(validate_template_leg("WAT", "RDG").is_ok());
+        assert!(
+            validate_template_leg("WAT", "RDG", &TimeWindow::default(), &TimeWindow::default())
+                .is_ok()
+        );
     }
 
     #[test]
     fn a_short_origin_code_is_rejected() {
-        assert!(validate_template_leg("W", "RDG").is_err());
+        assert!(
+            validate_template_leg("W", "RDG", &TimeWindow::default(), &TimeWindow::default())
+                .is_err()
+        );
     }
 
     #[test]
     fn a_short_destination_code_is_rejected() {
-        assert!(validate_template_leg("WAT", "R").is_err());
+        assert!(
+            validate_template_leg("WAT", "R", &TimeWindow::default(), &TimeWindow::default())
+                .is_err()
+        );
     }
 
     #[test]
@@ -630,21 +693,65 @@ mod validate_template_leg_tests {
     // "€" (U+20AC) is exactly 3 UTF-8 bytes but one character, the exact
     // shape of value a `.len() != 3` check would wrongly accept.
     fn a_three_byte_non_ascii_character_is_rejected() {
-        assert!(validate_template_leg("€", "RDG").is_err());
+        assert!(
+            validate_template_leg("€", "RDG", &TimeWindow::default(), &TimeWindow::default())
+                .is_err()
+        );
     }
 
     #[test]
     fn no_window_bound_is_required_unlike_validate_window_leg() {
-        // Judgment Call 2 -- deliberately no window-bound check at all
-        // here; this test exists to keep that decision from silently
-        // regressing if someone copies validate_window_leg's body in
-        // later.
-        assert!(validate_template_leg("WAT", "RDG").is_ok());
+        // Judgment Call 2 -- deliberately no "at least one bound set"
+        // check here; this test exists to keep that decision from
+        // silently regressing if someone copies validate_window_leg's
+        // body in later.
+        assert!(
+            validate_template_leg("WAT", "RDG", &TimeWindow::default(), &TimeWindow::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    // M12 regression (2026-09 security/bug review, Repeater Signal): the
+    // one check this function WAS missing relative to
+    // `journeys::validate_window_leg` -- a backwards window must still be
+    // rejected here, even though "at least one bound set" deliberately
+    // isn't (previous test).
+    fn a_backwards_depart_window_is_rejected() {
+        let backwards = TimeWindow {
+            after: Some("18:00:00".parse().unwrap()),
+            before: Some("08:00:00".parse().unwrap()),
+        };
+        let err = validate_template_leg("WAT", "RDG", &backwards, &TimeWindow::default())
+            .expect_err("after later than before must be rejected");
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn a_backwards_arrive_window_is_rejected() {
+        let backwards = TimeWindow {
+            after: Some("18:00:00".parse().unwrap()),
+            before: Some("08:00:00".parse().unwrap()),
+        };
+        let err = validate_template_leg("WAT", "RDG", &TimeWindow::default(), &backwards)
+            .expect_err("after later than before must be rejected");
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn a_forward_window_with_both_bounds_set_is_accepted() {
+        let forward = TimeWindow {
+            after: Some("08:00:00".parse().unwrap()),
+            before: Some("18:00:00".parse().unwrap()),
+        };
+        assert!(validate_template_leg("WAT", "RDG", &forward, &forward).is_ok());
     }
 
     #[test]
     fn validation_messages_carry_no_internal_field_names() {
-        let message = validate_template_leg("W", "RDG").unwrap_err();
+        let message =
+            validate_template_leg("W", "RDG", &TimeWindow::default(), &TimeWindow::default())
+                .unwrap_err();
         assert!(!message.is_empty());
         assert!(
             !message.contains('_'),
@@ -1292,6 +1399,110 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup template if delete lost the race");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                materialize_template_racing_a_concurrent_replace_never_mixes_old_and_new_state \
+                -- --ignored --test-threads=1`"]
+    // M12 regression (2026-09 security/bug review, Repeater Signal):
+    // before this fix, `get_owned_template`/`list_template_legs` read
+    // OUTSIDE the transaction that later takes the `FOR UPDATE` lock --
+    // the lock was real, but acquired too late to protect those reads,
+    // only the `INSERT`s after it. A `replace_template` landing in that
+    // window (which both renames the template and wholesale-replaces its
+    // legs, all under ITS OWN lock on the same row) could still race in
+    // between the read and the lock, so the minted journey could combine
+    // the OLD custom_name with the NEW legs (or vice versa) -- a state
+    // that never existed in `journey_templates`/`journey_template_legs`
+    // at any single instant. With the lock acquired first, every
+    // `materialize_template` outcome must be entirely pre-replace or
+    // entirely post-replace, never a mix.
+    async fn materialize_template_racing_a_concurrent_replace_never_mixes_old_and_new_state() {
+        let pool = connect().await;
+        let user_id = "TEST-TEMPLATE-MAT-REPLACE-RACE";
+        seed_user(&pool, user_id).await;
+
+        let old_legs = vec![fixture_leg("WAT", "RDG")];
+        let template_id = create_template(&pool, user_id, Some("Old Name"), &old_legs)
+            .await
+            .expect("create template");
+
+        let new_legs = vec![fixture_leg("EUS", "MAN")];
+        let pool_a = pool.clone();
+        let pool_b = pool.clone();
+        let (materialize_result, replace_result) = tokio::join!(
+            materialize_template(&pool_a, template_id, user_id, "2026-09-22".parse().unwrap()),
+            replace_template(
+                &pool_b,
+                template_id,
+                user_id,
+                Some("New Name"),
+                &new_legs,
+                None,
+                true,
+                None,
+                None,
+                "manual",
+                None,
+            ),
+        );
+
+        assert!(replace_result.expect("replace must never error under this race"));
+        let materialized =
+            materialize_result.expect("materialize must never error under this race");
+
+        if let Some(materialized) = materialized {
+            let (custom_name,): (Option<String>,) =
+                sqlx::query_as("SELECT custom_name FROM journeys WHERE id = $1")
+                    .bind(materialized.journey_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read back the minted journey's custom_name");
+            let leg_origins: Vec<Option<String>> = sqlx::query_scalar(
+                "SELECT origin_crs FROM journey_legs WHERE id = ANY($1) ORDER BY leg_order",
+            )
+            .bind(&materialized.leg_ids)
+            .fetch_all(&pool)
+            .await
+            .expect("read back the minted legs' origin_crs");
+
+            let is_entirely_pre_replace = custom_name.as_deref() == Some("Old Name")
+                && leg_origins == vec![Some("WAT".to_string())];
+            let is_entirely_post_replace = custom_name.as_deref() == Some("New Name")
+                && leg_origins == vec![Some("EUS".to_string())];
+            assert!(
+                is_entirely_pre_replace || is_entirely_post_replace,
+                "a minted journey must reflect either the pre-replace or the post-replace \
+                 template state, never a mix of both (custom_name={custom_name:?}, \
+                 leg_origins={leg_origins:?})"
+            );
+
+            sqlx::query("DELETE FROM journey_legs WHERE id = ANY($1)")
+                .bind(&materialized.leg_ids)
+                .execute(&pool)
+                .await
+                .expect("cleanup materialized journey_legs");
+            sqlx::query("DELETE FROM journeys WHERE id = $1")
+                .bind(materialized.journey_id)
+                .execute(&pool)
+                .await
+                .expect("cleanup materialized journey");
+        }
+
+        sqlx::query("DELETE FROM journey_template_legs WHERE template_id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup template legs");
+        sqlx::query("DELETE FROM journey_templates WHERE id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup template");
 
         cleanup_user(&pool, user_id).await;
     }

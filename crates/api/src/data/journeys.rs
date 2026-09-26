@@ -816,7 +816,38 @@ pub async fn set_leg_train_subscription(
     train_subscription_id: i64,
 ) -> anyhow::Result<bool> {
     let mut tx = pool.begin().await?;
+    let updated = set_leg_train_subscription_locked(
+        &mut tx,
+        journey_id,
+        leg_id,
+        user_id,
+        train_subscription_id,
+    )
+    .await?;
+    if updated {
+        tx.commit().await?;
+    } else {
+        tx.rollback().await?;
+    }
+    Ok(updated)
+}
 
+/// The row-locked ownership-check-then-`UPDATE`-then-conditional-
+/// deactivation core of [`set_leg_train_subscription`], factored out onto
+/// an already-open transaction/connection -- 2026-09 security/bug review
+/// (Repeater Signal) Medium finding M12: [`create_subscription_and_bind_leg`]
+/// needs to run this SAME logic inside ITS OWN transaction, one that also
+/// contains the `train_subscriptions` INSERT that must precede it, so
+/// neither commits without the other. Caller commits/rolls back; this
+/// function only ever leaves the transaction open, whichever `bool` it
+/// returns.
+async fn set_leg_train_subscription_locked(
+    tx: &mut sqlx::PgConnection,
+    journey_id: i64,
+    leg_id: i64,
+    user_id: &str,
+    train_subscription_id: i64,
+) -> anyhow::Result<bool> {
     // 2026-09 Signal Box Audit Low finding: this used to check ONLY that
     // `leg_id`/`journey_id` belong to `user_id`, never that
     // `train_subscription_id` does too. That made this an IDOR: nothing
@@ -824,20 +855,19 @@ pub async fn set_leg_train_subscription(
     // `train_subscriptions` row -- which would then surface user B's live
     // train position/notifications inside user A's journey UI, and hand
     // user A a `tracking_id` for a subscription they don't own. It was
-    // "safe" only by accident -- `post_leg_train` (this function's one
-    // caller) always mints a brand-new subscription via
-    // `create_subscription_for_train(&app.database, trains_id, &user.id)`
-    // immediately before calling in, so `train_subscription_id` is always
-    // already this same user's. But that's a property of today's ONE
-    // caller, not of this function -- any future caller that accepts a
-    // subscription id from elsewhere (e.g. a "reuse an existing pin"
-    // shortcut) would silently reintroduce the IDOR. The `EXISTS` clause
-    // below makes the ownership check a property of the function itself:
-    // if `train_subscription_id` isn't this `user_id`'s, the whole lookup
-    // comes back empty and this returns `Ok(false)`, which the route maps
-    // to `404` -- same "no such leg, or not this caller's" posture as
-    // every other failure mode here, never leaking whether the
-    // subscription id itself exists.
+    // "safe" only by accident -- every real caller (`post_leg_train`, via
+    // `create_subscription_and_bind_leg`) always mints/reuses the
+    // subscription for THIS SAME `user_id` immediately before calling in,
+    // so `train_subscription_id` is always already this same user's. But
+    // that's a property of today's real callers, not of this function --
+    // any future caller that accepts a subscription id from elsewhere
+    // (e.g. a "reuse an existing pin" shortcut) would silently
+    // reintroduce the IDOR. The `EXISTS` clause below makes the ownership
+    // check a property of the function itself: if `train_subscription_id`
+    // isn't this `user_id`'s, the whole lookup comes back empty and this
+    // returns `Ok(false)`, which the route maps to `404` -- same "no such
+    // leg, or not this caller's" posture as every other failure mode
+    // here, never leaking whether the subscription id itself exists.
     let owned: Option<(Option<i64>,)> = sqlx::query_as(
         "SELECT jl.train_subscription_id FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
@@ -890,8 +920,60 @@ pub async fn set_leg_train_subscription(
         }
     }
 
-    tx.commit().await?;
     Ok(true)
+}
+
+/// Creates (or reuses -- `create_subscription_for_train` is idempotent per
+/// `(user_id, trains_id)`, its own doc comment) a `train_subscriptions` row
+/// for `trains_id` and binds it to `leg_id`, ATOMICALLY -- 2026-09
+/// security/bug review (Repeater Signal) Medium finding M12.
+///
+/// The bug this closes: `post_leg_train` (this function's one caller,
+/// `routes/journeys.rs`) used to call `create_subscription_for_train`
+/// against `&app.database` directly -- its own bare statement, committed
+/// immediately -- and only THEN call `set_leg_train_subscription` in a
+/// separate, later transaction to link that subscription to the leg. A
+/// failure or lost race in that second call left the freshly minted
+/// subscription permanently orphaned: reachable via `/Train/{trackingId}`/
+/// `GET /Train/mine`, but linked from no `journey_legs` row at all --
+/// `set_leg_train_subscription`'s own doc comment already names exactly
+/// this as reachable ("Lost a race against a concurrent deletion of the
+/// underlying leg between the read above and this write"). This is the
+/// identical "subscription committed before its link" shape
+/// [`add_known_train_leg_to_journey`]'s own doc comment already closed for
+/// the leg-CREATION path (a brand new leg); this closes the same race for
+/// the leg-REBIND path (an existing leg's first pick, or a later "Change
+/// train") the same way: one transaction, subscription insert and leg
+/// link, or neither -- via [`set_leg_train_subscription_locked`], the
+/// same row-locked ownership-check-then-`UPDATE` core
+/// `set_leg_train_subscription` itself runs, just inside THIS function's
+/// own transaction instead of its own.
+///
+/// Returns `Ok(None)` for "no such leg, or not this caller's" -- same
+/// posture as `set_leg_train_subscription` (the route maps it to `404`,
+/// never `403`); the freshly-created-or-reused subscription is rolled
+/// back right along with it, so a losing race never leaves one behind.
+/// Returns `Ok(Some(tracking_id))` on success.
+pub async fn create_subscription_and_bind_leg(
+    pool: &PgPool,
+    journey_id: i64,
+    leg_id: i64,
+    user_id: &str,
+    trains_id: i64,
+) -> anyhow::Result<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    let tracking_id =
+        crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
+            .await?;
+    let updated =
+        set_leg_train_subscription_locked(&mut tx, journey_id, leg_id, user_id, tracking_id)
+            .await?;
+    if !updated {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    tx.commit().await?;
+    Ok(Some(tracking_id))
 }
 
 /// Removes one leg from a journey the caller owns -- the 2026-09-22 UX
@@ -2163,6 +2245,143 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-JOURNEY-IDOR-OWNER").await;
         cleanup_user(&pool, "TEST-JOURNEY-IDOR-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                create_subscription_and_bind_leg_creates_and_binds_in_one_call \
+                -- --ignored --test-threads=1`"]
+    async fn create_subscription_and_bind_leg_creates_and_binds_in_one_call() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-CREATE-BIND";
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        let (journey_id, leg_id) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            service_date,
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create window leg");
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-TRAIN-CREATE-BIND",
+            service_date,
+        )
+        .await
+        .expect("seed fixture train");
+
+        let tracking_id =
+            create_subscription_and_bind_leg(&pool, journey_id, leg_id, user_id, trains_id)
+                .await
+                .expect("create and bind must not error")
+                .expect("leg is owned");
+
+        let leg = get_owned_leg(&pool, journey_id, leg_id, user_id)
+            .await
+            .expect("read leg")
+            .expect("leg exists");
+        assert_eq!(leg.train_subscription_id, Some(tracking_id));
+        assert_eq!(leg.match_mode, "manual");
+
+        let subscription_owner: (String,) =
+            sqlx::query_as("SELECT user_id FROM train_subscriptions WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("the subscription must exist");
+        assert_eq!(subscription_owner.0, user_id);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                create_subscription_and_bind_leg_never_orphans_a_subscription_when_the_leg_is_gone \
+                -- --ignored --test-threads=1`"]
+    // M12 regression (2026-09 security/bug review, Repeater Signal): before
+    // this fix, `post_leg_train` created the `train_subscriptions` row via
+    // its own bare, immediately-committed statement, THEN separately called
+    // `set_leg_train_subscription` to link it -- a concurrent deletion of
+    // the leg between those two steps (`set_leg_train_subscription`'s own
+    // documented "lost a race" case) left the freshly minted subscription
+    // permanently orphaned, with no `journey_legs` row ever pointing at it.
+    // `create_subscription_and_bind_leg` wraps both steps in one
+    // transaction, so this same "leg vanished first" case must now roll
+    // the subscription insert back too, leaving no row behind at all.
+    async fn create_subscription_and_bind_leg_never_orphans_a_subscription_when_the_leg_is_gone() {
+        let pool = connect().await;
+        let user_id = "TEST-JOURNEY-CREATE-BIND-GONE";
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        let (journey_id, leg_id) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            service_date,
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create window leg");
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-TRAIN-CREATE-BIND-GONE",
+            service_date,
+        )
+        .await
+        .expect("seed fixture train");
+
+        // Simulates a concurrent deletion landing between the (would-be)
+        // subscription creation and the leg link -- deleting the leg's
+        // whole journey (its only leg), same as `delete_leg`'s own
+        // last-leg-deletes-the-journey behavior.
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .expect("simulate the concurrent deletion");
+
+        let result =
+            create_subscription_and_bind_leg(&pool, journey_id, leg_id, user_id, trains_id)
+                .await
+                .expect("must not error even though the leg is gone");
+        assert_eq!(result, None, "no leg to bind to must report Ok(None)");
+
+        let orphaned: Option<(i64,)> = sqlx::query_as(
+            "SELECT id FROM train_subscriptions WHERE user_id = $1 AND trains_id = $2",
+        )
+        .bind(user_id)
+        .bind(trains_id)
+        .fetch_optional(&pool)
+        .await
+        .expect("check for an orphaned subscription");
+        assert_eq!(
+            orphaned, None,
+            "the subscription this call would have minted must be rolled back, not left \
+             orphaned with no leg ever pointing at it"
+        );
+
+        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]

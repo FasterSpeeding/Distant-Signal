@@ -1530,6 +1530,19 @@ struct MatchLegResponse {
 /// and any later "Change train" re-pick -- it is always an `UPDATE`, never
 /// a new leg (see `journeys::set_leg_train_subscription`'s own doc
 /// comment).
+///
+/// Subscription creation and leg linking go through
+/// `journeys::create_subscription_and_bind_leg` as ONE atomic step -- 2026-09
+/// security/bug review (Repeater Signal) Medium finding M12: this route
+/// used to call `train_tracking::create_subscription_for_train` directly
+/// against `&app.database` (its own bare statement, committed immediately),
+/// then separately call `journeys::set_leg_train_subscription` afterwards
+/// to link it. A failure/lost race in that second call -- reachable, per
+/// that function's own doc comment on the "no such leg" case below -- left
+/// the freshly minted subscription permanently orphaned. See
+/// `create_subscription_and_bind_leg`'s own doc comment for the full
+/// mechanism this closes, the same shape `add_known_train_leg_to_journey`
+/// already closed for the leg-creation path.
 async fn post_leg_train(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -1556,10 +1569,34 @@ async fn post_leg_train(
     )
     .await
     .map_err(internal_error("find or create train"))?;
-    let tracking_id =
-        train_tracking::create_subscription_for_train(&app.database, trains_id, &user.id)
-            .await
-            .map_err(internal_error("create subscription"))?;
+
+    let tracking_id = journeys::create_subscription_and_bind_leg(
+        &app.database,
+        journey_id,
+        leg_id,
+        &user.id,
+        trains_id,
+    )
+    .await
+    .map_err(internal_error(
+        "create subscription and set journey leg train",
+    ))?
+    .ok_or({
+        // Lost a race against a concurrent deletion of the underlying leg
+        // between the read above and this write -- vanishingly unlikely,
+        // but handled rather than silently ignored, matching
+        // `post_attach_ticket`'s own analogous race-handling posture in
+        // `routes/train.rs`. (`delete_journey_leg`, below, is that
+        // deletion route -- added by the 2026-09-22 UX review's I14/2.4
+        // fix, after this comment's original "no delete route exists"
+        // reasoning was written.) The subscription this call would have
+        // created/reused is rolled back right along with the loss --
+        // `create_subscription_and_bind_leg`'s own doc comment.
+        (
+            StatusCode::NOT_FOUND,
+            "no journey leg with that id".to_string(),
+        )
+    })?;
 
     crate::routes::train::enrich_shared_train(
         &app,
@@ -1569,30 +1606,6 @@ async fn post_leg_train(
         body.service_date,
     )
     .await;
-
-    let updated = journeys::set_leg_train_subscription(
-        &app.database,
-        journey_id,
-        leg_id,
-        &user.id,
-        tracking_id,
-    )
-    .await
-    .map_err(internal_error("set journey leg train"))?;
-    if !updated {
-        // Lost a race against a concurrent deletion of the underlying leg
-        // between the read above and this write -- vanishingly unlikely,
-        // but handled rather than silently ignored, matching
-        // `post_attach_ticket`'s own analogous race-handling posture in
-        // `routes/train.rs`. (`delete_journey_leg`, below, is that
-        // deletion route -- added by the 2026-09-22 UX review's I14/2.4
-        // fix, after this comment's original "no delete route exists"
-        // reasoning was written.)
-        return Err((
-            StatusCode::NOT_FOUND,
-            "no journey leg with that id".to_string(),
-        ));
-    }
 
     Ok(Json(MatchLegResponse { tracking_id }))
 }
