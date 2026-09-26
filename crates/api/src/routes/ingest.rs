@@ -559,24 +559,29 @@ async fn get_schedule_line_population(
     Ok(Json(population))
 }
 
-/// Query parameter shared by `/schedule-destination-departures` and
-/// `/schedule-calling-points-full` -- both are DELETE(-maybe)+INSERT
-/// whole-day-replace publishes that may one day be split across multiple
-/// calls per service date (`rows.chunks(50_000)`, see
-/// `crates/schedule-reference/src/main.rs`'s own doc comments on
-/// `publish_schedule_destination_departures`/`publish_schedule_calling_points_full`).
-/// `first_chunk` tells the matching `queries::upsert_*_chunk` function
-/// whether THIS call should clear the touched dates before inserting
-/// (`true`, and the caller's first/only call for those dates in this
-/// publish cycle) or only insert (`false`, a later call for dates an
-/// earlier call in the same cycle already cleared).
+/// Query parameters shared by `/schedule-destination-departures` and
+/// `/schedule-calling-points-full` -- both are whole-day publishes that
+/// `schedule-reference` splits across several calls per service date
+/// (`post_date_scoped_rows_in_chunks`, `PUBLISH_CHUNK_ROWS` rows each).
 ///
-/// Defaults to `true` when omitted -- the same DELETE-then-INSERT-every-call
-/// behavior this route had before this parameter existed -- so an older or
-/// unaware caller (or a manual request) gets the same whole-day-replace
-/// semantics it always had, rather than silently becoming insert-only and
-/// leaking stale rows forward. `schedule-reference` passes it explicitly on
-/// every call.
+/// Two protocols, chosen by whether `publish_id` is present:
+///
+/// * **Diff protocol (`publish_id` present, 2026-09-26+).** Every chunk of
+///   one publish carries the same `publish_id`; the final chunk also carries
+///   `last_chunk=true` and `total_rows=<rows across all chunks>`. Each chunk
+///   upserts its rows without rewriting unchanged ones; the final chunk
+///   deletes the rows the publish did not carry. See
+///   `queries::SchedulePublishPart` for the full protocol. `first_chunk` is
+///   still sent (and used, to discard an abandoned earlier publish's staged
+///   keys) because an OLDER `api` only understands `first_chunk` -- it
+///   ignores the unknown new parameters and falls back to its own
+///   delete-then-insert behavior, which is correct for the same sequence of
+///   calls.
+/// * **Legacy protocol (no `publish_id`).** Exactly the pre-2026-09-26
+///   behavior, for an older `schedule-reference` during a rolling deploy:
+///   `first_chunk=true` (the default when omitted, so an unaware caller gets
+///   whole-day-replace rather than silently becoming insert-only) clears
+///   the touched dates before inserting; `first_chunk=false` only inserts.
 fn default_true() -> bool {
     true
 }
@@ -585,6 +590,53 @@ fn default_true() -> bool {
 struct ScheduleChunkParams {
     #[serde(default = "default_true")]
     first_chunk: bool,
+    publish_id: Option<String>,
+    #[serde(default)]
+    last_chunk: bool,
+    total_rows: Option<u64>,
+}
+
+/// Longest `publish_id` accepted -- `schedule-reference`'s own ids are well
+/// under this; the bound only stops a malformed caller staging arbitrarily
+/// large keys.
+const MAX_PUBLISH_ID_LEN: usize = 128;
+
+/// Which publish protocol one `ScheduleChunkParams` selects -- see that
+/// struct's doc comment.
+enum ScheduleChunkMode<'a> {
+    Legacy { first_chunk: bool },
+    Diff(queries::SchedulePublishPart<'a>),
+}
+
+impl ScheduleChunkParams {
+    fn mode(&self) -> Result<ScheduleChunkMode<'_>, (StatusCode, String)> {
+        let Some(publish_id) = self.publish_id.as_deref() else {
+            return Ok(ScheduleChunkMode::Legacy {
+                first_chunk: self.first_chunk,
+            });
+        };
+        if publish_id.is_empty() || publish_id.len() > MAX_PUBLISH_ID_LEN {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("publish_id must be 1-{MAX_PUBLISH_ID_LEN} characters"),
+            ));
+        }
+        let final_total_rows = match (self.last_chunk, self.total_rows) {
+            (true, Some(total)) => Some(total),
+            (true, None) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "last_chunk=true requires total_rows".to_string(),
+                ));
+            }
+            (false, _) => None,
+        };
+        Ok(ScheduleChunkMode::Diff(queries::SchedulePublishPart {
+            publish_id,
+            first_chunk: self.first_chunk,
+            final_total_rows,
+        }))
+    }
 }
 
 /// `crates/schedule-reference`'s per-cycle batch of CIF-derived per-station
@@ -616,28 +668,26 @@ async fn post_schedule_network_departures(
 /// `routes::trains::get_trains_search`.
 ///
 /// The body is FLAT -- one element per departure, ~377,000 of them, ~30MB
-/// -- not one element per destination with an array inside it. Today
-/// `schedule-reference` always sends exactly one call per service date (see
-/// that crate's own `publish_schedule_destination_departures` doc comment),
-/// so `first_chunk` is always `true` in practice; the query parameter exists
-/// so a future multi-chunk publish (`rows.chunks(50_000)`, documented there)
-/// can send `?first_chunk=false` for its second-and-later calls without a
-/// later chunk's implicit DELETE wiping out an earlier chunk's just-inserted
-/// rows for the same date -- see
-/// `queries::upsert_schedule_destination_departures_chunk`'s own doc
-/// comment. This handler adds no logic of its own beyond that call,
-/// deliberately.
+/// -- not one element per destination with an array inside it, split by
+/// `schedule-reference` into several calls per service date. See
+/// `ScheduleChunkParams` for the diff (`?publish_id=`) and legacy
+/// (`?first_chunk=` only) chunk protocols this dispatches between; this
+/// handler adds no logic of its own beyond that dispatch, deliberately.
 async fn post_schedule_destination_departures(
     State(app): State<App>,
     axum::extract::Query(params): axum::extract::Query<ScheduleChunkParams>,
     Json(rows): Json<Vec<ScheduleDestinationDeparturesRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_schedule_destination_departures_chunk(
-        &app.database,
-        &rows,
-        params.first_chunk,
-    )
-    .await
+    let upserted = match params.mode()? {
+        ScheduleChunkMode::Legacy { first_chunk } => {
+            queries::upsert_schedule_destination_departures_chunk(&app.database, &rows, first_chunk)
+                .await
+        }
+        ScheduleChunkMode::Diff(part) => {
+            queries::upsert_schedule_destination_departures_publish_part(&app.database, &rows, part)
+                .await
+        }
+    }
     .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
@@ -647,22 +697,25 @@ async fn post_schedule_destination_departures(
 /// `/schedule-destination-departures` and `/fixed-links` directly above,
 /// reusing the same `schedule-reference` writer credential (see
 /// `app.rs`'s route-group table). See
-/// `queries::upsert_schedule_calling_points_full_chunk` for the
-/// DELETE(-if-first-chunk)+INSERT-array transaction shape, and
-/// `post_schedule_destination_departures` directly above for why this
-/// route, too, takes a `?first_chunk=` query parameter rather than always
-/// deleting.
+/// `queries::upsert_schedule_calling_points_full_publish_part` for the
+/// diff-publish transaction shape, and `ScheduleChunkParams` for the
+/// chunk protocols this route shares with
+/// `post_schedule_destination_departures` directly above.
 async fn post_schedule_calling_points_full(
     State(app): State<App>,
     axum::extract::Query(params): axum::extract::Query<ScheduleChunkParams>,
     Json(rows): Json<Vec<ScheduleCallingPointsFullRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_schedule_calling_points_full_chunk(
-        &app.database,
-        &rows,
-        params.first_chunk,
-    )
-    .await
+    let upserted = match params.mode()? {
+        ScheduleChunkMode::Legacy { first_chunk } => {
+            queries::upsert_schedule_calling_points_full_chunk(&app.database, &rows, first_chunk)
+                .await
+        }
+        ScheduleChunkMode::Diff(part) => {
+            queries::upsert_schedule_calling_points_full_publish_part(&app.database, &rows, part)
+                .await
+        }
+    }
     .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
@@ -1851,5 +1904,159 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    /// The diff chunk protocol end to end through the router, exactly as
+    /// `schedule-reference`'s `post_date_scoped_rows_in_chunks` sends it: two
+    /// chunks sharing a `publish_id`, the last carrying
+    /// `last_chunk=true&total_rows=`. The date ends with exactly the union of
+    /// the two chunks, and the previous publish's row that neither carried
+    /// is gone.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                post_schedule_calling_points_full -- --ignored --test-threads=1`"]
+    async fn post_schedule_calling_points_full_diff_protocol_publishes_the_union_of_its_chunks() {
+        let pool = connect().await;
+        let date = "2099-07-20";
+        let clear = || async {
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = $1::date")
+                .bind(date)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture rows");
+        };
+        clear().await;
+        let calling_point = |uid: &str| {
+            json!({
+                "service_date": date,
+                "uid": uid,
+                "seq": 0,
+                "tiploc": "EUSTON",
+                "kind": "origin",
+                "booked_arrival": null,
+                "booked_departure": "08:00:00",
+                "day_offset": 0
+            })
+        };
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let post = |query: &'static str, body: Value| {
+            let router = router.clone();
+            async move {
+                router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!("/schedule-calling-points-full?{query}"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+
+        // The previous publish (legacy protocol, as an older publisher sends it).
+        assert_eq!(
+            post("first_chunk=true", json!([calling_point("STALE")])).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post(
+                "first_chunk=true&publish_id=route-test",
+                json!([calling_point("CHUNK1")])
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post(
+                "first_chunk=false&publish_id=route-test&last_chunk=true&total_rows=2",
+                json!([calling_point("CHUNK2")])
+            )
+            .await,
+            StatusCode::OK
+        );
+
+        let uids: Vec<String> = sqlx::query_scalar(
+            "SELECT uid FROM schedule_calling_points_full WHERE service_date = $1::date ORDER BY uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+        assert_eq!(uids, vec!["CHUNK1".to_string(), "CHUNK2".to_string()]);
+
+        clear().await;
+    }
+}
+
+#[cfg(test)]
+mod schedule_chunk_params_tests {
+    use super::*;
+
+    fn params(query: &str) -> ScheduleChunkParams {
+        let uri: axum::http::Uri = format!("/x?{query}").parse().expect("valid uri");
+        axum::extract::Query::<ScheduleChunkParams>::try_from_uri(&uri)
+            .expect("valid query string")
+            .0
+    }
+
+    /// An older `schedule-reference` sends only `first_chunk` (or nothing):
+    /// it must get exactly the legacy delete-then-insert contract.
+    #[test]
+    fn no_publish_id_selects_the_legacy_protocol() {
+        assert!(matches!(
+            params("").mode(),
+            Ok(ScheduleChunkMode::Legacy { first_chunk: true })
+        ));
+        assert!(matches!(
+            params("first_chunk=false").mode(),
+            Ok(ScheduleChunkMode::Legacy { first_chunk: false })
+        ));
+    }
+
+    #[test]
+    fn a_publish_id_selects_the_diff_protocol_and_only_the_last_chunk_finalizes() {
+        let middle = params("first_chunk=false&publish_id=p1");
+        let Ok(ScheduleChunkMode::Diff(part)) = middle.mode() else {
+            panic!("expected the diff protocol");
+        };
+        assert_eq!(
+            (part.publish_id, part.first_chunk, part.final_total_rows),
+            ("p1", false, None)
+        );
+
+        let last = params("first_chunk=false&publish_id=p1&last_chunk=true&total_rows=120000");
+        let Ok(ScheduleChunkMode::Diff(part)) = last.mode() else {
+            panic!("expected the diff protocol");
+        };
+        assert_eq!(part.final_total_rows, Some(120_000));
+    }
+
+    /// A final chunk without its row total cannot be verified, so it is
+    /// rejected rather than guessed at.
+    #[test]
+    fn a_last_chunk_without_total_rows_is_a_bad_request() {
+        let Err((status, _)) = params("publish_id=p1&last_chunk=true").mode() else {
+            panic!("expected a rejection");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn an_empty_or_oversized_publish_id_is_a_bad_request() {
+        for query in [
+            "publish_id=".to_string(),
+            format!("publish_id={}", "x".repeat(MAX_PUBLISH_ID_LEN + 1)),
+        ] {
+            let Err((status, _)) = params(&query).mode() else {
+                panic!("expected a rejection for {query}");
+            };
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
     }
 }
