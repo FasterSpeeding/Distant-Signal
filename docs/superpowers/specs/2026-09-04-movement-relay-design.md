@@ -265,6 +265,26 @@ replay safe"), carried over unchanged.
   posture this repo already uses elsewhere for first-guess cadence
   constants (e.g. `trust-consumer/src/config.rs:126-128`'s own
   `stanox_crs_reload_secs` comment).
+- **Revised 2026-09-26 against production measurements.** The real rate is
+  ~1M entries/day (16.45M added in total), not ~630k, so N = 500,000 held
+  11.7h, not 19h, and cost 460 MB (920 B/entry) inside a 512Mi Redis limit
+  with no `maxmemory`: ~90% full before any AOF-rewrite or BGSAVE fork. The
+  cap is now `--movement-stream-maxlen` / `MOVEMENT_STREAM_MAXLEN` (chart
+  `movementRelay.streamMaxLen`), defaulting to a **512 MiB budget at 1 KiB
+  per entry = 524,288 entries** (~12h of daytime traffic).
+  - About 12h is the target because this stream is the only replay source
+    for the downstream groups (movement-relay holds RDM's one Kafka group).
+    Restarts and node reboots cost minutes, and the case worth covering is
+    a crash-looping consumer that nobody notices overnight.
+  - `MAXLEN` rather than `MINID` because the failure being guarded against
+    is memory: a time cap lets a busier feed grow Redis without bound.
+  - Redis now runs with `maxmemory 640mb` and `noeviction` in a 640Mi/1Gi
+    pod, so it refuses XADD rather than being OOMKilled. movement-relay's
+    existing retain/pause/retry path turns that refusal into backpressure
+    onto Kafka. It also XTRIMs on each refusal, so lowering the cap recovers.
+  - RDB `save` is off; AOF alone persists.
+  - `msg_type` stays: measured on 100k real envelopes, it adds no memory.
+  - See values.yaml's `redis:` block for the arithmetic.
 - **A consumer that falls behind past the trim window WILL lose entries it
   never read — by design, given oldest-first eviction above, not merely as
   an edge case under sustained load — so this must be a detected, handled
