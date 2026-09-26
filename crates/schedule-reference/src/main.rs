@@ -121,6 +121,41 @@ fn read_prefixed_lines_multi(path: &std::path::Path, prefixes: &[&str]) -> anyho
     Ok(out)
 }
 
+/// Builds the whole-network `ScheduleIndex` from the `MCA` file at `path`,
+/// one line at a time, never holding the file's text in memory.
+///
+/// **Why (2026-09-26 production OOM).** This used to be
+/// `read_prefixed_lines_multi(path, &["BS", "BX", "LO", "LI", "CR", "LT"])`
+/// followed by `ScheduleIndex::from_text`, which kept ~700MB of schedule
+/// text (plus `String` doubling slack) alive for the whole of
+/// `publish_cif_derived_products` -- index build, every per-date publish and
+/// all -- on top of the index itself. With the index at ~2.3GiB that put the
+/// `reference` container over its 3Gi limit on every run.
+///
+/// Every line is fed to the parser unfiltered: it already ignores every
+/// record type other than `BS`/`BX`/`LO`/`LI`/`LT` (`CR` included), so the old
+/// prefix filter changed nothing but cost a copy. Line terminators are
+/// stripped exactly as `BufRead::lines` did (`\n`, then one `\r`), and a
+/// non-UTF-8 line is still an error for the whole read, as it was.
+fn build_schedule_index_from_file(
+    path: &std::path::Path,
+) -> anyhow::Result<schedule_query::ScheduleIndex> {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut builder = schedule_query::ScheduleIndexBuilder::default();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let trimmed = line.strip_suffix('\n').unwrap_or(&line);
+        let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+        builder.push_line(trimmed);
+    }
+    Ok(builder.finish())
+}
+
 /// Every product one delivery's publish cycle is responsible for, and what
 /// happened to it -- the bookkeeping that decides whether
 /// `last_processed_delivery` may advance.
@@ -743,11 +778,10 @@ async fn publish_cif_derived_products(
     tiploc_crs_records: &[common::TiplocCrsRecord],
     outcome: &mut CycleOutcome,
 ) {
-    let mca_schedule_text = match read_prefixed_lines_multi(
-        mca_path,
-        &["BS", "BX", "LO", "LI", "CR", "LT"],
-    ) {
-        Ok(text) => text,
+    // Streamed straight off disk into the index -- see
+    // `build_schedule_index_from_file` for the OOM this replaced.
+    let index = match build_schedule_index_from_file(mca_path) {
+        Ok(index) => index,
         Err(err) => {
             tracing::error!(error = ?err, "failed to read CIF SCHEDULE records from delivery; skipping this cycle's CIF-derived publishes");
             // Retryable, not permanent: a read of the read-only-mounted PVC
@@ -757,8 +791,6 @@ async fn publish_cif_derived_products(
             return;
         }
     };
-
-    let index = schedule_query::ScheduleIndex::from_text(&mca_schedule_text);
     // schedule-reference has no rail-day concept of its own yet --
     // publishing against the plain calendar date is deliberate and
     // sufficient here:
@@ -3431,5 +3463,56 @@ mod london_local_date_tests {
             london_local_date_at(instant),
             chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod schedule_index_from_file_tests {
+    use super::*;
+
+    const BS_C00573_PERMANENT: &str =
+        "BSNC005732605172612060000001 PXX1S003101121194800 DMU    125      S A T        P";
+    const BX_SR: &str = "BX         SRYSR408800";
+    const LO_EUSTON: &str = "LOEUSTON  0822 08227  C      TB";
+    const LI_CARLILE: &str = "LICARLILE 1202 1213      120212131        T";
+    const LT_EUSTON: &str = "LTEUSTON  0804 08079     TF";
+    const TI_LINE: &str = "TIEUSTON 00598400EUSTON                    98400   EUS EUSTON";
+
+    /// The streamed-from-disk index must be the same index the old
+    /// read-whole-text-then-`from_text` path built: CRLF terminators, a
+    /// missing final newline and unrelated record types (`TI`) interleaved
+    /// all included.
+    #[test]
+    fn streaming_from_a_file_matches_from_text() {
+        let lines = [
+            TI_LINE,
+            BS_C00573_PERMANENT,
+            BX_SR,
+            LO_EUSTON,
+            LI_CARLILE,
+            LT_EUSTON,
+        ];
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), lines.join("\r\n")).unwrap();
+
+        let streamed = build_schedule_index_from_file(file.path()).unwrap();
+        let from_text = schedule_query::ScheduleIndex::from_text(&lines.join("\n"));
+
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        let resolved = streamed.schedule_for_uid("C00573", date);
+        assert!(resolved.is_some());
+        assert_eq!(resolved, from_text.schedule_for_uid("C00573", date));
+        let streamed_resolved = resolved.unwrap();
+        assert_eq!(streamed_resolved.calling_points.len(), 3);
+        assert_eq!(streamed_resolved.operator_atoc.as_deref(), Some("SR"));
+        assert_eq!(
+            schedule_calling_points_full_rows(&streamed, date),
+            schedule_calling_points_full_rows(&from_text, date)
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_an_error_not_an_empty_index() {
+        assert!(build_schedule_index_from_file(std::path::Path::new("/nonexistent/mca")).is_err());
     }
 }
