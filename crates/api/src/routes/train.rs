@@ -3053,6 +3053,86 @@ mod db_tests {
         cleanup_user(&pool, "TEST-DELETE-REAL-OWNER").await;
     }
 
+    /// 2026-09-26 review, Low finding 13: `journey_legs.train_subscription_id
+    /// ... ON DELETE SET NULL` (`20260922090000_journeys.sql`) only clears
+    /// that one column -- deleting a tracked train that's still bound to a
+    /// journey leg used to leave the leg's `match_mode` exactly as it was
+    /// (`'manual'` here), so the leg ended up in a half-state no sweep
+    /// re-checks (`notifier::queries::unmatched_auto_legs_for_commit_check`
+    /// only ever selects `match_mode = 'unmatched'`) even though
+    /// `train_subscription_id` now reads `NULL`. This proves
+    /// `train_tracking::delete_tracked_train`'s own fix: the leg's
+    /// `match_mode` comes back `'unmatched'` too, in sync with the FK's own
+    /// `NULL`, so the leg is genuinely (not just apparently) unmatched
+    /// afterwards.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_tracked_train_resets_a_bound_journey_legs_match_mode -- --ignored \
+                --test-threads=1`"]
+    async fn delete_tracked_train_resets_a_bound_journey_legs_match_mode() {
+        let pool = connect().await;
+        let user_id = "TEST-DELETE-L13-JOURNEY-LEG";
+        let owner_token = seed_session(&pool, user_id).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            user_id,
+            Some("L13UID"),
+            "2026-08-29".parse().unwrap(),
+        )
+        .await;
+
+        let (journey_id,): (i64,) =
+            sqlx::query_as("INSERT INTO journeys (user_id) VALUES ($1) RETURNING id")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("seed fixture journey");
+        let (leg_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, service_date, train_subscription_id, match_mode) \
+             VALUES ($1, 1, $2, $3, 'manual') RETURNING id",
+        )
+        .bind(journey_id)
+        .bind("2026-08-29".parse::<chrono::NaiveDate>().unwrap())
+        .bind(tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed fixture journey leg bound to the tracked train");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, _body) = delete_request(router, tracking_id, Some(&owner_token)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (train_subscription_id, match_mode): (Option<i64>, String) = sqlx::query_as(
+            "SELECT train_subscription_id, match_mode FROM journey_legs WHERE id = $1",
+        )
+        .bind(leg_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back the journey leg");
+        assert!(
+            train_subscription_id.is_none(),
+            "the FK's own ON DELETE SET NULL must still clear train_subscription_id"
+        );
+        assert_eq!(
+            match_mode, "unmatched",
+            "match_mode must be reset alongside train_subscription_id, not left as a stale \
+             'manual' claiming a subscription that no longer exists"
+        );
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'L13UID'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture trains row orphaned by the delete route itself");
+        cleanup_user(&pool, user_id).await;
+    }
+
     // --- delete_ticket (Decision 2 of
     // docs/superpowers/specs/2026-09-02-ticket-display-delete-original-design.md) ---
 

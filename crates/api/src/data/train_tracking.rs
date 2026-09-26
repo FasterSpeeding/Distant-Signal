@@ -1677,13 +1677,65 @@ pub async fn get_by_tracking_id(
 /// (doesn't exist, or belongs to someone else -- indistinguishable at this
 /// layer, same as every other ownership check in this file; the route
 /// handler maps `false` to `404`, never `403`).
+///
+/// **Journey-leg cleanup (2026-09-26 review, Low finding 13).**
+/// `journey_legs.train_subscription_id` is `ON DELETE SET NULL`
+/// (`20260922090000_journeys.sql`), so this delete alone already un-links
+/// any leg that pointed at this subscription -- but that FK only touches
+/// `train_subscription_id`, never `journey_legs.match_mode`. Left alone, a
+/// leg that was `'manual'` (a direct pin/known-train pick, or an earlier
+/// "Change train" re-pick -- see `journeys::set_leg_train_subscription`)
+/// or `'auto'` (a template sweep's own auto-commit --
+/// `notifier::queries::auto_commit_leg_to_train`) would end up with NO
+/// subscription attached but a `match_mode` column still claiming it's
+/// resolved. Two concrete failures came out of that mismatch: (1)
+/// `notifier::queries::unmatched_auto_legs_for_commit_check`, the template
+/// auto-sweep, only ever selects `WHERE match_mode = 'unmatched'` -- an
+/// orphaned `'auto'` leg from a `default_match_mode = 'auto'` template
+/// would never be reconsidered for re-matching, silently going dark
+/// instead of the sweep picking a fresh candidate the way it would for a
+/// leg that had never matched at all; (2) `routes::journeys::build_journey_detail_response`
+/// derives `trackedTrainState: None` purely from `train_subscription_id IS
+/// NULL`, regardless of `match_mode`, so the frontend's `JourneyLegCard`
+/// would render this leg as "Open" (offering `JourneyLegCandidates`) while
+/// the DB still called it `'manual'`/`'auto'` -- a status column lying
+/// about a leg the UI itself no longer treats as matched. Resetting
+/// `match_mode` to `'unmatched'` here (scoped by the same ownership guard
+/// as the delete below, so a not-this-caller's `id` touches nothing) makes
+/// both facts agree again: the leg reads as genuinely unmatched everywhere,
+/// exactly the state it would be in had it never been matched, and (for a
+/// leg whose journey does trace back to an `'auto'` template) becomes
+/// reachable by the auto-sweep again on its next cycle.
 pub async fn delete_tracked_train(pool: &PgPool, id: i64, user_id: &str) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
+
+    // Ownership-scoped via the same `EXISTS` idiom
+    // `journeys::set_leg_train_subscription` already uses: this only
+    // matches `journey_legs` rows at all when `id` is a subscription that
+    // truly belongs to `user_id`, so a not-this-caller's (or nonexistent)
+    // `id` leaves every other user's `journey_legs` rows completely
+    // untouched, exactly like the `DELETE` below.
+    sqlx::query(
+        "UPDATE journey_legs jl SET match_mode = 'unmatched' \
+         WHERE jl.train_subscription_id = $1 \
+           AND EXISTS ( \
+               SELECT 1 FROM train_subscriptions ts WHERE ts.id = $1 AND ts.user_id = $2 \
+           )",
+    )
+    .bind(id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
     let result = sqlx::query("DELETE FROM train_subscriptions WHERE id = $1 AND user_id = $2")
         .bind(id)
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(result.rows_affected() > 0)
+    let deleted = result.rows_affected() > 0;
+
+    tx.commit().await?;
+    Ok(deleted)
 }
 
 /// Renames (or clears, if `custom_name` is `None`) a tracked train's
