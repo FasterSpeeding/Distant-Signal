@@ -2422,10 +2422,10 @@ mod db_tests {
         let far = d + chrono::Duration::days(30);
         for (query, field) in [
             (format!("date={d}&time=10:00"), "station"),
-            (format!("station=ZRA&time=10:00"), "date"),
+            ("station=ZRA&time=10:00".to_string(), "date"),
             (format!("station=ZRA&date={d}"), "time"),
             (format!("station=ZR1&date={d}&time=10:00"), "station"),
-            (format!("station=ZRA&date=tomorrow&time=10:00"), "date"),
+            ("station=ZRA&date=tomorrow&time=10:00".to_string(), "date"),
             (format!("station=ZRA&date={far}&time=10:00"), "date"),
             (format!("station=ZRA&date={d}&time=25:00"), "time"),
             (format!("station=ZRA&date={d}&time=10:00&rsid=SR4"), "rsid"),
