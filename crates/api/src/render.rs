@@ -302,11 +302,58 @@ pub(crate) fn schedule_departure_json(
 /// fallback in both cases -- "assume same day as the departure", the
 /// previous behavior this field's addition is fixing forward from, not a
 /// new failure mode.
-pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Value {
+///
+/// **`originCrs`/`destinationCrs` are filtered through
+/// `queries::is_bookable_crs`, blanking an X-prefixed Network Rail
+/// pseudo-code to `null`.** `d`'s `true_origin_crs`/`destination_crs` are
+/// resolved by `schedule_query::resolve::departures_by_destination_crs`
+/// via `parser::resolve_tiploc_crs`, which -- unlike `resolve` -- applies
+/// NO X-prefixed exclusion (see `resolve.rs`'s own `unresolved_destination_key`
+/// doc comment). This function used to pass both fields straight through
+/// unfiltered, the same gap `is_bookable_crs`'s own doc comment cites real
+/// production evidence for at three OTHER display-bound call sites
+/// (`schedule_matching::find_schedule_match`, `routes::lines::get_line_trains`,
+/// `schedule_departure_json` above) but had not yet been closed here --
+/// this function's own opaque-JSONB read site is exactly where that filter
+/// has to apply, the same reasoning `schedule_departure_json`'s own doc
+/// comment gives for its own `destination_crs`.
+///
+/// **`destinationName` resolves `destinationCrs` (after the filter above)
+/// through `destination_names`, the same batched `crs -> name` lookup and
+/// "absent from the map renders `null`" contract as
+/// `station_departure_json`/`schedule_departure_json`'s identical
+/// parameter.** This function did not have this field at all before: `GET
+/// /public/trains/search` and `GET /Journeys/{id}/legs/{id}/candidates`
+/// (this function's two real callers) rendered a bare `destinationCrs`
+/// code with no name, unlike every other departure board this crate
+/// serves -- see `resolve.rs`'s own `unresolved_destination_key` doc
+/// comment, which used to cite this exact gap ("does not look up a
+/// display name for `destinationCrs` today, for any value").
+/// `TrainSearchForm.tsx`'s results table rendered
+/// `originCrs ?? '?' → stationCrs → destinationCrs ?? '?'` -- bare CRS
+/// codes only -- as a direct consequence.
+pub(crate) fn calling_point_departure_json(
+    d: &Value,
+    station_crs: &str,
+    destination_names: &HashMap<String, String>,
+) -> Value {
     let scheduled = d
         .get("scheduled")
         .and_then(Value::as_str)
         .map(|s| s.chars().take(5).collect::<String>());
+    let origin_crs = d
+        .get("true_origin_crs")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|crs| queries::is_bookable_crs(crs));
+    let destination_crs = d
+        .get("destination_crs")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|crs| queries::is_bookable_crs(crs));
+    let destination_name = destination_crs
+        .as_deref()
+        .and_then(|crs| destination_names.get(&crs.to_uppercase()));
     // `destination_arrival` is absent from `d` both when the key is
     // missing and when it is JSON `null` -- either way this ends up
     // `None`, and `json!`'s `None::<String>` still serializes as an
@@ -323,8 +370,9 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
         "stationCrs": station_crs,
-        "originCrs": d.get("true_origin_crs").cloned().unwrap_or(Value::Null),
-        "destinationCrs": d.get("destination_crs").cloned().unwrap_or(Value::Null),
+        "originCrs": origin_crs,
+        "destinationCrs": destination_crs,
+        "destinationName": destination_name,
         "destinationArrival": destination_arrival,
         "destinationArrivalDayOffset": destination_arrival_day_offset,
         "operator": d.get("operator_atoc").cloned().unwrap_or(Value::Null),
@@ -1027,7 +1075,7 @@ mod tests {
             "true_origin_crs": "PAD",
             "scheduled": "08:22:00",
         });
-        let json = calling_point_departure_json(&row, "RDG");
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert_eq!(json["uid"], "C10001");
         assert_eq!(json["scheduled"], "08:22");
         assert_eq!(json["stationCrs"], "RDG");
@@ -1043,7 +1091,7 @@ mod tests {
             "true_origin_crs": null,
             "scheduled": "10:05:00",
         });
-        let json = calling_point_departure_json(&row, "RDG");
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert!(json["originCrs"].is_null());
         assert!(
             json.get("originCrs").is_some(),
@@ -1060,7 +1108,7 @@ mod tests {
             "scheduled": "08:22:00",
             "destination_arrival": "11:30:00",
         });
-        let json = calling_point_departure_json(&row, "RDG");
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert_eq!(json["destinationArrival"], "11:30");
     }
 
@@ -1079,7 +1127,7 @@ mod tests {
             "destination_arrival": "01:01:00",
             "destination_arrival_day_offset": 1,
         });
-        let json = calling_point_departure_json(&row, "LST");
+        let json = calling_point_departure_json(&row, "LST", &HashMap::new());
         assert_eq!(json["destinationArrivalDayOffset"], 1);
     }
 
@@ -1098,7 +1146,7 @@ mod tests {
             "scheduled": "08:22:00",
             "destination_arrival": "11:30:00",
         });
-        let json = calling_point_departure_json(&row, "RDG");
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert_eq!(json["destinationArrivalDayOffset"], 0);
     }
 
@@ -1112,7 +1160,7 @@ mod tests {
             "scheduled": "10:05:00",
             "destination_arrival": null,
         });
-        let json = calling_point_departure_json(&row, "RDG");
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert!(json["destinationArrival"].is_null());
         assert!(
             json.get("destinationArrival").is_some(),
@@ -1129,7 +1177,7 @@ mod tests {
             "scheduled": "08:22:00",
             "operator_atoc": "SW",
         });
-        let json = calling_point_departure_json(&row, "RDG");
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert_eq!(json["operator"], "SW");
     }
 
@@ -1142,7 +1190,7 @@ mod tests {
             "scheduled": "10:05:00",
             "operator_atoc": null,
         });
-        let json = calling_point_departure_json(&row, "RDG");
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert!(json["operator"].is_null());
         assert!(
             json.get("operator").is_some(),
@@ -1209,6 +1257,131 @@ mod tests {
         let json = schedule_departure_json(&raw, &names);
         assert_eq!(json["destinationCrs"], "WOL");
         assert_eq!(json["destinationName"], "Wolverhampton");
+    }
+
+    /// Regression for `calling_point_departure_json`'s own doc comment:
+    /// `d`'s `destination_crs`/`true_origin_crs` are resolved via
+    /// `parser::resolve_tiploc_crs`, which applies no X-prefixed exclusion
+    /// -- unlike `schedule_departure_json` above (fixed for its own
+    /// `destination_crs` in the 2026-09-24 `is_bookable_crs`-sharing pass),
+    /// this function used to pass BOTH fields straight through unfiltered.
+    #[test]
+    fn calling_point_departure_json_blanks_an_x_prefixed_pseudo_crs_destination() {
+        let row = serde_json::json!({
+            "uid": "Y80908",
+            "true_origin_crs": "BHM",
+            "destination_crs": "XHN",
+            "scheduled": "14:05:00",
+        });
+        let names = HashMap::from([("XHN".to_string(), "Hanslope Junction".to_string())]);
+        let json = calling_point_departure_json(&row, "RDG", &names);
+        assert!(
+            json["destinationCrs"].is_null(),
+            "an X-prefixed pseudo-CRS is not a real, displayable station identity: {json:?}"
+        );
+        assert!(
+            json["destinationName"].is_null(),
+            "no name should be resolved for a blanked-out destination: {json:?}"
+        );
+        assert_eq!(
+            json["originCrs"], "BHM",
+            "a genuine origin CRS is untouched"
+        );
+    }
+
+    /// The origin-side mirror of the test directly above: `true_origin_crs`
+    /// goes through the exact same `queries::is_bookable_crs` filter as
+    /// `destination_crs`, since it is resolved by the identical
+    /// `parser::resolve_tiploc_crs` path and a schedule can genuinely
+    /// originate at a non-passenger location (e.g. empty-coaching-stock
+    /// starting from a carriage siding).
+    #[test]
+    fn calling_point_departure_json_blanks_an_x_prefixed_pseudo_crs_origin() {
+        let row = serde_json::json!({
+            "uid": "Y80908",
+            "true_origin_crs": "XVR",
+            "destination_crs": "WAT",
+            "scheduled": "14:05:00",
+        });
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
+        assert!(
+            json["originCrs"].is_null(),
+            "an X-prefixed pseudo-CRS is not a real, displayable station identity: {json:?}"
+        );
+        assert_eq!(
+            json["destinationCrs"], "WAT",
+            "a genuine destination CRS is untouched"
+        );
+    }
+
+    /// The mirror of the two tests directly above: a genuine, non-X-prefixed
+    /// origin/destination pair must still resolve normally -- `queries::
+    /// is_bookable_crs` only excludes the `X`-prefixed convention, never a
+    /// real station code.
+    #[test]
+    fn calling_point_departure_json_keeps_genuine_non_x_origin_and_destination_crs() {
+        let row = serde_json::json!({
+            "uid": "C10001",
+            "true_origin_crs": "PAD",
+            "destination_crs": "WAT",
+            "scheduled": "08:22:00",
+        });
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
+        assert_eq!(json["originCrs"], "PAD");
+        assert_eq!(json["destinationCrs"], "WAT");
+    }
+
+    /// Regression for the `destinationName` field this function did not
+    /// have at all before -- see this function's own doc comment. Same
+    /// batched `crs -> name` contract `schedule_departure_json_keeps_a_genuine_non_x_crs_destination`
+    /// proves for its sibling.
+    #[test]
+    fn calling_point_departure_json_resolves_a_destination_name_from_the_lookup_map() {
+        let row = serde_json::json!({
+            "uid": "C10001",
+            "true_origin_crs": "PAD",
+            "destination_crs": "WAT",
+            "scheduled": "08:22:00",
+        });
+        let names = HashMap::from([("WAT".to_string(), "London Waterloo".to_string())]);
+        let json = calling_point_departure_json(&row, "RDG", &names);
+        assert_eq!(json["destinationCrs"], "WAT");
+        assert_eq!(json["destinationName"], "London Waterloo");
+    }
+
+    /// A destination CRS absent from the lookup map degrades to a `null`
+    /// name, not a missing key or a panic -- the same contract every other
+    /// name-resolving renderer in this crate already establishes.
+    #[test]
+    fn calling_point_departure_json_destination_name_is_null_for_an_unresolved_code() {
+        let row = serde_json::json!({
+            "uid": "C10001",
+            "true_origin_crs": "PAD",
+            "destination_crs": "WAT",
+            "scheduled": "08:22:00",
+        });
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
+        assert!(json["destinationName"].is_null());
+        assert!(
+            json.get("destinationName").is_some(),
+            "must be explicit null, not omitted"
+        );
+    }
+
+    /// A `null` `destination_crs` must not be looked up in the names map at
+    /// all -- `destinationName` stays `null` rather than the lookup
+    /// somehow matching a `null`-keyed entry.
+    #[test]
+    fn calling_point_departure_json_null_destination_crs_gives_a_null_name_not_a_lookup() {
+        let row = serde_json::json!({
+            "uid": "C10002",
+            "true_origin_crs": "PAD",
+            "destination_crs": null,
+            "scheduled": "10:05:00",
+        });
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
+        assert!(json["destinationCrs"].is_null());
+        assert!(json["destinationName"].is_null());
     }
 
     #[test]

@@ -40,6 +40,12 @@ interface CandidateRow {
    * because the backend search keys its main row on that station. */
   scheduled: string;
   destinationCrs: string | null;
+  /** Station name resolved from `destinationCrs`, `null` when unresolved
+   * (or when `destinationCrs` itself is `null`) -- same contract as
+   * `TrainSearchForm.tsx`'s identical field, which this shares a backend
+   * renderer with. Optional for backward compatibility with a response
+   * from a backend build that predates this field. */
+  destinationName?: string | null;
   originCrs: string | null;
   destinationArrival: string | null;
   /** Echoed back by the backend; identical to `stationCrs`. */
@@ -432,7 +438,9 @@ function CandidateRowView({
         // only thing on the row, which was C4.
         <Text size="xs" c="dimmed">
           Train {row.uid}
-          {row.originCrs && row.destinationCrs ? ` · ${row.originCrs} → ${row.destinationCrs}` : ''}
+          {row.originCrs && row.destinationCrs
+            ? ` · ${row.originCrs} → ${row.destinationName ?? row.destinationCrs}`
+            : ''}
           {row.operator !== null ? ` · ${row.operator}` : ''}
         </Text>
       }

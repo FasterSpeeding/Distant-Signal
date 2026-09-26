@@ -280,6 +280,8 @@ struct AddLegResponse {
 /// as it stood before that fix.
 #[cfg(test)]
 mod leg_candidate_json_tests {
+    use std::collections::HashMap;
+
     use super::leg_candidate_json;
     use serde_json::json;
 
@@ -300,7 +302,7 @@ mod leg_candidate_json_tests {
 
     #[test]
     fn renders_the_leg_s_own_endpoints_and_arrival_alongside_the_train_s_own_route() {
-        let json = leg_candidate_json(&row(), "YRK", "NCL");
+        let json = leg_candidate_json(&row(), "YRK", "NCL", &HashMap::new());
         // The leg: leaves York 19:00, reaches Newcastle 19:55.
         assert_eq!(json["stationCrs"], "YRK");
         assert_eq!(json["legOriginCrs"], "YRK");
@@ -319,7 +321,7 @@ mod leg_candidate_json_tests {
     fn a_missing_leg_arrival_is_an_explicit_null_not_a_guess_from_the_terminus() {
         let mut row = row();
         row["leg_destination_arrival"] = serde_json::Value::Null;
-        let json = leg_candidate_json(&row, "YRK", "NCL");
+        let json = leg_candidate_json(&row, "YRK", "NCL", &HashMap::new());
         assert!(json["legDestinationArrival"].is_null());
         // Specifically NOT silently backfilled from the terminus arrival,
         // which is a different station.
@@ -332,16 +334,48 @@ mod leg_candidate_json_tests {
         row.as_object_mut()
             .unwrap()
             .remove("leg_destination_arrival_day_offset");
-        let json = leg_candidate_json(&row, "YRK", "NCL");
+        let json = leg_candidate_json(&row, "YRK", "NCL", &HashMap::new());
         assert_eq!(json["legDestinationArrivalDayOffset"], 0);
     }
 
     #[test]
     fn a_leg_that_ends_at_the_schedule_s_own_terminus_still_names_the_leg_s_end() {
-        let json = leg_candidate_json(&row(), "KGX", "EDB");
+        let json = leg_candidate_json(&row(), "KGX", "EDB", &HashMap::new());
         assert_eq!(json["legOriginCrs"], "KGX");
         assert_eq!(json["legDestinationCrs"], "EDB");
         assert_eq!(json["stationCrs"], "KGX");
+    }
+
+    /// Regression for the `destination_names` threading this function's own
+    /// doc comment documents: `get_leg_candidates` resolves the SCHEDULE's
+    /// own `destination_crs` (`row()`'s `EDB`, Edinburgh -- the train's true
+    /// terminus), not `leg_destination_crs` (`NCL`, Newcastle -- where THIS
+    /// leg gets off). A names map keyed by the leg destination must not
+    /// leak through as `destinationName`.
+    #[test]
+    fn destination_name_resolves_the_schedules_own_terminus_not_the_legs_destination() {
+        let names = HashMap::from([
+            ("EDB".to_string(), "Edinburgh".to_string()),
+            ("NCL".to_string(), "Newcastle".to_string()),
+        ]);
+        let json = leg_candidate_json(&row(), "YRK", "NCL", &names);
+        assert_eq!(json["destinationCrs"], "EDB");
+        assert_eq!(json["destinationName"], "Edinburgh");
+    }
+
+    /// A destination CRS with no matching `stations` row degrades to a
+    /// `null` name rather than a missing key or a panic -- the same
+    /// contract every other name-resolving renderer in this crate
+    /// (`render::station_departure_json`/`render::schedule_departure_json`)
+    /// already establishes.
+    #[test]
+    fn destination_name_is_null_for_an_unresolved_code() {
+        let json = leg_candidate_json(&row(), "YRK", "NCL", &HashMap::new());
+        assert!(json["destinationName"].is_null());
+        assert!(
+            json.get("destinationName").is_some(),
+            "must be explicit null, not omitted"
+        );
     }
 }
 
@@ -1380,11 +1414,26 @@ async fn get_leg_candidates(
         ));
     };
 
+    // Same batched destination-name enrichment `routes::trains::get_trains_search`
+    // now applies -- `leg_candidate_json` reuses `render::calling_point_departure_json`
+    // verbatim (this function's own doc comment), so it needs the same
+    // `destination_names` map that renderer's `destinationName` field reads.
+    let destination_crs_codes: Vec<String> = page
+        .departures
+        .iter()
+        .filter_map(|d| d.get("destination_crs").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let destination_names =
+        crate::data::queries::station_names_for_crs_batch(&app.database, &destination_crs_codes)
+            .await
+            .map_err(internal_error("resolve leg candidate destination names"))?;
+
     Ok(Json(serde_json::json!({
         "results": page
             .departures
             .iter()
-            .map(|row| leg_candidate_json(row, origin_crs, destination_crs))
+            .map(|row| leg_candidate_json(row, origin_crs, destination_crs, &destination_names))
             .collect::<Vec<serde_json::Value>>(),
         "nextCursor": page.next_cursor.as_ref().map(crate::routes::trains::encode_cursor),
     })))
@@ -1413,12 +1462,23 @@ async fn get_leg_candidates(
 /// `legDestinationArrival` is `null` whenever the schedule records neither
 /// an arrival nor a booked departure at the leg's destination -- the row
 /// then shows no arrival rather than a fabricated one.
+///
+/// `destination_names` is threaded straight through to the shared renderer
+/// -- see `render::calling_point_departure_json`'s own doc comment for the
+/// `destinationName`/X-prefixed-pseudo-CRS-filtering contract this
+/// forwards unchanged. Built by `get_leg_candidates` from every row's own
+/// `destination_crs` (the schedule's TRUE terminus, not `leg_destination_crs`
+/// below -- those two can genuinely differ, e.g. a York->Newcastle leg on a
+/// London->Edinburgh service), the same batched-lookup shape
+/// `routes::trains::get_trains_search` uses for its own candidates.
 fn leg_candidate_json(
     row: &serde_json::Value,
     leg_origin_crs: &str,
     leg_destination_crs: &str,
+    destination_names: &std::collections::HashMap<String, String>,
 ) -> serde_json::Value {
-    let mut json = crate::render::calling_point_departure_json(row, leg_origin_crs);
+    let mut json =
+        crate::render::calling_point_departure_json(row, leg_origin_crs, destination_names);
     let arrival = row
         .get("leg_destination_arrival")
         .and_then(serde_json::Value::as_str)

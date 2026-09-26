@@ -1223,9 +1223,32 @@ impl From<FixedLinkRow> for common::FixedLinkRecord {
 /// resolves exactly as before; a TIPLOC present ONLY in `tiploc_crs` --
 /// e.g. Vauxhall's/Clapham Junction's previously-dropped sibling TIPLOC --
 /// now ALSO resolves, which it could not before this plan.
+///
+/// **The returned `crs` is `UPPER()`-cased, matching [`crs_for_tiplocs_batch`]'s
+/// own `UPPER(crs)` projection -- this function used to select the bare,
+/// as-stored `crs` column instead.** Neither `upsert_stanox_crs` nor
+/// `upsert_tiploc_crs` case-normalizes `crs` on write (it is stored exactly
+/// as `schedule_reference::parser` decoded it from the raw CIF byte range,
+/// and no `CHECK` constraint enforces uppercase in either migration), so
+/// the two sibling functions could disagree about a single TIPLOC's CRS
+/// casing depending on which one a caller happened to call -- the same
+/// "two functions that both claim to resolve the same code silently
+/// disagree" bug class the Signal Box Audit's `UPPER(TRIM(...))`-everywhere
+/// pass already closed for every WHERE-clause comparison in this file (see
+/// this module's own doc note on `list_stanox_crs_for_crs`), just on the
+/// *output* side instead of the input side, and so missed by that pass.
+/// This matters beyond cosmetics: `schedule_matching::find_schedule_match`
+/// feeds this function's result straight into
+/// `.filter(|crs| queries::is_bookable_crs(crs))`, and `is_bookable_crs`
+/// checks `crs.starts_with('X')` -- a case-sensitive, uppercase-only
+/// check. An un-normalized lowercase pseudo-CRS (e.g. `"xvr"` instead of
+/// `"XVR"`) would silently pass that filter and render as if it were a
+/// real, bookable station -- exactly the failure mode `is_bookable_crs`'s
+/// own doc comment cites real production evidence for (`XVR`/`XHN`/`XOZ`/
+/// `XOD`/`XOE`/`XWI`).
 pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as(
-        "SELECT crs FROM ( \
+        "SELECT UPPER(crs) FROM ( \
              SELECT tiploc, crs, 1 AS priority FROM tiploc_crs \
              UNION ALL \
              SELECT tiploc, crs, 2 AS priority FROM stanox_crs \
@@ -6064,6 +6087,48 @@ mod stanox_crs_lookup_query_tests {
         assert_eq!(crs_for_tiploc(&pool, "NOWHERE").await.unwrap(), None);
 
         sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-CRE'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                crs_for_tiploc_uppercases_a_lower_case_stored_crs_matching_the_batch_sibling \
+                -- --ignored --test-threads=1`"]
+    async fn crs_for_tiploc_uppercases_a_lower_case_stored_crs_matching_the_batch_sibling() {
+        // Neither `upsert_stanox_crs` nor `upsert_tiploc_crs` case-normalizes
+        // `crs` on write (see `crs_for_tiploc`'s own doc comment) -- this
+        // seeds a lower-case `crs` directly to prove `crs_for_tiploc` itself
+        // uppercases on read, the same defense `crs_for_tiplocs_batch`
+        // already applies via its own `UPPER(crs)` projection. Before this
+        // fix, `crs_for_tiploc` returned the bare `"xvr"` here, which would
+        // silently defeat `is_bookable_crs`'s case-sensitive
+        // `starts_with('X')` check at this function's real
+        // `find_schedule_match` call site.
+        let pool = test_pool().await;
+        upsert_stanox_crs(
+            &pool,
+            &[common::StanoxCrsRecord {
+                stanox: "TEST-LOWER-XVR".to_string(),
+                crs: "xvr".to_string(),
+                tiploc: "TEST-LOWER-VICTRCR".to_string(),
+                station_name: "VICTORIA CARRIAGE ROAD".to_string(),
+                source_sequence: 1,
+                change_time_minutes: None,
+            }],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        assert_eq!(
+            crs_for_tiploc(&pool, "test-lower-victrcr").await.unwrap(),
+            Some("XVR".to_string()),
+            "crs_for_tiploc must uppercase a lower-case-stored crs, matching \
+             crs_for_tiplocs_batch's own UPPER(crs) projection"
+        );
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-LOWER-XVR'")
             .execute(&pool)
             .await
             .expect("cleanup");
