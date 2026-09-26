@@ -526,11 +526,19 @@ struct SchedulePopulationParams {
     service_date: chrono::NaiveDate,
 }
 
+/// `population` is a `Box<RawValue>`, not a `serde_json::Value`: serde_json
+/// still validates that it is well-formed JSON while scanning the body (so
+/// a malformed body gets exactly the same `Json` extractor rejection as
+/// before), but keeps it as one contiguous string instead of building a
+/// `Value` tree several times the size of a body that reaches 31 MB of JSON
+/// text for the biggest line. The text is then bound straight into the
+/// upsert as `$3::jsonb` -- see `queries::upsert_schedule_line_population`
+/// for the OOM this fixed. The wire format is unchanged.
 #[derive(Debug, Deserialize)]
 struct SchedulePopulationBody {
     line_id: String,
     service_date: chrono::NaiveDate,
-    population: serde_json::Value,
+    population: Box<serde_json::value::RawValue>,
 }
 
 async fn post_schedule_line_population(
@@ -541,22 +549,129 @@ async fn post_schedule_line_population(
         &app.database,
         &body.line_id,
         body.service_date,
-        &body.population,
+        body.population.get(),
     )
     .await
     .map_err(internal_error)?;
     Ok(StatusCode::OK)
 }
 
+/// Prefix of `GET /private/schedule-line-population`'s `ETag` values:
+/// `"slp-<updated_at as Unix microseconds>"`. The prefix only exists so a
+/// validator minted by something else can never parse as one of ours.
+const POPULATION_ETAG_PREFIX: &str = "slp-";
+
+/// The `ETag` for a `schedule_line_population` row last changed at
+/// `updated_at` -- see `queries::get_schedule_line_population_conditional`
+/// for why `updated_at` is a sound content version.
+fn population_etag(updated_at: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "\"{POPULATION_ETAG_PREFIX}{}\"",
+        updated_at.timestamp_micros()
+    )
+}
+
+/// What a request's `If-None-Match` asks about, in terms
+/// `queries::get_schedule_line_population_conditional` understands.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PopulationIfNoneMatch {
+    /// `If-None-Match: *` -- any current representation matches.
+    any: bool,
+    /// Every entity tag in the header(s) that parses as one of
+    /// [`population_etag`]'s, decoded back to its `updated_at`. Anything
+    /// else (another server's tag, garbage) is ignored, i.e. treated as
+    /// "doesn't match", which is always safe: the client just gets a 200.
+    versions: Vec<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Parses `If-None-Match` (RFC 9110 §13.1.2: a comma-separated list, or
+/// `*`, possibly split across several header lines). Weak comparison, as
+/// that section requires for `If-None-Match`, so a `W/` prefix is ignored.
+fn parse_population_if_none_match(headers: &axum::http::HeaderMap) -> PopulationIfNoneMatch {
+    let mut parsed = PopulationIfNoneMatch::default();
+    for value in headers.get_all(axum::http::header::IF_NONE_MATCH) {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        for tag in value.split(',').map(str::trim) {
+            if tag == "*" {
+                parsed.any = true;
+                continue;
+            }
+            let tag = tag.strip_prefix("W/").unwrap_or(tag);
+            let Some(micros) = tag
+                .strip_prefix('"')
+                .and_then(|t| t.strip_suffix('"'))
+                .and_then(|t| t.strip_prefix(POPULATION_ETAG_PREFIX))
+                .and_then(|t| t.parse::<i64>().ok())
+            else {
+                continue;
+            };
+            if let Some(version) = chrono::DateTime::from_timestamp_micros(micros) {
+                parsed.versions.push(version);
+            }
+        }
+    }
+    parsed
+}
+
+/// Returns the stored population as Postgres's JSON text, verbatim, with
+/// `Content-Type: application/json` -- no `serde_json::Value` round-trip
+/// (that decode was several times a 31 MB body, per request, under
+/// `full-coverage-consumer`'s 450-675-GETs-per-2-minutes reload bursts).
+/// The JSON is the same value as before; only whitespace and object key
+/// order can differ, which no JSON reader (in particular
+/// `full-coverage-consumer`'s `Vec<LinePopulationEntry>` deserialize)
+/// depends on. A missing row is still `200 null`.
+///
+/// **Conditional GET (2026-09-26).** Every 200 carries an `ETag` derived
+/// from the row's `updated_at`, and a request whose `If-None-Match`
+/// matches it gets `304 Not Modified` with no body -- without Postgres
+/// even decompressing the blob. `full-coverage-consumer` sends back the
+/// last `ETag` it saw, so its every-300s reload of every line re-downloads
+/// only the populations that actually changed. Both directions of version
+/// skew are safe: an older consumer sends no `If-None-Match` and gets
+/// exactly the 200 it always did (the extra header is ignored), and a newer
+/// consumer against an older `api` gets 200s with no `ETag`, so it never
+/// has a validator to send.
 async fn get_schedule_line_population(
     State(app): State<App>,
+    headers: axum::http::HeaderMap,
     axum::extract::Query(params): axum::extract::Query<SchedulePopulationParams>,
-) -> Result<Json<Option<serde_json::Value>>, (StatusCode, String)> {
-    let population =
-        queries::get_schedule_line_population(&app.database, &params.line_id, params.service_date)
-            .await
-            .map_err(internal_error)?;
-    Ok(Json(population))
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    use axum::http::header::{CONTENT_TYPE, ETAG};
+    use axum::response::IntoResponse;
+
+    let if_none_match = parse_population_if_none_match(&headers);
+    let population = queries::get_schedule_line_population_conditional(
+        &app.database,
+        &params.line_id,
+        params.service_date,
+        if_none_match.any,
+        &if_none_match.versions,
+    )
+    .await
+    .map_err(internal_error)?;
+
+    Ok(match population {
+        None => ([(CONTENT_TYPE, "application/json")], "null").into_response(),
+        Some(queries::ConditionalPopulation::NotModified { updated_at }) => (
+            StatusCode::NOT_MODIFIED,
+            [(ETAG, population_etag(updated_at))],
+        )
+            .into_response(),
+        Some(queries::ConditionalPopulation::Modified {
+            updated_at,
+            population,
+        }) => (
+            [
+                (CONTENT_TYPE, "application/json".to_string()),
+                (ETAG, population_etag(updated_at)),
+            ],
+            population,
+        )
+            .into_response(),
+    })
 }
 
 /// Query parameters shared by `/schedule-destination-departures` and
@@ -927,6 +1042,12 @@ mod db_tests {
     /// Distinct name from `delete_fixture` above -- same "reserved
     /// fixture namespace" spirit, applied to `schedule_line_population`'s
     /// own `line_id` key instead of a (crs, operator) pair.
+    /// `get_schedule_line_population` returns JSON text; compare it as JSON
+    /// (Postgres's jsonb rendering normalises whitespace and key order).
+    fn parse_population(text: Option<String>) -> Option<Value> {
+        text.map(|t| serde_json::from_str(&t).expect("stored population is valid JSON"))
+    }
+
     async fn delete_population_fixture(pool: &PgPool, line_id: &str) {
         sqlx::query("DELETE FROM schedule_line_population WHERE line_id = $1")
             .bind(line_id)
@@ -1166,14 +1287,19 @@ mod db_tests {
         let population = serde_json::json!([
             {"uid": "C11052", "calling_points": []},
         ]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &population)
-            .await
-            .expect("seed population");
+        queries::upsert_schedule_line_population(
+            &pool,
+            FIXTURE_LINE_ID,
+            service_date,
+            &population.to_string(),
+        )
+        .await
+        .expect("seed population");
 
         let fetched = queries::get_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date)
             .await
             .expect("fetch population");
-        assert_eq!(fetched, Some(population));
+        assert_eq!(parse_population(fetched), Some(population));
 
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
     }
@@ -1189,12 +1315,22 @@ mod db_tests {
         let first = serde_json::json!([{"uid": "C11052", "calling_points": []}]);
         let second = serde_json::json!([{"uid": "C99999", "calling_points": []}]);
 
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &first)
-            .await
-            .expect("seed first population");
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &second)
-            .await
-            .expect("seed second population");
+        queries::upsert_schedule_line_population(
+            &pool,
+            FIXTURE_LINE_ID,
+            service_date,
+            &first.to_string(),
+        )
+        .await
+        .expect("seed first population");
+        queries::upsert_schedule_line_population(
+            &pool,
+            FIXTURE_LINE_ID,
+            service_date,
+            &second.to_string(),
+        )
+        .await
+        .expect("seed second population");
 
         let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
             "SELECT population FROM schedule_line_population WHERE line_id = $1 AND service_date = $2",
@@ -1236,17 +1372,27 @@ mod db_tests {
 
         let service_date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
         let original = serde_json::json!([{"uid": "C11052", "calling_points": []}]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &original)
-            .await
-            .expect("seed population");
+        queries::upsert_schedule_line_population(
+            &pool,
+            FIXTURE_LINE_ID,
+            service_date,
+            &original.to_string(),
+        )
+        .await
+        .expect("seed population");
         let (xmin_before, updated_at_before) = row_version(&pool, service_date).await;
 
         // Same content with the keys in a different order: jsonb equality,
         // not text equality, decides "unchanged".
         let reordered = serde_json::json!([{"calling_points": [], "uid": "C11052"}]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &reordered)
-            .await
-            .expect("republish identical population");
+        queries::upsert_schedule_line_population(
+            &pool,
+            FIXTURE_LINE_ID,
+            service_date,
+            &reordered.to_string(),
+        )
+        .await
+        .expect("republish identical population");
         let (xmin_after_same, updated_at_after_same) = row_version(&pool, service_date).await;
         assert_eq!(
             xmin_after_same, xmin_before,
@@ -1255,9 +1401,14 @@ mod db_tests {
         assert_eq!(updated_at_after_same, updated_at_before);
 
         let changed = serde_json::json!([{"uid": "C99999", "calling_points": []}]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &changed)
-            .await
-            .expect("publish changed population");
+        queries::upsert_schedule_line_population(
+            &pool,
+            FIXTURE_LINE_ID,
+            service_date,
+            &changed.to_string(),
+        )
+        .await
+        .expect("publish changed population");
         let (xmin_after_change, _) = row_version(&pool, service_date).await;
         assert_ne!(
             xmin_after_change, xmin_before,
@@ -1266,7 +1417,7 @@ mod db_tests {
         let fetched = queries::get_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date)
             .await
             .expect("fetch population");
-        assert_eq!(fetched, Some(changed));
+        assert_eq!(parse_population(fetched), Some(changed));
 
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
     }
@@ -1337,6 +1488,373 @@ mod db_tests {
         );
 
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    /// A multi-MB population shaped like a real one (thousands of entries,
+    /// a dozen-plus calling points each, every field type the real
+    /// `LinePopulationEntry` carries).
+    fn large_population(entries: usize) -> Value {
+        Value::Array(
+            (0..entries)
+                .map(|i| {
+                    json!({
+                        "uid": format!("L{i:05}"),
+                        "calling_points": (0..16).map(|j| json!({
+                            "tiploc": format!("TPL{j:03}"),
+                            "kind": if j == 0 { "Origin" } else if j == 15 { "Terminate" } else { "Intermediate" },
+                            "booked_arrival": if j == 0 { Value::Null } else { json!("08:15:30") },
+                            "booked_departure": if j == 15 { Value::Null } else { json!("08:16:00") },
+                            "is_half_minute_arrival": j % 2 == 0,
+                            "is_half_minute_departure": false,
+                            "day_offset": 0,
+                            "activity": "T ",
+                            "public_arrival": null,
+                            "public_departure": "08:16:00",
+                            "unicode": "Kings Cross \u{00e9}\u{2014}\"quoted\"\\",
+                            "float": 1.5,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// With the same 100 MB body limit `routes::private_router` layers over
+    /// the real `/private/*` routes (axum's own 2 MB default would 413 the
+    /// multi-MB fixture).
+    fn population_router(pool: &PgPool) -> axum::Router {
+        crate::app::Router::new()
+            .merge(router())
+            .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
+            .with_state(test_app(pool.clone()))
+    }
+
+    async fn post_population(
+        router: &axum::Router,
+        line_id: &str,
+        population: &Value,
+    ) -> StatusCode {
+        let body = json!({
+            "line_id": line_id,
+            "service_date": "2026-09-04",
+            "population": population,
+        });
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/schedule-line-population")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// `(status, etag, content-type, body)` of one GET, optionally with an
+    /// `If-None-Match`.
+    async fn get_population(
+        router: &axum::Router,
+        line_id: &str,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, Option<String>, Option<String>, Vec<u8>) {
+        let mut request = Request::builder().uri(format!(
+            "/schedule-line-population?line_id={line_id}&service_date=2026-09-04"
+        ));
+        if let Some(tag) = if_none_match {
+            request = request.header("if-none-match", tag);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .map(|v: &axum::http::HeaderValue| v.to_str().unwrap().to_string())
+        };
+        let etag = header(axum::http::header::ETAG);
+        let content_type = header(axum::http::header::CONTENT_TYPE);
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, etag, content_type, body)
+    }
+
+    /// The memory fix must not change what is stored or served: a
+    /// multi-MB population POSTed through the `RawValue`/`$3::jsonb` path
+    /// is jsonb-equal to the same population bound the OLD way (as a
+    /// `serde_json::Value`), the GET body parses back to the identical
+    /// value, and re-POSTing the GET body verbatim is a no-op.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn a_multi_mb_population_round_trips_post_and_get_unchanged() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+        let router = population_router(&pool);
+
+        let population = large_population(6000);
+        let text_len = population.to_string().len();
+        assert!(text_len > 5_000_000, "fixture is only {text_len} bytes");
+
+        assert_eq!(
+            post_population(&router, FIXTURE_LINE_ID, &population).await,
+            StatusCode::OK
+        );
+
+        // Equal (jsonb equality) to what binding a `Value` -- the old
+        // code path -- stores.
+        let (equal_to_value_bind, xmin_before): (bool, String) = sqlx::query_as(
+            "SELECT population = $3, xmin::text FROM schedule_line_population \
+             WHERE line_id = $1 AND service_date = $2",
+        )
+        .bind(FIXTURE_LINE_ID)
+        .bind(chrono::NaiveDate::from_ymd_opt(2026, 9, 4).unwrap())
+        .bind(&population)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(equal_to_value_bind);
+
+        let (status, etag, content_type, body) =
+            get_population(&router, FIXTURE_LINE_ID, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+        assert!(etag.is_some());
+        let served: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(served, population);
+        // And it still deserializes into the consumer's own wire type.
+        let _: Vec<schedule_query::LinePopulationEntry> = serde_json::from_slice(&body).unwrap();
+
+        // Re-publishing the served text verbatim changes nothing.
+        let served_raw: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            post_population(&router, FIXTURE_LINE_ID, &served_raw).await,
+            StatusCode::OK
+        );
+        let (xmin_after,): (String,) =
+            sqlx::query_as("SELECT xmin::text FROM schedule_line_population WHERE line_id = $1")
+                .bind(FIXTURE_LINE_ID)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            xmin_after, xmin_before,
+            "identical republish must be a no-op"
+        );
+        let (_, etag_after, _, _) = get_population(&router, FIXTURE_LINE_ID, None).await;
+        assert_eq!(etag_after, etag, "an unchanged population keeps its ETag");
+
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    /// Conditional GET, both compatibility directions on the api side: a
+    /// client with no `If-None-Match` (every consumer predating this
+    /// change) gets the full 200 exactly as before; a client echoing the
+    /// `ETag` gets a bodyless 304 until the population changes, then a 200
+    /// with a new `ETag`. Foreign/garbage validators are ignored (200).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn get_honours_if_none_match_and_still_serves_clients_without_it() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+        let router = population_router(&pool);
+
+        // Unpublished: still `200 null`, with or without a validator.
+        for tag in [None, Some("\"slp-1\""), Some("*")] {
+            let (status, etag, _, body) = get_population(&router, FIXTURE_LINE_ID, tag).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(etag, None);
+            assert_eq!(body, b"null");
+        }
+
+        let first = large_population(50);
+        post_population(&router, FIXTURE_LINE_ID, &first).await;
+
+        let (status, etag, _, body) = get_population(&router, FIXTURE_LINE_ID, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), first);
+        let etag = etag.expect("a 200 for a published row carries an ETag");
+
+        for matching in [
+            etag.clone(),
+            format!("W/{etag}"),
+            format!("\"other\", {etag}"),
+            "*".to_string(),
+        ] {
+            let (status, echoed, _, body) =
+                get_population(&router, FIXTURE_LINE_ID, Some(&matching)).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_MODIFIED,
+                "If-None-Match: {matching}"
+            );
+            assert_eq!(echoed.as_deref(), Some(etag.as_str()));
+            assert!(body.is_empty());
+        }
+        for not_matching in ["\"slp-1\"", "\"something-else\"", "garbage"] {
+            let (status, _, _, body) =
+                get_population(&router, FIXTURE_LINE_ID, Some(not_matching)).await;
+            assert_eq!(status, StatusCode::OK, "If-None-Match: {not_matching}");
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), first);
+        }
+
+        // A changed population invalidates the old validator.
+        let second = large_population(51);
+        post_population(&router, FIXTURE_LINE_ID, &second).await;
+        let (status, new_etag, _, body) =
+            get_population(&router, FIXTURE_LINE_ID, Some(&etag)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(new_etag.as_deref(), Some(etag.as_str()));
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), second);
+
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    /// The POST keeps the old request-format validation: malformed JSON,
+    /// a missing `population`, and a bad date are still rejected by the
+    /// `Json` extractor, and nothing is written.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn post_still_rejects_malformed_bodies() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+        let router = population_router(&pool);
+
+        let cases = [
+            (
+                r#"{"line_id": "ZTEST", "service_date": "2026-09-04", "population": [{"uid": }]}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                r#"{"line_id": "ZTEST", "service_date": "2026-09-04"}"#,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                r#"{"line_id": "ZTEST", "service_date": "not-a-date", "population": []}"#,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ];
+        for (body, expected) in cases {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/schedule-line-population")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "body: {body}");
+        }
+        let (count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM schedule_line_population WHERE line_id = $1")
+                .bind(FIXTURE_LINE_ID)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// `get_schedule_line_population_entries`' in-SQL uid filter keeps the
+    /// published order and matches the old in-Rust filter.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn population_entries_filter_by_uid_in_sql_preserving_order() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 4).unwrap();
+        let population = large_population(5);
+        let mut population_array = population.as_array().unwrap().clone();
+        // A second, later entry for the same uid: both must come back, in order.
+        let mut dup = population_array[1].clone();
+        dup["calling_points"] = json!([]);
+        population_array.push(dup);
+        let population = Value::Array(population_array);
+        queries::upsert_schedule_line_population(
+            &pool,
+            FIXTURE_LINE_ID,
+            date,
+            &population.to_string(),
+        )
+        .await
+        .unwrap();
+
+        let all: Vec<schedule_query::LinePopulationEntry> =
+            serde_json::from_value(population.clone()).unwrap();
+        let fetched_all =
+            queries::get_schedule_line_population_entries(&pool, FIXTURE_LINE_ID, date, None)
+                .await
+                .unwrap();
+        assert_eq!(fetched_all.as_ref(), Some(&all));
+
+        let only = queries::get_schedule_line_population_entries(
+            &pool,
+            FIXTURE_LINE_ID,
+            date,
+            Some("L00001"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let expected: Vec<_> = all.iter().filter(|e| e.uid == "L00001").cloned().collect();
+        assert_eq!(expected.len(), 2);
+        assert_eq!(only, expected);
+
+        let none = queries::get_schedule_line_population_entries(
+            &pool,
+            FIXTURE_LINE_ID,
+            date,
+            Some("NOPE"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(none, Some(vec![]));
+        let missing =
+            queries::get_schedule_line_population_entries(&pool, "ZNEVER", date, Some("L00001"))
+                .await
+                .unwrap();
+        assert_eq!(missing, None);
+
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    #[test]
+    fn if_none_match_parsing_accepts_lists_weak_tags_and_star_and_ignores_the_rest() {
+        let mut headers = axum::http::HeaderMap::new();
+        let version = chrono::DateTime::from_timestamp_micros(1_790_000_000_123_456).unwrap();
+        let etag = population_etag(version);
+        assert_eq!(etag, "\"slp-1790000000123456\"");
+        headers.append(
+            axum::http::header::IF_NONE_MATCH,
+            format!("\"foreign\", W/{etag}, garbage").parse().unwrap(),
+        );
+        headers.append(axum::http::header::IF_NONE_MATCH, "*".parse().unwrap());
+        assert_eq!(
+            parse_population_if_none_match(&headers),
+            PopulationIfNoneMatch {
+                any: true,
+                versions: vec![version],
+            }
+        );
+        assert_eq!(
+            parse_population_if_none_match(&axum::http::HeaderMap::new()),
+            PopulationIfNoneMatch::default()
+        );
     }
 
     async fn delete_full_coverage_fixture(pool: &PgPool, line_id: &str) {
