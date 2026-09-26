@@ -43,6 +43,16 @@ pub enum PlannedLeg {
         /// actually falls on -- same field, same meaning, as
         /// `schedule_query::records::CallingPoint::day_offset`.
         arrival_day_offset: u8,
+        /// CIF booked (timetabled) platform at the boarding calling point,
+        /// and at the alighting one -- `schedule_calling_points_full.platform`.
+        /// Never live/Darwin. `None` until `trip_leg_details::attach_leg_details`
+        /// fills them in; stays `None` when the CIF field is blank.
+        booked_departure_platform: Option<String>,
+        booked_arrival_platform: Option<String>,
+        /// The schedule's `BX` ATOC operator code (e.g. `"SW"`), via
+        /// `schedule_destination_departures.operator_atoc`. Filled in by
+        /// `trip_leg_details::attach_leg_details`; `None` when unknown.
+        operator: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Transfer {
@@ -118,6 +128,10 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 scheduled_departure,
                 scheduled_arrival,
                 arrival_day_offset,
+                // Filled in after planning -- see `trip_leg_details`.
+                booked_departure_platform: None,
+                booked_arrival_platform: None,
+                operator: None,
             }
         }
         JourneyLeg::Transfer(transfer) => PlannedLeg::Transfer {

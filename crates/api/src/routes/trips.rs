@@ -176,6 +176,10 @@ async fn get_trip_plan(
         )
     })?
     .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    let mut segments = segments;
+    crate::data::trip_leg_details::attach_leg_details(&app.database, date, &mut segments)
+        .await
+        .map_err(internal_error("attach trip leg details"))?;
 
     Ok(Json(serde_json::json!({
         "results": params.results,
@@ -846,6 +850,76 @@ mod db_tests {
                 .ok();
         }
         sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANCAP-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// `/Trips/plan` train legs carry the CIF booked platform at the
+    /// boarding and alighting calling points and the schedule's ATOC
+    /// operator (`trip_leg_details::attach_leg_details`) -- present when the
+    /// CIF-derived tables have them, explicit `null` when not.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn train_legs_carry_booked_platforms_and_operator_or_null() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform) \
+             VALUES ($1, 'TESTPLAT1', 0, 'TESTPT1O', 'origin', NULL, '08:00:00', 0, '3'), \
+                    ($1, 'TESTPLAT1', 1, 'TESTPT1D', 'terminate', '08:50:00', NULL, 0, NULL) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+             (service_date, destination_crs, scheduled, train_uid, origin_crs, operator_atoc) \
+             VALUES ($1, 'ZYB', '08:00:00', 'TESTPLAT1', 'ZYA', 'SW') ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed schedule_destination_departures");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPLAT-ZYA', 'ZYA', 'TESTPT1O', 'TEST PLAT ORIGIN', 1), \
+                    ('TESTPLAT-ZYB', 'ZYB', 'TESTPT1D', 'TEST PLAT DESTINATION', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = get(
+            router,
+            format!("/Trips/plan?origin=ZYA&destination=ZYB&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let leg = &body["segments"][0]["itineraries"][0]["legs"][0];
+        assert_eq!(leg["trainUid"], "TESTPLAT1", "{body:?}");
+        assert_eq!(leg["bookedDeparturePlatform"], "3");
+        let leg = leg.as_object().unwrap();
+        assert!(
+            leg.contains_key("bookedArrivalPlatform") && leg["bookedArrivalPlatform"].is_null()
+        );
+        assert_eq!(leg["operator"], "SW");
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TESTPLAT1'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TESTPLAT1'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLAT-ZY%'")
             .execute(&pool)
             .await
             .ok();

@@ -886,6 +886,13 @@ export type TripPlanLeg =
       scheduledDeparture: string; // "HH:MM:SS"
       scheduledArrival: string;
       arrivalDayOffset: number;
+      // CIF booked (timetabled) platform at the boarding / alighting calling
+      // point -- never live/Darwin. `null` when the CIF field is blank.
+      bookedDeparturePlatform?: string | null;
+      bookedArrivalPlatform?: string | null;
+      // The schedule's CIF `BX` ATOC operator code (e.g. "SW"); `null` when
+      // unknown.
+      operator?: string | null;
     }
   | {
       kind: 'transfer';
