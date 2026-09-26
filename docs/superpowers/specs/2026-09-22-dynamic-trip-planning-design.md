@@ -824,6 +824,11 @@ in others:
   the requested value (`maxChanges + 2`), not from a fixed constant; see
   `routes::trips::get_trip_plan`'s doc comment for the parameter contract
   and how its worst-case cost stays bounded.)*
+  *(Correction 2026-09-26: as shipped, the cap is a hard limit only in
+  `'options'` mode. `'fastest'` mode (CSA) does not enforce it: it always
+  returns the earliest-arrival itinerary, even one over the cap, flagged
+  `exceedsRecommendedChanges: true`. Callers needing a strict limit use
+  `results=options`.)*
 - **Walking transfers between differently-named stations are required, not
   a later phase.** v1 must be able to route via a cross-London (or
   equivalent) walk/tube/bus/tram/ferry hop between two different CRS
@@ -1119,7 +1124,8 @@ against constructed fixtures (mirroring `resolve.rs`'s own test-fixture
 conventions), before either scan algorithm is built on top.
 
 **Phase 3 — Connection Scan Algorithm (`results: 'fastest'`).** The CSA
-scan itself (earliest-arrival, ≤2-interchange cap, both same-CRS and
+scan itself (earliest-arrival; the ≤2-interchange cap is only flagged,
+not enforced, in this mode -- see §4's 2026-09-26 correction; both same-CRS and
 cross-CRS `ALF` transfers per Phase 1/2, per §4) plus the back-pointer
 trace needed to recover an actual leg-by-leg itinerary from CSA's raw
 arrival-time frontier (§1, §2). Timing/memory-profiled against real

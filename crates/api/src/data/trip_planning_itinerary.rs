@@ -2,9 +2,10 @@
 //! minutes-from-midnight) into the CRS/human-time-keyed shape
 //! `routes::trips` serializes, applies this feature's interchange cap
 //! (design spec §4: ≤2 by default, caller-raisable to ≤4 via
-//! `?maxChanges=`), and chains ordered waypoints into independently-solved
-//! sub-journeys (design spec §4: "Not a traveling-salesman-style... problem").
-//! See
+//! `?maxChanges=`; a hard filter in `options` mode only, a flag in
+//! `fastest` mode -- see [`plan_segment`]), and chains ordered waypoints
+//! into independently-solved sub-journeys (design spec §4: "Not a
+//! traveling-salesman-style... problem"). See
 //! docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase5-planning-api-plan.md's
 //! own Judgment Calls for the reasoning behind the cap-enforcement and
 //! waypoint-chaining choices below.
@@ -182,15 +183,20 @@ fn train_leg_count(legs: &[JourneyLeg]) -> u32 {
 ///
 /// `max_changes` is the interchange cap in effect for this request
 /// ([`DEFAULT_MAX_CHANGES`] unless the caller asked otherwise; the route
-/// bounds it to at most [`MAX_CHANGES_LIMIT`]). Both modes honour the SAME
-/// cap: `options` filters to it (and sizes RAPTOR's rounds from it, see
-/// [`max_rounds`]), `fastest` flags a result over it via
-/// `exceedsRecommendedChanges`.
+/// bounds it to at most [`MAX_CHANGES_LIMIT`]). Only `options` enforces it
+/// as a hard limit: it drops every itinerary over the cap (and sizes
+/// RAPTOR's rounds from it, see [`max_rounds`]), reporting via the returned
+/// `bool` (`cappedByMaxChanges`) when a strictly faster over-cap itinerary
+/// was dropped. `fastest` does NOT enforce it: CSA always returns the
+/// earliest-arrival itinerary, even one needing more changes than the cap,
+/// and only flags that via `exceeds_recommended_changes`
+/// (`exceedsRecommendedChanges`); its returned `bool` is always `false`.
 ///
-/// Returns `Ok(itineraries)` -- possibly empty, meaning "no itinerary
-/// within the cap was found" (a real, distinct outcome from an error, see
-/// this plan's Review Focus) -- or `Err(message)` for a caller-facing
-/// validation problem (an unresolvable CRS).
+/// Returns `Ok(itineraries)` -- possibly empty, meaning "no itinerary was
+/// found" (in `options` mode, "none within the cap"; a real, distinct
+/// outcome from an error, see this plan's Review Focus) -- or
+/// `Err(message)` for a caller-facing validation problem (an unresolvable
+/// CRS).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_segment(
     connections: &[schedule_query::Connection],
