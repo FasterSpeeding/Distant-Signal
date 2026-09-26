@@ -1,7 +1,8 @@
 //! Turns a raw `trip_planner::Journey`/`RaptorJourney` (TIPLOC-keyed,
 //! minutes-from-midnight) into the CRS/human-time-keyed shape
-//! `routes::trips` serializes, applies this feature's ≤2-interchange cap
-//! (design spec §4), and chains ordered waypoints into independently-solved
+//! `routes::trips` serializes, applies this feature's interchange cap
+//! (design spec §4: ≤2 by default, caller-raisable to ≤4 via
+//! `?maxChanges=`), and chains ordered waypoints into independently-solved
 //! sub-journeys (design spec §4: "Not a traveling-salesman-style... problem").
 //! See
 //! docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase5-planning-api-plan.md's
@@ -12,17 +13,34 @@ use chrono::{NaiveDate, NaiveTime};
 use schedule_query::InterchangeData;
 use trip_planner::{JourneyLeg, RaptorJourney};
 
-/// Design spec §4's hard cap, at most 2 interchanges (3 legs) per computed
-/// itinerary -- applied here, in the presentation layer, never inside
-/// `scan_connections`/`raptor_search` themselves (Phase 3/4's own Judgment
-/// Calls: neither algorithm has an interchange-count concept built in).
-pub const MAX_CHANGES: u32 = 2;
+/// Design spec §4's default cap, at most 2 interchanges (3 legs) per
+/// computed itinerary -- applied here, in the presentation layer, never
+/// inside `scan_connections`/`raptor_search` themselves (Phase 3/4's own
+/// Judgment Calls: neither algorithm has an interchange-count concept built
+/// in). This is what `GET /Trips/plan` uses when the caller omits
+/// `?maxChanges=`, so existing callers (this app's own frontend included)
+/// see exactly the pre-parameter behaviour.
+pub const DEFAULT_MAX_CHANGES: u32 = 2;
+
+/// Upper bound on a caller-requested `?maxChanges=` -- matches the sibling
+/// `Distant-Signal-MCP` project's own `PLAN_MAX_CHANGES` default of 4 (the
+/// precedent design spec §4 already cites), so that project can route every
+/// `plan_journey` query through `/Trips/plan`. Bounded rather than open
+/// because every extra change is one more full RAPTOR sweep over the day's
+/// connections graph per segment in `options` mode -- see
+/// `routes::trips::get_trip_plan`'s own DoS notes for the worst-case
+/// arithmetic.
+pub const MAX_CHANGES_LIMIT: u32 = 4;
 
 /// Phase 4's own Judgment Call 2: `max_rounds` for RAPTOR is NEVER the
-/// library's own default -- `MAX_CHANGES + 1` trips needed for
-/// `MAX_CHANGES` changes, plus one further round of headroom to detect
-/// whether the cap actually bound the answer.
-pub const MAX_ROUNDS: u32 = MAX_CHANGES + 2;
+/// library's own default -- `max_changes + 1` trips needed for
+/// `max_changes` changes, plus one further round of headroom to detect
+/// whether the cap actually bound the answer. Derived from the cap actually
+/// in effect for THIS request, never from a fixed constant, so a raised cap
+/// can't silently lose its headroom round (or its within-cap answers).
+pub const fn max_rounds(max_changes: u32) -> u32 {
+    max_changes + 2
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
@@ -141,10 +159,18 @@ fn train_leg_count(legs: &[JourneyLeg]) -> u32 {
 /// by the caller (`routes::trips`) before this is ever called; this
 /// function assumes it is already one of exactly those two strings.
 ///
+/// `max_changes` is the interchange cap in effect for this request
+/// ([`DEFAULT_MAX_CHANGES`] unless the caller asked otherwise; the route
+/// bounds it to at most [`MAX_CHANGES_LIMIT`]). Both modes honour the SAME
+/// cap: `options` filters to it (and sizes RAPTOR's rounds from it, see
+/// [`max_rounds`]), `fastest` flags a result over it via
+/// `exceedsRecommendedChanges`.
+///
 /// Returns `Ok(itineraries)` -- possibly empty, meaning "no itinerary
 /// within the cap was found" (a real, distinct outcome from an error, see
 /// this plan's Review Focus) -- or `Err(message)` for a caller-facing
 /// validation problem (an unresolvable CRS).
+#[allow(clippy::too_many_arguments)]
 pub fn plan_segment(
     connections: &[schedule_query::Connection],
     interchange: &InterchangeData,
@@ -153,6 +179,7 @@ pub fn plan_segment(
     destination_crs: &str,
     departure_after: NaiveTime,
     results: &str,
+    max_changes: u32,
 ) -> Result<(Vec<PlannedItinerary>, bool), String> {
     let from_tiplocs = interchange
         .crs_to_tiplocs
@@ -201,9 +228,9 @@ pub fn plan_segment(
             change_count,
             total_duration_minutes: journey.arrival_min - journey.departure_min,
             // See this plan's Judgment Call 3: CSA has no cap of its own,
-            // so a genuinely-fastest answer that needs more than 2 changes
-            // is still returned, honestly flagged, not hidden.
-            exceeds_recommended_changes: Some(change_count > MAX_CHANGES),
+            // so a genuinely-fastest answer that needs more than the
+            // requested cap is still returned, honestly flagged, not hidden.
+            exceeds_recommended_changes: Some(change_count > max_changes),
         };
         return Ok((vec![itinerary], false));
     }
@@ -216,17 +243,17 @@ pub fn plan_segment(
             to_tiplocs: &to_tiplocs,
             departure_min,
             date,
-            max_rounds: MAX_ROUNDS,
+            max_rounds: max_rounds(max_changes),
         });
         let within_cap: Vec<&RaptorJourney> =
-            all.iter().filter(|j| j.changes <= MAX_CHANGES).collect();
-        // Judgment Call 2: did the headroom round (MAX_ROUNDS, one past
-        // what MAX_CHANGES alone needs) find something strictly better
+            all.iter().filter(|j| j.changes <= max_changes).collect();
+        // Judgment Call 2: did the headroom round (`max_rounds`, one past
+        // what `max_changes` alone needs) find something strictly better
         // than every within-cap entry? If so, the cap genuinely bound the
         // answer -- flagged honestly, not silently swallowed.
         let best_within_cap = within_cap.iter().map(|j| j.arrival_min).min();
         let capped = all.iter().any(|j| {
-            j.changes > MAX_CHANGES && best_within_cap.is_none_or(|best| j.arrival_min < best)
+            j.changes > max_changes && best_within_cap.is_none_or(|best| j.arrival_min < best)
         });
 
         let itineraries = within_cap
@@ -282,6 +309,7 @@ pub fn plan_via_waypoints(
     destination_crs: &str,
     departure_after: NaiveTime,
     results: &str,
+    max_changes: u32,
 ) -> Result<Vec<SegmentResult>, String> {
     let mut stops: Vec<&str> = vec![origin_crs];
     stops.extend(waypoints.iter().map(String::as_str));
@@ -303,6 +331,7 @@ pub fn plan_via_waypoints(
             to,
             segment_departure,
             results,
+            max_changes,
         )
         .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
         segments.push(SegmentResult {
@@ -374,6 +403,7 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "fastest",
+            DEFAULT_MAX_CHANGES,
         );
         assert!(result.unwrap_err().contains("ZZZ"));
     }
@@ -401,6 +431,7 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "fastest",
+            DEFAULT_MAX_CHANGES,
         )
         .unwrap();
         assert_eq!(itineraries.len(), 1);
@@ -441,13 +472,138 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "options",
+            DEFAULT_MAX_CHANGES,
         )
         .unwrap();
-        assert!(itineraries.iter().all(|i| i.change_count <= MAX_CHANGES));
+        assert!(
+            itineraries
+                .iter()
+                .all(|i| i.change_count <= DEFAULT_MAX_CHANGES)
+        );
         assert!(
             capped,
             "a strictly faster, over-cap itinerary exists and must be flagged"
         );
+    }
+
+    /// Four instant-change hops `EUS -> A -> B -> C -> MKC`: the ONLY route,
+    /// needing exactly 3 changes. Shared by the `max_changes` tests below.
+    fn three_change_only_network() -> (Vec<schedule_query::Connection>, InterchangeData) {
+        let connections = vec![
+            conn("U1", "EUSTON", "A", 480, 490),
+            conn("U2", "A", "B", 490, 500),
+            conn("U3", "B", "C", 500, 510),
+            conn("U4", "C", "MKC", 510, 520),
+        ];
+        let interchange = interchange_with_change_times(
+            &[("EUS", "EUSTON"), ("MKC", "MKC")],
+            &[("EUSTON", 0), ("A", 0), ("B", 0), ("C", 0), ("MKC", 0)],
+        );
+        (connections, interchange)
+    }
+
+    #[test]
+    fn options_mode_finds_a_three_change_route_only_when_the_cap_allows_it() {
+        let (connections, interchange) = three_change_only_network();
+        let plan = |max_changes| {
+            plan_segment(
+                &connections,
+                &interchange,
+                date(),
+                "EUS",
+                "MKC",
+                NaiveTime::MIN,
+                "options",
+                max_changes,
+            )
+            .unwrap()
+        };
+
+        let (at_default, capped_at_default) = plan(DEFAULT_MAX_CHANGES);
+        assert!(at_default.is_empty(), "{at_default:?}");
+        assert!(
+            capped_at_default,
+            "the only route needs 3 changes, so the default cap of 2 genuinely bound it"
+        );
+
+        let (at_three, capped_at_three) = plan(3);
+        assert_eq!(at_three.len(), 1, "{at_three:?}");
+        assert_eq!(at_three[0].change_count, 3);
+        assert!(!capped_at_three);
+    }
+
+    /// Proves the headroom round scales with the requested cap rather than
+    /// staying pinned to the default: a 4-change-only route must be reported
+    /// as `capped` at `max_changes = 3` (which needs RAPTOR round 5, i.e.
+    /// `max_rounds(3)`), and found at `max_changes = 4` (the upper limit).
+    #[test]
+    fn the_headroom_round_scales_with_the_requested_cap() {
+        let connections = vec![
+            conn("U1", "EUSTON", "A", 480, 490),
+            conn("U2", "A", "B", 490, 500),
+            conn("U3", "B", "C", 500, 510),
+            conn("U4", "C", "D", 510, 520),
+            conn("U5", "D", "MKC", 520, 530),
+        ];
+        let interchange = interchange_with_change_times(
+            &[("EUS", "EUSTON"), ("MKC", "MKC")],
+            &[
+                ("EUSTON", 0),
+                ("A", 0),
+                ("B", 0),
+                ("C", 0),
+                ("D", 0),
+                ("MKC", 0),
+            ],
+        );
+        let plan = |max_changes| {
+            plan_segment(
+                &connections,
+                &interchange,
+                date(),
+                "EUS",
+                "MKC",
+                NaiveTime::MIN,
+                "options",
+                max_changes,
+            )
+            .unwrap()
+        };
+
+        let (at_three, capped_at_three) = plan(3);
+        assert!(at_three.is_empty(), "{at_three:?}");
+        assert!(
+            capped_at_three,
+            "max_rounds(3) must include a headroom round deep enough to see the 4-change route"
+        );
+
+        let (at_limit, capped_at_limit) = plan(MAX_CHANGES_LIMIT);
+        assert_eq!(at_limit.len(), 1, "{at_limit:?}");
+        assert_eq!(at_limit[0].change_count, 4);
+        assert!(!capped_at_limit);
+    }
+
+    #[test]
+    fn fastest_mode_flags_against_the_requested_cap_not_the_default() {
+        let (connections, interchange) = three_change_only_network();
+        let flag = |max_changes| {
+            let (itineraries, capped) = plan_segment(
+                &connections,
+                &interchange,
+                date(),
+                "EUS",
+                "MKC",
+                NaiveTime::MIN,
+                "fastest",
+                max_changes,
+            )
+            .unwrap();
+            assert!(!capped, "fastest mode never reports cappedByMaxChanges");
+            assert_eq!(itineraries.len(), 1);
+            itineraries[0].exceeds_recommended_changes
+        };
+        assert_eq!(flag(DEFAULT_MAX_CHANGES), Some(true));
+        assert_eq!(flag(3), Some(false));
     }
 
     #[test]
@@ -477,6 +633,7 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "fastest",
+            DEFAULT_MAX_CHANGES,
         )
         .unwrap();
         assert_eq!(itineraries.len(), 1);
@@ -526,6 +683,7 @@ mod tests {
             "MAN",
             NaiveTime::MIN,
             "fastest",
+            DEFAULT_MAX_CHANGES,
         )
         .unwrap();
 
@@ -558,6 +716,7 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "fastest",
+            DEFAULT_MAX_CHANGES,
         )
         .unwrap_err();
         assert!(
@@ -577,6 +736,7 @@ mod tests {
             "MKC",
             NaiveTime::MIN,
             "quickest",
+            DEFAULT_MAX_CHANGES,
         )
         .unwrap_err();
         assert!(err.contains("fastest"));
