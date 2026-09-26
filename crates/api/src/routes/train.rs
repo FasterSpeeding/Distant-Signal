@@ -747,6 +747,14 @@ async fn post_tracked_train_name(
 /// delete), where this one is reachable by anyone, unauthenticated, so an
 /// ungated version would let any caller mint arbitrary `trains` rows for
 /// made-up identities by hitting this URL in a loop.
+///
+/// Keyed on CIF `(train_uid, service_date)` only. There is no Darwin
+/// `rid`- or LDBWS `serviceID`-keyed sibling, because this app never
+/// receives or stores either as a durable key (see
+/// `common::StationDeparture::service_id`). A caller holding only a
+/// departure-board row resolves it to this route's key via the CIF
+/// timetable -- see `routes::departures::get_station_departures`'s doc
+/// comment for the documented steps.
 async fn get_by_uid_and_date(
     State(app): State<App>,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
