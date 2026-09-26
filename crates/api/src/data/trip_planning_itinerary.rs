@@ -71,6 +71,12 @@ pub enum PlannedLeg {
         /// `schedule_destination_departures.operator_atoc`. Filled in by
         /// `trip_leg_details::attach_leg_details`; `None` when unknown.
         operator: Option<String>,
+        /// The schedule's CIF `BS` Train Identity -- the 4-character
+        /// signalling headcode (e.g. `"1S00"`), via
+        /// `schedule_destination_departures.headcode`. Filled in by
+        /// `trip_leg_details::attach_leg_details`; `None` when unknown or
+        /// when the stored rows disagree. NOT the TRUST 10-char train id.
+        headcode: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Transfer {
@@ -150,6 +156,7 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 booked_departure_platform: None,
                 booked_arrival_platform: None,
                 operator: None,
+                headcode: None,
             }
         }
         JourneyLeg::Transfer(transfer) => PlannedLeg::Transfer {
