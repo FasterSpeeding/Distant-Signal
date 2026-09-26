@@ -56,3 +56,53 @@ export function routeLabel(
     ? `${stationLabel(originCrs, originName)} → ${stationLabel(destinationCrs, destinationName)}`
     : `${originCrs} → ${destinationCrs}`;
 }
+
+/** `"EUS — London Euston"`, or the bare code when no name resolved. The
+ * code-first counterpart to `stationLabel` above (which puts the name
+ * first, `Name (CODE)`): this is the shape every CRS/TOC `Autocomplete`
+ * dropdown in this app already renders a suggestion as
+ * (`suggestionAutocompleteProps` in `lib/suggestionAutocomplete.ts`, and
+ * `AllLinesTable.tsx`'s own operator picker), so a PERMANENT summary built
+ * from a code+name pair that visitor just picked from one of those pickers
+ * -- e.g. `PlanTripFlow`'s segment/itinerary summaries -- uses this
+ * code-first shape instead of `stationLabel`'s name-first one, to read as
+ * the same kind of label the picker itself already showed, not a
+ * different convention. `GET /Trips/plan` (unlike every other
+ * station-bearing response in this app) has no `*Name` sibling field of
+ * its own to resolve this server-side, which is why callers need to
+ * resolve names themselves (see `lib/suggestions.ts`'s `getStationNames`)
+ * and hand the result through here. */
+export function codeStationLabel(crs: string, name: string | null | undefined): string {
+  return name ? `${crs} — ${name}` : crs;
+}
+
+/** Code-first two-sided join, mirroring `routeLabel`'s own "never mix a
+ * resolved name with a bare code on the other end" rule (see its doc
+ * comment) -- a route with only one name known must not render as e.g.
+ * "EUS — London Euston → MKC" (a resolved name right next to a bare code
+ * reads as a data error, not a degraded lookup). Built from
+ * `codeStationLabel` rather than `stationLabel` for the same reason that
+ * function exists: to match the code-first shape of the picker the
+ * visitor used to choose these stations.
+ *
+ * `unknownLabel` defaults to `'?'` -- `ItineraryOption`'s own established
+ * placeholder for a `TripPlanLeg` whose CRS is genuinely `null` (a TIPLOC
+ * with no CRS mapping), NOT `routeLabel`'s `UNKNOWN_STATION_LABEL` (that
+ * placeholder is `TrackedTrainState`'s own pre-match-pin convention, a
+ * different caller with a different null-shaped reason). A caller whose
+ * ends are never nullable (e.g. `TripPlanSegment.originCrs`/
+ * `destinationCrs`) never reaches this branch at all. */
+export function codeRouteLabel(
+  originCrs: string | null,
+  originName: string | null | undefined,
+  destinationCrs: string | null,
+  destinationName: string | null | undefined,
+  unknownLabel = '?',
+): string {
+  if (!originCrs || !destinationCrs) {
+    return `${originCrs ?? unknownLabel} → ${destinationCrs ?? unknownLabel}`;
+  }
+  return originName && destinationName
+    ? `${codeStationLabel(originCrs, originName)} → ${codeStationLabel(destinationCrs, destinationName)}`
+    : `${originCrs} → ${destinationCrs}`;
+}

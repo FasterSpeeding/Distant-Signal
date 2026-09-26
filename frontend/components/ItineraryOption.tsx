@@ -1,15 +1,25 @@
 import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
+import { codeRouteLabel } from '@/lib/stationLabel';
 import type { TripPlanItinerary, TripPlanLeg } from '@/lib/types';
 
-function legSummary(leg: TripPlanLeg): string {
+/** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
+ * full name -- `GET /Trips/plan` (unlike every other station-bearing
+ * response in this app) never sends one itself, so `PlanTripFlow` (the
+ * only caller) resolves it client-side (`lib/suggestions.ts`'s
+ * `getStationNames`) from every code `lib/tripPlan.ts`'s
+ * `collectTripPlanStationCodes` finds across the whole plan, and passes
+ * the result down here. Empty by default so a caller with no lookup
+ * result yet (or a test exercising this component in isolation) still
+ * renders the bare-code fallback `codeRouteLabel` already provides for an
+ * unresolved code. */
+function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string {
+  const originName = leg.originCrs ? stationNames.get(leg.originCrs) : undefined;
+  const destinationName = leg.destinationCrs ? stationNames.get(leg.destinationCrs) : undefined;
+  const route = codeRouteLabel(leg.originCrs, originName, leg.destinationCrs, destinationName);
   if (leg.kind === 'train') {
-    const from = leg.originCrs ?? '?';
-    const to = leg.destinationCrs ?? '?';
-    return `${leg.scheduledDeparture.slice(0, 5)} ${from} → ${to} ${leg.scheduledArrival.slice(0, 5)}`;
+    return `${leg.scheduledDeparture.slice(0, 5)} ${route} ${leg.scheduledArrival.slice(0, 5)}`;
   }
-  const from = leg.originCrs ?? '?';
-  const to = leg.destinationCrs ?? '?';
-  return `Walk/transfer (${leg.mode}) ${from} → ${to}, ${leg.minutes} min`;
+  return `Walk/transfer (${leg.mode}) ${route}, ${leg.minutes} min`;
 }
 
 /** One selectable itinerary card -- design spec §5.3's "route-summary
@@ -21,10 +31,14 @@ export function ItineraryOption({
   itinerary,
   selected,
   onSelect,
+  stationNames = new Map(),
 }: {
   itinerary: TripPlanItinerary;
   selected: boolean;
   onSelect: () => void;
+  /** CRS -> full name, resolved by `PlanTripFlow` -- see `legSummary`'s own
+   * doc comment. */
+  stationNames?: Map<string, string>;
 }) {
   const hasTrainLeg = itinerary.legs.some(leg => leg.kind === 'train');
 
@@ -39,7 +53,7 @@ export function ItineraryOption({
             <Stack gap={4}>
               {itinerary.legs.map((leg, index) => (
                 <Text key={index} size="sm">
-                  {legSummary(leg)}
+                  {legSummary(leg, stationNames)}
                 </Text>
               ))}
             </Stack>

@@ -16,7 +16,7 @@ import {
 import { DateInput, TimeInput } from '@mantine/dates';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
-import { withNoMatchPlaceholder, noMatchOptionContent } from '@/lib/autocompleteNoMatch';
+import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { TripPlanQuery } from '@/lib/tripPlan';
 
 /** `@tabler/icons-react` isn't a project dependency (checked package.json,
@@ -179,42 +179,30 @@ export function PlanTripForm({
         placeholder="Station name or CRS code"
         value={originCrs}
         onChange={setOriginCrs}
-        // See this task's Step 1 -- mirrors `TrackTrainForm.tsx`'s own
-        // Origin `Autocomplete` (debounced `searchStations` via
-        // `useSuggestions`, plus `withNoMatchPlaceholder`/
-        // `noMatchOptionContent` for the "no matches" option -- see
-        // `lib/autocompleteNoMatch.ts` for why `Autocomplete` needs that
-        // workaround instead of a `nothingFoundMessage` prop).
-        data={withNoMatchPlaceholder(
-          originSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching stations',
-          { active: originCrs.trim().length > 0 && !originSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-          if (placeholder) return placeholder;
-          const match = originSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
+        // Mirrors `TrackTrainForm.tsx`'s own Origin `Autocomplete`: the
+        // shared `data`/`filter`/`renderOption` trio every CRS/TOC-code
+        // `Autocomplete` field in this app needs (see
+        // `lib/suggestionAutocomplete.ts`'s own doc comment for why this
+        // is factored out rather than hand-rolled per field -- this field
+        // used to carry its own copy of the same three pieces, one of the
+        // "five call sites' worth of hand-copied, independently drifting
+        // boilerplate" that helper was meant to end).
+        {...suggestionAutocompleteProps(originSuggestions, {
+          query: originCrs,
+          loading: originSuggestionsLoading,
+          noMatchMessage: 'No matching stations',
+        })}
       />
       <Autocomplete
         label="To"
         placeholder="Station name or CRS code"
         value={destinationCrs}
         onChange={setDestinationCrs}
-        data={withNoMatchPlaceholder(
-          destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
-          'No matching stations',
-          { active: destinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
-        )}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
-          if (placeholder) return placeholder;
-          const match = destinationSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
+        {...suggestionAutocompleteProps(destinationSuggestions, {
+          query: destinationCrs,
+          loading: destinationSuggestionsLoading,
+          noMatchMessage: 'No matching stations',
+        })}
       />
       {waypoints.map((waypoint, index) => (
         <Group key={index} gap="xs">

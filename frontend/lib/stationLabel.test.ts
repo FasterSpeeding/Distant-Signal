@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stationLabel, routeLabel } from './stationLabel';
+import { stationLabel, routeLabel, codeStationLabel, codeRouteLabel } from './stationLabel';
 
 describe('stationLabel', () => {
   it('renders "Name (CRS)" when a name resolved', () => {
@@ -58,5 +58,51 @@ describe('routeLabel', () => {
     expect(routeLabel(null, null, 'EDB', 'Edinburgh Waverley')).toBe(
       'Unknown station → Edinburgh Waverley (EDB)',
     );
+  });
+});
+
+describe('codeStationLabel', () => {
+  it('renders "CODE — Name" when a name resolved', () => {
+    expect(codeStationLabel('EUS', 'London Euston')).toBe('EUS — London Euston');
+  });
+
+  it('falls back to the bare code when name is null', () => {
+    expect(codeStationLabel('EUS', null)).toBe('EUS');
+  });
+
+  it('falls back to the bare code when name is undefined', () => {
+    expect(codeStationLabel('EUS', undefined)).toBe('EUS');
+  });
+});
+
+describe('codeRouteLabel', () => {
+  it('renders both ends with names when both resolved', () => {
+    expect(codeRouteLabel('EUS', 'London Euston', 'MKC', 'Milton Keynes Central')).toBe(
+      'EUS — London Euston → MKC — Milton Keynes Central',
+    );
+  });
+
+  it('falls back to bare codes on both ends when neither name resolved', () => {
+    expect(codeRouteLabel('EUS', null, 'MKC', null)).toBe('EUS → MKC');
+  });
+
+  // Same "never mix forms" rule as `routeLabel` (see its own tests) --
+  // only one end's name resolving must not render e.g.
+  // "EUS — London Euston → MKC".
+  it('falls back to bare codes on both ends when only the origin name is unresolved', () => {
+    expect(codeRouteLabel('EUS', null, 'MKC', 'Milton Keynes Central')).toBe('EUS → MKC');
+  });
+
+  it('falls back to bare codes on both ends when only the destination name is unresolved', () => {
+    expect(codeRouteLabel('EUS', 'London Euston', 'MKC', null)).toBe('EUS → MKC');
+  });
+
+  it('uses "?" as the default placeholder for a null CRS (a TripPlanLeg with no stanox_crs match)', () => {
+    expect(codeRouteLabel(null, null, 'MKC', 'Milton Keynes Central')).toBe('? → MKC');
+    expect(codeRouteLabel('EUS', 'London Euston', null, null)).toBe('EUS → ?');
+  });
+
+  it('accepts a caller-supplied placeholder for a null CRS', () => {
+    expect(codeRouteLabel(null, null, null, null, 'Unknown')).toBe('Unknown → Unknown');
   });
 });

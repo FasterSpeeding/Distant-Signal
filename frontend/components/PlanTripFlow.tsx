@@ -6,7 +6,9 @@ import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
-import { fetchTripPlan, TripPlanError, type TripPlanQuery } from '@/lib/tripPlan';
+import { collectTripPlanStationCodes, fetchTripPlan, TripPlanError, type TripPlanQuery } from '@/lib/tripPlan';
+import { getStationNames } from '@/lib/suggestions';
+import { codeRouteLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
 interface SegmentSelection {
@@ -38,6 +40,18 @@ interface SegmentSelection {
 export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyResponse) => void }) {
   const [plan, setPlan] = useState<TripPlanResponse | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
+  // CRS -> full name, resolved client-side once `plan` loads -- unlike
+  // every OTHER station-bearing response in this app, `GET /Trips/plan`
+  // never sends a `*Name` sibling field of its own (see
+  // `lib/tripPlan.ts`'s `collectTripPlanStationCodes` doc comment), so
+  // this component resolves every code the plan mentions itself
+  // (`lib/suggestions.ts`'s `getStationNames`) and hands the result to
+  // both the segment/no-route summaries below and each `ItineraryOption`.
+  // A code with no resolved name is simply absent from the map --
+  // `codeRouteLabel` already falls back to the bare code for that case,
+  // same "degraded lookup, not broken display" contract as every other
+  // station label in this app.
+  const [stationNames, setStationNames] = useState<Map<string, string>>(new Map());
   const [selections, setSelections] = useState<SegmentSelection[]>([]);
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
@@ -80,11 +94,24 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
     setSearching(true);
     setPlanError(null);
     setPlan(null);
+    // Clears out the PREVIOUS search's resolved names immediately (not
+    // just once the new lookup resolves) -- otherwise a code the new plan
+    // never mentions could keep rendering the old plan's name for the
+    // brief window before `getStationNames` below resolves.
+    setStationNames(new Map());
     try {
       const result = await fetchTripPlan(query);
       if (searchRequestId.current !== requestId) return; // superseded by a newer search
       setPlan(result);
       setSelections(result.segments.map(() => ({ itinerary: null })));
+      // Best-effort, non-blocking: the plan itself is already fully
+      // renderable with bare codes (`codeRouteLabel`'s own fallback), so
+      // this resolves in the background rather than delaying `searching`
+      // going back to `false` -- a slow/failed name lookup must never
+      // hold up the actual route results.
+      void getStationNames(collectTripPlanStationCodes(result)).then((names) => {
+        if (searchRequestId.current === requestId) setStationNames(names);
+      });
     } catch (error) {
       if (searchRequestId.current !== requestId) return;
       setPlanError(error instanceof TripPlanError ? error.message : 'Could not plan this trip. Please try again.');
@@ -261,29 +288,37 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
         </Alert>
       )}
       {plan &&
-        plan.segments.map((segment, segmentIndex) => (
-          <Stack key={segmentIndex} gap="xs">
-            <Text fw={600}>
-              {segment.originCrs} → {segment.destinationCrs}
-            </Text>
-            {segment.itineraries.length === 0 && (
-              <Alert color="yellow">No route found for {segment.originCrs} → {segment.destinationCrs}.</Alert>
-            )}
-            {segment.cappedByMaxChanges && (
-              <Text size="xs" c="orange">
-                A faster route exists with more changes than shown below.
-              </Text>
-            )}
-            {segment.itineraries.map((itinerary, itineraryIndex) => (
-              <ItineraryOption
-                key={itineraryIndex}
-                itinerary={itinerary}
-                selected={selections[segmentIndex]?.itinerary === itinerary}
-                onSelect={() => selectItinerary(segmentIndex, itinerary)}
-              />
-            ))}
-          </Stack>
-        ))}
+        plan.segments.map((segment, segmentIndex) => {
+          // Computed once per segment -- reused for both the heading and
+          // the "no route found" alert below, so the two can never drift
+          // out of sync with each other's formatting.
+          const segmentLabel = codeRouteLabel(
+            segment.originCrs,
+            stationNames.get(segment.originCrs),
+            segment.destinationCrs,
+            stationNames.get(segment.destinationCrs),
+          );
+          return (
+            <Stack key={segmentIndex} gap="xs">
+              <Text fw={600}>{segmentLabel}</Text>
+              {segment.itineraries.length === 0 && <Alert color="yellow">No route found for {segmentLabel}.</Alert>}
+              {segment.cappedByMaxChanges && (
+                <Text size="xs" c="orange">
+                  A faster route exists with more changes than shown below.
+                </Text>
+              )}
+              {segment.itineraries.map((itinerary, itineraryIndex) => (
+                <ItineraryOption
+                  key={itineraryIndex}
+                  itinerary={itinerary}
+                  selected={selections[segmentIndex]?.itinerary === itinerary}
+                  onSelect={() => selectItinerary(segmentIndex, itinerary)}
+                  stationNames={stationNames}
+                />
+              ))}
+            </Stack>
+          );
+        })}
       {creationError && (
         <Alert color="red" title="Some legs could not be created">
           {creationError}

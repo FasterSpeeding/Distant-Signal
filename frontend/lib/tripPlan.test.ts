@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { buildTripPlanQuery, fetchTripPlan, TripPlanError } from './tripPlan';
+import { buildTripPlanQuery, collectTripPlanStationCodes, fetchTripPlan, TripPlanError } from './tripPlan';
+import type { TripPlanResponse } from './types';
 
 describe('buildTripPlanQuery', () => {
   it('builds a minimal query with no waypoints or departAfter', () => {
@@ -50,6 +51,100 @@ describe('buildTripPlanQuery', () => {
       results: 'fastest',
     });
     expect(new URLSearchParams(query).get('departAfter')).toBe('08:30:00');
+  });
+});
+
+describe('collectTripPlanStationCodes', () => {
+  it('collects segment endpoints plus every leg endpoint, deduped, across segments and itineraries', () => {
+    const response: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'BHM',
+          destinationCrs: 'GLC',
+          cappedByMaxChanges: false,
+          itineraries: [
+            {
+              // Boards/alights mid-route -- CRE/PRE differ from the
+              // segment's own BHM/GLC (see this function's own doc
+              // comment).
+              legs: [
+                {
+                  kind: 'train',
+                  trainUid: 'X1',
+                  serviceDate: '2026-09-23',
+                  originCrs: 'CRE',
+                  destinationCrs: 'PRE',
+                  scheduledDeparture: '10:00:00',
+                  scheduledArrival: '11:15:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 0,
+              totalDurationMinutes: 75,
+            },
+            {
+              legs: [
+                { kind: 'transfer', mode: 'WALK', originCrs: 'BHM', destinationCrs: 'BHM', minutes: 5 },
+                {
+                  kind: 'train',
+                  trainUid: 'X2',
+                  serviceDate: '2026-09-23',
+                  originCrs: 'BHM',
+                  destinationCrs: 'GLC',
+                  scheduledDeparture: '10:30:00',
+                  scheduledArrival: '11:45:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 1,
+              totalDurationMinutes: 75,
+            },
+          ],
+        },
+        { originCrs: 'GLC', destinationCrs: 'EDB', cappedByMaxChanges: false, itineraries: [] },
+      ],
+    };
+    const codes = collectTripPlanStationCodes(response);
+    expect(new Set(codes)).toEqual(new Set(['BHM', 'GLC', 'CRE', 'PRE', 'EDB']));
+    // Deduped -- 'BHM' and 'GLC' each appear multiple times above.
+    expect(codes.length).toBe(new Set(codes).size);
+  });
+
+  it('omits a leg end that is null (no stanox_crs match for that TIPLOC)', () => {
+    const response: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'MKC',
+          cappedByMaxChanges: false,
+          itineraries: [
+            {
+              legs: [
+                {
+                  kind: 'train',
+                  trainUid: 'C1',
+                  serviceDate: '2026-09-23',
+                  originCrs: null,
+                  destinationCrs: null,
+                  scheduledDeparture: '08:00:00',
+                  scheduledArrival: '08:50:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 0,
+              totalDurationMinutes: 50,
+            },
+          ],
+        },
+      ],
+    };
+    expect(new Set(collectTripPlanStationCodes(response))).toEqual(new Set(['EUS', 'MKC']));
+  });
+
+  it('returns an empty array for a plan with no segments', () => {
+    expect(collectTripPlanStationCodes({ results: 'fastest', segments: [] })).toEqual([]);
   });
 });
 
