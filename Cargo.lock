@@ -2882,6 +2882,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "web-push",
+ "wiremock",
 ]
 
 [[package]]
