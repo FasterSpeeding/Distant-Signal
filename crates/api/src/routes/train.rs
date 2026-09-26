@@ -3078,7 +3078,7 @@ mod db_tests {
             &pool,
             user_id,
             Some("L13UID"),
-            "2026-08-29".parse().unwrap(),
+            "2026-07-13".parse().unwrap(),
         )
         .await;
 
@@ -3094,7 +3094,7 @@ mod db_tests {
              VALUES ($1, 1, $2, $3, 'manual') RETURNING id",
         )
         .bind(journey_id)
-        .bind("2026-08-29".parse::<chrono::NaiveDate>().unwrap())
+        .bind("2026-07-13".parse::<chrono::NaiveDate>().unwrap())
         .bind(tracking_id)
         .fetch_one(&pool)
         .await
