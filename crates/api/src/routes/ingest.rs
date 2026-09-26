@@ -1158,6 +1158,66 @@ mod db_tests {
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
     }
 
+    /// Guards the `IS DISTINCT FROM` in `upsert_schedule_line_population`:
+    /// republishing an equal population must not write a new row version
+    /// (a whole new ~0.5 MB TOAST copy per line per day in production),
+    /// while a changed one still replaces it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn an_identical_republish_leaves_the_row_untouched_but_a_change_still_writes() {
+        async fn row_version(pool: &PgPool, service_date: chrono::NaiveDate) -> (String, String) {
+            sqlx::query_as(
+                "SELECT xmin::text, updated_at::text FROM schedule_line_population \
+                 WHERE line_id = $1 AND service_date = $2",
+            )
+            .bind(FIXTURE_LINE_ID)
+            .bind(service_date)
+            .fetch_one(pool)
+            .await
+            .expect("read fixture row version")
+        }
+
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+
+        let service_date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let original = serde_json::json!([{"uid": "C11052", "calling_points": []}]);
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &original)
+            .await
+            .expect("seed population");
+        let (xmin_before, updated_at_before) = row_version(&pool, service_date).await;
+
+        // Same content with the keys in a different order: jsonb equality,
+        // not text equality, decides "unchanged".
+        let reordered = serde_json::json!([{"calling_points": [], "uid": "C11052"}]);
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &reordered)
+            .await
+            .expect("republish identical population");
+        let (xmin_after_same, updated_at_after_same) = row_version(&pool, service_date).await;
+        assert_eq!(
+            xmin_after_same, xmin_before,
+            "an identical republish must not write a new row version"
+        );
+        assert_eq!(updated_at_after_same, updated_at_before);
+
+        let changed = serde_json::json!([{"uid": "C99999", "calling_points": []}]);
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &changed)
+            .await
+            .expect("publish changed population");
+        let (xmin_after_change, _) = row_version(&pool, service_date).await;
+        assert_ne!(
+            xmin_after_change, xmin_before,
+            "a changed population must still be written"
+        );
+        let fetched = queries::get_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date)
+            .await
+            .expect("fetch population");
+        assert_eq!(fetched, Some(changed));
+
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_line_population -- --ignored --test-threads=1`"]

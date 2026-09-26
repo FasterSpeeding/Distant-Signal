@@ -1382,6 +1382,19 @@ pub fn is_bookable_crs(crs: &str) -> bool {
 /// is stored opaquely; `api` never deserializes it into
 /// `schedule_query::LinePopulationEntry` -- only `schedule-reference`
 /// (writer) and `full-coverage-consumer` (reader) need that shape.
+///
+/// **An identical re-publish is a no-op.** `schedule-reference` republishes
+/// every line for every date in its window each cycle, and almost all of
+/// those populations are unchanged. Each blob is ~0.5 MB of compressed
+/// JSONB, so an unconditional `DO UPDATE` wrote a whole new TOAST copy per
+/// row per publish (in production: ~920 MB live data behind a 1.5 GB TOAST
+/// file, rewritten daily). The `WHERE ... IS DISTINCT FROM` skips the row
+/// entirely when the content is equal (jsonb equality, so key order and
+/// whitespace don't matter). The cost is that `updated_at` now means "when
+/// this population last CHANGED", not "when it was last published" --
+/// nothing reads `updated_at` (publish freshness is tracked by
+/// `schedule_reference_publishes`, not here), so no consumer depends on the
+/// old meaning.
 pub async fn upsert_schedule_line_population(
     pool: &PgPool,
     line_id: &str,
@@ -1395,6 +1408,7 @@ pub async fn upsert_schedule_line_population(
         ON CONFLICT (line_id, service_date) DO UPDATE SET
             population = EXCLUDED.population,
             updated_at = EXCLUDED.updated_at
+        WHERE schedule_line_population.population IS DISTINCT FROM EXCLUDED.population
         "#,
     )
     .bind(line_id)
