@@ -752,9 +752,11 @@ async fn post_tracked_train_name(
 /// `rid`- or LDBWS `serviceID`-keyed sibling, because this app never
 /// receives or stores either as a durable key (see
 /// `common::StationDeparture::service_id`). A caller holding only a
-/// departure-board row resolves it to this route's key via the CIF
-/// timetable -- see `routes::departures::get_station_departures`'s doc
-/// comment for the documented steps.
+/// departure-board row resolves it to this route's key with
+/// `GET /public/trains/resolve` (`routes::trains::get_trains_resolve`),
+/// which matches the board's Retail Service ID (`rsid`) against the CIF
+/// timetable exactly, falling back to a time/destination/operator match --
+/// see `routes::departures::get_station_departures`'s doc comment.
 async fn get_by_uid_and_date(
     State(app): State<App>,
     Path((train_uid, date)): Path<(String, NaiveDate)>,

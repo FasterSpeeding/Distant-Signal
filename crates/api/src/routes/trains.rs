@@ -1,3 +1,6 @@
+//! `GET /public/trains/resolve` (see `get_trains_resolve`) lives here too:
+//! it maps a live departure-board row to a CIF `(uid, service_date)`.
+//!
 //! `GET /public/trains/search` -- calling-point-first, whole-network,
 //! CIF-SCHEDULE-derived train search. Backs the `/trains` listing page.
 //! Generalizes the earlier destination-first search
@@ -115,6 +118,7 @@ use serde_json::{Value, json};
 use crate::app::{App, Router};
 use crate::data::queries;
 use crate::data::queries::CallingPointDepartureCursor;
+use crate::data::train_resolve;
 use crate::render::calling_point_departure_json;
 
 /// Page size when the caller does not ask for one.
@@ -254,7 +258,154 @@ struct TrainSearchParams {
 }
 
 pub fn router() -> Router {
-    Router::new().route("/trains/search", axum::routing::get(get_trains_search))
+    Router::new()
+        .route("/trains/search", axum::routing::get(get_trains_search))
+        .route("/trains/resolve", axum::routing::get(get_trains_resolve))
+}
+
+/// Query parameters of `GET /public/trains/resolve`. Unknown names are a
+/// `400` for the same reason as [`TrainSearchParams`]: a misspelled
+/// `destination` would otherwise silently widen the match.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrainResolveParams {
+    /// Required. The board's own station, a 3-letter CRS code.
+    station: String,
+    /// Required, `"YYYY-MM-DD"`: the London-local calendar date of `time`
+    /// at `station` -- NOT necessarily the train's CIF service date (a
+    /// train that started before midnight carries the previous one; the
+    /// response's `serviceDate` says which). Same window as
+    /// `/public/trains/search`'s `date`.
+    date: String,
+    /// Required, `"HH:MM"`: the board's scheduled (public) time at `station`.
+    time: String,
+    /// Optional: the board's Retail Service ID (LDBWS `rsid`), 6-8 letters
+    /// and digits.
+    rsid: Option<String>,
+    /// Optional: the board's destination CRS.
+    destination: Option<String>,
+    /// Optional: the board's operator, a 2-character ATOC code.
+    operator: Option<String>,
+    /// Optional: `departure` (default) or `arrival`.
+    kind: Option<String>,
+}
+
+fn non_empty(raw: &Option<String>) -> Option<&str> {
+    raw.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Validates and uppercases a caller-supplied Retail Service ID.
+fn normalize_rsid(raw: &str) -> Result<String, (StatusCode, String)> {
+    let trimmed = raw.trim();
+    if !(6..=8).contains(&trimmed.len()) || !trimmed.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "rsid must be a 6-8 character retail service ID (letters and digits)".to_string(),
+        ));
+    }
+    Ok(trimmed.to_ascii_uppercase())
+}
+
+/// Validates and uppercases a 2-character ATOC operator code.
+fn normalize_operator(raw: &str) -> Result<String, (StatusCode, String)> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 2 || !trimmed.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "operator must be a 2-character ATOC code".to_string(),
+        ));
+    }
+    Ok(trimmed.to_ascii_uppercase())
+}
+
+/// `GET /public/trains/resolve?station=&date=&time=[&rsid=][&destination=][&operator=][&kind=]`
+/// -- resolves one live departure-board row to the CIF key
+/// `GET /Train/by-uid/{uid}/{date}` takes. Built for a client (the MCP
+/// server, a board UI) that holds an LDBWS row -- which carries no `uid`
+/// and no `rid` -- and wants the train page for it.
+///
+/// Matching lives in `crate::data::train_resolve` (see `resolve` there for
+/// the exact rules): an `rsid` is matched exactly, then on its first 6
+/// characters, within +-5 minutes of the WORKING time; with no usable
+/// `rsid`, the +-2 minute timetable heuristic plus destination/operator
+/// that `routes::departures::get_station_departures` documents. Both the
+/// given date (`day_offset = 0`) and, after midnight, the previous service
+/// date (`day_offset = 1`) are searched.
+///
+/// * `200 {"trainUid","serviceDate","matchedOn","href"}` -- `matchedOn` is
+///   `"rsid"`, `"rsidPrefix"` or `"timetable"`, so a caller can tell an
+///   exact join from a heuristic one.
+/// * `400` (plain text naming the field) for a missing/malformed parameter
+///   or a date outside the window.
+/// * `404` (plain text) when nothing matches.
+/// * `409` (plain text listing every `uid/serviceDate`) when more than one
+///   train still matches -- this route never guesses.
+async fn get_trains_resolve(
+    State(app): State<App>,
+    Query(params): Query<TrainResolveParams>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let station = normalize_crs("station", &params.station)?;
+    let time = normalize_time("time", params.time.trim())?;
+    let rsid = non_empty(&params.rsid).map(normalize_rsid).transpose()?;
+    let destination = non_empty(&params.destination)
+        .map(|s| normalize_crs("destination", s))
+        .transpose()?;
+    let operator = non_empty(&params.operator)
+        .map(normalize_operator)
+        .transpose()?;
+    let kind = match non_empty(&params.kind) {
+        None | Some("departure") => train_resolve::ResolveKind::Departure,
+        Some("arrival") => train_resolve::ResolveKind::Arrival,
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "kind must be departure or arrival".to_string(),
+            ));
+        }
+    };
+    // Same single London-local `today` read and window as `get_trains_search`.
+    let today = chrono::Utc::now()
+        .with_timezone(&chrono_tz::Europe::London)
+        .date_naive();
+    let date = normalize_date(&params.date, today)?;
+
+    let request = train_resolve::ResolveRequest {
+        target: date.and_time(time),
+        rsid,
+        destination,
+        operator,
+    };
+    let candidates =
+        train_resolve::resolve_candidates(&app.database, &station, request.target, kind)
+            .await
+            .map_err(internal_error)?;
+
+    match train_resolve::resolve(&candidates, &request) {
+        train_resolve::ResolveOutcome::Found {
+            train_uid,
+            service_date,
+            matched_on,
+        } => Ok(Json(json!({
+            "href": format!("/Train/by-uid/{train_uid}/{service_date}"),
+            "trainUid": train_uid,
+            "serviceDate": service_date,
+            "matchedOn": matched_on.as_str(),
+        }))),
+        train_resolve::ResolveOutcome::NotFound => Err((
+            StatusCode::NOT_FOUND,
+            format!("no scheduled train matches that board row at {station}"),
+        )),
+        train_resolve::ResolveOutcome::Ambiguous(keys) => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "more than one scheduled train matches that board row: {}",
+                keys.iter()
+                    .map(|(uid, date)| format!("{uid}/{date}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
 }
 
 /// Parses a caller-supplied `"HH:MM"` into a real `NaiveTime`.
@@ -631,7 +782,7 @@ mod db_tests {
     }
 
     /// Returns `None` (after printing why) instead of the usual triple when
-    /// `now` sits inside the roughly-hour-long window around Europe/London
+    /// `now` sits inside the roughly-90-minute window around Europe/London
     /// midnight where these tests' assumptions about "today" don't hold --
     /// see the comment below. Callers are expected to bail out of the test
     /// they're running (`let Some(...) = relative_times() else { return };`)
@@ -651,12 +802,16 @@ mod db_tests {
         let past = chrono::NaiveTime::MIN;
         let (soon, soon_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(30));
         let (later, later_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(60));
-        if soon_wrapped == 0 && later_wrapped == 0 && now > past {
+        // Callers also build times a little PAST `later` (e.g. a final stop
+        // at `later + 5min`), so keep a margin beyond it too: without this,
+        // a run at ~22:56 put that stop past midnight and failed for real.
+        let (_, margin_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(90));
+        if soon_wrapped == 0 && later_wrapped == 0 && margin_wrapped == 0 && now > past {
             Some((past, soon, later))
         } else {
             println!(
                 "skipping: these tests need at least an hour before midnight and a moment \
-                 after it; re-run outside 23:00-00:01 Europe/London"
+                 after it; re-run outside 22:30-00:01 Europe/London"
             );
             None
         }
@@ -1907,5 +2062,494 @@ mod db_tests {
             body.contains(&target.format("%Y-%m-%d").to_string()),
             "the 404 should name the actually-requested date, not always say 'today': {body}"
         );
+    }
+
+    // --- GET /trains/resolve --------------------------------------------------
+    //
+    // Fixture rows use made-up `ZR*` station codes and `RSLV*` uids, on
+    // today+4 (and today+3 for the overnight case) so nothing depends on the
+    // wall clock beyond the +-7 day window.
+
+    fn resolve_day() -> chrono::NaiveDate {
+        chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive()
+            + chrono::Duration::days(4)
+    }
+
+    fn hm(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    async fn clear_resolve_fixtures(pool: &PgPool) {
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid LIKE 'RSLV%'")
+            .execute(pool)
+            .await
+            .expect("cleanup resolve fixture rows");
+        sqlx::query("DELETE FROM trains WHERE train_uid LIKE 'RSLV%'")
+            .execute(pool)
+            .await
+            .expect("cleanup resolve fixture trains");
+    }
+
+    /// One departure row. `arrivals` is `(calling_point_arrival,
+    /// destination_arrival)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_resolve_row(
+        pool: &PgPool,
+        service_date: chrono::NaiveDate,
+        uid: &str,
+        station: &str,
+        destination: &str,
+        scheduled: chrono::NaiveTime,
+        day_offset: i16,
+        rsid: Option<&str>,
+        operator: Option<&str>,
+        arrivals: (Option<chrono::NaiveTime>, Option<chrono::NaiveTime>),
+    ) {
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, \
+                 calling_point_arrival, destination_arrival, operator_atoc, rsid) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(service_date)
+        .bind(destination)
+        .bind(scheduled)
+        .bind(day_offset)
+        .bind(uid)
+        .bind(station)
+        .bind(arrivals.0)
+        .bind(arrivals.1)
+        .bind(operator)
+        .bind(rsid)
+        .execute(pool)
+        .await
+        .expect("seed resolve fixture row");
+    }
+
+    async fn resolve_json(pool: &PgPool, query: &str) -> (StatusCode, String) {
+        get(pool, &format!("/trains/resolve?{query}")).await
+    }
+
+    fn resolved(body: &str) -> Value {
+        serde_json::from_str(body).unwrap_or_else(|_| panic!("not JSON: {body}"))
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_exact_rsid_picks_its_train_over_a_same_time_one() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        let none = (None, None);
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVA1",
+            "ZRA",
+            "ZRB",
+            hm(10, 0),
+            0,
+            Some("SR408800"),
+            Some("SR"),
+            none,
+        )
+        .await;
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVB1",
+            "ZRA",
+            "ZRB",
+            hm(10, 0),
+            0,
+            Some("SR999900"),
+            Some("SR"),
+            none,
+        )
+        .await;
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=zra&date={d}&time=10:01&rsid=sr408800"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            resolved(&body),
+            json!({
+                "trainUid": "RSLVA1",
+                "serviceDate": d.to_string(),
+                "matchedOn": "rsid",
+                "href": format!("/Train/by-uid/RSLVA1/{d}"),
+            })
+        );
+        clear_resolve_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_falls_back_to_the_six_character_rsid_prefix() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVP1",
+            "ZRA",
+            "ZRB",
+            hm(11, 0),
+            0,
+            Some("SE123401"),
+            Some("SE"),
+            (None, None),
+        )
+        .await;
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=11:00&rsid=SE123400"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json = resolved(&body);
+        assert_eq!(json["trainUid"], "RSLVP1");
+        assert_eq!(json["matchedOn"], "rsidPrefix");
+        clear_resolve_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_split_portions_are_a_409_until_destination_breaks_the_tie() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        let none = (None, None);
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVS1",
+            "ZRA",
+            "ZRC",
+            hm(12, 0),
+            0,
+            Some("SE777701"),
+            Some("SE"),
+            none,
+        )
+        .await;
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVS2",
+            "ZRA",
+            "ZRD",
+            hm(12, 0),
+            0,
+            Some("SE777702"),
+            Some("SE"),
+            none,
+        )
+        .await;
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=12:00&rsid=SE777700"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body.contains(&format!("RSLVS1/{d}")) && body.contains(&format!("RSLVS2/{d}")),
+            "the 409 lists every candidate: {body}"
+        );
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=12:00&rsid=SE777700&destination=zrd"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(resolved(&body)["trainUid"], "RSLVS2");
+        clear_resolve_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_after_midnight_finds_the_previous_service_date() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        let previous = d - chrono::Duration::days(1);
+        seed_resolve_row(
+            &pool,
+            previous,
+            "RSLVN1",
+            "ZRA",
+            "ZRB",
+            hm(0, 20),
+            1,
+            Some("XC000100"),
+            Some("XC"),
+            (None, None),
+        )
+        .await;
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=00:20&rsid=XC000100"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json = resolved(&body);
+        assert_eq!(json["trainUid"], "RSLVN1");
+        assert_eq!(json["serviceDate"], previous.to_string());
+        assert_eq!(json["href"], format!("/Train/by-uid/RSLVN1/{previous}"));
+
+        // The same row is NOT a match for 00:20 on its own service date.
+        let (status, _) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={previous}&time=00:20&rsid=XC000100"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        clear_resolve_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_without_an_rsid_uses_the_timetable_heuristic() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        let none = (None, None);
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVT1",
+            "ZRA",
+            "ZRB",
+            hm(13, 0),
+            0,
+            None,
+            Some("GW"),
+            none,
+        )
+        .await;
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVT2",
+            "ZRA",
+            "ZRE",
+            hm(13, 1),
+            0,
+            None,
+            Some("GW"),
+            none,
+        )
+        .await;
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=13:00&destination=ZRB&operator=gw"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json = resolved(&body);
+        assert_eq!(json["trainUid"], "RSLVT1");
+        assert_eq!(json["matchedOn"], "timetable");
+
+        // Rows published before rsid existed: a board rsid still resolves
+        // through the timetable fallback.
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=13:00&rsid=GW100000&destination=ZRE"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(resolved(&body)["trainUid"], "RSLVT2");
+
+        let (status, body) = resolve_json(&pool, &format!("station=ZRA&date={d}&time=13:00")).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "time alone is ambiguous here: {body}"
+        );
+        clear_resolve_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_nothing_matching_is_a_404() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVZ1",
+            "ZRA",
+            "ZRB",
+            hm(14, 0),
+            0,
+            Some("GW200000"),
+            Some("GW"),
+            (None, None),
+        )
+        .await;
+
+        for query in [
+            format!("station=ZRA&date={d}&time=15:00"),
+            format!("station=ZRA&date={d}&time=14:00&rsid=VT999900"),
+            format!("station=ZRQ&date={d}&time=14:00&rsid=GW200000"),
+        ] {
+            let (status, body) = resolve_json(&pool, &query).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{query}: {body}");
+        }
+        clear_resolve_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_rejects_malformed_input_naming_the_field() {
+        let pool = connect().await;
+        let d = resolve_day();
+        let far = d + chrono::Duration::days(30);
+        for (query, field) in [
+            (format!("date={d}&time=10:00"), "station"),
+            ("station=ZRA&time=10:00".to_string(), "date"),
+            (format!("station=ZRA&date={d}"), "time"),
+            (format!("station=ZR1&date={d}&time=10:00"), "station"),
+            ("station=ZRA&date=tomorrow&time=10:00".to_string(), "date"),
+            (format!("station=ZRA&date={far}&time=10:00"), "date"),
+            (format!("station=ZRA&date={d}&time=25:00"), "time"),
+            (format!("station=ZRA&date={d}&time=10:00&rsid=SR4"), "rsid"),
+            (
+                format!("station=ZRA&date={d}&time=10:00&rsid=SR40-800"),
+                "rsid",
+            ),
+            (
+                format!("station=ZRA&date={d}&time=10:00&destination=Z"),
+                "destination",
+            ),
+            (
+                format!("station=ZRA&date={d}&time=10:00&operator=SRX"),
+                "operator",
+            ),
+            (format!("station=ZRA&date={d}&time=10:00&kind=pass"), "kind"),
+            (format!("station=ZRA&date={d}&time=10:00&uid=C00001"), "uid"),
+        ] {
+            let (status, body) = resolve_json(&pool, &query).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body}");
+            assert!(
+                body.contains(field),
+                "{query}: the 400 names `{field}`: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_arrival_matches_the_terminus_and_intermediate_arrivals() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        // RSLVR1 calls at ZRA (arr 17:58, dep 18:00) and terminates at ZRT
+        // at 18:30; ZRT has no row of its own.
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVR1",
+            "ZRA",
+            "ZRT",
+            hm(18, 0),
+            0,
+            Some("GW555500"),
+            Some("GW"),
+            (Some(hm(17, 58)), Some(hm(18, 30))),
+        )
+        .await;
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRT&date={d}&time=18:30&rsid=GW555500&kind=arrival"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(resolved(&body)["trainUid"], "RSLVR1");
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=17:58&kind=arrival&destination=ZRT"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(resolved(&body)["matchedOn"], "timetable");
+
+        // A terminus has no departure to resolve.
+        let (status, _) = resolve_json(
+            &pool,
+            &format!("station=ZRT&date={d}&time=18:30&rsid=GW555500"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        clear_resolve_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_resolve -- --ignored --test-threads=1`"]
+    async fn trains_resolve_href_is_accepted_by_train_by_uid() {
+        let pool = connect().await;
+        clear_resolve_fixtures(&pool).await;
+        let d = resolve_day();
+        seed_resolve_row(
+            &pool,
+            d,
+            "RSLVH1",
+            "ZRA",
+            "ZRB",
+            hm(19, 0),
+            0,
+            Some("LM300000"),
+            Some("LM"),
+            (None, None),
+        )
+        .await;
+
+        let (status, body) = resolve_json(
+            &pool,
+            &format!("station=ZRA&date={d}&time=19:00&rsid=LM300000"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let href = resolved(&body)["href"].as_str().unwrap().to_string();
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(crate::routes::train::router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(Request::builder().uri(&href).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "{href}: {body}");
+        assert_eq!(body["trainUid"], "RSLVH1");
+        assert_eq!(body["serviceDate"], d.to_string());
+        clear_resolve_fixtures(&pool).await;
     }
 }

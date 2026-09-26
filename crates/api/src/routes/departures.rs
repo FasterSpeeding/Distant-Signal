@@ -39,28 +39,34 @@ pub fn router() -> Router {
 /// `rid` and no CIF `train_uid` for it, and the public LDBWS board this is
 /// sampled from supplies neither, so there is deliberately no
 /// `serviceId`- or `rid`-keyed train lookup and no `trainUid` on these
-/// rows. A caller holding only a board row (from here, or from its own
-/// LDBWS `GetDepBoardWithDetails` call) resolves it through the CIF
-/// timetable instead:
+/// rows. A caller holding a board row (from here, or from its own LDBWS
+/// call) resolves it with ONE call:
 ///
-/// 1. `GET /public/trains/search?station={crs}&date={serviceDate}&from={std-2m}&to={std+2m}`
-///    -- `station` is the board's own CRS, `serviceDate` the London-local
-///    rail day. Pad the window by a couple of minutes: `scheduled` there is
-///    the CIF WORKING (booked) departure, which can sit a minute or so off
-///    the PUBLIC `std` a board shows.
-/// 2. Keep the `results` whose `destinationCrs` equals the row's
-///    `destinationCrs` and whose `operator` (ATOC code, nullable) equals
-///    the row's `operator`. Exactly one distinct `uid` left -> that's the
-///    train; none or several -> treat as unresolved rather than guessing.
-/// 3. `GET /Train/by-uid/{uid}/{serviceDate}`.
+/// `GET /public/trains/resolve?station={crs}&date={localDate}&time={std}&rsid={rsid}&destination={destinationCrs}&operator={operator}`
 ///
-/// For a board `std` shortly after midnight, the service may belong to the
-/// PREVIOUS day's `service_date` (CIF dates a service by where it starts),
-/// so retry step 1 with yesterday's date before giving up. This is a
-/// timetable match, not an exact join -- the same best-effort
-/// `(date, station, time, destination)` correlation the train-tracking
-/// design already accepts (docs/superpowers/specs/2026-08-28-train-tracking-design.md,
-/// "Darwin RID").
+/// which answers `{"trainUid","serviceDate","matchedOn","href"}` (`href`
+/// is the `/Train/by-uid/...` path), `404` when nothing matches, or `409`
+/// listing the candidates when several do -- it never guesses. See
+/// `routes::trains::get_trains_resolve` and `data::train_resolve::resolve`.
+/// LDBWS's `rsid` (the CIF Retail Service ID, which `schedule-reference`
+/// now publishes on every schedule row) makes that an exact join; without
+/// one, the route falls back to the timetable heuristic this comment used
+/// to spell out by hand:
+///
+/// 1. calls at `station` whose CIF WORKING (booked) time is within +-2
+///    minutes of the board's PUBLIC `std` (they can differ by a minute or
+///    so), on the given date and -- for a `std` shortly after midnight --
+///    on the PREVIOUS service date (CIF dates a service by where it
+///    starts);
+/// 2. narrowed to those whose destination and operator (ATOC code) equal
+///    the row's;
+/// 3. exactly one distinct `uid` left is the train; none or several is
+///    unresolved.
+///
+/// That heuristic is the best-effort `(date, station, time, destination)`
+/// correlation the train-tracking design already accepts
+/// (docs/superpowers/specs/2026-08-28-train-tracking-design.md,
+/// "Darwin RID"); `matchedOn: "timetable"` flags it.
 ///
 /// The CIF-derived sibling route, `GET /public/stations/{crs}/schedule-departures`
 /// (below), DOES carry `uid` per row, keyed on today's London service date

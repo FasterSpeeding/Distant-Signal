@@ -1128,7 +1128,9 @@ fn schedule_network_departures_rows(
 /// not ~55 or ~80. The later `operator_atoc` field is a nullable 2-char
 /// string, and the later `headcode` field (the `BS` Train Identity, see
 /// `schedule_query::records::BasicSchedule::headcode`) a nullable 4-char
-/// one; neither moves that estimate much (~15 bytes each with the key).
+/// one, and the later `rsid` field (the `BX` Retail Service ID, see
+/// `schedule_query::records::BasicSchedule::rsid`) a nullable 8-char one;
+/// none moves that estimate much (~15-20 bytes each with the key).
 fn schedule_destination_departures_rows(
     mut by_destination: std::collections::HashMap<
         String,
@@ -1153,6 +1155,7 @@ fn schedule_destination_departures_rows(
                     "destination_arrival_day_offset": d.destination_arrival_day_offset,
                     "operator_atoc": d.operator_atoc,
                     "headcode": d.headcode,
+                    "rsid": d.rsid,
                 })
             })
         })
@@ -2283,6 +2286,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
@@ -2295,6 +2299,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
             ],
         );
@@ -2311,6 +2316,7 @@ mod poll_once_tests {
                 destination_arrival_day_offset: 0,
                 operator_atoc: Some("SR".to_string()),
                 headcode: Some("1S00".to_string()),
+                rsid: Some("SR408800".to_string()),
             }],
         );
 
@@ -2341,11 +2347,16 @@ mod poll_once_tests {
                 "destination_arrival_day_offset": 0,
                 "operator_atoc": "SR",
                 "headcode": "1S00",
+                "rsid": "SR408800",
             }),
-            "exactly twelve keys, named exactly as the table's columns are, \
-             with a Some(\"SR\") operator_atoc and a Some(\"1S00\") headcode \
-             round-tripping to JSON strings"
+            "exactly thirteen keys, named exactly as the table's columns are, \
+             with a Some(\"SR\") operator_atoc, a Some(\"1S00\") headcode \
+             and a Some(\"SR408800\") rsid round-tripping to JSON strings"
         );
+        // A None rsid (blank/absent CIF Retail Service ID) is an explicit
+        // JSON null, not an omitted key.
+        assert!(rows[1]["rsid"].is_null());
+        assert!(rows[1].as_object().unwrap().contains_key("rsid"));
         // A None headcode (blank CIF Train Identity) is an explicit JSON
         // null, not an omitted key.
         assert!(rows[1]["headcode"].is_null());
@@ -2395,6 +2406,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C11052".to_string(),
@@ -2407,6 +2419,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
             ],
         );
@@ -2450,6 +2463,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C99999".to_string(),
@@ -2462,6 +2476,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
             ],
         );
@@ -2507,6 +2522,7 @@ mod poll_once_tests {
                 destination_arrival_day_offset: 0,
                 operator_atoc: None,
                 headcode: None,
+                rsid: None,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -2545,6 +2561,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
@@ -2557,6 +2574,7 @@ mod poll_once_tests {
                     destination_arrival_day_offset: 0,
                     operator_atoc: None,
                     headcode: None,
+                    rsid: None,
                 },
             ],
         );

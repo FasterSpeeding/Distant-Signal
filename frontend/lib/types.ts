@@ -740,6 +740,21 @@ export interface PublicTrainState {
   mayHaveArrived: boolean;
 }
 
+/** `GET /public/trains/resolve`'s 200 body
+ * (`crates/api/src/routes/trains.rs`'s `get_trains_resolve`): a live
+ * departure-board row resolved to the `(trainUid, serviceDate)` key of
+ * `GET /Train/by-uid/{uid}/{date}` (`href`). `serviceDate` is the CIF
+ * service date, which is the day BEFORE the board's date for a train that
+ * started before midnight. 404/409 are plain text, not this shape. */
+export interface TrainResolveResult {
+  trainUid: string;
+  serviceDate: string; // "YYYY-MM-DD"
+  // "rsid": the full retail service ID matched; "rsidPrefix": only its
+  // first 6 characters; "timetable": time plus destination/operator.
+  matchedOn: "rsid" | "rsidPrefix" | "timetable";
+  href: string;
+}
+
 /** `GET /Train/mine`'s per-item response shape
  * (`crates/api/src/data/train_tracking.rs`'s `TrackedTrainListItem`,
  * camelCase). A deliberately lighter shape than `TrackedTrainState` --
