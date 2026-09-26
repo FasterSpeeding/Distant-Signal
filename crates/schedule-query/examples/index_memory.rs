@@ -205,7 +205,7 @@ fn destination_rows(index: &ScheduleIndex) -> impl Iterator<Item = serde_json::V
     report("destination departures grouped");
     by_destination
         .into_iter()
-        .flat_map(|(destination_crs, departures)| {
+        .flat_map(move |(destination_crs, departures)| {
             departures.into_iter().map(move |d| {
                 serde_json::json!({
                     "service_date": date,
