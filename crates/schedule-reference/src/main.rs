@@ -3447,7 +3447,7 @@ mod poll_once_retry_tests {
     /// service actually publishes. The `BS` line is the byte-verbatim real
     /// `C00573` record from `schedule_query::parse`'s own fixtures with only
     /// its UID, date range and days-run field replaced.
-    fn write_fixture_delivery(root: &std::path::Path, dir_name: &str) {
+    pub(super) fn write_fixture_delivery(root: &std::path::Path, dir_name: &str) {
         const TI_EUSTON: &str =
             "TIEUSTON 00144400NLONDON EUSTON             724102893EUSLONDON EUSTON           ";
         const BS_REAL: &str =
@@ -3481,7 +3481,7 @@ mod poll_once_retry_tests {
     /// Mounts a 200-answering POST mock for every publish route, then lets the
     /// caller override individual routes by mounting a mock FIRST (wiremock
     /// matches in mount order, so anything mounted before this call wins).
-    async fn mount_all_publishes_ok(server: &wiremock::MockServer) {
+    pub(super) async fn mount_all_publishes_ok(server: &wiremock::MockServer) {
         for path in [
             "/private/stanox-crs",
             "/private/tiploc-crs",
@@ -3502,7 +3502,7 @@ mod poll_once_retry_tests {
         }
     }
 
-    async fn posts_to(server: &wiremock::MockServer, path: &str) -> usize {
+    pub(super) async fn posts_to(server: &wiremock::MockServer, path: &str) -> usize {
         server
             .received_requests()
             .await
@@ -3648,6 +3648,225 @@ mod poll_once_retry_tests {
             "a cycle with any failed product must not claim a complete publish in api's durable \
              record -- a restart should still re-attempt this delivery"
         );
+    }
+}
+
+/// 2026-09-26 node-reboot follow-up: a product that fails is retried within
+/// the cycle, and one that keeps failing is the ONLY thing the next cycle
+/// republishes.
+#[cfg(test)]
+mod per_product_retry_tests {
+    use super::poll_once_retry_tests::{mount_all_publishes_ok, posts_to, write_fixture_delivery};
+    use super::*;
+
+    const DELIVERY: &str = "20260926T200045Z";
+
+    async fn setup(
+        server: &wiremock::MockServer,
+    ) -> (
+        common::oauth_client::OAuthTokenCache,
+        Config,
+        Client,
+        tempfile::TempDir,
+    ) {
+        let tokens = super::poll_once_tests::mock_token_cache(server).await;
+        let storage = tempfile::tempdir().unwrap();
+        write_fixture_delivery(storage.path(), DELIVERY);
+        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        config.storage_dir = storage.path().to_path_buf();
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        (tokens, config, client, storage)
+    }
+
+    fn fail_n_times(path: &str, times: u64) -> wiremock::Mock {
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(path))
+            .respond_with(wiremock::ResponseTemplate::new(502))
+            .up_to_n_times(times)
+    }
+
+    fn publish_ids(requests: &[wiremock::Request], path: &str) -> Vec<String> {
+        requests
+            .iter()
+            .filter(|req| req.url.path() == path)
+            .map(|req| {
+                req.url
+                    .query_pairs()
+                    .find(|(k, _)| k == "publish_id")
+                    .map(|(_, v)| v.into_owned())
+                    .expect("every non-empty per-date chunk carries a publish_id")
+            })
+            .collect()
+    }
+
+    /// A one-off failure of a small product and of one per-date chunk is
+    /// absorbed by the in-cycle retry: the delivery is marked processed and
+    /// the durable marker written in the same cycle, and the retried per-date
+    /// publish ran under a NEW `publish_id`, not the abandoned one.
+    #[tokio::test]
+    async fn a_transient_product_failure_is_retried_and_the_delivery_is_marked_processed() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, _storage) = setup(&server).await;
+        fail_n_times("/private/stanox-crs", 1).mount(&server).await;
+        fail_n_times("/private/schedule-calling-points-full", 1)
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle");
+
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert!(state.partial.is_none());
+        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 2);
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            1,
+            "every product published (one after a retry), so the durable marker is written"
+        );
+        let requests = server.received_requests().await.unwrap();
+        let ids = publish_ids(&requests, "/private/schedule-calling-points-full");
+        assert_eq!(
+            ids.len(),
+            (DESTINATION_DEPARTURES_FORWARD_DAYS + 2) as usize,
+            "one POST per date, plus the one retried"
+        );
+        let distinct: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            ids.len(),
+            "the retried publish must start a fresh publish_id: {ids:?}"
+        );
+    }
+
+    /// A product that fails every in-cycle attempt leaves the delivery
+    /// unmarked -- and the next cycle republishes that product ALONE, then
+    /// marks the delivery processed and writes the durable marker.
+    #[tokio::test]
+    async fn a_persistent_failure_leaves_the_delivery_unmarked_and_only_it_is_redone_next_cycle() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, _storage) = setup(&server).await;
+        fail_n_times("/private/tiploc-crs", u64::MAX)
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 1");
+
+        assert_eq!(state.last_processed_delivery, None);
+        assert_eq!(
+            posts_to(&server, "/private/tiploc-crs").await,
+            config.publish_retry.attempts as usize
+        );
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            0
+        );
+        let partial = state.partial.as_ref().expect("partial progress is kept");
+        assert_eq!(partial.delivery, DELIVERY);
+        assert!(!partial.published.contains(product::TIPLOC_CRS));
+        assert!(partial.published.contains(product::STANOX_CRS));
+
+        // `api`/the IdP recover.
+        server.reset().await;
+        let _ = super::poll_once_tests::mock_token_cache(&server).await;
+        mount_all_publishes_ok(&server).await;
+
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 2");
+
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert!(state.partial.is_none());
+        assert_eq!(posts_to(&server, "/private/tiploc-crs").await, 1);
+        for already_published in [
+            "/private/stanox-crs",
+            "/private/schedule-network-departures",
+            "/private/schedule-destination-departures",
+            "/private/schedule-calling-points-full",
+        ] {
+            assert_eq!(
+                posts_to(&server, already_published).await,
+                0,
+                "{already_published} published in cycle 1 and must not be republished"
+            );
+        }
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            1,
+            "once every product has published, across cycles, the durable marker is written"
+        );
+    }
+
+    /// Per-date tracking: when one per-date product fails for every date,
+    /// the next cycle redoes exactly those dates of that product and none of
+    /// its sibling's.
+    #[tokio::test]
+    async fn only_the_failed_per_date_product_is_republished_next_cycle() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, mut config, client, _storage) = setup(&server).await;
+        config.publish_retry.attempts = 1;
+        fail_n_times("/private/schedule-calling-points-full", u64::MAX)
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 1");
+        assert_eq!(state.last_processed_delivery, None);
+
+        server.reset().await;
+        let _ = super::poll_once_tests::mock_token_cache(&server).await;
+        mount_all_publishes_ok(&server).await;
+
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 2");
+
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert_eq!(
+            posts_to(&server, "/private/schedule-calling-points-full").await,
+            (DESTINATION_DEPARTURES_FORWARD_DAYS + 1) as usize
+        );
+        assert_eq!(
+            posts_to(&server, "/private/schedule-destination-departures").await,
+            0
+        );
+        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 0);
+    }
+
+    /// A newer delivery supersedes a partly published one: it is published
+    /// in full, not "resumed" with the old delivery's progress.
+    #[tokio::test]
+    async fn a_newer_delivery_does_not_inherit_a_partial_ones_progress() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, storage) = setup(&server).await;
+        mount_all_publishes_ok(&server).await;
+        write_fixture_delivery(storage.path(), "20260927T200045Z");
+
+        let mut state = PublishState {
+            last_processed_delivery: None,
+            partial: Some(PartialDelivery {
+                delivery: DELIVERY.to_string(),
+                published: [product::STANOX_CRS.to_string()].into_iter().collect(),
+            }),
+        };
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle");
+
+        assert_eq!(
+            state.last_processed_delivery.as_deref(),
+            Some("20260927T200045Z")
+        );
+        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 1);
     }
 }
 
