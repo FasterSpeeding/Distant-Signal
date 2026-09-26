@@ -166,6 +166,39 @@ pub async fn resolve_link(pool: &PgPool, token: &str) -> anyhow::Result<Option<R
     }))
 }
 
+/// How long a revoked or expired link row is kept before
+/// [`prune_dead_links`] deletes it. Long enough that a "why did my link stop
+/// working" support question can still be answered from the table for a
+/// while; short enough that rows from every regenerate click (each one
+/// revokes the previous row, and nothing ever deleted them) don't pile up
+/// forever.
+pub const DEAD_LINK_RETENTION: Duration = Duration::days(30);
+
+/// Deletes `unlisted_links` AND `group_invite_links` rows that have been
+/// revoked, or have expired, for longer than [`DEAD_LINK_RETENTION`]
+/// (2026-09-26 review, L10: revoked rows were never pruned, so every
+/// Regenerate/rotate left a permanent dead row behind). Neither table's
+/// dead rows can ever resolve again -- both validity predicates require
+/// `revoked_at IS NULL` and an unexpired `expires_at` -- so deleting them
+/// changes no behavior. Run from `main.rs`'s hourly
+/// `session_cleanup_sweep_loop`, the same periodic-cleanup home
+/// `users::prune_expired_sessions` already uses. Returns the number of
+/// rows deleted across both tables, for logging only.
+pub async fn prune_dead_links(pool: &PgPool) -> anyhow::Result<u64> {
+    let cutoff = Utc::now() - DEAD_LINK_RETENTION;
+    let unlisted =
+        sqlx::query("DELETE FROM unlisted_links WHERE revoked_at < $1 OR expires_at < $1")
+            .bind(cutoff)
+            .execute(pool)
+            .await?;
+    let invites =
+        sqlx::query("DELETE FROM group_invite_links WHERE revoked_at < $1 OR expires_at < $1")
+            .bind(cutoff)
+            .execute(pool)
+            .await?;
+    Ok(unlisted.rows_affected() + invites.rows_affected())
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;

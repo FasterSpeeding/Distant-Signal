@@ -199,9 +199,10 @@ where
 }
 
 /// Shared by Phase 2's "add a leg to an EXISTING journey" functions below.
-/// `Ok(None)` if `journey_id` doesn't exist or isn't owned by `user_id`
-/// (404-never-403, same posture as every other ownership check in this
-/// app); `Ok(Some(next_leg_order))` otherwise, `next_leg_order` being
+/// `AddLegOutcome::NotFound` if `journey_id` doesn't exist or isn't owned
+/// by `user_id` (404-never-403, same posture as every other ownership check
+/// in this app); `AddLegOutcome::Added(next_leg_order)` otherwise,
+/// `next_leg_order` being
 /// `MAX(leg_order) + 1` for this journey (`1` if it somehow has none yet,
 /// though that can't happen in practice since every journey is created
 /// with a leg).
@@ -217,11 +218,20 @@ where
 /// double-submit from two different tabs -- same accepted-limitation
 /// posture as `train_tracking::create_subscription_for_train`'s own doc
 /// comment.
+///
+/// **Leg cap (2026-09-26 review, L10).** Also refuses once the journey
+/// already has [`MAX_LEGS_PER_JOURNEY`] legs -- checked HERE, after the
+/// ownership check, rather than as a route-level pre-count, so a caller
+/// probing someone else's journey id still only ever sees the 404 path,
+/// never a "full" answer that would confirm the journey exists. Same
+/// count-then-insert race posture as `routes::lines`'s custom-line cap: a
+/// concurrent double-submit can land one over, which is fine for a cap
+/// whose job is bounding an order of magnitude.
 async fn owned_next_leg_order(
     pool: &PgPool,
     journey_id: i64,
     user_id: &str,
-) -> anyhow::Result<Option<i32>> {
+) -> anyhow::Result<AddLegOutcome<i32>> {
     let owned: Option<(i64,)> =
         sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
             .bind(journey_id)
@@ -229,15 +239,72 @@ async fn owned_next_leg_order(
             .fetch_optional(pool)
             .await?;
     if owned.is_none() {
-        return Ok(None);
+        return Ok(AddLegOutcome::NotFound);
     }
-    let next_leg_order: (i32,) = sqlx::query_as(
-        "SELECT COALESCE(MAX(leg_order), 0) + 1 FROM journey_legs WHERE journey_id = $1",
+    let (leg_count, next_leg_order): (i64, i32) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(MAX(leg_order), 0) + 1 FROM journey_legs WHERE journey_id = $1",
     )
     .bind(journey_id)
     .fetch_one(pool)
     .await?;
-    Ok(Some(next_leg_order.0))
+    if leg_count >= MAX_LEGS_PER_JOURNEY {
+        return Ok(AddLegOutcome::AtCap);
+    }
+    Ok(AddLegOutcome::Added(next_leg_order))
+}
+
+/// How many legs one journey may have. Same value as
+/// `journey_templates::MAX_LEGS_PER_TEMPLATE`, deliberately: a template
+/// materializes 1:1 into a journey's legs, so the two caps answer the same
+/// question ("how long can one trip plausibly be") and must agree. Before
+/// this existed, `add_known_train_leg_to_journey`/`add_window_leg_to_journey`
+/// would append legs forever -- each `knownTrain` leg also creating a live
+/// `train_subscriptions` row the notifier fans out to.
+pub const MAX_LEGS_PER_JOURNEY: i64 = 20;
+
+/// How many journeys one user may have created by hand (`POST /Journeys`).
+/// Template-materialized journeys (`source_template_id IS NOT NULL`) are
+/// NOT counted: those are produced on a schedule by `notifier`'s own
+/// materialization and are already bounded by
+/// `journey_templates::MAX_JOURNEY_TEMPLATES_PER_USER` x days, and counting
+/// them would make a recurring template silently eat a user's manual
+/// allowance. Journeys are never auto-pruned, so this is sized as a
+/// lifetime-of-account abuse bound (years of real two-trips-a-day manual
+/// use), not a working-set limit -- a user who does reach it gets a clear
+/// 400 telling them to delete old journeys.
+pub const MAX_JOURNEYS_PER_USER: i64 = 1000;
+
+/// Hand-created journeys `user_id` currently owns, for
+/// [`MAX_JOURNEYS_PER_USER`] enforcement (see that constant's doc for why
+/// template-materialized journeys are excluded).
+pub async fn count_manual_journeys_for_user(pool: &PgPool, user_id: &str) -> anyhow::Result<i64> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM journeys WHERE user_id = $1 AND source_template_id IS NULL",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
+/// Outcome of adding a leg to an EXISTING journey: the journey isn't there
+/// (or isn't the caller's -- route maps to 404), it already has
+/// [`MAX_LEGS_PER_JOURNEY`] legs (route maps to 400), or the leg was added.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddLegOutcome<T> {
+    NotFound,
+    AtCap,
+    Added(T),
+}
+
+impl<T> AddLegOutcome<T> {
+    /// `Some` only for [`AddLegOutcome::Added`].
+    pub fn into_added(self) -> Option<T> {
+        match self {
+            AddLegOutcome::Added(value) => Some(value),
+            AddLegOutcome::NotFound | AddLegOutcome::AtCap => None,
+        }
+    }
 }
 
 /// Creates a one-leg journey around a legacy CRS+time GUESS pin
@@ -411,8 +478,10 @@ pub async fn create_journey_with_known_train_leg(
 /// comment on [`create_journey_with_known_train_leg`] for the full
 /// reasoning; this function's override-selection logic is byte-identical.
 ///
-/// Returns `Ok(None)` for "no such journey, or not this caller's" (route
-/// maps to 404). Returns `Ok(Some((leg_id, tracking_id)))` on success --
+/// Returns `AddLegOutcome::NotFound` for "no such journey, or not this
+/// caller's" (route maps to 404), `AddLegOutcome::AtCap` once the journey
+/// already has [`MAX_LEGS_PER_JOURNEY`] legs (route maps to 400), and
+/// `AddLegOutcome::Added((leg_id, tracking_id))` on success --
 /// `tracking_id` is needed by the route layer to run the same
 /// `enrich_shared_train` best-effort enrichment `post_journey`'s own
 /// `KnownTrain` arm and `post_leg_train` already run for every new
@@ -425,9 +494,11 @@ pub async fn add_known_train_leg_to_journey(
     service_date: NaiveDate,
     origin_crs_override: Option<&str>,
     destination_crs_override: Option<&str>,
-) -> anyhow::Result<Option<(i64, i64)>> {
-    let Some(next_leg_order) = owned_next_leg_order(pool, journey_id, user_id).await? else {
-        return Ok(None);
+) -> anyhow::Result<AddLegOutcome<(i64, i64)>> {
+    let next_leg_order = match owned_next_leg_order(pool, journey_id, user_id).await? {
+        AddLegOutcome::Added(next) => next,
+        AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
+        AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
     };
     // 2026-09 Signal Box Audit Low finding: `create_subscription_for_train`
     // used to run as its own bare statement against `pool`, committed
@@ -479,7 +550,7 @@ pub async fn add_known_train_leg_to_journey(
     )
     .await?;
     tx.commit().await?;
-    Ok(Some((leg_id, tracking_id)))
+    Ok(AddLegOutcome::Added((leg_id, tracking_id)))
 }
 
 /// User-facing validation for a window-search leg's request fields --
@@ -730,8 +801,10 @@ pub async fn create_journey_with_window_leg(
 /// its own, matching this file's established "route validates, data layer
 /// writes" split.
 ///
-/// Returns `Ok(None)` for "no such journey, or not this caller's" (route
-/// maps to 404). Returns `Ok(Some(leg_id))` on success -- an `'unmatched'`
+/// Returns `AddLegOutcome::NotFound` for "no such journey, or not this
+/// caller's" (route maps to 404), `AddLegOutcome::AtCap` at
+/// [`MAX_LEGS_PER_JOURNEY`] (400), and `AddLegOutcome::Added(leg_id)` on
+/// success -- an `'unmatched'`
 /// leg with no `train_subscription_id`, exactly like a window-mode
 /// journey's own first leg.
 #[allow(clippy::too_many_arguments)]
@@ -744,9 +817,11 @@ pub async fn add_window_leg_to_journey(
     service_date: NaiveDate,
     depart_window: TimeWindow,
     arrive_window: TimeWindow,
-) -> anyhow::Result<Option<i64>> {
-    let Some(next_leg_order) = owned_next_leg_order(pool, journey_id, user_id).await? else {
-        return Ok(None);
+) -> anyhow::Result<AddLegOutcome<i64>> {
+    let next_leg_order = match owned_next_leg_order(pool, journey_id, user_id).await? {
+        AddLegOutcome::Added(next) => next,
+        AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
+        AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
     };
     let leg_id = insert_leg(
         pool,
@@ -764,7 +839,7 @@ pub async fn add_window_leg_to_journey(
         true,
     )
     .await?;
-    Ok(Some(leg_id))
+    Ok(AddLegOutcome::Added(leg_id))
 }
 
 /// Binds (or re-binds) a leg to a real train working -- the `manual`-mode
@@ -2457,6 +2532,7 @@ mod db_tests {
         )
         .await
         .expect("add second window leg")
+        .into_added()
         .expect("journey is owned");
         assert_eq!(leg_order_of(&pool, second_leg_id).await, 2);
 
@@ -2484,6 +2560,7 @@ mod db_tests {
         )
         .await
         .expect("add third window leg")
+        .into_added()
         .expect("journey is owned");
         assert_eq!(leg_order_of(&pool, third_leg_id).await, 3);
 
@@ -2533,6 +2610,7 @@ mod db_tests {
         )
         .await
         .expect("add known-train leg")
+        .into_added()
         .expect("journey is owned");
         assert_eq!(leg_order_of(&pool, leg_id).await, 2);
 
@@ -2643,7 +2721,7 @@ mod db_tests {
             .expect("check for a subscription row");
 
             match result {
-                Ok(Some(_)) => {
+                Ok(AddLegOutcome::Added(_)) => {
                     // Succeeded: a subscription row for this trains_id is
                     // expected and correct.
                     assert!(subscription.is_some());
@@ -2657,7 +2735,9 @@ mod db_tests {
                          for trains_id {trains_id}"
                     );
                 }
-                Ok(None) => panic!("journey_id is owned by user_id -- must never be Ok(None)"),
+                Ok(other) => panic!(
+                    "journey_id is owned by user_id and far under the leg cap -- got {other:?}"
+                ),
             }
         }
 
@@ -2871,7 +2951,7 @@ mod db_tests {
         )
         .await
         .expect("attempt add window leg as non-owner");
-        assert_eq!(window_result, None);
+        assert_eq!(window_result, AddLegOutcome::NotFound);
 
         // `trains_id` is never dereferenced: ownership is checked first,
         // before this function ever touches `train_subscriptions`.
@@ -2886,7 +2966,7 @@ mod db_tests {
         )
         .await
         .expect("attempt add known-train leg as non-owner");
-        assert_eq!(known_train_result, None);
+        assert_eq!(known_train_result, AddLegOutcome::NotFound);
 
         cleanup_user(&pool, owner_id).await;
         cleanup_user(&pool, other_id).await;

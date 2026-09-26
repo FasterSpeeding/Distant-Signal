@@ -77,6 +77,31 @@ mod role_tests {
     }
 }
 
+/// How many groups one user may belong to at once -- created or joined,
+/// counted together (2026-09-26 review, L10). Every membership widens the
+/// fan-out of `list_shared_trains`/`list_shared_journeys`/shared custom
+/// lines for that user, and before this cap a script could create groups
+/// without limit. 100 is far above any real social use while still bounding
+/// that fan-out. Checked by `routes::groups::create_group` and inside
+/// [`consume_invite_link`].
+pub const MAX_GROUPS_PER_USER: i64 = 100;
+
+/// How many members one group may have (2026-09-26 review, L10) -- checked
+/// inside [`consume_invite_link`], the only path that adds a non-owner
+/// member. Same value as [`MAX_GROUPS_PER_USER`]; a group is a circle of
+/// people sharing their trains, and each member's shares fan out to every
+/// other member, so the cost is quadratic in this number.
+pub const MAX_MEMBERS_PER_GROUP: i64 = 100;
+
+/// How many groups `user_id` currently belongs to, in any role.
+pub async fn count_memberships_for_user(pool: &PgPool, user_id: &str) -> Result<i64> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_members WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
 pub async fn create_group(pool: &PgPool, name: &str, user_id: &str) -> Result<String> {
     let id = crate::auth::generate_session_token();
     let mut tx = pool.begin().await?;
@@ -710,17 +735,33 @@ pub async fn resolve_invite_link(pool: &PgPool, token: &str) -> Result<Option<Jo
     }))
 }
 
+/// What [`consume_invite_link`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinOutcome {
+    /// Now a member (or already was one -- a re-click is not an error).
+    Joined(String),
+    /// The token doesn't resolve to a valid, unexpired, unrevoked link --
+    /// the route maps this to `404`.
+    InvalidLink,
+    /// The group already has [`MAX_MEMBERS_PER_GROUP`] members.
+    GroupFull,
+    /// The caller already belongs to [`MAX_GROUPS_PER_USER`] groups.
+    TooManyGroups,
+}
+
 /// Consumes a join token: adds the caller to `group_members` as a plain
 /// `member` if the token is still valid, or no-ops if they're already a
 /// member (e.g. the owner re-clicking their own link, or a double-submit)
 /// -- `ON CONFLICT DO NOTHING` on the natural `(group_id, user_id)` PK.
-/// Returns the joined `group_id`, or `None` if the token doesn't resolve
-/// to a valid, unexpired, unrevoked link -- the route maps that to `404`.
-pub async fn consume_invite_link(
-    pool: &PgPool,
-    token: &str,
-    user_id: &str,
-) -> Result<Option<String>> {
+///
+/// Refuses (without joining) once the group holds
+/// [`MAX_MEMBERS_PER_GROUP`] members or the caller already belongs to
+/// [`MAX_GROUPS_PER_USER`] groups -- both checked only for a NEW
+/// membership, so an existing member re-clicking always still succeeds.
+/// The group's row is locked `FOR UPDATE` first (same lock
+/// `remove_member` takes) so two concurrent joins can't both pass the
+/// member-count check on a group that has room for only one.
+pub async fn consume_invite_link(pool: &PgPool, token: &str, user_id: &str) -> Result<JoinOutcome> {
     let mut tx = pool.begin().await?;
     let group_id: Option<String> = sqlx::query_scalar(
         "SELECT group_id FROM group_invite_links \
@@ -731,8 +772,40 @@ pub async fn consume_invite_link(
     .await?;
     let Some(group_id) = group_id else {
         tx.rollback().await?;
-        return Ok(None);
+        return Ok(JoinOutcome::InvalidLink);
     };
+
+    sqlx::query("SELECT id FROM groups WHERE id = $1 FOR UPDATE")
+        .bind(&group_id)
+        .execute(&mut *tx)
+        .await?;
+    let already_member: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)",
+    )
+    .bind(&group_id)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !already_member {
+        let members: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM group_members WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if members >= MAX_MEMBERS_PER_GROUP {
+            tx.rollback().await?;
+            return Ok(JoinOutcome::GroupFull);
+        }
+        let memberships: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM group_members WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if memberships >= MAX_GROUPS_PER_USER {
+            tx.rollback().await?;
+            return Ok(JoinOutcome::TooManyGroups);
+        }
+    }
 
     sqlx::query(
         "INSERT INTO group_members (group_id, user_id, role, joined_at) \
@@ -745,7 +818,7 @@ pub async fn consume_invite_link(
     .await?;
 
     tx.commit().await?;
-    Ok(Some(group_id))
+    Ok(JoinOutcome::Joined(group_id))
 }
 
 /// Adds one of the caller's own tracked trains to a group. Ownership is
@@ -2799,9 +2872,8 @@ mod db_tests {
 
         let joined = consume_invite_link(&pool, &link.token, "TEST-GROUPS-JOIN-JOINER-3")
             .await
-            .expect("consume")
-            .expect("should resolve");
-        assert_eq!(joined, group_id);
+            .expect("consume");
+        assert_eq!(joined, JoinOutcome::Joined(group_id.clone()));
         let role = get_member_role(&pool, &group_id, "TEST-GROUPS-JOIN-JOINER-3")
             .await
             .expect("query")
@@ -2812,9 +2884,8 @@ mod db_tests {
         // link) must not error or duplicate the row.
         let joined_again = consume_invite_link(&pool, &link.token, "TEST-GROUPS-JOIN-JOINER-3")
             .await
-            .expect("consume again")
-            .expect("should still resolve");
-        assert_eq!(joined_again, group_id);
+            .expect("consume again");
+        assert_eq!(joined_again, JoinOutcome::Joined(group_id.clone()));
 
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(&group_id)
@@ -2839,7 +2910,7 @@ mod db_tests {
         let joined = consume_invite_link(&pool, "not-a-real-token", "TEST-GROUPS-JOIN-JOINER-4")
             .await
             .expect("consume");
-        assert_eq!(joined, None);
+        assert_eq!(joined, JoinOutcome::InvalidLink);
 
         cleanup(&pool, &["TEST-GROUPS-JOIN-JOINER-4"]).await;
     }

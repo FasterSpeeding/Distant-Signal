@@ -439,6 +439,20 @@ async fn session_cleanup_sweep_loop(app: App) {
                 tracing::error!(error = ?err, "session-cleanup sweep failed; will retry next interval");
             }
         }
+        // Same hourly cadence, same "cheap, idempotent, nobody is waiting
+        // on it" reasoning -- see `unlisted_links::prune_dead_links`.
+        match data::unlisted_links::prune_dead_links(&app.database).await {
+            Ok(deleted) if deleted > 0 => {
+                tracing::info!(
+                    deleted,
+                    "session-cleanup sweep pruned dead share/invite links"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "dead-link prune failed; will retry next interval");
+            }
+        }
     }
 }
 

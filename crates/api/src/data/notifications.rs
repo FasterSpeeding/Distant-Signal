@@ -84,10 +84,38 @@ pub async fn upsert_push_subscription(
     .execute(pool)
     .await?;
     if result.rows_affected() == 0 {
-        Ok(PushSubscriptionUpsert::EndpointOwnedByAnotherUser)
-    } else {
-        Ok(PushSubscriptionUpsert::Saved)
+        return Ok(PushSubscriptionUpsert::EndpointOwnedByAnotherUser);
     }
+    evict_push_subscriptions_over_cap(pool, user_id).await?;
+    Ok(PushSubscriptionUpsert::Saved)
+}
+
+/// How many push subscriptions (browsers/devices) one user may hold
+/// (2026-09-26 review, L10). Every row is a separate outbound web-push POST
+/// on every notification the notifier sends that user, so an unbounded
+/// count is unbounded outbound work (and, before L9, unbounded SSRF
+/// attempts). 20 comfortably covers a real person's phones, tablets, work
+/// and home browsers, and profile churn.
+pub const MAX_PUSH_SUBSCRIPTIONS_PER_USER: i64 = 20;
+
+/// Enforces [`MAX_PUSH_SUBSCRIPTIONS_PER_USER`] by EVICTING the
+/// least-recently-seen rows beyond the cap, rather than rejecting the new
+/// subscription. A browser that's been reinstalled or had its site data
+/// cleared leaves its old row behind until the push service 404s/410s it
+/// (`notifier::send`), so a hard reject would lock a real user out of
+/// subscribing their CURRENT device because of dead ones; the row they just
+/// saved is by definition the most recently seen, so it always survives.
+async fn evict_push_subscriptions_over_cap(pool: &PgPool, user_id: &str) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM push_subscriptions WHERE id IN ( \
+            SELECT id FROM push_subscriptions WHERE user_id = $1 \
+            ORDER BY last_seen_at DESC, id DESC OFFSET $2)",
+    )
+    .bind(user_id)
+    .bind(MAX_PUSH_SUBSCRIPTIONS_PER_USER)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

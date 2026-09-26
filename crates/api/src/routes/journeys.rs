@@ -574,6 +574,24 @@ async fn post_journey(
     // display name.
     let custom_name = train_tracking::validate_custom_name(body.custom_name.as_deref())
         .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    // Per-user cap (2026-09-26 review, L10) -- every arm below inserts a new
+    // `journeys` row. Same route-level count-then-insert shape (and the same
+    // accepted "a concurrent burst can land a few over" race) as
+    // `routes::lines`'s custom-line cap; see `journeys::MAX_JOURNEYS_PER_USER`
+    // for the value and why template-materialized journeys don't count.
+    let owned = journeys::count_manual_journeys_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("count journeys"))?;
+    if owned >= journeys::MAX_JOURNEYS_PER_USER {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "You already have {} journeys, which is the maximum. Delete some old ones to make \
+                 room for a new one.",
+                journeys::MAX_JOURNEYS_PER_USER
+            ),
+        ));
+    }
     match body.leg {
         CreateJourneyLegRequest::Pin {
             origin_crs,
@@ -841,9 +859,7 @@ async fn post_journey_leg(
             )
             .await
             .map_err(internal_error("add leg to journey (known-train)"))?;
-            let Some((leg_id, tracking_id)) = added else {
-                return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
-            };
+            let (leg_id, tracking_id) = added_leg_or_error(added)?;
 
             // Same best-effort enrichment `post_journey`'s own `KnownTrain`
             // arm and `post_leg_train` already make for the exact same
@@ -889,15 +905,33 @@ async fn post_journey_leg(
             )
             .await
             .map_err(internal_error("add leg to journey (window)"))?;
-            let Some(leg_id) = added else {
-                return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
-            };
+            let leg_id = added_leg_or_error(added)?;
 
             Ok(Json(AddLegResponse {
                 leg_id,
                 tracking_id: None,
             }))
         }
+    }
+}
+
+/// Maps [`journeys::AddLegOutcome`] onto `post_journey_leg`'s wire
+/// statuses: `404` for a missing/not-yours journey (unchanged), `400` once
+/// the journey already holds [`journeys::MAX_LEGS_PER_JOURNEY`] legs
+/// (2026-09-26 review, L10).
+fn added_leg_or_error<T>(outcome: journeys::AddLegOutcome<T>) -> Result<T, (StatusCode, String)> {
+    match outcome {
+        journeys::AddLegOutcome::Added(value) => Ok(value),
+        journeys::AddLegOutcome::NotFound => {
+            Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()))
+        }
+        journeys::AddLegOutcome::AtCap => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "This journey already has {} legs, which is the maximum.",
+                journeys::MAX_LEGS_PER_JOURNEY
+            ),
+        )),
     }
 }
 
