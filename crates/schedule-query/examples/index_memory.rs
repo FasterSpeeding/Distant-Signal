@@ -36,7 +36,7 @@
 
 use std::io::{BufRead, Write};
 
-use schedule_query::{CallingPoint, RawSchedule, ScheduleIndex};
+use schedule_query::{CallingPoint, RawSchedule, ScheduleIndex, ScheduleIndexBuilder};
 
 const SCHEDULES: usize = 427_000;
 const TIPLOC_POOL: usize = 8_000;
@@ -84,6 +84,12 @@ fn generate(out: &mut impl Write) -> std::io::Result<()> {
         put(&mut line, 3, &format!("{:06}", uid_number % 1_000_000));
         put(&mut line, 79, if i % 5 == 4 { "O" } else { "P" });
         put(&mut line, 32, &format!("{}{:03}", 1 + i % 9, i % 1000));
+        // One running day per UID (an overlay shares its base's day), so a
+        // single service date resolves ~1/7 of the extract -- still roughly
+        // twice a real day's share, i.e. conservative for the per-date phase.
+        let mut days = *b"0000000";
+        days[uid_number % 7] = b'1';
+        line[21..28].copy_from_slice(&days);
         out.write_all(&line)?;
         out.write_all(b"\n")?;
         out.write_all(&bx)?;
@@ -113,8 +119,11 @@ fn generate(out: &mut impl Write) -> std::io::Result<()> {
                 put(&mut line, 33, &format!("{:<3}", (i + j) % 12 + 1));
                 put(&mut line, 42, "T ");
             } else {
-                // A passing/timing point: no public times, no platform, no
+                // A passing/timing point: a pass time (`20..25`) instead of
+                // booked arrival/departure, no public times, no platform, no
                 // activity.
+                put(&mut line, 10, "          ");
+                put(&mut line, 20, &format!("{} ", hhmm(start + j * 3)));
                 put(&mut line, 25, "        ");
                 put(&mut line, 33, "   ");
                 put(&mut line, 42, "  ");
@@ -177,6 +186,73 @@ fn read_prefixed_text(path: &str) -> String {
     out
 }
 
+/// Optional third argument `rows`: after the index is built, also build one
+/// service date's `schedule_destination_departures` rows the way
+/// `schedule-reference` does (every row a `serde_json::Value`, all rows for
+/// the date collected before the first POST), to size the per-date phase.
+fn destination_rows(index: &ScheduleIndex) -> impl Iterator<Item = serde_json::Value> {
+    // A Sunday inside the template's 2026-05-17..2026-12-06 validity.
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 17).expect("date");
+    let tiploc_to_crs: std::collections::HashMap<String, String> = (0..TIPLOC_POOL)
+        .map(|i| (format!("T{i:06}"), format!("C{:02}", i % 100)))
+        .collect();
+    let by_destination = schedule_query::departures_by_destination_crs(
+        index,
+        date,
+        chrono::NaiveTime::MIN,
+        &tiploc_to_crs,
+    );
+    report("destination departures grouped");
+    by_destination
+        .into_iter()
+        .flat_map(|(destination_crs, departures)| {
+            departures.into_iter().map(move |d| {
+                serde_json::json!({
+                    "service_date": date,
+                    "destination_crs": destination_crs,
+                    "scheduled": d.scheduled,
+                    "day_offset": d.day_offset,
+                    "train_uid": d.uid,
+                    "origin_crs": d.origin_crs,
+                    "true_origin_crs": d.true_origin_crs,
+                    "calling_point_arrival": d.calling_point_arrival,
+                    "destination_arrival": d.destination_arrival,
+                    "destination_arrival_day_offset": d.destination_arrival_day_offset,
+                    "operator_atoc": d.operator_atoc,
+                    "headcode": d.headcode,
+                })
+            })
+        })
+}
+
+/// `rows`: every row for the date collected before posting (the
+/// pre-2026-09-26 `schedule-reference` shape). `rows-chunked`: rows pulled
+/// 50,000 at a time, each chunk dropped before the next is built (the
+/// current `post_date_scoped_row_stream` shape).
+fn maybe_rows(index: &ScheduleIndex) {
+    match std::env::args().nth(3).as_deref() {
+        Some("rows") => {
+            let rows: Vec<serde_json::Value> = destination_rows(index).collect();
+            eprintln!("built {} destination-departure rows", rows.len());
+            report("destination rows built (all, Value)");
+        }
+        Some("rows-chunked") => {
+            let mut rows = destination_rows(index);
+            let mut total = 0;
+            loop {
+                let chunk: Vec<serde_json::Value> = rows.by_ref().take(50_000).collect();
+                if chunk.is_empty() {
+                    break;
+                }
+                total += chunk.len();
+            }
+            eprintln!("built {total} destination-departure rows, 50k at a time");
+            report("destination rows built (chunked)");
+        }
+        _ => {}
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     report("start");
@@ -192,6 +268,7 @@ fn main() {
             drop(text);
             report("text dropped");
             summarize(&index);
+            maybe_rows(&index);
         }
         (Some("gen"), Some(path)) => {
             let mut out = std::io::BufWriter::new(std::fs::File::create(path).expect("create"));
@@ -206,9 +283,27 @@ fn main() {
             drop(text);
             report("text dropped");
             summarize(&index);
+            maybe_rows(&index);
+        }
+        (Some("file-stream"), Some(path)) => {
+            // Mirrors `schedule-reference::build_schedule_index_from_file`.
+            let mut reader = std::io::BufReader::new(std::fs::File::open(path).expect("open"));
+            let mut builder = ScheduleIndexBuilder::default();
+            let mut line = String::new();
+            while reader.read_line(&mut line).expect("read") != 0 {
+                let trimmed = line.strip_suffix('\n').unwrap_or(&line);
+                builder.push_line(trimmed.strip_suffix('\r').unwrap_or(trimmed));
+                line.clear();
+            }
+            let index = builder.finish();
+            report("index built (streamed, no text)");
+            summarize(&index);
+            maybe_rows(&index);
         }
         _ => {
-            eprintln!("usage: index_memory [inmem | gen <path> | file-text <path>]");
+            eprintln!(
+                "usage: index_memory [inmem | gen <path> | file-text <path> | file-stream <path>]"
+            );
             std::process::exit(2);
         }
     }

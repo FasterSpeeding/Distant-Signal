@@ -843,12 +843,11 @@ impl ScheduleIndexBuilder {
         match by_uid.get_mut(schedule.basic.uid.as_str()) {
             Some(schedules) => schedules.push(schedule),
             None => {
-                // Most UIDs carry exactly one schedule; a default `push`
-                // would allocate room for four.
+                // Most UIDs carry exactly one schedule: `vec![x]` allocates
+                // room for exactly one, where `or_default().push` would
+                // allocate four.
                 let uid = schedule.basic.uid.clone();
-                let mut schedules = Vec::with_capacity(1);
-                schedules.push(schedule);
-                by_uid.insert(uid, schedules);
+                by_uid.insert(uid, vec![schedule]);
             }
         }
     }
