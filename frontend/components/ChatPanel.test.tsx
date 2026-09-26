@@ -190,6 +190,30 @@ describe('ChatPanel', () => {
     expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
   });
 
+  // Bug found by e2e/chat.spec.ts's "reconnect" case: `@modelcontextprotocol/sdk`'s
+  // own `auth()` (client/auth.js) throws a bare `Error` -- not a
+  // `StreamableHTTPError` -- when its OWN reauth attempt (triggered by the
+  // real 401/403 from `/mcp`) fails, e.g. `discoverOAuthProtectedResourceMetadata`'s
+  // "HTTP 401 trying to load well-known OAuth protected resource metadata."
+  // when the RFC 9728 `.well-known` endpoint itself 401s. That message has
+  // no structured `.code` and contains neither "unauthorized" nor
+  // "forbidden", so it fell through to `tool-error` instead of
+  // `mcp-reconnect` even though it is a genuine session-expiry.
+  it('recognizes an MCP OAuth-discovery failure ("HTTP 401 trying to...") as a session-expiry error', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn.mockReturnValue(
+      (async function* () {
+        throw new Error('HTTP 401 trying to load well-known OAuth protected resource metadata.');
+      })(),
+    );
+    renderWithMantine(<ChatPanel />);
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
+  });
+
   it('does not submit an empty or whitespace-only message', () => {
     setAnthropicApiKey('sk-ant-test');
     seedMcpTokens();

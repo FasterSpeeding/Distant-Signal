@@ -1221,6 +1221,17 @@ export function TrackTrainForm({
             value={windowServiceDate}
             onChange={setWindowServiceDate}
             clearable
+            // Bug: this `clearable` field was the one place in the app
+            // missing the `clearButtonProps` aria-label every other
+            // `clearable` field already carries (see e.g.
+            // `TrainSearchForm.tsx`'s own "Clear the date" and
+            // `IncidentSearchForm.tsx`'s comment on the same pattern).
+            // Mantine's `clearable` renders an icon-only close button with
+            // no accessible name of its own, which axe-core flags as a
+            // critical `button-name` violation -- caught by the
+            // accessibility suite's `/track, departure picker populated`
+            // and route-sweep cases once this field had a value to clear.
+            clearButtonProps={{ 'aria-label': 'Clear the date' }}
           />
           {/* Review §2.2/I17: all four fields below say "(optional)" in
               their own label, which is individually true but collectively

@@ -305,6 +305,29 @@ describe('IssueList', () => {
     expect(screen.queryByText('No further detail available.')).not.toBeInTheDocument();
   });
 
+  // Bug: `AccordionItem`'s `value` used to be the raw `statusKey(status)` --
+  // a dedupe/React-key identity that joins its parts with plain spaces (e.g.
+  // "9 knowledgebase Signal failure <iso>//true"), not an HTML-id-safe
+  // token. Mantine's Accordion concatenates `value` verbatim into the
+  // control's own `aria-controls`, so that raw join produced an
+  // `aria-controls` value containing embedded whitespace -- which HTML
+  // parses as several space-separated id references, only one of which (if
+  // any) exists. axe-core's `aria-valid-attr-value` rule flagged exactly
+  // this once every accordion was expanded (e2e/accessibility.spec.ts's
+  // `/lines/[id], every issue accordion expanded` and `/stations/[crs],
+  // every disclosure expanded` cases).
+  it('gives the expanded control an aria-controls value with no whitespace, referencing a real element', () => {
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    fireEvent.click(screen.getByText(/^All/));
+
+    const control = screen.getByText('Signal failure').closest('button');
+    expect(control).not.toBeNull();
+    const ariaControls = control!.getAttribute('aria-controls');
+    expect(ariaControls).toBeTruthy();
+    expect(ariaControls).not.toMatch(/\s/);
+    expect(document.getElementById(ariaControls!)).not.toBeNull();
+  });
+
   it('surfaces the "View full incident details" link when a status disruption is knowledgebase-sourced', async () => {
     const withKnowledgebaseSource: LineStatus = {
       ...minorNow,

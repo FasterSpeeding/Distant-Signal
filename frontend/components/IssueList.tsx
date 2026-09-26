@@ -416,9 +416,23 @@ export function IssueList({
           reports), so it's keyed/valued on that instead -- tied to the
           issue's own severity/reason/validity-window, not its position in
           this render's array.
+
+          Bug: `statusKey` is a dedupe/React-key identity, not an HTML-id-safe
+          token -- it joins its parts with plain spaces (and a reason/
+          description can itself contain a colon, e.g. "Fixture: signalling
+          problems..."). Mantine's `Accordion` concatenates `value` verbatim
+          into the control/panel `id`s and into the control's own
+          `aria-controls`, so a raw `statusKey()` there produced an
+          `aria-controls` value containing embedded whitespace -- which HTML
+          parses as SEVERAL space-separated id references, only one of which
+          (if any) exists. axe's `aria-valid-attr-value` rule flagged exactly
+          this on `/lines/[id]` and `/stations/[crs]` once every accordion/
+          disclosure was expanded. `encodeURIComponent` keeps `statusKey`'s
+          uniqueness (it's injective) while guaranteeing no whitespace (or any
+          other character HTML forbids in an id) reaches the DOM.
         */}
         {filtered.map((status) => (
-          <AccordionItem key={statusKey(status)} value={statusKey(status)}>
+          <AccordionItem key={statusKey(status)} value={encodeURIComponent(statusKey(status))}>
             <AccordionControl>
               {/*
                 The badges are the row's classification and provenance, so

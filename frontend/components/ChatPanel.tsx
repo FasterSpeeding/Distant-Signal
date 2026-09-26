@@ -231,12 +231,31 @@ function classifyChatError(err: unknown): ChatError {
   // reliably carries alongside the code (e.g. "401 Unauthorized", "403
   // Forbidden") -- present in a genuine auth failure's text, and exactly
   // what a merely-numeric coincidence like a train reporting number lacks.
+  //
+  // Bug (found via e2e/chat.spec.ts's "reconnect" case): a real 401/403 from
+  // `/mcp` doesn't always surface as a `StreamableHTTPError` with a
+  // structured `.code`. `client/streamableHttp.js`'s `send()` reacts to that
+  // 401/403 by calling the SDK's own `auth()` (client/auth.js) to attempt
+  // reauth *before* ever throwing -- and when that reauth attempt itself
+  // fails (no cached discovery state, so the first step is an RFC 9728
+  // `.well-known` fetch, or a client-registration `/register` call, either
+  // of which can 401/403 too, e.g. because the well-known/registration
+  // endpoints don't exist yet), `auth()` throws a bare `Error` whose message
+  // is `discoverOAuthProtectedResourceMetadata`'s
+  // "HTTP 401 trying to load well-known OAuth protected resource metadata."
+  // or `parseErrorResponse`'s "HTTP 401: Invalid OAuth error response...".
+  // Neither contains "unauthorized"/"forbidden", so the word-based match
+  // above missed both, misclassifying a genuine session-expiry as a generic
+  // tool-error. "HTTP 401"/"HTTP 403" (the literal word "HTTP" immediately
+  // before the code) is a distinct, reliable signal that doesn't share the
+  // false-positive risk a bare number does -- no upstream/tool text in this
+  // app phrases anything else that way.
   const status = mcpHttpStatus(err);
   if (status === 401 || status === 403) {
     return { kind: 'mcp-reconnect' };
   }
   const message = err instanceof Error ? err.message : 'Something went wrong.';
-  if (status === null && /\b(unauthoriz(?:ed|ation)?|forbidden)\b/i.test(message)) {
+  if (status === null && /\b(unauthoriz(?:ed|ation)?|forbidden)\b|\bHTTP\s+(?:401|403)\b/i.test(message)) {
     return { kind: 'mcp-reconnect' };
   }
   return { kind: 'tool-error', message };
