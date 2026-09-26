@@ -610,6 +610,40 @@ struct CreateLineRequest {
     destination_crs_filter: Vec<String>,
 }
 
+/// A real 3-letter CRS code, ASCII-alphabetic only, case-insensitive --
+/// same check as `routes::trains::normalize_crs`/`journeys::is_three_letter_crs`/
+/// `journey_templates::is_three_letter_crs` (each module keeps its own
+/// private copy rather than reaching across the module boundary, matching
+/// this codebase's existing convention for this exact check).
+///
+/// This is the gate for `CreateLineRequest::stations`: a custom line's
+/// stations flow, completely unvalidated before this, straight into
+/// `LineDefinition::sample_stations` (`From<CustomLine> for LineDefinition`)
+/// and from there into `poller-ldbws`'s `fetch_departures_once`, which
+/// splices each one directly into a `GetDepBoardWithDetails/{crs}` URL path
+/// alongside the org's own RDM API key. Without this check, any
+/// authenticated user could submit a station value containing `/`, `?`, or
+/// other URL-structuring characters and redirect that request to an
+/// arbitrary path/query on the RDM host, or simply submit a large number of
+/// distinct bogus values to inflate per-cycle request volume against quota
+/// (M3, 2026-09-26 review).
+fn is_three_letter_crs(crs: &str) -> bool {
+    let trimmed = crs.trim();
+    trimmed.chars().count() == 3 && trimmed.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Rejects `stations` if any entry isn't a plausible CRS code (see
+/// [`is_three_letter_crs`]), naming the first offender in the error message.
+fn validate_station_crs_codes(stations: &[String]) -> Result<(), (StatusCode, String)> {
+    if let Some(bad) = stations.iter().find(|s| !is_three_letter_crs(s)) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("'{bad}' is not a valid 3-letter CRS code"),
+        ));
+    }
+    Ok(())
+}
+
 async fn create_line(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -627,6 +661,7 @@ async fn create_line(
             "a line needs at least 2 stations".to_string(),
         ));
     }
+    validate_station_crs_codes(&req.stations)?;
     if custom_lines::slugify(&req.name) == "custom-" {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -773,6 +808,7 @@ async fn update_line(
             "a line needs at least 2 stations".to_string(),
         ));
     }
+    validate_station_crs_codes(&req.stations)?;
     // Deliberately no `slugify(&req.name) == "custom-"` check here, unlike
     // `create_line`: that check exists solely to guard id derivation from
     // an all-punctuation name, and `update_line` never derives an id (see
@@ -1005,6 +1041,43 @@ mod tests {
     fn resolve_schedule_date_defaults_to_today_when_absent() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
         assert_eq!(resolve_schedule_date(None, today), today);
+    }
+
+    #[test]
+    fn is_three_letter_crs_accepts_a_real_code_in_either_case() {
+        assert!(is_three_letter_crs("WOK"));
+        assert!(is_three_letter_crs("wok"));
+        assert!(is_three_letter_crs(" WOK "));
+    }
+
+    #[test]
+    fn is_three_letter_crs_rejects_wrong_length() {
+        assert!(!is_three_letter_crs("WO"));
+        assert!(!is_three_letter_crs("WOKE"));
+        assert!(!is_three_letter_crs(""));
+    }
+
+    #[test]
+    fn is_three_letter_crs_rejects_non_alphabetic_characters() {
+        // The exact shape M3 (2026-09-26 review) is guarding against: a
+        // value with URL-structuring characters that would otherwise flow
+        // straight into `poller-ldbws`'s `GetDepBoardWithDetails/{crs}` path.
+        assert!(!is_three_letter_crs("W1K"));
+        assert!(!is_three_letter_crs("W/K"));
+        assert!(!is_three_letter_crs("W?K"));
+    }
+
+    #[test]
+    fn validate_station_crs_codes_accepts_genuine_codes() {
+        assert!(validate_station_crs_codes(&["WOK".to_string(), "CLJ".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn validate_station_crs_codes_rejects_a_malformed_entry_naming_it_in_the_message() {
+        let err = validate_station_crs_codes(&["WOK".to_string(), "../evil".to_string()])
+            .expect_err("malformed station should be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("../evil"), "message was: {}", err.1);
     }
 }
 
