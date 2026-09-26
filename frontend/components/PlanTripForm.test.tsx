@@ -1,5 +1,6 @@
 import { screen, fireEvent } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import dayjs from 'dayjs';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
 
@@ -9,6 +10,17 @@ import { PlanTripForm } from './PlanTripForm';
 // ancestor. Same convention every other Mantine-backed form test in this
 // repo already uses (e.g. `TrackTrainForm.test.tsx`), rather than this
 // file's own hand-rolled provider.
+// A fixed "now" for the "defaults to now, not midnight" tests below --
+// `departAfter` now defaults to `dayjs().format('HH:mm')` at mount (this
+// task's own "default to now" fix), so asserting against it needs the real
+// wall-clock time pinned to something known, exactly the same reasoning
+// `TrackTrainForm.test.tsx`'s own `FIXED_NOW` gives for its
+// `scheduledDeparture` default. `shouldAdvanceTime` (same option
+// `TrackTrainForm.test.tsx`/`AutoRefresh.test.tsx` already use) lets real
+// `setTimeout`-driven async machinery keep working normally while `Date`
+// itself stays pinned near this fixed point.
+const FIXED_NOW = '2026-09-05T14:32:00.000Z';
+
 describe('PlanTripForm', () => {
   it('disables Find routes until both origin and destination are entered', () => {
     renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
@@ -68,5 +80,48 @@ describe('PlanTripForm', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ originCrs: 'EUS', destinationCrs: 'EDB', waypointCrs: ['YRK'], results: 'fastest' })
     );
+  });
+
+  // Regression coverage for the "defaults to start of day, not now" bug:
+  // `departAfter` used to default to `''`, which `buildTripPlanQuery`
+  // (`lib/tripPlan.ts`) then omitted from the query string entirely, and
+  // `GET /Trips/plan` (`crates/api/src/routes/trips.rs`) defaults an absent
+  // `departAfter` to `NaiveTime::MIN` -- so a visitor who searched without
+  // touching this field silently got an itinerary search from midnight.
+  describe('departAfter defaults to now, not midnight', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date(FIXED_NOW));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('pre-fills the Depart after field with the current local time on mount', () => {
+      renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
+      expect(screen.getByLabelText('Depart after (optional)')).toHaveValue(dayjs(FIXED_NOW).format('HH:mm'));
+    });
+
+    it('submits the current time as departAfter when the visitor never touches the field', () => {
+      const onSubmit = vi.fn();
+      renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+      fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ departAfter: dayjs(FIXED_NOW).format('HH:mm') })
+      );
+    });
+
+    it('still lets a visitor clear the field back to no lower bound at all', () => {
+      const onSubmit = vi.fn();
+      renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+      fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
+      fireEvent.change(screen.getByLabelText('Depart after (optional)'), { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ departAfter: undefined }));
+    });
   });
 });
