@@ -1752,7 +1752,10 @@ movementRelay:
   # (MOVEMENT_STREAM_MAXLEN). The default is a 1 GiB memory budget at a
   # planning figure of 1 KiB of Redis memory per entry (920 B measured in
   # production). At the ~1M entries/day measured on 2026-09-26 that is
-  # about 24h of traffic. It is the ONLY replay window
+  # about 24h of traffic. (movement-relay's own built-in default,
+  # crates/movement-relay/src/config.rs, is still the older 524,288 /
+  # ~12h; the chart always sets this env var, so that only applies
+  # outside Helm.) It is the ONLY replay window
   # trust-consumer, full-coverage-consumer and trust-backlog-consumer have:
   # RDM issues one Kafka group, which movement-relay holds, so a
   # downstream consumer that is down for longer than this loses the gap
