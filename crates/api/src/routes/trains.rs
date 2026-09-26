@@ -1,3 +1,6 @@
+//! `GET /public/trains/resolve` (see `get_trains_resolve`) lives here too:
+//! it maps a live departure-board row to a CIF `(uid, service_date)`.
+//!
 //! `GET /public/trains/search` -- calling-point-first, whole-network,
 //! CIF-SCHEDULE-derived train search. Backs the `/trains` listing page.
 //! Generalizes the earlier destination-first search
@@ -115,6 +118,7 @@ use serde_json::{Value, json};
 use crate::app::{App, Router};
 use crate::data::queries;
 use crate::data::queries::CallingPointDepartureCursor;
+use crate::data::train_resolve;
 use crate::render::calling_point_departure_json;
 
 /// Page size when the caller does not ask for one.
@@ -254,7 +258,154 @@ struct TrainSearchParams {
 }
 
 pub fn router() -> Router {
-    Router::new().route("/trains/search", axum::routing::get(get_trains_search))
+    Router::new()
+        .route("/trains/search", axum::routing::get(get_trains_search))
+        .route("/trains/resolve", axum::routing::get(get_trains_resolve))
+}
+
+/// Query parameters of `GET /public/trains/resolve`. Unknown names are a
+/// `400` for the same reason as [`TrainSearchParams`]: a misspelled
+/// `destination` would otherwise silently widen the match.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrainResolveParams {
+    /// Required. The board's own station, a 3-letter CRS code.
+    station: String,
+    /// Required, `"YYYY-MM-DD"`: the London-local calendar date of `time`
+    /// at `station` -- NOT necessarily the train's CIF service date (a
+    /// train that started before midnight carries the previous one; the
+    /// response's `serviceDate` says which). Same window as
+    /// `/public/trains/search`'s `date`.
+    date: String,
+    /// Required, `"HH:MM"`: the board's scheduled (public) time at `station`.
+    time: String,
+    /// Optional: the board's Retail Service ID (LDBWS `rsid`), 6-8 letters
+    /// and digits.
+    rsid: Option<String>,
+    /// Optional: the board's destination CRS.
+    destination: Option<String>,
+    /// Optional: the board's operator, a 2-character ATOC code.
+    operator: Option<String>,
+    /// Optional: `departure` (default) or `arrival`.
+    kind: Option<String>,
+}
+
+fn non_empty(raw: &Option<String>) -> Option<&str> {
+    raw.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Validates and uppercases a caller-supplied Retail Service ID.
+fn normalize_rsid(raw: &str) -> Result<String, (StatusCode, String)> {
+    let trimmed = raw.trim();
+    if !(6..=8).contains(&trimmed.len()) || !trimmed.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "rsid must be a 6-8 character retail service ID (letters and digits)".to_string(),
+        ));
+    }
+    Ok(trimmed.to_ascii_uppercase())
+}
+
+/// Validates and uppercases a 2-character ATOC operator code.
+fn normalize_operator(raw: &str) -> Result<String, (StatusCode, String)> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 2 || !trimmed.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "operator must be a 2-character ATOC code".to_string(),
+        ));
+    }
+    Ok(trimmed.to_ascii_uppercase())
+}
+
+/// `GET /public/trains/resolve?station=&date=&time=[&rsid=][&destination=][&operator=][&kind=]`
+/// -- resolves one live departure-board row to the CIF key
+/// `GET /Train/by-uid/{uid}/{date}` takes. Built for a client (the MCP
+/// server, a board UI) that holds an LDBWS row -- which carries no `uid`
+/// and no `rid` -- and wants the train page for it.
+///
+/// Matching lives in `crate::data::train_resolve` (see `resolve` there for
+/// the exact rules): an `rsid` is matched exactly, then on its first 6
+/// characters, within +-5 minutes of the WORKING time; with no usable
+/// `rsid`, the +-2 minute timetable heuristic plus destination/operator
+/// that `routes::departures::get_station_departures` documents. Both the
+/// given date (`day_offset = 0`) and, after midnight, the previous service
+/// date (`day_offset = 1`) are searched.
+///
+/// * `200 {"trainUid","serviceDate","matchedOn","href"}` -- `matchedOn` is
+///   `"rsid"`, `"rsidPrefix"` or `"timetable"`, so a caller can tell an
+///   exact join from a heuristic one.
+/// * `400` (plain text naming the field) for a missing/malformed parameter
+///   or a date outside the window.
+/// * `404` (plain text) when nothing matches.
+/// * `409` (plain text listing every `uid/serviceDate`) when more than one
+///   train still matches -- this route never guesses.
+async fn get_trains_resolve(
+    State(app): State<App>,
+    Query(params): Query<TrainResolveParams>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let station = normalize_crs("station", &params.station)?;
+    let time = normalize_time("time", params.time.trim())?;
+    let rsid = non_empty(&params.rsid).map(normalize_rsid).transpose()?;
+    let destination = non_empty(&params.destination)
+        .map(|s| normalize_crs("destination", s))
+        .transpose()?;
+    let operator = non_empty(&params.operator)
+        .map(normalize_operator)
+        .transpose()?;
+    let kind = match non_empty(&params.kind) {
+        None | Some("departure") => train_resolve::ResolveKind::Departure,
+        Some("arrival") => train_resolve::ResolveKind::Arrival,
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "kind must be departure or arrival".to_string(),
+            ));
+        }
+    };
+    // Same single London-local `today` read and window as `get_trains_search`.
+    let today = chrono::Utc::now()
+        .with_timezone(&chrono_tz::Europe::London)
+        .date_naive();
+    let date = normalize_date(&params.date, today)?;
+
+    let request = train_resolve::ResolveRequest {
+        target: date.and_time(time),
+        rsid,
+        destination,
+        operator,
+    };
+    let candidates =
+        train_resolve::resolve_candidates(&app.database, &station, request.target, kind)
+            .await
+            .map_err(internal_error)?;
+
+    match train_resolve::resolve(&candidates, &request) {
+        train_resolve::ResolveOutcome::Found {
+            train_uid,
+            service_date,
+            matched_on,
+        } => Ok(Json(json!({
+            "href": format!("/Train/by-uid/{train_uid}/{service_date}"),
+            "trainUid": train_uid,
+            "serviceDate": service_date,
+            "matchedOn": matched_on.as_str(),
+        }))),
+        train_resolve::ResolveOutcome::NotFound => Err((
+            StatusCode::NOT_FOUND,
+            format!("no scheduled train matches that board row at {station}"),
+        )),
+        train_resolve::ResolveOutcome::Ambiguous(keys) => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "more than one scheduled train matches that board row: {}",
+                keys.iter()
+                    .map(|(uid, date)| format!("{uid}/{date}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
 }
 
 /// Parses a caller-supplied `"HH:MM"` into a real `NaiveTime`.
