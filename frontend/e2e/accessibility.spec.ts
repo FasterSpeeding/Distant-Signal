@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { openNavDrawer } from './navDrawer';
 
 // A repeatable axe-core sweep over EVERY route in `app/`, in both colour
 // schemes, logged out and logged in, and across the interactive sub-states
@@ -495,8 +496,7 @@ test.describe('accessibility: interactive sub-states', () => {
   test('the nav drawer, opened on a phone viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/lines');
-    await page.locator('nav').getByRole('button', { name: 'Navigation menu' }).click();
-    await expect(page.getByRole('dialog', { name: 'Menu' })).toBeVisible();
+    await openNavDrawer(page);
     await expectNoViolations(page);
   });
 

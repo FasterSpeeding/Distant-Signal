@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openNavDrawer } from './navDrawer';
 
 // Task 1.2 (docs/superpowers/sdd/2026-09-17-ux-fixes-phase1-crosscutting):
 // the nav bar's two layout defects, and the regression net for both.
@@ -202,8 +203,7 @@ test.describe('phone nav bar (390x844)', () => {
     const nav = page.locator('nav');
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
 
-    await nav.getByRole('button', { name: 'Navigation menu' }).click();
-    const drawer = page.getByRole('dialog', { name: 'Menu' });
+    const drawer = await openNavDrawer(page);
     // `exact: true` for the same reason as the desktop-bar test above:
     // 'Trains' is a substring of 'My Trains & Tickets', both present here.
     for (const label of [
@@ -223,8 +223,7 @@ test.describe('phone nav bar (390x844)', () => {
     page,
   }) => {
     await page.goto('/lines');
-    await page.locator('nav').getByRole('button', { name: 'Navigation menu' }).click();
-    const drawer = page.getByRole('dialog', { name: 'Menu' });
+    const drawer = await openNavDrawer(page);
     await drawer.getByRole('link', { name: 'Stations' }).click();
 
     await expect(page).toHaveURL(/\/stations$/);
@@ -240,8 +239,7 @@ test('the drawer closes itself if the window grows past the breakpoint while it 
   // over the page with no visible control that opened it.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/lines');
-  await page.locator('nav').getByRole('button', { name: 'Navigation menu' }).click();
-  await expect(page.getByRole('dialog', { name: 'Menu' })).toBeVisible();
+  await openNavDrawer(page);
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(page.getByRole('dialog', { name: 'Menu' })).toBeHidden();
