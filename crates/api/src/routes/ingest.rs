@@ -526,11 +526,19 @@ struct SchedulePopulationParams {
     service_date: chrono::NaiveDate,
 }
 
+/// `population` is a `Box<RawValue>`, not a `serde_json::Value`: serde_json
+/// still validates that it is well-formed JSON while scanning the body (so
+/// a malformed body gets exactly the same `Json` extractor rejection as
+/// before), but keeps it as one contiguous string instead of building a
+/// `Value` tree several times the size of a body that reaches 31 MB of JSON
+/// text for the biggest line. The text is then bound straight into the
+/// upsert as `$3::jsonb` -- see `queries::upsert_schedule_line_population`
+/// for the OOM this fixed. The wire format is unchanged.
 #[derive(Debug, Deserialize)]
 struct SchedulePopulationBody {
     line_id: String,
     service_date: chrono::NaiveDate,
-    population: serde_json::Value,
+    population: Box<serde_json::value::RawValue>,
 }
 
 async fn post_schedule_line_population(
@@ -541,22 +549,127 @@ async fn post_schedule_line_population(
         &app.database,
         &body.line_id,
         body.service_date,
-        &body.population,
+        body.population.get(),
     )
     .await
     .map_err(internal_error)?;
     Ok(StatusCode::OK)
 }
 
+/// Prefix of `GET /private/schedule-line-population`'s `ETag` values:
+/// `"slp-<updated_at as Unix microseconds>"`. The prefix only exists so a
+/// validator minted by something else can never parse as one of ours.
+const POPULATION_ETAG_PREFIX: &str = "slp-";
+
+/// The `ETag` for a `schedule_line_population` row last changed at
+/// `updated_at` -- see `queries::get_schedule_line_population_conditional`
+/// for why `updated_at` is a sound content version.
+fn population_etag(updated_at: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "\"{POPULATION_ETAG_PREFIX}{}\"",
+        updated_at.timestamp_micros()
+    )
+}
+
+/// What a request's `If-None-Match` asks about, in terms
+/// `queries::get_schedule_line_population_conditional` understands.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PopulationIfNoneMatch {
+    /// `If-None-Match: *` -- any current representation matches.
+    any: bool,
+    /// Every entity tag in the header(s) that parses as one of
+    /// [`population_etag`]'s, decoded back to its `updated_at`. Anything
+    /// else (another server's tag, garbage) is ignored, i.e. treated as
+    /// "doesn't match", which is always safe: the client just gets a 200.
+    versions: Vec<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Parses `If-None-Match` (RFC 9110 §13.1.2: a comma-separated list, or
+/// `*`, possibly split across several header lines). Weak comparison, as
+/// that section requires for `If-None-Match`, so a `W/` prefix is ignored.
+fn parse_population_if_none_match(headers: &axum::http::HeaderMap) -> PopulationIfNoneMatch {
+    let mut parsed = PopulationIfNoneMatch::default();
+    for value in headers.get_all(axum::http::header::IF_NONE_MATCH) {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        for tag in value.split(',').map(str::trim) {
+            if tag == "*" {
+                parsed.any = true;
+                continue;
+            }
+            let tag = tag.strip_prefix("W/").unwrap_or(tag);
+            let Some(micros) = tag
+                .strip_prefix('"')
+                .and_then(|t| t.strip_suffix('"'))
+                .and_then(|t| t.strip_prefix(POPULATION_ETAG_PREFIX))
+                .and_then(|t| t.parse::<i64>().ok())
+            else {
+                continue;
+            };
+            if let Some(version) = chrono::DateTime::from_timestamp_micros(micros) {
+                parsed.versions.push(version);
+            }
+        }
+    }
+    parsed
+}
+
+/// Returns the stored population as Postgres's JSON text, verbatim, with
+/// `Content-Type: application/json` -- no `serde_json::Value` round-trip
+/// (that decode was several times a 31 MB body, per request, under
+/// `full-coverage-consumer`'s 450-675-GETs-per-2-minutes reload bursts).
+/// The JSON is the same value as before; only whitespace and object key
+/// order can differ, which no JSON reader (in particular
+/// `full-coverage-consumer`'s `Vec<LinePopulationEntry>` deserialize)
+/// depends on. A missing row is still `200 null`.
+///
+/// **Conditional GET (2026-09-26).** Every 200 carries an `ETag` derived
+/// from the row's `updated_at`, and a request whose `If-None-Match`
+/// matches it gets `304 Not Modified` with no body -- without Postgres
+/// even decompressing the blob. `full-coverage-consumer` sends back the
+/// last `ETag` it saw, so its every-300s reload of every line re-downloads
+/// only the populations that actually changed. Both directions of version
+/// skew are safe: an older consumer sends no `If-None-Match` and gets
+/// exactly the 200 it always did (the extra header is ignored), and a newer
+/// consumer against an older `api` gets 200s with no `ETag`, so it never
+/// has a validator to send.
 async fn get_schedule_line_population(
     State(app): State<App>,
+    headers: axum::http::HeaderMap,
     axum::extract::Query(params): axum::extract::Query<SchedulePopulationParams>,
-) -> Result<Json<Option<serde_json::Value>>, (StatusCode, String)> {
-    let population =
-        queries::get_schedule_line_population(&app.database, &params.line_id, params.service_date)
-            .await
-            .map_err(internal_error)?;
-    Ok(Json(population))
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    use axum::http::header::{CONTENT_TYPE, ETAG};
+    use axum::response::IntoResponse;
+
+    let if_none_match = parse_population_if_none_match(&headers);
+    let population = queries::get_schedule_line_population_conditional(
+        &app.database,
+        &params.line_id,
+        params.service_date,
+        if_none_match.any,
+        &if_none_match.versions,
+    )
+    .await
+    .map_err(internal_error)?;
+
+    Ok(match population {
+        None => ([(CONTENT_TYPE, "application/json")], "null").into_response(),
+        Some(queries::ConditionalPopulation::NotModified { updated_at }) => {
+            (StatusCode::NOT_MODIFIED, [(ETAG, population_etag(updated_at))]).into_response()
+        }
+        Some(queries::ConditionalPopulation::Modified {
+            updated_at,
+            population,
+        }) => (
+            [
+                (CONTENT_TYPE, "application/json".to_string()),
+                (ETAG, population_etag(updated_at)),
+            ],
+            population,
+        )
+            .into_response(),
+    })
 }
 
 /// Query parameters shared by `/schedule-destination-departures` and
@@ -927,6 +1040,12 @@ mod db_tests {
     /// Distinct name from `delete_fixture` above -- same "reserved
     /// fixture namespace" spirit, applied to `schedule_line_population`'s
     /// own `line_id` key instead of a (crs, operator) pair.
+    /// `get_schedule_line_population` returns JSON text; compare it as JSON
+    /// (Postgres's jsonb rendering normalises whitespace and key order).
+    fn parse_population(text: Option<String>) -> Option<Value> {
+        text.map(|t| serde_json::from_str(&t).expect("stored population is valid JSON"))
+    }
+
     async fn delete_population_fixture(pool: &PgPool, line_id: &str) {
         sqlx::query("DELETE FROM schedule_line_population WHERE line_id = $1")
             .bind(line_id)
@@ -1166,14 +1285,14 @@ mod db_tests {
         let population = serde_json::json!([
             {"uid": "C11052", "calling_points": []},
         ]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &population)
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &population.to_string())
             .await
             .expect("seed population");
 
         let fetched = queries::get_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date)
             .await
             .expect("fetch population");
-        assert_eq!(fetched, Some(population));
+        assert_eq!(parse_population(fetched), Some(population));
 
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
     }
@@ -1189,10 +1308,10 @@ mod db_tests {
         let first = serde_json::json!([{"uid": "C11052", "calling_points": []}]);
         let second = serde_json::json!([{"uid": "C99999", "calling_points": []}]);
 
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &first)
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &first.to_string())
             .await
             .expect("seed first population");
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &second)
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &second.to_string())
             .await
             .expect("seed second population");
 
@@ -1236,7 +1355,7 @@ mod db_tests {
 
         let service_date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
         let original = serde_json::json!([{"uid": "C11052", "calling_points": []}]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &original)
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &original.to_string())
             .await
             .expect("seed population");
         let (xmin_before, updated_at_before) = row_version(&pool, service_date).await;
@@ -1244,7 +1363,7 @@ mod db_tests {
         // Same content with the keys in a different order: jsonb equality,
         // not text equality, decides "unchanged".
         let reordered = serde_json::json!([{"calling_points": [], "uid": "C11052"}]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &reordered)
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &reordered.to_string())
             .await
             .expect("republish identical population");
         let (xmin_after_same, updated_at_after_same) = row_version(&pool, service_date).await;
@@ -1255,7 +1374,7 @@ mod db_tests {
         assert_eq!(updated_at_after_same, updated_at_before);
 
         let changed = serde_json::json!([{"uid": "C99999", "calling_points": []}]);
-        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &changed)
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &changed.to_string())
             .await
             .expect("publish changed population");
         let (xmin_after_change, _) = row_version(&pool, service_date).await;
@@ -1266,7 +1385,7 @@ mod db_tests {
         let fetched = queries::get_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date)
             .await
             .expect("fetch population");
-        assert_eq!(fetched, Some(changed));
+        assert_eq!(parse_population(fetched), Some(changed));
 
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
     }

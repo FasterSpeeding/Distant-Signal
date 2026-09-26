@@ -19,7 +19,6 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::app::{App, Router};
 use crate::auth::{AuthenticatedUser, OptionalAuthenticatedUser};
@@ -28,7 +27,7 @@ use crate::data::{
     queries,
     trains::{self, PublicTrainState},
 };
-use crate::render::{ScheduleRouteEndpoints, line_train_json};
+use crate::render::{LineTrainJson, ScheduleRouteEndpoints, line_train_json};
 
 pub fn router() -> Router {
     Router::new()
@@ -208,7 +207,7 @@ async fn get_line_schedule(
     Path(id): Path<String>,
     Query(query): Query<ScheduleQuery>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<axum::response::Response, (StatusCode, String)> {
     // London-local "today", not UTC -- see `routes::trains`'s `london_now`
     // split (baa4e75) for the original incident: during the 00:00-01:00 BST
     // window a UTC "today" is still yesterday in London, so this route
@@ -244,7 +243,28 @@ async fn get_line_schedule(
         ));
     };
 
-    Ok(Json(population))
+    // Relayed as Postgres's own JSON text, not decoded into a
+    // `serde_json::Value` and re-serialised: a line's population reaches
+    // 31 MB of text, and the `Value` round-trip cost several times that in
+    // heap per request. Same JSON value; only whitespace/key order differ.
+    use axum::response::IntoResponse;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        population,
+    )
+        .into_response())
+}
+
+/// A population entry's field as Postgres rendered it (`(e -> 'x')::text`),
+/// wrapped for verbatim embedding in the response; an absent field is JSON
+/// `null`, same as the old `entry.get(..).cloned().unwrap_or(Value::Null)`.
+/// `RawValue::from_string` re-validates without copying; Postgres's jsonb
+/// output is always valid JSON, so the error arm is unreachable in practice.
+fn raw_json_or_null(
+    text: Option<String>,
+) -> Result<Box<serde_json::value::RawValue>, (StatusCode, String)> {
+    serde_json::value::RawValue::from_string(text.unwrap_or_else(|| "null".to_string()))
+        .map_err(|err| internal_error(err.into()))
 }
 
 /// `GET /public/lines/{id}/trains?date=`: every scheduled UID on line `id`
@@ -267,29 +287,12 @@ async fn get_line_schedule(
 /// this handler never writes: a UID with no existing `trains` row simply
 /// renders `liveStatus: null` (an honest, expected gap -- see the spec's
 /// Open question 2), never triggering a `find_or_create_train` upsert.
-/// The first and last TIPLOCs of one population entry's `calling_points`
-/// array (raw, unnormalized) -- `None` for a missing/empty/malformed array,
-/// or for a calling point whose own `tiploc` key is absent. Used by
-/// `get_line_trains` to know which TIPLOCs need resolving to a schedule-side
-/// origin/destination (see `ScheduleRouteEndpoints`'s own doc comment for
-/// why).
-fn first_and_last_tiploc(entry: &Value) -> (Option<String>, Option<String>) {
-    let Some(points) = entry.get("calling_points").and_then(Value::as_array) else {
-        return (None, None);
-    };
-    let tiploc_of = |p: &Value| p.get("tiploc").and_then(Value::as_str).map(str::to_string);
-    (
-        points.first().and_then(tiploc_of),
-        points.last().and_then(tiploc_of),
-    )
-}
-
 async fn get_line_trains(
     State(app): State<App>,
     Path(id): Path<String>,
     Query(query): Query<ScheduleQuery>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
-) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+) -> Result<Json<Vec<LineTrainJson>>, (StatusCode, String)> {
     // Same London-local "today" as `get_line_schedule` above, same reason.
     let london_today = chrono::Utc::now()
         .with_timezone(&chrono_tz::Europe::London)
@@ -303,7 +306,11 @@ async fn get_line_trains(
             format!("no CIF-derived schedule population for line {id} on {service_date}"),
         ));
     }
-    let Some(population) = queries::get_schedule_line_population(&app.database, &id, service_date)
+    // Projected in SQL to exactly what this route reads -- uid, raw
+    // calling points, first/last TIPLOC -- instead of materialising the
+    // whole population as a `serde_json::Value` (see
+    // `queries::list_line_train_entries`).
+    let Some(entries) = queries::list_line_train_entries(&app.database, &id, service_date)
         .await
         .map_err(internal_error)?
     else {
@@ -312,19 +319,7 @@ async fn get_line_trains(
             format!("no CIF-derived schedule population for line {id} on {service_date}"),
         ));
     };
-
-    // `population` is already owned here -- destructure it directly rather
-    // than `.as_array().cloned()`, which would clone the whole array (a
-    // line's full daily service list; size unmeasured, see the spec's Open
-    // question 1) just to unwrap it.
-    let entries = match population {
-        Value::Array(entries) => entries,
-        _ => Vec::new(),
-    };
-    let uids: Vec<String> = entries
-        .iter()
-        .filter_map(|e| e.get("uid").and_then(Value::as_str).map(str::to_string))
-        .collect();
+    let uids: Vec<String> = entries.iter().filter_map(|e| e.uid.clone()).collect();
 
     let live_states = trains::get_public_train_states_for_line(&app.database, &uids, service_date)
         .await
@@ -342,8 +337,10 @@ async fn get_line_trains(
     // entry on the line regardless of population size, mirroring
     // `live_states`'s own one-query-per-line shape above rather than one
     // per entry.
-    let endpoint_tiplocs: Vec<(Option<String>, Option<String>)> =
-        entries.iter().map(first_and_last_tiploc).collect();
+    let endpoint_tiplocs: Vec<(Option<String>, Option<String>)> = entries
+        .iter()
+        .map(|e| (e.first_tiploc.clone(), e.last_tiploc.clone()))
+        .collect();
     let all_tiplocs: Vec<String> = endpoint_tiplocs
         .iter()
         .flat_map(|(first, last)| [first.clone(), last.clone()])
@@ -388,13 +385,13 @@ async fn get_line_trains(
             .and_then(|c| crs_to_name.get(&c.to_uppercase()).cloned())
     };
 
-    let result: Vec<Value> = entries
-        .iter()
+    let result = entries
+        .into_iter()
         .zip(endpoint_crs.iter())
         .map(|(entry, (origin_crs, destination_crs))| {
             let live = entry
-                .get("uid")
-                .and_then(Value::as_str)
+                .uid
+                .as_deref()
                 .and_then(|uid| live_by_uid.get(uid).copied());
             let schedule_route = ScheduleRouteEndpoints {
                 origin_name: name_of(origin_crs),
@@ -402,9 +399,11 @@ async fn get_line_trains(
                 destination_name: name_of(destination_crs),
                 destination_crs: destination_crs.clone(),
             };
-            line_train_json(entry, live, &schedule_route)
+            let uid = raw_json_or_null(entry.uid_json)?;
+            let calling_points = raw_json_or_null(entry.calling_points_json)?;
+            Ok(line_train_json(uid, calling_points, live, &schedule_route))
         })
-        .collect();
+        .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
 
     Ok(Json(result))
 }
@@ -976,50 +975,6 @@ mod tests {
     }
 
     #[test]
-    fn first_and_last_tiploc_reads_both_ends_of_a_multi_stop_entry() {
-        let entry = serde_json::json!({
-            "uid": "C1",
-            "calling_points": [
-                {"tiploc": "KNGX", "kind": "Origin"},
-                {"tiploc": "PBRO", "kind": "Intermediate"},
-                {"tiploc": "YORK", "kind": "Terminate"},
-            ],
-        });
-        assert_eq!(
-            first_and_last_tiploc(&entry),
-            (Some("KNGX".to_string()), Some("YORK".to_string()))
-        );
-    }
-
-    #[test]
-    fn first_and_last_tiploc_a_single_stop_entry_returns_the_same_tiploc_twice() {
-        let entry = serde_json::json!({
-            "uid": "C1",
-            "calling_points": [{"tiploc": "KNGX", "kind": "Origin"}],
-        });
-        assert_eq!(
-            first_and_last_tiploc(&entry),
-            (Some("KNGX".to_string()), Some("KNGX".to_string()))
-        );
-    }
-
-    #[test]
-    fn first_and_last_tiploc_missing_or_empty_calling_points_is_none_none() {
-        assert_eq!(
-            first_and_last_tiploc(&serde_json::json!({"uid": "C1"})),
-            (None, None)
-        );
-        assert_eq!(
-            first_and_last_tiploc(&serde_json::json!({"uid": "C1", "calling_points": []})),
-            (None, None)
-        );
-        assert_eq!(
-            first_and_last_tiploc(&serde_json::json!({"uid": "C1", "calling_points": null})),
-            (None, None)
-        );
-    }
-
-    #[test]
     fn an_overground_tfl_line_with_an_nr_counterpart_is_suppressed() {
         // Area 2 -- see docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md.
         assert!(is_merged_into_nr_line("tfl-mildmay"));
@@ -1125,7 +1080,7 @@ mod tests {
 mod db_tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use sqlx::PgPool;
     use tower::ServiceExt;
 
@@ -1134,6 +1089,7 @@ mod db_tests {
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
+    use crate::data::queries;
     use crate::data::custom_lines::{self, NewCustomLine};
     use crate::data::users::insert_session;
 
@@ -2479,6 +2435,99 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture schedule_line_population rows");
+    }
+
+    /// `queries::list_line_train_entries`' SQL projection must reproduce
+    /// exactly what the Rust `first_and_last_tiploc` / `entry.get(..)` walk
+    /// it replaced did, for every entry shape -- including the degenerate
+    /// ones (missing/empty/null calling points, non-string tiploc/uid) --
+    /// and keep the published array order.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_line_train_entries_projects -- --ignored`"]
+    async fn list_line_train_entries_projects_uid_calling_points_and_endpoint_tiplocs() {
+        use crate::data::queries;
+        use serde_json::json;
+
+        const LINE: &str = "test-line-train-entries-projection";
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, LINE).await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+
+        assert!(
+            queries::list_line_train_entries(&pool, LINE, date)
+                .await
+                .unwrap()
+                .is_none(),
+            "no row is None (the route's 404)"
+        );
+
+        let population = serde_json::json!([
+            {"uid": "C1", "calling_points": [
+                {"tiploc": "KNGX", "kind": "Origin"},
+                {"tiploc": "PBRO", "kind": "Intermediate"},
+                {"tiploc": "YORK", "kind": "Terminate"},
+            ]},
+            {"uid": "C2", "calling_points": [{"tiploc": "KNGX", "kind": "Origin"}]},
+            {"uid": "C3"},
+            {"uid": "C4", "calling_points": []},
+            {"uid": "C5", "calling_points": null},
+            {"uid": 7, "calling_points": [{"tiploc": 1}, {"kind": "Terminate"}]},
+            {"calling_points": [{"tiploc": "EUSTON"}]},
+        ]);
+        queries::upsert_schedule_line_population(&pool, LINE, date, &population.to_string())
+            .await
+            .unwrap();
+
+        let rows = queries::list_line_train_entries(&pool, LINE, date)
+            .await
+            .unwrap()
+            .expect("row exists");
+        let s = |v: &str| Some(v.to_string());
+        let as_value = |text: &Option<String>| -> Value {
+            text.as_deref()
+                .map(|t| serde_json::from_str(t).unwrap())
+                .unwrap_or(Value::Null)
+        };
+        let got: Vec<(Value, Option<String>, Value, Option<String>, Option<String>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    as_value(&r.uid_json),
+                    r.uid.clone(),
+                    as_value(&r.calling_points_json),
+                    r.first_tiploc.clone(),
+                    r.last_tiploc.clone(),
+                )
+            })
+            .collect();
+        let entries = population.as_array().unwrap();
+        let cps = |i: usize| entries[i].get("calling_points").cloned().unwrap_or(Value::Null);
+        assert_eq!(
+            got,
+            vec![
+                (json!("C1"), s("C1"), cps(0), s("KNGX"), s("YORK")),
+                (json!("C2"), s("C2"), cps(1), s("KNGX"), s("KNGX")),
+                (json!("C3"), s("C3"), Value::Null, None, None),
+                (json!("C4"), s("C4"), json!([]), None, None),
+                (json!("C5"), s("C5"), Value::Null, None, None),
+                (json!(7), None, cps(5), None, None),
+                (Value::Null, None, cps(6), s("EUSTON"), s("EUSTON")),
+            ]
+        );
+
+        // An empty population is Some(empty), not the 404's None.
+        queries::upsert_schedule_line_population(&pool, LINE, date, "[]")
+            .await
+            .unwrap();
+        let rows = queries::list_line_train_entries(&pool, LINE, date)
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert!(rows.is_empty());
+
+        delete_schedule_population_fixture(&pool, LINE).await;
     }
 
     /// Issues `GET /public/lines/{id}/schedule`, with an optional

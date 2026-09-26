@@ -1383,6 +1383,17 @@ pub fn is_bookable_crs(crs: &str) -> bool {
 /// `schedule_query::LinePopulationEntry` -- only `schedule-reference`
 /// (writer) and `full-coverage-consumer` (reader) need that shape.
 ///
+/// `population_json` is the population as JSON TEXT, bound as `text` and
+/// cast with `$3::jsonb` so Postgres does the parse. It used to be a
+/// `&serde_json::Value`, which meant the POST handler built a full `Value`
+/// tree of a body that can reach 31 MB of JSON text (one line's population,
+/// measured in production 2026-09-26) -- several times that size in heap --
+/// and then re-encoded it for the bind. That, under `schedule-reference`'s
+/// restart-time republish storms, is what OOM-killed `api` against its
+/// 1536Mi limit. The caller must pass syntactically valid JSON (the route
+/// gets that for free from `serde_json::value::RawValue`); invalid text is
+/// rejected by Postgres's own jsonb input function as an error.
+///
 /// **An identical re-publish is a no-op.** `schedule-reference` republishes
 /// every line for every date in its window each cycle, and almost all of
 /// those populations are unchanged. Each blob is ~0.5 MB of compressed
@@ -1390,21 +1401,22 @@ pub fn is_bookable_crs(crs: &str) -> bool {
 /// row per publish (in production: ~920 MB live data behind a 1.5 GB TOAST
 /// file, rewritten daily). The `WHERE ... IS DISTINCT FROM` skips the row
 /// entirely when the content is equal (jsonb equality, so key order and
-/// whitespace don't matter). The cost is that `updated_at` now means "when
-/// this population last CHANGED", not "when it was last published" --
-/// nothing reads `updated_at` (publish freshness is tracked by
-/// `schedule_reference_publishes`, not here), so no consumer depends on the
-/// old meaning.
+/// whitespace don't matter). The consequence is that `updated_at` means
+/// "when this population last CHANGED", not "when it was last published" --
+/// which is exactly what makes it usable as the `ETag` of
+/// `GET /private/schedule-line-population` (see
+/// [`get_schedule_line_population_conditional`]). Publish freshness is
+/// tracked by `schedule_reference_publishes`, not here.
 pub async fn upsert_schedule_line_population(
     pool: &PgPool,
     line_id: &str,
     service_date: chrono::NaiveDate,
-    population: &serde_json::Value,
+    population_json: &str,
 ) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO schedule_line_population (line_id, service_date, population, updated_at)
-        VALUES ($1, $2, $3, now())
+        VALUES ($1, $2, $3::jsonb, now())
         ON CONFLICT (line_id, service_date) DO UPDATE SET
             population = EXCLUDED.population,
             updated_at = EXCLUDED.updated_at
@@ -1413,13 +1425,22 @@ pub async fn upsert_schedule_line_population(
     )
     .bind(line_id)
     .bind(service_date)
-    .bind(population)
+    .bind(population_json)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-/// Reads one line's population for one service date, if published.
+/// Reads one line's population for one service date, if published, as
+/// Postgres's own JSON text rendering of the stored jsonb
+/// (`population::text`).
+///
+/// Text, not `serde_json::Value`: every caller either relays it verbatim
+/// (`GET /public/lines/{id}/schedule`) or deserializes it straight into its
+/// own type. Decoding into a `Value` first cost several times the text size
+/// in heap for a blob that reaches 31 MB of text -- see
+/// [`upsert_schedule_line_population`]'s doc comment.
+///
 /// `None` when `full-coverage-consumer` reloads before `schedule-reference`
 /// has ever published that day's population yet (a real, expected startup
 /// race, not an error -- the caller treats it the same as "empty
@@ -1428,18 +1449,212 @@ pub async fn get_schedule_line_population(
     pool: &PgPool,
     line_id: &str,
     service_date: chrono::NaiveDate,
-) -> Result<Option<serde_json::Value>> {
-    use sqlx::Row;
-    let row = sqlx::query(
-        "SELECT population FROM schedule_line_population WHERE line_id = $1 AND service_date = $2",
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT population::text FROM schedule_line_population \
+         WHERE line_id = $1 AND service_date = $2",
     )
     .bind(line_id)
     .bind(service_date)
     .fetch_optional(pool)
     .await?;
-    row.map(|r| r.try_get("population"))
+    Ok(row.map(|(population,)| population))
+}
+
+/// Result of [`get_schedule_line_population_conditional`] for a row that
+/// exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConditionalPopulation {
+    /// The caller's validator matched the row's `updated_at`: the body was
+    /// not read (not even detoasted -- see the query's `CASE`).
+    NotModified {
+        updated_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// The row changed since the caller's validator (or it sent none):
+    /// the population as JSON text, same as [`get_schedule_line_population`].
+    Modified {
+        updated_at: chrono::DateTime<chrono::Utc>,
+        population: String,
+    },
+}
+
+/// [`get_schedule_line_population`] plus a conditional-GET short-circuit
+/// for `GET /private/schedule-line-population`'s `If-None-Match`.
+///
+/// `updated_at` is the row's version: [`upsert_schedule_line_population`]
+/// only touches it when the stored jsonb actually changes, so an unchanged
+/// `updated_at` means an unchanged population. When it equals any of
+/// `known_versions` (or `match_any` is set, `If-None-Match: *`), the `CASE`
+/// never evaluates `population::text`, so Postgres does not even
+/// decompress the TOASTed blob, and `api` allocates nothing for it.
+///
+/// `None` exactly when [`get_schedule_line_population`] would return
+/// `None`: no row at all.
+pub async fn get_schedule_line_population_conditional(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+    match_any: bool,
+    known_versions: &[chrono::DateTime<chrono::Utc>],
+) -> Result<Option<ConditionalPopulation>> {
+    let row: Option<(chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
+        "SELECT updated_at, \
+                CASE WHEN $3 OR updated_at = ANY($4) THEN NULL ELSE population::text END \
+         FROM schedule_line_population \
+         WHERE line_id = $1 AND service_date = $2",
+    )
+    .bind(line_id)
+    .bind(service_date)
+    .bind(match_any)
+    .bind(known_versions)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(updated_at, population)| match population {
+        // `population` is `NOT NULL`, so a NULL here can only be the `CASE`'s
+        // not-modified branch.
+        None => ConditionalPopulation::NotModified { updated_at },
+        Some(population) => ConditionalPopulation::Modified {
+            updated_at,
+            population,
+        },
+    }))
+}
+
+/// One line's population for one service date, deserialized into
+/// `schedule_query::LinePopulationEntry` for
+/// `schedule_matching::find_schedule_match` -- optionally narrowed IN SQL
+/// to the entries whose `uid` is `only_uid`.
+///
+/// `find_schedule_match` runs this once per candidate line (a busy
+/// terminus sits on a dozen catalogued lines), and with a known uid it
+/// only ever keeps that one uid's entries. Filtering in Postgres
+/// (`jsonb_array_elements` + `jsonb_agg ... ORDER BY ord`, preserving the
+/// published array order that `match_pin`'s tie-break depends on) means
+/// `api` receives a few kB instead of a whole line's day -- up to 31 MB of
+/// text -- per candidate line. The untargeted path (`only_uid = None`)
+/// still needs every entry, but now deserializes the text straight into
+/// the typed entries instead of going through a `serde_json::Value` first.
+///
+/// `None` when no row exists; `Some(vec![])` when a row exists but carries
+/// no entry for `only_uid`.
+pub async fn get_schedule_line_population_entries(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+    only_uid: Option<&str>,
+) -> Result<Option<Vec<schedule_query::LinePopulationEntry>>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT CASE WHEN $3::text IS NULL THEN population::text \
+                ELSE COALESCE( \
+                    (SELECT jsonb_agg(x.e ORDER BY x.ord) \
+                     FROM jsonb_array_elements(population) WITH ORDINALITY AS x(e, ord) \
+                     WHERE x.e ->> 'uid' = $3::text), \
+                    '[]'::jsonb)::text \
+                END \
+         FROM schedule_line_population \
+         WHERE line_id = $1 AND service_date = $2",
+    )
+    .bind(line_id)
+    .bind(service_date)
+    .bind(only_uid)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|(text,)| serde_json::from_str(&text).map_err(Into::into))
         .transpose()
-        .map_err(Into::into)
+}
+
+/// One element of a line's population as `GET /public/lines/{id}/trains`
+/// needs it, projected by [`list_line_train_entries`].
+#[derive(Debug)]
+pub struct LineTrainEntryRow {
+    /// The entry's `uid` as raw JSON text (`"C10001"`), or `None` when
+    /// absent -- passed through verbatim, same as the old
+    /// `entry.get("uid").cloned()`.
+    pub uid_json: Option<String>,
+    /// The entry's `uid` when it is a JSON string -- what the live-state
+    /// lookup keys on.
+    pub uid: Option<String>,
+    /// The entry's `calling_points` as raw JSON text, `None` when absent.
+    pub calling_points_json: Option<String>,
+    /// `tiploc` of the first/last element of `calling_points`, when
+    /// `calling_points` is an array and that element's `tiploc` is a string
+    /// -- exactly `routes::lines::first_and_last_tiploc`'s old contract.
+    pub first_tiploc: Option<String>,
+    pub last_tiploc: Option<String>,
+}
+
+/// Every element of one line's population, projected in SQL to what
+/// `GET /public/lines/{id}/trains` actually reads (see
+/// [`LineTrainEntryRow`]), in published array order.
+///
+/// That route used to load the whole population into a
+/// `serde_json::Value` and then walk it. The projection keeps `api` from
+/// materialising any `Value` tree for the population: the calling points it
+/// has to echo back come through as raw JSON text and are embedded in the
+/// response verbatim (`serde_json::value::RawValue`), and the first/last
+/// TIPLOC it needs for route endpoints come out of Postgres as plain
+/// strings.
+///
+/// `None` when no row exists (the route's 404); `Some(vec![])` for a row
+/// whose population is an empty array -- or not an array at all, which
+/// the old code also treated as "no entries".
+pub async fn list_line_train_entries(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+) -> Result<Option<Vec<LineTrainEntryRow>>> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        r#"
+        SELECT x.ord,
+               (x.e -> 'uid')::text,
+               CASE WHEN jsonb_typeof(x.e -> 'uid') = 'string' THEN x.e ->> 'uid' END,
+               (x.e -> 'calling_points')::text,
+               CASE WHEN jsonb_typeof(x.e -> 'calling_points') = 'array'
+                     AND jsonb_typeof(x.e -> 'calling_points' -> 0 -> 'tiploc') = 'string'
+                    THEN x.e -> 'calling_points' -> 0 ->> 'tiploc' END,
+               CASE WHEN jsonb_typeof(x.e -> 'calling_points') = 'array'
+                     AND jsonb_typeof(x.e -> 'calling_points' -> -1 -> 'tiploc') = 'string'
+                    THEN x.e -> 'calling_points' -> -1 ->> 'tiploc' END
+        FROM schedule_line_population p
+        LEFT JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(p.population) = 'array' THEN p.population ELSE '[]'::jsonb END
+        ) WITH ORDINALITY AS x(e, ord) ON true
+        WHERE p.line_id = $1 AND p.service_date = $2
+        ORDER BY x.ord
+        "#,
+    )
+    .bind(line_id)
+    .bind(service_date)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        rows.into_iter()
+            // The LEFT JOIN's one all-NULL row for an empty population.
+            .filter(|(ord, ..)| ord.is_some())
+            .map(
+                |(_, uid_json, uid, calling_points_json, first_tiploc, last_tiploc)| {
+                    LineTrainEntryRow {
+                        uid_json,
+                        uid,
+                        calling_points_json,
+                        first_tiploc,
+                        last_tiploc,
+                    }
+                },
+            )
+            .collect(),
+    ))
 }
 
 /// Every published line whose `service_date` population contains a schedule
