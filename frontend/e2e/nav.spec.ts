@@ -162,7 +162,10 @@ test.describe('desktop nav bar (1440x900)', () => {
         '/track/mine',
       );
       await expect(menu.getByRole('menuitem', { name: 'Groups' })).toHaveAttribute('href', '/groups');
-      await expect(menu.getByRole('menuitem', { name: 'Log out' })).toBeVisible();
+      // `exact`: Playwright name-matching is a case-insensitive substring match
+      // by default, and "Log out other sessions" also contains "Log out".
+      await expect(menu.getByRole('menuitem', { name: 'Log out', exact: true })).toBeVisible();
+      await expect(menu.getByRole('menuitem', { name: 'Log out other sessions', exact: true })).toBeVisible();
     });
 
     test('keeps those three OUT of the bar itself', async ({ page }) => {
@@ -170,7 +173,7 @@ test.describe('desktop nav bar (1440x900)', () => {
       const nav = page.locator('nav');
       await expect(nav.getByRole('link', { name: 'My Trains & Tickets' })).toHaveCount(0);
       await expect(nav.getByRole('link', { name: 'Groups' })).toHaveCount(0);
-      await expect(nav.getByRole('button', { name: 'Log out' })).toHaveCount(0);
+      await expect(nav.getByRole('button', { name: 'Log out', exact: true })).toHaveCount(0);
     });
   });
 });
