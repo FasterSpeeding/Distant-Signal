@@ -8951,8 +8951,36 @@ mod schedule_destination_departures_query_tests {
         // this file's usual 2099 sentinel. `670101..671231` (2067) is used
         // here instead -- still decades past any real delivery this app
         // will ever ingest, just inside the format's own real ceiling.
+        //
+        // **The BS line below is padded out to the real CIF fixed width of
+        // 80 bytes** (51 spaces between the days-of-week bitmask and the
+        // trailing STP indicator `P`), exactly like `WCML_MULTI_STATION_SCHEDULES`'s
+        // own `BSNC17798...P` line it was quoted from. This one byte-count
+        // detail was lost when this block was first written (2026-09-24,
+        // commit 0221de164e21a4455073546474cad19651082e42): it shipped as a
+        // 40-byte line (only 11 padding spaces), which still parsed under
+        // the THEN-current `parse_basic_schedule`, which read the STP
+        // indicator from "the line's last significant character" rather
+        // than its fixed column. The next day's commit 7d1790d2 (2026-09-25,
+        // "close 5 Low-severity sched-area findings") correctly fixed that
+        // -- a truncated real BS line could otherwise decode a
+        // bogus-but-plausible STP value -- by requiring the STP indicator
+        // at CIF's real fixed column 80 (`STP_INDICATOR_COL` = 79, 0-based),
+        // which means `parse_basic_schedule` now rejects any BS line short
+        // of 80 bytes outright (see that function's own `line.len() <=
+        // STP_INDICATOR_COL` guard). This 40-byte fixture line was never
+        // valid CIF to begin with -- no real feed produces a short BS line,
+        // the format is fixed-width by specification -- so it only ever
+        // "worked" by accident, against the OLD, less-correct parser
+        // behaviour. Once the parser was correctly tightened, this
+        // under-padded fixture silently produced zero rows instead of
+        // exercising the real regression it was written for. Restoring the
+        // real 80-byte width (verified against `WCML_MULTI_STATION_SCHEDULES`
+        // byte-for-byte, save for the `date_from`/`date_to` digits) is the
+        // fix: it makes this line the byte-verbatim CIF record the doc
+        // comment above already claimed it was.
         const AVANTI_EUS_MKC: &str = "\
-BSNC177986701016712311111111           P
+BSNC177986701016712311111111                                                   P
 LOEUSTON  0756         TB
 LTMKNSCEN 0837         TF";
 
@@ -8964,9 +8992,10 @@ LTMKNSCEN 0837         TF";
         // not given by that quote (only that it ran on 2026-09-11), so
         // this reconstruction runs it daily across a wide real-shaped
         // range (2067, same "%y`-ceiling" reasoning as `AVANTI_EUS_MKC`
-        // above).
+        // above). Same 80-byte-width fix as `AVANTI_EUS_MKC` above, for the
+        // same reason -- this BS line was also only 40 bytes.
         const LNR_EUS_MKC_INTERMEDIATE: &str = "\
-BSNC180176701016712311111111           P
+BSNC180176701016712311111111                                                   P
 LOEUSTON  1446         TB
 LIMKNSCEN 1518 1519         T
 LTSTAFFRD 1630         TF";
@@ -9090,14 +9119,20 @@ LTSTAFFRD 1630         TF";
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_journey_leg_candidates_operator_filter -- --ignored --test-threads=1`"]
     async fn search_journey_leg_candidates_operator_filter_matches_only_the_requested_atoc_code() {
+        // Same real CIF fixed-width-80-byte BS line fix as the sibling test
+        // above (`search_journey_leg_candidates_includes_every_real_operator_calling_at_a_shared_station`'s
+        // own doc comment has the full root-cause explanation): a BS line
+        // short of 80 bytes fails `parse_basic_schedule`'s STP-indicator
+        // fixed-column check outright, so no block ever opens for the BX/LO/LI/LT
+        // lines that follow it to attach to.
         const AVANTI_EUS_MKC_XX: &str = "\
-BSNC177986701016712311111111           P
+BSNC177986701016712311111111                                                   P
 BX         XXY000000
 LOEUSTON  0756         TB
 LTMKNSCEN 0837         TF";
 
         const LNR_EUS_MKC_INTERMEDIATE_ZZ: &str = "\
-BSNC180176701016712311111111           P
+BSNC180176701016712311111111                                                   P
 BX         ZZY000000
 LOEUSTON  1446         TB
 LIMKNSCEN 1518 1519         T
