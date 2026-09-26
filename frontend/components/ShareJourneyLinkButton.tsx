@@ -7,6 +7,8 @@ import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { JourneyShareLink } from '@/lib/types';
+import { readShareLinkBody } from '@/lib/freshLinkToken';
+import { formatDate } from '@/lib/dateFormat';
 
 const COPIED_LABEL = 'Copied!';
 const COPIED_TIMEOUT_MS = 2000;
@@ -30,14 +32,12 @@ const COPIED_TIMEOUT_MS = 2000;
  * EXISTING one -- the one piece of copy this component invents, per the
  * brief's own instruction to justify it.
  *
- * No expiry line in the modal, unlike `GroupInviteLinkCard`'s "Expires
- * {date}." -- design spec §5's own choice is no TTL for a journey's
- * unlisted link (`expiresAt` is always `null` on the wire today), so
- * there is nothing dated to report. In its place, one static line stating
- * the plain-language equivalent of that same §5 reasoning ("no automatic
- * TTL, explicit revoke is the lever") for the audience that actually needs
- * it: the owner deciding whether it's still safe to have this link out
- * there.
+ * Expiry: journey share links now expire 30 days after creation
+ * (2026-09-26 review, L17 -- design spec §5 originally chose no TTL), so the
+ * modal shows "Expires {date}." like `GroupInviteLinkCard`, plus an
+ * "Extend" button that pushes the SAME link's expiry out another 30 days
+ * (`POST .../share-link/extend`) -- regenerating would break every copy
+ * recipients already hold.
  *
  * `shareLink`/`origin` are both server-resolved props, passed down from
  * `app/journeys/[id]/page.tsx` exactly the way `GroupInviteLinkCard`
@@ -65,7 +65,17 @@ export function ShareJourneyLinkButton({
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
 
-  const url = shareLink ? `${origin}/journeys/shared/${shareLink.token}` : null;
+  // Tokens are hashed at rest (L14): the server-rendered `shareLink` never
+  // carries one, so a copyable URL exists only right after this session's
+  // own Create/Regenerate, taken from the POST response.
+  const [freshToken, setFreshToken] = useState<string | null>(null);
+  const token = freshToken ?? shareLink?.token ?? null;
+  const url = token ? `${origin}/journeys/shared/${token}` : null;
+  const hasActiveLink = shareLink !== null || freshToken !== null;
+  // Tracks the newest known expiry: a Create/Regenerate/Extend response
+  // updates it immediately, ahead of `router.refresh()` re-rendering props.
+  const [freshExpiresAt, setFreshExpiresAt] = useState<string | null>(null);
+  const expiresAt = freshExpiresAt ?? shareLink?.expiresAt ?? null;
 
   function handleOpen() {
     setError(null);
@@ -109,10 +119,37 @@ export function ShareJourneyLinkButton({
         setBusy(false);
         return;
       }
+      const body = await readShareLinkBody(response);
+      setFreshToken(body.token);
+      setFreshExpiresAt(body.expiresAt);
       router.refresh();
       setBusy(false);
     } catch {
       setError(shareLink ? 'Could not create a new share link.' : 'Could not create a share link.');
+      setBusy(false);
+    }
+  }
+
+  async function extend() {
+    setBusy(true);
+    setError(null);
+    needsLoginState.reset();
+    try {
+      const response = await fetch(`/api/Journeys/${journeyId}/share-link/extend`, { method: 'POST' });
+      if (!response.ok) {
+        if (response.status === 401) {
+          needsLoginState.markNeedsLogin();
+        } else {
+          setError('Could not extend the share link.');
+        }
+        setBusy(false);
+        return;
+      }
+      setFreshExpiresAt((await readShareLinkBody(response)).expiresAt);
+      router.refresh();
+      setBusy(false);
+    } catch {
+      setError('Could not extend the share link.');
       setBusy(false);
     }
   }
@@ -132,6 +169,8 @@ export function ShareJourneyLinkButton({
         setBusy(false);
         return;
       }
+      setFreshToken(null);
+      setFreshExpiresAt(null);
       router.refresh();
       setBusy(false);
     } catch {
@@ -160,9 +199,19 @@ export function ShareJourneyLinkButton({
                 </ActionIcon>
               </Tooltip>
             </Group>
+          ) : hasActiveLink ? (
+            <Text size="sm" c="dimmed">
+              A share link is active, but for security it can&apos;t be shown again. Regenerate to get a new link to
+              copy.
+            </Text>
           ) : (
             <Text size="sm" c="dimmed">
               No active share link.
+            </Text>
+          )}
+          {hasActiveLink && expiresAt && (
+            <Text size="xs" c="dimmed">
+              Expires {formatDate(expiresAt)}.
             </Text>
           )}
           {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
@@ -171,9 +220,14 @@ export function ShareJourneyLinkButton({
           )}
           <Group gap="xs">
             <Button variant="default" size="xs" onClick={createOrRegenerate} loading={busy}>
-              {shareLink ? 'Regenerate' : 'Create link'}
+              {hasActiveLink ? 'Regenerate' : 'Create link'}
             </Button>
-            {shareLink && (
+            {hasActiveLink && (
+              <Button variant="default" size="xs" onClick={extend} loading={busy}>
+                Extend 30 days
+              </Button>
+            )}
+            {hasActiveLink && (
               <Button variant="outline" color="red" size="xs" onClick={revoke} loading={busy}>
                 Revoke
               </Button>
@@ -189,7 +243,8 @@ export function ShareJourneyLinkButton({
               not a link exists yet -- it's describing what creating one
               will mean. */}
           <Text size="xs" c="dimmed">
-            Anyone with this link can view this journey (read-only) without logging in, until you revoke it.
+            Anyone with this link can view this journey (read-only) without logging in, until it expires or you
+            revoke it.
           </Text>
         </Stack>
       </Modal>

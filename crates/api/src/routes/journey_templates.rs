@@ -225,6 +225,22 @@ async fn post_journey_template(
     user: AuthenticatedUser,
     Json(body): Json<CreateJourneyTemplateRequest>,
 ) -> Result<Json<CreateJourneyTemplateResponse>, (StatusCode, String)> {
+    // Per-user cap (2026-09-26 review, L10) -- both arms below create a new
+    // template. Same route-level count-then-insert shape as
+    // `routes::lines`'s custom-line cap (and the same accepted race).
+    let owned = journey_templates::count_templates_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("count journey templates"))?;
+    if owned >= journey_templates::MAX_JOURNEY_TEMPLATES_PER_USER {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "You already have {} journey templates, which is the maximum. Delete one to \
+                 make room for a new one.",
+                journey_templates::MAX_JOURNEY_TEMPLATES_PER_USER
+            ),
+        ));
+    }
     match body {
         CreateJourneyTemplateRequest::Manual { custom_name, legs } => {
             if legs.is_empty() {

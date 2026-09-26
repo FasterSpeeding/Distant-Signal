@@ -33,6 +33,20 @@ use crate::data::{journeys, schedule_matching, train_tracking, unlisted_links};
 /// and never will.
 const JOURNEY_RESOURCE_TYPE: &str = "journey";
 
+/// How long a journey share link lives before it stops resolving
+/// (2026-09-26 review, L17). Originally `None` (design doc §5: "no forced
+/// expiry"), but the token is the ENTIRE access control for an
+/// unauthenticated URL that inevitably lands in places this app can't clean
+/// up -- ingress access logs, browser history, `Referer` headers -- so a
+/// forgotten link used to grant read access forever. 30 days comfortably
+/// covers a journey's real lifetime (a trip, or a stretch of commuting
+/// someone is following) and is still bounded; an owner whose link is still
+/// in active use extends it in place (`extend_journey_share_link`, same
+/// token, so recipients' copies keep working) rather than regenerating.
+/// Longer than `groups::INVITE_LINK_TTL`'s 7 days on purpose: an invite is
+/// a one-off action, a journey link is something recipients revisit.
+const JOURNEY_SHARE_LINK_TTL: chrono::Duration = chrono::Duration::days(30);
+
 pub fn router() -> Router {
     Router::new()
         .route("/Journeys", axum::routing::post(post_journey))
@@ -77,6 +91,10 @@ pub fn router() -> Router {
         .route(
             "/Journeys/{journey_id}/share-link",
             axum::routing::post(create_journey_share_link).delete(revoke_journey_share_link),
+        )
+        .route(
+            "/Journeys/{journey_id}/share-link/extend",
+            axum::routing::post(extend_journey_share_link),
         )
 }
 
@@ -574,6 +592,24 @@ async fn post_journey(
     // display name.
     let custom_name = train_tracking::validate_custom_name(body.custom_name.as_deref())
         .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    // Per-user cap (2026-09-26 review, L10) -- every arm below inserts a new
+    // `journeys` row. Same route-level count-then-insert shape (and the same
+    // accepted "a concurrent burst can land a few over" race) as
+    // `routes::lines`'s custom-line cap; see `journeys::MAX_JOURNEYS_PER_USER`
+    // for the value and why template-materialized journeys don't count.
+    let owned = journeys::count_manual_journeys_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("count journeys"))?;
+    if owned >= journeys::MAX_JOURNEYS_PER_USER {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "You already have {} journeys, which is the maximum. Delete some old ones to make \
+                 room for a new one.",
+                journeys::MAX_JOURNEYS_PER_USER
+            ),
+        ));
+    }
     match body.leg {
         CreateJourneyLegRequest::Pin {
             origin_crs,
@@ -857,9 +893,7 @@ async fn post_journey_leg(
             )
             .await
             .map_err(internal_error("add leg to journey (known-train)"))?;
-            let Some((leg_id, tracking_id)) = added else {
-                return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
-            };
+            let (leg_id, tracking_id) = added_leg_or_error(added)?;
 
             // Same best-effort enrichment `post_journey`'s own `KnownTrain`
             // arm and `post_leg_train` already make for the exact same
@@ -905,15 +939,33 @@ async fn post_journey_leg(
             )
             .await
             .map_err(internal_error("add leg to journey (window)"))?;
-            let Some(leg_id) = added else {
-                return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
-            };
+            let leg_id = added_leg_or_error(added)?;
 
             Ok(Json(AddLegResponse {
                 leg_id,
                 tracking_id: None,
             }))
         }
+    }
+}
+
+/// Maps [`journeys::AddLegOutcome`] onto `post_journey_leg`'s wire
+/// statuses: `404` for a missing/not-yours journey (unchanged), `400` once
+/// the journey already holds [`journeys::MAX_LEGS_PER_JOURNEY`] legs
+/// (2026-09-26 review, L10).
+fn added_leg_or_error<T>(outcome: journeys::AddLegOutcome<T>) -> Result<T, (StatusCode, String)> {
+    match outcome {
+        journeys::AddLegOutcome::Added(value) => Ok(value),
+        journeys::AddLegOutcome::NotFound => {
+            Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()))
+        }
+        journeys::AddLegOutcome::AtCap => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "This journey already has {} legs, which is the maximum.",
+                journeys::MAX_LEGS_PER_JOURNEY
+            ),
+        )),
     }
 }
 
@@ -967,7 +1019,12 @@ struct JourneyDetailResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShareLinkResponse {
-    token: String,
+    /// `Some` ONLY in the response to the `POST .../share-link` that just
+    /// minted it. Tokens are stored hashed (2026-09-26 review, L14,
+    /// `unlisted_links::hash_link_token`), so `GET /Journeys/{id}` can say
+    /// that an active link exists and when it expires, but can never show
+    /// its URL again -- the owner regenerates to get a fresh copyable one.
+    token: Option<String>,
     expires_at: Option<DateTime<Utc>>,
 }
 
@@ -1070,9 +1127,11 @@ async fn get_journey(
 /// non-owner, matching every other write route's own 404-never-403
 /// posture. Used for both the first "Share" click and a later
 /// "Regenerate" -- `unlisted_links::rotate_link` already has this dual
-/// role built in. The `None` TTL is the journeys-specific choice from
-/// design doc §5: no forced expiry, explicit revoke/regenerate are the
-/// owner's only two levers.
+/// role built in. Every link now expires after [`JOURNEY_SHARE_LINK_TTL`]
+/// (2026-09-26 review, L17 -- this used to pass `None`, per design doc §5's
+/// original "no forced expiry" choice; see that constant's doc for why it
+/// changed). A regenerate starts a fresh window; see
+/// `extend_journey_share_link` for pushing out the CURRENT link's expiry.
 async fn create_journey_share_link(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -1085,14 +1144,49 @@ async fn create_journey_share_link(
         JOURNEY_RESOURCE_TYPE,
         &journey_id.to_string(),
         &user.id,
-        None,
+        Some(JOURNEY_SHARE_LINK_TTL),
     )
     .await
     .map_err(internal_error("create journey share link"))?;
 
     Ok(Json(ShareLinkResponse {
-        token: link.token,
+        token: Some(link.token),
         expires_at: link.expires_at,
+    }))
+}
+
+/// `POST /Journeys/{journeyId}/share-link/extend` -- owner-only, same
+/// ownership check as `create_journey_share_link`. Resets the ACTIVE link's
+/// expiry to [`JOURNEY_SHARE_LINK_TTL`] from now WITHOUT changing its
+/// token (2026-09-26 review, L17): the way to keep a link that's still in
+/// active use alive, since regenerating would break every copy recipients
+/// already hold (and tokens are hashed at rest, so the owner can't even
+/// re-copy the old URL). An already-expired or revoked link can't be
+/// revived this way -- `404`, the owner regenerates instead. No request
+/// body.
+async fn extend_journey_share_link(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+) -> Result<Json<ShareLinkResponse>, (StatusCode, String)> {
+    require_journey_ownership(&app, journey_id, &user.id).await?;
+
+    let expires_at = unlisted_links::extend_link(
+        &app.database,
+        JOURNEY_RESOURCE_TYPE,
+        &journey_id.to_string(),
+        JOURNEY_SHARE_LINK_TTL,
+    )
+    .await
+    .map_err(internal_error("extend journey share link"))?
+    .ok_or((
+        StatusCode::NOT_FOUND,
+        "this journey has no active share link to extend".to_string(),
+    ))?;
+
+    Ok(Json(ShareLinkResponse {
+        token: None,
+        expires_at: Some(expires_at),
     }))
 }
 
@@ -1306,7 +1400,7 @@ async fn build_journey_detail_response(
         .await
         .map_err(internal_error("read journey share link"))?
         .map(|link| ShareLinkResponse {
-            token: link.token,
+            token: None,
             expires_at: link.expires_at,
         })
     } else {
@@ -3730,7 +3824,29 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK, "create share link: {body:?}");
         let token = body["token"].as_str().expect("token present").to_string();
         assert!(!token.is_empty());
-        assert!(body["expiresAt"].is_null());
+        // L17: every journey share link now carries a 30-day expiry.
+        let expires_at: chrono::DateTime<chrono::Utc> = body["expiresAt"]
+            .as_str()
+            .expect("expiresAt present")
+            .parse()
+            .expect("RFC3339 expiresAt");
+        let ttl_left = expires_at - chrono::Utc::now();
+        assert!(
+            ttl_left > chrono::Duration::days(29) && ttl_left <= super::JOURNEY_SHARE_LINK_TTL,
+            "unexpected expiry {expires_at}"
+        );
+
+        // The owner can extend the SAME link in place.
+        let (status, extended) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/share-link/extend"),
+            Some(&owner_token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "extend share link: {extended:?}");
+        assert!(extended["token"].is_null());
+        assert!(extended["expiresAt"].is_string());
 
         // No cookie at all -- the whole point of the public token route.
         let (status, body) = request(router, format!("/Journeys/shared/{token}"), None).await;
@@ -4076,7 +4192,14 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "owner get journey: {body:?}");
-        assert_eq!(body["shareLink"]["token"], token);
+        // Tokens are hashed at rest (L14): the owner sees that a link is
+        // active, never its token again.
+        assert!(
+            body["shareLink"].is_object(),
+            "owner should see the active link: {body:?}"
+        );
+        assert!(body["shareLink"]["token"].is_null());
+        let _ = token;
 
         // Share the journey into a group both the owner and the member are
         // in -- same seeding as

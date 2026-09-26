@@ -18,23 +18,12 @@ use api::{data, routes};
 /// route, so leaking it anywhere is equivalent to leaking the resource
 /// itself.
 ///
-/// A full TTL mechanism for journey share links already exists at the
-/// data layer -- `unlisted_links::rotate_link`'s own `ttl: Option<Duration>`
-/// parameter, backed by `unlisted_links.expires_at` and honored by
-/// `resolve_link`/`get_active_link` -- but journeys deliberately pass
-/// `None` today, a DOCUMENTED product decision
-/// (`docs/superpowers/specs/2026-09-23-unlisted-links-design.md` §5: a
-/// journey's link grants read-only access to one already-bounded
-/// resource, not an ever-growing membership boundary, so explicit
-/// revoke/regenerate are its only two owner-facing levers). Silently
-/// overriding that as a side effect of a Low-severity logging fix would be
-/// a bigger, product-level change than this finding calls for -- forcing
-/// every existing share link to start expiring is a UX change worth its
-/// own decision, not something to sneak in here. Redacting the token from
-/// tracing output is the smaller, purely-defensive fix instead: it closes
-/// the log-exposure channel without changing the feature's behavior at
-/// all, and if a TTL mechanism is wanted later, the plumbing is already
-/// there waiting for it.
+/// Complements, rather than replaces, the share link's own TTL: as of the
+/// 2026-09-26 review's L17 fix every journey share link expires after
+/// `routes::journeys::JOURNEY_SHARE_LINK_TTL` (30 days, extendable by the
+/// owner), which bounds how long a token leaked through any of the channels
+/// above stays useful -- but a token that's still live must not be written
+/// into this service's own logs either, so the redaction stays.
 fn redact_share_token_uri(uri: &axum::http::Uri) -> String {
     let path = uri.path();
     if let Some(token) = path.strip_prefix("/Journeys/shared/")
@@ -137,15 +126,48 @@ async fn main() -> anyhow::Result<()> {
     //      combination; do not "fix" that panic by pinning an origin
     //      allowlist and enabling credentials without re-deriving this
     //      whole comment.
-    //   2. Only GET is allowed. Every session-authenticated mutation is a
-    //      POST/PUT/DELETE, so each is a non-simple request whose
-    //      preflight this config rejects outright. Adding a method here
-    //      moves that endpoint inside the permissive-origin envelope.
+    //   2. Only GET is allowed. This does NOT mean every session-
+    //      authenticated mutation's preflight is rejected outright, though
+    //      an earlier version of this comment claimed exactly that — it's
+    //      only true for a mutation whose body forces a genuinely
+    //      "non-simple" request (per the Fetch spec's CORS-safelisted
+    //      request-header rules), e.g. `Content-Type: application/json`.
+    //      A handful of real routes — group promote/demote
+    //      (`routes::groups::promote_member`/`demote_member`), group join
+    //      (`routes::groups::post_join`), invite-link create/revoke
+    //      (`routes::groups::create_invite_link`/`revoke_invite_link`), and
+    //      journey share-link create/revoke
+    //      (`routes::journeys::create_journey_share_link`/
+    //      `revoke_journey_share_link`) — are POST/DELETE with NO JSON (or
+    //      any other) body at all, sent with no extra headers, which makes
+    //      each one a "simple request" under the CORS spec: the browser
+    //      never sends a preflight for it in the first place, so a method
+    //      allowlist here has nothing to intercept, and this config would
+    //      let the ACTUAL request straight through to the handler
+    //      regardless of Origin (only withholding `Access-Control-Allow-*`
+    //      response headers, which stops a cross-origin page from reading
+    //      the response body, not from having already caused the mutation).
+    //      Adding a method here does still widen the permissive-origin
+    //      envelope for the genuinely non-simple (JSON-body) mutations, so
+    //      the caution stands — just not for the reason originally given.
     //
-    // The session cookie is additionally `SameSite=Lax`, which blocks
-    // cross-site cookie attachment on exactly those non-GET requests
-    // (`auth::set_cookie_header`) — a second, independent barrier, not a
-    // substitute for either of the above.
+    // What actually protects those no-body routes is two independent
+    // layers, neither of which is this CORS config:
+    //   1. The session cookie is `SameSite=Lax`
+    //      (`auth::set_cookie_header`), which stops the browser from
+    //      attaching it to a cross-SITE (not just cross-origin) POST/PUT/
+    //      DELETE at all — a genuinely cross-site attacker's request
+    //      reaches `api` with no session, so it 401s regardless of what
+    //      CORS would have allowed through.
+    //   2. `frontend/app/api/[...path]/route.ts`'s own
+    //      `hasAcceptableOriginForMutation` Origin check, added because
+    //      `SameSite=Lax` alone doesn't cover a same-SITE sibling
+    //      subdomain or a future XSS — either can still issue a same-site
+    //      request that carries the cookie. Every one of the no-body
+    //      routes above is only ever called by the frontend through that
+    //      proxy (never fetched directly against this service's own
+    //      origin from a browser), so that Origin check is the real
+    //      barrier for them, not anything in this file.
     let cors = CorsLayer::new()
         .allow_methods([axum::http::Method::GET])
         .allow_origin(Any);
@@ -421,6 +443,20 @@ async fn session_cleanup_sweep_loop(app: App) {
             Ok(_) => {}
             Err(err) => {
                 tracing::error!(error = ?err, "session-cleanup sweep failed; will retry next interval");
+            }
+        }
+        // Same hourly cadence, same "cheap, idempotent, nobody is waiting
+        // on it" reasoning -- see `unlisted_links::prune_dead_links`.
+        match data::unlisted_links::prune_dead_links(&app.database).await {
+            Ok(deleted) if deleted > 0 => {
+                tracing::info!(
+                    deleted,
+                    "session-cleanup sweep pruned dead share/invite links"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "dead-link prune failed; will retry next interval");
             }
         }
     }

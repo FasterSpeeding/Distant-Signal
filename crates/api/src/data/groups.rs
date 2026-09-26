@@ -77,6 +77,31 @@ mod role_tests {
     }
 }
 
+/// How many groups one user may belong to at once -- created or joined,
+/// counted together (2026-09-26 review, L10). Every membership widens the
+/// fan-out of `list_shared_trains`/`list_shared_journeys`/shared custom
+/// lines for that user, and before this cap a script could create groups
+/// without limit. 100 is far above any real social use while still bounding
+/// that fan-out. Checked by `routes::groups::create_group` and inside
+/// [`consume_invite_link`].
+pub const MAX_GROUPS_PER_USER: i64 = 100;
+
+/// How many members one group may have (2026-09-26 review, L10) -- checked
+/// inside [`consume_invite_link`], the only path that adds a non-owner
+/// member. Same value as [`MAX_GROUPS_PER_USER`]; a group is a circle of
+/// people sharing their trains, and each member's shares fan out to every
+/// other member, so the cost is quadratic in this number.
+pub const MAX_MEMBERS_PER_GROUP: i64 = 100;
+
+/// How many groups `user_id` currently belongs to, in any role.
+pub async fn count_memberships_for_user(pool: &PgPool, user_id: &str) -> Result<i64> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_members WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
 pub async fn create_group(pool: &PgPool, name: &str, user_id: &str) -> Result<String> {
     let id = crate::auth::generate_session_token();
     let mut tx = pool.begin().await?;
@@ -552,6 +577,28 @@ pub async fn remove_member(
         .execute(&mut *tx)
         .await?;
 
+    // A KICKED member (removed by someone else, not leaving of their own
+    // accord) must not be able to walk straight back in (2026-09-26 review,
+    // L14). Invite links are group-wide and reusable -- one active link per
+    // group, not one per invitee (`rotate_invite_link`) -- so the member
+    // being removed has very likely seen the current one, and without this
+    // could simply `POST /groups/join/{token}` again until the link expires
+    // up to 7 days later. Revoking (not rotating) is deliberate: a rotated
+    // replacement's token would only exist in this function's own memory,
+    // since tokens are stored hashed and never readable again, so an
+    // admin/owner regenerates a fresh link from the group page when they
+    // next want to invite someone. A voluntary leave (`remover_is_target`)
+    // keeps the link: rejoining a group you left yourself is legitimate.
+    if !remover_is_target {
+        sqlx::query(
+            "UPDATE group_invite_links SET revoked_at = NOW() \
+             WHERE group_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2")
         .bind(group_id)
         .bind(target_user_id)
@@ -593,7 +640,12 @@ pub async fn remove_member(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InviteLink {
-    pub token: String,
+    /// `Some` only when this value came straight from
+    /// [`rotate_invite_link`] -- tokens are stored hashed (2026-09-26 review,
+    /// L14; `unlisted_links::hash_link_token`, the same SHA-256 scheme
+    /// `sessions.id` uses), so [`get_active_invite_link`] can report that a
+    /// link is active and when it expires, but can never recover its token.
+    pub token: Option<String>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -601,12 +653,6 @@ pub struct InviteLink {
 /// decided) -- a low-effort mitigation against an old, forgotten, still-
 /// valid link being found and reused much later.
 const INVITE_LINK_TTL: chrono::Duration = chrono::Duration::days(7);
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct InviteLinkRow {
-    token: String,
-    expires_at: DateTime<Utc>,
-}
 
 /// Rotates the group's active invite link: revokes any currently-active
 /// link and inserts a fresh one with a new 7-day expiry, in one
@@ -629,10 +675,10 @@ pub async fn rotate_invite_link(
     let token = crate::auth::generate_session_token();
     let expires_at = Utc::now() + INVITE_LINK_TTL;
     sqlx::query(
-        "INSERT INTO group_invite_links (token, group_id, created_by, created_at, expires_at) \
+        "INSERT INTO group_invite_links (token_hash, group_id, created_by, created_at, expires_at) \
          VALUES ($1, $2, $3, NOW(), $4)",
     )
-    .bind(&token)
+    .bind(crate::data::unlisted_links::hash_link_token(&token))
     .bind(group_id)
     .bind(user_id)
     .bind(expires_at)
@@ -640,7 +686,10 @@ pub async fn rotate_invite_link(
     .await?;
 
     tx.commit().await?;
-    Ok(InviteLink { token, expires_at })
+    Ok(InviteLink {
+        token: Some(token),
+        expires_at,
+    })
 }
 
 /// Revokes the group's active invite link with no replacement.
@@ -665,17 +714,17 @@ pub async fn revoke_invite_link(pool: &PgPool, group_id: &str) -> Result<bool> {
 /// invite-link routes), so `GET /groups/{id}`'s own response is extended
 /// to carry it; see this plan's self-review note on that extension.
 pub async fn get_active_invite_link(pool: &PgPool, group_id: &str) -> Result<Option<InviteLink>> {
-    let row: Option<InviteLinkRow> = sqlx::query_as(
-        "SELECT token, expires_at FROM group_invite_links \
+    let row: Option<(DateTime<Utc>,)> = sqlx::query_as(
+        "SELECT expires_at FROM group_invite_links \
          WHERE group_id = $1 AND revoked_at IS NULL AND expires_at > NOW() \
          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(group_id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| InviteLink {
-        token: r.token,
-        expires_at: r.expires_at,
+    Ok(row.map(|(expires_at,)| InviteLink {
+        token: None,
+        expires_at,
     }))
 }
 
@@ -698,9 +747,9 @@ pub async fn resolve_invite_link(pool: &PgPool, token: &str) -> Result<Option<Jo
         "SELECT g.id, g.name, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) \
          FROM group_invite_links l \
          JOIN groups g ON g.id = l.group_id \
-         WHERE l.token = $1 AND l.revoked_at IS NULL AND l.expires_at > NOW()",
+         WHERE l.token_hash = $1 AND l.revoked_at IS NULL AND l.expires_at > NOW()",
     )
-    .bind(token)
+    .bind(crate::data::unlisted_links::hash_link_token(token))
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(group_id, group_name, member_count)| JoinPreview {
@@ -710,29 +759,77 @@ pub async fn resolve_invite_link(pool: &PgPool, token: &str) -> Result<Option<Jo
     }))
 }
 
+/// What [`consume_invite_link`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinOutcome {
+    /// Now a member (or already was one -- a re-click is not an error).
+    Joined(String),
+    /// The token doesn't resolve to a valid, unexpired, unrevoked link --
+    /// the route maps this to `404`.
+    InvalidLink,
+    /// The group already has [`MAX_MEMBERS_PER_GROUP`] members.
+    GroupFull,
+    /// The caller already belongs to [`MAX_GROUPS_PER_USER`] groups.
+    TooManyGroups,
+}
+
 /// Consumes a join token: adds the caller to `group_members` as a plain
 /// `member` if the token is still valid, or no-ops if they're already a
 /// member (e.g. the owner re-clicking their own link, or a double-submit)
 /// -- `ON CONFLICT DO NOTHING` on the natural `(group_id, user_id)` PK.
-/// Returns the joined `group_id`, or `None` if the token doesn't resolve
-/// to a valid, unexpired, unrevoked link -- the route maps that to `404`.
-pub async fn consume_invite_link(
-    pool: &PgPool,
-    token: &str,
-    user_id: &str,
-) -> Result<Option<String>> {
+///
+/// Refuses (without joining) once the group holds
+/// [`MAX_MEMBERS_PER_GROUP`] members or the caller already belongs to
+/// [`MAX_GROUPS_PER_USER`] groups -- both checked only for a NEW
+/// membership, so an existing member re-clicking always still succeeds.
+/// The group's row is locked `FOR UPDATE` first (same lock
+/// `remove_member` takes) so two concurrent joins can't both pass the
+/// member-count check on a group that has room for only one.
+pub async fn consume_invite_link(pool: &PgPool, token: &str, user_id: &str) -> Result<JoinOutcome> {
     let mut tx = pool.begin().await?;
     let group_id: Option<String> = sqlx::query_scalar(
         "SELECT group_id FROM group_invite_links \
-         WHERE token = $1 AND revoked_at IS NULL AND expires_at > NOW()",
+         WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()",
     )
-    .bind(token)
+    .bind(crate::data::unlisted_links::hash_link_token(token))
     .fetch_optional(&mut *tx)
     .await?;
     let Some(group_id) = group_id else {
         tx.rollback().await?;
-        return Ok(None);
+        return Ok(JoinOutcome::InvalidLink);
     };
+
+    sqlx::query("SELECT id FROM groups WHERE id = $1 FOR UPDATE")
+        .bind(&group_id)
+        .execute(&mut *tx)
+        .await?;
+    let already_member: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)",
+    )
+    .bind(&group_id)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !already_member {
+        let members: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM group_members WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if members >= MAX_MEMBERS_PER_GROUP {
+            tx.rollback().await?;
+            return Ok(JoinOutcome::GroupFull);
+        }
+        let memberships: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM group_members WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if memberships >= MAX_GROUPS_PER_USER {
+            tx.rollback().await?;
+            return Ok(JoinOutcome::TooManyGroups);
+        }
+    }
 
     sqlx::query(
         "INSERT INTO group_members (group_id, user_id, role, joined_at) \
@@ -745,7 +842,7 @@ pub async fn consume_invite_link(
     .await?;
 
     tx.commit().await?;
-    Ok(Some(group_id))
+    Ok(JoinOutcome::Joined(group_id))
 }
 
 /// Adds one of the caller's own tracked trains to a group. Ownership is
@@ -2022,10 +2119,10 @@ mod db_tests {
         // Create a group_invite_links row (token is base64-encoded random bytes, using UUID for test)
         let token = crate::auth::generate_session_token();
         sqlx::query(
-            "INSERT INTO group_invite_links (token, group_id, created_by, created_at, expires_at) \
+            "INSERT INTO group_invite_links (token_hash, group_id, created_by, created_at, expires_at) \
              VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '7 days')",
         )
-        .bind(&token)
+        .bind(crate::data::unlisted_links::hash_link_token(&token))
         .bind(&group_id)
         .bind("TEST-GROUPS-DELETE-OWNER")
         .execute(&pool)
@@ -2664,8 +2761,19 @@ mod db_tests {
             .await
             .expect("query")
             .expect("should have an active link");
+        assert_eq!(active.token, None, "a stored token can never be read back");
+        assert!(
+            resolve_invite_link(&pool, second.token.as_deref().unwrap())
+                .await
+                .expect("query")
+                .is_some(),
+            "the newest link should be active"
+        );
         assert_eq!(
-            active.token, second.token,
+            resolve_invite_link(&pool, first.token.as_deref().unwrap())
+                .await
+                .expect("query"),
+            None,
             "only the newest link should be active"
         );
 
@@ -2728,10 +2836,10 @@ mod db_tests {
             .expect("create group");
         let token = "test-expired-token";
         sqlx::query(
-            "INSERT INTO group_invite_links (token, group_id, created_by, expires_at) \
+            "INSERT INTO group_invite_links (token_hash, group_id, created_by, expires_at) \
              VALUES ($1, $2, $3, NOW() - INTERVAL '1 hour')",
         )
-        .bind(token)
+        .bind(crate::data::unlisted_links::hash_link_token(token))
         .bind(&group_id)
         .bind("TEST-GROUPS-JOIN-OWNER-1")
         .execute(&pool)
@@ -2767,7 +2875,7 @@ mod db_tests {
         revoke_invite_link(&pool, &group_id).await.expect("revoke");
 
         assert_eq!(
-            resolve_invite_link(&pool, &link.token)
+            resolve_invite_link(&pool, link.token.as_deref().unwrap())
                 .await
                 .expect("query"),
             None
@@ -2779,6 +2887,94 @@ mod db_tests {
             .await
             .ok();
         cleanup(&pool, &["TEST-GROUPS-JOIN-OWNER-2"]).await;
+    }
+
+    /// L14 (2026-09-26 review): the invite token is stored hashed, and a
+    /// member KICKED by an admin/owner can't rejoin with the link they
+    /// already saw -- while a member who LEFT voluntarily still can.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                invite_tokens_are_hashed_at_rest_and_a_kicked_member_cannot_rejoin -- --ignored`"]
+    async fn invite_tokens_are_hashed_at_rest_and_a_kicked_member_cannot_rejoin() {
+        let pool = connect().await;
+        for id in [
+            "TEST-GROUPS-L14-OWNER",
+            "TEST-GROUPS-L14-KICKED",
+            "TEST-GROUPS-L14-LEAVER",
+        ] {
+            seed_user(&pool, id).await;
+        }
+        let group_id = create_group(&pool, "L14", "TEST-GROUPS-L14-OWNER")
+            .await
+            .expect("create group");
+        let link = rotate_invite_link(&pool, &group_id, "TEST-GROUPS-L14-OWNER")
+            .await
+            .expect("rotate");
+        let token = link.token.clone().expect("fresh link carries its token");
+
+        let stored: Vec<String> =
+            sqlx::query_scalar("SELECT token_hash FROM group_invite_links WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_all(&pool)
+                .await
+                .expect("read stored token");
+        assert_eq!(stored, vec![crate::auth::hash_session_token(&token)]);
+        assert!(
+            !stored.contains(&token),
+            "plaintext token must never be stored"
+        );
+
+        for joiner in ["TEST-GROUPS-L14-KICKED", "TEST-GROUPS-L14-LEAVER"] {
+            assert!(matches!(
+                consume_invite_link(&pool, &token, joiner)
+                    .await
+                    .expect("join"),
+                JoinOutcome::Joined(_)
+            ));
+        }
+
+        // Voluntary leave keeps the link usable -- and rejoining works.
+        remove_member(&pool, &group_id, "TEST-GROUPS-L14-LEAVER", true)
+            .await
+            .expect("leave");
+        assert!(matches!(
+            consume_invite_link(&pool, &token, "TEST-GROUPS-L14-LEAVER")
+                .await
+                .expect("rejoin after leaving"),
+            JoinOutcome::Joined(_)
+        ));
+
+        // A kick revokes the link, so the kicked member can't come back.
+        remove_member(&pool, &group_id, "TEST-GROUPS-L14-KICKED", false)
+            .await
+            .expect("kick");
+        assert_eq!(
+            consume_invite_link(&pool, &token, "TEST-GROUPS-L14-KICKED")
+                .await
+                .expect("attempt rejoin"),
+            JoinOutcome::InvalidLink
+        );
+        assert_eq!(
+            get_member_role(&pool, &group_id, "TEST-GROUPS-L14-KICKED")
+                .await
+                .expect("query"),
+            None
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-L14-OWNER",
+                "TEST-GROUPS-L14-KICKED",
+                "TEST-GROUPS-L14-LEAVER",
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2797,11 +2993,14 @@ mod db_tests {
             .await
             .expect("rotate");
 
-        let joined = consume_invite_link(&pool, &link.token, "TEST-GROUPS-JOIN-JOINER-3")
-            .await
-            .expect("consume")
-            .expect("should resolve");
-        assert_eq!(joined, group_id);
+        let joined = consume_invite_link(
+            &pool,
+            link.token.as_deref().unwrap(),
+            "TEST-GROUPS-JOIN-JOINER-3",
+        )
+        .await
+        .expect("consume");
+        assert_eq!(joined, JoinOutcome::Joined(group_id.clone()));
         let role = get_member_role(&pool, &group_id, "TEST-GROUPS-JOIN-JOINER-3")
             .await
             .expect("query")
@@ -2810,11 +3009,14 @@ mod db_tests {
 
         // Re-clicking the same link (double-submit, or the owner's own
         // link) must not error or duplicate the row.
-        let joined_again = consume_invite_link(&pool, &link.token, "TEST-GROUPS-JOIN-JOINER-3")
-            .await
-            .expect("consume again")
-            .expect("should still resolve");
-        assert_eq!(joined_again, group_id);
+        let joined_again = consume_invite_link(
+            &pool,
+            link.token.as_deref().unwrap(),
+            "TEST-GROUPS-JOIN-JOINER-3",
+        )
+        .await
+        .expect("consume again");
+        assert_eq!(joined_again, JoinOutcome::Joined(group_id.clone()));
 
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(&group_id)
@@ -2839,7 +3041,7 @@ mod db_tests {
         let joined = consume_invite_link(&pool, "not-a-real-token", "TEST-GROUPS-JOIN-JOINER-4")
             .await
             .expect("consume");
-        assert_eq!(joined, None);
+        assert_eq!(joined, JoinOutcome::InvalidLink);
 
         cleanup(&pool, &["TEST-GROUPS-JOIN-JOINER-4"]).await;
     }

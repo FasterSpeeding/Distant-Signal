@@ -231,6 +231,15 @@ async fn create_group(
     Json(req): Json<CreateGroupRequest>,
 ) -> Result<Json<GroupIdentityResponse>, (StatusCode, String)> {
     let name = validate_group_name(&req.name).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    // Per-user cap (2026-09-26 review, L10); same route-level
+    // count-then-insert shape (and accepted race) as `routes::lines`'s
+    // custom-line cap. See `groups::MAX_GROUPS_PER_USER`.
+    let memberships = groups::count_memberships_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("count group memberships"))?;
+    if memberships >= groups::MAX_GROUPS_PER_USER {
+        return Err((StatusCode::BAD_REQUEST, too_many_groups_message()));
+    }
     let id = groups::create_group(&app.database, &name, &user.id)
         .await
         .map_err(internal_error("create group"))?;
@@ -589,14 +598,33 @@ async fn post_join(
     user: AuthenticatedUser,
     Path(token): Path<String>,
 ) -> Result<Json<JoinResponse>, (StatusCode, String)> {
-    let group_id = groups::consume_invite_link(&app.database, &token, &user.id)
+    match groups::consume_invite_link(&app.database, &token, &user.id)
         .await
         .map_err(internal_error("join group"))?
-        .ok_or((
+    {
+        groups::JoinOutcome::Joined(group_id) => Ok(Json(JoinResponse { group_id })),
+        groups::JoinOutcome::InvalidLink => Err((
             StatusCode::NOT_FOUND,
             "this invite link is invalid or has expired".to_string(),
-        ))?;
-    Ok(Json(JoinResponse { group_id }))
+        )),
+        groups::JoinOutcome::GroupFull => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "This group is full — groups can have at most {} members.",
+                groups::MAX_MEMBERS_PER_GROUP
+            ),
+        )),
+        groups::JoinOutcome::TooManyGroups => {
+            Err((StatusCode::BAD_REQUEST, too_many_groups_message()))
+        }
+    }
+}
+
+fn too_many_groups_message() -> String {
+    format!(
+        "You're already in {} groups, which is the maximum. Leave one to make room.",
+        groups::MAX_GROUPS_PER_USER
+    )
 }
 
 /// `_route` suffix avoids shadowing `groups::list_group_trains` while
@@ -1782,13 +1810,16 @@ mod db_tests {
             owner_link.is_object(),
             "the owner must receive the invite link, got {owner_link:?}"
         );
+        // Tokens are hashed at rest (2026-09-26 review, L14): the owner
+        // learns that a link is active and when it expires, never its token.
         assert!(
             owner_link
-                .get("token")
+                .get("expiresAt")
                 .and_then(Value::as_str)
-                .is_some_and(|token| !token.is_empty()),
-            "the owner's invite link must carry a non-empty token"
+                .is_some(),
+            "the owner's invite link must carry its expiry"
         );
+        assert_eq!(owner_link.get("token"), Some(&Value::Null));
 
         cleanup(
             &pool,

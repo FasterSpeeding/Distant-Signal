@@ -7,6 +7,7 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { formatDate } from '@/lib/dateFormat';
 import type { GroupInviteLink } from '@/lib/types';
+import { freshTokenFromResponse } from '@/lib/freshLinkToken';
 
 /** Copy-to-clipboard / Web Share affordance for a group's invite link,
  * adapted from `ShareButton.tsx`'s own pattern (feature-detect
@@ -45,7 +46,14 @@ export function GroupInviteLinkCard({
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
 
-  const url = inviteLink ? `${origin}/groups/join/${inviteLink.token}` : null;
+  // Tokens are stored hashed server-side (L14), so the server-rendered
+  // `inviteLink` never carries one -- the only time this component can show
+  // a copyable URL is right after THIS session's own Regenerate, from the
+  // POST response. Otherwise an active link is known only by its expiry.
+  const [freshToken, setFreshToken] = useState<string | null>(null);
+  const token = freshToken ?? inviteLink?.token ?? null;
+  const url = token ? `${origin}/groups/join/${token}` : null;
+  const hasActiveLink = inviteLink !== null || freshToken !== null;
 
   async function share() {
     if (!url) return;
@@ -81,6 +89,7 @@ export function GroupInviteLinkCard({
         setBusy(false);
         return;
       }
+      setFreshToken(await freshTokenFromResponse(response));
       router.refresh();
       setBusy(false);
     } catch {
@@ -104,6 +113,7 @@ export function GroupInviteLinkCard({
         setBusy(false);
         return;
       }
+      setFreshToken(null);
       router.refresh();
       setBusy(false);
     } catch {
@@ -142,6 +152,11 @@ export function GroupInviteLinkCard({
               </ActionIcon>
             </Tooltip>
           </Group>
+        ) : hasActiveLink ? (
+          <Text size="sm" c="dimmed">
+            An invite link is active, but for security it can&apos;t be shown again. Regenerate to get a new link to
+            copy.
+          </Text>
         ) : (
           <Text size="sm" c="dimmed">
             No active invite link.
@@ -166,7 +181,7 @@ export function GroupInviteLinkCard({
           <Button variant="default" size="xs" onClick={regenerate} loading={busy}>
             Regenerate
           </Button>
-          {url && (
+          {hasActiveLink && (
             <Button variant="outline" color="red" size="xs" onClick={revoke} loading={busy}>
               Revoke
             </Button>
@@ -181,7 +196,7 @@ export function GroupInviteLinkCard({
             a third button. Gated on `url` -- with no active link there is
             no "old one" for Regenerate to invalidate; it's just creating
             the first one. */}
-        {url && (
+        {hasActiveLink && (
           <Text size="xs" c="dimmed">
             Regenerating creates a new link — the old one stops working immediately.
           </Text>

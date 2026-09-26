@@ -149,8 +149,26 @@ fn reject_if_over_pin_limit(items: &[String], noun: &str) -> Result<(), (StatusC
             ),
         ));
     }
+    if items.iter().any(|item| item.len() > MAX_PINNED_ID_LENGTH) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("a pinned {noun} id is too long ({MAX_PINNED_ID_LENGTH} bytes max)"),
+        ));
+    }
     Ok(())
 }
+
+/// Upper bound, in bytes, on any single id/code in a
+/// `PUT /preferences/pinned-*` body (2026-09-26 review, L10).
+/// [`MAX_PINNED_ITEMS`] bounded how MANY ids one request could store, but
+/// each id was an unvalidated free-form string (`pinned_lines`/
+/// `pinned_operators` don't validate against any catalogue on write -- see
+/// `preferences::replace_pinned_lines`), so 500 multi-megabyte strings were
+/// still accepted and persisted. Real ids are short: the longest catalogue
+/// line id is under 50 bytes, operator codes are 2-3, and a custom line's
+/// id is `custom-` plus a slug of its name. 256 leaves generous room for a
+/// long custom-line name's slug.
+const MAX_PINNED_ID_LENGTH: usize = 256;
 
 async fn put_pinned_lines(
     State(app): State<App>,

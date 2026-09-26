@@ -56,12 +56,6 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trip-planner = { path = "../trip-planner" }
 trust-schema = { path = "../trust-schema" }
-# Named directly (not just reached through `reqwest::Url`, which is a type
-# alias for this crate's own `Url`) so `data::notifications::
-# validate_push_endpoint` can pattern-match `url::Host::{Domain,Ipv4,Ipv6}`
-# -- Rust 2021+ requires a crate be a direct dependency to `use` its types
-# by path, even when it's already pulled in transitively.
-url = "2.5"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

@@ -191,6 +191,26 @@ pub fn validate_leg_count(leg_count: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// How many journey templates one user may own (2026-09-26 review, L10).
+/// Same reasoning -- and so the same value -- as
+/// `custom_lines::MAX_CUSTOM_LINES_PER_USER`: a template is not a storage
+/// cost, it's RECURRING work (`notifier` materializes every active template
+/// into a real journey, with live train subscriptions, on its own schedule,
+/// forever), so unbounded creation is unbounded background load for the
+/// whole system. 50 is far above any real commute pattern count.
+pub const MAX_JOURNEY_TEMPLATES_PER_USER: i64 = 50;
+
+/// How many templates `user_id` currently owns, for
+/// [`MAX_JOURNEY_TEMPLATES_PER_USER`] enforcement.
+pub async fn count_templates_for_user(pool: &PgPool, user_id: &str) -> anyhow::Result<i64> {
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM journey_templates WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?;
+    Ok(count)
+}
+
 /// User-facing validation for a template's recurrence fields
 /// (`default_match_mode`/`auto_commit_rule`/`days_of_week`/`starts_on`/
 /// `ends_on`) -- same pure-validator pattern as [`validate_template_leg`],
