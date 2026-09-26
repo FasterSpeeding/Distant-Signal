@@ -53,6 +53,16 @@ describe('next.config.mjs Content-Security-Policy header', () => {
     expect(csp).toContain("object-src 'none'");
   });
 
+  // Finding L7 of the 2026-09-26 "Repeater Signal" review: this app renders
+  // no `<iframe>` anywhere and only ever loads one same-origin worker script
+  // (`public/sw.js`), so both can be pinned down explicitly instead of
+  // relying on the `default-src 'self'` fallback.
+  it('blocks framing this page embeds and restricts workers to self', async () => {
+    const csp = await cspValue();
+    expect(csp).toContain("frame-src 'none'");
+    expect(csp).toContain("worker-src 'self'");
+  });
+
   it("adds this deployment's own NEXT_PUBLIC_RAILMCP_PUBLIC_URL origin to connect-src when configured", async () => {
     process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL = 'https://railmcp.example.com/some/path';
     const csp = await cspValue();

