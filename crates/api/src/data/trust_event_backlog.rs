@@ -358,6 +358,13 @@ pub async fn ingest_shared_movements_batch(
                 derived
             }
             "0002" => journey::apply_cancellation(&previous),
+            // "0005" (Reinstatement, confirmed by the H4 fix of the
+            // 2026-09-26 review): un-sticks a "cancelled" journey back to
+            // "en_route" -- see `journey::apply_reinstatement`'s own doc
+            // comment. Without this arm, a Reinstatement flowing through
+            // this shared write path would silently fall into the `_ =>
+            // continue` no-op below and never un-stick anything.
+            "0005" => journey::apply_reinstatement(&previous),
             // "0001" (Activation) carries no derivable state of its own --
             // find_or_create_train/mark_train_resolved above already did
             // everything an Activation contributes to the shared row.
