@@ -59,14 +59,14 @@ describe('/api/[...path] proxy', () => {
   it('forwards a Train/track POST to the bare-root backend path, with cookies attached', async () => {
     const req = makeRequest('/api/Train/track', {
       method: 'POST',
-      headers: { cookie: 'nr_session=abc123' },
+      headers: { cookie: 'distant_signal_session=abc123' },
       body: JSON.stringify({ origin_crs: 'WAT' }),
     });
     await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
     const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
     expect(calledUrl.toString()).toBe('http://test-api:8080/Train/track');
     expect((init as RequestInit).method).toBe('POST');
-    expect((init as { headers: Record<string, string> }).headers.Cookie).toBe('nr_session=abc123');
+    expect((init as { headers: Record<string, string> }).headers.Cookie).toBe('distant_signal_session=abc123');
   });
 
   // Regression: api's own strict same-origin check on POST /auth/logout
@@ -87,7 +87,7 @@ describe('/api/[...path] proxy', () => {
         // every other passing Origin-check test above.
         origin: 'http://localhost:3000',
         referer: 'http://localhost:3000/settings',
-        cookie: 'nr_session=abc123',
+        cookie: 'distant_signal_session=abc123',
       },
     });
     await POST(req, { params: Promise.resolve({ path: ['auth', 'logout'] }) });
@@ -132,7 +132,7 @@ describe('/api/[...path] proxy', () => {
     // exercises the guard's "no trailing slash required" case.
     const req = makeRequest('/api/Journeys', {
       method: 'POST',
-      headers: { cookie: 'nr_session=abc123' },
+      headers: { cookie: 'distant_signal_session=abc123' },
       body: JSON.stringify({ leg: { mode: 'pin' } }),
     });
     await POST(req, { params: Promise.resolve({ path: ['Journeys'] }) });
@@ -169,7 +169,7 @@ describe('/api/[...path] proxy', () => {
     // segment.
     const req = makeRequest('/api/JourneyTemplates', {
       method: 'POST',
-      headers: { cookie: 'nr_session=abc123' },
+      headers: { cookie: 'distant_signal_session=abc123' },
       body: JSON.stringify({ customName: 'Commute', legs: [] }),
     });
     await POST(req, { params: Promise.resolve({ path: ['JourneyTemplates'] }) });
@@ -181,7 +181,7 @@ describe('/api/[...path] proxy', () => {
   it('forwards a PUT /api/JourneyTemplates/1 to the bare-root backend path', async () => {
     const req = makeRequest('/api/JourneyTemplates/1', {
       method: 'PUT',
-      headers: { cookie: 'nr_session=abc123' },
+      headers: { cookie: 'distant_signal_session=abc123' },
       body: JSON.stringify({ customName: 'Commute', legs: [] }),
     });
     await PUT(req, { params: Promise.resolve({ path: ['JourneyTemplates', '1'] }) });
@@ -193,7 +193,7 @@ describe('/api/[...path] proxy', () => {
   it('forwards a POST /api/JourneyTemplates/1/materialize to the bare-root backend path', async () => {
     const req = makeRequest('/api/JourneyTemplates/1/materialize', {
       method: 'POST',
-      headers: { cookie: 'nr_session=abc123' },
+      headers: { cookie: 'distant_signal_session=abc123' },
       body: JSON.stringify({ serviceDate: '2026-09-23' }),
     });
     await POST(req, { params: Promise.resolve({ path: ['JourneyTemplates', '1', 'materialize'] }) });
@@ -206,7 +206,7 @@ describe('/api/[...path] proxy', () => {
     const req = makeRequest('/api/Train/1/tickets/pkpass', {
       method: 'POST',
       headers: {
-        cookie: 'nr_session=abc123',
+        cookie: 'distant_signal_session=abc123',
         'content-type': `multipart/form-data; boundary=${boundary}`,
       },
       body: `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="t.pkpass"\r\n\r\nfake-bytes\r\n--${boundary}--`,
@@ -397,6 +397,95 @@ describe('/api/[...path] proxy', () => {
       await GET(req, { params: Promise.resolve({ path: ['Train', 'abc/def'] }) });
       const [calledUrl] = vi.mocked(fetch).mock.calls[0];
       expect(calledUrl.toString()).toBe('http://test-api:8080/Train/abc%2Fdef');
+    });
+  });
+
+  // Finding L5 of the 2026-09-26 "Repeater Signal" review: this proxy used
+  // to forward the browser's ENTIRE `Cookie` header verbatim, not just the
+  // one or two named cookies `api` actually reads -- `lib/api.ts`'s own
+  // `cookieForwardInit` was already narrowed to just the session cookie for
+  // this exact reason, and this proxy hadn't been brought in line with it.
+  describe('cookie forwarding is narrowed to the named session/login-state cookies', () => {
+    it('forwards only the session cookie, dropping an unrelated cookie sent alongside it', async () => {
+      const req = makeRequest('/api/preferences', {
+        headers: { cookie: 'theme=dark; distant_signal_session=abc123; consent=1' },
+      });
+      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers.Cookie).toBe('distant_signal_session=abc123');
+    });
+
+    it('forwards the login-state cookie (not the session cookie) on /api/auth/callback', async () => {
+      const req = makeRequest('/api/auth/callback?code=abc&state=xyz', {
+        headers: { cookie: 'distant_signal_login=login-state-123' },
+      });
+      await GET(req, { params: Promise.resolve({ path: ['auth', 'callback'] }) });
+      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+      expect(calledUrl.toString()).toBe('http://test-api:8080/public/auth/callback?code=abc&state=xyz');
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers.Cookie).toBe('distant_signal_login=login-state-123');
+    });
+
+    it('forwards both the session and login-state cookies together when both are present', async () => {
+      const req = makeRequest('/api/auth/session', {
+        headers: { cookie: 'distant_signal_session=abc123; distant_signal_login=login-state-123' },
+      });
+      await GET(req, { params: Promise.resolve({ path: ['auth', 'session'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers.Cookie).toBe('distant_signal_session=abc123; distant_signal_login=login-state-123');
+    });
+
+    it('omits the Cookie header entirely when the browser sent none of the forwarded cookies', async () => {
+      const req = makeRequest('/api/preferences', {
+        headers: { cookie: 'theme=dark; consent=1' },
+      });
+      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers.Cookie).toBeUndefined();
+    });
+
+    it('omits the Cookie header entirely when the browser sent no Cookie header at all', async () => {
+      const req = makeRequest('/api/preferences');
+      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers.Cookie).toBeUndefined();
+    });
+  });
+
+  // Finding L16 of the 2026-09-26 "Repeater Signal" review: this proxy
+  // forwarded no client-IP signal at all, so a future per-IP rate limit on
+  // the login route or a token lookup would have nothing to key on.
+  describe('X-Forwarded-For forwarding', () => {
+    it("forwards the incoming request's X-Forwarded-For header to the backend", async () => {
+      const req = makeRequest('/api/preferences', {
+        headers: { 'x-forwarded-for': '203.0.113.5' },
+      });
+      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers['X-Forwarded-For']).toBe('203.0.113.5');
+    });
+
+    it('forwards a multi-hop X-Forwarded-For value unchanged', async () => {
+      const req = makeRequest('/api/preferences', {
+        headers: { 'x-forwarded-for': '203.0.113.5, 10.0.4.2' },
+      });
+      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers['X-Forwarded-For']).toBe('203.0.113.5, 10.0.4.2');
+    });
+
+    it('omits X-Forwarded-For from the outbound fetch when the incoming request carries none', async () => {
+      const req = makeRequest('/api/preferences');
+      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers['X-Forwarded-For']).toBeUndefined();
     });
   });
 });

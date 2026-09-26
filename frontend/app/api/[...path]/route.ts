@@ -11,9 +11,12 @@ import { getSiteOrigin } from '@/lib/siteOrigin';
 //
 // The OIDC login flow (`/auth/login`, `/auth/callback`) also runs through
 // this proxy, which adds two more requirements beyond a plain body/status
-// passthrough: the incoming `Cookie` header must reach `api` (so
-// `/auth/session` and `/auth/callback` can read the session/state cookies
-// the browser is holding), and every `Set-Cookie` `api` sends back must
+// passthrough: the session/login-state cookies named by
+// `FORWARDED_COOKIE_NAMES` below must reach `api` (so `/auth/session` and
+// `/auth/callback` can read whichever of the two the browser is holding --
+// NOT the whole incoming `Cookie` header verbatim; see that constant's own
+// doc comment for why only these two, added for the 2026-09-26 "Repeater
+// Signal" review's finding L5), and every `Set-Cookie` `api` sends back must
 // reach the browser unmodified (so it can store the session cookie
 // `/auth/callback` and `/auth/logout` set). `/auth/login` and
 // `/auth/callback` also respond with `3xx` redirects that must be handed
@@ -58,6 +61,55 @@ import { getSiteOrigin } from '@/lib/siteOrigin';
 // straight through with no prefix inserted, since the backend already
 // expects it bare.
 const ROOT_MOUNTED_PREFIXES = new Set(['Train', 'Journeys', 'JourneyTemplates', 'Trips']);
+
+// The two cookies this proxy's own backend routes can ever need --
+// `distant_signal_session` (`SESSION_COOKIE_NAME`, matching
+// `crates/api/src/auth.rs` and `lib/api.ts`'s own copy of this constant) for
+// every ordinary authenticated request, and `distant_signal_login`
+// (`LOGIN_STATE_COOKIE_NAME`, `crates/api/src/auth.rs`) for `GET
+// /auth/callback` alone, which reads it to look up the PKCE verifier/nonce/
+// csrf_state `GET /auth/login` stored server-side under it moments earlier.
+//
+// Forwarding the whole incoming `Cookie` header verbatim (this proxy's own
+// shape until the 2026-09-26 "Repeater Signal" review, finding L5) shipped
+// every OTHER cookie this origin might ever hold -- an analytics/consent
+// cookie a future feature adds, say -- to the backend's own separate origin
+// unconditionally, on every one of the ~50 call sites through this proxy.
+// `lib/api.ts`'s own `cookieForwardInit` was already narrowed to just the
+// session cookie for exactly this reason (Signal Box Audit, flib Low
+// finding); this mirrors that fix here, widened by the one extra cookie this
+// proxy alone needs that no SSR `fetch` in `lib/api.ts` ever does (no page
+// render ever needs the short-lived, mid-login-flow state cookie).
+const SESSION_COOKIE_NAME = 'distant_signal_session';
+const LOGIN_STATE_COOKIE_NAME = 'distant_signal_login';
+const FORWARDED_COOKIE_NAMES: readonly string[] = [SESSION_COOKIE_NAME, LOGIN_STATE_COOKIE_NAME];
+
+/** Rebuilds a `Cookie` header value carrying only `FORWARDED_COOKIE_NAMES`
+ * out of whatever the browser's own request carried -- see that constant's
+ * own doc comment for why. Returns `null` (no `Cookie` header at all) when
+ * neither is present, matching `cookieForwardInit`'s own "omit the header
+ * entirely" shape in `lib/api.ts`.
+ *
+ * A plain manual split rather than a cookie-parsing dependency: a cookie
+ * pair's name can't itself contain `;` or `=` (RFC 6265 §4.1.1's `cookie-av`
+ * grammar), so splitting on `;` and then the FIRST `=` is exact for
+ * extracting a pair's name, never a best-effort heuristic -- the value may
+ * itself validly contain further `=` characters (e.g. base64url padding-free
+ * output never does, but this doesn't assume that), which `slice(eq + 1)`
+ * preserves whole rather than also splitting on. */
+function forwardedCookieHeader(rawCookieHeader: string | null): string | null {
+  if (!rawCookieHeader) return null;
+  const forwarded: string[] = [];
+  for (const pair of rawCookieHeader.split(';')) {
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    const name = pair.slice(0, eq).trim();
+    if (FORWARDED_COOKIE_NAMES.includes(name)) {
+      forwarded.push(`${name}=${pair.slice(eq + 1).trim()}`);
+    }
+  }
+  return forwarded.length > 0 ? forwarded.join('; ') : null;
+}
 
 // Next.js decodes each catch-all segment before populating `path`, so a
 // segment can legitimately contain a *decoded* `#`, `?`, or `/` (from an
@@ -161,9 +213,28 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   const headers: Record<string, string> = {
     'Content-Type': req.headers.get('content-type') ?? 'application/json',
   };
-  const cookie = req.headers.get('cookie');
+  const cookie = forwardedCookieHeader(req.headers.get('cookie'));
   if (cookie) {
     headers.Cookie = cookie;
+  }
+  // Forward whatever `X-Forwarded-For` this app's own Ingress already set on
+  // the incoming request (`charts/distant-signal/templates/ingress.yaml` --
+  // a plain host-routed `nginx` Ingress, which sets this header itself on
+  // every request it forwards, same as any standard reverse proxy) through
+  // to the backend fetch call -- same reasoning as the Origin/Referer
+  // forwarding immediately below: Node's own `fetch` does not carry over ANY
+  // of the inbound request's headers automatically, so without this, every
+  // request `api` ever saw through this proxy looked like it came from the
+  // frontend pod's own address, with nothing to attribute a future per-IP
+  // rate limit (on `/auth/login`, say) to the real client (2026-09-26
+  // review, finding L16). This app's own Next.js server (App Router route
+  // handlers, this Next.js version) exposes no lower-level access to the raw
+  // TCP peer address of the request it received to append its own hop onto
+  // the chain -- what's relayed here is exactly what the Ingress already put
+  // in the header, unmodified.
+  const forwardedFor = req.headers.get('x-forwarded-for');
+  if (forwardedFor) {
+    headers['X-Forwarded-For'] = forwardedFor;
   }
   // Forward the browser's own Origin/Referer through verbatim -- api's
   // own strict same-origin check on POST /auth/logout (2026-09-25

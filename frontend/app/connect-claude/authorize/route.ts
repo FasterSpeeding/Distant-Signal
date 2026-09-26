@@ -3,9 +3,12 @@ import { getSiteOrigin } from '@/lib/siteOrigin';
 
 // SESSION_COOKIE_NAME, crates/api/src/auth.rs:63 -- must match exactly. This
 // route is the one place in frontend/ that reads this cookie's raw value
-// directly (rather than forwarding the whole Cookie header verbatim, the
-// way app/api/[...path]/route.ts does) -- see Open questions/risks #3 of
+// directly (rather than forwarding a `Cookie` header on through to `api` at
+// all) -- see Open questions/risks #3 of
 // docs/superpowers/plans/2026-09-02-embedded-chatbot-shared-foundation-and-option-c.md.
+// (`app/api/[...path]/route.ts` forwards only this cookie and the OIDC
+// login-state one by name, not the whole `Cookie` header verbatim, since
+// the 2026-09-26 "Repeater Signal" review's finding L5.)
 const SESSION_COOKIE_NAME = 'distant_signal_session';
 
 function railMcpBaseUrl(): string {
