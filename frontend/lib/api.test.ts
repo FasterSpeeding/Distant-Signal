@@ -544,6 +544,15 @@ describe('api client', () => {
   // (there is no redesign of the auth UI here), but only the genuine
   // failure leaves a trace.
   describe('getSessionOrLoggedOut', () => {
+    // Each test below installs its own `console.error` spy and counts its
+    // calls. Since Vitest 4, `vi.spyOn` on a method that is already a spy
+    // returns that same spy (with its accumulated calls) instead of wrapping
+    // it afresh, so the spies must be restored between tests for each
+    // test's call count to cover only its own run.
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     it('returns the confirmed session as-is on success, logging nothing', async () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.stubGlobal(
