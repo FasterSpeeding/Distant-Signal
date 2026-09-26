@@ -495,11 +495,30 @@ async fn get_trains_search(
         ));
     };
 
+    // Batched destination-name enrichment, closing the gap
+    // `render::calling_point_departure_json`'s own doc comment now
+    // documents: `TrainSearchForm.tsx` used to render a bare
+    // `destinationCrs` code with no name, unlike every other departure
+    // board in this crate (`station_departure_json`/`schedule_departure_json`
+    // both already resolve one). Same batched-lookup shape
+    // `routes::departures::get_station_departures` already established:
+    // collect every row's `destination_crs`, resolve them all in one query,
+    // hand the map to the renderer.
+    let destination_crs: Vec<String> = page
+        .departures
+        .iter()
+        .filter_map(|d| d.get("destination_crs").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let destination_names = queries::station_names_for_crs_batch(&app.database, &destination_crs)
+        .await
+        .map_err(internal_error)?;
+
     Ok(Json(json!({
         "results": page
             .departures
             .iter()
-            .map(|row| calling_point_departure_json(row, &station))
+            .map(|row| calling_point_departure_json(row, &station, &destination_names))
             .collect::<Vec<Value>>(),
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
     })))

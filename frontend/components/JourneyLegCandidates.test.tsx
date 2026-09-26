@@ -135,6 +135,35 @@ describe('JourneyLegCandidates', () => {
     await screen.findByText(/No scheduled trains match this window\./);
   });
 
+  // Regression: the train's own route in the dimmed subtitle used to show
+  // ONLY the bare `destinationCrs` code -- the backend now resolves a
+  // `destinationName` alongside it (`render::calling_point_departure_json`,
+  // threaded through `leg_candidate_json`), and this row must prefer the
+  // name when one resolved. `CANDIDATES_FIXTURE`'s own rows have no
+  // `destinationName`, so this uses a dedicated response rather than
+  // mutating the shared fixture every other test in this file also relies
+  // on for its exact 'Train C11052 · BRI → PAD' text.
+  it('prefers destinationName over the bare destinationCrs in the train route subtitle', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        candidates: () =>
+          new Response(
+            JSON.stringify({
+              results: [{ ...CANDIDATES_FIXTURE.results[0], destinationName: 'London Paddington' }],
+              nextCursor: null,
+            }),
+            { status: 200 },
+          ),
+      }),
+    );
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(await screen.findByText('Train C11052 · BRI → London Paddington')).toBeInTheDocument();
+  });
+
   it('leads each row with the traveller\'s own leg times, not the train\'s route', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(

@@ -83,12 +83,13 @@ function searchBody(
     stationCrs: string;
     originCrs: string | null;
     destinationCrs: string | null;
+    destinationName?: string | null;
     destinationArrival?: string | null;
   }>,
   nextCursor: string | null = null,
 ) {
   return JSON.stringify({
-    results: rows.map((row) => ({ destinationArrival: null, ...row })),
+    results: rows.map((row) => ({ destinationArrival: null, destinationName: null, ...row })),
     nextCursor,
   });
 }
@@ -520,6 +521,43 @@ describe('TrainSearchForm', () => {
     await clickSearch();
 
     expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
+  });
+
+  // Regression: `destinationCrs` used to be the ONLY thing this row could
+  // show for a destination -- the backend now resolves a `destinationName`
+  // alongside it (`render::calling_point_departure_json`), and this row
+  // must prefer the name when one resolved, falling back to the bare code
+  // otherwise (a row with no name, or a response from a backend build
+  // predating this field entirely, must render exactly as it did before).
+  it('prefers destinationName over the bare destinationCrs when one resolves', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: () =>
+          new Response(
+            searchBody([
+              {
+                uid: 'C10001',
+                scheduled: '08:22',
+                stationCrs: 'MAN',
+                originCrs: 'EUS',
+                destinationCrs: 'WAT',
+                destinationName: 'London Waterloo',
+              },
+              { uid: 'C10002', scheduled: '10:05', stationCrs: 'MAN', originCrs: 'CRE', destinationCrs: 'WAT' },
+            ]),
+            { status: 200 },
+          ),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    await clickSearch();
+
+    expect(await screen.findByText('08:22 · EUS → MAN → London Waterloo')).toBeInTheDocument();
+    // The second row has no destinationName in this response -- falls back
+    // to the bare code exactly as before this field existed.
     expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
   });
 

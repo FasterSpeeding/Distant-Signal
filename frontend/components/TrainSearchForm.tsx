@@ -73,6 +73,14 @@ interface TrainSearchRow {
   stationCrs: string;
   originCrs: string | null;
   destinationCrs: string | null;
+  /** Station name resolved from `destinationCrs`, `null` when unresolved
+   * (or when `destinationCrs` itself is `null`) -- same "absent from the
+   * lookup map renders `null`" contract as every other name field this app
+   * resolves from a CRS. Optional on the wire type only for backward
+   * compatibility with a response from a backend build that predates this
+   * field (`?? destinationCrs` below degrades to the bare code exactly as
+   * this row rendered before this field existed). */
+  destinationName?: string | null;
   destinationArrival: string | null;
   /** How many calendar days past the search date `destinationArrival`
    * actually falls on -- the TERMINATING calling point's own day offset,
@@ -624,7 +632,7 @@ export function TrainSearchForm({
              * belonging to the row beneath them. */
             <Group key={`${row.uid}-${row.scheduled}`} style={{ rowGap: 4 }}>
               <Text size="sm">
-                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
+                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationName ?? row.destinationCrs ?? '?'}
               </Text>
               <Group gap="sm" wrap="nowrap" style={{ marginInlineStart: 'auto' }}>
                 <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
