@@ -78,14 +78,77 @@ const singleSegmentPlan: TripPlanResponse = {
 // mock-implementation state for `restoreAllMocks` to strip, so it keeps
 // returning a real, resolved promise for the lifetime of this module,
 // across every test in this file.
+// `mock`-prefixed (per Vitest's own hoisting exception -- a `vi.mock`
+// factory can only reference outer variables named `mock*`), and read
+// live rather than via `mockResolvedValue(...)`: same C2 rationale as
+// `searchStations`/`searchTocs` below -- a plain function that reads
+// mutable state at call time has no mock-implementation state for this
+// file's own `afterEach(() => vi.restoreAllMocks())` to strip, so it keeps
+// resolving correctly for the lifetime of this module, across every test.
+// Empty by default (no test needs a resolved name unless it populates
+// this first), and cleared in `afterEach` below so one test's names never
+// leak into the next.
+const mockStationNames = new Map<string, string>();
+
 vi.mock('@/lib/suggestions', () => ({
   searchStations: async () => [],
   searchTocs: async () => [],
+  getStationNames: async () => new Map(mockStationNames),
 }));
 
 describe('PlanTripFlow', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    mockStationNames.clear();
+  });
+
+  // The bug this fixes: `GET /Trips/plan` never sends a `*Name` sibling
+  // field for its bare CRS codes (unlike every other station-bearing
+  // response in this app), so the segment heading, the "no route found"
+  // alert, and each itinerary's own leg summary all used to render ONLY
+  // the raw code -- unreadable to anyone who doesn't already know UK
+  // station codes by heart. `PlanTripFlow` now resolves every code the
+  // plan mentions itself (`getStationNames`, mocked here via
+  // `mockStationNames`) and renders `CODE — Name` wherever a bare code
+  // used to stand alone.
+  it('shows resolved station names (CODE — Name) in the segment heading and itinerary leg summary', async () => {
+    mockStationNames.set('EUS', 'London Euston');
+    mockStationNames.set('MKC', 'Milton Keynes Central');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response),
+    );
+
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    // The segment heading (an exact match -- unlike the bare-code case
+    // above, this full string is unique: the itinerary line below embeds
+    // it inside "08:00 ... 08:50", which is a DIFFERENT full string, not
+    // an ambiguous substring match).
+    await screen.findByText('EUS — London Euston → MKC — Milton Keynes Central');
+    // The itinerary's own leg summary line, same names.
+    await screen.findByText('08:00 EUS — London Euston → MKC — Milton Keynes Central 08:50');
+  });
+
+  it('falls back to bare codes in the segment heading/leg summary when no name resolves', async () => {
+    // `mockStationNames` is empty by default (cleared in `afterEach`) --
+    // this is the "lookup found nothing" case, distinct from the bug this
+    // fixes (which was "no lookup was ever attempted").
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response),
+    );
+
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    await screen.findByText('EUS → MKC');
+    await screen.findByText('08:00 EUS → MKC 08:50');
   });
 
   it('creates the journey via POST /api/Journeys after picking the only itinerary', async () => {

@@ -1,5 +1,33 @@
 import type { TripPlanResponse } from './types';
 
+/** Every distinct, non-null CRS code a `GET /Trips/plan` response mentions
+ * -- each segment's own origin/destination endpoints, AND every leg (train
+ * or transfer) of every one of its itineraries, since a leg's own
+ * origin/destination can genuinely differ from its segment's (boarding a
+ * Birmingham->Glasgow service at Crewe, alighting at Preston -- see
+ * `PlanTripFlow.tsx`'s own `handleTrackJourney` doc comment for the real
+ * example this covers). `TripPlanSegment`/`TripPlanLeg` carry bare codes
+ * only, unlike every OTHER station-bearing response in this app (which
+ * already comes back with a `*Name` sibling field resolved server-side),
+ * so `PlanTripFlow` uses this to know which codes it needs to resolve
+ * itself, via `lib/suggestions.ts`'s `getStationNames`. Pure and
+ * independently testable, matching `buildTripPlanQuery`'s own "small pure
+ * helper" convention below. */
+export function collectTripPlanStationCodes(response: TripPlanResponse): string[] {
+  const codes = new Set<string>();
+  for (const segment of response.segments) {
+    codes.add(segment.originCrs);
+    codes.add(segment.destinationCrs);
+    for (const itinerary of segment.itineraries) {
+      for (const leg of itinerary.legs) {
+        if (leg.originCrs) codes.add(leg.originCrs);
+        if (leg.destinationCrs) codes.add(leg.destinationCrs);
+      }
+    }
+  }
+  return Array.from(codes);
+}
+
 export interface TripPlanQuery {
   originCrs: string;
   destinationCrs: string;

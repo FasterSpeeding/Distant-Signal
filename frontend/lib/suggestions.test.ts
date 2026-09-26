@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { searchNearbyStations } from './suggestions';
+import { searchNearbyStations, getStationNames } from './suggestions';
 
 describe('searchNearbyStations', () => {
   afterEach(() => {
@@ -38,5 +38,68 @@ describe('searchNearbyStations', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('bad request', { status: 400 })));
 
     await expect(searchNearbyStations(0, 0)).rejects.toThrow('400');
+  });
+});
+
+describe('getStationNames', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resolves each distinct code to its exact-match name via /api/stations?q=', async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input, 'http://localhost');
+      const q = url.searchParams.get('q');
+      if (q === 'EUS') {
+        return new Response(JSON.stringify([{ code: 'EUS', name: 'London Euston' }]), { status: 200 });
+      }
+      if (q === 'MKC') {
+        return new Response(JSON.stringify([{ code: 'MKC', name: 'Milton Keynes Central' }]), { status: 200 });
+      }
+      return new Response(JSON.stringify([]), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const names = await getStationNames(['EUS', 'MKC']);
+
+    expect(names).toEqual(new Map([['EUS', 'London Euston'], ['MKC', 'Milton Keynes Central']]));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fetches each distinct code only once, even when it appears multiple times', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify([{ code: 'EUS', name: 'London Euston' }]), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getStationNames(['EUS', 'EUS', 'EUS']);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits a code with no exact-match row (substring search returned other stations only)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([{ code: 'EUSTON SQUARE', name: 'Not a real CRS' }]), { status: 200 })),
+    );
+
+    const names = await getStationNames(['ZZZ']);
+
+    expect(names.size).toBe(0);
+  });
+
+  it('omits a code whose lookup fails, without losing names for the other codes', async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input, 'http://localhost');
+      if (url.searchParams.get('q') === 'EUS') {
+        return new Response(JSON.stringify([{ code: 'EUS', name: 'London Euston' }]), { status: 200 });
+      }
+      throw new TypeError('Failed to fetch');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const names = await getStationNames(['EUS', 'MKC']);
+
+    expect(names).toEqual(new Map([['EUS', 'London Euston']]));
   });
 });
