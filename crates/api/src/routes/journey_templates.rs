@@ -195,8 +195,13 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
 fn to_template_leg_input(
     leg: TemplateLegRequest,
 ) -> Result<TemplateLegInput, (StatusCode, String)> {
-    journey_templates::validate_template_leg(&leg.origin_crs, &leg.destination_crs)
-        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    journey_templates::validate_template_leg(
+        &leg.origin_crs,
+        &leg.destination_crs,
+        &leg.depart_window,
+        &leg.arrive_window,
+    )
+    .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     Ok(TemplateLegInput {
         origin_crs: Some(leg.origin_crs.trim().to_ascii_uppercase()),
         destination_crs: Some(leg.destination_crs.trim().to_ascii_uppercase()),
