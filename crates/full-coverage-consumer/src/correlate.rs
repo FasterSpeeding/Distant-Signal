@@ -89,6 +89,15 @@ pub fn apply_movement(
             // module's exact pre-existing behavior (status only ever
             // "en_route"/"cancelled").
             *previous = trust_schema::journey::apply_movement(previous, movement, loc_crs, None);
+            // `journey::apply_movement` leaves a LATE report's delay as
+            // `None` for its caller to fill in, and this consumer never
+            // did, so `stats::synthesize_departure` read every late train
+            // as 0 minutes late and every row's `delayed` was 0 (windowed
+            // stats design, section 3.1). TRUST's own `timetable_variation`
+            // is the value.
+            if let Some(delay) = trust_schema::schema::movement_delay_minutes(movement) {
+                previous.delay_minutes = Some(delay);
+            }
             matched.push(key);
         }
     }
@@ -181,6 +190,14 @@ mod tests {
         }
     }
 
+    fn late_movement(train_id: &str, minutes: &str) -> Movement {
+        Movement {
+            variation_status: Some("LATE".to_string()),
+            timetable_variation: Some(minutes.to_string()),
+            ..movement(train_id)
+        }
+    }
+
     fn movement(train_id: &str) -> Movement {
         Movement {
             train_id: train_id.to_string(),
@@ -227,6 +244,50 @@ mod tests {
                 .derived
                 .contains_key(&("line-b".to_string(), "C11052".to_string()))
         );
+    }
+
+    /// Regression test: a LATE movement's delay comes from TRUST's
+    /// `timetable_variation`. It used to stay `None`, so every full-coverage
+    /// row read `delayed = 0`.
+    #[test]
+    fn a_late_movement_records_trusts_timetable_variation_as_the_delay() {
+        let mut state = CorrelationState::default();
+        let date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        apply_activation(&mut state, &activation("T1", "C11052"));
+        apply_movement(
+            &mut state,
+            &late_movement("T1", "12"),
+            &stanox_table(),
+            &tiploc_index_sharing_one_tiploc(),
+            &population_with_uid_in_line_a(date),
+            date,
+        );
+        let key = ("line-a".to_string(), "C11052".to_string());
+        assert_eq!(state.derived[&key].delay_minutes, Some(12));
+
+        let row = crate::stats::build_line_row(
+            "line-a",
+            date,
+            &["C11052"],
+            &state.derived,
+            true,
+            false,
+            &common::Defaults::default(),
+        );
+        assert_eq!(row.stats.delayed, 1, "12 minutes late is delayed at 5");
+        assert_eq!(row.stats.avg_delay_minutes, 12.0);
+
+        // A later ON TIME report at the line overwrites it (last write
+        // wins, as for every other DerivedState field).
+        apply_movement(
+            &mut state,
+            &movement("T1"),
+            &stanox_table(),
+            &tiploc_index_sharing_one_tiploc(),
+            &population_with_uid_in_line_a(date),
+            date,
+        );
+        assert_eq!(state.derived[&key].delay_minutes, Some(0));
     }
 
     #[test]
