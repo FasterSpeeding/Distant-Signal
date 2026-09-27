@@ -86,6 +86,8 @@ const REAL_STATION_CRS = process.env.E2E_REAL_STATION_CRS ?? 'PAD';
 //    in `components/JourneyProgress.test.tsx`'s "keyboard reachability"
 //    block, exactly as before.
 const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE;
+const LEGAL_PAGES_RENDERED =
+  process.env.LEGAL_PAGES_PREVIEW === 'true' || process.env.LEGAL_PAGES_PUBLISHED === 'true';
 const GROUP_ID = process.env.E2E_GROUP_ID;
 const GROUP_INVITE_TOKEN = process.env.E2E_GROUP_INVITE_TOKEN;
 const CUSTOM_LINE_ID = process.env.E2E_CUSTOM_LINE_ID;
@@ -223,6 +225,18 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/track/mine/add-ticket (anonymous login prompt)', '/track/mine/add-ticket'],
   ['/groups (anonymous login prompt)', '/groups'],
   ['/chat (anonymous login prompt)', '/chat'],
+  ['/attribution', '/attribution'],
+  // The draft legal pages 404 unless the server has LEGAL_PAGES_PREVIEW or
+  // LEGAL_PAGES_PUBLISHED on (frontend/lib/legal.ts). CI sets
+  // LEGAL_PAGES_PREVIEW for this job, and the same env reaches this process.
+  ...(LEGAL_PAGES_RENDERED
+    ? ([
+        ['/privacy', '/privacy'],
+        ['/terms', '/terms'],
+        ['/cookies', '/cookies'],
+        ['/contact', '/contact'],
+      ] as [string, string][])
+    : []),
 ];
 
 test.describe('accessibility: anonymous, light scheme', () => {

@@ -4,10 +4,19 @@ import { describe, it, expect } from 'vitest';
 // crawler actually receives, not just the object. It's an internal module
 // path; if a Next upgrade moves it, update this import.
 import { resolveRobots } from 'next/dist/build/webpack/loaders/metadata/resolve-route-data';
-import { AI_TRAINING_CRAWLERS, buildRobots } from './robots';
+import { AI_TRAINING_CRAWLERS, BLOCK_AI_TRAINING_CRAWLERS, buildRobots } from './robots';
 
 const render = (...args: Parameters<typeof buildRobots>) => resolveRobots(buildRobots(...args));
 const lines = (text: string) => text.split('\n');
+/** Lines of the `User-Agent: *` group only: from its header up to the blank
+ * line that ends it. The AI-crawler group's `Disallow: /` must not count
+ * against the general rules. */
+const starGroup = (text: string) => {
+  const all = lines(text);
+  const start = all.indexOf('User-Agent: *');
+  const end = all.indexOf('', start);
+  return all.slice(start, end === -1 ? undefined : end);
+};
 
 describe('buildRobots', () => {
   it('allows the site by default and re-allows only /journeys/new under /journeys/', () => {
@@ -34,7 +43,7 @@ describe('buildRobots', () => {
   });
 
   it('keeps token-bearing share and invite links behind a disallowed prefix', () => {
-    const disallowed = lines(render({ origin: undefined }))
+    const disallowed = starGroup(render({ origin: undefined }))
       .filter((l) => l.startsWith('Disallow: '))
       .map((l) => l.slice('Disallow: '.length));
     for (const tokenPath of ['/journeys/shared/abc123', '/groups/join/abc123', '/chat/callback']) {
@@ -43,7 +52,7 @@ describe('buildRobots', () => {
   });
 
   it('does not disallow the public pages', () => {
-    const disallowed = lines(render({ origin: undefined }))
+    const disallowed = starGroup(render({ origin: undefined }))
       .filter((l) => l.startsWith('Disallow: '))
       .map((l) => l.slice('Disallow: '.length))
       // Wildcard rules are checked separately above.
@@ -64,6 +73,11 @@ describe('buildRobots', () => {
       '/incidents/42',
       '/connect-claude',
       '/track',
+      '/attribution',
+      '/privacy',
+      '/terms',
+      '/cookies',
+      '/contact',
     ]) {
       expect(disallowed.filter((prefix) => publicPath.startsWith(prefix))).toEqual([]);
     }
@@ -87,8 +101,24 @@ describe('buildRobots', () => {
     expect(text).toMatch(/^Sitemap: https:\/\/ds\.example\/sitemap\.xml$/m);
   });
 
-  it('does not block AI training crawlers by default', () => {
-    const text = render({ origin: undefined });
+  it('blocks AI training crawlers by default (owner decision, 2026-09-27)', () => {
+    expect(BLOCK_AI_TRAINING_CRAWLERS).toBe(true);
+    const out = lines(render({ origin: undefined }));
+    for (const ua of AI_TRAINING_CRAWLERS) {
+      expect(out).toContain(`User-Agent: ${ua}`);
+    }
+    const lastUa = out.lastIndexOf(`User-Agent: ${AI_TRAINING_CRAWLERS.at(-1)}`);
+    expect(out[lastUa + 1]).toBe('Disallow: /');
+  });
+
+  it('keeps the general rules for every other crawler when AI crawlers are blocked', () => {
+    const out = lines(render({ origin: undefined }));
+    expect(out[0]).toBe('User-Agent: *');
+    expect(out).toContain('Allow: /');
+  });
+
+  it('does not block AI training crawlers when the toggle is off', () => {
+    const text = render({ origin: undefined, blockAiTrainingCrawlers: false });
     for (const ua of AI_TRAINING_CRAWLERS) {
       expect(text).not.toContain(`User-Agent: ${ua}`);
     }

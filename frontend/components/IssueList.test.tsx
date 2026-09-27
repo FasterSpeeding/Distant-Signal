@@ -869,4 +869,32 @@ describe('IssueList', () => {
       expect(within(sourceGroup).getAllByRole('checkbox')).toHaveLength(5);
     });
   });
+
+  // LEG-16: rows whose status came from a Knowledgebase incident may have
+  // had their severity or timing adjusted by the enricher's LLM.
+  it('badges knowledgebase-sourced rows as AI-assisted, and only those', () => {
+    const kb: LineStatus = {
+      ...minorNow,
+      disruption: {
+        category: 'RealTime',
+        description: 'Full details here',
+        affectedStops: [],
+        affectedRoutes: [],
+        source: 'knowledgebase-incident-123',
+        impactType: null,
+      },
+    };
+    const { container, unmount } = renderWithMantine(<IssueList items={toItems([kb])} now={NOW} />);
+    const badge = container.querySelector('[data-ai-badge]');
+    expect(badge).not.toBeNull();
+    expect(badge).toHaveAccessibleDescription(/may be inaccurate/);
+    // Not focusable: it sits inside the accordion's button.
+    expect(badge).not.toHaveAttribute('tabindex');
+    unmount();
+
+    const other = renderWithMantine(
+      <IssueList items={toItems([{ ...kb, disruption: { ...kb.disruption!, source: 'ldbws-sampling' } }])} now={NOW} />,
+    );
+    expect(other.container.querySelector('[data-ai-badge]')).toBeNull();
+  });
 });

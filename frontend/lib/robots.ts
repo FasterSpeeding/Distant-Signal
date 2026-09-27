@@ -50,9 +50,10 @@ export const DISALLOWED_PATHS: readonly string[] = [
  * caught by the query-string rule. */
 export const ALLOWED_PATHS: readonly string[] = ['/', '/journeys/new$'];
 
-/** Crawlers that collect content to train AI models. **Not blocked by
- * default.** To opt out, set `BLOCK_AI_TRAINING_CRAWLERS` to `true`: each
- * of these user agents then gets `Disallow: /`. `Google-Extended` and
+/** Crawlers that collect content to train AI models. **Blocked**: the
+ * owner opted out of AI training (2026-09-27), so `BLOCK_AI_TRAINING_CRAWLERS`
+ * is `true` and each of these user agents gets `Disallow: /`. Set it back to
+ * `false` to allow them again. `Google-Extended` and
  * `Applebot-Extended` are control tokens rather than separate crawlers.
  * Blocking them opts out of AI training without affecting normal Google or
  * Apple search indexing.
@@ -74,7 +75,7 @@ export const AI_TRAINING_CRAWLERS: readonly string[] = [
 ];
 
 /** Owner toggle. See `AI_TRAINING_CRAWLERS`. */
-export const BLOCK_AI_TRAINING_CRAWLERS = false;
+export const BLOCK_AI_TRAINING_CRAWLERS = true;
 
 /** Path of the app's sitemap, relative to the site origin. `null` because
  * the app doesn't have one yet. If an `app/sitemap.ts` is added, set this

@@ -7,16 +7,22 @@ import { incidentIdFromSource } from '@/lib/incidents';
 import { impactTypeLabel } from '@/lib/impactType';
 import { incidentSourceLabel } from '@/lib/incidentSource';
 import { TextLink } from './TextLink';
+import { AiGeneratedBadge, ENRICHED_INCIDENT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 
 export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
   const incidentId = incidentIdFromSource(disruption.source);
   const impactLabel = impactTypeLabel(disruption.impactType);
+  const enriched = isEnricherInfluenced(disruption.source);
   return (
     <Stack gap="xs">
       {impactLabel && (
-        <Badge variant="light" color="orange" w="fit-content">
-          {impactLabel}
-        </Badge>
+        <Group gap="xs">
+          <Badge variant="light" color="orange" w="fit-content">
+            {impactLabel}
+          </Badge>
+          {/* `impactType` only ever comes from the enricher's LLM output. */}
+          {enriched && <AiGeneratedBadge note={ENRICHED_INCIDENT_NOTE} />}
+        </Group>
       )}
       {/* `data-rich-text`: the CSS hook for `app/globals.css`'s
           `[data-rich-text] a` rule. Anchors inside knowledgebase incident
@@ -55,6 +61,13 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
         // nothing is lost by not printing it.
         <Text size="xs" c="dimmed" title={disruption.source ?? undefined}>
           Source: {incidentSourceLabel(disruption.source)}
+        </Text>
+      )}
+      {enriched && (
+        // Visible, not tooltip-only: this is the one place a sighted
+        // keyboard user can read the AI note (the badges are not focusable).
+        <Text size="xs" c="dimmed" data-ai-note>
+          {ENRICHED_INCIDENT_NOTE}
         </Text>
       )}
       {incidentId && (

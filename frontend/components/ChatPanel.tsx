@@ -9,6 +9,7 @@ import type { RenderedTrainLeg } from '@/lib/types';
 import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
+import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent } from '@/lib/chatTurn';
 
 interface ChatMessage {
@@ -157,6 +158,10 @@ export function ChatPanel() {
           ))}
         </Stack>
       </ScrollArea>
+      {/* LEG-16: always visible, so it is read before the first answer. */}
+      <Text size="xs" c="dimmed" data-ai-note>
+        {CHAT_AI_NOTE}
+      </Text>
       <form onSubmit={handleSubmit}>
         <Group gap="xs" align="flex-end">
           <TextInput
@@ -333,6 +338,11 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
           `app/connect-claude/page.tsx`'s own informational `Alert` moved
           off blue. */}
       <Card withBorder padding="sm" radius="md" maw="80%" bg={isUser ? 'grape.0' : undefined}>
+        {!isUser && (
+          <Group gap={4} mb={4}>
+            <AiGeneratedBadge label="AI-generated" note={CHAT_AI_NOTE} />
+          </Group>
+        )}
         <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content || (isUser ? '' : '…')}</Text>
       </Card>
       {message.legs.map((leg, index) => (

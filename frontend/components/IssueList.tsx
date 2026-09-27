@@ -26,6 +26,7 @@ import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
 import { isGoodSeverity } from '@/lib/severity';
 import { impactTypeLabel } from '@/lib/impactType';
+import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 import { coverageProvenanceNote } from '@/lib/sampleStats';
 
 type ActiveFilter = 'all' | IssueBucket;
@@ -461,6 +462,11 @@ export function IssueList({
                     <Badge variant="light" size="sm" color="orange">
                       {impactTypeLabel(status.disruption?.impactType)}
                     </Badge>
+                  )}
+                  {/* LEG-16: severity, the reason's timing annotations and
+                      `impactType` may come from the incident enricher's LLM. */}
+                  {isEnricherInfluenced(status.disruption?.source) && (
+                    <AiGeneratedBadge note={ENRICHED_INCIDENT_SHORT_NOTE} />
                   )}
                   {(linesByStatus.get(status) ?? []).length > 1 && (
                     <Badge variant="outline" size="sm" color="gray">
