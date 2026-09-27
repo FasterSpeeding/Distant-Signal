@@ -305,11 +305,7 @@ pub async fn upsert_incidents(
         }
     };
     for incident_id in text_changed_ids {
-        let result: redis::RedisResult<String> = redis::cmd("XADD")
-            .arg("incident-text-changed")
-            .arg("*")
-            .arg("incident_id")
-            .arg(&incident_id)
+        let result: redis::RedisResult<String> = text_changed_xadd(&incident_id)
             .query_async(&mut redis)
             .await;
         if let Err(err) = result {
@@ -320,7 +316,30 @@ pub async fn upsert_incidents(
     Ok(count)
 }
 
+/// Approximate cap on the `incident-text-changed` stream (API-8). The api
+/// is its only producer and nothing else trims it, so an enricher that is
+/// down, or never catches up, would otherwise grow it without bound in the
+/// same Redis that runs `maxmemory` for the movement streams. Text changes
+/// are rare (tens a day), so 10,000 entries is weeks of backlog; anything
+/// trimmed unprocessed is caught by the enricher's hourly sweep.
+const INCIDENT_TEXT_CHANGED_MAXLEN: usize = 10_000;
+
+/// `XADD incident-text-changed MAXLEN ~ <cap> * incident_id <id>`. `~` lets
+/// Redis trim whole macro-nodes only, so the cap costs nothing per write.
+fn text_changed_xadd(incident_id: &str) -> redis::Cmd {
+    let mut cmd = redis::cmd("XADD");
+    cmd.arg("incident-text-changed")
+        .arg("MAXLEN")
+        .arg("~")
+        .arg(INCIDENT_TEXT_CHANGED_MAXLEN)
+        .arg("*")
+        .arg("incident_id")
+        .arg(incident_id);
+    cmd
+}
+
 /// Upserts a batch of station reference records. No history — this is
+
 /// reference data, not an event stream (see the reference-data migration's
 /// comment).
 pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Result<u64> {
@@ -6121,6 +6140,28 @@ pub async fn station_names_for_crs_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// API-8: the text-changed publish carries an approximate MAXLEN cap.
+    #[test]
+    fn text_changed_xadd_caps_the_stream() {
+        let packed = String::from_utf8(text_changed_xadd("INC-1").get_packed_command()).unwrap();
+        // RESP: `*<n>` then a `$<len>`, `<value>` pair per argument.
+        let parts: Vec<&str> = packed.trim_end().split("\r\n").collect();
+        let args: Vec<&str> = parts[1..].chunks(2).map(|pair| pair[1]).collect();
+        assert_eq!(
+            args,
+            [
+                "XADD",
+                "incident-text-changed",
+                "MAXLEN",
+                "~",
+                "10000",
+                "*",
+                "incident_id",
+                "INC-1"
+            ]
+        );
+    }
 
     fn existing(summary: &str, description: &str, validity: serde_json::Value) -> ExistingIncident {
         ExistingIncident {
