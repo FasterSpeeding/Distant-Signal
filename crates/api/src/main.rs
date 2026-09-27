@@ -284,7 +284,7 @@ async fn server_main() -> anyhow::Result<()> {
     //
     // The migrations then run on their own connection, not the request
     // pool: lock_timeout 10s and a statement_timeout under the startup
-    // probe's 300s budget instead of the pool's 60s, after dropping any
+    // probe's 900s budget instead of the pool's 60s, after dropping any
     // INVALID index a failed CREATE INDEX CONCURRENTLY left behind. See
     // `api::migrate`.
     let migrate = async {
