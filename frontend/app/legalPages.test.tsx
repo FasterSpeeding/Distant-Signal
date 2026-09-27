@@ -7,7 +7,7 @@ import PrivacyPage, { dynamic as privacyDynamic, generateMetadata as PrivacyGene
 import TermsPage, { dynamic as termsDynamic } from './terms/page';
 import CookiesPage, { dynamic as cookiesDynamic } from './cookies/page';
 import ContactPage, { dynamic as contactDynamic } from './contact/page';
-import AttributionPage from './attribution/page';
+import AttributionPage, { dynamic as attributionDynamic } from './attribution/page';
 
 // Real Next throws from notFound(); mirror that so an unpublished page never
 // renders past the gate.
@@ -92,6 +92,10 @@ describe('draft legal pages', () => {
 });
 
 describe('/attribution', () => {
+  it('renders per request, so its footer reads the runtime legal-pages flag', () => {
+    expect(attributionDynamic).toBe('force-dynamic');
+  });
+
   it('is always public, whatever the legal pages flag says', () => {
     renderWithMantine(AttributionPage());
     expect(screen.getByRole('heading', { level: 1, name: 'Data sources and licences' })).toBeInTheDocument();

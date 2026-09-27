@@ -2,6 +2,11 @@ import { Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { OpenDataAttributionDetails } from '@/components/OpenDataAttribution';
 
+// Render per request so the footer's legal links (lib/legal.ts, read at
+// request time) are right on this page too. Without it Next prerenders this
+// page at build time, with the flags as they were in the image build.
+export const dynamic = 'force-dynamic';
+
 const METADATA_TITLE = 'Data sources and licences — Distant Signal';
 const METADATA_DESCRIPTION =
   'The open data Distant Signal uses, with the attribution each licence requires: National Rail, Network Rail, RSP, TfL, the National Transport Authority, Iarnród Éireann and Translink.';

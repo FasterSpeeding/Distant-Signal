@@ -95,6 +95,13 @@ function ExternalLink({ href, children }: { href: string; children: ReactNode })
   );
 }
 
+/** The legal links are decided at render time. Routes Next prerenders at
+ * build time (`○` in the `next build` route list: today `/stations`,
+ * `/lines/new`, `/groups/new`, `/journeys/new`, `/chat/callback`) render
+ * this footer once, with the flags as the build saw them, so they only
+ * show the legal links if the flag was set for the image build. Every
+ * per-request route, including the legal pages and `/attribution`, reads
+ * the runtime value. */
 export function OpenDataAttribution() {
   const legalLinks = legalPagesVisible() ? LEGAL_LINKS : [];
   return (
