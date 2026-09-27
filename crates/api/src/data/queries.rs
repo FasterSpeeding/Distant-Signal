@@ -2102,8 +2102,13 @@ pub async fn upsert_schedule_destination_departures_chunk(
 ///
 /// `first_chunk` discards staged keys left by any OTHER publish of the same
 /// dates (an abandoned, failed-part-way publish, or a concurrent publisher
-/// that has now been superseded) and anything staged more than a day ago,
+/// that has now been superseded) and anything staged more than an hour ago,
 /// so the staging tables hold at most about one in-flight publish per date.
+/// (An hour, not the original day, since 2026-09-27: a publish takes minutes,
+/// and a cycle whose final chunks all fail -- as every date's did in that
+/// day's incident -- otherwise leaves every date's keys, ~1.8M rows, staged
+/// for a day. A publish still in flight after an hour losing its keys only
+/// fails its count check: it deletes nothing.)
 ///
 /// # Visibility
 ///
@@ -2213,7 +2218,7 @@ const DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
     product: "schedule_destination_departures",
     discard_superseded: "DELETE FROM schedule_destination_departures_publish_keys \
          WHERE (service_date = ANY($2::date[]) AND publish_id <> $1) \
-            OR staged_at < now() - interval '1 day'",
+            OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
     analyze: "ANALYZE schedule_destination_departures_publish_keys",
@@ -2236,7 +2241,7 @@ const CALLING_POINTS_FULL_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
     product: "schedule_calling_points_full",
     discard_superseded: "DELETE FROM schedule_calling_points_full_publish_keys \
          WHERE (service_date = ANY($2::date[]) AND publish_id <> $1) \
-            OR staged_at < now() - interval '1 day'",
+            OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
     analyze: "ANALYZE schedule_calling_points_full_publish_keys",

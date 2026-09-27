@@ -399,6 +399,30 @@ pub(crate) fn build_internal_oauth_routes(
     ]
 }
 
+/// Session settings sent at connect time on every `api` pool connection so
+/// Postgres notices a client that has gone away (2026-09-27 incident: the
+/// server's defaults are all 0, and schedule publish deletes kept running
+/// for many minutes on behalf of an `api` pod that had already died --
+/// sqlx does not cancel a query when the future awaiting it is dropped).
+///
+/// * `client_connection_check_interval` (PG 14+; production runs 16) makes
+///   a long-running query poll its socket and abort once the client is gone.
+/// * The TCP keepalives turn a peer that vanished without a FIN/RST (a
+///   killed pod, a dropped node) into a closed socket that check can see:
+///   ~60s idle + 6 x 10s probes.
+///
+/// All are user-settable, so they go in the startup packet's `options`.
+const DEAD_CLIENT_DETECTION_SETTINGS: [(&str, &str); 4] = [
+    ("client_connection_check_interval", "10s"),
+    ("tcp_keepalives_idle", "60"),
+    ("tcp_keepalives_interval", "10"),
+    ("tcp_keepalives_count", "6"),
+];
+
+fn with_dead_client_detection(options: PgConnectOptions) -> PgConnectOptions {
+    options.options(DEAD_CLIENT_DETECTION_SETTINGS)
+}
+
 /// Startup guard (2026-09-25 Low-severity auth-core review): the
 /// user-facing SSO client and the internal-service OAuth2 client must
 /// never be configured with the SAME `client_id` -- see the call site in
@@ -488,8 +512,9 @@ impl AppState {
             .database_url
             .parse()
             .context("could not parse DATABASE_URL")?;
-        let connect_options =
-            connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10));
+        let connect_options = with_dead_client_detection(
+            connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10)),
+        );
 
         let db = PgPoolOptions::new()
             .max_connections(50)
@@ -684,5 +709,36 @@ mod internal_oauth_startup_guard_tests {
             .expect_err("identical client ids must be rejected at startup");
         assert!(err.to_string().contains("sso_client_id"));
         assert!(err.to_string().contains("internal_oauth_client_id"));
+    }
+}
+
+#[cfg(test)]
+mod dead_client_detection_tests {
+    use super::*;
+
+    /// The settings actually reach the session (and are accepted by the
+    /// server -- an unknown one would fail the connection outright).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                dead_client_detection -- --ignored`"]
+    async fn pool_connections_carry_the_dead_client_detection_settings() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let options: PgConnectOptions = database_url.parse().expect("parse DATABASE_URL");
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(with_dead_client_detection(options))
+            .await
+            .expect("connect with the settings");
+        for (name, expected) in [
+            ("client_connection_check_interval", "10s"),
+            ("tcp_keepalives_count", "6"),
+        ] {
+            let value: String = sqlx::query_scalar(&format!("SHOW {name}"))
+                .fetch_one(&pool)
+                .await
+                .expect("SHOW setting");
+            assert_eq!(value, expected, "{name}");
+        }
     }
 }
