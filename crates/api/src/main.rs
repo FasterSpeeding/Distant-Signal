@@ -289,11 +289,11 @@ async fn server_main() -> anyhow::Result<()> {
     // `api::migrate`.
     let migrate = async {
         data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
-        let migration_options: sqlx::postgres::PgConnectOptions = app
-            .config
-            .database_url
-            .parse()
-            .context("could not parse DATABASE_URL")?;
+        let migration_options: sqlx::postgres::PgConnectOptions =
+            app.config
+                .database_url
+                .parse()
+                .context("could not parse DATABASE_URL")?;
         api::migrate::run(
             api::app::with_dead_client_detection(migration_options),
             api::migrate::MigrationSettings::from_env()?,
