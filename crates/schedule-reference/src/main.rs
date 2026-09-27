@@ -278,24 +278,66 @@ fn build_schedule_index_from_file(
 struct CycleOutcome {
     retryable_failures: Vec<String>,
     permanent_failures: Vec<String>,
+    /// Products `api` refused as bad data (400/413/422) for this delivery,
+    /// this cycle or an earlier one: counted in `permanent_failures` (so the
+    /// in-memory marker may advance but the durable one is not written) and
+    /// skipped by later cycles of the same delivery (DQ6/SCHED-1).
+    rejected: std::collections::HashSet<String>,
     /// Every product key published for this delivery, this cycle or an
     /// earlier one in this process.
     published: std::collections::HashSet<String>,
 }
 
 impl CycleOutcome {
-    /// Starts a cycle for a delivery that has already published `published`.
-    fn resuming(published: std::collections::HashSet<String>) -> Self {
+    /// Starts a cycle for a delivery that has already published `published`
+    /// and had `rejected` refused by `api` (see [`Self::rejected`]).
+    fn resuming(
+        published: std::collections::HashSet<String>,
+        rejected: std::collections::HashSet<String>,
+    ) -> Self {
         Self {
             published,
+            permanent_failures: rejected.iter().cloned().collect(),
+            rejected,
             ..Self::default()
         }
     }
 
-    /// Whether `product` was already published for this delivery, so this
-    /// cycle can skip it.
+    /// Whether this cycle can skip `product`: it was already published for
+    /// this delivery, or `api` already rejected it (retrying the same data
+    /// would be rejected the same way).
     fn is_published(&self, product: &str) -> bool {
-        self.published.contains(product)
+        self.published.contains(product) || self.rejected.contains(product)
+    }
+
+    /// Records a failed publish of `product`, classified (DQ6/SCHED-1 of the
+    /// 2026-09-27 review): a 400/413/422 from `api` is a rejection of the
+    /// data itself, permanent for this delivery (see [`Self::rejected`]);
+    /// anything else (a timeout, 5xx, 409, auth failure, connection error)
+    /// is retryable.
+    fn failed(&mut self, product: impl Into<String>, err: &anyhow::Error) {
+        let product = product.into();
+        match common::ingest::classify_failure(err) {
+            common::ingest::FailureClass::Rejected => {
+                tracing::error!(
+                    error = ?err,
+                    product,
+                    "api rejected this product's data (400/413/422); NOT retrying it for this \
+                     delivery, and the durable completion marker will not be written"
+                );
+                telemetry::record(&product, telemetry::REJECTED);
+                self.permanent_failures.push(product.clone());
+                self.rejected.insert(product);
+            }
+            common::ingest::FailureClass::Transient => {
+                tracing::error!(
+                    error = ?err,
+                    product,
+                    "failed to publish this product after retrying; it will be retried next cycle"
+                );
+                self.retryable(product);
+            }
+        }
     }
 
     /// Records a successful publish of `product`.
@@ -362,7 +404,10 @@ mod telemetry {
     pub const PUBLISHED: &str = "published";
     pub const RETRYABLE: &str = "retryable";
     pub const PERMANENT: &str = "permanent";
-    const OUTCOMES: [&str; 3] = [PUBLISHED, RETRYABLE, PERMANENT];
+    /// `api` refused the data itself (400/413/422): permanent for this
+    /// delivery (DQ6/SCHED-1).
+    pub const REJECTED: &str = "rejected";
+    const OUTCOMES: [&str; 4] = [PUBLISHED, RETRYABLE, PERMANENT, REJECTED];
 
     /// Every `product` label value [`product_kind`] can return.
     const PRODUCT_KINDS: [&str; 9] = [
@@ -483,6 +528,8 @@ struct PublishState {
 struct PartialDelivery {
     delivery: String,
     published: std::collections::HashSet<String>,
+    /// See [`CycleOutcome::rejected`].
+    rejected: std::collections::HashSet<String>,
 }
 
 /// Retries one product's publish in place, up to `retry.attempts` times with
@@ -522,6 +569,14 @@ async fn publish_with_retry(
                     "publish's final chunk failed in a way that suggests api is still busy with \
                      it; not retrying within this cycle"
                 );
+                return Err(err);
+            }
+            Err(err)
+                if common::ingest::classify_failure(&err)
+                    == common::ingest::FailureClass::Rejected =>
+            {
+                // DQ6/SCHED-1: api refused the data itself; the same request
+                // is refused the same way however often it is sent.
                 return Err(err);
             }
             Err(err) if tries + 1 < retry.attempts => {
@@ -612,7 +667,7 @@ async fn poll_once(
                 "resuming a partly published delivery: only the products that failed last cycle \
                  are published this cycle"
             );
-            CycleOutcome::resuming(partial.published)
+            CycleOutcome::resuming(partial.published, partial.rejected)
         }
         _ => CycleOutcome::default(),
     };
@@ -637,10 +692,7 @@ async fn poll_once(
         .await
         {
             Ok(()) => outcome.succeeded(product::STANOX_CRS),
-            Err(err) => {
-                tracing::error!(error = ?err, "failed to publish stanox/crs rows; it will be retried next cycle");
-                outcome.retryable(product::STANOX_CRS);
-            }
+            Err(err) => outcome.failed(product::STANOX_CRS, &err),
         }
     }
 
@@ -678,10 +730,7 @@ async fn poll_once(
         .await
         {
             Ok(()) => outcome.succeeded(product::TIPLOC_CRS),
-            Err(err) => {
-                tracing::error!(error = ?err, "failed to publish tiploc/crs rows; it will be retried next cycle");
-                outcome.retryable(product::TIPLOC_CRS);
-            }
+            Err(err) => outcome.failed(product::TIPLOC_CRS, &err),
         }
     }
 
@@ -731,6 +780,7 @@ async fn poll_once(
         state.partial = Some(PartialDelivery {
             delivery: delivery.dir_name.clone(),
             published: outcome.published,
+            rejected: outcome.rejected,
         });
         return Ok(());
     }
@@ -886,10 +936,7 @@ async fn publish_fixed_links(
     .await
     {
         Ok(()) => outcome.succeeded(product::FIXED_LINKS),
-        Err(err) => {
-            tracing::error!(error = ?err, "failed to publish fixed links; it will be retried next cycle");
-            outcome.retryable(product::FIXED_LINKS);
-        }
+        Err(err) => outcome.failed(product::FIXED_LINKS, &err),
     }
 }
 
@@ -1355,10 +1402,7 @@ async fn publish_schedule_line_population(
         .await
         {
             Ok(()) => outcome.succeeded(key),
-            Err(err) => {
-                tracing::error!(error = ?err, line_id = %line.id, "failed to publish schedule line population; it will be retried next cycle");
-                outcome.retryable(key);
-            }
+            Err(err) => outcome.failed(key, &err),
         }
     }
 }
@@ -1506,10 +1550,7 @@ async fn publish_schedule_network_departures(
     .await
     {
         Ok(()) => outcome.succeeded(key),
-        Err(err) => {
-            tracing::error!(error = ?err, "failed to publish schedule-derived network departures; it will be retried next cycle");
-            outcome.retryable(key);
-        }
+        Err(err) => outcome.failed(key, &err),
     }
 }
 
@@ -1717,10 +1758,7 @@ async fn publish_schedule_destination_departures(
     .await;
     match result {
         Ok(()) => outcome.succeeded(key),
-        Err(err) => {
-            tracing::error!(error = ?err, %today, "failed to publish schedule-derived destination departures; it will be retried next cycle");
-            outcome.retryable(key);
-        }
+        Err(err) => outcome.failed(key, &err),
     }
 }
 
@@ -1890,10 +1928,7 @@ async fn publish_schedule_calling_points_full(
     .await;
     match result {
         Ok(()) => outcome.succeeded(key),
-        Err(err) => {
-            tracing::error!(error = ?err, %date, "failed to publish schedule calling points; it will be retried next cycle");
-            outcome.retryable(key);
-        }
+        Err(err) => outcome.failed(key, &err),
     }
 }
 
@@ -2147,7 +2182,9 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
             if last_chunk && final_chunk_failure_defers_to_next_cycle(&err) {
                 anyhow::Error::new(DeferToNextCycle(message))
             } else {
-                anyhow::anyhow!(message)
+                // `context`, not a fresh error: the HTTP status underneath
+                // must survive for `classify_failure` (DQ6/SCHED-1).
+                err.context(message)
             }
         })?;
         if last_chunk {
@@ -2207,9 +2244,10 @@ async fn post_schedule_line_population(
     tokens: &common::oauth_client::OAuthTokenCache,
     body: &serde_json::Value,
 ) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     common::ingest::post_json(client, url, tokens, body)
         .await
-        .map_err(|err| anyhow::anyhow!("schedule-line-population POST failed: {err}"))
+        .context("schedule-line-population POST failed")
 }
 
 /// Best-effort extraction of the digits embedded in a real delivery's own
@@ -4182,6 +4220,130 @@ mod per_product_retry_tests {
         assert_eq!(posts_to(&server, "/private/stanox-crs").await, 0);
     }
 
+    fn reject_always(path: &str, status: u16) -> wiremock::Mock {
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(path))
+            .respond_with(wiremock::ResponseTemplate::new(status).set_body_string("bad data"))
+    }
+
+    /// DQ6/SCHED-1: a 422 from api is permanent for this delivery. It is
+    /// sent once (no in-cycle retries), the delivery is marked processed in
+    /// memory so the next cycle does not redo it, the durable completion
+    /// marker is NOT written, and the rejection is counted.
+    #[tokio::test]
+    async fn a_rejected_product_is_not_retried_and_writes_no_completion_marker() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, _storage) = setup(&server).await;
+        reject_always("/private/tiploc-crs", 422)
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 1");
+
+        assert_eq!(
+            posts_to(&server, "/private/tiploc-crs").await,
+            1,
+            "a rejection is not retried within the cycle"
+        );
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            0,
+            "a rejected product means the delivery did not fully publish"
+        );
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(
+                r#"distant_signal_schedule_reference_publishes_total{product="tiploc_crs",outcome="rejected"} 1"#
+            ),
+            "{rendered}"
+        );
+
+        // The next cycle sees the delivery as processed: nothing is resent.
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 2");
+        assert_eq!(posts_to(&server, "/private/tiploc-crs").await, 1);
+    }
+
+    /// 400 and 413 are rejections too, and the per-date chunked products
+    /// keep the HTTP status through their error wrapping.
+    #[tokio::test]
+    async fn a_rejected_chunk_of_a_per_date_product_is_not_retried() {
+        for status in [400, 413] {
+            let server = wiremock::MockServer::start().await;
+            let (tokens, config, client, _storage) = setup(&server).await;
+            reject_always("/private/schedule-calling-points-full", status)
+                .mount(&server)
+                .await;
+            mount_all_publishes_ok(&server).await;
+
+            let mut state = PublishState::default();
+            poll_once(&client, &config, &mut state, &tokens)
+                .await
+                .expect("cycle");
+
+            assert_eq!(
+                posts_to(&server, "/private/schedule-calling-points-full").await,
+                (DESTINATION_DEPARTURES_FORWARD_DAYS + 1) as usize,
+                "{status}: one attempt per date, no retries"
+            );
+            assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+            assert_eq!(
+                posts_to(&server, "/private/schedule-reference-publishes").await,
+                0
+            );
+        }
+    }
+
+    /// A rejection alongside a transient failure: the delivery stays
+    /// unmarked for the transient one, and the next cycle retries only that,
+    /// not the rejected product. The durable marker is still never written.
+    #[tokio::test]
+    async fn a_rejected_product_is_skipped_when_the_delivery_resumes() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, _storage) = setup(&server).await;
+        reject_always("/private/tiploc-crs", 422)
+            .mount(&server)
+            .await;
+        fail_n_times("/private/stanox-crs", u64::MAX)
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 1");
+        assert_eq!(state.last_processed_delivery, None);
+
+        server.reset().await;
+        let _ = super::poll_once_tests::mock_token_cache(&server).await;
+        mount_all_publishes_ok(&server).await;
+
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 2");
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 1);
+        assert_eq!(
+            posts_to(&server, "/private/tiploc-crs").await,
+            0,
+            "the rejected product is not resent for the same delivery"
+        );
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            0
+        );
+    }
+
     /// A newer delivery supersedes a partly published one: it is published
     /// in full, not "resumed" with the old delivery's progress.
     #[tokio::test]
@@ -4196,6 +4358,7 @@ mod per_product_retry_tests {
             partial: Some(PartialDelivery {
                 delivery: DELIVERY.to_string(),
                 published: [product::STANOX_CRS.to_string()].into_iter().collect(),
+                rejected: Default::default(),
             }),
         };
         poll_once(&client, &config, &mut state, &tokens)

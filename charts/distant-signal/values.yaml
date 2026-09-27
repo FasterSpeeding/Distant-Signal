@@ -2843,12 +2843,15 @@ metrics:
     # delivery is older than `staleAfterHours` (deliveries land nightly).
     # DistantSignalSchedulePublishStagedMismatch: api skipped a publish's
     # delete (staged key count mismatch) within `mismatchWindow`.
+    # DistantSignalScheduleReferencePublishRejected: api answered 400/413/422
+    # to a product within `rejectedWindow` (permanent for that delivery).
     schedulePipeline:
       enabled: true
       notSeededFor: 30m
       zipRejectedWindow: 6h
       staleAfterHours: 30
       mismatchWindow: 6h
+      rejectedWindow: 6h
       severity: warning
 
 # ---------------------------------------------------------------------------

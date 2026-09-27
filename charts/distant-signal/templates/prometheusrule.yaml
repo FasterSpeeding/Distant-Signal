@@ -457,6 +457,30 @@ spec:
               match the publisher's total, so it did not delete the rows that
               publish left out. They stay until the next complete publish;
               api's warn log has the publish_id and both counts.
+        {{- /*
+        DQ6/SCHED-1: api answered 400/413/422 to one of schedule-reference's
+        products. That is permanent for the delivery: it is not retried, and
+        the durable completion marker is not written (so a restart tries the
+        delivery again). The product's previous rows stay in place.
+        */}}
+        - alert: DistantSignalScheduleReferencePublishRejected
+          expr: |
+            sum by (namespace, product) (increase(distant_signal_schedule_reference_publishes_total{namespace="{{ $ns }}", outcome="rejected"}[{{ .rejectedWindow }}])) > 0
+          for: 0m
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "api rejected schedule-reference's {{ "{{ $labels.product }}" }} publish"
+            description: >-
+              api in {{ "{{ $labels.namespace }}" }} refused schedule-reference's
+              {{ "{{ $labels.product }}" }} data with 400, 413 or 422. It is not
+              retried for this delivery and the delivery is not recorded as
+              published, so that product keeps its previous rows. Usually a
+              schema skew between the two services or an oversized chunk; the
+              reference container's error log has api's response body.
     {{- end }}
     {{- end }}
 {{- end }}
