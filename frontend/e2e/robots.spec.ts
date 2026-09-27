@@ -10,5 +10,6 @@ test('/robots.txt is served as text/plain with the expected rules', async ({ req
   expect(body).toContain('Disallow: /api/');
   expect(body).toContain('Disallow: /journeys/');
   expect(body).toContain('Disallow: /groups');
+  expect(body).toContain('User-Agent: GPTBot');
   expect(body).not.toContain('undefined');
 });
