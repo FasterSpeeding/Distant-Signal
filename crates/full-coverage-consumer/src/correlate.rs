@@ -27,6 +27,38 @@ pub struct CorrelationState {
     pub resolved: HashMap<String, String>,
 }
 
+/// The day of the month a TRUST `train_id` was activated for: its last
+/// two characters (the origin departure's day of the month, by TRUST's own
+/// id convention). `None` for an id not ending in two digits.
+pub fn train_id_day_of_month(train_id: &str) -> Option<u32> {
+    let digits = train_id.get(train_id.len().checked_sub(2)?..)?;
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Which of `candidates` an Activation's train runs on: the date of its
+/// origin departure. From `tp_origin_timestamp` (a plain `YYYY-MM-DD`)
+/// when present, else from the `train_id`'s day-of-month digits, matched
+/// against `candidates` -- never from `schedule_start_date`, which is the
+/// CIF validity window's start. `None` when neither says.
+pub fn activation_service_date(
+    activation: &Activation,
+    candidates: &[chrono::NaiveDate],
+) -> Option<chrono::NaiveDate> {
+    use chrono::Datelike;
+    if let Some(date) = activation
+        .tp_origin_timestamp
+        .as_deref()
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok())
+    {
+        return Some(date);
+    }
+    let day = train_id_day_of_month(&activation.train_id)?;
+    candidates.iter().copied().find(|date| date.day() == day)
+}
+
 pub fn apply_activation(state: &mut CorrelationState, activation: &Activation) {
     state
         .pending_activations
@@ -444,5 +476,20 @@ mod tests {
         );
         assert!(cancelled.is_empty());
         assert!(state.derived.is_empty());
+    }
+
+    #[test]
+    fn an_activations_service_date_comes_from_tp_origin_then_the_train_id() {
+        let d: chrono::NaiveDate = "2026-09-26".parse().unwrap();
+        let next = d + chrono::Duration::days(1);
+        let mut a = activation("722N71MW27", "C11052");
+        a.tp_origin_timestamp = Some("2026-09-26".to_string());
+        assert_eq!(activation_service_date(&a, &[d, next]), Some(d));
+        a.tp_origin_timestamp = None;
+        assert_eq!(activation_service_date(&a, &[d, next]), Some(next));
+        assert_eq!(activation_service_date(&a, &[d]), None);
+        assert_eq!(train_id_day_of_month("722N71MW27"), Some(27));
+        assert_eq!(train_id_day_of_month("X"), None);
+        assert_eq!(train_id_day_of_month("722N71MWAB"), None);
     }
 }

@@ -56,6 +56,14 @@ pub struct DayState {
     /// failing) when consumption began -- their early movements could not
     /// be matched, so their rows are partial for the rest of the day too.
     pub partial_lines: HashSet<String>,
+    /// `train_id -> uid` of every Activation for the NEXT service date
+    /// seen while this day is current. TRUST activates a train about an
+    /// hour before it departs, so the next day's first trains (02:00-03:00
+    /// London) are activated before this day closes -- 267 of them on
+    /// 2026-09-27 -- and used to be wiped with this day's state at the
+    /// rollover, so none of their movements could be matched. [`DayState::roll`]
+    /// carries them into the next day.
+    pub next_activations: HashMap<String, String>,
 }
 
 impl DayState {
@@ -66,7 +74,19 @@ impl DayState {
             stations: station_correlate::StationCorrelationState::default(),
             partial_reason: None,
             partial_lines: HashSet::new(),
+            next_activations: HashMap::new(),
         }
+    }
+
+    /// The day after this one closes: a fresh state for `next`, keeping
+    /// only the Activations already seen for it (see
+    /// [`DayState::next_activations`]).
+    pub fn roll(self, next: chrono::NaiveDate) -> DayState {
+        let mut day = DayState::new(next);
+        if next == self.service_date + chrono::Duration::days(1) {
+            day.correlation.pending_activations = self.next_activations;
+        }
+        day
     }
 
     pub fn is_line_partial(&self, line_id: &str) -> bool {
@@ -83,6 +103,9 @@ impl DayState {
         population: &Population,
     ) -> anyhow::Result<()> {
         for message in trust_schema::schema::parse_batch(raw)? {
+            if let TrustMessage::Activation(activation) = &message {
+                self.note_next_day_activation(activation);
+            }
             dispatch_message(
                 message,
                 &mut self.correlation,
@@ -92,6 +115,35 @@ impl DayState {
                 population,
                 self.service_date,
             );
+        }
+        Ok(())
+    }
+}
+
+impl DayState {
+    fn note_next_day_activation(&mut self, activation: &trust_schema::schema::Activation) {
+        let next = self.service_date + chrono::Duration::days(1);
+        if correlate::activation_service_date(activation, &[self.service_date, next]) == Some(next)
+        {
+            self.next_activations
+                .insert(activation.train_id.clone(), activation.train_uid.clone());
+        }
+    }
+
+    /// The startup replay's lookback segment (entries from before the rail
+    /// day started, see `replay`): only Activations for THIS service date
+    /// are applied, so a train activated before 02:00 London -- about an
+    /// hour before it departs -- can still be matched. Nothing else from
+    /// before the day start belongs to this day's rows.
+    pub fn dispatch_lookback_payload(&mut self, raw: &str) -> anyhow::Result<()> {
+        let previous = self.service_date - chrono::Duration::days(1);
+        for message in trust_schema::schema::parse_batch(raw)? {
+            if let TrustMessage::Activation(activation) = message
+                && correlate::activation_service_date(&activation, &[previous, self.service_date])
+                    == Some(self.service_date)
+            {
+                correlate::apply_activation(&mut self.correlation, &activation);
+            }
         }
         Ok(())
     }
@@ -188,5 +240,85 @@ pub fn dispatch_message(
         | TrustMessage::ChangeOfIdentity(_)
         | TrustMessage::Reinstatement(_)
         | TrustMessage::Unknown(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn activation_payload(train_id: &str, uid: &str, origin_date: Option<&str>) -> String {
+        let origin = origin_date
+            .map(|d| format!(r#","tp_origin_timestamp":"{d}""#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"header":{{"msg_type":"0001"}},"body":{{"train_id":"{train_id}","train_uid":"{uid}","toc_id":"SW"{origin}}}}}"#
+        )
+    }
+
+    /// Regression test for the lost pre-rollover activations: an
+    /// Activation for D + 1 received while D is still current survives
+    /// the rollover; one for D does not leak into D + 1.
+    #[test]
+    fn an_activation_for_the_next_day_survives_the_rollover() {
+        let d: chrono::NaiveDate = "2026-09-26".parse().unwrap();
+        let next = d + chrono::Duration::days(1);
+        let mut day = DayState::new(d);
+        let lookups = Lookups::default();
+        let population = Population::default();
+        // 00:30Z on the 27th: the 02:30 London departure is activated.
+        day.dispatch_payload(
+            &activation_payload("722N71MW27", "C11052", Some("2026-09-27")),
+            &lookups,
+            &population,
+        )
+        .unwrap();
+        // A train of D, by its train_id digits alone.
+        day.dispatch_payload(
+            &activation_payload("722N72MW26", "C22222", None),
+            &lookups,
+            &population,
+        )
+        .unwrap();
+
+        let rolled = day.roll(next);
+        assert_eq!(rolled.service_date, next);
+        assert_eq!(
+            rolled
+                .correlation
+                .pending_activations
+                .get("722N71MW27")
+                .map(String::as_str),
+            Some("C11052")
+        );
+        assert!(
+            !rolled
+                .correlation
+                .pending_activations
+                .contains_key("722N72MW26")
+        );
+        assert!(rolled.next_activations.is_empty());
+    }
+
+    #[test]
+    fn the_lookback_applies_only_this_days_activations() {
+        let d: chrono::NaiveDate = "2026-09-27".parse().unwrap();
+        let mut day = DayState::new(d);
+        day.dispatch_lookback_payload(&activation_payload("722N71MW27", "C11052", None))
+            .unwrap();
+        day.dispatch_lookback_payload(&activation_payload("722N72MW26", "C22222", None))
+            .unwrap();
+        day.dispatch_lookback_payload(
+            r#"{"header":{"msg_type":"0003"},"body":{"train_id":"722N71MW27","event_type":"DEPARTURE","loc_stanox":"1","variation_status":"ON TIME"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            day.correlation
+                .pending_activations
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["722N71MW27"]
+        );
+        assert!(day.correlation.derived.is_empty());
     }
 }

@@ -207,8 +207,8 @@ async fn main() -> anyhow::Result<()> {
             .await;
             last_stats_write = tokio::time::Instant::now();
 
-            tracing::info!(closed = %closing, new = %next, "rail day closed; wrote its final stats, then reset correlation state");
-            day = DayState::new(next);
+            tracing::info!(closed = %closing, new = %next, carried_activations = day.next_activations.len(), "rail day closed; wrote its final stats, then reset correlation state (keeping the next day's activations)");
+            day = day.roll(next);
             publish_day_partial_metrics(&day);
         }
 
