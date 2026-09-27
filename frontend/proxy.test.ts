@@ -69,6 +69,7 @@ describe('proxy matcher', () => {
     '/_next/image',
     '/healthz',
     '/robots.txt',
+    '/.well-known/security.txt',
     '/sw.js',
     '/sw-cache-rules.js',
     '/offline.html',
