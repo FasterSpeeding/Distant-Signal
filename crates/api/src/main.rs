@@ -206,6 +206,11 @@ async fn server_main() -> anyhow::Result<()> {
         ))
         .build_pair();
 
+    // API-2: whole-request time limits, body reads included -- a short one
+    // for everything public, a longer one for the internal ingest routes
+    // (100 MB bodies, 120 s publish statements). The HTTP/1 header-read
+    // timeout is on the listener itself; see `api::edge`.
+    let edge_settings = api::edge::EdgeSettings::from_env()?;
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
@@ -213,7 +218,11 @@ async fn server_main() -> anyhow::Result<()> {
         .merge(routes::journey_templates::router())
         .merge(routes::trips::router())
         .nest("/public", routes::public_router())
-        .nest("/private", routes::private_router(app.clone()));
+        .layer(edge_settings.public_timeout_layer())
+        .nest(
+            "/private",
+            routes::private_router(app.clone()).layer(edge_settings.private_timeout_layer()),
+        );
 
     // Unlike the other seven binaries, api's own PUBLIC listener stays up
     // either way -- metrics_enabled only decides whether requests are
@@ -302,12 +311,13 @@ async fn server_main() -> anyhow::Result<()> {
         anyhow::Ok(())
     };
     let bind_url = app.config.bind_url.clone();
+    let header_read_timeout = edge_settings.header_read_timeout();
     run_startup(
         migrate,
         || spawn_background_loops(&app),
         || async move {
             let listener = tokio::net::TcpListener::bind(&bind_url).await?;
-            axum::serve(listener, router).await?;
+            api::edge::serve(listener, router, header_read_timeout).await?;
             Ok(())
         },
     )
