@@ -1309,7 +1309,7 @@ async fn build_journey_detail_response(
         .iter()
         .filter_map(|leg| leg.train_subscription_id)
         .collect();
-    let mut states = train_tracking::get_by_tracking_ids(&app.database, &tracking_ids)
+    let states = train_tracking::get_by_tracking_ids(&app.database, &tracking_ids)
         .await
         .map_err(internal_error("read tracked train state"))?;
 
@@ -1359,16 +1359,12 @@ async fn build_journey_detail_response(
 
     let mut legs = Vec::with_capacity(leg_rows.len());
     for leg in leg_rows {
-        // A leg can name the same subscription as another leg only through
-        // data the API never writes; clone rather than `remove` so such a
-        // leg still renders.
-        let tracked_train_state = match leg.train_subscription_id.and_then(|id| {
-            if tracking_ids.iter().filter(|&&t| t == id).count() > 1 {
-                states.get(&id).cloned()
-            } else {
-                states.remove(&id)
-            }
-        }) {
+        // Cloned, not removed: two legs could in principle name one
+        // subscription, and each must still render it.
+        let tracked_train_state = match leg
+            .train_subscription_id
+            .and_then(|id| states.get(&id).cloned())
+        {
             Some(state) => {
                 let origin_board = crate::routes::train::darwin_blend_origin_crs(&state)
                     .and_then(|crs| boards.get(&crate::data::queries::normalize_code(crs)));

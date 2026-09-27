@@ -727,13 +727,8 @@ async fn last_ingest(pool: &PgPool, source: &str) -> Result<Option<chrono::DateT
 /// review 2026-09-27 F10/F11). Same values as the five `last_*_fetch`
 /// functions: `(stations, tocs, incidents, tfl, schedule_feed)`.
 pub async fn data_freshness(pool: &PgPool) -> Result<[Option<chrono::DateTime<chrono::Utc>>; 5]> {
-    let row: (
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-    ) = sqlx::query_as(
+    type Ts = Option<chrono::DateTime<chrono::Utc>>;
+    let row: (Ts, Ts, Ts, Ts, Ts) = sqlx::query_as(
         "SELECT \
             (SELECT fetched_at FROM ingest_freshness WHERE source = 'stations'), \
             (SELECT fetched_at FROM ingest_freshness WHERE source = 'tocs'), \
@@ -1303,7 +1298,7 @@ pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecor
     // left untouched; only surplus stored rows are deleted and only
     // missing incoming rows inserted. `FOR UPDATE` keeps two concurrent
     // publishes from both diffing against the same snapshot.
-    let existing: Vec<(
+    type StoredLink = (
         i64,
         String,
         String,
@@ -1313,7 +1308,8 @@ pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecor
         String,
         String,
         i32,
-    )> = sqlx::query_as(
+    );
+    let existing: Vec<StoredLink> = sqlx::query_as(
         "SELECT id, mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, \
                     source_sequence \
              FROM fixed_links ORDER BY id FOR UPDATE",

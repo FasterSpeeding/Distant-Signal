@@ -950,53 +950,48 @@ pub async fn prune_trains(
     let (untracked_due, tracked_due) =
         trains_prune_due(pool, retention_days, untracked_retention_days).await?;
     let mut pruned = 0u64;
-    while untracked_due {
-        let result = sqlx::query(
-            "DELETE FROM trains WHERE id IN ( \
-                SELECT id FROM trains \
-                WHERE service_date < CURRENT_DATE - ($1 || ' days')::interval \
-                  AND NOT EXISTS ( \
-                      SELECT 1 FROM train_subscriptions \
-                      WHERE train_subscriptions.trains_id = trains.id \
-                  ) \
-                ORDER BY service_date \
-                LIMIT $2 \
-             )",
-        )
-        .bind(untracked_retention_days.to_string())
-        .bind(PRUNE_TRAINS_BATCH)
-        .execute(pool)
-        .await?;
-        let rows_affected = result.rows_affected();
-        pruned += rows_affected;
-        if rows_affected < PRUNE_TRAINS_BATCH as u64 {
-            break;
-        }
+    if untracked_due {
+        pruned += prune_trains_tier(pool, untracked_retention_days, "NOT EXISTS").await?;
     }
-    while tracked_due {
-        let result = sqlx::query(
-            "DELETE FROM trains WHERE id IN ( \
-                SELECT id FROM trains \
-                WHERE service_date < CURRENT_DATE - ($1 || ' days')::interval \
-                  AND EXISTS ( \
-                      SELECT 1 FROM train_subscriptions \
-                      WHERE train_subscriptions.trains_id = trains.id \
-                  ) \
-                ORDER BY service_date \
-                LIMIT $2 \
-             )",
-        )
-        .bind(retention_days.to_string())
-        .bind(PRUNE_TRAINS_BATCH)
-        .execute(pool)
-        .await?;
-        let rows_affected = result.rows_affected();
-        pruned += rows_affected;
-        if rows_affected < PRUNE_TRAINS_BATCH as u64 {
-            break;
-        }
+    if tracked_due {
+        pruned += prune_trains_tier(pool, retention_days, "EXISTS").await?;
     }
     Ok(pruned)
+}
+
+/// One `prune_trains` tier: batches of the oldest eligible rows until a
+/// batch comes back short. `subscription_test` is `EXISTS` (tracked) or
+/// `NOT EXISTS` (untracked).
+async fn prune_trains_tier(
+    pool: &PgPool,
+    retention_days: i64,
+    subscription_test: &'static str,
+) -> Result<u64> {
+    let sql = format!(
+        "DELETE FROM trains WHERE id IN ( \
+            SELECT id FROM trains \
+            WHERE service_date < CURRENT_DATE - ($1 || ' days')::interval \
+              AND {subscription_test} ( \
+                  SELECT 1 FROM train_subscriptions \
+                  WHERE train_subscriptions.trains_id = trains.id \
+              ) \
+            ORDER BY service_date \
+            LIMIT $2 \
+         )"
+    );
+    let mut pruned = 0u64;
+    loop {
+        let rows_affected = sqlx::query(&sql)
+            .bind(retention_days.to_string())
+            .bind(PRUNE_TRAINS_BATCH)
+            .execute(pool)
+            .await?
+            .rows_affected();
+        pruned += rows_affected;
+        if rows_affected < PRUNE_TRAINS_BATCH as u64 {
+            return Ok(pruned);
+        }
+    }
 }
 
 /// Whether either `trains` retention tier can have anything to delete,

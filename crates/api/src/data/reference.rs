@@ -349,7 +349,9 @@ pub(crate) fn filter_accessibility_fields(full: &serde_json::Value) -> serde_jso
 /// questions/risks).
 pub async fn station_accessibility(pool: &PgPool, crs: &str) -> Result<Option<serde_json::Value>> {
     use sqlx::Row;
-    let row = sqlx::query("SELECT accessibility FROM stations WHERE crs = $1")
+    // `::bpchar` so `stations_pkey` (a `CHAR(3)` key) serves the lookup; a
+    // bare `text` parameter would cast the column instead.
+    let row = sqlx::query("SELECT accessibility FROM stations WHERE crs = $1::bpchar")
         .bind(crs)
         .fetch_optional(pool)
         .await?;

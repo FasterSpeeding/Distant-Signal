@@ -134,6 +134,41 @@ mod tests {
         }
     }
 
+    fn sample(crs: &str, board: Vec<StationDeparture>) -> common::StationSample {
+        common::StationSample {
+            crs: crs.to_string(),
+            polled_at: chrono::Utc::now(),
+            departures: board,
+        }
+    }
+
+    #[test]
+    fn from_samples_finds_both_boards_by_normalised_crs() {
+        let samples: std::collections::HashMap<String, common::StationSample> = [
+            (
+                "RDG".to_string(),
+                sample("RDG", vec![departure("WAT", vec!["WOK"])]),
+            ),
+            (
+                "BRI".to_string(),
+                sample("BRI", vec![departure("WAT", vec!["RDG"])]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let status =
+            leg_skip_status_from_samples(&samples, Some(" bri"), "rdg", "WOK", Some("WAT"));
+        assert!(status.destination_skipped);
+        assert!(status.origin_skipped);
+    }
+
+    #[test]
+    fn from_samples_is_default_without_the_leg_origin_board() {
+        let samples = std::collections::HashMap::new();
+        let status = leg_skip_status_from_samples(&samples, None, "RDG", "WOK", Some("WAT"));
+        assert_eq!(status, LegSkipStatus::default());
+    }
+
     #[test]
     fn no_skip_when_the_matched_entry_reports_nothing_skipped() {
         let origin_board = vec![departure("WAT", vec![])];

@@ -709,10 +709,15 @@ pub async fn station_sample_for_crs(
     pool: &PgPool,
     crs: &str,
 ) -> anyhow::Result<Option<common::StationSample>> {
-    let row = sqlx::query("SELECT crs, polled_at, departures FROM station_samples WHERE crs = $1")
-        .bind(crs)
-        .fetch_optional(pool)
-        .await?;
+    // Normalised and compared as `bpchar` like the api's copy: the column is
+    // `CHAR(3)`, and a bare `text` parameter would cast the column instead,
+    // so `station_samples_pkey` could not serve the lookup.
+    let row = sqlx::query(
+        "SELECT crs, polled_at, departures FROM station_samples WHERE crs = $1::bpchar",
+    )
+    .bind(crs.trim().to_ascii_uppercase())
+    .fetch_optional(pool)
+    .await?;
     let Some(row) = row else {
         return Ok(None);
     };
