@@ -3,6 +3,7 @@ import { screen, fireEvent } from '@testing-library/react';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { renderWithMantine } from '@/test/render';
 import { ChatPanel } from './ChatPanel';
+import { CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { setAnthropicApiKey } from '@/lib/anthropicKey';
 
 const mockRunChatTurn = vi.fn();
@@ -223,5 +224,34 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: '   ' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(mockRunChatTurn).not.toHaveBeenCalled();
+  });
+
+  // LEG-16: the chat's output is AI-generated and can be wrong.
+  it('always shows a visible "AI-generated, may be inaccurate" note', () => {
+    seedMcpTokens();
+    setAnthropicApiKey('sk-ant-test');
+    const { container } = renderWithMantine(<ChatPanel />);
+    expect(container.querySelector('[data-ai-note]')).toHaveTextContent(CHAT_AI_NOTE);
+    expect(CHAT_AI_NOTE).toMatch(/may be inaccurate/);
+  });
+
+  it('labels each assistant reply, and not the user\'s own messages, as AI-generated', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn.mockReturnValue(
+      (async function* () {
+        yield { type: 'text-delta', text: 'Next train is at 10:15.' };
+        yield { type: 'done' };
+      })(),
+    );
+    renderWithMantine(<ChatPanel />);
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    await screen.findByText(/next train is at 10:15/i);
+    const badges = screen.getAllByText('AI-generated');
+    expect(badges).toHaveLength(1);
+    expect(badges[0].closest('[data-ai-badge]')).toHaveAccessibleDescription(CHAT_AI_NOTE);
+    const userBubble = screen.getByText('when is the next train').closest('.mantine-Card-root')!;
+    expect(userBubble.querySelector('[data-ai-badge]')).toBeNull();
   });
 });

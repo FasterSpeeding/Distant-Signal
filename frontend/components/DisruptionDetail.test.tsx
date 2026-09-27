@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { DisruptionDetail } from './DisruptionDetail';
+import { ENRICHED_INCIDENT_NOTE } from './AiGeneratedBadge';
 import type { Disruption } from '@/lib/types';
 
 const sample: Disruption = {
@@ -120,5 +121,29 @@ describe('DisruptionDetail', () => {
       <DisruptionDetail disruption={{ ...sample, impactType: 'some_future_taxonomy_value' }} />,
     );
     expect(screen.queryByText('some_future_taxonomy_value')).not.toBeInTheDocument();
+  });
+
+  // LEG-16: impactType, severity and timing can come from the enricher's LLM.
+  it('labels a knowledgebase-sourced disruption as partly AI-derived, with a visible "may be inaccurate" note', () => {
+    const { container } = renderWithMantine(<DisruptionDetail disruption={sample} />);
+    expect(container.querySelector('[data-ai-note]')).toHaveTextContent(ENRICHED_INCIDENT_NOTE);
+    expect(ENRICHED_INCIDENT_NOTE).toMatch(/may be inaccurate/);
+  });
+
+  it('puts an AI badge beside the (LLM-extracted) impact type', () => {
+    const { container } = renderWithMantine(
+      <DisruptionDetail disruption={{ ...sample, impactType: 'rail_replacement_bus' }} />,
+    );
+    expect(screen.getByText('Rail Replacement Bus')).toBeInTheDocument();
+    expect(container.querySelector('[data-ai-badge]')).toHaveAccessibleDescription(ENRICHED_INCIDENT_NOTE);
+  });
+
+  it('adds no AI label to sources the enricher never touches', () => {
+    for (const source of ['ldbws-sampling', 'tfl-line-status-central', null]) {
+      const { container, unmount } = renderWithMantine(<DisruptionDetail disruption={{ ...sample, source }} />);
+      expect(container.querySelector('[data-ai-note]')).toBeNull();
+      expect(container.querySelector('[data-ai-badge]')).toBeNull();
+      unmount();
+    }
   });
 });

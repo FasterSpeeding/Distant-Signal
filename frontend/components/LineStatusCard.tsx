@@ -3,6 +3,7 @@
 import { Card, Group, Text, Stack } from '@mantine/core';
 import Link from 'next/link';
 import { StatusBadge } from './StatusBadge';
+import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 import { LastUpdated } from './LastUpdated';
 import { worstStatus } from '@/lib/severity';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
@@ -44,6 +45,13 @@ export function LineStatusCard({ report }: { report: LineStatusReport }) {
         >
           {worst.reason}
         </Text>
+        {/* LEG-16: the worst status's severity and reason may have been
+            shaped by the incident enricher's LLM. */}
+        {'disruption' in worst && isEnricherInfluenced(worst.disruption?.source) && (
+          <Group gap={4}>
+            <AiGeneratedBadge note={ENRICHED_INCIDENT_SHORT_NOTE} />
+          </Group>
+        )}
         <Text size="xs" c="dimmed">
           {formatSampleSummary(representative)}
         </Text>

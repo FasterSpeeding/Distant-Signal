@@ -135,4 +135,30 @@ describe('LineStatusCard', () => {
     const titleRow = container.querySelector('[data-card-title-row]') as HTMLElement;
     expect(titleRow.getAttribute('data-wrap')).toBe('nowrap');
   });
+
+  it('badges the card as AI-assisted when its worst status came from a Knowledgebase incident', () => {
+    const kbReport: LineStatusReport = {
+      ...report,
+      lineStatuses: [
+        {
+          ...report.lineStatuses[0],
+          disruption: {
+            category: 'RealTime',
+            description: 'Signal failure',
+            affectedStops: [],
+            affectedRoutes: [],
+            source: 'knowledgebase-incident-1',
+            impactType: null,
+          },
+        },
+      ],
+    };
+    const { container } = renderWithMantine(<LineStatusCard report={kbReport} />);
+    expect(container.querySelector('[data-ai-badge]')).toHaveAccessibleDescription(/may be inaccurate/);
+  });
+
+  it('shows no AI badge when the worst status has no Knowledgebase source', () => {
+    const { container } = renderWithMantine(<LineStatusCard report={report} />);
+    expect(container.querySelector('[data-ai-badge]')).toBeNull();
+  });
 });
