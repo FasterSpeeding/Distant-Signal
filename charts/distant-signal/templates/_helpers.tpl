@@ -1035,3 +1035,36 @@ spec:
     {{- end }}
   {{- end }}
 {{- end }}
+
+{{/*
+The storage request for the chart-rendered Redis PVC (DQ15). Normally
+redis.persistence.size. But a PVC's size can only grow, and only on a
+StorageClass with allowVolumeExpansion: an upgrade that changes the request
+on any other class (k3s local-path, for one) fails outright. So when the PVC
+already exists and its StorageClass cannot expand (or cannot be read), keep
+the PVC's current request. NOTES.txt warns when that happens.
+
+`lookup` only sees the cluster during a real install/upgrade (helm CLI or
+Flux's helm-controller). `helm template`, `--dry-run` and Argo CD get
+nothing back and render redis.persistence.size as-is -- pin the size (or use
+existingClaim) there, as values.yaml's upgrade note says.
+*/}}
+{{- define "distant-signal.redisPvcSize" -}}
+{{- $size := .Values.redis.persistence.size | toString -}}
+{{- $existing := lookup "v1" "PersistentVolumeClaim" .Release.Namespace (include "distant-signal.redisFullname" .) -}}
+{{- if $existing -}}
+{{- $current := dig "spec" "resources" "requests" "storage" "" $existing | toString -}}
+{{- if and $current (ne $current $size) -}}
+{{- $expandable := false -}}
+{{- $class := dig "spec" "storageClassName" "" $existing -}}
+{{- if $class -}}
+{{- $sc := lookup "storage.k8s.io/v1" "StorageClass" "" $class -}}
+{{- $expandable = dig "allowVolumeExpansion" false $sc -}}
+{{- end -}}
+{{- if not $expandable -}}
+{{- $size = $current -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $size -}}
+{{- end }}

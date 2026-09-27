@@ -174,6 +174,20 @@ helm upgrade distant-signal ./charts/distant-signal -n distant-signal
 
 Read the next section before upgrading if you rely on generated secrets.
 
+> **Upgrade note: Redis PVC default 1Gi -> 4Gi (2026-09-27).** A PVC can only
+> grow, and only on a StorageClass with `allowVolumeExpansion: true`; k3s
+> `local-path` and other hostPath-style classes cannot expand. **Before
+> upgrading an existing install whose Redis PVC was created at 1Gi on such a
+> class, pin its current size (`--set redis.persistence.size=1Gi`, or in your
+> values/overlay) or set `redis.persistence.existingClaim` to the PVC.**
+> Otherwise the upgrade can fail when Kubernetes rejects the PVC change.
+> During a real `helm install`/`helm upgrade` (the helm CLI or Flux) the
+> chart also protects itself: it looks up the existing PVC and keeps its
+> current size when its StorageClass cannot expand it, and NOTES.txt says
+> so. That lookup sees nothing under `helm template`, `--dry-run` or Argo CD,
+> which is why the pin is still required there. On an expandable class the
+> PVC is resized to 4Gi in place.
+
 `api` and `aggregator` roll concurrently with no ordering guarantee between
 them. When a release adds a database migration that `aggregator` depends on
 (as `20260822120000_line_status_source.sql` did, for the `line_status.source`
@@ -507,9 +521,9 @@ above `maxmemory` for fragmentation and fork copy-on-write:
 
 Change the three together. Every extra 100,000 entries needs about 100 MiB
 more `maxmemory` and about 130 MiB more limit. At this size the AOF on
-disk can reach 1-2 GB, past the default 1Gi `redis.persistence.size`. Many
-provisioners don't enforce the size, but on a StorageClass that does, raise
-it (4Gi is comfortable); a full volume makes Redis refuse writes.
+disk can reach 1-2 GB, so `redis.persistence.size` defaults to 4Gi (it was
+1Gi before 2026-09-27; see the upgrade note under [Upgrade](#upgrade)); a
+full volume makes Redis refuse writes.
 RDB snapshots are off (`redis.save: ""`) because AOF already persists
 everything, and each snapshot forks the process.
 
@@ -990,7 +1004,7 @@ used for and why persistence defaults on.
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `redis.service.port` | `6379` | Service and container port; also sets the `REDIS_URL` the api and enricher get. |
 | `redis.persistence.enabled` | `true` | Attach a PVC and run redis with `--appendonly yes`. When false an emptyDir is used and data is lost on reschedule. |
-| `redis.persistence.size` | `1Gi` | Requested volume size. The AOF can reach 1-2 GB at the default `maxmemory`; raise this on a StorageClass that enforces size (see Sizing above). |
+| `redis.persistence.size` | `4Gi` | Requested volume size. The AOF can reach 1-2 GB at the default `maxmemory` (see Sizing above). An existing PVC on a non-expandable StorageClass keeps its size; read the [Upgrade](#upgrade) note before upgrading from a 1Gi install. |
 | `redis.persistence.storageClass` | `""` | StorageClass name. Empty means the cluster default. |
 | `redis.persistence.accessModes` | `[ReadWriteOnce]` | PVC access modes. |
 | `redis.persistence.existingClaim` | `""` | Use a pre-existing PVC instead of a chart-rendered one. |

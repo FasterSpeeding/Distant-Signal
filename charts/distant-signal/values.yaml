@@ -1465,12 +1465,24 @@ redis:
     # memory, 2026-09-26), the incremental file grows to about the base's
     # size before a rewrite, and a rewrite briefly writes a new base
     # alongside the old one. At the default 1536mb maxmemory that can
-    # reach 1-2 GB on disk, i.e. past this 1Gi. Many provisioners round
-    # up or don't enforce the size (hostPath/local-path), but on a
-    # StorageClass that enforces it, raise this (e.g. to 4Gi) -- a full
-    # volume fails the AOF write and Redis refuses writes. If you raise
-    # maxmemory further, raise this with it.
-    size: 1Gi
+    # reach 1-2 GB on disk, so the default is 4Gi (raised from 1Gi on
+    # 2026-09-27, DQ15/INF-8) -- a full volume fails the AOF write and
+    # Redis refuses writes. If you raise maxmemory further, raise this with
+    # it.
+    #
+    # !!! UPGRADE NOTE (1Gi -> 4Gi default) !!!
+    # A PVC can only grow, and only on a StorageClass with
+    # allowVolumeExpansion: true. k3s local-path (and most hostPath-style
+    # classes) cannot expand, so an existing install created at 1Gi on such
+    # a class must, BEFORE upgrading to this chart version, either pin its
+    # current size (`redis.persistence.size: 1Gi`) or point
+    # `redis.persistence.existingClaim` at the PVC.
+    # During a real `helm install/upgrade` (helm CLI or Flux) the chart
+    # also guards this itself: it looks the PVC up and keeps its current
+    # size when the StorageClass cannot expand it (NOTES.txt says so). That
+    # lookup is blind under `helm template`, `--dry-run` and Argo CD, which
+    # is why the pin is still required.
+    size: 4Gi
     # -- StorageClass name. Empty means the cluster default.
     storageClass: ""
     accessModes:

@@ -694,6 +694,10 @@ jobs:
           grep -A1 -- '- --maxmemory$' <<<"$redis" | grep -q -- '- "1536mb"'
           grep -A1 -- '- --maxmemory-policy' <<<"$redis" | grep -q -- '- "noeviction"'
           grep -q 'memory: 2560Mi' <<<"$redis"
+          # DQ15: 4Gi default (no cluster here, so the existing-PVC lookup is
+          # empty and the value renders as-is).
+          helm template distant-signal charts/distant-signal "${base[@]}" \
+            --show-only templates/redis-pvc.yaml | grep -q 'storage: "4Gi"'
           bare=$(helm template distant-signal charts/distant-signal "${base[@]}" \
             --set redis.save=null --set redis.maxmemory=null \
             --show-only templates/redis-deployment.yaml)
