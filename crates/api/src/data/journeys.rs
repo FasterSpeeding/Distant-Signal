@@ -2970,6 +2970,42 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
+    /// DB2-39: `journey_owner` returns the owning user, and `None` for an
+    /// id with no journey.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                journey_owner_returns_the_owner_or_none -- --ignored --test-threads=1`"]
+    async fn journey_owner_returns_the_owner_or_none() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-39-JOURNEY-OWNER";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let (journey_id, _) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow::default(),
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create journey");
+
+        assert_eq!(
+            journey_owner(&pool, journey_id).await.unwrap(),
+            Some(user_id.to_string())
+        );
+        let (unused,): (i64,) = sqlx::query_as("SELECT COALESCE(MAX(id), 0) + 1000 FROM journeys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(journey_owner(&pool, unused).await.unwrap(), None);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
     /// DB2-18: the list is the newest `MINE_LIST_LIMIT` journeys that have
     /// a leg, newest first, with a stable order for equal `created_at`.
     /// A newer leg-less journey neither appears nor takes a slot.

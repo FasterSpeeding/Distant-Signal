@@ -6312,6 +6312,122 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
+    /// DB2-39: `schedule_matching::run_schedule_match_sweep` (only called
+    /// from `main.rs`'s sweep loop) matches a pending pin whose schedule is
+    /// published, leaves one that has no match pending, and reports the
+    /// count. Synthetic CRS, TIPLOC, line and UID so it touches no real
+    /// fixture rows.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                run_schedule_match_sweep_matches_a_pending_pin -- --ignored --test-threads=1`"]
+    async fn run_schedule_match_sweep_matches_a_pending_pin() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-39-SWEEP";
+        let line_id = "test-db2-39-line";
+        let uid = "Z39001";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let service_date = chrono::Utc::now().date_naive() + chrono::Duration::days(3);
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TEST-DB2-39-STANOX', 'ZZQ', 'ZZQTEST', 'TEST DB2-39', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (line_id, service_date) DO UPDATE SET population = EXCLUDED.population",
+        )
+        .bind(line_id)
+        .bind(service_date)
+        .bind(serde_json::json!([{
+            "uid": uid,
+            "calling_points": [{
+                "tiploc": "ZZQTEST",
+                "kind": "Origin",
+                "booked_arrival": null,
+                "booked_departure": "08:15",
+                "is_half_minute_arrival": false,
+                "is_half_minute_departure": false
+            }]
+        }]))
+        .execute(&pool)
+        .await
+        .expect("seed schedule_line_population");
+
+        let departure =
+            crate::data::eta_blend::london_to_utc(service_date.and_hms_opt(8, 15, 0).unwrap())
+                .unwrap();
+        let matching = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("ZZQ"),
+            Some(departure),
+            "pending",
+            None,
+        )
+        .await;
+        let unmatched = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("ZZQ"),
+            Some(departure + chrono::Duration::hours(5)),
+            "pending",
+            None,
+        )
+        .await;
+
+        let index =
+            std::collections::HashMap::from([("ZZQ".to_string(), vec![line_id.to_string()])]);
+        let matched = crate::data::schedule_matching::run_schedule_match_sweep(&pool, &index)
+            .await
+            .expect("sweep");
+        assert_eq!(matched, 1);
+
+        let state = |id: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "SELECT ts.resolution_status, tr.train_uid FROM train_subscriptions ts \
+                     LEFT JOIN trains tr ON tr.id = ts.trains_id WHERE ts.id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(
+            state(matching).await,
+            ("schedule_matched".to_string(), Some(uid.to_string()))
+        );
+        assert_eq!(state(unmatched).await, ("pending".to_string(), None));
+
+        cleanup_user(&pool, user_id).await;
+        for (sql, bind) in [
+            ("DELETE FROM trains WHERE train_uid = $1", uid),
+            (
+                "DELETE FROM schedule_line_population WHERE line_id = $1",
+                line_id,
+            ),
+            (
+                "DELETE FROM stanox_crs WHERE stanox = $1",
+                "TEST-DB2-39-STANOX",
+            ),
+        ] {
+            sqlx::query(sql)
+                .bind(bind)
+                .execute(&pool)
+                .await
+                .expect("cleanup");
+        }
+    }
+
     /// API-6: both sweeps skip a pin dated beyond the timetable horizon, so
     /// a far-future pin (legal before `validate_pin` bounded it) is no
     /// longer retried every 300 s until its date comes round.
