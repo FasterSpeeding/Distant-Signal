@@ -30,7 +30,7 @@
 //! find-or-creates the shared `trains` row and links a subscription to it
 //! in the same request.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use axum::Json;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
@@ -41,9 +41,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
+use crate::data::ticket_subprocess::{ParseFailure, TicketKind, TicketParser};
 use crate::data::{
     delay_repay_rules, eta_blend, journey_leg_proposal, schedule_matching, ticket_extraction,
-    train_tracking,
+    ticket_precheck, ticket_subprocess, train_tracking,
 };
 
 pub fn router() -> Router {
@@ -1414,105 +1415,18 @@ async fn post_pkpass_upload_standalone(
 /// `sqlx::query` call and touches no database handle -- there is nothing
 /// in this file that could accidentally persist an unreviewed upload. See
 /// this plan's Global Constraints.
-///
-/// **Low finding (2026-09-25 review): `ticket_extraction::parse_pkpass` used
-/// to run inline on this async handler's own executor thread.** The `zip`
-/// crate's inflate is bounded here (`ticket_extraction::MAX_ENTRY_BYTES`
-/// caps every entry read, so this was never the unbounded-allocation hazard
-/// `parse_pdf`'s own doc comment describes for `pdf_extract`/`lopdf`) -- so
-/// this never crashed the process. It still ran synchronous, CPU-bound ZIP
-/// inflate + JSON parsing directly on a tokio worker thread, which stalls
-/// every OTHER request multiplexed onto that same worker for however long
-/// the parse takes, exactly the general "don't block the executor" hazard
-/// `routes::trips`'s own `spawn_blocking` doc comment names. Moved onto the
-/// blocking pool via `spawn_blocking`, with the same wall-clock budget
-/// pattern `handle_pdf_upload` already uses just below.
-///
-/// **That budget bounds this request's own wait, not the thread (M13,
-/// 2026-09-26 review).** `tokio::time::timeout` dropping the `JoinHandle` on
-/// expiry only stops THIS function from continuing to await a result -- the
-/// spawned closure keeps running on its blocking-pool thread to completion
-/// regardless, since neither the `zip` crate nor this module's own parsing
-/// exposes any cooperative cancellation point a caller can hook into. See
-/// [`TICKET_PARSE_SLOTS`]'s doc comment for why that matters and what
-/// actually bounds it (a fixed concurrency cap, not this timeout).
 async fn handle_pkpass_upload(
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
-    let bytes = read_single_file_field(&mut multipart, "file").await?;
-
-    // See `TICKET_PARSE_SLOTS`'s doc comment: this permit is moved INTO the
-    // spawned closure below (not merely held across this `.await`), so it
-    // stays held for as long as the blocking-pool thread itself is
-    // occupied -- including past this function's own return on a timeout.
-    let Ok(permit) = Arc::clone(&TICKET_PARSE_SLOTS).try_acquire_owned() else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "too many ticket uploads are being processed right now; please retry in a moment"
-                .to_string(),
-        ));
-    };
-
-    let parsed = tokio::time::timeout(
-        PKPASS_PARSE_TIMEOUT,
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            ticket_extraction::parse_pkpass(&bytes)
-        }),
-    )
-    .await;
-
-    match parsed {
-        Ok(Ok(Ok(ticket))) => Ok(Json(ticket)),
-        Ok(Ok(Err(err))) => Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("could not read this as a train .pkpass: {err}"),
-        )),
-        Ok(Err(join_err)) => {
-            tracing::error!(error = ?join_err, ".pkpass parse task panicked or was cancelled");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to parse .pkpass".to_string(),
-            ))
-        }
-        Err(_elapsed) => Err((
-            StatusCode::GATEWAY_TIMEOUT,
-            "pkpass parsing took too long; try a smaller or simpler file".to_string(),
-        )),
-    }
+    handle_ticket_upload(&TICKET_PARSER, TicketKind::Pkpass, multipart).await
 }
-
-/// Wall-clock budget for a single `.pkpass`'s parse -- mirrors
-/// `PDF_PARSE_TIMEOUT`'s own reasoning: generous for any legitimate ticket
-/// pass (a `pass.json` a few KB, parsed in well under a second).
-///
-/// **This bounds only how long a single request waits (M13, 2026-09-26
-/// review).** On expiry, `handle_pkpass_upload` stops awaiting and answers
-/// `GATEWAY_TIMEOUT` immediately, but the underlying blocking-pool thread is
-/// NOT freed or interrupted by that -- it keeps running the abandoned parse
-/// to completion (or, for a sufficiently pathological input, effectively
-/// forever) regardless, since dropping a `spawn_blocking` task's
-/// `JoinHandle` never stops the OS thread executing it. What actually
-/// bounds how many such threads can ever be tied up at once is
-/// [`TICKET_PARSE_SLOTS`], not this constant.
-const PKPASS_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Same contract as `post_pkpass_upload` (Task 7) -- see that handler's
 /// doc comment for why `_user`/`_tracking_id` are otherwise unused, and
 /// the same REVIEW-BEFORE-SAVE note: no `sqlx::query` call, no database
 /// handle, anywhere in this function.
 ///
-/// Unlike `.pkpass` parsing (a bounded zip-entry read), `ticket_extraction::parse_pdf`
-/// runs the third-party `pdf_extract` crate over untrusted, potentially
-/// pathological PDF bytes with no time bound of its own -- CPU-bound,
-/// synchronous work that would otherwise stall a tokio worker thread for
-/// the whole API, not just this route, if called directly from this async
-/// handler. It's pushed onto a blocking-pool thread via `spawn_blocking`
-/// and given a hard wall-clock budget via `timeout`, but (M13, 2026-09-26
-/// review) that budget alone does NOT prevent a stuck worker thread -- see
-/// [`TICKET_PARSE_SLOTS`]'s doc comment for why, and for the mechanism (a
-/// fixed concurrency cap, not this timeout) that actually bounds how many
-/// threads a pathological upload can tie up.
+/// The parse itself runs in a child process -- see [`handle_ticket_upload`].
 async fn post_pdf_upload(
     _user: AuthenticatedUser,
     Path(_tracking_id): Path<i64>,
@@ -1532,111 +1446,138 @@ async fn post_pdf_upload_standalone(
 }
 
 async fn handle_pdf_upload(
+    multipart: Multipart,
+) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+    handle_ticket_upload(&TICKET_PARSER, TicketKind::Pdf, multipart).await
+}
+
+/// Shared by both upload kinds: read the file, pre-check it, parse it in a
+/// child process.
+///
+/// **History (M13).** The parse used to run on a `spawn_blocking` thread
+/// under a `tokio::time::timeout`. That timeout only stopped the request
+/// from waiting: `pdf_extract`/`lopdf` and `zip` have no cancellation hook,
+/// so a pathological file kept its thread busy indefinitely, and after
+/// [`TICKET_PARSE_PERMITS`] such uploads every later one got a 503 until
+/// the pod restarted. Now:
+///
+/// 1. [`ticket_precheck`] rejects the common pathological shapes (wrong
+///    magic bytes, zip bombs, nested archives, ZIP64, a PDF with no
+///    trailer or an absurd object/page count) with a 413/415/422 and a
+///    specific message, before a slot is taken or a process started.
+/// 2. [`ticket_subprocess::TicketParser`] runs the real parse in
+///    `api parse-ticket <kind>`, a child with `RLIMIT_AS`/`RLIMIT_CPU`,
+///    SIGKILLed at [`TICKET_PARSE_TIMEOUT`] (504) or when this future is
+///    dropped. Its slots count live children, so a stuck parse holds a slot
+///    for at most the timeout.
+///
+/// Status mapping: see [`ticket_parse_failure_response`].
+async fn handle_ticket_upload(
+    parser: &TicketParser,
+    kind: TicketKind,
     mut multipart: Multipart,
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
 
-    // See `TICKET_PARSE_SLOTS`'s doc comment: this permit is moved INTO the
-    // spawned closure below (not merely held across this `.await`), so it
-    // stays held for as long as the blocking-pool thread itself is
-    // occupied -- including past this function's own return on a timeout.
-    let Ok(permit) = Arc::clone(&TICKET_PARSE_SLOTS).try_acquire_owned() else {
-        return Err((
+    let prechecked = match kind {
+        TicketKind::Pkpass => ticket_precheck::precheck_pkpass(&bytes),
+        TicketKind::Pdf => ticket_precheck::precheck_pdf(&bytes),
+    };
+    if let Err(rejection) = prechecked {
+        return Err(ticket_precheck_response(&rejection));
+    }
+
+    parser
+        .parse(kind, bytes)
+        .await
+        .map(Json)
+        .map_err(|failure| ticket_parse_failure_response(kind, failure))
+}
+
+fn ticket_precheck_response(rejection: &ticket_precheck::Rejection) -> (StatusCode, String) {
+    let status = match rejection {
+        ticket_precheck::Rejection::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+        ticket_precheck::Rejection::WrongType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ticket_precheck::Rejection::Unacceptable(_) => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    (status, rejection.message().to_string())
+}
+
+/// `Busy` 503, `TimedOut` 504, `Unparseable`/`ChildDied` 422 (a file that
+/// crashes or exhausts the parser is a bad file, not a server fault; the
+/// detail goes to the log), `Internal` 500.
+fn ticket_parse_failure_response(kind: TicketKind, failure: ParseFailure) -> (StatusCode, String) {
+    let what = match kind {
+        TicketKind::Pkpass => "a train .pkpass",
+        TicketKind::Pdf => "a PDF e-ticket",
+    };
+    match failure {
+        ParseFailure::Busy => (
             StatusCode::SERVICE_UNAVAILABLE,
             "too many ticket uploads are being processed right now; please retry in a moment"
                 .to_string(),
-        ));
-    };
-
-    let parsed = tokio::time::timeout(
-        PDF_PARSE_TIMEOUT,
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            ticket_extraction::parse_pdf(&bytes)
-        }),
-    )
-    .await;
-
-    match parsed {
-        Ok(Ok(Ok(ticket))) => Ok(Json(ticket)),
-        Ok(Ok(Err(err))) => Err((
+        ),
+        ParseFailure::Unparseable(err) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            format!("could not read this as a PDF e-ticket: {err}"),
-        )),
-        Ok(Err(join_err)) => {
-            tracing::error!(error = ?join_err, "PDF parse task panicked or was cancelled");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to parse PDF e-ticket".to_string(),
-            ))
-        }
-        Err(_elapsed) => Err((
+            format!("could not read this as {what}: {err}"),
+        ),
+        ParseFailure::TimedOut => (
             StatusCode::GATEWAY_TIMEOUT,
-            "PDF e-ticket parsing took too long; try a smaller or simpler file".to_string(),
-        )),
+            "reading this ticket took too long; try a smaller or simpler file".to_string(),
+        ),
+        ParseFailure::ChildDied { status, stderr } => {
+            tracing::warn!(
+                ?kind,
+                %status,
+                stderr = %stderr.trim(),
+                "ticket parse child died (resource limit or crash)"
+            );
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!(
+                    "could not read this as {what}: the file needed more memory or CPU than any \
+                     ticket should"
+                ),
+            )
+        }
+        ParseFailure::Internal(err) => {
+            tracing::error!(error = ?err, ?kind, "ticket parse child failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to parse the ticket file".to_string(),
+            )
+        }
     }
 }
 
-/// Wall-clock budget for a single PDF's text extraction (Finding 2 of the
-/// final review of this plan) -- generous for any legitimate ticket PDF
-/// (typically well under a second).
-///
-/// **This bounds only how long a single request waits (M13, 2026-09-26
-/// review).** On expiry, `handle_pdf_upload` stops awaiting and answers
-/// `GATEWAY_TIMEOUT` immediately, but the underlying blocking-pool thread is
-/// NOT freed or interrupted by that -- `pdf_extract`/`lopdf` are synchronous
-/// third-party code with no cooperative cancellation point this app can
-/// call into, so the abandoned parse keeps running to completion (or,
-/// for a sufficiently pathological input, effectively forever) regardless.
-/// What actually bounds how many such threads can ever be tied up at once
-/// is [`TICKET_PARSE_SLOTS`], not this constant.
-const PDF_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Wall-clock budget for one ticket parse, both kinds -- generous for any
+/// legitimate ticket (well under a second). On expiry the child is
+/// SIGKILLed and reaped, and its slot freed, before the 504 is sent.
+const TICKET_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Per-process concurrency gate on ticket-file parsing (M13, 2026-09-26
-/// review), shared by both `handle_pdf_upload` and `handle_pkpass_upload`.
-///
-/// **Why a timeout alone is not protection here.** Both handlers wrap their
-/// `spawn_blocking` call in a `tokio::time::timeout`, but dropping the
-/// `JoinHandle` on expiry does not stop the underlying blocking-pool OS
-/// thread: `pdf_extract`/`lopdf` (PDF) and the `zip` crate (`.pkpass`) are
-/// synchronous, third-party code with no cooperative cancellation hook this
-/// app can call into, so an abandoned parse keeps running on its own thread
-/// regardless of what the awaiting request does. A caller who keeps
-/// re-uploading a pathological file after each `GATEWAY_TIMEOUT` could
-/// therefore accumulate an UNBOUNDED number of permanently-stuck
-/// blocking-pool threads over time, eventually starving every other
-/// `spawn_blocking` consumer in the process (this route's own other parse
-/// kind, `routes::trips`'s graph search, sqlx's own blocking callouts) even
-/// though each individual request "failed" promptly.
-///
-/// This semaphore bounds that to a small, FIXED number instead:
-/// [`TICKET_PARSE_PERMITS`] blocking-pool threads can ever be occupied by a
-/// ticket parse at once, stuck or not, so the worst case is contained
-/// rather than unbounded. Same shedding posture as
-/// `routes::trips::PLAN_SLOTS` (`try_acquire`, not a queueing layer -- see
-/// that constant's own doc comment for why queueing would make this worse,
-/// not better): once exhausted, a new upload is refused immediately with a
-/// `503`, not queued behind the stuck ones.
-///
-/// **The permit MUST be an OWNED one, acquired via `try_acquire_owned`
-/// through this `Arc` and moved INTO the `spawn_blocking` closure itself --
-/// not just held across the `.await` in the async handler. The two are not
-/// equivalent:** a permit held only by the async function's own stack frame
-/// is dropped the instant that function returns, which on the timeout path
-/// happens WHILE the abandoned parse is still running on its blocking-pool
-/// thread. That would only bound how many requests are concurrently
-/// *awaited*, not how many threads are concurrently *stuck*, which is the
-/// actual resource this gate exists to protect. Tying the permit's lifetime
-/// to the closure itself means it is only released when that thread's work
-/// genuinely finishes, however long that takes.
-static TICKET_PARSE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(TICKET_PARSE_PERMITS)));
+/// The process-wide parser behind both upload routes. Children are
+/// re-executions of this very binary (`current_exe`, `/usr/local/bin/api`
+/// in the image); see `data::ticket_subprocess`'s module doc.
+static TICKET_PARSER: LazyLock<TicketParser> = LazyLock::new(|| {
+    let exe = std::env::current_exe().unwrap_or_else(|err| {
+        tracing::warn!(error = ?err, "current_exe failed; re-executing via /proc/self/exe");
+        std::path::PathBuf::from("/proc/self/exe")
+    });
+    TicketParser::new(
+        exe,
+        TICKET_PARSE_PERMITS,
+        TICKET_PARSE_TIMEOUT,
+        ticket_subprocess::ChildLimits::default(),
+    )
+});
 
-/// See [`TICKET_PARSE_SLOTS`]. 8: generous for ordinary interactive use (a
-/// user uploads one boarding pass at a time, occasionally), small enough
-/// that even a sustained flood of pathological uploads -- each one a
-/// permanently-stuck thread this bound cannot un-stick, only cap -- leaves
-/// the rest of the blocking pool free for every other route.
+/// Live parse children allowed at once (M13, 2026-09-26 review). Beyond
+/// this an upload is refused immediately with a 503, not queued -- same
+/// shedding posture as `routes::trips::PLAN_SLOTS`. 8 is generous for
+/// interactive use (one boarding pass at a time) and bounds the worst case
+/// at 8 x `ChildLimits::address_space_bytes` of memory. Since the children
+/// are killed at [`TICKET_PARSE_TIMEOUT`], a flood of pathological uploads
+/// can hold every slot for at most that long.
 const TICKET_PARSE_PERMITS: usize = 8;
 
 /// Shared by this route and Task 9's PDF upload route: reads the single
@@ -1649,15 +1590,15 @@ async fn read_single_file_field(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|err| (StatusCode::BAD_REQUEST, format!("malformed upload: {err}")))?
+        // `MultipartError::status` is 413 when the body hit
+        // `DefaultBodyLimit`, 400 otherwise.
+        .map_err(|err| (err.status(), format!("malformed upload: {err}")))?
     {
         if field.name() == Some(field_name) {
-            let bytes = field.bytes().await.map_err(|err| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("failed to read upload: {err}"),
-                )
-            })?;
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|err| (err.status(), format!("failed to read upload: {err}")))?;
             return Ok(bytes.to_vec());
         }
     }
@@ -5060,5 +5001,124 @@ mod db_tests {
 
         cleanup_user(&pool, user_id).await;
         cleanup_public_train(&pool, train_uid).await;
+    }
+}
+
+/// Ticket-upload handler tests (M13). These drive `handle_ticket_upload`
+/// with a real `Multipart` and a local `TicketParser`, never the
+/// process-wide one (whose `current_exe` would be this test binary).
+#[cfg(test)]
+mod ticket_upload_tests {
+    use axum::extract::FromRequest;
+
+    use super::*;
+    use crate::data::ticket_precheck::fixtures;
+
+    async fn multipart_with(bytes: &[u8]) -> Multipart {
+        let boundary = "ticketboundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"ticket\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        Multipart::from_request(request, &()).await.unwrap()
+    }
+
+    /// A parser that must never be reached: its executable doesn't exist.
+    fn unreachable_parser(slots: usize) -> TicketParser {
+        TicketParser::new(
+            "/nonexistent/api".into(),
+            slots,
+            std::time::Duration::from_secs(1),
+            ticket_subprocess::ChildLimits::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn every_slot_busy_is_a_503() {
+        let parser = unreachable_parser(0);
+        let multipart = multipart_with(&fixtures::train_pdf()).await;
+        let err = handle_ticket_upload(&parser, TicketKind::Pdf, multipart)
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE, "{}", err.1);
+        assert!(err.1.contains("retry"), "{}", err.1);
+    }
+
+    #[tokio::test]
+    async fn precheck_rejections_map_to_413_415_and_422_without_spawning() {
+        let parser = unreachable_parser(1);
+        let cases: Vec<(TicketKind, Vec<u8>, StatusCode)> = vec![
+            (
+                TicketKind::Pdf,
+                {
+                    let mut big = fixtures::train_pdf();
+                    big.resize(5 * 1024 * 1024, b' ');
+                    big
+                },
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                TicketKind::Pkpass,
+                fixtures::train_pdf(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                TicketKind::Pdf,
+                fixtures::train_pkpass(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                TicketKind::Pkpass,
+                fixtures::zip_with(&[("readme.txt", b"x")]),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ];
+        for (kind, bytes, expected) in cases {
+            let err = handle_ticket_upload(&parser, kind, multipart_with(&bytes).await)
+                .await
+                .unwrap_err();
+            assert_eq!(err.0, expected, "{kind:?}: {}", err.1);
+        }
+        assert_eq!(parser.available_slots(), 1);
+    }
+
+    #[test]
+    fn parse_failures_map_to_their_statuses() {
+        let cases = [
+            (ParseFailure::Busy, StatusCode::SERVICE_UNAVAILABLE),
+            (ParseFailure::TimedOut, StatusCode::GATEWAY_TIMEOUT),
+            (
+                ParseFailure::Unparseable("nope".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                ParseFailure::ChildDied {
+                    status: "signal 6".into(),
+                    stderr: String::new(),
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                ParseFailure::Internal(anyhow::anyhow!("boom")),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (failure, expected) in cases {
+            assert_eq!(
+                ticket_parse_failure_response(TicketKind::Pdf, failure).0,
+                expected
+            );
+        }
     }
 }

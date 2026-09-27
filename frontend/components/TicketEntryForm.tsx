@@ -216,11 +216,17 @@ export function TicketEntryForm({
         setUploadError("That doesn't look like a valid upload — try again or fill in the form manually");
         return;
       }
-      if (response.status === 422) {
+      if (response.status === 422 || response.status === 415) {
         // Backend's own message is already human-readable, e.g. "could
-        // not read this as a train .pkpass: ..." -- safe to surface
-        // directly per Decision 2's table.
+        // not read this as a train .pkpass: ..." (422) or "this file is a
+        // PDF, not a .pkpass; upload it as a PDF e-ticket instead" (415,
+        // the api's magic-byte check) -- safe to surface directly per
+        // Decision 2's table.
         setUploadError(await response.text());
+        return;
+      }
+      if (response.status === 503) {
+        setUploadError('Too many tickets are being read right now — try again in a moment, or fill in the details manually');
         return;
       }
       if (response.status === 504) {
@@ -228,7 +234,11 @@ export function TicketEntryForm({
         return;
       }
       if (response.status === 413) {
-        setUploadError('That file is too large (8 MB limit). Try filling in the details manually');
+        // The api caps PDFs at 4 MiB and .pkpass files at 8 MiB
+        // (`ticket_precheck`).
+        setUploadError(
+          `That file is too large (${kind === 'pdf' ? '4' : '8'} MB limit). Try filling in the details manually`,
+        );
         return;
       }
       setUploadError("Couldn't read this file. Try filling in the details manually");
