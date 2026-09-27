@@ -68,31 +68,38 @@ if (typeof window !== 'undefined' && !window.Element.prototype.scrollTo) {
 // (and tests calling `localStorage.clear()` between cases) actually use —
 // `key`/`length` are part of the Storage interface but nothing here
 // exercises them, so they're deliberately omitted.
-if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+//
+// FE-13: installed UNCONDITIONALLY, on both `window` and `globalThis`. This
+// used to be guarded by `typeof window.localStorage !== 'undefined'`. Node
+// 25+ ships its own global `localStorage`, which is `undefined` unless
+// `--localstorage-file` is given, and it shadows jsdom's -- so the guard was
+// false, the polyfill was skipped, and every test touching storage threw.
+if (typeof window !== 'undefined') {
   const store: Record<string, string> = {};
-
-  Object.defineProperty(window, 'localStorage', {
-    value: {
-      getItem(key: string) {
-        return store[key] ?? null;
-      },
-      setItem(key: string, value: string) {
-        store[key] = value;
-      },
-      removeItem(key: string) {
-        delete store[key];
-      },
-      clear() {
-        for (const key of Object.keys(store)) {
-          delete store[key];
-        }
-      },
+  const storage = {
+    getItem(key: string) {
+      return store[key] ?? null;
     },
-    writable: true,
-    configurable: true,
-  });
+    setItem(key: string, value: string) {
+      store[key] = String(value);
+    },
+    removeItem(key: string) {
+      delete store[key];
+    },
+    clear() {
+      for (const key of Object.keys(store)) {
+        delete store[key];
+      }
+    },
+  };
+  for (const target of new Set<object>([window, globalThis])) {
+    Object.defineProperty(target, 'localStorage', {
+      value: storage,
+      writable: true,
+      configurable: true,
+    });
+  }
 }
-
 
 // Let any Mantine transition timer a test file leaked finish BEFORE Vitest
 // tears the jsdom environment down (which deletes `window` from the
