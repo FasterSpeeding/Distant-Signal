@@ -598,6 +598,7 @@ pub async fn ingest_shared_movements_batch(
             tracked_train_id: 0, // unused by upsert_train_movement -- see its own doc comment
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: event.dedup_key.clone(),
             msg_type: event.msg_type.clone(),
             event_type: event.event_type.clone(),
