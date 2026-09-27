@@ -688,6 +688,37 @@ independent UI simplification.
   `tracked_trains`** never matches the JOIN in step 4 — no special-casing
   needed, this falls out of the query shape itself.
 
+### Delivery guarantee: at-most-once
+
+Decided 2026-09-27 (open-findings triage DQ9, finding DB2-25). This
+supersedes the "not silently lost forever" claim in the transient-failure
+bullet above, which stopped being true once the watermark cursors began
+advancing independently of send outcomes.
+
+- A notification is decided when a poll reads its source row, and sent by
+  the push queue's workers (`crates/notifier/src/push_queue.rs`). The
+  `*_notification_state` row is written only after a delivery succeeds.
+- The watermark cursors advance whether or not the send succeeded. A
+  line or train row is re-read only within the cursor grace window
+  (`cursorGraceSeconds`, about two cycles), so a push that fails, or is
+  refused because the queue is full, after that window is **lost**. The
+  full-poll cycles (station skips, unmatched legs) keep re-deciding until
+  one delivery succeeds.
+- The reverse failure can duplicate a push: if the send succeeds but the
+  state write fails three times, a grace-window re-read may send it again.
+- There is no outbox or pending-send marker. At about 21 subscriptions, a
+  lost push costs less than the machinery to prevent it. If push volume
+  grows, the next step is a `last_attempted_at` marker on the state rows,
+  re-decided until the send succeeds or the marker expires (DQ9 option B).
+- **What is lost is counted.** `distant_signal_notifier_push_dropped_total`
+  has one `reason` label per path: `queue_full`, `user_queue_full`,
+  `shutting_down`, `abandoned_on_shutdown`, `send_failed` (no subscription
+  accepted the push) and `error` (the job could not run). A count inside
+  the grace window may still be re-sent; a steady rate means pushes are
+  being lost. The chart alert `DistantSignalNotifierPushDropped`
+  (`metrics.prometheusRule.notifierPushDropped`) fires when a reason
+  reaches `minDrops` (5) within `window` (1h).
+
 ## Testing
 
 Following this repo's established convention (pure logic tested directly,

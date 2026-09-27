@@ -2832,6 +2832,16 @@ metrics:
       stalledWindow: 10m
       stalledFor: 15m
       severity: warning
+    # DistantSignalNotifierPushDropped: at least minDrops decided push
+    # notifications ended undelivered (queue full, every endpoint failed,
+    # or the job errored) within `window`, per reason. Notifier delivery is
+    # at-most-once by decision (triage DQ9), so these may be lost for good.
+    notifierPushDropped:
+      enabled: true
+      window: 1h
+      minDrops: 5
+      for: 0m
+      severity: warning
 
 # ---------------------------------------------------------------------------
 # NetworkPolicy (optional)
