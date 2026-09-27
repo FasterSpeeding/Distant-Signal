@@ -2,6 +2,11 @@ import { Box, Group, List, ListItem, Stack, Text, Title } from '@mantine/core';
 import type { ReactNode } from 'react';
 import { TextLink } from './TextLink';
 import { LEGAL_LINKS, legalPagesVisible } from '@/lib/legal';
+import { NATIONAL_RAIL_URL } from './NationalRailCredit';
+
+// Re-exported so existing imports keep working; it lives in its own module
+// because client components render it too.
+export { NationalRailCredit } from './NationalRailCredit';
 
 /** Attribution for the third-party open data this app republishes: the
  * short site footer (`OpenDataAttribution`, on every page) and the full
@@ -55,14 +60,19 @@ import { LEGAL_LINKS, legalPagesVisible } from '@/lib/legal';
  * Network Rail Infrastructure Limited licensed under the following
  * licence", hyperlinked to the licence (LEG-19). It is rendered verbatim
  * below with that link. Network Rail also forbids its brand or logo and any
- * claim to be "official", so the line stays unbranded. If the RDM Train
- * Movements product's Schedule 1 names a different statement, that wording
- * replaces this one (LEG-17).
+ * claim to be "official", so the line stays unbranded.
  *
  * The timetable (CIF, from the DTD/RSP feed) needs "Source: RSP" or a link
  * to the Rail Delivery Group (LEG-22); both are given on the attribution
- * page. The accepted product licence is still to be confirmed by the
- * operator.
+ * page.
+ *
+ * Operating basis (decision of 2026-09-27): the operator treats the current
+ * and planned use of the Rail Data Marketplace feeds as permitted under the
+ * RDM terms. The attribution here is therefore final, not a placeholder
+ * awaiting Schedule 1 sign-off: the Darwin/KB Stations wording above, the
+ * NRIL statement for TRUST (LEG-19), "Source: RSP" for CIF (LEG-22), and the
+ * same National Rail line directly under LDBWS-derived departure data
+ * (`NationalRailCredit`, LEG-23). Revisit only if the RDM terms change.
  *
  * Irish and Northern Irish sources (LEG-20, LEG-21): Irish Rail GTFS is the
  * NTA's, under CC BY 4.0, which requires the NTA's name, a link and an
@@ -95,19 +105,6 @@ function ExternalLink({ href, children }: { href: string; children: ReactNode })
   );
 }
 
-/** LEG-23: the Darwin/LDBWS Schedule 1 credit ("powered by NationalRail"),
- * placed directly under a block whose data is predominantly from National
- * Rail -- NRE's developer guidelines ask for it "alongside" such data, not
- * only in the site-wide footer. Same wording and link as the footer; no
- * logo (that needs National Rail's written permission). */
-export function NationalRailCredit() {
-  return (
-    <Text size="xs" c="dimmed" data-nre-credit>
-      Live departure data <ExternalLink href="https://www.nationalrail.co.uk">powered by NationalRail</ExternalLink>
-    </Text>
-  );
-}
-
 /** The legal links are decided at render time. Routes Next prerenders at
  * build time (`○` in the `next build` route list: today `/stations`,
  * `/lines/new`, `/groups/new`, `/journeys/new`, `/chat/callback`) render
@@ -133,7 +130,7 @@ export function OpenDataAttribution() {
           (see `AuthStatus.tsx`). The other linked lines below follow it for
           the same reason; plain-text lines stay `xs`. */}
       <Text size="sm" c="dimmed">
-        <ExternalLink href="https://www.nationalrail.co.uk">powered by NationalRail</ExternalLink>
+        <ExternalLink href={NATIONAL_RAIL_URL}>powered by NationalRail</ExternalLink>
         {' (Train Information Services Ltd)'}
       </Text>
       <Text size="sm" c="dimmed">
@@ -177,7 +174,7 @@ export const DATA_SOURCES: readonly DataSource[] = [
     use: 'Live departure boards, station information, incidents and train operator details, provided through the Rail Data Marketplace. Knowledgebase incidents and operator data are published by Rail Delivery Group.',
     statement: (
       <>
-        <ExternalLink href="https://www.nationalrail.co.uk">powered by NationalRail</ExternalLink>
+        <ExternalLink href={NATIONAL_RAIL_URL}>powered by NationalRail</ExternalLink>
         {' (Train Information Services Ltd)'}
       </>
     ),

@@ -17,6 +17,7 @@ import { DateTimePicker, DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+import { NationalRailCredit } from './NationalRailCredit';
 import { ScheduleRow } from './ScheduleRow';
 import { TextLink } from './TextLink';
 import { TrackDestinationModal } from './TrackDestinationModal';
@@ -1043,26 +1044,31 @@ export function TrackTrainForm({
         // hand-rolled here) -- see that component's own doc comment for
         // the AA-contrast reasoning behind dimming only the row's TEXT,
         // never its status badge, for a non-clickable (cancelled) row.
-        <Stack gap="xs" data-departure-picker-rows>
-          {filtered.map((row) => (
-            <ScheduleRow
-              key={row.serviceId}
-              row={{
-                key: row.serviceId,
-                scheduled: row.scheduled,
-                destinationCrs: row.destinationCrs,
-                destinationName: row.destinationName,
-                operator: row.operator,
-                isCancelled: row.isCancelled,
-                delayMinutes: row.delayMinutes,
-                platform: row.platform,
-                plannedPlatform: row.plannedPlatform,
-                platformChanged: row.platformChanged,
-              }}
-              onSelect={() => pickDeparture(row)}
-            />
-          ))}
-        </Stack>
+        <>
+          <Stack gap="xs" data-departure-picker-rows>
+            {filtered.map((row) => (
+              <ScheduleRow
+                key={row.serviceId}
+                row={{
+                  key: row.serviceId,
+                  scheduled: row.scheduled,
+                  destinationCrs: row.destinationCrs,
+                  destinationName: row.destinationName,
+                  operator: row.operator,
+                  isCancelled: row.isCancelled,
+                  delayMinutes: row.delayMinutes,
+                  platform: row.platform,
+                  plannedPlatform: row.plannedPlatform,
+                  platformChanged: row.platformChanged,
+                }}
+                onSelect={() => pickDeparture(row)}
+              />
+            ))}
+          </Stack>
+          {/* LEG-23: this is Darwin's live departure board, so the National
+              Rail credit sits directly under it. */}
+          <NationalRailCredit />
+        </>
       );
     }
     // picker.source === 'cif' -- Operator never filters this source

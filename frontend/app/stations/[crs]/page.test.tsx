@@ -216,7 +216,7 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
 
     const credit = document.querySelector('#stats [data-nre-credit]');
     expect(credit).not.toBeNull();
-    expect(credit).toHaveTextContent('powered by NationalRail');
+    expect(credit).toHaveTextContent('powered by NationalRail (Train Information Services Ltd)');
     expect(credit?.querySelector('a')).toHaveAttribute('href', 'https://www.nationalrail.co.uk');
   });
 

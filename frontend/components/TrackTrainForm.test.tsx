@@ -1510,6 +1510,46 @@ describe('TrackTrainForm', () => {
       // 2026-09-22 UX review follow-up (item 5): resolved via the same
       // server-side batched lookup as the LDBWS branch above.
       expect(screen.getByText(/08:22 · Crewe \(CRE\)/)).toBeInTheDocument();
+      // LEG-23: the CIF timetable is not National Rail data, so no NRE credit.
+      expect(document.querySelector('[data-nre-credit]')).toBeNull();
+    });
+
+    // LEG-23: the LDBWS picker is Darwin's live departure board, so the
+    // National Rail credit sits directly under its rows.
+    it('credits National Rail directly under the LDBWS live departures', async () => {
+      vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
+      const rows = [
+        {
+          serviceId: 'svc-credit',
+          operator: 'SW',
+          destinationCrs: 'BSK',
+          scheduled: '10:15',
+          estimated: 'On time',
+          isCancelled: false,
+          delayMinutes: 0,
+          cancelReason: null,
+          delayReason: null,
+          skippedStations: [],
+          platform: null,
+          plannedPlatform: null,
+          platformChanged: false,
+        },
+      ];
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(rows), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /10:15/ });
+
+      const credit = document.querySelector('[data-nre-credit]');
+      expect(credit).not.toBeNull();
+      expect(credit).toHaveTextContent('Live departure data powered by NationalRail (Train Information Services Ltd)');
+      expect(screen.getByRole('link', { name: 'powered by NationalRail' })).toHaveAttribute(
+        'href',
+        'https://www.nationalrail.co.uk',
+      );
+      // Outside the rows container, so it is not mistaken for a pickable row.
+      expect(document.querySelector('[data-departure-picker-rows] [data-nre-credit]')).toBeNull();
     });
 
     it('a 404 from LDBWS followed by a CIF 200 [] renders the shared "no live departures right now" text', async () => {
