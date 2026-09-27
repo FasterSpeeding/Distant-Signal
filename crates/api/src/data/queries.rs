@@ -1006,7 +1006,7 @@ pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord
 /// `keep_stanoxes.is_empty()` is a no-op, not "delete everything" -- matches
 /// this crate's established "an empty batch must never be read as delete
 /// everything" posture ([`upsert_fixed_links`],
-/// [`upsert_schedule_destination_departures_chunk`]).
+/// [`upsert_schedule_destination_departures`]).
 pub async fn prune_stanox_crs_not_in(pool: &PgPool, keep_stanoxes: &[String]) -> Result<u64> {
     if keep_stanoxes.is_empty() {
         return Ok(0);
@@ -1270,9 +1270,9 @@ pub async fn list_tiploc_crs(pool: &PgPool) -> Result<Vec<common::TiplocCrsRecor
 ///
 /// **An empty `records` is a no-op, and that is load-bearing (2026-09-25
 /// fix).** Before this guard, this was the one wholesale-replace publish
-/// function in this file WITHOUT it -- both `upsert_schedule_destination_departures_chunk`
-/// and `upsert_schedule_calling_points_full_chunk` already reject an empty
-/// batch before their own `DELETE`, for exactly this reason: a delete-then-insert
+/// function in this file WITHOUT it -- the (since removed) legacy schedule
+/// chunk upserts already rejected an empty batch before their own `DELETE`,
+/// for exactly this reason: a delete-then-insert
 /// upsert can wipe a whole product on a client mistake or an upstream
 /// parse failure that produces zero rows, in a way a per-row `ON CONFLICT`
 /// loop never could. `schedule-reference` itself only calls this when it
@@ -2265,9 +2265,10 @@ pub struct CallingPointDeparturePage {
 /// fixtures) uses. The ingest route
 /// (`crates/api/src/routes/ingest.rs::post_schedule_destination_departures`)
 /// receives a day in several chunks and so calls
-/// [`upsert_schedule_destination_departures_publish_part`] directly (or, for
-/// an older `schedule-reference` that sends no `publish_id`, the legacy
-/// [`upsert_schedule_destination_departures_chunk`]).
+/// [`upsert_schedule_destination_departures_publish_part`] directly. (The
+/// legacy delete-then-insert chunk path for a publisher without
+/// `publish_id` was removed with F-LEGACY on 2026-09-27; such a request is
+/// now a 400.)
 pub async fn upsert_schedule_destination_departures(
     pool: &PgPool,
     rows: &[ScheduleDestinationDeparturesRow],
@@ -2283,98 +2284,6 @@ pub async fn upsert_schedule_destination_departures(
         },
     )
     .await
-}
-
-/// **Legacy** chunk-aware delete-then-insert, kept only for the
-/// pre-2026-09-26 ingest contract: an older `schedule-reference` that sends
-/// `?first_chunk=` but no `?publish_id=` (see
-/// `routes::ingest::ScheduleChunkParams`). Every current caller uses the
-/// diff-based [`upsert_schedule_destination_departures_publish_part`]
-/// instead; this path exists so a rolling deploy that lands `api` before
-/// `schedule-reference` keeps publishing correctly (with the old index
-/// churn) until the new publisher arrives. It can be deleted once no
-/// publisher predating `publish_id` can be running.
-///
-/// `first_chunk = true` clears the touched dates first, then inserts;
-/// `first_chunk = false` skips the DELETE and only inserts -- so a later
-/// chunk's call does not wipe out an earlier chunk's just-inserted rows for
-/// the same date. `ON CONFLICT DO NOTHING` on the insert (a conflict can
-/// only be a duplicate within the same publish). An empty `rows` is a
-/// no-op. Returns rows actually inserted.
-pub async fn upsert_schedule_destination_departures_chunk(
-    pool: &PgPool,
-    rows: &[ScheduleDestinationDeparturesRow],
-    first_chunk: bool,
-) -> Result<u64> {
-    if rows.is_empty() {
-        return Ok(0);
-    }
-
-    let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
-    let destination_crs: Vec<&str> = rows.iter().map(|r| r.destination_crs.as_str()).collect();
-    let scheduled: Vec<chrono::NaiveTime> = rows.iter().map(|r| r.scheduled).collect();
-    let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
-    let train_uids: Vec<&str> = rows.iter().map(|r| r.train_uid.as_str()).collect();
-    let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
-    let true_origin_crs: Vec<Option<&str>> =
-        rows.iter().map(|r| r.true_origin_crs.as_deref()).collect();
-    let calling_point_arrival: Vec<Option<chrono::NaiveTime>> =
-        rows.iter().map(|r| r.calling_point_arrival).collect();
-    let destination_arrival: Vec<Option<chrono::NaiveTime>> =
-        rows.iter().map(|r| r.destination_arrival).collect();
-    let destination_arrival_day_offsets: Vec<i16> = rows
-        .iter()
-        .map(|r| r.destination_arrival_day_offset)
-        .collect();
-    let operator_atoc: Vec<Option<&str>> =
-        rows.iter().map(|r| r.operator_atoc.as_deref()).collect();
-    let headcode: Vec<Option<&str>> = rows.iter().map(|r| r.headcode.as_deref()).collect();
-    let rsid: Vec<Option<&str>> = rows.iter().map(|r| r.rsid.as_deref()).collect();
-
-    // Normally exactly one date. Handled as a set anyway so a batch that
-    // straddles a rail-day boundary replaces both days rather than half of
-    // one -- and so the DELETE (when it runs at all -- see `first_chunk`
-    // above) can never be wider than what is being written.
-    let mut distinct_dates = service_dates.clone();
-    distinct_dates.sort_unstable();
-    distinct_dates.dedup();
-
-    let mut tx = pool.begin().await?;
-    common::pg::set_local_statement_timeout(&mut tx, SCHEDULE_CHUNK_STATEMENT_TIMEOUT).await?;
-
-    if first_chunk {
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE service_date = ANY($1::date[])",
-        )
-        .bind(&distinct_dates)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let result = sqlx::query(
-        "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[], $13::text[]) \
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(&service_dates)
-    .bind(&destination_crs)
-    .bind(&scheduled)
-    .bind(&day_offsets)
-    .bind(&train_uids)
-    .bind(&origin_crs)
-    .bind(&true_origin_crs)
-    .bind(&calling_point_arrival)
-    .bind(&destination_arrival)
-    .bind(&destination_arrival_day_offsets)
-    .bind(&operator_atoc)
-    .bind(&headcode)
-    .bind(&rsid)
-    .execute(&mut *tx)
-    .await?;
-
-    tx.commit().await?;
-    Ok(result.rows_affected())
 }
 
 /// One HTTP chunk of a diff-based, possibly multi-chunk schedule publish --
@@ -2464,10 +2373,10 @@ struct PublishKeysSql {
 }
 
 /// `statement_timeout` for every statement of a schedule ingest chunk's
-/// transaction (both products, legacy and diff publish), raised above the
+/// transaction (both products), raised above the
 /// pool's 60s default (`common::pg`) with `SET LOCAL`. The bulk
 /// `INSERT ... SELECT FROM UNNEST` of up to ~250k rows takes 3-8s in
-/// production, and the legacy first chunk's whole-date `DELETE` longer; 120s
+/// production; 120s
 /// keeps a healthy chunk far inside the budget while still bounding a
 /// runaway. A final chunk's delete phase then sets its own
 /// [`PUBLISH_DELETE_STATEMENT_TIMEOUT`].
@@ -2612,6 +2521,24 @@ async fn finish_publish_part(
     part: SchedulePublishPart<'_>,
     statement_timeout: std::time::Duration,
 ) -> Result<u64> {
+    finish_publish_part_declaring(tx, sql, part, statement_timeout, &[]).await
+}
+
+/// [`finish_publish_part`], for a publish that also declares its service
+/// dates (PL-14). The dates a publish covers are normally read back from its
+/// staged keys, so a publish with NO rows (`total_rows=0`: a date that
+/// legitimately has no trains, e.g. Christmas Day) used to have no dates to
+/// delete from, and the previous publish's rows for that date survived as
+/// stale data. When nothing is staged and the publisher's total is 0,
+/// `declared_dates` stands in: every row of those dates is deleted (none of
+/// them was carried by this publish). Ignored otherwise.
+async fn finish_publish_part_declaring(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sql: &PublishKeysSql,
+    part: SchedulePublishPart<'_>,
+    statement_timeout: std::time::Duration,
+    declared_dates: &[chrono::NaiveDate],
+) -> Result<u64> {
     let Some(expected) = part.final_total_rows else {
         return Ok(0);
     };
@@ -2635,10 +2562,13 @@ async fn finish_publish_part(
         .into());
     }
 
-    let (staged, dates): (i64, Vec<chrono::NaiveDate>) = sqlx::query_as(sql.summarize)
+    let (staged, mut dates): (i64, Vec<chrono::NaiveDate>) = sqlx::query_as(sql.summarize)
         .bind(part.publish_id)
         .fetch_one(&mut **tx)
         .await?;
+    if staged == 0 && expected == 0 {
+        dates = declared_dates.to_vec();
+    }
 
     let deleted = if u64::try_from(staged).ok() == Some(expected) && !dates.is_empty() {
         // Fresh statistics before the anti-join. Between publishes the
@@ -2688,6 +2618,11 @@ async fn finish_publish_part(
              publisher's total; NOT deleting rows missing from this publish (stale rows stay \
              until the next complete publish)"
         );
+        metrics::counter!(
+            common::metrics::metric_name(SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC),
+            "product" => sql.product
+        )
+        .increment(1);
         0
     };
 
@@ -2697,6 +2632,91 @@ async fn finish_publish_part(
         .await?;
 
     Ok(deleted)
+}
+
+/// A final chunk that carries no rows -- only the end of a publish: its
+/// `total_rows` (normally 0) and the `service_date` the publisher covered
+/// (PL-14). With `total_rows = 0` every existing row of `service_date` is
+/// deleted, since the publish carried none of them; see
+/// [`finish_publish_part_declaring`]. `part` must be a final chunk
+/// (`final_total_rows` set); a non-final empty chunk is a no-op.
+async fn finish_publish_without_rows(
+    pool: &PgPool,
+    sql: &PublishKeysSql,
+    part: SchedulePublishPart<'_>,
+    service_date: Option<chrono::NaiveDate>,
+) -> Result<u64> {
+    if part.final_total_rows.is_none() {
+        return Ok(0);
+    }
+    let declared: Vec<chrono::NaiveDate> = service_date.into_iter().collect();
+    let mut tx = pool.begin().await?;
+    common::pg::set_local_statement_timeout(&mut tx, SCHEDULE_CHUNK_STATEMENT_TIMEOUT).await?;
+    discard_superseded_publish_keys(&mut tx, sql, part, &declared).await?;
+    let deleted = finish_publish_part_declaring(
+        &mut tx,
+        sql,
+        part,
+        PUBLISH_DELETE_STATEMENT_TIMEOUT,
+        &declared,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(deleted)
+}
+
+/// [`finish_publish_without_rows`] for `schedule_destination_departures`.
+/// Returns rows deleted.
+pub async fn finish_schedule_destination_departures_publish_without_rows(
+    pool: &PgPool,
+    part: SchedulePublishPart<'_>,
+    service_date: Option<chrono::NaiveDate>,
+) -> Result<u64> {
+    finish_publish_without_rows(
+        pool,
+        &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL,
+        part,
+        service_date,
+    )
+    .await
+}
+
+/// [`finish_publish_without_rows`] for `schedule_calling_points_full`.
+/// Returns rows deleted.
+pub async fn finish_schedule_calling_points_full_publish_without_rows(
+    pool: &PgPool,
+    part: SchedulePublishPart<'_>,
+    service_date: Option<chrono::NaiveDate>,
+) -> Result<u64> {
+    finish_publish_without_rows(
+        pool,
+        &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL,
+        part,
+        service_date,
+    )
+    .await
+}
+
+/// `api_schedule_publish_staged_mismatch_total{product}`: a final publish
+/// chunk whose staged key count did not match the publisher's total, so the
+/// rows missing from that publish were NOT deleted (SCHED-2). The chart's
+/// `DistantSignalSchedulePublishStagedMismatch` alert reads it.
+pub const SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC: &str =
+    "api_schedule_publish_staged_mismatch_total";
+
+/// Registers [`SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC`] at 0 for both
+/// products at startup, so the alert's `increase()` sees the first mismatch.
+pub fn register_schedule_publish_metrics() {
+    for sql in [
+        &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL,
+        &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL,
+    ] {
+        metrics::counter!(
+            common::metrics::metric_name(SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC),
+            "product" => sql.product
+        )
+        .increment(0);
+    }
 }
 
 /// One chunk of a diff-based `schedule_destination_departures` publish --
@@ -2876,9 +2896,7 @@ pub struct ScheduleCallingPointsFullRow {
 /// (this file's own tests, `crates/api/src/routes/train.rs` and
 /// `crates/api/src/data/journey.rs`'s fixtures) uses. The ingest route
 /// (`crates/api/src/routes/ingest.rs::post_schedule_calling_points_full`)
-/// instead calls [`upsert_schedule_calling_points_full_publish_part`] (or,
-/// for a publisher that predates `publish_id`, the legacy
-/// [`upsert_schedule_calling_points_full_chunk`]).
+/// instead calls [`upsert_schedule_calling_points_full_publish_part`].
 pub async fn upsert_schedule_calling_points_full(
     pool: &PgPool,
     rows: &[ScheduleCallingPointsFullRow],
@@ -2894,78 +2912,6 @@ pub async fn upsert_schedule_calling_points_full(
         },
     )
     .await
-}
-
-/// **Legacy** chunk-aware delete-then-insert for the pre-2026-09-26 ingest
-/// contract (`?first_chunk=` with no `?publish_id=`) -- same status and same
-/// contract as [`upsert_schedule_destination_departures_chunk`]: `true`
-/// clears the touched dates first; `false` skips the DELETE and only
-/// inserts, so a later chunk in the same publish cycle cannot wipe out an
-/// earlier chunk's just-inserted rows for the same date. Only
-/// `crates/api/src/routes/ingest.rs`'s `post_schedule_calling_points_full`
-/// calls it, and only for a publisher that sends no `publish_id`.
-pub async fn upsert_schedule_calling_points_full_chunk(
-    pool: &PgPool,
-    rows: &[ScheduleCallingPointsFullRow],
-    first_chunk: bool,
-) -> Result<u64> {
-    if rows.is_empty() {
-        return Ok(0);
-    }
-
-    let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
-    let uids: Vec<&str> = rows.iter().map(|r| r.uid.as_str()).collect();
-    let seqs: Vec<i16> = rows.iter().map(|r| r.seq).collect();
-    let tiplocs: Vec<&str> = rows.iter().map(|r| r.tiploc.as_str()).collect();
-    let kinds: Vec<&str> = rows.iter().map(|r| r.kind.as_str()).collect();
-    let booked_arrivals: Vec<Option<chrono::NaiveTime>> =
-        rows.iter().map(|r| r.booked_arrival).collect();
-    let booked_departures: Vec<Option<chrono::NaiveTime>> =
-        rows.iter().map(|r| r.booked_departure).collect();
-    let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
-    let platforms: Vec<Option<&str>> = rows.iter().map(|r| r.platform.as_deref()).collect();
-
-    // Normally exactly one date. Handled as a set anyway so a batch that
-    // straddles a rail-day boundary replaces both days rather than half of
-    // one -- and so the DELETE (when it runs at all -- see `first_chunk`
-    // above) can never be wider than what is being written. Same
-    // convention as `upsert_schedule_destination_departures_chunk`.
-    let mut distinct_dates = service_dates.clone();
-    distinct_dates.sort_unstable();
-    distinct_dates.dedup();
-
-    let mut tx = pool.begin().await?;
-    common::pg::set_local_statement_timeout(&mut tx, SCHEDULE_CHUNK_STATEMENT_TIMEOUT).await?;
-
-    if first_chunk {
-        sqlx::query(
-            "DELETE FROM schedule_calling_points_full WHERE service_date = ANY($1::date[])",
-        )
-        .bind(&distinct_dates)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let result = sqlx::query(
-        "INSERT INTO schedule_calling_points_full \
-            (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::smallint[], $4::text[], $5::text[], $6::time[], $7::time[], $8::smallint[], $9::text[]) \
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(&service_dates)
-    .bind(&uids)
-    .bind(&seqs)
-    .bind(&tiplocs)
-    .bind(&kinds)
-    .bind(&booked_arrivals)
-    .bind(&booked_departures)
-    .bind(&day_offsets)
-    .bind(&platforms)
-    .execute(&mut *tx)
-    .await?;
-
-    tx.commit().await?;
-    Ok(result.rows_affected())
 }
 
 /// One chunk of a diff-based `schedule_calling_points_full` publish -- see
@@ -7502,7 +7448,7 @@ mod stanox_crs_lookup_query_tests {
         // carries no rows at all must be a no-op, NOT "delete every fixed
         // link this app knows about" -- same posture and same reason as
         // `upsert_with_an_empty_batch_does_not_wipe_the_day` (schedule_destination_departures)
-        // and `upsert_schedule_calling_points_full_chunk`'s own guard.
+        // and `upsert_schedule_calling_points_full`'s own guard.
         let pool = test_pool().await;
         let seeded = vec![common::FixedLinkRecord {
             mode: "TUBE".to_string(),
@@ -8197,67 +8143,6 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(
             remaining, 3,
             "an empty batch must leave the day untouched, never clear it"
-        );
-
-        delete_day(&pool, date).await;
-    }
-
-    /// The real-failure-shape regression for the review finding: today
-    /// `schedule-reference` sends exactly one call per service date, but
-    /// `rows.chunks(50_000)` is a documented planned fallback for when a
-    /// day's payload grows too large for one call. Before
-    /// `upsert_schedule_destination_departures_chunk` existed, EVERY call
-    /// unconditionally ran `DELETE ... WHERE service_date = ANY(...)`
-    /// first, so a second chunk for the same date would have wiped out the
-    /// first chunk's just-inserted rows, silently leaving only the last
-    /// chunk's data for that day. This publishes two chunks for the same
-    /// date -- the second with `first_chunk = false` -- and asserts BOTH
-    /// chunks' rows survive.
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_rows() {
-        let pool = test_pool().await;
-        let date = fixture_date(3);
-        delete_day(&pool, date).await;
-
-        let first_chunk_rows = vec![
-            row(date, "ZRD", time(8, 0), "CHUNK-A1", "EUS", None, None),
-            row(date, "ZRD", time(9, 0), "CHUNK-A2", "EUS", None, None),
-        ];
-        let inserted = upsert_schedule_destination_departures_chunk(&pool, &first_chunk_rows, true)
-            .await
-            .expect("first chunk upsert");
-        assert_eq!(inserted, 2);
-
-        // A different train_uid, same date -- the second chunk of the same
-        // publish cycle. `first_chunk = false`: must NOT clear the date
-        // before inserting.
-        let second_chunk_rows = vec![row(date, "ZRD", time(10, 0), "CHUNK-B1", "CRE", None, None)];
-        let inserted =
-            upsert_schedule_destination_departures_chunk(&pool, &second_chunk_rows, false)
-                .await
-                .expect("second chunk upsert");
-        assert_eq!(inserted, 1);
-
-        let mut stored: Vec<String> = sqlx::query_scalar(
-            "SELECT train_uid FROM schedule_destination_departures \
-             WHERE service_date = $1 ORDER BY train_uid",
-        )
-        .bind(date)
-        .fetch_all(&pool)
-        .await
-        .expect("read back both chunks");
-        stored.sort();
-        assert_eq!(
-            stored,
-            vec![
-                "CHUNK-A1".to_string(),
-                "CHUNK-A2".to_string(),
-                "CHUNK-B1".to_string(),
-            ],
-            "both chunks' rows must survive -- the first chunk's rows must not be \
-             wiped by the second chunk's insert"
         );
 
         delete_day(&pool, date).await;
@@ -9914,88 +9799,6 @@ mod schedule_destination_departures_query_tests {
             .ok();
     }
 
-    /// The `schedule_calling_points_full` sibling of
-    /// `a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_rows`
-    /// -- same review finding, same real-failure shape: before
-    /// `upsert_schedule_calling_points_full_chunk` existed, every call
-    /// unconditionally deleted the date first, so a second chunk publishing
-    /// a different train's calling points for the same date would have
-    /// wiped out the first chunk's just-inserted rows. Publishes two
-    /// chunks (different `uid`s, same `service_date`) -- the second with
-    /// `first_chunk = false` -- and asserts BOTH chunks' rows survive.
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_calling_points \
-                -- --ignored --test-threads=1`"]
-    async fn a_second_chunk_for_the_same_date_does_not_wipe_the_first_chunks_calling_points() {
-        let pool = test_pool().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        sqlx::query(
-            "DELETE FROM schedule_calling_points_full WHERE uid IN ('TEST-CHUNK-A', 'TEST-CHUNK-B')",
-        )
-        .execute(&pool)
-        .await
-        .ok();
-
-        let first_chunk_rows = vec![ScheduleCallingPointsFullRow {
-            service_date,
-            uid: "TEST-CHUNK-A".to_string(),
-            seq: 0,
-            tiploc: "RDG    ".to_string(),
-            kind: "origin".to_string(),
-            booked_arrival: None,
-            booked_departure: "10:15:00".parse().ok(),
-            day_offset: 0,
-            platform: None,
-        }];
-        let inserted = upsert_schedule_calling_points_full_chunk(&pool, &first_chunk_rows, true)
-            .await
-            .expect("first chunk upsert");
-        assert_eq!(inserted, 1);
-
-        // A different train (uid), same service_date -- the second chunk
-        // of the same publish cycle. `first_chunk = false`: must NOT clear
-        // the date before inserting.
-        let second_chunk_rows = vec![ScheduleCallingPointsFullRow {
-            service_date,
-            uid: "TEST-CHUNK-B".to_string(),
-            seq: 0,
-            tiploc: "WAT    ".to_string(),
-            kind: "origin".to_string(),
-            booked_arrival: None,
-            booked_departure: "11:00:00".parse().ok(),
-            day_offset: 0,
-            platform: None,
-        }];
-        let inserted = upsert_schedule_calling_points_full_chunk(&pool, &second_chunk_rows, false)
-            .await
-            .expect("second chunk upsert");
-        assert_eq!(inserted, 1);
-
-        let mut stored: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT uid FROM schedule_calling_points_full \
-             WHERE service_date = $1 AND uid IN ('TEST-CHUNK-A', 'TEST-CHUNK-B') ORDER BY uid",
-        )
-        .bind(service_date)
-        .fetch_all(&pool)
-        .await
-        .expect("read back both chunks");
-        stored.sort();
-        assert_eq!(
-            stored,
-            vec!["TEST-CHUNK-A".to_string(), "TEST-CHUNK-B".to_string()],
-            "both chunks' rows must survive -- the first chunk's rows must not be \
-             wiped by the second chunk's insert"
-        );
-
-        sqlx::query(
-            "DELETE FROM schedule_calling_points_full WHERE uid IN ('TEST-CHUNK-A', 'TEST-CHUNK-B')",
-        )
-        .execute(&pool)
-        .await
-        .ok();
-    }
-
     /// The midnight-crossing regression this whole fix targets, at the
     /// query layer: a real overnight service's post-midnight calling point
     /// (small `scheduled`, e.g. `00:07`, but `day_offset = 1`) must still
@@ -10652,13 +10455,9 @@ mod journey_timetable_overlay_query_tests {
     }
 }
 
-/// DB-gated coverage for the 2026-09-25 schedule-pipeline fixes:
+/// DB-gated coverage for the 2026-09-25 schedule-pipeline fixes (the legacy
+/// chunk-contract tests that also lived here went with that path, F-LEGACY):
 ///
-/// * the chunk-aware `replace_dates` contract on
-///   [`upsert_schedule_calling_points_full_chunk`] /
-///   [`upsert_schedule_destination_departures_chunk`], which is what makes it
-///   safe for `schedule-reference` to split an oversized per-date publish into
-///   several POSTs, and
 /// * [`insert_schedule_reference_publish`] /
 ///   [`last_completed_schedule_reference_publish`], the completion marker that
 ///   replaced "seed the restart dedup from `schedule-ingest`'s extraction
@@ -10679,178 +10478,6 @@ mod schedule_pipeline_integrity_tests {
             .connect(&database_url)
             .await
             .expect("connect to postgres")
-    }
-
-    fn fixture_date(day: u32) -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(2099, 6, day).expect("valid fixture date")
-    }
-
-    fn time(h: u32, m: u32) -> chrono::NaiveTime {
-        chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid fixture time")
-    }
-
-    fn calling_point(
-        service_date: chrono::NaiveDate,
-        uid: &str,
-        seq: i16,
-    ) -> ScheduleCallingPointsFullRow {
-        ScheduleCallingPointsFullRow {
-            service_date,
-            uid: uid.to_string(),
-            seq,
-            tiploc: "EUSTON".to_string(),
-            kind: "intermediate".to_string(),
-            booked_arrival: Some(time(8, 0)),
-            booked_departure: Some(time(8, 2)),
-            day_offset: 0,
-            platform: None,
-        }
-    }
-
-    async fn clear_calling_points(pool: &PgPool, service_date: chrono::NaiveDate) {
-        sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = $1")
-            .bind(service_date)
-            .execute(pool)
-            .await
-            .expect("cleanup fixture schedule_calling_points_full rows");
-    }
-
-    async fn stored_uids(pool: &PgPool, service_date: chrono::NaiveDate) -> Vec<String> {
-        sqlx::query_as::<_, (String,)>(
-            "SELECT DISTINCT uid FROM schedule_calling_points_full WHERE service_date = $1 \
-             ORDER BY uid",
-        )
-        .bind(service_date)
-        .fetch_all(pool)
-        .await
-        .expect("read back fixture rows")
-        .into_iter()
-        .map(|(uid,)| uid)
-        .collect()
-    }
-
-    /// **The test that makes chunking safe.** Two chunks of the SAME service
-    /// date: the first clears the date, the second must add to it. If the
-    /// second chunk also ran the `DELETE`, the date would end up holding only
-    /// the last chunk -- silently losing every earlier chunk of the publish,
-    /// which is strictly worse than the oversized-body problem chunking exists
-    /// to solve.
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_pipeline_integrity -- --ignored --test-threads=1`"]
-    async fn a_second_calling_points_chunk_adds_to_the_date_instead_of_wiping_the_first() {
-        let pool = test_pool().await;
-        let date = fixture_date(1);
-        clear_calling_points(&pool, date).await;
-
-        // Chunk 1 of 2: clears the date (there is a prior delivery's row to
-        // clear, seeded here so the DELETE is genuinely exercised).
-        upsert_schedule_calling_points_full(&pool, &[calling_point(date, "STALE1", 0)])
-            .await
-            .expect("seed a prior delivery's row");
-        upsert_schedule_calling_points_full_chunk(&pool, &[calling_point(date, "FRESH1", 0)], true)
-            .await
-            .expect("first chunk");
-        // Chunk 2 of 2: must NOT clear the date.
-        upsert_schedule_calling_points_full_chunk(
-            &pool,
-            &[calling_point(date, "FRESH2", 0)],
-            false,
-        )
-        .await
-        .expect("second chunk");
-
-        assert_eq!(
-            stored_uids(&pool, date).await,
-            vec!["FRESH1".to_string(), "FRESH2".to_string()],
-            "both chunks must survive, and the previous delivery's row must not"
-        );
-
-        clear_calling_points(&pool, date).await;
-    }
-
-    /// The other half of the same contract: a `replace_dates: true` batch is
-    /// still a wholesale replace, unchanged -- and so is the two-argument
-    /// wrapper every existing in-process caller uses.
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_pipeline_integrity -- --ignored --test-threads=1`"]
-    async fn a_replacing_calling_points_chunk_still_clears_the_date_first() {
-        let pool = test_pool().await;
-        let date = fixture_date(2);
-        clear_calling_points(&pool, date).await;
-
-        upsert_schedule_calling_points_full(&pool, &[calling_point(date, "OLD", 0)])
-            .await
-            .expect("seed");
-        upsert_schedule_calling_points_full_chunk(&pool, &[calling_point(date, "NEW", 0)], true)
-            .await
-            .expect("replacing batch");
-
-        assert_eq!(
-            stored_uids(&pool, date).await,
-            vec!["NEW".to_string()],
-            "a replacing batch must supersede the whole date, exactly as before chunking existed"
-        );
-
-        clear_calling_points(&pool, date).await;
-    }
-
-    /// The same contract on the sibling product, which shares the chunked
-    /// publisher (`post_date_scoped_rows_in_chunks`) and therefore the same
-    /// per-chunk delete hazard.
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_pipeline_integrity -- --ignored --test-threads=1`"]
-    async fn a_second_destination_departures_chunk_adds_to_the_date_instead_of_wiping_the_first() {
-        let pool = test_pool().await;
-        let date = fixture_date(3);
-        let clear = |pool: PgPool| async move {
-            sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-                .bind(date)
-                .execute(&pool)
-                .await
-                .expect("cleanup fixture schedule_destination_departures rows");
-        };
-        clear(pool.clone()).await;
-
-        let row = |uid: &str, scheduled: chrono::NaiveTime| ScheduleDestinationDeparturesRow {
-            service_date: date,
-            destination_crs: "ZRD".to_string(),
-            scheduled,
-            day_offset: 0,
-            train_uid: uid.to_string(),
-            origin_crs: "EUS".to_string(),
-            true_origin_crs: None,
-            calling_point_arrival: None,
-            destination_arrival: None,
-            destination_arrival_day_offset: 0,
-            operator_atoc: None,
-            headcode: None,
-            rsid: None,
-        };
-
-        upsert_schedule_destination_departures_chunk(&pool, &[row("FRESH1", time(8, 0))], true)
-            .await
-            .expect("first chunk");
-        upsert_schedule_destination_departures_chunk(&pool, &[row("FRESH2", time(9, 0))], false)
-            .await
-            .expect("second chunk");
-
-        let uids: Vec<String> = sqlx::query_as::<_, (String,)>(
-            "SELECT train_uid FROM schedule_destination_departures WHERE service_date = $1 \
-             ORDER BY train_uid",
-        )
-        .bind(date)
-        .fetch_all(&pool)
-        .await
-        .expect("read back")
-        .into_iter()
-        .map(|(uid,)| uid)
-        .collect();
-        assert_eq!(uids, vec!["FRESH1".to_string(), "FRESH2".to_string()]);
-
-        clear(pool.clone()).await;
     }
 
     /// The completion marker `schedule-reference` seeds its restart dedup from
@@ -11255,37 +10882,6 @@ mod schedule_publish_diff_tests {
         clear_dates(&pool, &[date]).await;
     }
 
-    /// The legacy (pre-`publish_id`) chunk path stores `rsid` too, NULL
-    /// included.
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_publish_diff -- --ignored --test-threads=1`"]
-    async fn the_legacy_chunk_upsert_round_trips_rsid_including_a_null_value() {
-        let pool = test_pool().await;
-        let date = fixture_date(12);
-        clear_dates(&pool, &[date]).await;
-
-        let rows = [
-            ScheduleDestinationDeparturesRow {
-                rsid: Some("SR408800".to_string()),
-                ..departure(date, "LEGACY-A", time(8, 0), Some("SR"))
-            },
-            departure(date, "LEGACY-B", time(9, 0), None),
-        ];
-        upsert_schedule_destination_departures_chunk(&pool, &rows, true)
-            .await
-            .expect("legacy chunk publish");
-        assert_eq!(
-            stored_rsids(&pool, date).await,
-            vec![
-                ("LEGACY-A".to_string(), Some("SR408800".to_string())),
-                ("LEGACY-B".to_string(), None),
-            ]
-        );
-
-        clear_dates(&pool, &[date]).await;
-    }
-
     /// **The multi-chunk contract.** A publish split over three chunks ends
     /// with exactly the union of the chunks: rows from an earlier chunk are
     /// not lost to a later one, and the previous publish's rows that no chunk
@@ -11449,6 +11045,92 @@ mod schedule_publish_diff_tests {
         clear_dates(&pool, &[date]).await;
     }
 
+    /// PL-14: a publish with no rows for its date (`total_rows=0`, e.g. no
+    /// trains on Christmas Day) deletes that date's previous rows -- and
+    /// only that date's.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn an_empty_final_publish_clears_only_its_declared_date() {
+        let pool = test_pool().await;
+        let date = fixture_date(15);
+        let other = fixture_date(16);
+        clear_dates(&pool, &[date, other]).await;
+        for day in [date, other] {
+            upsert_schedule_destination_departures(
+                &pool,
+                &[departure(day, "PREVIOUS", time(8, 0), None)],
+            )
+            .await
+            .expect("previous publish");
+        }
+
+        // A non-final empty chunk is a no-op.
+        let deleted = finish_schedule_destination_departures_publish_without_rows(
+            &pool,
+            SchedulePublishPart {
+                publish_id: "test-empty-middle",
+                first_chunk: true,
+                final_total_rows: None,
+            },
+            Some(date),
+        )
+        .await
+        .expect("non-final empty chunk");
+        assert_eq!(deleted, 0);
+        assert_eq!(uids(&departure_tuples(&pool, date).await), vec!["PREVIOUS"]);
+
+        let deleted = finish_schedule_destination_departures_publish_without_rows(
+            &pool,
+            SchedulePublishPart {
+                publish_id: "test-empty-final",
+                first_chunk: true,
+                final_total_rows: Some(0),
+            },
+            Some(date),
+        )
+        .await
+        .expect("empty final publish");
+        assert_eq!(deleted, 1);
+        assert!(departure_tuples(&pool, date).await.is_empty());
+        assert_eq!(
+            uids(&departure_tuples(&pool, other).await),
+            vec!["PREVIOUS"],
+            "another date is untouched"
+        );
+
+        // Without a declared date there is nothing it may delete.
+        upsert_schedule_calling_points_full(&pool, &[calling_point(date, "CP", 0, None)])
+            .await
+            .expect("calling point");
+        let deleted = finish_schedule_calling_points_full_publish_without_rows(
+            &pool,
+            SchedulePublishPart {
+                publish_id: "test-empty-undated",
+                first_chunk: true,
+                final_total_rows: Some(0),
+            },
+            None,
+        )
+        .await
+        .expect("undated empty publish");
+        assert_eq!(deleted, 0);
+        let deleted = finish_schedule_calling_points_full_publish_without_rows(
+            &pool,
+            SchedulePublishPart {
+                publish_id: "test-empty-dated",
+                first_chunk: true,
+                final_total_rows: Some(0),
+            },
+            Some(date),
+        )
+        .await
+        .expect("dated empty publish");
+        assert_eq!(deleted, 1);
+
+        clear_dates(&pool, &[date, other]).await;
+    }
+
     /// **Fail closed.** If the final chunk finds fewer (or more) staged keys
     /// than the publisher's `total_rows` -- a chunk went to an `api` that
     /// doesn't stage keys, a chunk was replayed, staging was lost -- it must
@@ -11458,6 +11140,10 @@ mod schedule_publish_diff_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_publish_diff -- --ignored --test-threads=1`"]
     async fn a_final_chunk_whose_staged_count_does_not_match_deletes_nothing() {
+        // SCHED-2: the skipped delete is counted, not only logged.
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
         let pool = test_pool().await;
         let date = fixture_date(8);
         clear_dates(&pool, &[date]).await;
@@ -11502,6 +11188,13 @@ mod schedule_publish_diff_tests {
             .await,
             0,
             "staged keys are dropped even when the delete is skipped"
+        );
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(
+                r#"distant_signal_api_schedule_publish_staged_mismatch_total{product="schedule_destination_departures"} 1"#
+            ),
+            "{rendered}"
         );
 
         clear_dates(&pool, &[date]).await;

@@ -119,6 +119,49 @@ pub fn is_delivery_dir_name(name: &str) -> bool {
         && bytes[15] == b'Z'
 }
 
+/// Caps on what one delivery zip may expand to (finding PL-5 of the
+/// 2026-09-27 pipelines review). The zip arrives through the
+/// internet-facing SFTP container, so a small archive that inflates to fill
+/// `storage_dir`'s volume would stop the whole CIF pipeline. A real full
+/// CIF delivery is ~1-2 GB uncompressed across about a dozen files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtractLimits {
+    /// Total uncompressed bytes across every extracted entry.
+    pub max_total_bytes: u64,
+    /// Number of entries in the archive (directories included).
+    pub max_entries: usize,
+}
+
+impl Default for ExtractLimits {
+    fn default() -> Self {
+        Self {
+            max_total_bytes: 4 * 1024 * 1024 * 1024,
+            max_entries: 64,
+        }
+    }
+}
+
+/// A zip that can never be extracted as it stands: over a cap in
+/// [`ExtractLimits`], or an entry whose inflated size differs from the size
+/// its central directory declares. Permanent for these bytes, so the caller
+/// quarantines the delivery instead of retrying it every cycle.
+#[derive(Debug)]
+pub struct RejectedZip(pub String);
+
+impl std::fmt::Display for RejectedZip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "zip delivery rejected: {}", self.0)
+    }
+}
+
+impl std::error::Error for RejectedZip {}
+
+/// Whether `err` is a [`RejectedZip`] (permanent) rather than an IO or
+/// transient failure worth retrying.
+pub fn is_rejected(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<RejectedZip>().is_some()
+}
+
 /// Extracts every regular-file entry of the zip at `zip_path` directly into
 /// `dest_dir` (created if needed), streaming each entry straight to disk
 /// (the real `RJTTFnnnMCA.txt` entry is ~700MB uncompressed -- this must
@@ -134,16 +177,51 @@ pub fn is_delivery_dir_name(name: &str) -> bool {
 /// the zip's own central directory records for it, so a short write can
 /// never pass for a complete file. Callers outside tests go through
 /// [`ensure_extracted`], never this directly: `dest_dir` is written in place.
-pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::Result<Vec<(String, u64)>> {
+///
+/// PL-5: before anything is written, the entry count and the sum of the
+/// declared sizes are checked against `limits`; and each entry is read
+/// through a `take()` of its declared size plus one byte, so an entry that
+/// lies about its size stops there instead of filling the disk. Any of
+/// these is a [`RejectedZip`].
+pub fn extract_zip(
+    zip_path: &Path,
+    dest_dir: &Path,
+    limits: ExtractLimits,
+) -> anyhow::Result<Vec<(String, u64)>> {
+    use std::io::Read;
+
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|err| anyhow::anyhow!("failed to open {zip_path:?} as a zip archive: {err}"))?;
+
+    if archive.len() > limits.max_entries {
+        return Err(RejectedZip(format!(
+            "{} entries, over the cap of {}",
+            archive.len(),
+            limits.max_entries
+        ))
+        .into());
+    }
+    let mut declared_total: u64 = 0;
+    for i in 0..archive.len() {
+        let entry = archive.by_index_raw(i)?;
+        if !entry.is_dir() {
+            declared_total = declared_total.saturating_add(entry.size());
+        }
+    }
+    if declared_total > limits.max_total_bytes {
+        return Err(RejectedZip(format!(
+            "declares {declared_total} uncompressed bytes, over the cap of {}",
+            limits.max_total_bytes
+        ))
+        .into());
+    }
 
     std::fs::create_dir_all(dest_dir)?;
 
     let mut extracted = Vec::new();
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
+        let entry = archive.by_index(i)?;
         if entry.is_dir() {
             continue;
         }
@@ -163,17 +241,20 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::Result<Vec<(Stri
             continue;
         }
 
+        let declared = entry.size();
         let out_path = dest_dir.join(&enclosed);
         let mut out_file = std::fs::File::create(&out_path)?;
-        let bytes = std::io::copy(&mut entry, &mut out_file)?;
+        let bytes = std::io::copy(&mut entry.take(declared.saturating_add(1)), &mut out_file)?;
         out_file.sync_all()?;
-        if bytes != entry.size() {
-            anyhow::bail!(
-                "extracted {} bytes of {} but the zip records {}",
-                bytes,
+        if bytes != declared {
+            return Err(RejectedZip(format!(
+                "entry {} inflated to {}{} bytes but the zip records {}",
                 enclosed.display(),
-                entry.size()
-            );
+                if bytes > declared { "more than " } else { "" },
+                bytes.min(declared),
+                declared
+            ))
+            .into());
         }
         extracted.push((enclosed.to_string_lossy().into_owned(), bytes));
     }
@@ -212,6 +293,7 @@ pub fn ensure_extracted(
     zip_path: &Path,
     storage_dir: &Path,
     dir_name: &str,
+    limits: ExtractLimits,
 ) -> anyhow::Result<(Vec<(String, u64)>, Extraction)> {
     let final_dir = storage_dir.join(dir_name);
     if let Some(files) = read_marker(&final_dir)? {
@@ -229,7 +311,18 @@ pub fn ensure_extracted(
     if temp_dir.exists() {
         std::fs::remove_dir_all(&temp_dir)?;
     }
-    let files = extract_zip(zip_path, &temp_dir)?;
+    let files = match extract_zip(zip_path, &temp_dir, limits) {
+        Ok(files) => files,
+        Err(err) => {
+            // Free the space now: a partial (or rejected, oversized)
+            // extraction must not sit on the shared volume until the next
+            // attempt.
+            if let Err(cleanup) = std::fs::remove_dir_all(&temp_dir) {
+                tracing::warn!(error = ?cleanup, path = ?temp_dir, "failed to remove a failed extraction's scratch directory");
+            }
+            return Err(err);
+        }
+    };
     write_marker(&temp_dir, &files)?;
     fsync_dir(&temp_dir)?;
 
@@ -571,7 +664,7 @@ mod tests {
         std::fs::write(&zip_path, &bytes).unwrap();
         let dest_dir = dir.path().join("20260903T172830Z");
 
-        let mut extracted = extract_zip(&zip_path, &dest_dir).unwrap();
+        let mut extracted = extract_zip(&zip_path, &dest_dir, ExtractLimits::default()).unwrap();
         extracted.sort();
 
         assert_eq!(
@@ -598,9 +691,70 @@ mod tests {
         std::fs::write(&zip_path, &bytes).unwrap();
         let dest_dir = dir.path().join("20260903T172830Z");
 
-        extract_zip(&zip_path, &dest_dir).unwrap();
-        let extracted_again = extract_zip(&zip_path, &dest_dir).unwrap();
+        extract_zip(&zip_path, &dest_dir, ExtractLimits::default()).unwrap();
+        let extracted_again = extract_zip(&zip_path, &dest_dir, ExtractLimits::default()).unwrap();
         assert_eq!(extracted_again.len(), 1);
+    }
+
+    /// PL-5: a zip declaring more uncompressed bytes than the cap is
+    /// rejected before a single byte is written.
+    #[test]
+    fn extract_zip_rejects_a_zip_over_the_byte_cap_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(dir.path());
+        let dest_dir = dir.path().join("out");
+        let limits = ExtractLimits {
+            max_total_bytes: 21,
+            max_entries: 64,
+        };
+        let err = extract_zip(&zip_path, &dest_dir, limits).unwrap_err();
+        assert!(is_rejected(&err), "{err:?}");
+        assert!(
+            !dest_dir.exists(),
+            "nothing may be written for a rejected zip"
+        );
+
+        // Exactly at the cap (11 + 11 bytes) is fine.
+        let limits = ExtractLimits {
+            max_total_bytes: 22,
+            max_entries: 64,
+        };
+        assert_eq!(extract_zip(&zip_path, &dest_dir, limits).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn extract_zip_rejects_a_zip_over_the_entry_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(dir.path());
+        let limits = ExtractLimits {
+            max_total_bytes: u64::MAX,
+            max_entries: 1,
+        };
+        let err = extract_zip(&zip_path, &dir.path().join("out"), limits).unwrap_err();
+        assert!(is_rejected(&err), "{err:?}");
+    }
+
+    /// A rejected extraction leaves no scratch directory on the volume.
+    #[test]
+    fn ensure_extracted_cleans_up_after_a_rejected_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(dir.path());
+        let storage = tempfile::tempdir().unwrap();
+        let limits = ExtractLimits {
+            max_total_bytes: 1,
+            max_entries: 64,
+        };
+        let err =
+            ensure_extracted(&zip_path, storage.path(), "20260903T172830Z", limits).unwrap_err();
+        assert!(is_rejected(&err));
+        assert!(names_in(storage.path()).is_empty());
+    }
+
+    #[test]
+    fn default_limits_fit_a_real_delivery() {
+        let limits = ExtractLimits::default();
+        assert!(limits.max_total_bytes >= 4 * 1024 * 1024 * 1024);
+        assert!(limits.max_entries >= 16);
     }
 
     fn fixture_zip(dir: &Path) -> PathBuf {
@@ -630,8 +784,13 @@ mod tests {
         let storage = tempfile::tempdir().unwrap();
         let zip_path = fixture_zip(watch.path());
 
-        let (mut files, how) =
-            ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+        let (mut files, how) = ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            ExtractLimits::default(),
+        )
+        .unwrap();
         files.sort();
 
         assert_eq!(how, Extraction::Extracted);
@@ -664,13 +823,24 @@ mod tests {
         let watch = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let zip_path = fixture_zip(watch.path());
-        ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+        ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            ExtractLimits::default(),
+        )
+        .unwrap();
         let mca = storage.path().join("20260903T172830Z/RJTTF942MCA.txt");
         std::fs::write(&mca, b"untouched since").unwrap();
 
         for _ in 0..3 {
-            let (files, how) =
-                ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+            let (files, how) = ensure_extracted(
+                &zip_path,
+                storage.path(),
+                "20260903T172830Z",
+                ExtractLimits::default(),
+            )
+            .unwrap();
             assert_eq!(how, Extraction::AlreadyComplete);
             assert_eq!(files.len(), 2);
         }
@@ -689,7 +859,13 @@ mod tests {
         std::fs::write(final_dir.join("RJTTF942MCA.txt"), b"mca con").unwrap();
         std::fs::write(final_dir.join("RJTTF942MSN.txt"), b"msn content").unwrap();
 
-        let (_, how) = ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+        let (_, how) = ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            ExtractLimits::default(),
+        )
+        .unwrap();
 
         assert_eq!(how, Extraction::Extracted);
         assert_eq!(
@@ -712,9 +888,15 @@ mod tests {
         let storage = tempfile::tempdir().unwrap();
         let zip_path = fixture_zip(watch.path());
         let final_dir = storage.path().join("20260903T172830Z");
-        extract_zip(&zip_path, &final_dir).unwrap();
+        extract_zip(&zip_path, &final_dir, ExtractLimits::default()).unwrap();
 
-        let (files, how) = ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+        let (files, how) = ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            ExtractLimits::default(),
+        )
+        .unwrap();
 
         assert_eq!(how, Extraction::Adopted);
         assert_eq!(files.len(), 2);
@@ -734,7 +916,13 @@ mod tests {
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(scratch.join("RJTTF000ZZZ.txt"), b"leftover").unwrap();
 
-        ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+        ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            ExtractLimits::default(),
+        )
+        .unwrap();
 
         assert_eq!(
             names_in(storage.path()),

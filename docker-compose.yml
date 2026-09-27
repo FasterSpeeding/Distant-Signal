@@ -418,14 +418,12 @@ services:
       REFERENCE_RELOAD_SECS: ${REFERENCE_RELOAD_SECS:-60}
       RETENTION_DAYS: ${RETENTION_DAYS_TRAIN_EVENTS:-90}
       HEALTH_BIND_URL: 0.0.0.0:8081
-      # docs/superpowers/plans/2026-09-04-movement-relay-plan.md Task 4/11:
-      # this crate keeps reading Kafka directly by default in local dev too,
-      # same as production, unless a developer explicitly opts into
-      # exercising the Redis Streams path via MOVEMENT_FEED_BACKEND in their
-      # own .env -- movement-relay is NOT added to this service's
-      # depends_on, since it publishes nothing unless the developer also
-      # starts it (compose up movement-relay) and sets this.
-      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND:-kafka}
+      # Reads the movement-events Redis stream by default, as production does
+      # (PL-15a). movement-relay is NOT in depends_on: start it with
+      # `docker compose up movement-relay` when you want live events; until
+      # then this consumer just waits on an empty stream. Set
+      # MOVEMENT_FEED_BACKEND=kafka to use the legacy direct connection.
+      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND:-redis-stream}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
     healthcheck:
@@ -479,9 +477,9 @@ services:
       # into the image, same pattern as aggregator's own LINES_DIR above.
       LINES_DIR: /app/lines
       HEALTH_BIND_URL: 0.0.0.0:8082
-      # See trust-consumer's own identical comment above -- same opt-in
-      # posture, this crate's own separate backend toggle.
-      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND_FULL_COVERAGE:-kafka}
+      # See trust-consumer's own identical comment above; this crate has its
+      # own separate backend toggle.
+      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND_FULL_COVERAGE:-redis-stream}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
     healthcheck:
@@ -546,12 +544,9 @@ services:
   # movement-relay: the sole real Kafka client against RDM's Train
   # Movements product from Deploy B onward (docs/superpowers/specs/2026-09-04-movement-relay-design.md),
   # fanning out into the movement-events Redis Stream both trust-consumer
-  # and full-coverage-consumer above can optionally read from (see their
-  # own MOVEMENT_FEED_BACKEND opt-in comments). NOT started by default via
-  # any depends_on above -- a developer who wants to exercise the Redis
-  # Streams path locally runs `docker compose up movement-relay` alongside
-  # setting MOVEMENT_FEED_BACKEND=redis-stream for whichever consumer(s)
-  # they want reading from it.
+  # and full-coverage-consumer above read from by default. NOT started via
+  # any depends_on above -- a developer who wants live events locally runs
+  # `docker compose up movement-relay`.
   movement-relay:
     build:
       context: .

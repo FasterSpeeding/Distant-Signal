@@ -46,6 +46,31 @@ impl std::fmt::Display for DeferToNextCycle {
 
 impl std::error::Error for DeferToNextCycle {}
 
+/// What [`post_date_scoped_row_stream`] does when a date has no rows at all
+/// (PL-14).
+#[derive(Debug, Clone, Copy)]
+enum EmptyPublish {
+    /// Publish the empty date, so `api` deletes that date's previous rows.
+    Clear(chrono::NaiveDate),
+    /// Send nothing and fail with [`RefusedToClear`]: used when EVERY date of
+    /// the publish window is empty, which is far more likely a broken
+    /// delivery than a network with no trains for a week.
+    Refuse,
+}
+
+/// See [`EmptyPublish::Refuse`]. Recorded as a permanent failure for the
+/// delivery: re-reading the same delivery finds the same nothing.
+#[derive(Debug)]
+struct RefusedToClear(String);
+
+impl std::fmt::Display for RefusedToClear {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RefusedToClear {}
+
 /// Whether a failed FINAL chunk means `api` may still be (or just was) busy
 /// with that product's delete, so an immediate in-cycle retry -- a whole new
 /// publish, re-staging every key and ending in another full delete -- would
@@ -116,11 +141,7 @@ async fn main() -> anyhow::Result<()> {
     let mut state = PublishState {
         // Waiting (with backoff) for api to answer is not a stall.
         last_processed_delivery: progress
-            .idle(seed_last_processed_delivery(
-                &client,
-                &config,
-                &internal_oauth,
-            ))
+            .idle(seed_and_report(&client, &config, &internal_oauth))
             .await,
         partial: None,
     };
@@ -282,41 +303,94 @@ fn build_schedule_index_from_file(
 struct CycleOutcome {
     retryable_failures: Vec<String>,
     permanent_failures: Vec<String>,
+    /// Products `api` refused as bad data (400/413/422) for this delivery,
+    /// this cycle or an earlier one: counted in `permanent_failures` (so the
+    /// in-memory marker may advance but the durable one is not written) and
+    /// skipped by later cycles of the same delivery (DQ6/SCHED-1).
+    rejected: std::collections::HashSet<String>,
     /// Every product key published for this delivery, this cycle or an
     /// earlier one in this process.
     published: std::collections::HashSet<String>,
 }
 
 impl CycleOutcome {
-    /// Starts a cycle for a delivery that has already published `published`.
-    fn resuming(published: std::collections::HashSet<String>) -> Self {
+    /// Starts a cycle for a delivery that has already published `published`
+    /// and had `rejected` refused by `api` (see [`Self::rejected`]).
+    fn resuming(
+        published: std::collections::HashSet<String>,
+        rejected: std::collections::HashSet<String>,
+    ) -> Self {
         Self {
             published,
+            permanent_failures: rejected.iter().cloned().collect(),
+            rejected,
             ..Self::default()
         }
     }
 
-    /// Whether `product` was already published for this delivery, so this
-    /// cycle can skip it.
+    /// Whether this cycle can skip `product`: it was already published for
+    /// this delivery, or `api` already rejected it (retrying the same data
+    /// would be rejected the same way).
     fn is_published(&self, product: &str) -> bool {
-        self.published.contains(product)
+        self.published.contains(product) || self.rejected.contains(product)
+    }
+
+    /// Records a failed publish of `product`, classified (DQ6/SCHED-1 of the
+    /// 2026-09-27 review): a 400/413/422 from `api` is a rejection of the
+    /// data itself, permanent for this delivery (see [`Self::rejected`]);
+    /// anything else (a timeout, 5xx, 409, auth failure, connection error)
+    /// is retryable.
+    fn failed(&mut self, product: impl Into<String>, err: &anyhow::Error) {
+        let product = product.into();
+        if err.downcast_ref::<RefusedToClear>().is_some() {
+            tracing::error!(error = %err, product, "refusing to clear this product's date");
+            self.permanent(product);
+            return;
+        }
+        match common::ingest::classify_failure(err) {
+            common::ingest::FailureClass::Rejected => {
+                tracing::error!(
+                    error = ?err,
+                    product,
+                    "api rejected this product's data (400/413/422); NOT retrying it for this \
+                     delivery, and the durable completion marker will not be written"
+                );
+                telemetry::record(&product, telemetry::REJECTED);
+                self.permanent_failures.push(product.clone());
+                self.rejected.insert(product);
+            }
+            common::ingest::FailureClass::Transient => {
+                tracing::error!(
+                    error = ?err,
+                    product,
+                    "failed to publish this product after retrying; it will be retried next cycle"
+                );
+                self.retryable(product);
+            }
+        }
     }
 
     /// Records a successful publish of `product`.
     fn succeeded(&mut self, product: impl Into<String>) {
-        self.published.insert(product.into());
+        let product = product.into();
+        telemetry::record(&product, telemetry::PUBLISHED);
+        self.published.insert(product);
     }
 
     /// Records a failure a later attempt at the same delivery could fix --
     /// the classification that holds `last_processed_delivery` back.
     fn retryable(&mut self, product: impl Into<String>) {
-        self.retryable_failures.push(product.into());
+        let product = product.into();
+        telemetry::record(&product, telemetry::RETRYABLE);
+        self.retryable_failures.push(product);
     }
 
     /// Records a failure that is deterministic in this delivery's own input
     /// -- logged, but never worth reprocessing the delivery for.
     fn permanent(&mut self, product: impl Into<String>) {
-        self.permanent_failures.push(product.into());
+        let product = product.into();
+        telemetry::record(&product, telemetry::PERMANENT);
+        self.permanent_failures.push(product);
     }
 
     /// Whether this delivery may be marked processed. Deliberately keyed on
@@ -338,6 +412,103 @@ impl CycleOutcome {
     /// re-attempt a delivery whose last cycle did not fully publish.
     fn fully_published(&self) -> bool {
         self.retryable_failures.is_empty() && self.permanent_failures.is_empty()
+    }
+}
+
+/// This service's own metrics beyond the cycle-duration histogram (SCHED-2
+/// of the 2026-09-27 review): a counter of every product publish by outcome,
+/// and the delivery timestamp of the last fully published delivery, which
+/// the chart's staleness alert reads.
+mod telemetry {
+    /// `schedule_reference_publishes_total{product, outcome}`: one per
+    /// product publish attempt that [`super::CycleOutcome`] recorded (after
+    /// in-cycle retries). `product` is the product's kind, never its date or
+    /// line, so the label set stays small.
+    pub const PUBLISHES_METRIC: &str = "schedule_reference_publishes_total";
+    /// Unix seconds of the delivery (its directory's timestamp name) whose
+    /// every product last published, seeded at startup from `api`'s durable
+    /// marker. A healthy pipeline moves it forward about once a day.
+    pub const LAST_PUBLISHED_DELIVERY_METRIC: &str =
+        "schedule_reference_last_published_delivery_timestamp_seconds";
+
+    pub const PUBLISHED: &str = "published";
+    pub const RETRYABLE: &str = "retryable";
+    pub const PERMANENT: &str = "permanent";
+    /// `api` refused the data itself (400/413/422): permanent for this
+    /// delivery (DQ6/SCHED-1).
+    pub const REJECTED: &str = "rejected";
+    const OUTCOMES: [&str; 4] = [PUBLISHED, RETRYABLE, PERMANENT, REJECTED];
+
+    /// Every `product` label value [`product_kind`] can return.
+    const PRODUCT_KINDS: [&str; 9] = [
+        "stanox_crs",
+        "tiploc_crs",
+        "fixed_links",
+        "schedule_line_population",
+        "schedule_network_departures",
+        "schedule_destination_departures",
+        "schedule_calling_points_full",
+        "all_cif_derived",
+        "other",
+    ];
+
+    /// The label for a product key: its kind, the part before any `/`
+    /// (a date, a line) or ` (` (a note on why it failed).
+    pub fn product_kind(key: &str) -> &'static str {
+        if key.starts_with("all CIF-derived") {
+            return "all_cif_derived";
+        }
+        let kind = key.split(['/', ' ']).next().unwrap_or(key);
+        PRODUCT_KINDS
+            .iter()
+            .find(|known| **known == kind)
+            .copied()
+            .unwrap_or("other")
+    }
+
+    pub fn record(product: &str, outcome: &'static str) {
+        metrics::counter!(
+            common::metrics::metric_name(PUBLISHES_METRIC),
+            "product" => product_kind(product),
+            "outcome" => outcome
+        )
+        .increment(1);
+    }
+
+    /// Registers every `(product, outcome)` series at 0, so an alert's
+    /// `increase()` sees the first failure of a kind.
+    pub fn register() {
+        for product in PRODUCT_KINDS {
+            for outcome in OUTCOMES {
+                metrics::counter!(
+                    common::metrics::metric_name(PUBLISHES_METRIC),
+                    "product" => product,
+                    "outcome" => outcome
+                )
+                .increment(0);
+            }
+        }
+    }
+
+    /// A delivery directory name (`YYYYMMDDTHHMMSSZ`, schedule-ingest's
+    /// `delivery_dir_name`) as Unix seconds.
+    pub fn delivery_timestamp(dir_name: &str) -> Option<i64> {
+        chrono::NaiveDateTime::parse_from_str(dir_name, "%Y%m%dT%H%M%SZ")
+            .ok()
+            .map(|at| at.and_utc().timestamp())
+    }
+
+    pub fn set_last_published_delivery(dir_name: &str) {
+        match delivery_timestamp(dir_name) {
+            Some(at) => {
+                metrics::gauge!(common::metrics::metric_name(LAST_PUBLISHED_DELIVERY_METRIC))
+                    .set(at as f64)
+            }
+            None => tracing::warn!(
+                delivery = dir_name,
+                "delivery directory name is not a timestamp; last-published gauge not updated"
+            ),
+        }
     }
 }
 
@@ -387,6 +558,8 @@ struct PublishState {
 struct PartialDelivery {
     delivery: String,
     published: std::collections::HashSet<String>,
+    /// See [`CycleOutcome::rejected`].
+    rejected: std::collections::HashSet<String>,
 }
 
 /// Retries one product's publish in place, up to `retry.attempts` times with
@@ -426,6 +599,14 @@ async fn publish_with_retry(
                     "publish's final chunk failed in a way that suggests api is still busy with \
                      it; not retrying within this cycle"
                 );
+                return Err(err);
+            }
+            Err(err)
+                if common::ingest::classify_failure(&err)
+                    == common::ingest::FailureClass::Rejected =>
+            {
+                // DQ6/SCHED-1: api refused the data itself; the same request
+                // is refused the same way however often it is sent.
                 return Err(err);
             }
             Err(err) if tries + 1 < retry.attempts => {
@@ -516,7 +697,7 @@ async fn poll_once(
                 "resuming a partly published delivery: only the products that failed last cycle \
                  are published this cycle"
             );
-            CycleOutcome::resuming(partial.published)
+            CycleOutcome::resuming(partial.published, partial.rejected)
         }
         _ => CycleOutcome::default(),
     };
@@ -541,10 +722,7 @@ async fn poll_once(
         .await
         {
             Ok(()) => outcome.succeeded(product::STANOX_CRS),
-            Err(err) => {
-                tracing::error!(error = ?err, "failed to publish stanox/crs rows; it will be retried next cycle");
-                outcome.retryable(product::STANOX_CRS);
-            }
+            Err(err) => outcome.failed(product::STANOX_CRS, &err),
         }
     }
 
@@ -582,10 +760,7 @@ async fn poll_once(
         .await
         {
             Ok(()) => outcome.succeeded(product::TIPLOC_CRS),
-            Err(err) => {
-                tracing::error!(error = ?err, "failed to publish tiploc/crs rows; it will be retried next cycle");
-                outcome.retryable(product::TIPLOC_CRS);
-            }
+            Err(err) => outcome.failed(product::TIPLOC_CRS, &err),
         }
     }
 
@@ -635,6 +810,7 @@ async fn poll_once(
         state.partial = Some(PartialDelivery {
             delivery: delivery.dir_name.clone(),
             published: outcome.published,
+            rejected: outcome.rejected,
         });
         return Ok(());
     }
@@ -653,6 +829,7 @@ async fn poll_once(
     state.last_processed_delivery = Some(delivery.dir_name.clone());
 
     if outcome.fully_published() {
+        telemetry::set_last_published_delivery(&delivery.dir_name);
         record_completed_publish(client, config, internal_oauth, &delivery.dir_name).await;
     }
 
@@ -789,12 +966,34 @@ async fn publish_fixed_links(
     .await
     {
         Ok(()) => outcome.succeeded(product::FIXED_LINKS),
-        Err(err) => {
-            tracing::error!(error = ?err, "failed to publish fixed links; it will be retried next cycle");
-            outcome.retryable(product::FIXED_LINKS);
-        }
+        Err(err) => outcome.failed(product::FIXED_LINKS, &err),
     }
 }
+
+/// [`seed_last_processed_delivery`], reporting progress on the
+/// `schedule_reference_seeded` gauge: 0 from process start until the seed
+/// returns, then 1 (PL-15e of the 2026-09-27 pipelines review). The seed
+/// wait is `progress.idle`, so the liveness endpoint is healthy throughout
+/// it; without this gauge "never managed to seed" (api or the IdP down for
+/// hours) looked exactly like "idle between deliveries".
+async fn seed_and_report(
+    client: &Client,
+    config: &Config,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+) -> Option<String> {
+    metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(0.0);
+    telemetry::register();
+    let seeded = seed_last_processed_delivery(client, config, internal_oauth).await;
+    metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(1.0);
+    if let Some(delivery) = &seeded {
+        telemetry::set_last_published_delivery(delivery);
+    }
+    seeded
+}
+
+/// `schedule_reference_seeded` (see [`seed_and_report`]); the chart's
+/// `DistantSignalScheduleReferenceNotSeeded` alert reads it.
+const SEEDED_METRIC: &str = "schedule_reference_seeded";
 
 /// Seeds `last_processed_delivery` from THIS SERVICE'S OWN persisted record
 /// of the most recent delivery whose publish cycle actually completed (`GET
@@ -1047,7 +1246,11 @@ async fn publish_cif_derived_products(
     let dates = forward_publish_dates(today, DESTINATION_DEPARTURES_FORWARD_DAYS);
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
     let cif_products: Vec<String> = lines_to_publish(&config.lines, &crs_to_tiploc)
-        .map(|line| product::line_population(&line.id, today))
+        .flat_map(|line| {
+            line_population_dates(today)
+                .into_iter()
+                .map(|date| product::line_population(&line.id, date))
+        })
         .chain(std::iter::once(product::network_departures(today)))
         .chain(dates.iter().flat_map(|&date| {
             [
@@ -1124,8 +1327,9 @@ async fn publish_cif_derived_products(
     .await;
     // Third CIF-derived product off the SAME one-per-cycle ScheduleIndex --
     // the design doc's Approach B is explicit that this must not trigger a
-    // second parse or a resident index. Unlike the two products above,
-    // this one publishes a WINDOW of dates, not just `today`: see
+    // second parse or a resident index. Unlike the two products above (line
+    // populations: today and tomorrow; network departures: today), this one
+    // publishes the whole 8-day WINDOW of dates: see
     // docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md
     // §1/§2. `publish_schedule_destination_departures` itself is
     // unmodified -- it already accepts an arbitrary date; only the number
@@ -1138,6 +1342,15 @@ async fn publish_cif_derived_products(
     // outputs" precedent, Task 1 Step 4). The compile-time `const _: ()`
     // assertion next to both constants' declarations, above, is what keeps
     // this reused bound honest if either constant ever changes.
+    // PL-14: an empty date is published as empty (clearing its previous
+    // rows) only when some date of the window has schedules at all -- a
+    // delivery that yields nothing for a whole week is broken, and must not
+    // wipe a week of good rows. Stops at the first public calling point.
+    let window_has_schedules = dates.iter().any(|&date| {
+        schedule_calling_points_full_row_iter(&index, date)
+            .next()
+            .is_some()
+    });
     for date in dates {
         publish_schedule_destination_departures(
             client,
@@ -1146,6 +1359,7 @@ async fn publish_cif_derived_products(
             date,
             tiploc_crs_records,
             internal_oauth,
+            window_has_schedules,
             outcome,
         )
         .await;
@@ -1153,8 +1367,16 @@ async fn publish_cif_derived_products(
         // ScheduleIndex and the SAME per-date loop as the sibling call
         // directly above -- one pass, multiple outputs, this file's own
         // established precedent.
-        publish_schedule_calling_points_full(client, config, &index, date, internal_oauth, outcome)
-            .await;
+        publish_schedule_calling_points_full(
+            client,
+            config,
+            &index,
+            date,
+            internal_oauth,
+            window_has_schedules,
+            outcome,
+        )
+        .await;
     }
 }
 
@@ -1208,37 +1430,47 @@ async fn publish_schedule_line_population(
 ) {
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
     for line in lines_to_publish(&config.lines, &crs_to_tiploc) {
-        let key = product::line_population(&line.id, today);
-        if outcome.is_published(&key) {
-            continue;
-        }
-        let tiplocs = line_tiplocs(line, &crs_to_tiploc);
-        let resolved = schedule_query::schedules_touching(&index, &tiplocs, today);
-        let population: Vec<schedule_query::LinePopulationEntry> =
-            resolved.into_iter().map(Into::into).collect();
-        let body = serde_json::json!({
-            "line_id": line.id,
-            "service_date": today,
-            "population": population,
-        });
-        match publish_with_retry(&config.publish_retry, &key, async || {
-            post_schedule_line_population(
-                client,
-                &config.schedule_line_population_url,
-                internal_oauth,
-                &body,
-            )
+        for date in line_population_dates(today) {
+            let key = product::line_population(&line.id, date);
+            if outcome.is_published(&key) {
+                continue;
+            }
+            let tiplocs = line_tiplocs(line, &crs_to_tiploc);
+            let resolved = schedule_query::schedules_touching(&index, &tiplocs, date);
+            let population: Vec<schedule_query::LinePopulationEntry> =
+                resolved.into_iter().map(Into::into).collect();
+            let body = serde_json::json!({
+                "line_id": line.id,
+                "service_date": date,
+                "population": population,
+            });
+            match publish_with_retry(&config.publish_retry, &key, async || {
+                post_schedule_line_population(
+                    client,
+                    &config.schedule_line_population_url,
+                    internal_oauth,
+                    &body,
+                )
+                .await
+            })
             .await
-        })
-        .await
-        {
-            Ok(()) => outcome.succeeded(key),
-            Err(err) => {
-                tracing::error!(error = ?err, line_id = %line.id, "failed to publish schedule line population; it will be retried next cycle");
-                outcome.retryable(key);
+            {
+                Ok(()) => outcome.succeeded(key),
+                Err(err) => outcome.failed(key, &err),
             }
         }
     }
+}
+
+/// The dates each line's population is published for: today and tomorrow
+/// (DQ11/PL-9 of the 2026-09-27 review). `full-coverage-consumer` loads the
+/// rail day's and the next day's population so the 02:00 rollover finds
+/// the new day already loaded; only today's used to be published, so the
+/// next day's request was always `null` and a late delivery left the new
+/// rail day with no population at all. Publishing tomorrow's too means a
+/// day's population normally exists a full day before it is needed.
+fn line_population_dates(today: chrono::NaiveDate) -> [chrono::NaiveDate; 2] {
+    [today, today + chrono::Duration::days(1)]
 }
 
 /// Real, CIF-derived CRS -> TIPLOC(s) map, inverted from the UNION of
@@ -1384,10 +1616,7 @@ async fn publish_schedule_network_departures(
     .await
     {
         Ok(()) => outcome.succeeded(key),
-        Err(err) => {
-            tracing::error!(error = ?err, "failed to publish schedule-derived network departures; it will be retried next cycle");
-            outcome.retryable(key);
-        }
+        Err(err) => outcome.failed(key, &err),
     }
 }
 
@@ -1549,6 +1778,7 @@ fn schedule_destination_departures_row_iter(
 ///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom, but it is
 ///    sent in [`PUBLISH_CHUNK_ROWS`]-row chunks anyway, as one diff publish
 ///    -- see [`post_date_scoped_rows_in_chunks`] for the chunk contract.
+#[allow(clippy::too_many_arguments)]
 async fn publish_schedule_destination_departures(
     client: &Client,
     config: &Config,
@@ -1556,6 +1786,7 @@ async fn publish_schedule_destination_departures(
     today: chrono::NaiveDate,
     tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    window_has_schedules: bool,
     outcome: &mut CycleOutcome,
 ) {
     let key = product::destination_departures(today);
@@ -1589,16 +1820,14 @@ async fn publish_schedule_destination_departures(
             rows,
             "schedule-derived destination departures rows",
             FINAL_CHUNK_REQUEST_TIMEOUT,
+            empty_publish(today, window_has_schedules),
         )
         .await
     })
     .await;
     match result {
         Ok(()) => outcome.succeeded(key),
-        Err(err) => {
-            tracing::error!(error = ?err, %today, "failed to publish schedule-derived destination departures; it will be retried next cycle");
-            outcome.retryable(key);
-        }
+        Err(err) => outcome.failed(key, &err),
     }
 }
 
@@ -1725,7 +1954,7 @@ fn schedule_calling_points_full_row_iter(
 /// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`)
 /// and/or this crate's 30s `REQUEST_TIMEOUT`. See [`PUBLISH_CHUNK_ROWS`] for
 /// the sizing and [`post_date_scoped_rows_in_chunks`] for the chunk contract
-/// (`publish_id`/`last_chunk`/`total_rows`, plus the legacy `first_chunk`)
+/// (`publish_id`/`first_chunk`/`last_chunk`/`total_rows`)
 /// that keeps chunking from turning into per-chunk data loss.
 ///
 /// **Non-public calling points are filtered out before publish (2026-09-25;
@@ -1745,6 +1974,7 @@ async fn publish_schedule_calling_points_full(
     index: &schedule_query::ScheduleIndex,
     date: chrono::NaiveDate,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    window_has_schedules: bool,
     outcome: &mut CycleOutcome,
 ) {
     let key = product::calling_points_full(date);
@@ -1762,16 +1992,14 @@ async fn publish_schedule_calling_points_full(
             rows,
             "schedule-derived full calling-point rows",
             FINAL_CHUNK_REQUEST_TIMEOUT,
+            empty_publish(date, window_has_schedules),
         )
         .await
     })
     .await;
     match result {
         Ok(()) => outcome.succeeded(key),
-        Err(err) => {
-            tracing::error!(error = ?err, %date, "failed to publish schedule calling points; it will be retried next cycle");
-            outcome.retryable(key);
-        }
+        Err(err) => outcome.failed(key, &err),
     }
 }
 
@@ -1893,15 +2121,15 @@ const PUBLISH_CHUNK_ROWS: usize = 50_000;
 /// `crates/api`). This replaced a delete-the-whole-date-then-reinsert publish
 /// that left the target tables' indexes 52-66% bloated in production.
 ///
-/// **`first_chunk` is still sent, for rolling-deploy compatibility.** An
-/// `api` that predates `publish_id` ignores the new parameters and applies
-/// its own legacy contract: `first_chunk=true` clears the date then inserts,
-/// `first_chunk=false` only inserts. That is still correct for exactly this
-/// sequence of calls (it is what this function sent before the diff
-/// protocol existed), so either service can deploy first. Getting that name
-/// wrong would be silent and catastrophic against such an `api`: it would
-/// default every chunk to `first_chunk=true`, each chunk's `DELETE` would
-/// wipe the chunks before it, and each date would keep only its last chunk.
+/// **`first_chunk`** marks the chunk on which `api` discards staged keys
+/// left by an abandoned earlier publish of the date. (It also once told an
+/// `api` predating `publish_id` which chunk cleared the date; `api` dropped
+/// that legacy path with F-LEGACY on 2026-09-27 and now answers 400 to a
+/// chunk without `publish_id`.)
+///
+/// **An empty date (PL-14)** is one POST with no rows, `total_rows=0` and
+/// `service_date`, so `api` deletes the date's previous rows -- see
+/// [`EmptyPublish`].
 ///
 /// **Partial-date exposure.** Each chunk is its own transaction on the `api`
 /// side. Under the diff protocol a failure part way through a date (chunk 5
@@ -1928,6 +2156,7 @@ async fn post_date_scoped_rows_in_chunks(
         rows.iter(),
         noun,
         FINAL_CHUNK_REQUEST_TIMEOUT,
+        EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).expect("valid date")),
     )
     .await
 }
@@ -1962,6 +2191,7 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
     rows: impl Iterator<Item = T>,
     noun: &str,
     final_chunk_timeout: Duration,
+    empty: EmptyPublish,
 ) -> anyhow::Result<()> {
     let mut rows = rows.peekable();
     let exact_total = match rows.size_hint() {
@@ -1969,22 +2199,49 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
         _ => None,
     };
 
-    // An empty publish is still POSTed, exactly once, rather than skipped:
-    // both receiving routes treat an empty batch as a deliberate no-op that
-    // must NOT delete the date (see `queries::upsert_schedule_calling_points_full`'s
-    // own "an empty `rows` is a no-op, and that is load-bearing"), and
-    // sending it keeps this cycle's `posted 0 <noun>` log line -- the only
-    // evidence that the publish ran at all and genuinely had nothing to say.
+    // PL-14: a date with no rows is published as exactly that -- one POST
+    // with no rows that is both the first and the final chunk
+    // (`total_rows=0`) and names its `service_date`, so `api` deletes the
+    // previous publish's rows for the date instead of keeping them as stale
+    // data. It used to be a bare `first_chunk=true` POST with no publish_id
+    // or date, which `api` could only treat as a no-op. Unless the caller
+    // says the whole window looks broken (`EmptyPublish::Refuse`), in which
+    // case nothing is sent and the previous rows stay.
     if rows.peek().is_none() {
+        let service_date = match empty {
+            EmptyPublish::Clear(service_date) => service_date,
+            EmptyPublish::Refuse => {
+                return Err(anyhow::Error::new(RefusedToClear(format!(
+                    "no {noun} for this date and none for any date of the publish window; not \
+                     clearing the date's previous rows"
+                ))));
+            }
+        };
         let empty: [T; 0] = [];
-        return common::ingest::post_batch(
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let clear_url = format!(
+            "{url}{separator}first_chunk=true&publish_id={}&last_chunk=true&total_rows=0\
+             &service_date={service_date}",
+            new_publish_id()
+        );
+        return common::ingest::post_batch_with_timeout(
             client,
-            &first_chunk_url(url, true),
+            &clear_url,
             tokens,
             &empty,
             noun,
+            Some(final_chunk_timeout),
         )
-        .await;
+        .await
+        .map_err(|err| {
+            if final_chunk_failure_defers_to_next_cycle(&err) {
+                anyhow::Error::new(DeferToNextCycle(format!(
+                    "empty publish of {noun} for {service_date} failed: {err}"
+                )))
+            } else {
+                err.context(format!("empty publish of {noun} for {service_date} failed"))
+            }
+        });
     }
 
     let publish_id = new_publish_id();
@@ -2025,13 +2282,25 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
             if last_chunk && final_chunk_failure_defers_to_next_cycle(&err) {
                 anyhow::Error::new(DeferToNextCycle(message))
             } else {
-                anyhow::anyhow!(message)
+                // `context`, not a fresh error: the HTTP status underneath
+                // must survive for `classify_failure` (DQ6/SCHED-1).
+                err.context(message)
             }
         })?;
         if last_chunk {
             return Ok(());
         }
         index += 1;
+    }
+}
+
+/// [`EmptyPublish`] for `date`, given whether any date of the publish window
+/// has schedules.
+fn empty_publish(date: chrono::NaiveDate, window_has_schedules: bool) -> EmptyPublish {
+    if window_has_schedules {
+        EmptyPublish::Clear(date)
+    } else {
+        EmptyPublish::Refuse
     }
 }
 
@@ -2046,9 +2315,8 @@ fn new_publish_id() -> String {
     format!("sr-{nanos}-{}-{sequence}", std::process::id())
 }
 
-/// Appends the `first_chunk` query parameter -- the legacy (pre-`publish_id`)
-/// half of [`post_date_scoped_rows_in_chunks`]'s contract, telling an older
-/// `api` whether this chunk is the one that clears the date. Handles a URL
+/// Appends the `first_chunk` query parameter of
+/// [`post_date_scoped_rows_in_chunks`]'s contract. Handles a URL
 /// that already carries a query string, since these URLs come from
 /// configuration and nothing stops an operator setting one.
 fn first_chunk_url(url: &str, first_chunk: bool) -> String {
@@ -2085,9 +2353,10 @@ async fn post_schedule_line_population(
     tokens: &common::oauth_client::OAuthTokenCache,
     body: &serde_json::Value,
 ) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     common::ingest::post_json(client, url, tokens, body)
         .await
-        .map_err(|err| anyhow::anyhow!("schedule-line-population POST failed: {err}"))
+        .context("schedule-line-population POST failed")
 }
 
 /// Best-effort extraction of the digits embedded in a real delivery's own
@@ -3285,6 +3554,119 @@ mod poll_once_tests {
         })
     }
 
+    #[test]
+    fn telemetry_product_kinds_are_bounded() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
+        for (key, kind) in [
+            (product::STANOX_CRS.to_string(), "stanox_crs"),
+            (product::TIPLOC_CRS.to_string(), "tiploc_crs"),
+            (product::FIXED_LINKS.to_string(), "fixed_links"),
+            ("fixed_links (ALF read failed)".to_string(), "fixed_links"),
+            (
+                product::line_population("c2c", date),
+                "schedule_line_population",
+            ),
+            (
+                product::network_departures(date),
+                "schedule_network_departures",
+            ),
+            (
+                product::destination_departures(date),
+                "schedule_destination_departures",
+            ),
+            (
+                product::calling_points_full(date),
+                "schedule_calling_points_full",
+            ),
+            (
+                "all CIF-derived products (MCA SCHEDULE read failed)".to_string(),
+                "all_cif_derived",
+            ),
+            ("something new".to_string(), "other"),
+        ] {
+            assert_eq!(telemetry::product_kind(&key), kind, "{key}");
+        }
+    }
+
+    #[test]
+    fn telemetry_parses_a_delivery_dir_name() {
+        assert_eq!(
+            telemetry::delivery_timestamp("20260903T172830Z"),
+            Some(1_788_456_510)
+        );
+        assert_eq!(telemetry::delivery_timestamp("not-a-delivery"), None);
+    }
+
+    /// SCHED-2: a publish's outcome is counted per product kind, and a
+    /// seeded delivery sets the last-published gauge.
+    #[tokio::test]
+    async fn outcomes_and_the_seeded_delivery_are_exported() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-reference-publishes",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "delivery": "20260903T172830Z" })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config_for_server(&server.uri());
+        seed_and_report(&client, &config, &tokens).await;
+
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
+        let mut outcome = CycleOutcome::default();
+        outcome.succeeded(product::destination_departures(date));
+        outcome.retryable(product::calling_points_full(date));
+        outcome.permanent("fixed_links (ALF parsed to zero links)");
+
+        let rendered = handle.render();
+        for line in [
+            "distant_signal_schedule_reference_last_published_delivery_timestamp_seconds 1788456510",
+            r#"distant_signal_schedule_reference_publishes_total{product="schedule_destination_departures",outcome="published"} 1"#,
+            r#"distant_signal_schedule_reference_publishes_total{product="schedule_calling_points_full",outcome="retryable"} 1"#,
+            r#"distant_signal_schedule_reference_publishes_total{product="fixed_links",outcome="permanent"} 1"#,
+            r#"distant_signal_schedule_reference_publishes_total{product="stanox_crs",outcome="retryable"} 0"#,
+        ] {
+            assert!(rendered.contains(line), "missing {line} in:\n{rendered}");
+        }
+    }
+
+    /// PL-15e: the seeded gauge reads 1 once the seed has returned.
+    #[tokio::test]
+    async fn seed_and_report_sets_the_seeded_gauge() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-reference-publishes",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "delivery": null })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config_for_server(&server.uri());
+
+        assert_eq!(seed_and_report(&client, &config, &tokens).await, None);
+        let rendered = handle.render();
+        assert!(
+            rendered.contains("distant_signal_schedule_reference_seeded 1"),
+            "{rendered}"
+        );
+    }
+
     /// The seeding half of the 2026-09-25 restart-dedup fix: after a restart,
     /// this service must seed its dedup state from ITS OWN completion marker,
     /// so it neither redundantly republishes a delivery it already finished
@@ -3947,6 +4329,192 @@ mod per_product_retry_tests {
         assert_eq!(posts_to(&server, "/private/stanox-crs").await, 0);
     }
 
+    fn reject_always(path: &str, status: u16) -> wiremock::Mock {
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(path))
+            .respond_with(wiremock::ResponseTemplate::new(status).set_body_string("bad data"))
+    }
+
+    /// DQ6/SCHED-1: a 422 from api is permanent for this delivery. It is
+    /// sent once (no in-cycle retries), the delivery is marked processed in
+    /// memory so the next cycle does not redo it, the durable completion
+    /// marker is NOT written, and the rejection is counted.
+    #[tokio::test]
+    async fn a_rejected_product_is_not_retried_and_writes_no_completion_marker() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, _storage) = setup(&server).await;
+        reject_always("/private/tiploc-crs", 422)
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 1");
+
+        assert_eq!(
+            posts_to(&server, "/private/tiploc-crs").await,
+            1,
+            "a rejection is not retried within the cycle"
+        );
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            0,
+            "a rejected product means the delivery did not fully publish"
+        );
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(
+                r#"distant_signal_schedule_reference_publishes_total{product="tiploc_crs",outcome="rejected"} 1"#
+            ),
+            "{rendered}"
+        );
+
+        // The next cycle sees the delivery as processed: nothing is resent.
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 2");
+        assert_eq!(posts_to(&server, "/private/tiploc-crs").await, 1);
+    }
+
+    /// 400 and 413 are rejections too, and the per-date chunked products
+    /// keep the HTTP status through their error wrapping.
+    #[tokio::test]
+    async fn a_rejected_chunk_of_a_per_date_product_is_not_retried() {
+        for status in [400, 413] {
+            let server = wiremock::MockServer::start().await;
+            let (tokens, config, client, _storage) = setup(&server).await;
+            reject_always("/private/schedule-calling-points-full", status)
+                .mount(&server)
+                .await;
+            mount_all_publishes_ok(&server).await;
+
+            let mut state = PublishState::default();
+            poll_once(&client, &config, &mut state, &tokens)
+                .await
+                .expect("cycle");
+
+            assert_eq!(
+                posts_to(&server, "/private/schedule-calling-points-full").await,
+                (DESTINATION_DEPARTURES_FORWARD_DAYS + 1) as usize,
+                "{status}: one attempt per date, no retries"
+            );
+            assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+            assert_eq!(
+                posts_to(&server, "/private/schedule-reference-publishes").await,
+                0
+            );
+        }
+    }
+
+    /// A rejection alongside a transient failure: the delivery stays
+    /// unmarked for the transient one, and the next cycle retries only that,
+    /// not the rejected product. The durable marker is still never written.
+    #[tokio::test]
+    async fn a_rejected_product_is_skipped_when_the_delivery_resumes() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, _storage) = setup(&server).await;
+        reject_always("/private/tiploc-crs", 422)
+            .mount(&server)
+            .await;
+        fail_n_times("/private/stanox-crs", u64::MAX)
+            .mount(&server)
+            .await;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 1");
+        assert_eq!(state.last_processed_delivery, None);
+
+        server.reset().await;
+        let _ = super::poll_once_tests::mock_token_cache(&server).await;
+        mount_all_publishes_ok(&server).await;
+
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle 2");
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 1);
+        assert_eq!(
+            posts_to(&server, "/private/tiploc-crs").await,
+            0,
+            "the rejected product is not resent for the same delivery"
+        );
+        assert_eq!(
+            posts_to(&server, "/private/schedule-reference-publishes").await,
+            0
+        );
+    }
+
+    /// DQ11/PL-9: each line's population is published for today AND
+    /// tomorrow, so the rail-day rollover finds the new day already there.
+    #[tokio::test]
+    async fn line_populations_are_published_for_today_and_tomorrow() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, mut config, client, _storage) = setup(&server).await;
+        config.lines = common::config::LineCatalogue(vec![common::LineDefinition {
+            id: "test-euston-line".to_string(),
+            name: "Test".to_string(),
+            mode: "rail".to_string(),
+            category: "national-rail".to_string(),
+            operators: vec![],
+            stations: vec![common::Station {
+                crs: "EUS".to_string(),
+                tiploc: None,
+                role: "major".to_string(),
+                segment: None,
+            }],
+            sample_stations: vec![],
+            match_keywords: vec![],
+            excluded_keywords: vec![],
+            severity_overrides: std::collections::HashMap::new(),
+            destination_crs_filter: vec![],
+            headcode_prefixes: vec![],
+            full_coverage_enabled: true,
+        }]);
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle");
+
+        let today = london_local_date_now();
+        let mut dates: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|req| req.url.path() == "/private/schedule-line-population")
+            .map(|req| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(body["line_id"], "test-euston-line");
+                assert_eq!(
+                    body["population"].as_array().map(Vec::len),
+                    Some(1),
+                    "the fixture schedule runs both days"
+                );
+                body["service_date"].as_str().unwrap().to_string()
+            })
+            .collect();
+        dates.sort();
+        assert_eq!(
+            dates,
+            vec![
+                today.to_string(),
+                (today + chrono::Duration::days(1)).to_string()
+            ]
+        );
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+    }
+
     /// A newer delivery supersedes a partly published one: it is published
     /// in full, not "resumed" with the old delivery's progress.
     #[tokio::test]
@@ -3961,6 +4529,7 @@ mod per_product_retry_tests {
             partial: Some(PartialDelivery {
                 delivery: DELIVERY.to_string(),
                 published: [product::STANOX_CRS.to_string()].into_iter().collect(),
+                rejected: Default::default(),
             }),
         };
         poll_once(&client, &config, &mut state, &tokens)
@@ -4082,9 +4651,9 @@ mod chunked_publish_tests {
                     )
                 ),
             ],
-            "only the first chunk may clear the date for a legacy api, and only the last \
-             chunk (carrying the whole publish's row count) may delete missing rows for a \
-             diff-protocol api (publish_id {publish_id})"
+            "only the first chunk discards an abandoned publish's staged keys, and only the \
+             last chunk (carrying the whole publish's row count) may delete missing rows \
+             (publish_id {publish_id})"
         );
     }
 
@@ -4132,8 +4701,8 @@ mod chunked_publish_tests {
     }
 
     /// A publish small enough to fit in one chunk is exactly one POST that is
-    /// both the first chunk (clears the date on a legacy api) and the last
-    /// (deletes missing rows on a diff-protocol api).
+    /// both the first chunk (discards abandoned staged keys) and the last
+    /// (deletes missing rows).
     #[tokio::test]
     async fn a_publish_that_fits_in_one_chunk_is_still_exactly_one_replacing_post() {
         let server = wiremock::MockServer::start().await;
@@ -4160,10 +4729,9 @@ mod chunked_publish_tests {
         );
     }
 
-    /// An empty publish is still exactly one POST -- the receiving route
-    /// treats an empty batch as a deliberate no-op that must NOT delete the
-    /// date, and sending it keeps the `posted 0 <noun>` log line that is the
-    /// only evidence the publish ran and had nothing to say.
+    /// PL-14: an empty publish is exactly one POST that is both the first
+    /// and the final chunk, with `total_rows=0` and its `service_date`, so
+    /// `api` clears the date's previous rows.
     #[tokio::test]
     async fn an_empty_publish_is_one_post_and_never_silently_skipped() {
         let server = wiremock::MockServer::start().await;
@@ -4180,10 +4748,45 @@ mod chunked_publish_tests {
             .await
             .expect("accepted");
 
+        let (_, posts) = one_publish_id(capture_posts(&server, "/private/chunked").await);
         assert_eq!(
-            capture_posts(&server, "/private/chunked").await,
-            vec![(0, "first_chunk=true".to_string())]
+            posts,
+            vec![(
+                0,
+                "first_chunk=true&publish_id=<id>&last_chunk=true&total_rows=0\
+                 &service_date=2026-09-27"
+                    .to_string()
+            )]
         );
+    }
+
+    /// PL-14's guard: when the whole window is empty, nothing is sent and
+    /// the failure is permanent for the delivery (not a clearing publish).
+    #[tokio::test]
+    async fn an_empty_publish_is_refused_when_the_whole_window_is_empty() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+
+        let err = post_date_scoped_row_stream(
+            &client,
+            &url,
+            &tokens,
+            std::iter::empty::<serde_json::Value>(),
+            "test rows",
+            FINAL_CHUNK_REQUEST_TIMEOUT,
+            EmptyPublish::Refuse,
+        )
+        .await
+        .expect_err("refused");
+        assert!(err.downcast_ref::<RefusedToClear>().is_some());
+        assert!(capture_posts(&server, "/private/chunked").await.is_empty());
+
+        let mut outcome = CycleOutcome::default();
+        outcome.failed("schedule_calling_points_full/2026-09-27", &err);
+        assert!(outcome.may_advance_marker());
+        assert!(!outcome.fully_published());
     }
 
     /// A failing chunk must surface as an error naming WHICH chunk failed, so
@@ -4266,6 +4869,7 @@ mod final_chunk_retry_tests {
                 rows.iter(),
                 "test rows",
                 final_chunk_timeout,
+                EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
             )
             .await
         })
@@ -4341,6 +4945,7 @@ mod final_chunk_retry_tests {
             rows(3).iter(),
             "test rows",
             Duration::from_secs(5),
+            EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
         )
         .await
         .expect("the final chunk waits past the client-wide timeout");
