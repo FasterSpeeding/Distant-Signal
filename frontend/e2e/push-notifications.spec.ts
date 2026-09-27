@@ -161,9 +161,15 @@ test.describe('push notification handlers (sw.js)', () => {
       };
       sw.dispatchEvent(event);
       await waited;
-      return { closed: fakeNotification.closed, openedUrl };
+      return { closed: fakeNotification.closed, openedUrl, origin: sw.location.origin as string };
     });
 
-    expect(result).toEqual({ closed: true, openedUrl: '/lines/victoria' });
+    // FE-10: the handler resolves the payload URL against the site origin and
+    // only opens same-origin pages, so it opens the absolute URL.
+    expect(result).toEqual({
+      closed: true,
+      openedUrl: `${result.origin}/lines/victoria`,
+      origin: new URL(page.url()).origin,
+    });
   });
 });

@@ -42,7 +42,7 @@ const TRAIN_DATE = process.env.E2E_TRAIN_DATE;
 const GROUP_ID = process.env.E2E_GROUP_ID;
 
 async function expectMainMatchesNavWidth(page: Page) {
-  const nav = page.locator('nav > .mantine-Container-root');
+  const nav = page.locator('nav[aria-label="Main"] > .mantine-Container-root');
   const main = page.locator('main.mantine-Container-root');
   await expect(nav).toBeVisible();
   await expect(main).toBeVisible();
