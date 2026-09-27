@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         Some(&progress),
         || async {
             use sqlx::Connection;
-            sqlx::PgConnection::connect(&config.database_url)
+            sqlx::PgConnection::connect(config.database_url.expose())
                 .await?
                 .close()
                 .await
@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     // acquire_timeout; see `common::pg`. The retention prunes and archive
     // batches raise the statement timeout for their own transactions.
     let pool = common::pg::PoolSettings::from_env("distant-signal-aggregator", 10)?
-        .connect(&config.database_url)
+        .connect(config.database_url.expose())
         .await?;
     ready.store(true, std::sync::atomic::Ordering::Relaxed);
 

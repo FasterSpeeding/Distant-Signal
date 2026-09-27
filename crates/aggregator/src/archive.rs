@@ -129,19 +129,7 @@ pub enum FailurePolicy {
     Delete,
 }
 
-/// A secret string that never prints its value via `Debug`.
-#[derive(Clone)]
-pub struct Secret(String);
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Secret(***)")
-    }
-}
-
-fn parse_secret(s: &str) -> Result<Secret, std::convert::Infallible> {
-    Ok(Secret(s.to_string()))
-}
+pub use common::secret::Secret;
 
 /// CLI/env settings for the cold archive, flattened into `Config`.
 ///
@@ -176,10 +164,10 @@ pub struct ArchiveArgs {
     #[arg(long, env, default_value = "us-east-1")]
     pub archive_s3_region: String,
 
-    #[arg(long, env, value_parser = parse_secret, hide_env_values = true)]
+    #[arg(long, env, hide_env_values = true)]
     pub archive_s3_access_key_id: Option<Secret>,
 
-    #[arg(long, env, value_parser = parse_secret, hide_env_values = true)]
+    #[arg(long, env, hide_env_values = true)]
     pub archive_s3_secret_access_key: Option<Secret>,
 
     /// Path-style addressing (`https://endpoint/bucket/key`), which most
@@ -256,19 +244,19 @@ impl Archiver {
         let key_id = args
             .archive_s3_access_key_id
             .as_ref()
-            .filter(|s| !s.0.is_empty())
+            .filter(|s| !s.is_empty())
             .context("ARCHIVE_ENABLED is true but ARCHIVE_S3_ACCESS_KEY_ID is not set")?;
         let secret = args
             .archive_s3_secret_access_key
             .as_ref()
-            .filter(|s| !s.0.is_empty())
+            .filter(|s| !s.is_empty())
             .context("ARCHIVE_ENABLED is true but ARCHIVE_S3_SECRET_ACCESS_KEY is not set")?;
 
         let mut builder = object_store::aws::AmazonS3Builder::new()
             .with_bucket_name(bucket)
             .with_region(&args.archive_s3_region)
-            .with_access_key_id(&key_id.0)
-            .with_secret_access_key(&secret.0)
+            .with_access_key_id(key_id.expose())
+            .with_secret_access_key(secret.expose())
             .with_virtual_hosted_style_request(!args.archive_s3_path_style)
             .with_allow_http(args.archive_s3_allow_http)
             // Bounded, so an unreachable endpoint fails a batch in about a
@@ -666,8 +654,8 @@ mod tests {
             archive_s3_bucket: Some("bucket".into()),
             archive_s3_prefix: "p".into(),
             archive_s3_region: "us-east-1".into(),
-            archive_s3_access_key_id: Some(Secret("id".into())),
-            archive_s3_secret_access_key: Some(Secret("secret".into())),
+            archive_s3_access_key_id: Some(Secret::from("id")),
+            archive_s3_secret_access_key: Some(Secret::from("secret")),
             archive_s3_path_style: true,
             archive_s3_allow_http: false,
             archive_failure_policy: FailurePolicy::Retain,
@@ -748,7 +736,7 @@ mod tests {
         };
         assert!(Archiver::from_args(&no_bucket).is_err());
         let no_secret = ArchiveArgs {
-            archive_s3_secret_access_key: Some(Secret(String::new())),
+            archive_s3_secret_access_key: Some(Secret::default()),
             ..base_args()
         };
         assert!(Archiver::from_args(&no_secret).is_err());

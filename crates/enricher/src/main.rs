@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         Some(&progress),
         || async {
             use sqlx::Connection;
-            sqlx::PgConnection::connect(&config.database_url)
+            sqlx::PgConnection::connect(config.database_url.expose())
                 .await?
                 .close()
                 .await
@@ -72,10 +72,10 @@ async fn main() -> anyhow::Result<()> {
     // application_name, statement/idle-in-transaction timeouts and a short
     // acquire_timeout; see `common::pg`.
     let pool = common::pg::PoolSettings::from_env("distant-signal-enricher", 5)?
-        .connect(&config.database_url)
+        .connect(config.database_url.expose())
         .await?;
 
-    let redis_client = redis::Client::open(config.redis_url.clone())?;
+    let redis_client = redis::Client::open(config.redis_url.expose())?;
     let mut redis = common::startup::retry_until_ready(
         "Redis",
         common::startup::CONNECT_BACKOFF,
@@ -105,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
     // docs/superpowers/specs/2026-08-21-multi-period-extraction-design.md, §5.
     let llm = LlmClient::new(
         config.llm_base_url.clone(),
-        config.llm_api_key.clone(),
+        config
+            .llm_api_key
+            .as_ref()
+            .map(|key| key.expose().to_string()),
         config.llm_model.clone(),
         Duration::from_secs(config.llm_request_timeout_secs),
     )

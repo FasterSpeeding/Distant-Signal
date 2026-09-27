@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
         Some(&progress),
         || async {
             use sqlx::Connection;
-            sqlx::PgConnection::connect(&config.database_url)
+            sqlx::PgConnection::connect(config.database_url.expose())
                 .await?
                 .close()
                 .await
@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     // application_name, statement/idle-in-transaction timeouts and a short
     // acquire_timeout; see `common::pg`.
     let pool = common::pg::PoolSettings::from_env("distant-signal-notifier", 5)?
-        .connect(&config.database_url)
+        .connect(config.database_url.expose())
         .await?;
     ready.store(true, std::sync::atomic::Ordering::Relaxed);
 
@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
     let queue = PushQueue::start(
         PgBackend::new(
             pool.clone(),
-            Pusher::new(&config.vapid_private_key, &config.vapid_subject),
+            Pusher::new(config.vapid_private_key.expose(), &config.vapid_subject),
         ),
         config.push_queue_config(),
     );
