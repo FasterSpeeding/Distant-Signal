@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
-import dayjs from 'dayjs';
+import { nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
@@ -40,21 +40,15 @@ const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Mirrors the backend's exact window --
  * `crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
- * `SEARCH_WINDOW_BACKWARD_DAYS` -- computed once per render from `dayjs()`,
- * consistent with this file's existing `today` computation just below.
+ * `SEARCH_WINDOW_BACKWARD_DAYS` -- computed once per render.
  *
- * Anchored to the BROWSER's local clock, not `Europe/London` like the
- * server's own window -- this codebase has no timezone-aware date library
- * anywhere in `frontend/` to anchor it with (the server-side equivalent,
- * `chrono-tz`, is Rust-only). For a viewer whose device clock isn't
- * UK-local, this can disagree with the server by a day at either edge; a
- * resulting 400 fails gracefully into the existing generic error copy
- * rather than crashing, so this is a known imprecision, not a data-
- * integrity risk. */
+ * Anchored to Europe/London via `nowInLondon()` (FE-4), like the server's
+ * own window, so a visitor whose device isn't on UK time gets the same
+ * edges the server enforces rather than a 400 at either end. */
 function dateWindow() {
   return {
-    minDate: dayjs().subtract(7, 'day').format('YYYY-MM-DD'),
-    maxDate: dayjs().add(7, 'day').format('YYYY-MM-DD'),
+    minDate: nowInLondon().subtract(7, 'day').format('YYYY-MM-DD'),
+    maxDate: nowInLondon().add(7, 'day').format('YYYY-MM-DD'),
   };
 }
 
@@ -150,7 +144,7 @@ function hasRows(
  * itself would have applied at submit time -- it does not reintroduce a live
  * read of `dateValue`. */
 function resolvedDate(rawDate: string): string {
-  return rawDate || dayjs().format('YYYY-MM-DD');
+  return rawDate || nowInLondon().format('YYYY-MM-DD');
 }
 
 /** Calling-point-first, whole-network train search -- the `/trains` page's

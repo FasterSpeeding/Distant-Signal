@@ -1,6 +1,5 @@
 import { screen, fireEvent } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import dayjs from 'dayjs';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
 
@@ -11,7 +10,7 @@ import { PlanTripForm } from './PlanTripForm';
 // repo already uses (e.g. `TrackTrainForm.test.tsx`), rather than this
 // file's own hand-rolled provider.
 // A fixed "now" for the "defaults to now, not midnight" tests below --
-// `departAfter` now defaults to `dayjs().format('HH:mm')` at mount (this
+// `departAfter` now defaults to `nowInLondon().format('HH:mm')` at mount (this
 // task's own "default to now" fix), so asserting against it needs the real
 // wall-clock time pinned to something known, exactly the same reasoning
 // `TrackTrainForm.test.tsx`'s own `FIXED_NOW` gives for its
@@ -100,7 +99,7 @@ describe('PlanTripForm', () => {
 
     it('pre-fills the Depart after field with the current local time on mount', () => {
       renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
-      expect(screen.getByLabelText('Depart after (optional)')).toHaveValue(dayjs(FIXED_NOW).format('HH:mm'));
+      expect(screen.getByLabelText('Depart after (optional)')).toHaveValue('15:32') // London BST wall clock (FE-4);
     });
 
     it('submits the current time as departAfter when the visitor never touches the field', () => {
@@ -110,8 +109,19 @@ describe('PlanTripForm', () => {
       fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
       fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
       expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({ departAfter: dayjs(FIXED_NOW).format('HH:mm') })
+        expect.objectContaining({ departAfter: '15:32' })
       );
+    });
+
+    it('defaults date and time to London wall clock, not the host zone (FE-4)', () => {
+      // 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
+      vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
+      const onSubmit = vi.fn();
+      renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+      fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ date: '2026-07-16', departAfter: '00:30' }));
     });
 
     it('still lets a visitor clear the field back to no lower bound at all', () => {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useState } from 'react';
-import dayjs from 'dayjs';
+import { nowInLondon } from '@/lib/londonWallClock';
 import {
   Autocomplete,
   Button,
@@ -111,7 +111,7 @@ export function PlanTripForm({
   // needs no `.toISOString()` conversion (which, since that reads UTC,
   // could roll to the wrong calendar day near midnight in a non-UTC
   // timezone anyway).
-  const [date, setDate] = useState<string | null>(() => dayjs().format('YYYY-MM-DD'));
+  const [date, setDate] = useState<string | null>(() => nowInLondon().format('YYYY-MM-DD'));
   // Defaults to "now" (`'HH:MM'`, the same value contract `TimeFilterInput`'s
   // own `onChange` and every other `TimeInput` field in this codebase
   // already use), not `''` -- computed once via lazy `useState` initializer,
@@ -126,14 +126,12 @@ export function PlanTripForm({
   // Still genuinely optional: the field stays a plain, uncontrolled-feeling
   // `TimeInput` a visitor can clear (or retype) to search from any other
   // time, or from the start of the day -- this only changes what it shows
-  // before anyone has touched it. Deliberately browser-local time via
-  // `dayjs()`, matching `date` above and every other "now" default in this
-  // app (`TrackTrainForm.tsx`) -- this is an ordinary "what time do you want
-  // to depart" form field a visitor fills in for themselves, not a rail-day
-  // boundary computation, so there is no reason to force it to Europe/London
-  // specifically the way rail-day-boundary logic elsewhere in this codebase
-  // does.
-  const [departAfter, setDepartAfter] = useState(() => dayjs().format('HH:mm'));
+  // before anyone has touched it. Europe/London wall clock via
+  // `nowInLondon()`, like `date` above and `TrackTrainForm.tsx` (FE-4):
+  // `GET /Trips/plan` reads both fields as London wall-clock values, so a
+  // browser-zone default would search hours away (or on the wrong rail
+  // day) for any visitor whose device isn't on UK time.
+  const [departAfter, setDepartAfter] = useState(() => nowInLondon().format('HH:mm'));
   const [results, setResults] = useState<'fastest' | 'options'>('fastest');
   const resultsLabelId = useId();
 

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
+import { nowInLondon } from '@/lib/londonWallClock';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { TimeFilterInput } from './TimeFilterInput';
@@ -121,7 +122,8 @@ export function AddJourneyLegButton({
     // component's own doc comment.
     setOriginCrs(priorDestinationCrs ?? '');
     setDestinationCrs('');
-    setServiceDate(dayjs().format('YYYY-MM-DD'));
+    // London's today, not the browser's (FE-4): a rail service date.
+    setServiceDate(nowInLondon().format('YYYY-MM-DD'));
     setTrainUid('');
     setDepartFrom('');
     setDepartTo('');

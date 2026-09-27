@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Modal, Stack, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
+import { nowInLondon } from '@/lib/londonWallClock';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { MaterializeTemplateRequest, MaterializeTemplateResponse } from '@/lib/types';
@@ -28,7 +29,7 @@ function isValidServiceDate(value: string): boolean {
 
 /** "Run now" — the manual, on-demand materialization trigger
  * (`POST /JourneyTemplates/{id}/materialize`), §6 item 3. Defaults its
- * date field to today (`dayjs().format('YYYY-MM-DD')`, same convention
+ * date field to London's today (`nowInLondon().format('YYYY-MM-DD')`, same convention
  * `AddJourneyLegButton`'s own `handleOpen` already uses) but always sends
  * it explicitly — there is no implicit "today" on the wire
  * (`MaterializeTemplateRequest.serviceDate` is required, matching
@@ -48,7 +49,7 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
   const needsLoginState = useNeedsLogin();
 
   function handleOpen() {
-    setServiceDate(dayjs().format('YYYY-MM-DD'));
+    setServiceDate(nowInLondon().format('YYYY-MM-DD'));
     setError(null);
     needsLoginState.reset();
     open();

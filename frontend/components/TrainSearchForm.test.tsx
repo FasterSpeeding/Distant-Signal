@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainSearchForm } from './TrainSearchForm';
@@ -185,6 +185,10 @@ async function awaitMountSettled() {
 }
 
 describe('TrainSearchForm', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     pushMock.mockClear();
     replaceMock.mockClear();
@@ -710,15 +714,17 @@ describe('TrainSearchForm', () => {
     expect(await screen.findByText('09:00 · ? → MAN → WAT')).toBeInTheDocument();
   });
 
-  it('links each row to the public train page for today', async () => {
+  it('links each row to the public train page for London\'s today', async () => {
+    // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
 
     const links = await screen.findAllByRole('link', { name: 'View live status' });
-    const today = new Date().toISOString().slice(0, 10);
-    expect(links[0]).toHaveAttribute('href', `/train/C10001/${today}`);
+    expect(links[0]).toHaveAttribute('href', '/train/C10001/2026-07-16');
   });
 
   it('renders a Track this train action on every row', async () => {
