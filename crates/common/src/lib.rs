@@ -18,9 +18,11 @@ pub mod metrics;
 pub mod oauth_client;
 pub mod outbound_endpoint_guard;
 pub mod poller_loop;
+pub mod progress;
 pub mod rail_day;
 pub mod segments;
 pub mod service_args;
+pub mod startup;
 pub mod text_hash;
 pub mod trust_timestamp;
 
