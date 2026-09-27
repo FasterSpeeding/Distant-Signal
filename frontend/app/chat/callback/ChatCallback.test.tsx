@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { renderWithMantine } from '@/test/render';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
 import { ChatCallback } from './ChatCallback';
@@ -207,5 +210,43 @@ describe('ChatCallback', () => {
       expect(screen.getByText(/not configured/i)).toBeInTheDocument();
       expect(mockAuth).not.toHaveBeenCalled();
     });
+  });
+
+  // StrictMode must be the ROOT: React 19 only double-runs mount effects
+  // under a root-level StrictMode, not one nested inside renderWithMantine.
+  function renderStrict(ui: React.ReactNode) {
+    return render(
+      <StrictMode>
+        <MantineProvider theme={theme}>{ui}</MantineProvider>
+      </StrictMode>,
+    );
+  }
+
+  // FE-9: StrictMode's dev-only double effect run must attach to the same
+  // exchange, not re-verify the single-use state and show an error.
+  it('under StrictMode, exchanges once and redirects, never showing a verification error', async () => {
+    mockAuth.mockResolvedValue('AUTHORIZED');
+    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+    const state = provider.state();
+    window.history.pushState({}, '', `/chat/callback?code=abc123&state=${state}`);
+    renderStrict(<ChatCallback serverUrl="https://mcp.example.com" />);
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/chat'));
+    expect(mockAuth).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/could not be verified/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connected, taking you to Chat…' })).toBeInTheDocument();
+  });
+
+  it('under StrictMode, keeps showing "Connecting…" (not an error) while the exchange is in flight', async () => {
+    mockAuth.mockReturnValue(new Promise(() => {})); // never resolves
+    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+    const state = provider.state();
+    window.history.pushState({}, '', `/chat/callback?code=abc123&state=${state}`);
+    renderStrict(<ChatCallback serverUrl="https://mcp.example.com" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('heading', { name: 'Connecting…' })).toBeInTheDocument();
+    expect(screen.queryByText(/could not be verified/i)).not.toBeInTheDocument();
+    expect(mockAuth).toHaveBeenCalledTimes(1);
   });
 });

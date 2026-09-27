@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Alert, Button, Loader, Group, Stack, Text, Title } from '@mantine/core';
-import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
+import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
 
 /** Plain exclamation-in-a-circle, in the same inline-SVG house style as
@@ -48,6 +48,42 @@ function ErrorIcon() {
  * abort it. */
 const AUTH_TIMEOUT_MS = 20_000;
 
+type Exchange =
+  | { kind: 'error'; message: string }
+  | { kind: 'pending'; promise: Promise<AuthResult> };
+
+/** Validates the callback URL and starts the authorization-code exchange.
+ * Runs once per mount (see `exchangeRef`). */
+function startExchange(serverUrl: string): Exchange {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if (!code) {
+    return { kind: 'error', message: 'No authorization code was present in the callback URL.' };
+  }
+
+  const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+
+  // Finding 3 of the deferred fapp Low-severity batch (2026-09-24
+  // security review): before this, nothing about this callback verified
+  // an OAuth `state` parameter -- defense against a planted/replayed
+  // authorization code rested entirely on the PKCE verifier mismatching
+  // over in `auth()`'s own token-exchange call below. `provider.state()`
+  // (called by `auth()` itself when it built the authorization redirect
+  // that sent the browser here -- see `BrowserMcpOAuthProvider`) stored a
+  // random single-use value before that redirect; verifying it here,
+  // BEFORE ever calling `auth()` with the code, rejects a callback that
+  // didn't actually originate from a redirect this browser itself
+  // started, independent of and prior to the PKCE check.
+  if (!provider.consumeAndVerifyState(params.get('state'))) {
+    return {
+      kind: 'error',
+      message: 'The authorization response could not be verified. Please try connecting again from the Chat page.',
+    };
+  }
+
+  return { kind: 'pending', promise: auth(provider, { serverUrl, authorizationCode: code }) };
+}
+
 type CallbackState =
   | { kind: 'connecting' }
   | { kind: 'success' }
@@ -85,39 +121,28 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
       : { kind: 'error', message: 'The rail data service is not configured on this deployment.' },
   );
 
+  // FE-9: the one-time exchange for this mount. `consumeAndVerifyState` is
+  // single-use, so under React StrictMode's dev-only double effect run the
+  // second run used to fail verification and show "could not be verified"
+  // while the first run's exchange still completed and navigated. The ref
+  // survives that re-run, so the second run attaches to the same exchange.
+  const exchangeRef = useRef<Exchange | null>(null);
+
   useEffect(() => {
     if (!serverUrl) return; // initial state is already the error
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get('code');
-    if (!code) {
-      setState({ kind: 'error', message: 'No authorization code was present in the callback URL.' });
-      return;
+    if (exchangeRef.current === null) {
+      exchangeRef.current = startExchange(serverUrl);
     }
-
-    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
-
-    // Finding 3 of the deferred fapp Low-severity batch (2026-09-24
-    // security review): before this, nothing about this callback verified
-    // an OAuth `state` parameter -- defense against a planted/replayed
-    // authorization code rested entirely on the PKCE verifier mismatching
-    // over in `auth()`'s own token-exchange call below. `provider.state()`
-    // (called by `auth()` itself when it built the authorization redirect
-    // that sent the browser here -- see `BrowserMcpOAuthProvider`) stored a
-    // random single-use value before that redirect; verifying it here,
-    // BEFORE ever calling `auth()` with the code, rejects a callback that
-    // didn't actually originate from a redirect this browser itself
-    // started, independent of and prior to the PKCE check.
-    if (!provider.consumeAndVerifyState(params.get('state'))) {
-      setState({
-        kind: 'error',
-        message: 'The authorization response could not be verified. Please try connecting again from the Chat page.',
-      });
+    const exchange = exchangeRef.current;
+    if (exchange.kind === 'error') {
+      setState({ kind: 'error', message: exchange.message });
       return;
     }
 
     // Guards both the timeout firing after a real result already landed
     // and a real result landing after the timeout already gave up --
-    // whichever settles first wins, and the other is a no-op.
+    // whichever settles first wins, and the other is a no-op. `settled` is
+    // also set by this run's cleanup, so a torn-down run never updates.
     let settled = false;
 
     const timeoutId = setTimeout(() => {
@@ -129,7 +154,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
       });
     }, AUTH_TIMEOUT_MS);
 
-    auth(provider, { serverUrl, authorizationCode: code })
+    exchange.promise
       .then((result) => {
         if (settled) return;
         settled = true;
@@ -154,7 +179,10 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
         });
       });
 
-    return () => clearTimeout(timeoutId);
+    return () => {
+      settled = true;
+      clearTimeout(timeoutId);
+    };
     // Empty deps, deliberately: this effect processes the one-time OAuth
     // callback `code` exactly once per mount, and must never re-run just
     // because `router` (used only for the terminal `router.replace` below)

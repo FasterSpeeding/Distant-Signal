@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { afterAll, vi } from 'vitest';
+import { installTimerLeakGuard } from './test/timerLeakGuard';
 
 // Note on theme parity: this file runs once before test *modules* load, so
 // it can't inject props into a component tree — there's no JSX here to
@@ -101,7 +102,7 @@ if (typeof window !== 'undefined') {
   }
 }
 
-// Let any Mantine transition timer a test file leaked finish BEFORE Vitest
+// Cancel any Mantine transition timer a test file leaked BEFORE Vitest
 // tears the jsdom environment down (which deletes `window` from the
 // global scope).
 //
@@ -116,18 +117,19 @@ if (typeof window !== 'undefined') {
 // that fails `npm test`) if the file's environment has already been torn
 // down. The leak predates Vitest 4, but only under Vitest 4 does the
 // worker stay alive past teardown long enough for such a timer to fire
-// there (intermittently, under CPU load: a same-load A/B of `components/`
-// gave 0 such errors on Vitest 3.2.7 vs 2 on 4.1.11).
+// there.
 //
-// Node fires timers in expiry order, so waiting out a timer registered
-// after every leaked one, with a longer delay than any Mantine transition
-// (the longest default is `Transition`'s 250ms), guarantees they have all
-// run first. The initial short wait lets a still-pending second rAF (jsdom
-// drives rAF from a ~16ms interval) schedule its timer before the long
-// wait is registered. Skipped under fake timers: a leaked timer is then a
-// fake one that never fires on its own, and a real wait couldn't resolve.
-afterAll(async () => {
+// FE-9: this used to SLEEP 50 ms + 300 ms after every file, waiting for the
+// leaked timers to fire -- ~0.35 s per file, and timing-dependent under
+// load. Instead, every real timer and animation frame is tracked while it
+// is pending, and whatever is still pending once the file's tests (and its
+// own afterAll hooks, which run before this one) are done is cancelled:
+// animation frames first, so none can schedule a new timer, then timers.
+// Fake timers are unaffected: `vi.useFakeTimers()` replaces these globals
+// and `vi.useRealTimers()` puts these tracking wrappers back.
+const timerLeakGuard = installTimerLeakGuard();
+
+afterAll(() => {
   if (vi.isFakeTimers()) return;
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  timerLeakGuard.cancelPending();
 });
