@@ -838,11 +838,22 @@ pub async fn upsert_train_movement_on(
 /// so `existing_trains_id` (the `trains_id` column itself) is already
 /// `Some` by the time any live-TRUST resolution reaches this function for
 /// such a pin.
+///
+/// **Identity date (Repeater Signal M7 leftover, 2026-09-27).** A newly
+/// created `trains` row is keyed on `identity_date` (the resolving
+/// Activation's `tp_origin_timestamp`, carried by trust-consumer) when it is
+/// present and plausible, and on the subscription's own `service_date`
+/// otherwise. The two differ for a pin at an intermediate stop after
+/// midnight on a train that left its origin before midnight: the pin is
+/// dated D+1, and `trains(uid, D+1)` is the NEXT day's run of the same
+/// service, so the movements would land on another train's shared row. See
+/// [`identity_date_for`] for the plausibility rule.
 async fn flip_legacy_resolution(
     conn: &mut PgConnection,
     tracked_train_id: i64,
     resolved_train_uid: Option<&str>,
     resolved_train_id: &str,
+    identity_date: Option<chrono::NaiveDate>,
 ) -> anyhow::Result<LegacyResolution> {
     // **Single-transaction fix (2026-09-26 review, Medium finding 6).**
     // Before this fix, the `resolution_status = 'resolved'` write below and
@@ -928,8 +939,9 @@ async fn flip_legacy_resolution(
             LegacyResolution::Applied(id)
         }
         (None, Some(train_uid)) => {
-            let id = crate::data::trains::find_or_create_train(&mut *tx, train_uid, service_date)
-                .await?;
+            let train_date = identity_date_for(tracked_train_id, service_date, identity_date);
+            let id =
+                crate::data::trains::find_or_create_train(&mut *tx, train_uid, train_date).await?;
             sqlx::query("UPDATE train_subscriptions SET trains_id = $2 WHERE id = $1")
                 .bind(tracked_train_id)
                 .bind(id)
@@ -948,6 +960,38 @@ async fn flip_legacy_resolution(
     // alongside whatever partial shared-row write also failed.
     tx.commit().await?;
     Ok(outcome)
+}
+
+/// The date [`flip_legacy_resolution`] keys a new `trains` row on.
+///
+/// `identity_date` wins only when it is the subscription's own
+/// `service_date` or the day before it: a pin is dated by its own departure,
+/// which is never before the train's origin date and at most one day after
+/// it (an overnight train). Anything else is implausible -- a mis-parsed or
+/// mis-attributed Activation -- and falls back to the subscription's date,
+/// the pre-existing behaviour, with a warning. Absent (an older
+/// trust-consumer, or no parked Activation) falls back silently.
+fn identity_date_for(
+    tracked_train_id: i64,
+    service_date: chrono::NaiveDate,
+    identity_date: Option<chrono::NaiveDate>,
+) -> chrono::NaiveDate {
+    match identity_date {
+        None => service_date,
+        Some(date) if date == service_date || date == service_date - chrono::Duration::days(1) => {
+            date
+        }
+        Some(date) => {
+            tracing::warn!(
+                tracked_train_id,
+                %service_date,
+                identity_date = %date,
+                "resolution's identity_date is neither the subscription's date nor the day \
+                 before it; keying the trains row on the subscription's date instead"
+            );
+            service_date
+        }
+    }
 }
 
 /// [`flip_legacy_resolution`]'s outcome. A bare `Option<i64>` could not
@@ -1108,6 +1152,7 @@ pub async fn upsert_train_event_on(
                 event.tracked_train_id,
                 event.resolved_train_uid.as_deref(),
                 train_id,
+                event.identity_date,
             )
             .await?
         }
@@ -2535,6 +2580,7 @@ mod ticket_list_tests {
 #[cfg(test)]
 mod db_tests {
     use super::*;
+    use chrono::NaiveDate;
     use sqlx::postgres::PgPoolOptions;
 
     async fn connect() -> PgPool {
@@ -3011,6 +3057,7 @@ mod db_tests {
             tracked_train_id,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: dedup_key.to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -3301,6 +3348,7 @@ mod db_tests {
             tracked_train_id,
             resolved_train_uid: Some("TEST-LIVE-UID".to_string()),
             resolved_train_id: Some("221832406".to_string()),
+            identity_date: None,
             dedup_key: "test-live-dual-write-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -3354,6 +3402,241 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    // --- Live resolution keyed on the train's identity date (M7 leftover) ---
+    //
+    // A train leaves its origin at 23:30 BST on D and calls at an
+    // intermediate stop at 00:30 BST on D+1. The pin there is dated D+1 (its
+    // own departure's date); trust-consumer claims it and sends the
+    // Activation's origin date D as `identity_date`. The shared row must be
+    // `trains(uid, D)` -- `(uid, D+1)` is the next day's run.
+
+    /// Seeds a pending pin dated `pin_date` (no `trains_id`) and returns its id.
+    async fn seed_post_midnight_pin(pool: &PgPool, user_id: &str, pin_date: NaiveDate) -> i64 {
+        seed_user(pool, user_id).await;
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, $2, 'ZIM', $3) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(pin_date)
+        // 00:30 BST on `pin_date`.
+        .bind(
+            (pin_date - chrono::Duration::days(1))
+                .and_hms_opt(23, 30, 0)
+                .unwrap()
+                .and_utc(),
+        )
+        .fetch_one(pool)
+        .await
+        .expect("seed a post-midnight pending pin");
+        id
+    }
+
+    fn post_midnight_resolution(
+        tracked_train_id: i64,
+        train_uid: &str,
+        identity_date: Option<NaiveDate>,
+    ) -> TrainMovementEventMessage {
+        let mut event = fixture_event(tracked_train_id, &format!("{train_uid}-resolve"));
+        event.resolved_train_uid = Some(train_uid.to_string());
+        event.resolved_train_id = Some(format!("{train_uid}-TID"));
+        event.identity_date = identity_date;
+        event
+    }
+
+    /// `(trains.train_uid, trains.service_date)` behind a subscription.
+    async fn linked_identity(pool: &PgPool, tracked_train_id: i64) -> Option<(String, NaiveDate)> {
+        sqlx::query_as(
+            "SELECT tr.train_uid, tr.service_date FROM train_subscriptions ts \
+             JOIN trains tr ON tr.id = ts.trains_id WHERE ts.id = $1",
+        )
+        .bind(tracked_train_id)
+        .fetch_optional(pool)
+        .await
+        .expect("read the linked trains row")
+    }
+
+    async fn trains_row_exists(pool: &PgPool, train_uid: &str, date: NaiveDate) -> bool {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM trains WHERE train_uid = $1 AND service_date = $2)",
+        )
+        .bind(train_uid)
+        .bind(date)
+        .fetch_one(pool)
+        .await
+        .expect("check for a trains row")
+    }
+
+    async fn cleanup_identity_fixture(pool: &PgPool, user_ids: &[&str], train_uid: &str) {
+        for user_id in user_ids {
+            sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+                .bind(user_id)
+                .execute(pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(pool)
+            .await
+            .ok();
+        for user_id in user_ids {
+            cleanup_user(pool, user_id).await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_post_midnight_live_resolution -- --ignored --test-threads=1`"]
+    async fn a_post_midnight_live_resolution_creates_the_trains_row_on_the_identity_date() {
+        let pool = connect().await;
+        let user_id = "TEST-M7L-CREATE-USER";
+        let train_uid = "TEST-M7L-CREATE";
+        cleanup_identity_fixture(&pool, &[user_id], train_uid).await;
+
+        let origin_date: NaiveDate = "2026-09-12".parse().unwrap();
+        let pin_date: NaiveDate = "2026-09-13".parse().unwrap();
+        let pin = seed_post_midnight_pin(&pool, user_id, pin_date).await;
+
+        upsert_train_event(
+            &pool,
+            &post_midnight_resolution(pin, train_uid, Some(origin_date)),
+        )
+        .await
+        .expect("upsert_train_event");
+
+        assert_eq!(
+            linked_identity(&pool, pin).await,
+            Some((train_uid.to_string(), origin_date)),
+            "the shared row is the train's own (uid, origin date)"
+        );
+        assert!(
+            !trains_row_exists(&pool, train_uid, pin_date).await,
+            "no trains row for (uid, pin date): that is the next day's run"
+        );
+        let movements: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM train_movement_events m \
+             JOIN trains tr ON tr.id = m.trains_id \
+             WHERE tr.train_uid = $1 AND tr.service_date = $2",
+        )
+        .bind(train_uid)
+        .bind(origin_date)
+        .fetch_one(&pool)
+        .await
+        .expect("count movements");
+        assert_eq!(movements, 1, "the resolving movement lands on (uid, D)");
+
+        cleanup_identity_fixture(&pool, &[user_id], train_uid).await;
+    }
+
+    /// A second subscriber at the post-midnight stop joins the SAME shared
+    /// row the first one (or a schedule match) already created for `(uid, D)`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_post_midnight_live_resolution -- --ignored --test-threads=1`"]
+    async fn a_post_midnight_live_resolution_uses_an_existing_trains_row_on_the_identity_date() {
+        let pool = connect().await;
+        let user_id = "TEST-M7L-REUSE-USER";
+        let train_uid = "TEST-M7L-REUSE";
+        cleanup_identity_fixture(&pool, &[user_id], train_uid).await;
+
+        let origin_date: NaiveDate = "2026-09-12".parse().unwrap();
+        let pin_date: NaiveDate = "2026-09-13".parse().unwrap();
+        let existing = crate::data::trains::find_or_create_train(&pool, train_uid, origin_date)
+            .await
+            .expect("seed the origin-date trains row");
+        let pin = seed_post_midnight_pin(&pool, user_id, pin_date).await;
+
+        upsert_train_event(
+            &pool,
+            &post_midnight_resolution(pin, train_uid, Some(origin_date)),
+        )
+        .await
+        .expect("upsert_train_event");
+
+        let trains_id: Option<i64> =
+            sqlx::query_scalar("SELECT trains_id FROM train_subscriptions WHERE id = $1")
+                .bind(pin)
+                .fetch_one(&pool)
+                .await
+                .expect("read trains_id");
+        assert_eq!(trains_id, Some(existing));
+        assert!(!trains_row_exists(&pool, train_uid, pin_date).await);
+
+        cleanup_identity_fixture(&pool, &[user_id], train_uid).await;
+    }
+
+    /// Backward compatibility: a message with no `identity_date` (an older
+    /// trust-consumer, or no parked Activation) keeps the old behaviour and
+    /// keys on the subscription's own date; an implausible one (not the
+    /// pin's date or the day before) is ignored the same way.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_live_resolution_without_a_plausible_identity_date -- --ignored --test-threads=1`"]
+    async fn a_live_resolution_without_a_plausible_identity_date_keys_on_the_subscription_date() {
+        let pool = connect().await;
+        let absent_user = "TEST-M7L-ABSENT-USER";
+        let implausible_user = "TEST-M7L-IMPLAUSIBLE-USER";
+        let absent_uid = "TEST-M7L-ABSENT";
+        let implausible_uid = "TEST-M7L-IMPLAUSIBLE";
+        cleanup_identity_fixture(&pool, &[absent_user], absent_uid).await;
+        cleanup_identity_fixture(&pool, &[implausible_user], implausible_uid).await;
+
+        let pin_date: NaiveDate = "2026-09-13".parse().unwrap();
+
+        let absent_pin = seed_post_midnight_pin(&pool, absent_user, pin_date).await;
+        upsert_train_event(
+            &pool,
+            &post_midnight_resolution(absent_pin, absent_uid, None),
+        )
+        .await
+        .expect("upsert_train_event");
+        assert_eq!(
+            linked_identity(&pool, absent_pin).await,
+            Some((absent_uid.to_string(), pin_date))
+        );
+
+        let implausible_pin = seed_post_midnight_pin(&pool, implausible_user, pin_date).await;
+        upsert_train_event(
+            &pool,
+            &post_midnight_resolution(
+                implausible_pin,
+                implausible_uid,
+                Some("2026-09-10".parse().unwrap()),
+            ),
+        )
+        .await
+        .expect("upsert_train_event");
+        assert_eq!(
+            linked_identity(&pool, implausible_pin).await,
+            Some((implausible_uid.to_string(), pin_date))
+        );
+
+        cleanup_identity_fixture(&pool, &[absent_user], absent_uid).await;
+        cleanup_identity_fixture(&pool, &[implausible_user], implausible_uid).await;
+    }
+
+    #[test]
+    fn identity_date_for_accepts_only_the_pins_date_or_the_day_before() {
+        let pin_date: NaiveDate = "2026-09-13".parse().unwrap();
+        let day = |s: &str| s.parse::<NaiveDate>().unwrap();
+        assert_eq!(identity_date_for(1, pin_date, None), pin_date);
+        assert_eq!(
+            identity_date_for(1, pin_date, Some(day("2026-09-12"))),
+            day("2026-09-12")
+        );
+        assert_eq!(identity_date_for(1, pin_date, Some(pin_date)), pin_date);
+        assert_eq!(
+            identity_date_for(1, pin_date, Some(day("2026-09-14"))),
+            pin_date
+        );
+        assert_eq!(
+            identity_date_for(1, pin_date, Some(day("2026-09-11"))),
+            pin_date
+        );
     }
 
     #[tokio::test]
@@ -3511,6 +3794,7 @@ mod db_tests {
             tracked_train_id: 0, // unused by upsert_train_movement -- see its own doc comment
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-nosub-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -3587,6 +3871,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-idempotent-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -3686,6 +3971,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-out-of-order-newer-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("ARRIVAL".to_string()),
@@ -3714,6 +4000,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-out-of-order-older-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -3812,6 +4099,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-in-order-first-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -3839,6 +4127,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-in-order-second-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("ARRIVAL".to_string()),
@@ -3928,6 +4217,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-null-event-time-timed-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -3958,6 +4248,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-null-event-time-cancel-dedup".to_string(),
             msg_type: "0002".to_string(),
             event_type: None,
@@ -4027,6 +4318,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-no-clobber-timed-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -4052,6 +4344,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-no-clobber-no-timestamp-dedup".to_string(),
             msg_type: "0002".to_string(),
             event_type: None,
@@ -4093,6 +4386,7 @@ mod db_tests {
             tracked_train_id: 0,
             resolved_train_uid: None,
             resolved_train_id: None,
+            identity_date: None,
             dedup_key: "test-no-clobber-stale-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -5319,6 +5613,7 @@ mod db_tests {
             tracked_train_id: tracking_id,
             resolved_train_uid: Some("TEST-NR-LIVE-UID".to_string()),
             resolved_train_id: Some("TEST-NR-LIVE-TRAINID".to_string()),
+            identity_date: None,
             dedup_key: "test-nr-live-dedup-1".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),
@@ -5439,6 +5734,7 @@ mod db_tests {
             tracked_train_id,
             resolved_train_uid: Some("TEST-SHARED-RESOLVE-UID".to_string()),
             resolved_train_id: Some("TEST-SHARED-RESOLVE-TRAINID".to_string()),
+            identity_date: None,
             dedup_key: "test-shared-resolve-dedup".to_string(),
             msg_type: "0003".to_string(),
             event_type: Some("DEPARTURE".to_string()),

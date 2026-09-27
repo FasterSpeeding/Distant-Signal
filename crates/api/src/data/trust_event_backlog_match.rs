@@ -650,6 +650,7 @@ async fn replay_backlog_history(
             tracked_train_id,
             resolved_train_uid,
             resolved_train_id,
+            identity_date: None,
             dedup_key: dedup,
             msg_type: row.msg_type.clone(),
             event_type,
