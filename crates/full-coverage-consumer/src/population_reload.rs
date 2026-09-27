@@ -112,7 +112,14 @@ pub async fn reload_cycle(
                     drop(body);
                     match parsed {
                         Ok(Some(entries)) => {
-                            let uids = entries.into_iter().map(|e| e.uid).collect();
+                            // Rail-replacement buses and ships are never
+                            // reported by TRUST: left out, they no longer
+                            // read as cancellations (see `UidOnly`).
+                            let uids = entries
+                                .into_iter()
+                                .filter(UidOnly::is_train)
+                                .map(|e| e.uid)
+                                .collect();
                             next.insert_uids(line_id, date, uids, etag);
                             outcome.succeeded += 1;
                         }
@@ -412,6 +419,55 @@ pub(crate) mod tests {
             assert_eq!(population.etag_for("waterloo-reading", today), None);
         }
         server.verify().await;
+    }
+
+    /// Regression test: a rail-replacement bus (`train_status` `5`) or a
+    /// ship in the published population is left out, so it can no longer
+    /// count as a cancellation; a train, and an entry published without a
+    /// status (an older `schedule-reference`), are kept.
+    #[tokio::test]
+    async fn buses_and_ships_are_left_out_of_the_population() {
+        let server = MockServer::start().await;
+        let tokens = mock_token_cache(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/private/schedule-line-population"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"uid": "C11052", "calling_points": [], "train_status": "P", "operator_atoc": "SW"},
+                    {"uid": "B00001", "calling_points": [], "train_status": "5", "operator_atoc": "SW"},
+                    {"uid": "B00002", "calling_points": [], "train_status": "B"},
+                    {"uid": "S00001", "calling_points": [], "train_status": "S"},
+                    {"uid": "C22222", "calling_points": []}]"#,
+            ))
+            .mount(&server)
+            .await;
+        let today: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let (next, outcome) = reload_cycle(
+            &reqwest::Client::new(),
+            &url(&server),
+            &tokens,
+            &["waterloo-reading".to_string()],
+            &Population::default(),
+            today,
+        )
+        .await;
+        assert!(outcome.failed.is_empty());
+        let mut uids = next.uids_for("waterloo-reading", today);
+        uids.sort_unstable();
+        assert_eq!(uids, vec!["C11052", "C22222"]);
+
+        let row = crate::stats::build_line_row(
+            "waterloo-reading",
+            today,
+            &uids,
+            &std::collections::HashMap::new(),
+            true,
+            false,
+            &common::Defaults::default(),
+        );
+        assert_eq!(
+            row.stats.total, 2,
+            "the buses are not in the closed-day row"
+        );
     }
 
     /// A failed fetch keeps the previous snapshot for that key -- a

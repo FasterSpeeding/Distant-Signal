@@ -16,9 +16,26 @@ use schedule_query::LinePopulationEntry;
 /// each, 21 MB of JSON on 2026-09-27) used to be materialized in full --
 /// every `CallingPoint` of every entry -- just to take the uids and drop
 /// the rest. Now a line costs its body text plus its uids.
+///
+/// Also reads the entry's CIF `train_status` (2026-09-27), published by a
+/// `schedule-reference` that carries it: a rail-replacement bus (`B`/`5`)
+/// or a ship (`S`/`4`) is never reported by TRUST, so it used to read as a
+/// cancellation all day -- 882 of the 891 population UIDs that produced no
+/// TRUST message at all on 2026-09-26 were buses. [`UidOnly::is_train`] is
+/// how the reload leaves them out. A population published without the
+/// field (an older `schedule-reference`) keeps every entry, as before.
 #[derive(Debug, serde::Deserialize)]
 pub struct UidOnly {
     pub uid: String,
+    #[serde(default)]
+    pub train_status: Option<char>,
+}
+
+impl UidOnly {
+    /// Not a bus or a ship (or not known to be one).
+    pub fn is_train(&self) -> bool {
+        !schedule_query::is_bus_or_ship(self.train_status)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -348,7 +365,12 @@ mod tests {
             "is_half_minute_arrival": false, "is_half_minute_departure": false}]},
             {"uid": "W45449", "calling_points": []}]"#;
         let parsed: Option<Vec<UidOnly>> = serde_json::from_str(body).unwrap();
-        let uids: Vec<String> = parsed.unwrap().into_iter().map(|e| e.uid).collect();
+        let parsed = parsed.unwrap();
+        assert!(
+            parsed.iter().all(UidOnly::is_train),
+            "no train_status: kept"
+        );
+        let uids: Vec<String> = parsed.into_iter().map(|e| e.uid).collect();
         assert_eq!(uids, vec!["W45448", "W45449"]);
         assert!(
             serde_json::from_str::<Option<Vec<UidOnly>>>("null")
