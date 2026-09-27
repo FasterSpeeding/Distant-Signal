@@ -68,12 +68,23 @@ async fn main() -> anyhow::Result<()> {
     // re-extraction via the sweep's existing mismatch check WITHOUT asking
     // the configured endpoint to serve a model name it doesn't have. See
     // docs/superpowers/specs/2026-08-21-multi-period-extraction-design.md, §5.
-    let llm = Arc::new(LlmClient::new(
-        config.llm_base_url.clone(),
-        config.llm_api_key.clone(),
-        config.llm_model.clone(),
-        Duration::from_secs(config.llm_request_timeout_secs),
-    ));
+    let llm = Arc::new(
+        LlmClient::new(
+            config.llm_base_url.clone(),
+            config.llm_api_key.clone(),
+            config.llm_model.clone(),
+            Duration::from_secs(config.llm_request_timeout_secs),
+        )
+        // PROTOTYPE (research-nvidia-llm): every knob defaults to "off".
+        .with_provider_policy(llm::ProviderPolicy {
+            max_tokens: config.llm_max_tokens,
+            reasoning_effort: config.llm_reasoning_effort.clone(),
+            max_in_flight: config.llm_max_in_flight,
+            rate_limit_min_wait: Duration::from_secs(config.llm_rate_limit_retry_secs),
+            max_rate_limit_retries: config.llm_rate_limit_retries,
+            max_gateway_retries: config.llm_gateway_retries,
+        }),
+    );
     let model_version = format!("{}@periods-v2", config.llm_model);
 
     let mismatch_tracker = Arc::new(MismatchTracker::default());
@@ -284,7 +295,11 @@ async fn sweep_loop(
 /// bucket boundaries (extended past the tuned timeout, see `main`'s
 /// `install_with_buckets` call) are what actually serves "is a call about
 /// to time out," not the outcome label.
-fn record_llm_call_metrics(call: &'static str, elapsed: std::time::Duration, success: bool) {
+fn record_llm_call_metrics(
+    call: &'static str,
+    elapsed: std::time::Duration,
+    outcome: &'static str,
+) {
     metrics::histogram!(
         common::metrics::metric_name(LLM_DURATION_METRIC),
         "call" => call
@@ -293,9 +308,35 @@ fn record_llm_call_metrics(call: &'static str, elapsed: std::time::Duration, suc
     metrics::counter!(
         common::metrics::metric_name("enricher_llm_call_total"),
         "call" => call,
-        "outcome" => if success { "success" } else { "error" }
+        "outcome" => outcome
     )
     .increment(1);
+}
+
+/// PROTOTYPE (research-nvidia-llm): `success` plus the typed
+/// `llm::LlmCallError` labels (`rate_limited`, `gateway_error`, `timeout`,
+/// `http_error`, `empty_content`), falling back to `error`.
+fn llm_outcome<T>(result: &anyhow::Result<T>) -> &'static str {
+    match result {
+        Ok(_) => "success",
+        Err(err) => err
+            .downcast_ref::<llm::LlmCallError>()
+            .map_or("error", llm::LlmCallError::outcome_label),
+    }
+}
+
+/// PROTOTYPE (research-nvidia-llm): a provider-side 429/5xx/timeout says
+/// nothing about this incident's text, so it must not push the text into
+/// `RetryBackoff`'s 30 min -> 24 h per-text backoff.
+fn record_extraction_failure(
+    retry_backoff: &RetryBackoff,
+    incident_id: &str,
+    text_hash: &str,
+    err: &anyhow::Error,
+) {
+    if !llm::is_provider_transient(err) {
+        retry_backoff.record_failure(incident_id, text_hash);
+    }
 }
 
 /// Runs all three extraction passes for one incident and writes the result.
@@ -383,12 +424,16 @@ async fn process_incident(
     let primary_result = llm
         .extract_primary(&summary, &description, first_seen_at)
         .await;
-    record_llm_call_metrics("primary", primary_start.elapsed(), primary_result.is_ok());
+    record_llm_call_metrics(
+        "primary",
+        primary_start.elapsed(),
+        llm_outcome(&primary_result),
+    );
     let primary = match primary_result {
         Ok(p) => p,
         Err(err) => {
             tracing::error!(error = ?err, incident_id, "primary extraction failed");
-            retry_backoff.record_failure(incident_id, &text_hash);
+            record_extraction_failure(retry_backoff, incident_id, &text_hash, &err);
             return false;
         }
     };
@@ -426,13 +471,13 @@ async fn process_incident(
     record_llm_call_metrics(
         "resolution_adversarial",
         resolution_adversarial_start.elapsed(),
-        resolution_adversarial_result.is_ok(),
+        llm_outcome(&resolution_adversarial_result),
     );
     let resolution_adversarial = match resolution_adversarial_result {
         Ok(v) => v,
         Err(err) => {
             tracing::error!(error = ?err, incident_id, "adversarial extraction failed");
-            retry_backoff.record_failure(incident_id, &text_hash);
+            record_extraction_failure(retry_backoff, incident_id, &text_hash, &err);
             return false;
         }
     };
@@ -444,13 +489,13 @@ async fn process_incident(
     record_llm_call_metrics(
         "severity_adversarial",
         severity_adversarial_start.elapsed(),
-        severity_adversarial_result.is_ok(),
+        llm_outcome(&severity_adversarial_result),
     );
     let severity_adversarial = match severity_adversarial_result {
         Ok(v) => v,
         Err(err) => {
             tracing::error!(error = ?err, incident_id, "severity adversarial extraction failed");
-            retry_backoff.record_failure(incident_id, &text_hash);
+            record_extraction_failure(retry_backoff, incident_id, &text_hash, &err);
             return false;
         }
     };

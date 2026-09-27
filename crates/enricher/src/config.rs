@@ -38,6 +38,30 @@ pub struct Config {
     #[arg(long, env, default_value_t = 300)]
     pub llm_request_timeout_secs: u64,
 
+    // --- PROTOTYPE (research-nvidia-llm, 2026-09-27): per-provider knobs
+    // for a slow, rate-limited hosted endpoint (NVIDIA free tier). All
+    // default to "off" so an unset deployment behaves exactly as before.
+    // Set via `enricher.extraEnv` in the chart for a trial -- no template
+    // change needed. See llm::ProviderPolicy.
+    /// Sent as `max_tokens` when set (e.g. 8192 for GLM-5.3).
+    #[arg(long, env)]
+    pub llm_max_tokens: Option<u32>,
+    /// Sent as `reasoning_effort` when set (e.g. `low` for GLM-5.3).
+    #[arg(long, env)]
+    pub llm_reasoning_effort: Option<String>,
+    /// Cap on concurrent LLM HTTP attempts across stream/sweep/reclaim.
+    #[arg(long, env)]
+    pub llm_max_in_flight: Option<usize>,
+    /// Minimum 429 back-off before an in-call retry.
+    #[arg(long, env, default_value_t = 20)]
+    pub llm_rate_limit_retry_secs: u64,
+    /// In-call retries on 429 (0 = fail the incident, today's behaviour).
+    #[arg(long, env, default_value_t = 0)]
+    pub llm_rate_limit_retries: u32,
+    /// In-call retries on 502/503/504/client timeout (0 = today's behaviour).
+    #[arg(long, env, default_value_t = 0)]
+    pub llm_gateway_retries: u32,
+
     /// How often the reconciliation sweep runs, independent of the Redis
     /// Stream consumer loop. Backstop for a missed/lost publish.
     #[arg(long, env, default_value_t = 3600)]

@@ -193,6 +193,148 @@ pub struct LlmClient {
     api_key: Option<String>,
     model: String,
     http: reqwest::Client,
+    /// PROTOTYPE (research-nvidia-llm) -- see [`ProviderPolicy`].
+    policy: ProviderPolicy,
+    /// PROTOTYPE (research-nvidia-llm) -- `Some` only when
+    /// `ProviderPolicy::max_in_flight` is set. Held for the duration of one
+    /// HTTP attempt only, never across a 429 back-off sleep.
+    in_flight: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+}
+
+// ---------------------------------------------------------------------------
+// PROTOTYPE (research-nvidia-llm, 2026-09-27). NOT reviewed for production.
+// Sketch of the per-provider knobs a slow, rate-limited hosted endpoint such
+// as NVIDIA's free `integrate.api.nvidia.com/v1` tier needs. See
+// /home/coder/ds-review/nvidia-llm-enrichment-feasibility.md. Every knob
+// defaults to "off", so `LlmClient::new` sends byte-for-byte the same request
+// as before and never retries in-call.
+// ---------------------------------------------------------------------------
+
+/// Per-provider request/retry policy.
+#[derive(Debug, Clone)]
+pub struct ProviderPolicy {
+    /// Sent as `max_tokens` when `Some`. Reasoning models need an explicit
+    /// ceiling (Skye's GLM test: 8192) so a runaway reasoning trace is
+    /// bounded rather than consuming the whole gateway window.
+    pub max_tokens: Option<u32>,
+    /// Sent as `reasoning_effort` when `Some` (GLM-5.3 on NVIDIA honours
+    /// only `"low"`; its documented default is `"max"`).
+    pub reasoning_effort: Option<String>,
+    /// Cap on concurrent HTTP attempts across ALL callers sharing this
+    /// client (stream loop + sweep + reclaim). `None` = unlimited, as today.
+    pub max_in_flight: Option<usize>,
+    /// Minimum wait before retrying a 429, even if `Retry-After` is shorter
+    /// or absent.
+    pub rate_limit_min_wait: std::time::Duration,
+    /// In-call retries for 429. 0 = today's behaviour (fail the incident).
+    pub max_rate_limit_retries: u32,
+    /// In-call retries for 502/503/504 and client-side timeouts. 0 = today.
+    pub max_gateway_retries: u32,
+}
+
+impl Default for ProviderPolicy {
+    fn default() -> Self {
+        Self {
+            max_tokens: None,
+            reasoning_effort: None,
+            max_in_flight: None,
+            rate_limit_min_wait: std::time::Duration::from_secs(20),
+            max_rate_limit_retries: 0,
+            max_gateway_retries: 0,
+        }
+    }
+}
+
+/// Typed classification of one failed chat-completion attempt, so callers
+/// can tell "the provider is busy" apart from "this text can't be
+/// extracted". `main.rs` still sees an `anyhow::Error`; use
+/// [`is_provider_transient`] to downcast.
+#[derive(Debug)]
+pub enum LlmCallError {
+    RateLimited {
+        retry_after: Option<std::time::Duration>,
+    },
+    GatewayUnavailable {
+        status: u16,
+    },
+    ClientTimeout,
+    Status {
+        status: u16,
+    },
+    /// 200 OK but `content` was null/empty -- the typical failure of a
+    /// reasoning model that spent its whole budget thinking.
+    EmptyContent {
+        finish_reason: Option<String>,
+    },
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for LlmCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RateLimited { retry_after } => {
+                write!(
+                    f,
+                    "LLM endpoint rate-limited (429, retry_after={retry_after:?})"
+                )
+            }
+            Self::GatewayUnavailable { status } => {
+                write!(f, "LLM endpoint gateway error/timeout ({status})")
+            }
+            Self::ClientTimeout => write!(f, "LLM request exceeded the client timeout"),
+            Self::Status { status } => write!(f, "LLM endpoint returned HTTP {status}"),
+            Self::EmptyContent { finish_reason } => write!(
+                f,
+                "LLM returned no content (finish_reason={finish_reason:?}); likely exhausted \
+                 max_tokens on reasoning"
+            ),
+            Self::Other(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for LlmCallError {}
+
+impl LlmCallError {
+    /// A failure that says nothing about the incident's text -- it should
+    /// not feed `RetryBackoff`'s per-text exponential backoff.
+    pub fn is_provider_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited { .. } | Self::GatewayUnavailable { .. } | Self::ClientTimeout
+        )
+    }
+
+    /// Metric label for `enricher_llm_call_total{outcome=...}`.
+    pub fn outcome_label(&self) -> &'static str {
+        match self {
+            Self::RateLimited { .. } => "rate_limited",
+            Self::GatewayUnavailable { .. } => "gateway_error",
+            Self::ClientTimeout => "timeout",
+            Self::Status { .. } => "http_error",
+            Self::EmptyContent { .. } => "empty_content",
+            Self::Other(_) => "error",
+        }
+    }
+}
+
+/// Whether an error returned by any `LlmClient::extract_*` is a
+/// provider-side transient (429/5xx gateway/timeout) rather than a failure
+/// attributable to the incident text.
+pub fn is_provider_transient(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<LlmCallError>()
+        .is_some_and(LlmCallError::is_provider_transient)
+}
+
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
 }
 
 #[derive(Serialize)]
@@ -201,6 +343,12 @@ struct ChatCompletionRequest<'a> {
     messages: Vec<ChatMessage>,
     response_format: ResponseFormat,
     temperature: f32,
+    /// PROTOTYPE -- omitted from the wire when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    /// PROTOTYPE -- omitted from the wire when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -231,11 +379,18 @@ struct ChatCompletionResponse {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatChoiceMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct ChatChoiceMessage {
-    content: String,
+    /// `Option` (PROTOTYPE change): reasoning models legitimately return
+    /// `null` content when they run out of tokens mid-reasoning; that is
+    /// now a typed `LlmCallError::EmptyContent` instead of an opaque serde
+    /// error.
+    #[serde(default)]
+    content: Option<String>,
 }
 
 const PRIMARY_SCHEMA_NAME: &str = "incident_extraction";
@@ -517,7 +672,19 @@ impl LlmClient {
             api_key,
             model,
             http,
+            policy: ProviderPolicy::default(),
+            in_flight: None,
         }
+    }
+
+    /// PROTOTYPE (research-nvidia-llm): opt into a non-default
+    /// [`ProviderPolicy`].
+    pub fn with_provider_policy(mut self, policy: ProviderPolicy) -> Self {
+        self.in_flight = policy
+            .max_in_flight
+            .map(|n| std::sync::Arc::new(tokio::sync::Semaphore::new(n.max(1))));
+        self.policy = policy;
+        self
     }
 
     async fn chat_completion(
@@ -548,26 +715,99 @@ impl LlmClient {
                 },
             },
             temperature: 0.0,
+            max_tokens: self.policy.max_tokens,
+            reasoning_effort: self.policy.reasoning_effort.as_deref(),
         };
 
+        // PROTOTYPE: bounded in-call retry for provider-transient failures.
+        // With the default policy both budgets are 0, so the first failure
+        // is returned exactly as before.
+        let mut rate_limit_retries = 0;
+        let mut gateway_retries = 0;
+        loop {
+            let attempt = {
+                let _permit = match &self.in_flight {
+                    Some(sem) => Some(
+                        sem.acquire()
+                            .await
+                            .map_err(|err| anyhow::anyhow!("in-flight limiter closed: {err}"))?,
+                    ),
+                    None => None,
+                };
+                self.send_once(&request).await
+            };
+            match attempt {
+                Ok(content) => return Ok(content),
+                Err(LlmCallError::RateLimited { retry_after })
+                    if rate_limit_retries < self.policy.max_rate_limit_retries =>
+                {
+                    rate_limit_retries += 1;
+                    let wait = retry_after
+                        .unwrap_or_default()
+                        .max(self.policy.rate_limit_min_wait);
+                    tracing::warn!(?wait, attempt = rate_limit_retries, "LLM 429; backing off");
+                    tokio::time::sleep(wait).await;
+                }
+                Err(
+                    err @ (LlmCallError::GatewayUnavailable { .. } | LlmCallError::ClientTimeout),
+                ) if gateway_retries < self.policy.max_gateway_retries => {
+                    gateway_retries += 1;
+                    tracing::warn!(error = %err, attempt = gateway_retries, "LLM gateway failure; retrying");
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+
+    /// One HTTP attempt, classified. PROTOTYPE (research-nvidia-llm).
+    async fn send_once(&self, request: &ChatCompletionRequest<'_>) -> Result<String, LlmCallError> {
         let mut req = self
             .http
             .post(format!("{}/chat/completions", self.base_url))
-            .json(&request);
+            .json(request);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
 
-        let response = req.send().await?.error_for_status()?;
-        let body: ChatCompletionResponse = response.json().await?;
-        let content = body
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("chat completion response had no choices"))?
-            .message
-            .content;
-        Ok(content)
+        let response = req.send().await.map_err(|err| {
+            if err.is_timeout() {
+                LlmCallError::ClientTimeout
+            } else {
+                LlmCallError::Other(err.into())
+            }
+        })?;
+        let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(LlmCallError::RateLimited {
+                retry_after: parse_retry_after(response.headers()),
+            });
+        }
+        if matches!(status.as_u16(), 502..=504) {
+            return Err(LlmCallError::GatewayUnavailable {
+                status: status.as_u16(),
+            });
+        }
+        if !status.is_success() {
+            return Err(LlmCallError::Status {
+                status: status.as_u16(),
+            });
+        }
+        let body: ChatCompletionResponse = response.json().await.map_err(|err| {
+            if err.is_timeout() {
+                LlmCallError::ClientTimeout
+            } else {
+                LlmCallError::Other(err.into())
+            }
+        })?;
+        let choice = body.choices.into_iter().next().ok_or_else(|| {
+            LlmCallError::Other(anyhow::anyhow!("chat completion response had no choices"))
+        })?;
+        match choice.message.content {
+            Some(content) if !content.trim().is_empty() => Ok(content),
+            _ => Err(LlmCallError::EmptyContent {
+                finish_reason: choice.finish_reason,
+            }),
+        }
     }
 
     /// `reference_date` is the incident's `first_seen_at` (or, if the
@@ -1374,6 +1614,164 @@ mod tests {
         assert!(
             result.is_err(),
             "malformed content must be rejected, not silently stored"
+        );
+    }
+
+    // -- PROTOTYPE (research-nvidia-llm): ProviderPolicy / LlmCallError --
+
+    fn flat_primary_body() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": serde_json::json!({
+                        "category": "signal_failure",
+                        "periods": [{
+                            "scope_description": null,
+                            "date_range": null,
+                            "schedule_window": null,
+                            "resolution_status": "ongoing",
+                            "apparent_severity": "normal",
+                            "impact_type": null
+                        }]
+                    }).to_string()
+                },
+                "finish_reason": "stop"
+            }]
+        })
+    }
+
+    fn fast_retry_policy() -> ProviderPolicy {
+        ProviderPolicy {
+            max_tokens: Some(8192),
+            reasoning_effort: Some("low".to_string()),
+            max_in_flight: Some(3),
+            rate_limit_min_wait: std::time::Duration::from_millis(10),
+            max_rate_limit_retries: 3,
+            max_gateway_retries: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn default_policy_omits_max_tokens_and_reasoning_effort() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT);
+        client
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap();
+        let body =
+            String::from_utf8(server.received_requests().await.unwrap()[0].body.clone()).unwrap();
+        assert!(!body.contains("reasoning_effort"), "{body}");
+        assert!(!body.contains("max_tokens"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn policy_sends_reasoning_effort_and_max_tokens() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_string_contains("\"reasoning_effort\":\"low\""))
+            .and(body_string_contains("\"max_tokens\":8192"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+            .with_provider_policy(fast_retry_policy());
+        client
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rate_limit_is_retried_within_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+            .with_provider_policy(fast_retry_policy());
+        client
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap();
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn gateway_timeout_retries_are_capped_and_classified_transient() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(504))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+            .with_provider_policy(fast_retry_policy());
+        let err = client
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap_err();
+        // 1 initial attempt + max_gateway_retries (2).
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+        assert!(is_provider_transient(&err), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn default_policy_does_not_retry_a_504() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(504))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT);
+        assert!(
+            client
+                .extract_primary("s", "d", reference_date())
+                .await
+                .is_err()
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn null_content_is_a_typed_non_transient_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": null, "reasoning_content": "..." },
+                              "finish_reason": "length" }]
+            })))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+            .with_provider_policy(fast_retry_policy());
+        let err = client
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap_err();
+        assert!(!is_provider_transient(&err));
+        assert!(
+            matches!(
+                err.downcast_ref::<LlmCallError>(),
+                Some(LlmCallError::EmptyContent { finish_reason: Some(r) }) if r == "length"
+            ),
+            "{err:?}"
         );
     }
 
