@@ -185,6 +185,12 @@ fn day_start_trimmed(positions: &StreamPositions, start_id: &str) -> bool {
     }
 }
 
+/// The instant a stream entry id (`<ms>-<seq>`) was generated at.
+pub fn stream_id_time(id: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let millis: i64 = id.split('-').next()?.parse().ok()?;
+    chrono::DateTime::from_timestamp_millis(millis)
+}
+
 /// Retries `$op` until it succeeds: 1 s, doubling to 30 s, beating
 /// `$progress` (the process is alive; a restart would only repeat this).
 /// A macro rather than a closure-taking fn because `$op` borrows the
@@ -244,6 +250,8 @@ pub async fn run_startup_replay<S: ReplaySource + ?Sized>(
             "this movement-feed backend cannot replay the rail day; marking it partial"
         );
         day.partial_reason = Some(PartialReason::ReplayUnsupported);
+        // Nothing before this process started has been seen.
+        day.observed_from = chrono::Utc::now();
         return report;
     };
 
@@ -262,6 +270,19 @@ pub async fn run_startup_replay<S: ReplaySource + ?Sized>(
         );
         day.partial_reason = Some(PartialReason::DayStartTrimmed);
     }
+    // Everything from the lookback start on is replayed -- unless the
+    // stream has already lost some of it, in which case only from its
+    // first retained entry.
+    let lookback_start = day_start - LOOKBACK;
+    day.observed_from = if day_start_trimmed(&positions, &plan.start_id) {
+        positions
+            .stream_first_entry_id
+            .as_deref()
+            .and_then(stream_id_time)
+            .map_or_else(chrono::Utc::now, |first| first.max(lookback_start))
+    } else {
+        lookback_start
+    };
     let Some(end_id) = plan.end_id else {
         tracing::info!(
             service_date = %day.service_date,
@@ -301,10 +322,12 @@ pub async fn run_startup_replay<S: ReplaySource + ?Sized>(
                 continue;
             }
             let lookback = stream_id_less_than(id, &plan.day_start_id);
+            // The entry's own time: when the relay received it.
+            let received_at = stream_id_time(id).unwrap_or_else(chrono::Utc::now);
             let dispatched = if lookback {
-                day.dispatch_lookback_payload(payload)
+                day.dispatch_lookback_payload(payload, lookups, received_at)
             } else {
-                day.dispatch_payload(payload, lookups, &population)
+                day.dispatch_payload(payload, lookups, &population, received_at)
             };
             if let Err(err) = dispatched {
                 // Already dead-lettered (or about to be, if still pending)
@@ -470,11 +493,53 @@ mod tests {
         assert_eq!(report.lookback_entries, 2);
         assert_eq!(day.partial_reason, None);
         assert_eq!(
+            day.observed_from,
+            crate::stats::rail_day_start(service_date) - LOOKBACK,
+            "nothing lost: observed from the lookback start"
+        );
+        assert_eq!(
             day.correlation
                 .pending_activations
                 .get("722N71MW27")
                 .map(String::as_str),
             Some("C11052")
+        );
+    }
+
+    /// A trimmed lookback (the day start still retained): observed only
+    /// from the first retained entry, and the day is not partial.
+    #[tokio::test]
+    async fn a_trimmed_lookback_sets_observed_from_to_the_first_entry() {
+        let service_date: chrono::NaiveDate = "2026-09-27".parse().unwrap();
+        let day_start = crate::stats::rail_day_start(service_date).timestamp_millis();
+        let first = day_start - 60 * 60 * 1000;
+        let mut source = FakeSource {
+            positions: StreamPositions {
+                group_last_delivered_id: Some(format!("{}-0", day_start + 1000)),
+                stream_first_entry_id: Some(format!("{first}-0")),
+                stream_length: 10,
+                stream_entries_added: Some(500),
+                ..StreamPositions::default()
+            },
+            entries: vec![],
+        };
+        let mut day = DayState::new(service_date);
+        let population: SharedPopulation = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            crate::population::Population::default(),
+        ));
+        run_startup_replay(
+            &mut source,
+            &mut day,
+            &Lookups::default(),
+            &population,
+            &health_http::Progress::new(Duration::from_secs(60)),
+            10,
+        )
+        .await;
+        assert_eq!(day.partial_reason, None);
+        assert_eq!(
+            day.observed_from,
+            stream_id_time(&format!("{first}-0")).unwrap()
         );
     }
 

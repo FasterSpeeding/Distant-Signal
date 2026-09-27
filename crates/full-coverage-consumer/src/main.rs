@@ -61,6 +61,7 @@ mod replay;
 mod stanox_tiploc;
 mod station_correlate;
 mod stats;
+mod trains;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -169,8 +170,15 @@ async fn main() -> anyhow::Result<()> {
     .spawn();
 
     // Startup step 3: rebuild the rail day in progress, then consume.
-    let mut day =
-        start_consuming(&mut feed, &mut first_load, &population, &lookups, &progress).await?;
+    let mut day = start_consuming(
+        &mut feed,
+        &mut first_load,
+        &population,
+        &lookups,
+        &progress,
+        config.windowed.enabled,
+    )
+    .await?;
 
     let stats_write_interval = Duration::from_secs(config.stats_write_interval_secs);
     let mut last_stats_write = tokio::time::Instant::now() - stats_write_interval;
@@ -258,6 +266,10 @@ async fn main() -> anyhow::Result<()> {
                         "full_coverage_consumer_stream_gap_detected_total"
                     ))
                     .increment(1);
+                    // Everything before now is suspect for the rest of the
+                    // day: no window before it may influence severity, and
+                    // nothing before it is presumed cancelled.
+                    day.observed_from = chrono::Utc::now();
                 }
                 Ok(None) => {}
                 Err(err) => {
@@ -330,9 +342,13 @@ async fn start_consuming<F: replay::ReplaySource>(
     population: &SharedPopulation,
     lookups: &Lookups,
     progress: &health_http::Progress,
+    windowed: bool,
 ) -> anyhow::Result<DayState> {
     let first = population_reload::wait_for_first_load(first_load, progress).await?;
     let mut day = DayState::new(current_rail_service_date(chrono::Utc::now()));
+    if windowed {
+        day = day.enable_windowed();
+    }
     if first.service_date == day.service_date {
         day.partial_lines.extend(first.missing_lines);
     }
@@ -406,7 +422,7 @@ async fn consume_once<F: MovementFeed + DeadLetterSink>(
     };
     let mut unparseable = Vec::new();
     for raw in &batch {
-        if let Err(err) = day.dispatch_payload(raw, lookups, population) {
+        if let Err(err) = day.dispatch_payload(raw, lookups, population, chrono::Utc::now()) {
             tracing::error!(error = ?err, raw = %raw, "failed to parse TRUST batch; dead-lettering this payload");
             metrics::counter!(
                 common::metrics::metric_name("full_coverage_consumer_errors_total"),
@@ -1229,9 +1245,16 @@ mod tests {
                 service_date: fresh.service_date,
                 missing_lines: vec![],
             }));
-            let mut day = start_consuming(&mut feed, &mut rx, &population, &lookups, &progress())
-                .await
-                .unwrap();
+            let mut day = start_consuming(
+                &mut feed,
+                &mut rx,
+                &population,
+                &lookups,
+                &progress(),
+                false,
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 day.partial_reason, None,
                 "the whole day is still in the stream"
@@ -1306,9 +1329,16 @@ mod tests {
                 service_date: day.service_date,
                 missing_lines: vec![],
             }));
-            let day = start_consuming(&mut feed, &mut rx, &population, &lookups, &progress())
-                .await
-                .unwrap();
+            let day = start_consuming(
+                &mut feed,
+                &mut rx,
+                &population,
+                &lookups,
+                &progress(),
+                false,
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 day.partial_reason,
                 Some(day::PartialReason::DayStartTrimmed)
@@ -1349,6 +1379,7 @@ mod tests {
             &shared(population),
             &waterloo_lookups(),
             &progress(),
+            true,
         )
         .await
         .unwrap();
@@ -1357,6 +1388,11 @@ mod tests {
             Some(day::PartialReason::ReplayUnsupported)
         );
         assert!(day.partial_lines.contains("other-line"));
+        assert!(day.trains.is_some(), "windowed state on when asked for");
+        assert!(
+            chrono::Utc::now() - day.observed_from < chrono::Duration::minutes(1),
+            "under Kafka nothing before the process start was seen"
+        );
     }
 
     /// A feed that records, every time anything reads from it, whether the
@@ -1473,9 +1509,16 @@ mod tests {
         };
         let started = std::time::Instant::now();
         let lookups = waterloo_lookups();
-        let mut day = start_consuming(&mut feed, &mut rx, &population, &lookups, &progress())
-            .await
-            .unwrap();
+        let mut day = start_consuming(
+            &mut feed,
+            &mut rx,
+            &population,
+            &lookups,
+            &progress(),
+            false,
+        )
+        .await
+        .unwrap();
         consume_once(&mut feed, &mut day, &lookups, &population.load()).await;
 
         assert!(
