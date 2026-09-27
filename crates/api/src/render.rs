@@ -463,6 +463,11 @@ pub(crate) fn line_train_json(
                 "etaSource": s.eta_source,
                 "operatorCode": s.operator_code,
                 "operatorName": s.operator_name,
+                "cancelled": s.cancelled,
+                "cancelReasonCode": s.cancel_reason_code,
+                "cancelReason": s.cancel_reason,
+                "changeOfOriginReasonCode": s.change_of_origin_reason_code,
+                "changeOfOriginReason": s.change_of_origin_reason,
             })
         }),
     }
@@ -1493,6 +1498,11 @@ mod tests {
             may_have_arrived: false,
             operator_code: Some("LM".to_string()),
             operator_name: None,
+            cancelled: false,
+            cancel_reason_code: None,
+            cancel_reason: None,
+            change_of_origin_reason_code: None,
+            change_of_origin_reason: None,
         };
 
         let json = render_line_train(&entry, Some(&live), &ScheduleRouteEndpoints::default());

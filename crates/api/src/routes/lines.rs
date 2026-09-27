@@ -327,6 +327,7 @@ async fn get_line_trains(
         service_date,
     )
     .await;
+    crate::data::train_reasons::attach_to_public_states(&app.database, &mut live_states).await;
     let live_by_uid: HashMap<&str, &PublicTrainState> = live_states
         .iter()
         .map(|s| (s.train_uid.as_str(), s))

@@ -294,6 +294,16 @@ pub struct JourneyStop {
     /// `None` when the CIF field is blank, or the schedule row predates this
     /// field -- "not known", never guessed.
     pub booked_platform: Option<String>,
+    /// LDBWS-style live status of this stop (`OnTime`, `Late`, `Cancelled`,
+    /// `NoReport`, `Arrived`, `Departed`, `Scheduled`), served as `status`.
+    /// See `data::stop_live_status` for the mapping. Computed last, by the
+    /// train-detail routes once the train's own status is known, so it is
+    /// `None` on a freshly built stop.
+    #[serde(rename = "status")]
+    pub live_status: Option<crate::data::stop_live_status::LiveStopStatus>,
+    /// How many minutes late this stop is expected to be; `Some` only when
+    /// `live_status` is `Late`.
+    pub late_minutes: Option<i32>,
 }
 
 impl JourneyStop {
@@ -345,6 +355,8 @@ impl JourneyStop {
             planned_platform: None,
             platform_changed: false,
             booked_platform: cp.platform.clone(),
+            live_status: None,
+            late_minutes: None,
         }
     }
 }
@@ -1476,6 +1488,8 @@ mod tests {
             planned_platform: None,
             platform_changed: false,
             booked_platform: None,
+            live_status: None,
+            late_minutes: None,
         }
     }
 

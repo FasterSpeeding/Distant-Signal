@@ -1371,7 +1371,10 @@ async fn build_journey_detail_response(
                 let state =
                     crate::data::train_operator::attach_to_tracked_state(&app.database, state)
                         .await;
-                Some(crate::routes::train::attach_journey_stops(app, state).await)
+                let state = crate::routes::train::attach_journey_stops(app, state).await;
+                Some(
+                    crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
+                )
             }
             None => None,
         };

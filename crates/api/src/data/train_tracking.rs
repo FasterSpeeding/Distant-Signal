@@ -1601,6 +1601,26 @@ pub struct TrackedTrainState {
     /// `operator_code` is `None` or the code has no `tocs` row.
     #[sqlx(skip)]
     pub operator_name: Option<String>,
+    /// Whether the train is cancelled: `status == "cancelled"`. Filled
+    /// after the read by `data::train_reasons`, like every field below.
+    #[sqlx(skip)]
+    pub cancelled: bool,
+    /// The TRUST cancellation reason code (e.g. `"TG"`), only while
+    /// `cancelled` is true.
+    #[sqlx(skip)]
+    pub cancel_reason_code: Option<String>,
+    /// `cancel_reason_code`'s delay attribution glossary text (e.g.
+    /// `"Driver"`). `None` for a code the glossary lacks or a system code
+    /// (`PD`, `ZW`). There is no delay-reason equivalent: TRUST carries none.
+    #[sqlx(skip)]
+    pub cancel_reason: Option<String>,
+    /// The TRUST change-of-origin reason code, when the train's origin was
+    /// changed.
+    #[sqlx(skip)]
+    pub change_of_origin_reason_code: Option<String>,
+    /// Its glossary text, under the same rules as `cancel_reason`.
+    #[sqlx(skip)]
+    pub change_of_origin_reason: Option<String>,
 }
 
 // `LEFT JOIN`, never `JOIN`: a CRS with no reference row (a code the

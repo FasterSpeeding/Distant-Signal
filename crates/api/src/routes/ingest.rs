@@ -71,6 +71,7 @@ pub fn router() -> Router {
             "/trust-event-backlog",
             axum::routing::post(post_trust_event_backlog),
         )
+        .route("/train-reasons", axum::routing::post(post_train_reasons))
         .route(
             "/schedule-feed-ingests",
             axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
@@ -447,6 +448,22 @@ async fn post_trust_event_backlog(
         upserted: outcome.inserted,
         rejected,
     }))
+}
+
+/// `trust-backlog-consumer`'s TRUST reason codes (`0002` cancellation,
+/// `0006` change of origin) -- see `crate::data::train_reasons::upsert_reasons`.
+/// A row refused for a data error is skipped and counted, never failing
+/// the batch; anything else is a 500 so the consumer's redelivery re-sends
+/// it. `upserted` counts rows written (an older message than the stored
+/// one, or a train with no `trains` row yet, writes nothing).
+async fn post_train_reasons(
+    State(app): State<App>,
+    Json(reasons): Json<Vec<common::TrainReasonMessage>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = crate::data::train_reasons::upsert_reasons(&app.database, &reasons)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
 }
 
 /// `trust-consumer`'s periodic reference reload -- pending and
@@ -3184,6 +3201,47 @@ mod db_tests {
         assert_eq!(uids, vec!["CHUNK1".to_string(), "CHUNK2".to_string()]);
 
         clear().await;
+    }
+
+    /// `POST /private/train-reasons` files a coded cancellation against the
+    /// train's shared row, creating it from the uid, and answers `upserted`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                train_reasons_post -- --ignored --test-threads=1`"]
+    async fn train_reasons_post_stores_the_code_against_the_train() {
+        let pool = connect().await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-RSN-POST'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let body = json!([{
+            "train_id": "5RSNPOST26",
+            "train_uid": "TEST-RSN-POST",
+            "service_date": "2031-06-07",
+            "msg_type": "0002",
+            "reason_code": "TG",
+            "canx_type": "AT ORIGIN",
+            "event_at": "2031-06-07T08:00:00Z"
+        }]);
+        let (status, body) = post_json_to(router, "/train-reasons", &body).await;
+        assert_eq!(status, StatusCode::OK);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["upserted"], 1);
+        let code: Option<String> = sqlx::query_scalar(
+            "SELECT r.reason_code FROM train_reasons r JOIN trains t ON t.id = r.trains_id \
+             WHERE t.train_uid = 'TEST-RSN-POST' AND r.msg_type = '0002'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-RSN-POST'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(code.as_deref(), Some("TG"));
     }
 }
 
