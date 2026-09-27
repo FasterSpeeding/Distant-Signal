@@ -249,8 +249,12 @@ async fn run_cycle(
 ) -> anyhow::Result<()> {
     // --- Lines (Decision 2/3/5) ---
     let line_cursor = queries::read_cursor(pool, "line_status_history").await?;
-    let (line_candidates, line_observed_max_id) =
-        queries::poll_line_candidates(pool, line_cursor.last_processed_id).await?;
+    let (line_candidates, line_window) = queries::poll_line_candidates(
+        pool,
+        line_cursor.last_processed_id,
+        queries::LINE_POLL_BATCH_ROWS,
+    )
+    .await?;
 
     for candidate in &line_candidates {
         // Mirrors `notify_train_candidates`'s own per-candidate log, and is
@@ -304,11 +308,11 @@ async fn run_cycle(
             );
         }
     }
-    queries::advance_cursor_with_grace(
+    queries::advance_cursor_with_grace_bounded(
         pool,
         "line_status_history",
         &line_cursor,
-        line_observed_max_id,
+        line_window,
         now,
         cursor_grace,
     )
@@ -316,18 +320,19 @@ async fn run_cycle(
 
     // --- Trains (Decision 4) ---
     let train_cursor = queries::read_cursor(pool, "train_movement_events").await?;
-    let (train_candidates, train_max_id) = queries::poll_train_candidates(
+    let (train_candidates, train_window) = queries::poll_train_candidates(
         pool,
         train_cursor.last_processed_id,
         train_delay_threshold_minutes,
+        queries::TRAIN_POLL_BATCH_ROWS,
     )
     .await?;
     notify_train_candidates(pool, queue, &train_candidates, now).await?;
-    queries::advance_cursor_with_grace(
+    queries::advance_cursor_with_grace_bounded(
         pool,
         "train_movement_events",
         &train_cursor,
-        train_max_id,
+        train_window,
         now,
         cursor_grace,
     )
@@ -461,19 +466,23 @@ async fn run_forward_queue_cycle(
     cursor_grace: chrono::Duration,
 ) -> anyhow::Result<()> {
     let cursor = queries::read_cursor(pool, "notifier_forward_queue").await?;
-    let (touched_trains_ids, max_id) =
-        queries::poll_forward_queue(pool, cursor.last_processed_id).await?;
+    let (touched_trains_ids, window) = queries::poll_forward_queue(
+        pool,
+        cursor.last_processed_id,
+        queries::FORWARD_QUEUE_POLL_BATCH_ROWS,
+    )
+    .await?;
     for trains_id in touched_trains_ids {
         let candidates =
             queries::candidates_for_trains_id(pool, trains_id, train_delay_threshold_minutes)
                 .await?;
         notify_train_candidates(pool, queue, &candidates, now).await?;
     }
-    queries::advance_cursor_with_grace(
+    queries::advance_cursor_with_grace_bounded(
         pool,
         "notifier_forward_queue",
         &cursor,
-        max_id,
+        window,
         now,
         cursor_grace,
     )
