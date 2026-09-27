@@ -430,6 +430,15 @@ async fn get_line_status_history(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(
+        from,
+        to,
+        chrono::Duration::days(app.config.history_retention_days),
+        Utc::now(),
+    )?
+    else {
+        return Ok(Json(vec![]));
+    };
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
@@ -493,6 +502,15 @@ async fn get_line_daily_stats(
     Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_date_range(
+        from,
+        to,
+        app.config.daily_stats_retention_days,
+        Utc::now().date_naive(),
+    )?
+    else {
+        return Ok(Json(vec![]));
+    };
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
@@ -541,6 +559,10 @@ async fn get_line_half_hourly_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
@@ -594,6 +616,10 @@ async fn get_line_hourly_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
@@ -610,6 +636,10 @@ async fn get_line_six_hourly_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
@@ -658,6 +688,15 @@ async fn get_line_daily_coverage_stats(
     Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_date_range(
+        from,
+        to,
+        app.config.daily_stats_retention_days,
+        Utc::now().date_naive(),
+    )?
+    else {
+        return Ok(Json(vec![]));
+    };
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
@@ -706,6 +745,10 @@ async fn get_line_half_hourly_coverage_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
@@ -720,6 +763,69 @@ async fn get_line_half_hourly_coverage_stats(
     ))
 }
 
+/// Slack either side of the retention window when clamping a stats/history
+/// range: a prune that hasn't run yet can leave rows up to a cycle older
+/// than the window, and "now" differs slightly between this pod and the
+/// aggregator's clock.
+const RANGE_CLAMP_SLACK: chrono::Duration = chrono::Duration::days(1);
+
+/// API-10: validates and bounds a `{from}/to/{to}` instant range before it
+/// reaches a query.
+///
+/// `from > to` is a 400. Beyond that the range is clamped rather than
+/// rejected: to `[now - retention - slack, now + slack]`, since no row
+/// outside that window exists (the aggregator prunes it), so clamping
+/// changes no result. The frontend's range pickers legitimately ask for more
+/// than the retention window and show a shortfall banner, so a 400 there
+/// would break them. `Ok(None)` means the clamped range is empty and no
+/// query is needed. A non-positive `retention` disables the lower clamp.
+pub(crate) fn clamp_instant_range(
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    retention: chrono::Duration,
+    now: DateTime<Utc>,
+) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>, (StatusCode, String)> {
+    if from > to {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "`from` must not be after `to`".to_string(),
+        ));
+    }
+    let earliest =
+        (retention > chrono::Duration::zero()).then(|| now - retention - RANGE_CLAMP_SLACK);
+    let from = earliest.map_or(from, |earliest| from.max(earliest));
+    let to = to.min(now + RANGE_CLAMP_SLACK);
+    Ok((from <= to).then_some((from, to)))
+}
+
+/// [`clamp_instant_range`] for the daily routes' `NaiveDate` ranges, with
+/// `retention_days` of history before `today`.
+pub(crate) fn clamp_date_range(
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+    retention_days: i64,
+    today: chrono::NaiveDate,
+) -> Result<Option<(chrono::NaiveDate, chrono::NaiveDate)>, (StatusCode, String)> {
+    if from > to {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "`from` must not be after `to`".to_string(),
+        ));
+    }
+    let slack = RANGE_CLAMP_SLACK.num_days();
+    let earliest =
+        (retention_days > 0).then(|| today - chrono::Duration::days(retention_days + slack));
+    let from = earliest.map_or(from, |earliest| from.max(earliest));
+    let to = to.min(today + chrono::Duration::days(slack));
+    Ok((from <= to).then_some((from, to)))
+}
+
+/// The half-hourly (and hourly/six-hourly, coverage included) tables'
+/// retention, from config.
+pub(crate) fn half_hourly_retention(app: &App) -> chrono::Duration {
+    chrono::Duration::hours(app.config.half_hourly_stats_retention_hours)
+}
+
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "line status query failed");
     (
@@ -731,6 +837,112 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        s.parse().expect("valid RFC3339")
+    }
+
+    fn date(s: &str) -> chrono::NaiveDate {
+        s.parse().expect("valid date")
+    }
+
+    /// API-10: a reversed range is a 400.
+    #[test]
+    fn a_reversed_range_is_a_bad_request() {
+        let now = utc("2026-09-27T12:00:00Z");
+        let err = clamp_instant_range(
+            utc("2026-09-27T00:00:00Z"),
+            utc("2026-09-26T00:00:00Z"),
+            chrono::Duration::days(7),
+            now,
+        )
+        .expect_err("from > to must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let err = clamp_date_range(
+            date("2026-09-27"),
+            date("2026-09-26"),
+            300,
+            date("2026-09-27"),
+        )
+        .expect_err("from > to must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    /// API-10: 1970..2100 is clamped to the retention window (plus a day's
+    /// slack either side), so the query never scans more than that.
+    #[test]
+    fn an_enormous_range_is_clamped_to_the_retention_window() {
+        let now = utc("2026-09-27T12:00:00Z");
+        let (from, to) = clamp_instant_range(
+            utc("1970-01-01T00:00:00Z"),
+            utc("2100-01-01T00:00:00Z"),
+            chrono::Duration::days(7),
+            now,
+        )
+        .unwrap()
+        .expect("non-empty");
+        assert_eq!(from, utc("2026-09-19T12:00:00Z"));
+        assert_eq!(to, utc("2026-09-28T12:00:00Z"));
+
+        let (from, to) = clamp_date_range(
+            date("1970-01-01"),
+            date("2100-01-01"),
+            300,
+            date("2026-09-27"),
+        )
+        .unwrap()
+        .expect("non-empty");
+        assert_eq!(from, date("2026-09-27") - chrono::Duration::days(301));
+        assert_eq!(to, date("2026-09-28"));
+    }
+
+    /// A range inside the window is untouched.
+    #[test]
+    fn a_range_inside_the_window_is_unchanged() {
+        let now = utc("2026-09-27T12:00:00Z");
+        let from = utc("2026-09-25T00:00:00Z");
+        let to = utc("2026-09-26T00:00:00Z");
+        assert_eq!(
+            clamp_instant_range(from, to, chrono::Duration::hours(840), now).unwrap(),
+            Some((from, to))
+        );
+    }
+
+    /// A range entirely before the window needs no query at all.
+    #[test]
+    fn a_range_entirely_outside_the_window_is_empty() {
+        let now = utc("2026-09-27T12:00:00Z");
+        assert_eq!(
+            clamp_instant_range(
+                utc("2020-01-01T00:00:00Z"),
+                utc("2020-01-02T00:00:00Z"),
+                chrono::Duration::days(7),
+                now,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            clamp_date_range(
+                date("2099-01-01"),
+                date("2099-01-02"),
+                300,
+                date("2026-09-27")
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_non_positive_retention_disables_the_lower_clamp() {
+        let now = utc("2026-09-27T12:00:00Z");
+        let from = utc("2000-01-01T00:00:00Z");
+        let (clamped_from, _) = clamp_instant_range(from, now, chrono::Duration::zero(), now)
+            .unwrap()
+            .expect("non-empty");
+        assert_eq!(clamped_from, from);
+    }
 
     #[test]
     fn a_single_mode_still_works() {
@@ -1559,9 +1771,11 @@ mod db_tests {
             sso_redirect_url: "https://example.invalid/callback".to_string(),
             sso_post_login_redirect_url: "https://example.invalid/".to_string(),
             session_ttl_days: 14,
-            history_retention_days: 7,
-            daily_stats_retention_days: 300,
-            half_hourly_stats_retention_hours: 840,
+            // 0 = no lower clamp (API-10's `clamp_instant_range`), so the
+            // fixed-date fixtures below don't age out of the window.
+            history_retention_days: 0,
+            daily_stats_retention_days: 0,
+            half_hourly_stats_retention_hours: 0,
             metrics_enabled: false,
             metrics_port: 9091,
             defaults_file: None,

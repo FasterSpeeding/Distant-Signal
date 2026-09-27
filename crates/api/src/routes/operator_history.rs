@@ -30,7 +30,8 @@ use serde_json::Value;
 use crate::app::{App, Router};
 use crate::data::{operators, queries};
 use crate::routes::line_status::{
-    daily_stats_to_json, half_hourly_stats_to_json, sub_daily_stats_to_json,
+    clamp_date_range, clamp_instant_range, daily_stats_to_json, half_hourly_retention,
+    half_hourly_stats_to_json, sub_daily_stats_to_json,
 };
 
 pub fn router() -> Router {
@@ -94,6 +95,15 @@ async fn get_operator_daily_stats(
     State(app): State<App>,
     Path((code, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_date_range(
+        from,
+        to,
+        app.config.daily_stats_retention_days,
+        Utc::now().date_naive(),
+    )?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = operators::operator_rollup(&app.database, &app.config.lines, &code)
         .await
         .map_err(internal_error)?
@@ -109,6 +119,10 @@ async fn get_operator_half_hourly_stats(
     State(app): State<App>,
     Path((code, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = operators::operator_rollup(&app.database, &app.config.lines, &code)
         .await
         .map_err(internal_error)?
@@ -126,6 +140,10 @@ async fn get_operator_hourly_stats(
     State(app): State<App>,
     Path((code, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = operators::operator_rollup(&app.database, &app.config.lines, &code)
         .await
         .map_err(internal_error)?
@@ -143,6 +161,10 @@ async fn get_operator_six_hourly_stats(
     State(app): State<App>,
     Path((code, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = operators::operator_rollup(&app.database, &app.config.lines, &code)
         .await
         .map_err(internal_error)?
@@ -160,6 +182,15 @@ async fn get_network_daily_stats(
     State(app): State<App>,
     Path((from, to)): Path<(chrono::NaiveDate, chrono::NaiveDate)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_date_range(
+        from,
+        to,
+        app.config.daily_stats_retention_days,
+        Utc::now().date_naive(),
+    )?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = network_line_ids(&app.config.lines);
     let rows = queries::daily_stats_for_range_multi(&app.database, &line_ids, from, to)
         .await
@@ -171,6 +202,10 @@ async fn get_network_half_hourly_stats(
     State(app): State<App>,
     Path((from, to)): Path<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = network_line_ids(&app.config.lines);
     let rows = queries::half_hourly_stats_for_range_multi(&app.database, &line_ids, from, to)
         .await
@@ -184,6 +219,10 @@ async fn get_network_hourly_stats(
     State(app): State<App>,
     Path((from, to)): Path<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = network_line_ids(&app.config.lines);
     let rows = queries::sub_daily_stats_for_range_multi(&app.database, &line_ids, from, to, 60)
         .await
@@ -197,6 +236,10 @@ async fn get_network_six_hourly_stats(
     State(app): State<App>,
     Path((from, to)): Path<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let Some((from, to)) = clamp_instant_range(from, to, half_hourly_retention(&app), Utc::now())?
+    else {
+        return Ok(Json(vec![]));
+    };
     let line_ids = network_line_ids(&app.config.lines);
     let rows = queries::sub_daily_stats_for_range_multi(&app.database, &line_ids, from, to, 360)
         .await
@@ -295,9 +338,11 @@ mod db_tests {
             sso_redirect_url: "https://example.invalid/callback".to_string(),
             sso_post_login_redirect_url: "https://example.invalid/".to_string(),
             session_ttl_days: 14,
-            history_retention_days: 7,
-            daily_stats_retention_days: 300,
-            half_hourly_stats_retention_hours: 840,
+            // 0 = no lower clamp (API-10's `clamp_instant_range`), so the
+            // fixed-date fixtures below don't age out of the window.
+            history_retention_days: 0,
+            daily_stats_retention_days: 0,
+            half_hourly_stats_retention_hours: 0,
             metrics_enabled: false,
             metrics_port: 9091,
             defaults_file: None,
@@ -555,5 +600,55 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture rows");
+    }
+
+    /// API-10: a reversed range is a 400, and a range wholly outside the
+    /// retention window answers `[]`, both before any query (the pool here
+    /// points nowhere).
+    #[tokio::test]
+    async fn reversed_and_out_of_window_ranges_never_reach_the_database() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(100))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
+            .expect("lazy pool");
+        let mut app = test_app(pool, vec![catalogue_line("TEST-API10", &["ZR"])]);
+        {
+            let state = std::sync::Arc::get_mut(&mut app).expect("sole owner");
+            state.config.daily_stats_retention_days = 300;
+            state.config.half_hourly_stats_retention_hours = 840;
+        }
+        let router = test_router(app);
+        let status_and_body = |uri: &'static str| {
+            let router = router.clone();
+            async move {
+                let response = router
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, String::from_utf8_lossy(&body).into_owned())
+            }
+        };
+
+        for uri in [
+            "/network/stats/2026-09-02/to/2026-09-01",
+            "/operators/ZR/stats/2026-09-02/to/2026-09-01",
+            "/network/stats/half-hourly/2026-09-02T00:00:00Z/to/2026-09-01T00:00:00Z",
+            "/operators/ZR/stats/six-hourly/2026-09-02T00:00:00Z/to/2026-09-01T00:00:00Z",
+        ] {
+            let (status, _) = status_and_body(uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        }
+        for uri in [
+            "/network/stats/2090-01-01/to/2090-01-02",
+            "/network/stats/1990-01-01/to/1990-01-02",
+            "/network/stats/hourly/2090-01-01T00:00:00Z/to/2090-01-02T00:00:00Z",
+        ] {
+            let (status, body) = status_and_body(uri).await;
+            assert_eq!((status, body.as_str()), (StatusCode::OK, "[]"), "{uri}");
+        }
     }
 }
