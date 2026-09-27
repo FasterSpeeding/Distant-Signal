@@ -842,7 +842,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 get_custom_line_reports_the_owning_user_id \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn get_custom_line_reports_the_owning_user_id() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -900,7 +900,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                custom_lines_user_id_column_rejects_null -- --ignored`"]
+                custom_lines_user_id_column_rejects_null -- --ignored --test-threads=1`"]
     async fn custom_lines_user_id_column_rejects_null() {
         // Migration 20260901120000_custom_lines_owner_not_null.sql deleted
         // every surviving NULL-owner row (the repo owner's explicit choice,
@@ -944,7 +944,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                owners_for_ids -- --ignored`"]
+                owners_for_ids -- --ignored --test-threads=1`"]
     async fn owners_for_ids_returns_real_owner_and_omits_missing() {
         // Prior to migration 20260901120000_custom_lines_owner_not_null.sql
         // this also seeded a legacy NULL-owner row and asserted
@@ -1027,7 +1027,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_custom_lines_for_user -- --ignored`"]
+                list_custom_lines_for_user -- --ignored --test-threads=1`"]
     async fn list_custom_lines_for_user_returns_only_calling_users_rows() {
         use sqlx::postgres::PgPoolOptions;
 

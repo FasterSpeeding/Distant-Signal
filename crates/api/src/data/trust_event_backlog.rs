@@ -831,7 +831,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                upsert_trust_event_backlog_batch -- --ignored`"]
+                a_fresh_batch_inserts_every_row -- --ignored --test-threads=1`"]
     async fn a_fresh_batch_inserts_every_row() {
         let pool = connect().await;
         let events = vec![
@@ -858,7 +858,7 @@ mod db_tests {
     /// -- until migration 20260926210000 widened the constraint.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_batch_with_a_reinstatement_inserts_every_row -- --ignored`"]
+                a_batch_with_a_reinstatement_inserts_every_row -- --ignored --test-threads=1`"]
     async fn a_batch_with_a_reinstatement_inserts_every_row() {
         let pool = connect().await;
         let reinstatement = TrustBacklogEventMessage {
@@ -892,7 +892,7 @@ mod db_tests {
     /// The row is now reported as rejected instead of failing the call.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                the_msg_type_check_still_rejects_change_of_origin -- --ignored`"]
+                the_msg_type_check_still_rejects_change_of_origin -- --ignored --test-threads=1`"]
     async fn the_msg_type_check_still_rejects_change_of_origin() {
         let pool = connect().await;
         let change_of_origin = TrustBacklogEventMessage {
@@ -924,7 +924,7 @@ mod db_tests {
     /// widened in future.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_batch_with_one_bad_row_inserts_the_rest -- --ignored`"]
+                a_batch_with_one_bad_row_inserts_the_rest -- --ignored --test-threads=1`"]
     async fn a_batch_with_one_bad_row_inserts_the_rest_and_reports_the_bad_one() {
         let pool = connect().await;
         sqlx::query(
@@ -994,7 +994,7 @@ mod db_tests {
     /// pool's connections give up after 200ms.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_transient_failure_still_fails_the_whole_batch -- --ignored`"]
+                a_transient_failure_still_fails_the_whole_batch -- --ignored --test-threads=1`"]
     async fn a_transient_failure_still_fails_the_whole_batch() {
         let pool = connect().await;
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
@@ -1068,7 +1068,7 @@ mod db_tests {
     /// already stored.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_batch_repeating_a_dedup_key -- --ignored`"]
+                a_batch_repeating_a_dedup_key -- --ignored --test-threads=1`"]
     async fn a_batch_repeating_a_dedup_key_inserts_it_once_and_keeps_every_column() {
         let pool = connect().await;
         let cleanup = || async {
@@ -1129,7 +1129,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_redelivered_batch_inserts_nothing_twice -- --ignored`"]
+                a_redelivered_batch_inserts_nothing_twice -- --ignored --test-threads=1`"]
 
     async fn a_redelivered_batch_inserts_nothing_twice() {
         let pool = connect().await;
@@ -1301,7 +1301,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                ingest_shared_movement_is_a_no_op_with_no_known_train_uid -- --ignored`"]
+                ingest_shared_movement_is_a_no_op_with_no_known_train_uid -- --ignored --test-threads=1`"]
     async fn ingest_shared_movement_is_a_no_op_with_no_known_train_uid() {
         let pool = connect().await;
         let event = TrustBacklogEventMessage {

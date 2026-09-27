@@ -2003,7 +2003,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_mode_status_catalogue_rows_always_show_custom_row_only_when_owned -- --ignored`"]
+                get_mode_status_catalogue_rows_always_show_custom_row_only_when_owned -- --ignored --test-threads=1`"]
     async fn get_mode_status_catalogue_rows_always_show_custom_row_only_when_owned() {
         let pool = connect().await;
 
@@ -2080,7 +2080,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_status_drops_a_not_owned_custom_row_but_keeps_the_catalogue_row -- --ignored`"]
+                get_line_status_drops_a_not_owned_custom_row_but_keeps_the_catalogue_row -- --ignored --test-threads=1`"]
     async fn get_line_status_drops_a_not_owned_custom_row_but_keeps_the_catalogue_row() {
         let pool = connect().await;
 
@@ -2119,7 +2119,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_status_a_lone_not_owned_custom_id_404s_like_an_unknown_id -- --ignored`"]
+                get_line_status_a_lone_not_owned_custom_id_404s_like_an_unknown_id -- --ignored --test-threads=1`"]
     async fn get_line_status_a_lone_not_owned_custom_id_404s_like_an_unknown_id() {
         let pool = connect().await;
 
@@ -2158,7 +2158,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_status_the_owner_gets_their_own_custom_row -- --ignored`"]
+                get_line_status_the_owner_gets_their_own_custom_row -- --ignored --test-threads=1`"]
     async fn get_line_status_the_owner_gets_their_own_custom_row() {
         let pool = connect().await;
 
@@ -2194,7 +2194,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_status_history_an_owned_custom_id_returns_real_history -- --ignored`"]
+                get_line_status_history_an_owned_custom_id_returns_real_history -- --ignored --test-threads=1`"]
     async fn get_line_status_history_an_owned_custom_id_returns_real_history() {
         let pool = connect().await;
 
@@ -2231,7 +2231,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_status_history_a_not_owned_custom_id_returns_empty -- --ignored`"]
+                get_line_status_history_a_not_owned_custom_id_returns_empty -- --ignored --test-threads=1`"]
     async fn get_line_status_history_a_not_owned_custom_id_returns_empty() {
         let pool = connect().await;
 
@@ -2269,7 +2269,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_status_history_an_unknown_id_still_returns_empty_unchanged -- --ignored`"]
+                get_line_status_history_an_unknown_id_still_returns_empty_unchanged -- --ignored --test-threads=1`"]
     async fn get_line_status_history_an_unknown_id_still_returns_empty_unchanged() {
         let pool = connect().await;
 
@@ -2288,7 +2288,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_status_history_a_catalogue_id_is_unaffected -- --ignored`"]
+                get_line_status_history_a_catalogue_id_is_unaffected -- --ignored --test-threads=1`"]
     async fn get_line_status_history_a_catalogue_id_is_unaffected() {
         let pool = connect().await;
 
@@ -2313,7 +2313,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_stop_point_disruption_never_returns_a_custom_line -- --ignored`"]
+                get_stop_point_disruption_never_returns_a_custom_line -- --ignored --test-threads=1`"]
     async fn get_stop_point_disruption_never_returns_a_custom_line() {
         let pool = connect().await;
 
@@ -2369,7 +2369,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_stop_point_disruption_a_station_with_no_line_coverage_404s_rather_than_looking_like_good_service -- --ignored`"]
+                get_stop_point_disruption_a_station_with_no_line_coverage_404s_rather_than_looking_like_good_service -- --ignored --test-threads=1`"]
     async fn get_stop_point_disruption_a_station_with_no_line_coverage_404s_rather_than_looking_like_good_service()
      {
         // The regression this task exists for (see
@@ -2398,7 +2398,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_stop_point_disruption_a_covered_station_with_only_good_service_still_200s_with_an_empty_array -- --ignored`"]
+                get_stop_point_disruption_a_covered_station_with_only_good_service_still_200s_with_an_empty_array -- --ignored --test-threads=1`"]
     async fn get_stop_point_disruption_a_covered_station_with_only_good_service_still_200s_with_an_empty_array()
      {
         // The other half of the same distinction: a station that genuinely
@@ -2437,7 +2437,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_daily_coverage_stats_an_unknown_line_returns_an_empty_array -- --ignored`"]
+                get_line_daily_coverage_stats_an_unknown_line_returns_an_empty_array -- --ignored --test-threads=1`"]
     async fn get_line_daily_coverage_stats_an_unknown_line_returns_an_empty_array() {
         // Mirrors daily_stats_for_range's own "empty vec for an unknown
         // line_id, no error" contract -- this route never 404s.
@@ -2457,7 +2457,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_daily_coverage_stats_renders_a_seeded_row_with_correct_camel_case_and_rates -- --ignored`"]
+                get_line_daily_coverage_stats_renders_a_seeded_row_with_correct_camel_case_and_rates -- --ignored --test-threads=1`"]
     async fn get_line_daily_coverage_stats_renders_a_seeded_row_with_correct_camel_case_and_rates()
     {
         // Proves the whole round trip: a real row in

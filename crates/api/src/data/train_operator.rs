@@ -208,7 +208,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL"]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                operator_is_the_schedules_atoc_code_named_from_tocs -- --ignored --test-threads=1`"]
     async fn operator_is_the_schedules_atoc_code_named_from_tocs() {
         let pool = pool().await;
         let date: NaiveDate = "2031-03-04".parse().unwrap();

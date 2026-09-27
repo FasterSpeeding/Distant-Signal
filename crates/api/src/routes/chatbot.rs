@@ -210,7 +210,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                chatbot_access -- --ignored --test-threads=1`"]
+                anonymous_request_is_401 -- --ignored --test-threads=1`"]
     async fn anonymous_request_is_401() {
         let pool = connect().await;
         let router = test_router(test_app(pool));
@@ -221,7 +221,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                chatbot_access -- --ignored --test-threads=1`"]
+                logged_in_user_missing_the_chatbot_group_is_403_not_404 -- --ignored --test-threads=1`"]
     async fn logged_in_user_missing_the_chatbot_group_is_403_not_404() {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-CHATBOT-NO-GROUP", &[]).await;
@@ -240,7 +240,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                chatbot_access -- --ignored --test-threads=1`"]
+                logged_in_user_with_a_different_group_is_403_not_404 -- --ignored --test-threads=1`"]
     async fn logged_in_user_with_a_different_group_is_403_not_404() {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-CHATBOT-WRONG-GROUP", &["some-other-group"]).await;

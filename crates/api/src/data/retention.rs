@@ -246,7 +246,7 @@ mod db_tests {
     };
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn past_travel_is_pruned_and_recent_travel_and_templates_are_kept() {
         let pool = connect().await;
         let user = "ret-travel-user";
@@ -427,7 +427,7 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn stale_push_subscriptions_are_pruned_only_for_long_absent_users() {
         let pool = connect().await;
         cleanup(&pool, "ret-push-").await;
@@ -466,7 +466,7 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn inactive_accounts_are_deleted_only_when_enabled_and_without_a_live_session() {
         let pool = connect().await;
         cleanup(&pool, "ret-inact-").await;

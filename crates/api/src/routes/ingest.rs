@@ -1472,7 +1472,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                post_then_get_round_trips_the_exact_population_json -- --ignored --test-threads=1`"]
     async fn post_then_get_round_trips_the_exact_population_json() {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -1500,7 +1500,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                a_second_post_for_the_same_key_wholesale_replaces_not_merges -- --ignored --test-threads=1`"]
     async fn a_second_post_for_the_same_key_wholesale_replaces_not_merges() {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -1547,7 +1547,7 @@ mod db_tests {
     /// while a changed one still replaces it.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                an_identical_republish_leaves_the_row_untouched_but_a_change_still_writes -- --ignored --test-threads=1`"]
     async fn an_identical_republish_leaves_the_row_untouched_but_a_change_still_writes() {
         async fn row_version(pool: &PgPool, service_date: chrono::NaiveDate) -> (String, String) {
             sqlx::query_as(
@@ -1618,7 +1618,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                get_for_a_key_never_posted_is_none_not_an_error -- --ignored --test-threads=1`"]
     async fn get_for_a_key_never_posted_is_none_not_an_error() {
         let pool = connect().await;
         delete_population_fixture(&pool, "ZNEVER").await;
@@ -1632,7 +1632,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                http_post_then_get_round_trip_through_the_router -- --ignored --test-threads=1`"]
     async fn http_post_then_get_round_trip_through_the_router() {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -1789,7 +1789,7 @@ mod db_tests {
     /// value, and re-POSTing the GET body verbatim is a no-op.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                a_multi_mb_population_round_trips_post_and_get_unchanged -- --ignored --test-threads=1`"]
     async fn a_multi_mb_population_round_trips_post_and_get_unchanged() {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -1857,7 +1857,7 @@ mod db_tests {
     /// with a new `ETag`. Foreign/garbage validators are ignored (200).
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                get_honours_if_none_match_and_still_serves_clients_without_it -- --ignored --test-threads=1`"]
     async fn get_honours_if_none_match_and_still_serves_clients_without_it() {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -1919,7 +1919,7 @@ mod db_tests {
     /// `Json` extractor, and nothing is written.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                post_still_rejects_malformed_bodies -- --ignored --test-threads=1`"]
     async fn post_still_rejects_malformed_bodies() {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -1967,7 +1967,7 @@ mod db_tests {
     /// published order and matches the old in-Rust filter.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_line_population -- --ignored --test-threads=1`"]
+                population_entries_filter_by_uid_in_sql_preserving_order -- --ignored --test-threads=1`"]
     async fn population_entries_filter_by_uid_in_sql_preserving_order() {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -2136,7 +2136,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                full_coverage_line_stats -- --ignored --test-threads=1`"]
+                post_then_last_fetch_is_non_null_and_recent -- --ignored --test-threads=1`"]
     async fn post_then_last_fetch_is_non_null_and_recent() {
         let pool = connect().await;
         delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -2225,7 +2225,7 @@ mod db_tests {
     /// untouched), while a real change still is.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                full_coverage_line_stats -- --ignored --test-threads=1`"]
+                an_unchanged_full_coverage_row_is_not_rewritten -- --ignored --test-threads=1`"]
     async fn an_unchanged_full_coverage_row_is_not_rewritten() {
         let pool = connect().await;
         delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -2280,7 +2280,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                full_coverage_line_stats -- --ignored --test-threads=1`"]
+                a_second_post_for_the_same_line_and_day_updates_the_row_in_place -- --ignored --test-threads=1`"]
     async fn a_second_post_for_the_same_line_and_day_updates_the_row_in_place() {
         let pool = connect().await;
         delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
@@ -2310,7 +2310,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                full_coverage_line_stats -- --ignored --test-threads=1`"]
+                routes::ingest::db_tests::last_fetch_against_an_empty_table_is_null -- --ignored --test-threads=1`"]
     async fn last_fetch_against_an_empty_table_is_null() {
         let pool = connect().await;
         // Empty the table only inside a transaction that is rolled back, so
@@ -2493,7 +2493,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_network_departures -- --ignored --test-threads=1`"]
+                a_second_network_departures_post_for_the_same_key_wholesale_replaces_not_merges -- --ignored --test-threads=1`"]
     async fn a_second_network_departures_post_for_the_same_key_wholesale_replaces_not_merges() {
         let pool = connect().await;
         delete_network_departures_fixture(&pool, "ZQW").await;

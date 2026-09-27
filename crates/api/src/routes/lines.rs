@@ -1429,7 +1429,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 creating_more_custom_lines_than_the_per_user_cap_is_rejected_with_400 \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn creating_more_custom_lines_than_the_per_user_cap_is_rejected_with_400() {
         // The real cost this cap exists for is in another service entirely:
         // `aggregator`'s `run_cycle` reloads every custom line and
@@ -1509,7 +1509,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                no_session_cookie_is_rejected_with_401 -- --ignored`"]
+                no_session_cookie_is_rejected_with_401 -- --ignored --test-threads=1`"]
     async fn no_session_cookie_is_rejected_with_401() {
         let pool = connect().await;
         let router = test_router(test_app(pool, vec![]));
@@ -1524,7 +1524,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                a_non_owner_session_gets_404_not_403 -- --ignored`"]
+                a_non_owner_session_gets_404_not_403 -- --ignored --test-threads=1`"]
     async fn a_non_owner_session_gets_404_not_403() {
         let pool = connect().await;
 
@@ -1574,7 +1574,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                a_nonexistent_id_gets_404_for_a_real_caller -- --ignored`"]
+                a_nonexistent_id_gets_404_for_a_real_caller -- --ignored --test-threads=1`"]
     async fn a_nonexistent_id_gets_404_for_a_real_caller() {
         let pool = connect().await;
 
@@ -1593,7 +1593,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                the_real_owner_gets_200_with_full_detail_and_is_owner_true -- --ignored`"]
+                the_real_owner_gets_200_with_full_detail_and_is_owner_true -- --ignored --test-threads=1`"]
     async fn the_real_owner_gets_200_with_full_detail_and_is_owner_true() {
         let pool = connect().await;
 
@@ -1818,7 +1818,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                a_catalogue_id_still_404s_the_same_way_it_always_has -- --ignored`"]
+                a_catalogue_id_still_404s_the_same_way_it_always_has -- --ignored --test-threads=1`"]
     async fn a_catalogue_id_still_404s_the_same_way_it_always_has() {
         let pool = connect().await;
 
@@ -1980,7 +1980,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_definition_an_anonymous_caller_gets_404_for_a_custom_id -- --ignored`"]
+                get_line_definition_an_anonymous_caller_gets_404_for_a_custom_id -- --ignored --test-threads=1`"]
     async fn get_line_definition_an_anonymous_caller_gets_404_for_a_custom_id() {
         let pool = connect().await;
 
@@ -2014,7 +2014,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_definition_a_non_owner_session_gets_404_not_403 -- --ignored`"]
+                get_line_definition_a_non_owner_session_gets_404_not_403 -- --ignored --test-threads=1`"]
     async fn get_line_definition_a_non_owner_session_gets_404_not_403() {
         let pool = connect().await;
 
@@ -2062,7 +2062,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_definition_a_nonexistent_id_gets_404 -- --ignored`"]
+                get_line_definition_a_nonexistent_id_gets_404 -- --ignored --test-threads=1`"]
     async fn get_line_definition_a_nonexistent_id_gets_404() {
         let pool = connect().await;
 
@@ -2085,7 +2085,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_definition_the_real_owner_gets_200 -- --ignored`"]
+                get_line_definition_the_real_owner_gets_200 -- --ignored --test-threads=1`"]
     async fn get_line_definition_the_real_owner_gets_200() {
         let pool = connect().await;
 
@@ -2216,7 +2216,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_definition_a_catalogue_id_returns_regardless_of_session -- --ignored`"]
+                get_line_definition_a_catalogue_id_returns_regardless_of_session -- --ignored --test-threads=1`"]
     async fn get_line_definition_a_catalogue_id_returns_regardless_of_session() {
         let pool = connect().await;
 
@@ -2271,7 +2271,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                an_anonymous_caller_sees_catalogue_and_tfl_entries_but_no_custom_lines -- --ignored`"]
+                an_anonymous_caller_sees_catalogue_and_tfl_entries_but_no_custom_lines -- --ignored --test-threads=1`"]
     async fn an_anonymous_caller_sees_catalogue_and_tfl_entries_but_no_custom_lines() {
         let pool = connect().await;
 
@@ -2332,7 +2332,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_lines_cache_control_is_public_for_anonymous_and_private_for_authenticated_callers \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn list_lines_cache_control_is_public_for_anonymous_and_private_for_authenticated_callers()
      {
         // Regression for "Whole-table dumps served uncached to anonymous
@@ -2399,7 +2399,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                a_logged_in_caller_sees_only_their_own_custom_line_in_the_list -- --ignored`"]
+                a_logged_in_caller_sees_only_their_own_custom_line_in_the_list -- --ignored --test-threads=1`"]
     async fn a_logged_in_caller_sees_only_their_own_custom_line_in_the_list() {
         let pool = connect().await;
 
@@ -2471,7 +2471,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                catalogue_and_tfl_entries_are_identical_regardless_of_session_state -- --ignored`"]
+                catalogue_and_tfl_entries_are_identical_regardless_of_session_state -- --ignored --test-threads=1`"]
     async fn catalogue_and_tfl_entries_are_identical_regardless_of_session_state() {
         let pool = connect().await;
 
@@ -2548,7 +2548,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_line_train_entries_projects -- --ignored`"]
+                list_line_train_entries_projects -- --ignored --test-threads=1`"]
     async fn list_line_train_entries_projects_uid_calling_points_and_endpoint_tiplocs() {
         const LINE: &str = "test-line-train-entries-projection";
         let pool = connect().await;
@@ -2667,7 +2667,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                schedule_no_row_for_the_line_and_date_is_404_naming_both -- --ignored`"]
+                schedule_no_row_for_the_line_and_date_is_404_naming_both -- --ignored --test-threads=1`"]
     async fn schedule_no_row_for_the_line_and_date_is_404_naming_both() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-schedule-2a-missing").await;
@@ -2686,7 +2686,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                schedule_a_row_for_today_returns_the_raw_population_json_unchanged -- --ignored`"]
+                schedule_a_row_for_today_returns_the_raw_population_json_unchanged -- --ignored --test-threads=1`"]
     async fn schedule_a_row_for_today_returns_the_raw_population_json_unchanged() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-schedule-2a-today").await;
@@ -2733,7 +2733,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                schedule_an_explicit_date_query_param_selects_that_date_not_today -- --ignored`"]
+                schedule_an_explicit_date_query_param_selects_that_date_not_today -- --ignored --test-threads=1`"]
     async fn schedule_an_explicit_date_query_param_selects_that_date_not_today() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-schedule-2a-explicit-date").await;
@@ -2764,7 +2764,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                schedule_a_row_only_for_a_different_date_is_still_404_today -- --ignored`"]
+                schedule_a_row_only_for_a_different_date_is_still_404_today -- --ignored --test-threads=1`"]
     async fn schedule_a_row_only_for_a_different_date_is_still_404_today() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-schedule-2a-stale").await;
@@ -2791,7 +2791,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                schedule_uses_london_local_today_not_bare_utc -- --ignored`"]
+                schedule_uses_london_local_today_not_bare_utc -- --ignored --test-threads=1`"]
     async fn schedule_uses_london_local_today_not_bare_utc() {
         // Regression for the 19-pass review's Medium finding: this route
         // used to key its lookup off `chrono::Utc::now().date_naive()`,
@@ -2872,7 +2872,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                trains_no_row_for_the_line_and_date_is_404_naming_both -- --ignored`"]
+                trains_no_row_for_the_line_and_date_is_404_naming_both -- --ignored --test-threads=1`"]
     async fn trains_no_row_for_the_line_and_date_is_404_naming_both() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-trains-3-missing").await;
@@ -2892,7 +2892,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 trains_a_population_with_no_trains_rows_returns_every_entry_with_null_live_status \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn trains_a_population_with_no_trains_rows_returns_every_entry_with_null_live_status() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-trains-3-no-live").await;
@@ -2939,7 +2939,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 trains_a_uid_with_an_existing_trains_row_gets_its_live_status_attached \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn trains_a_uid_with_an_existing_trains_row_gets_its_live_status_attached() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-trains-3-live").await;
@@ -3006,7 +3006,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                trains_uses_london_local_today_not_bare_utc -- --ignored`"]
+                trains_uses_london_local_today_not_bare_utc -- --ignored --test-threads=1`"]
     async fn trains_uses_london_local_today_not_bare_utc() {
         // Same regression as `schedule_uses_london_local_today_not_bare_utc`
         // above, for `get_line_trains`'s own independent
@@ -3062,7 +3062,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                trains_blanks_an_x_prefixed_pseudo_crs_schedule_destination -- --ignored`"]
+                trains_blanks_an_x_prefixed_pseudo_crs_schedule_destination -- --ignored --test-threads=1`"]
     async fn trains_blanks_an_x_prefixed_pseudo_crs_schedule_destination() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-trains-3-xvr").await;
@@ -3127,7 +3127,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                trains_keeps_a_genuine_non_x_crs_schedule_destination -- --ignored`"]
+                trains_keeps_a_genuine_non_x_crs_schedule_destination -- --ignored --test-threads=1`"]
     async fn trains_keeps_a_genuine_non_x_crs_schedule_destination() {
         let pool = connect().await;
         delete_schedule_population_fixture(&pool, "test-trains-3-real-dest").await;

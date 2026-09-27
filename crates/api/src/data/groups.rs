@@ -2026,7 +2026,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                create_group_inserts_the_creator_as_a_permanent_owner -- --ignored`"]
+                create_group_inserts_the_creator_as_a_permanent_owner -- --ignored --test-threads=1`"]
     async fn create_group_inserts_the_creator_as_a_permanent_owner() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-CREATE-OWNER").await;
@@ -2052,7 +2052,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_groups_for_user_returns_only_the_callers_own_groups -- --ignored`"]
+                list_groups_for_user_returns_only_the_callers_own_groups -- --ignored --test-threads=1`"]
     async fn list_groups_for_user_returns_only_the_callers_own_groups() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-LIST-A").await;
@@ -2084,7 +2084,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_group_detail_returns_none_for_a_non_member -- --ignored`"]
+                get_group_detail_returns_none_for_a_non_member -- --ignored --test-threads=1`"]
     async fn get_group_detail_returns_none_for_a_non_member() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-DETAIL-OWNER").await;
@@ -2121,7 +2121,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                delete_group_cascades_members_and_trains_and_invite_links -- --ignored`"]
+                delete_group_cascades_members_and_trains_and_invite_links -- --ignored --test-threads=1`"]
     async fn delete_group_cascades_members_and_trains_and_invite_links() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-DELETE-OWNER").await;
@@ -2212,7 +2212,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                promote_to_admin_promotes_a_plain_member -- --ignored`"]
+                promote_to_admin_promotes_a_plain_member -- --ignored --test-threads=1`"]
     async fn promote_to_admin_promotes_a_plain_member() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-PROMOTE-OWNER").await;
@@ -2254,7 +2254,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                promote_to_admin_is_a_noop_against_the_owner_row -- --ignored`"]
+                promote_to_admin_is_a_noop_against_the_owner_row -- --ignored --test-threads=1`"]
     async fn promote_to_admin_is_a_noop_against_the_owner_row() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-PROMOTE-OWNER-2").await;
@@ -2288,7 +2288,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                demote_to_member_demotes_an_admin -- --ignored`"]
+                demote_to_member_demotes_an_admin -- --ignored --test-threads=1`"]
     async fn demote_to_member_demotes_an_admin() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-DEMOTE-OWNER").await;
@@ -2333,7 +2333,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                demote_to_member_is_a_noop_against_the_owner_row -- --ignored`"]
+                demote_to_member_is_a_noop_against_the_owner_row -- --ignored --test-threads=1`"]
     async fn demote_to_member_is_a_noop_against_the_owner_row() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-DEMOTE-OWNER-2").await;
@@ -2368,7 +2368,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                demote_to_member_is_a_noop_against_a_plain_member -- --ignored`"]
+                demote_to_member_is_a_noop_against_a_plain_member -- --ignored --test-threads=1`"]
     async fn demote_to_member_is_a_noop_against_a_plain_member() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-DEMOTE-OWNER-3").await;
@@ -2417,7 +2417,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                remove_member_returns_not_a_member_for_an_unknown_user -- --ignored`"]
+                remove_member_returns_not_a_member_for_an_unknown_user -- --ignored --test-threads=1`"]
     async fn remove_member_returns_not_a_member_for_an_unknown_user() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVE-OWNER-1").await;
@@ -2450,7 +2450,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_member_refuses_to_remove_the_owner_even_when_called_directly \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_member_refuses_to_remove_the_owner_even_when_called_directly() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-DIRECT-OWNER-1").await;
@@ -2482,7 +2482,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_member_deletes_a_departed_members_shared_trains_in_the_same_transaction \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_member_deletes_a_departed_members_shared_trains_in_the_same_transaction() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVE-OWNER-2").await;
@@ -2554,7 +2554,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_member_transfers_ownership_to_the_longest_standing_admin_when_the_owner_leaves \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_member_transfers_ownership_to_the_longest_standing_admin_when_the_owner_leaves()
     {
         let pool = connect().await;
@@ -2621,7 +2621,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_member_transfers_ownership_to_the_longest_standing_member_when_no_admin_exists \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_member_transfers_ownership_to_the_longest_standing_member_when_no_admin_exists()
     {
         let pool = connect().await;
@@ -2667,7 +2667,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                remove_member_deletes_the_whole_group_when_the_sole_owner_leaves_alone -- --ignored`"]
+                remove_member_deletes_the_whole_group_when_the_sole_owner_leaves_alone -- --ignored --test-threads=1`"]
     async fn remove_member_deletes_the_whole_group_when_the_sole_owner_leaves_alone() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-SOLO-OWNER").await;
@@ -2777,7 +2777,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                rotate_invite_link_revokes_the_previous_active_link -- --ignored`"]
+                rotate_invite_link_revokes_the_previous_active_link -- --ignored --test-threads=1`"]
     async fn rotate_invite_link_revokes_the_previous_active_link() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-INVITE-OWNER-1").await;
@@ -2824,7 +2824,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                revoke_invite_link_is_idempotent_and_clears_the_active_link -- --ignored`"]
+                revoke_invite_link_is_idempotent_and_clears_the_active_link -- --ignored --test-threads=1`"]
     async fn revoke_invite_link_is_idempotent_and_clears_the_active_link() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-INVITE-OWNER-2").await;
@@ -2863,7 +2863,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                resolve_invite_link_returns_none_for_an_expired_link -- --ignored`"]
+                resolve_invite_link_returns_none_for_an_expired_link -- --ignored --test-threads=1`"]
     async fn resolve_invite_link_returns_none_for_an_expired_link() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-JOIN-OWNER-1").await;
@@ -2898,7 +2898,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                resolve_invite_link_returns_none_for_a_revoked_link -- --ignored`"]
+                resolve_invite_link_returns_none_for_a_revoked_link -- --ignored --test-threads=1`"]
     async fn resolve_invite_link_returns_none_for_a_revoked_link() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-JOIN-OWNER-2").await;
@@ -2930,7 +2930,7 @@ mod db_tests {
     /// already saw -- while a member who LEFT voluntarily still can.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                invite_tokens_are_hashed_at_rest_and_a_kicked_member_cannot_rejoin -- --ignored`"]
+                invite_tokens_are_hashed_at_rest_and_a_kicked_member_cannot_rejoin -- --ignored --test-threads=1`"]
     async fn invite_tokens_are_hashed_at_rest_and_a_kicked_member_cannot_rejoin() {
         let pool = connect().await;
         for id in [
@@ -3017,7 +3017,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 consume_invite_link_adds_the_caller_as_a_plain_member_and_is_idempotent \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn consume_invite_link_adds_the_caller_as_a_plain_member_and_is_idempotent() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-JOIN-OWNER-3").await;
@@ -3069,7 +3069,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                consume_invite_link_returns_none_for_an_unknown_token -- --ignored`"]
+                consume_invite_link_returns_none_for_an_unknown_token -- --ignored --test-threads=1`"]
     async fn consume_invite_link_returns_none_for_an_unknown_token() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-JOIN-JOINER-4").await;
@@ -3085,7 +3085,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                add_train_to_group_rejects_a_train_the_caller_does_not_own -- --ignored`"]
+                add_train_to_group_rejects_a_train_the_caller_does_not_own -- --ignored --test-threads=1`"]
     async fn add_train_to_group_rejects_a_train_the_caller_does_not_own() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-ADDTRAIN-OWNER-1").await;
@@ -3128,7 +3128,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                add_train_to_group_is_idempotent -- --ignored`"]
+                add_train_to_group_is_idempotent -- --ignored --test-threads=1`"]
     async fn add_train_to_group_is_idempotent() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-ADDTRAIN-OWNER-2").await;
@@ -3235,7 +3235,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                remove_train_from_group_allows_the_sharer_to_remove_their_own_train -- --ignored`"]
+                remove_train_from_group_allows_the_sharer_to_remove_their_own_train -- --ignored --test-threads=1`"]
     async fn remove_train_from_group_allows_the_sharer_to_remove_their_own_train() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-1").await;
@@ -3275,7 +3275,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_train_from_group_denies_a_plain_member_removing_someone_elses_train \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_train_from_group_denies_a_plain_member_removing_someone_elses_train() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-OWNER-2").await;
@@ -3346,7 +3346,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                remove_train_from_group_allows_an_admin_to_remove_anyones_train -- --ignored`"]
+                remove_train_from_group_allows_an_admin_to_remove_anyones_train -- --ignored --test-threads=1`"]
     async fn remove_train_from_group_allows_an_admin_to_remove_anyones_train() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-OWNER-3").await;
@@ -3469,7 +3469,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_group_trains_returns_shared_trains_with_attribution -- --ignored`"]
+                list_group_trains_returns_shared_trains_with_attribution -- --ignored --test-threads=1`"]
     async fn list_group_trains_returns_shared_trains_with_attribution() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-LISTTRAINS-OWNER").await;
@@ -3523,7 +3523,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                add_journey_to_group_rejects_a_journey_the_caller_does_not_own -- --ignored`"]
+                add_journey_to_group_rejects_a_journey_the_caller_does_not_own -- --ignored --test-threads=1`"]
     async fn add_journey_to_group_rejects_a_journey_the_caller_does_not_own() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-ADDJOURNEY-OWNER-1").await;
@@ -3570,7 +3570,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                add_journey_to_group_is_idempotent -- --ignored`"]
+                add_journey_to_group_is_idempotent -- --ignored --test-threads=1`"]
     async fn add_journey_to_group_is_idempotent() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-ADDJOURNEY-OWNER-2").await;
@@ -3674,7 +3674,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_journey_from_group_allows_the_sharer_to_remove_their_own_journey \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_journey_from_group_allows_the_sharer_to_remove_their_own_journey() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVEJOURNEY-1").await;
@@ -3718,7 +3718,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_journey_from_group_denies_a_plain_member_removing_someone_elses_journey \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_journey_from_group_denies_a_plain_member_removing_someone_elses_journey() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVEJOURNEY-OWNER-2").await;
@@ -3782,7 +3782,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_group_journeys_returns_shared_journeys_with_attribution -- --ignored`"]
+                list_group_journeys_returns_shared_journeys_with_attribution -- --ignored --test-threads=1`"]
     async fn list_group_journeys_returns_shared_journeys_with_attribution() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-LISTJOURNEY-1").await;
@@ -3818,7 +3818,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_group_journeys_survives_deletion_of_the_journeys_first_leg -- --ignored`"]
+                list_group_journeys_survives_deletion_of_the_journeys_first_leg -- --ignored --test-threads=1`"]
     async fn list_group_journeys_survives_deletion_of_the_journeys_first_leg() {
         // 2026-09 review finding (Medium): `journeys::delete_leg` never
         // renumbers `leg_order` for the legs left behind, so a journey
@@ -3906,7 +3906,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_shared_journeys_for_user_survives_deletion_of_the_journeys_first_leg \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn list_shared_journeys_for_user_survives_deletion_of_the_journeys_first_leg() {
         // Same finding as `list_group_journeys_survives_deletion_of_the_
         // journeys_first_leg` immediately above, exercised against this
@@ -4000,7 +4000,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_member_deletes_a_departed_members_shared_journeys_in_the_same_transaction \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn remove_member_deletes_a_departed_members_shared_journeys_in_the_same_transaction() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVE-OWNER-J1").await;
@@ -4065,7 +4065,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_shared_trains_for_user_returns_other_members_trains_tagged_with_their_group \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn list_shared_trains_for_user_returns_other_members_trains_tagged_with_their_group() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-SHAREDMINE-SHARER").await;
@@ -4136,7 +4136,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_shared_trains_for_user_never_leaks_a_group_the_caller_is_not_in \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn list_shared_trains_for_user_never_leaks_a_group_the_caller_is_not_in() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-SHAREDLEAK-SHARER").await;
@@ -4181,7 +4181,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_shared_trains_for_user_returns_one_row_per_group_a_train_is_shared_into \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn list_shared_trains_for_user_returns_one_row_per_group_a_train_is_shared_into() {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-SHAREDTWO-SHARER").await;

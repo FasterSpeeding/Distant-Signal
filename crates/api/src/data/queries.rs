@@ -6513,7 +6513,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                tfl_line_summaries_lists_only_tfl_owned_rows -- --ignored`"]
+                tfl_line_summaries_lists_only_tfl_owned_rows -- --ignored --test-threads=1`"]
     async fn tfl_line_summaries_lists_only_tfl_owned_rows() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6568,7 +6568,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 upsert_tfl_line_status_refuses_to_steal_a_non_tfl_owned_row_with_the_same_line_id \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn upsert_tfl_line_status_refuses_to_steal_a_non_tfl_owned_row_with_the_same_line_id() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6626,7 +6626,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                a_re_post_with_a_changed_crs_overwrites_the_existing_row -- --ignored`"]
+                a_re_post_with_a_changed_crs_overwrites_the_existing_row -- --ignored --test-threads=1`"]
     async fn a_re_post_with_a_changed_crs_overwrites_the_existing_row() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6678,7 +6678,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                daily_stats_for_range -- --ignored`"]
+                daily_stats_for_range -- --ignored --test-threads=1`"]
     async fn daily_stats_for_range_filters_orders_and_handles_unknown_lines() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6738,7 +6738,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored` \
+                half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored --test-threads=1` \
                 against docker compose's postgres"]
     async fn half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines() {
         let database_url =
@@ -6801,7 +6801,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets -- --ignored` \
+                sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets -- --ignored --test-threads=1` \
                 against docker compose's postgres"]
     async fn sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets() {
         let database_url =
@@ -6879,7 +6879,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together -- --ignored` \
+                sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together -- --ignored --test-threads=1` \
                 against docker compose's postgres"]
     async fn sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together() {
         let database_url =
@@ -6937,7 +6937,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                daily_stats_for_range_multi -- --ignored`"]
+                daily_stats_for_range_multi -- --ignored --test-threads=1`"]
     async fn daily_stats_for_range_multi_sums_across_lines_and_excludes_others() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -6989,7 +6989,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                daily_stats_for_range_multi_an_empty_line_id_set -- --ignored`"]
+                daily_stats_for_range_multi_an_empty_line_id_set -- --ignored --test-threads=1`"]
     async fn daily_stats_for_range_multi_an_empty_line_id_set_returns_empty_not_an_error() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -7008,7 +7008,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                half_hourly_stats_for_range_multi -- --ignored`"]
+                half_hourly_stats_for_range_multi -- --ignored --test-threads=1`"]
     async fn half_hourly_stats_for_range_multi_sums_across_lines() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -7055,7 +7055,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                sub_daily_stats_for_range_multi -- --ignored`"]
+                sub_daily_stats_for_range_multi -- --ignored --test-threads=1`"]
     async fn sub_daily_stats_for_range_multi_groups_by_bucket_and_sums_across_lines() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -7124,7 +7124,7 @@ mod incident_query_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api incident_by_id -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api incident_by_id -- --ignored --test-threads=1`"]
     async fn incident_by_id_finds_a_seeded_row_and_none_for_an_unknown_id() {
         let pool = test_pool().await;
         sqlx::query(
@@ -7155,7 +7155,7 @@ mod incident_query_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api incident_history_for_id -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api incident_history_for_id -- --ignored --test-threads=1`"]
     async fn incident_history_for_id_is_ordered_newest_first_and_empty_for_an_unknown_id() {
         let pool = test_pool().await;
         sqlx::query(
@@ -7188,7 +7188,7 @@ mod incident_query_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api lines_currently_reporting_incident -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api lines_currently_reporting_incident -- --ignored --test-threads=1`"]
     async fn lines_currently_reporting_incident_matches_only_the_exact_jsonb_source_string() {
         // The concrete regression test for Correction 2: this must match a
         // real `knowledgebase-incident-*` source and must NOT false-positive
@@ -7268,7 +7268,7 @@ mod schedule_feed_ingest_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_insert_then_last_fetch_returns_the_delivered_at \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn schedule_feed_insert_then_last_fetch_returns_the_delivered_at() {
         use chrono::SubsecRound;
 
@@ -7308,7 +7308,7 @@ mod schedule_feed_ingest_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_reinserting_the_same_delivered_at_does_not_change_the_row \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn schedule_feed_reinserting_the_same_delivered_at_does_not_change_the_row() {
         use chrono::SubsecRound;
 
@@ -7365,7 +7365,7 @@ mod schedule_feed_ingest_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_last_fetch_against_an_empty_table_returns_none \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn schedule_feed_last_fetch_against_an_empty_table_returns_none() {
         let pool = test_pool().await;
 
@@ -7421,7 +7421,7 @@ mod stanox_crs_lookup_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_stanox_crs_for_crs -- --ignored`"]
+                list_stanox_crs_for_crs -- --ignored --test-threads=1`"]
     async fn list_stanox_crs_for_crs_returns_only_matching_rows_case_insensitively() {
         let pool = test_pool().await;
         upsert_stanox_crs(
@@ -7461,7 +7461,7 @@ mod stanox_crs_lookup_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                crs_for_tiploc -- --ignored`"]
+                crs_for_tiploc -- --ignored --test-threads=1`"]
     async fn crs_for_tiploc_resolves_a_known_tiploc_and_none_for_an_unknown_one() {
         let pool = test_pool().await;
         upsert_stanox_crs(
@@ -8053,7 +8053,7 @@ mod tiploc_crs_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back -- --ignored`"]
+                two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back -- --ignored --test-threads=1`"]
     async fn two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back() {
         // The direct DB-level proof this plan's whole point (two TIPLOCs,
         // one STANOX, both persisted) actually works against a real
@@ -10247,7 +10247,7 @@ mod schedule_destination_departures_query_tests {
     /// this file (synthetic CRS codes like "ZRD"/"RDG") never exercised.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                search_journey_leg_candidates_eus_mkc -- --ignored --test-threads=1`"]
+                search_journey_leg_candidates_includes_every_real_operator_calling_at_a_shared_station -- --ignored --test-threads=1`"]
     async fn search_journey_leg_candidates_includes_every_real_operator_calling_at_a_shared_station()
      {
         // Real byte-verbatim BS/LO/LT block, quoted directly from

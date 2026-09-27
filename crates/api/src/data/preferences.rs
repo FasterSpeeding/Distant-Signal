@@ -225,7 +225,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 replace_pinned_operators_then_list_pinned_operator_codes_round_trips \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn replace_pinned_operators_then_list_pinned_operator_codes_round_trips() {
         let pool = connect().await;
         sqlx::query(
@@ -273,7 +273,7 @@ mod db_tests {
     /// back exactly as written, including a reversed and a shuffled set.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                replace_pinned_sets_store_the_callers_order -- --ignored`"]
+                replace_pinned_sets_store_the_callers_order -- --ignored --test-threads=1`"]
     async fn replace_pinned_sets_store_the_callers_order() {
         let pool = connect().await;
         let user_id = "TEST-PINNED-ORDER-USER";
@@ -364,7 +364,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 replace_pinned_operators_with_a_duplicate_code_does_not_500_and_collapses_to_one_row \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn replace_pinned_operators_with_a_duplicate_code_does_not_500_and_collapses_to_one_row()
     {
         let pool = connect().await;
