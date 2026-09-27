@@ -24,6 +24,23 @@
 //!
 //! Only then does the loop below start reading as the consumer group.
 //!
+//! # Windowed stats (2026-09-27, off by default)
+//!
+//! With `FULL_COVERAGE_WINDOWED_STATS=true`
+//! (docs/superpowers/specs/2026-09-27-full-coverage-windowed-stats-design.md)
+//! the consumer also keeps per-train TRUST state by service date
+//! (`trains`), reduces each line's population to its relevant trains' due
+//! times (`population`), and on every stats write classifies the trains
+//! already due into a `recent` window (due in the last
+//! `FULL_COVERAGE_RECENT_WINDOW_MINUTES`, ending
+//! `FULL_COVERAGE_GRACE_MINUTES` ago) and a `day_to_date` window
+//! (`windows`), posted to `/private/full-coverage-window-stats`. The
+//! `full_coverage_line_stats` row then carries the day-to-date counts
+//! (the whole day once closed) as `stats_version` 2. The replay also starts
+//! `replay::LOOKBACK` before the rail day, so the day's first trains'
+//! Activations are seen. With the flag off, every row is exactly the legacy
+//! one.
+//!
 //! # Loop shape (Task 13)
 //!
 //! Mirrors `trust-consumer/src/main.rs`'s multi-cadence-in-one-loop shape

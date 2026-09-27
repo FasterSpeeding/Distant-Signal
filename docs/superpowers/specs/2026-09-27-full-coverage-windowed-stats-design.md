@@ -1,6 +1,9 @@
 # Design: windowed full-coverage stats (recent window + day-to-date)
 
-**Status: design, for a separate implementation agent. No code in this pass.**
+**Status: implemented (branch `wt-fc-windowed-impl`), every switch off by
+default. The "Decisions (2026-09-27)" section below overrides the rest of
+this document where they differ; "Implementation notes" at the end records
+what the implementation changed and why.**
 Base: local `main` at `c3d5a0fc` (includes the 2026-09-27 full-coverage
 restart fix: startup replay, partial days, population gating, date-keyed
 `full_coverage_line_stats`, exact gap detection).
@@ -21,6 +24,62 @@ All production numbers below were measured read-only on 2026-09-27 between
 through the apiserver proxy). The analysis script is committed as
 `scripts/fc-windowed-analysis.py`; its header lists the exact export
 queries, so every number here can be re-derived.
+
+## Decisions (2026-09-27)
+
+The user's answers to section 10's open questions, applied in the
+implementation:
+
+1. **Escalation tiers (open question 1).** `enforce` escalates only to
+   **Severe Delays and Part Suspended**:
+   `FULL_COVERAGE_WINDOW_MIN_ESCALATION_RANK` defaults to 4, the Severe
+   tier (`common::full_coverage_window::FULL_COVERAGE_WINDOW_DEFAULT_MIN_ESCALATION_RANK`).
+   The lower tiers are **computed and stored anyway**: in both `shadow` and
+   `enforce` the aggregator writes one row per line per 15-minute bucket to
+   `full_coverage_window_verdicts` (migration `20260927120200`), with
+   `would_escalate_to` (the window's tier when strictly worse than what the
+   line was showing) and the flag `below_min_rank` (a Minor Delays /
+   Reduced Service would-escalation held back by the gate), plus
+   `enforced`. `compare_full_coverage --windows` reports enforced vs
+   would-escalate tiers, so widening the enforced tiers later is an
+   evidence-based config change.
+2. **Pilot lines (open question 2).** `FULL_COVERAGE_WINDOW_ENFORCE_LINES`
+   is kept, but its default is **empty**, not `*` (this replaces the `*`
+   in section 8.1): switching to `enforce` enforces nothing until lines are
+   named. The operator picks about 5 lines of different volumes from the
+   shadow report; its section 6 lists per-line volume and suggests five
+   clean candidates near daytime medians of 6, 10, 20, 30 and 45 trains per
+   window. `*` still means every full-coverage-enabled line.
+3. **"Delayed" (open question 4).** A train is delayed when it is **at
+   least 3 minutes late at its first calling point on the line**, from
+   TRUST's `timetable_variation`: the delay of the earliest report that
+   shows the train on the line (a report at one of the line's TIPLOCs, or
+   planned at or after its due time -- the line's first station is not
+   always a TRUST reporting point). This replaces section 4.3.1's "maximum
+   reported delay among reports at L's stations" and section 5's "line's
+   merged `delay_threshold_minutes` (5)". The threshold is
+   `Defaults.full_coverage_delay_threshold_minutes`, default
+   `FULL_COVERAGE_DELAY_THRESHOLD_MINUTES = 3`, overridable per line through
+   `severity_overrides`. **Every share in section 3 was measured at 5
+   minutes, so expect more delayed trains** (and more Minor/Severe Delays
+   verdicts) than this document reports; the shadow report is the new
+   baseline. LDBWS keeps 5 minutes, so full coverage's late rates run
+   higher by construction.
+4. **Minimum sample (open question 5).** 6 evaluable trains per 60-minute
+   window (`full_coverage_min_sample_size`), and 3 affected trains per tier
+   (`full_coverage_min_affected`), as section 5.
+5. **No frontend or UI change (open question 3).** Day-to-date numbers are
+   computed and stored (`full_coverage_line_window_stats`,
+   `window_kind = 'day_to_date'`, and the v2 `full_coverage_line_stats`
+   row) but not shown.
+
+Also fixed first, as separate commits, because they damage the existing
+closed-day rows too (each with a regression test): `delayed` was always 0
+(the LATE delay now comes from `timetable_variation`); `apply_cancellation`
+ignored trains with no matched movement; the next day's Activations were
+wiped at the rollover (and never replayed after a restart); and
+rail-replacement buses and ships were counted as cancellations (they are left
+out once the population carries `train_status`).
 
 ## 1. Problem
 
@@ -1217,3 +1276,73 @@ workspace tests, DB-gated tests of touched crates on a fresh DB, and
    severity entirely; LDBWS and incidents still cover them.
    *Recommendation:* accept it. Lowering to 4 gains ~15 percentage points
    of coverage, but two late trains then read as "Minor Delays".
+
+## Implementation notes (2026-09-27)
+
+What the implementation did differently from sections 4-9, and why:
+
+- **Where the code lives.** To keep the change local for later merges:
+  window classification and counting are in a new
+  `crates/full-coverage-consumer/src/windows.rs` (not `stats.rs`, whose
+  legacy `build_line_row` is untouched); the aggregator's read, verdicts,
+  merge and prune are in a new `crates/aggregator/src/full_coverage_window.rs`
+  (not `queries.rs`/`aggregation.rs`); the api's storage is
+  `crates/api/src/data/full_coverage_window.rs` and the report
+  `crates/api/src/data/full_coverage_window_report.rs`. The common types
+  and `classify_full_coverage_window` are in
+  `crates/common/src/full_coverage_window.rs`, re-exported from `lib.rs`.
+- **A third migration**, `20260927120200_full_coverage_window_verdicts`,
+  for decision 1's stored verdicts. Like `20260927120000`, it creates a new
+  table and its index in one transaction; `migration_index_locking` does not
+  flag an index on a table the same file creates, so neither index needed a
+  separate `CONCURRENTLY` file. `20260927120100` only adds columns with
+  constant defaults (no rewrite). All three set `lock_timeout = '5s'`.
+- **`origin_dep` is kept per line-train** (`LineTrain.origin_dep_min`),
+  not in a per-date UID map: the reloader carries a line's population over
+  on a `304`, and a per-line value travels with it.
+- **Relevance.** A line/date is `Full` when any entry carries
+  `train_status` or `operator_atoc`. A line with no `operators` configured
+  skips the operator rule. Under `Full`, an entry without an operator is
+  not relevant to a line that has operators.
+- **Buses and ships are left out of the matching uid set too** (not only
+  the windows), which is the legacy-row bus fix. TRUST never reports them,
+  so no movement matching changes. Ships (`S`/`4`) are excluded with buses,
+  as section 4.1 says.
+- **Feed health's `last_event_at`** is the newest consumed Movement's
+  (corrected) `actual_timestamp`, not the stream entry id's time: the live
+  `MovementFeed` returns payloads without ids, and changing that trait would
+  touch every consumer. The replay does use the entry id's time as
+  `received_at`.
+- **`dep_timestamp` correction.** A 0002/0006 `dep_timestamp` is a planned
+  time, often hours ahead of receipt, so
+  `common::trust_timestamp::parse_trust_epoch_millis` would reject the
+  corrected value as implausible and fall back to the raw (skewed) one. The
+  per-train state instead applies the skew the latest Movement showed
+  (`corrected - raw` of its `actual_timestamp`).
+- **Parked 0002/0005/0006** are only kept for `train_id`s whose
+  day-of-month digits are today's or tomorrow's; anything else is not this
+  day's train.
+- **Window bounds.** `recent` covers due times in
+  `(now - grace - W, now - grace]` and stores that exclusive start as
+  `window_start`, so `window_end - window_start = W` (the reason text says
+  "in the last hour"). The closed-day row covers the whole rail day.
+- **The closed-day `on_time`** is not stored in `full_coverage_line_stats`
+  (the spec's migration has no such column); read back, it is derived.
+- **`enforce` scope.** Only the lines `enforce` may change (enabled and
+  allow-listed) leave the legacy whole-day merge and the day/half-hour
+  coverage rollups; every other line keeps today's code path even in
+  `enforce`. `shadow` evaluates every line with a fresh window, enabled or
+  not. A line with no fresh window is `Pending` under `enforce`, counted as
+  `missing`, and gets no verdict row.
+- **The report** judges each stored bucket at its own `computed_at`, so a
+  stored row is never "stale"; a stopped consumer shows as missing buckets
+  in the health section.
+- **No alert rules were added** (the design asks for none). Proposed, for
+  after `shadow` starts: `full_coverage_consumer_window_feed_stale == 1`
+  for 15 minutes outside a known TRUST outage;
+  `increase(full_coverage_consumer_errors_total{operation="post_window_stats"}[30m]) > 0`
+  once the api is deployed; `rate(full_coverage_consumer_window_rows_posted_total[10m]) == 0`
+  while the flag is on; and in `enforce`,
+  `increase(aggregator_full_coverage_window_verdicts_total{verdict="missing"}[15m])`
+  above the line count.
+
