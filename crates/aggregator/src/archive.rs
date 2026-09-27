@@ -6,10 +6,13 @@
 //!
 //! When enabled, each opted-in table's prune streams the rows it is about
 //! to delete into zstd-compressed JSON Lines objects in S3-compatible
-//! storage, confirms each object landed (PUT, then a HEAD whose size must
-//! match), and only then deletes exactly those rows -- all inside one
-//! database transaction per batch, with the batch's rows locked
-//! (`SELECT ... FOR UPDATE`) from selection to delete. See
+//! storage, confirms each object landed (PUT, then a HEAD whose size and
+//! ETag must match, the ETag being the body's MD5), and only then deletes
+//! exactly those rows. No database transaction or row lock is held while
+//! object storage is being talked to (SVC-06): the export reads one
+//! snapshot, the upload runs with no transaction open, and a short final
+//! transaction locks the batch, checks that nothing changed since the
+//! export, and deletes it (see [`archive_and_prune_trains`]). See
 //! `docs/cold-archive.md` for the object layout and how to read an archive
 //! offline; nothing in the app reads archived data back.
 //!
@@ -37,11 +40,11 @@
 //! first `trains.id`:
 //! `<prefix>/<table>/service_date=YYYY-MM-DD/part-<first id, 19 digits>.jsonl.zst`.
 //! Once a batch commits its first id no longer exists, so no later batch
-//! can reuse its key. If an upload succeeds but the transaction then rolls
-//! back (a later upload failed, verification failed, the DELETE or COMMIT
-//! failed, the pod died), the rows are still in the database and the next
-//! cycle selects the same batch again and overwrites the same keys -- no
-//! loss, no duplicate. The one residual case: if the eligible set for that
+//! can reuse its key. If an upload succeeds but the batch is then not
+//! deleted (a later upload failed, verification failed, the batch changed
+//! before the delete, the DELETE or COMMIT failed, the pod died), the rows
+//! are still in the database and the next run selects the same batch again
+//! and overwrites the same keys -- no loss, no duplicate. The one residual case: if the eligible set for that
 //! date changes between the failed attempt and the retry (e.g. a
 //! subscription is added to a 14-day-old train), the retry's first id can
 //! differ, leaving the stale object behind; every row carries its primary
@@ -102,16 +105,12 @@ const LICENSING_EXCLUDED_TABLES: &[(&str, &str)] = &[
 /// which is what is held in memory before the upload.
 pub const ARCHIVE_TRAINS_BATCH: i64 = 1000;
 
-/// `statement_timeout` for each archive batch's transaction; see
-/// `archive_and_prune_trains`. Matches the retention prunes'
-/// `queries::RETENTION_STATEMENT_TIMEOUT`.
+/// `statement_timeout` for each archive batch's export and delete
+/// transactions; see `archive_and_prune_trains`. Matches the retention
+/// prunes' `queries::RETENTION_STATEMENT_TIMEOUT`. Neither transaction is
+/// open while object storage is being talked to, so the pool's default
+/// idle-in-transaction timeout is enough.
 const ARCHIVE_BATCH_STATEMENT_TIMEOUT: Duration = crate::queries::RETENTION_STATEMENT_TIMEOUT;
-
-/// `idle_in_transaction_session_timeout` for each archive batch's
-/// transaction, which waits on object storage between statements: three
-/// objects x (120s request timeout + 60s of retries), plus verification,
-/// with room to spare. Still ends a transaction whose task has hung.
-const ARCHIVE_BATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// zstd level: 3 is zstd's own default, a good speed/ratio trade-off for
 /// JSON text.
@@ -400,25 +399,38 @@ async fn encode_rows(conn: &mut PgConnection, sql: &str, ids: &[i64]) -> Result<
     writer.finish()
 }
 
-/// One archived table's per-batch export query. Each serialises whole rows
-/// with `to_jsonb(t)::text`, so every column (current and future) is
-/// captured without a hand-maintained column list; Postgres renders
-/// timestamps as ISO-8601 and `jsonb` columns as nested JSON.
-const TRAINS_GROUP_EXPORTS: &[(&str, &str)] = &[
-    (
-        "train_movement_events",
-        "SELECT to_jsonb(t)::text FROM train_movement_events t \
-         WHERE t.trains_id = ANY($1) ORDER BY t.trains_id, t.id",
-    ),
-    (
-        "train_current_state",
-        "SELECT to_jsonb(t)::text FROM train_current_state t \
-         WHERE t.trains_id = ANY($1) ORDER BY t.trains_id, t.id",
-    ),
-    (
-        "trains",
-        "SELECT to_jsonb(t)::text FROM trains t WHERE t.id = ANY($1) ORDER BY t.id",
-    ),
+/// One archived table's per-batch export: `SELECT <row>::text FROM <table>
+/// t WHERE <filter> ORDER BY <order>`, with the batch's `trains.id` array as
+/// `$1`. `row` serialises whole rows with `to_jsonb(t)`, so every column
+/// (current and future) is captured without a hand-maintained column list;
+/// Postgres renders timestamps as ISO-8601 and `jsonb` columns as nested
+/// JSON.
+struct TableExport {
+    table: &'static str,
+    row: &'static str,
+    filter: &'static str,
+    order: &'static str,
+}
+
+const TRAINS_GROUP_EXPORTS: &[TableExport] = &[
+    TableExport {
+        table: "train_movement_events",
+        row: "to_jsonb(t)",
+        filter: "t.trains_id = ANY($1)",
+        order: "t.trains_id, t.id",
+    },
+    TableExport {
+        table: "train_current_state",
+        row: "to_jsonb(t)",
+        filter: "t.trains_id = ANY($1)",
+        order: "t.trains_id, t.id",
+    },
+    TableExport {
+        table: "trains",
+        row: "to_jsonb(t)",
+        filter: "t.id = ANY($1)",
+        order: "t.id",
+    },
 ];
 
 /// Outcome of one [`archive_and_prune_trains`] run.
@@ -449,19 +461,32 @@ impl TrainsArchiveOutcome {
 /// row) past `untracked_retention_days`, or a tracked one past
 /// `retention_days`. Used only when `trains` is in `ARCHIVE_TABLES`.
 ///
-/// Per batch, in ONE transaction: lock the batch's `trains` rows, export
-/// them and their `train_movement_events`/`train_current_state` rows to
-/// objects, verify each object, then `DELETE` exactly those `trains` ids
-/// (the children go by the same `ON DELETE CASCADE` as today) and commit.
-/// Each batch is its own transaction, as in `prune_trains`.
+/// Per batch, in three steps (SVC-06: no row lock is held while object
+/// storage is being talked to):
 ///
-/// An upload failure is not an `Err`: under [`FailurePolicy::Retain`] the
-/// batch rolls back and this returns with `upload_failed` set (retried
-/// next cycle); under [`FailurePolicy::Delete`] the rows are deleted
-/// anyway and the rest of this run skips archiving. Returning `Ok` keeps
-/// an object-storage outage from aborting the LDBWS-ceiling prunes that
-/// `run_retention` runs after this one. Database errors still propagate
-/// as `Err`, exactly as `prune_trains`'s do.
+/// 1. **Export**, in a short `REPEATABLE READ READ ONLY` transaction: the
+///    batch's `trains`, `train_movement_events` and `train_current_state`
+///    rows are encoded, and a fingerprint (row count plus a sum of row
+///    hashes) is taken of each table's rows from the same snapshot. No row
+///    is locked.
+/// 2. **Upload** each object and verify it (size and ETag/MD5, see
+///    `Archiver::put_verified`), with no transaction open.
+/// 3. **Delete**, in a short transaction: lock the batch's `trains` rows
+///    (`FOR UPDATE`, which also blocks new child rows through their FK),
+///    re-check that every id is still eligible and that every table's
+///    fingerprint is unchanged, then `DELETE` exactly those ids (the
+///    children go by the same `ON DELETE CASCADE` as today) and commit. If
+///    anything changed since the export (a subscription was added, a row
+///    was updated), the batch is left alone and this run stops; the next
+///    run exports it again under the same key.
+///
+/// An upload failure is not an `Err`: under [`FailurePolicy::Retain`] no
+/// row is deleted and this returns with `upload_failed` set (retried next
+/// run); under [`FailurePolicy::Delete`] the rows are deleted anyway and the
+/// rest of this run skips archiving. Returning `Ok` keeps an object-storage
+/// outage from aborting the LDBWS-ceiling prunes that `run_retention` runs
+/// after this one. Database errors still propagate as `Err`, exactly as
+/// `prune_trains`'s do.
 pub async fn archive_and_prune_trains(
     pool: &PgPool,
     archiver: &Archiver,
@@ -473,7 +498,7 @@ pub async fn archive_and_prune_trains(
     let mut skip_uploads = false;
 
     // One MIN(service_date) probe: when neither tier has anything old
-    // enough (almost every cycle) skip the FOR UPDATE candidate scan.
+    // enough (almost every cycle) skip the candidate scan.
     let (untracked_due, tracked_due) =
         crate::queries::trains_prune_due(pool, retention_days, untracked_retention_days).await?;
     if !untracked_due && !tracked_due {
@@ -481,42 +506,23 @@ pub async fn archive_and_prune_trains(
     }
 
     loop {
-        let mut tx = pool.begin().await?;
-        // The pool's defaults (`common::pg`: 60s statement, 30s idle in
-        // transaction) are too tight here: the batch's transaction stays
-        // open, idle from Postgres's point of view, while `export_batch`
-        // uploads and verifies up to three objects (each request up to 120s,
-        // retried for up to 60s). Raised for this transaction only.
-        common::pg::set_local_statement_timeout(&mut tx, ARCHIVE_BATCH_STATEMENT_TIMEOUT).await?;
-        common::pg::set_local_idle_in_transaction_timeout(&mut tx, ARCHIVE_BATCH_IDLE_TIMEOUT)
-            .await?;
         // Oldest eligible date first, lowest ids first: deterministic, so a
         // retried batch re-selects the same rows and overwrites the same
-        // keys. `FOR UPDATE OF t` also blocks a concurrent
-        // train_subscriptions/movement-event insert referencing these rows
-        // (their FK takes a KEY SHARE lock) until we commit or roll back.
-        let candidates: Vec<(i64, NaiveDate)> = sqlx::query_as(
-            "SELECT t.id, t.service_date FROM trains t \
-             WHERE t.service_date < CURRENT_DATE - ($4 || ' days')::interval \
-               AND ((t.service_date < CURRENT_DATE - ($1 || ' days')::interval \
-                     AND NOT EXISTS (SELECT 1 FROM train_subscriptions s WHERE s.trains_id = t.id)) \
-                 OR (t.service_date < CURRENT_DATE - ($2 || ' days')::interval \
-                     AND EXISTS (SELECT 1 FROM train_subscriptions s WHERE s.trains_id = t.id))) \
-             ORDER BY t.service_date, t.id \
-             LIMIT $3 \
-             FOR UPDATE OF t",
-        )
+        // keys. Not locked: step 3 locks and re-checks.
+        let candidates: Vec<(i64, NaiveDate)> = sqlx::query_as(&format!(
+            "SELECT t.id, t.service_date FROM trains t WHERE {TRAINS_ELIGIBLE} \
+             ORDER BY t.service_date, t.id LIMIT $3"
+        ))
         .bind(untracked_retention_days.to_string())
         .bind(retention_days.to_string())
         .bind(batch_size)
         // The later of the two cutoffs, as a plain range the planner can
         // serve from `trains_service_date` (the OR alone cannot be).
         .bind(retention_days.min(untracked_retention_days).to_string())
-        .fetch_all(&mut *tx)
+        .fetch_all(pool)
         .await?;
 
         let Some(&(first_id, service_date)) = candidates.first() else {
-            tx.rollback().await?;
             break;
         };
         // One batch never spans two service dates, so every object lives
@@ -527,10 +533,11 @@ pub async fn archive_and_prune_trains(
             .map(|(id, _)| *id)
             .collect();
 
+        let mut exported_fingerprints = None;
         if !skip_uploads {
-            match export_batch(&mut tx, archiver, service_date, first_id, &ids).await {
-                Ok((rows, objects)) => {
-                    for (table, n) in rows {
+            match export_and_upload(pool, archiver, service_date, first_id, &ids).await {
+                Ok(exported) => {
+                    for &(table, n) in &exported.rows {
                         outcome.add_rows(table, n);
                         metrics::counter!(
                             common::metrics::metric_name("aggregator_archive_rows_total"),
@@ -538,11 +545,12 @@ pub async fn archive_and_prune_trains(
                         )
                         .increment(n);
                     }
-                    outcome.objects_written += objects;
+                    outcome.objects_written += exported.objects;
                     metrics::counter!(common::metrics::metric_name(
                         "aggregator_archive_objects_total"
                     ))
-                    .increment(objects);
+                    .increment(exported.objects);
+                    exported_fingerprints = Some(exported.fingerprints);
                 }
                 Err(err) => {
                     outcome.upload_failed = true;
@@ -557,10 +565,9 @@ pub async fn archive_and_prune_trains(
                                 %service_date,
                                 first_id,
                                 "archiving a trains batch failed (export, upload or verification); \
-                                 keeping these rows and retrying next retention cycle \
+                                 keeping these rows and retrying next retention run \
                                  (ARCHIVE_FAILURE_POLICY=retain)"
                             );
-                            tx.rollback().await?;
                             break;
                         }
                         FailurePolicy::Delete => {
@@ -570,7 +577,7 @@ pub async fn archive_and_prune_trains(
                                 first_id,
                                 "archiving a trains batch failed (export, upload or verification); \
                                  deleting rows WITHOUT archiving them for the rest of this \
-                                 cycle (ARCHIVE_FAILURE_POLICY=delete)"
+                                 run (ARCHIVE_FAILURE_POLICY=delete)"
                             );
                             skip_uploads = true;
                         }
@@ -579,12 +586,30 @@ pub async fn archive_and_prune_trains(
             }
         }
 
-        let deleted = sqlx::query("DELETE FROM trains WHERE id = ANY($1)")
-            .bind(&ids)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        tx.commit().await?;
+        let deleted = match delete_batch(
+            pool,
+            &ids,
+            exported_fingerprints.as_deref(),
+            retention_days,
+            untracked_retention_days,
+        )
+        .await?
+        {
+            Some(deleted) => deleted,
+            None => {
+                metrics::counter!(common::metrics::metric_name(
+                    "aggregator_archive_batches_changed_total"
+                ))
+                .increment(1);
+                tracing::warn!(
+                    %service_date,
+                    first_id,
+                    "a trains batch changed between its archive export and its delete; left in \
+                     place and re-exported next retention run"
+                );
+                break;
+            }
+        };
         outcome.pruned += deleted;
 
         // A short candidate list that this batch consumed whole means
@@ -598,21 +623,79 @@ pub async fn archive_and_prune_trains(
     Ok(outcome)
 }
 
-/// Exports one batch's three tables and uploads them. Returns the per-table
-/// row counts and the number of objects written. A table with no rows in
-/// this batch gets no object (an empty file only trips up offline readers).
-/// Any error here means "do not delete this batch".
-async fn export_batch(
-    conn: &mut PgConnection,
+/// The two-tier retention predicate over `trains t`. Binds: `$1` untracked
+/// days, `$2` tracked days, `$4` the smaller of the two (a plain range on
+/// `service_date` the planner can use; the OR alone cannot be).
+const TRAINS_ELIGIBLE: &str = "t.service_date < CURRENT_DATE - ($4 || ' days')::interval \
+     AND ((t.service_date < CURRENT_DATE - ($1 || ' days')::interval \
+           AND NOT EXISTS (SELECT 1 FROM train_subscriptions s WHERE s.trains_id = t.id)) \
+       OR (t.service_date < CURRENT_DATE - ($2 || ' days')::interval \
+           AND EXISTS (SELECT 1 FROM train_subscriptions s WHERE s.trains_id = t.id)))";
+
+/// One table's rows for a batch, as seen by one snapshot: `(row count, sum
+/// of each row's 64-bit text hash)`. Equal fingerprints before and after
+/// mean no row was added, removed or changed in between (to within a hash
+/// collision).
+type Fingerprint = (i64, String);
+
+/// What [`export_and_upload`] produced for one batch.
+struct ExportedBatch {
+    rows: Vec<(&'static str, u64)>,
+    objects: u64,
+    /// One per [`TRAINS_GROUP_EXPORTS`] entry, in order.
+    fingerprints: Vec<Fingerprint>,
+}
+
+async fn fingerprints(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Fingerprint>> {
+    let mut out = Vec::with_capacity(TRAINS_GROUP_EXPORTS.len());
+    for export in TRAINS_GROUP_EXPORTS {
+        let fingerprint: Fingerprint = sqlx::query_as(&format!(
+            "SELECT COUNT(*), COALESCE(SUM(hashtextextended(({})::text, 0)::numeric), 0)::text \
+             FROM {} t WHERE {}",
+            export.row, export.table, export.filter
+        ))
+        .bind(ids)
+        .fetch_one(&mut *conn)
+        .await?;
+        out.push(fingerprint);
+    }
+    Ok(out)
+}
+
+/// Step 1 and 2 of [`archive_and_prune_trains`]: export one batch from a
+/// single read-only snapshot, then upload and verify it with no transaction
+/// open. A table with no rows in this batch gets no object (an empty file
+/// only trips up offline readers). Any error here means "do not delete
+/// this batch".
+async fn export_and_upload(
+    pool: &PgPool,
     archiver: &Archiver,
     service_date: NaiveDate,
     first_id: i64,
     ids: &[i64],
-) -> Result<(Vec<(&'static str, u64)>, u64)> {
-    let mut rows = Vec::with_capacity(TRAINS_GROUP_EXPORTS.len());
+) -> Result<ExportedBatch> {
+    let mut encoded = Vec::with_capacity(TRAINS_GROUP_EXPORTS.len());
+    let fingerprints = {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        common::pg::set_local_statement_timeout(&mut tx, ARCHIVE_BATCH_STATEMENT_TIMEOUT).await?;
+        let fingerprints = fingerprints(&mut tx, ids).await?;
+        for export in TRAINS_GROUP_EXPORTS {
+            let sql = format!(
+                "SELECT {}::text FROM {} t WHERE {} ORDER BY {}",
+                export.row, export.table, export.filter, export.order
+            );
+            encoded.push((export.table, encode_rows(&mut tx, &sql, ids).await?));
+        }
+        tx.commit().await?;
+        fingerprints
+    };
+
+    let mut rows = Vec::with_capacity(encoded.len());
     let mut objects = 0;
-    for &(table, sql) in TRAINS_GROUP_EXPORTS {
-        let (bytes, n) = encode_rows(conn, sql, ids).await?;
+    for (table, (bytes, n)) in encoded {
         if n > 0 {
             let path = archiver.object_path(table, service_date, first_id);
             archiver.put_verified(&path, bytes).await?;
@@ -620,7 +703,58 @@ async fn export_batch(
         }
         rows.push((table, n));
     }
-    Ok((rows, objects))
+    Ok(ExportedBatch {
+        rows,
+        objects,
+        fingerprints,
+    })
+}
+
+/// Step 3 of [`archive_and_prune_trains`]: in one short transaction, lock
+/// the batch, re-check it, and delete it. `exported` is the export's
+/// fingerprints, or `None` when the batch is being deleted without an
+/// archive (`FailurePolicy::Delete` after a failure), in which case the
+/// still-eligible ids are deleted whatever else changed. Returns `None`
+/// (and deletes nothing) if an archived batch changed since its export.
+async fn delete_batch(
+    pool: &PgPool,
+    ids: &[i64],
+    exported: Option<&[Fingerprint]>,
+    retention_days: i64,
+    untracked_retention_days: i64,
+) -> Result<Option<u64>> {
+    let mut tx = pool.begin().await?;
+    common::pg::set_local_statement_timeout(&mut tx, ARCHIVE_BATCH_STATEMENT_TIMEOUT).await?;
+    // `FOR UPDATE OF t` also blocks a concurrent train_subscriptions or
+    // movement-event insert referencing these rows (their FK takes a KEY
+    // SHARE lock) until we commit or roll back.
+    let still_eligible: Vec<i64> = sqlx::query_scalar(&format!(
+        "SELECT t.id FROM trains t WHERE t.id = ANY($3) AND {TRAINS_ELIGIBLE} \
+         ORDER BY t.id FOR UPDATE OF t"
+    ))
+    .bind(untracked_retention_days.to_string())
+    .bind(retention_days.to_string())
+    .bind(ids)
+    .bind(retention_days.min(untracked_retention_days).to_string())
+    .fetch_all(&mut *tx)
+    .await?;
+
+    if let Some(exported) = exported {
+        let unchanged = still_eligible.len() == ids.len()
+            && fingerprints(&mut tx, ids).await?.as_slice() == exported;
+        if !unchanged {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+    }
+
+    let deleted = sqlx::query("DELETE FROM trains WHERE id = ANY($1)")
+        .bind(&still_eligible)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(Some(deleted))
 }
 
 #[cfg(test)]
@@ -782,6 +916,12 @@ mod tests {
         inner: InMemory,
         fail_put: std::sync::atomic::AtomicBool,
         fail_head: std::sync::atomic::AtomicBool,
+        /// During each PUT, try to lock these `trains` rows with `NOWAIT`
+        /// from another connection and record whether that worked.
+        probe_locks: std::sync::Mutex<Option<(PgPool, Vec<i64>)>>,
+        lock_free_during_put: std::sync::Mutex<Vec<bool>>,
+        /// During the next PUT, change this `trains` row (once).
+        mutate_on_put: std::sync::Mutex<Option<(PgPool, i64)>>,
     }
 
     impl std::fmt::Display for FlakyStore {
@@ -807,6 +947,26 @@ mod tests {
         ) -> object_store::Result<object_store::PutResult> {
             if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(injected());
+            }
+            let probe = self.probe_locks.lock().unwrap().clone();
+            if let Some((pool, ids)) = probe {
+                let mut tx = pool.begin().await.unwrap();
+                let free =
+                    sqlx::query("SELECT id FROM trains WHERE id = ANY($1) FOR UPDATE NOWAIT")
+                        .bind(&ids)
+                        .fetch_all(&mut *tx)
+                        .await
+                        .is_ok();
+                tx.rollback().await.ok();
+                self.lock_free_during_put.lock().unwrap().push(free);
+            }
+            let mutate = self.mutate_on_put.lock().unwrap().take();
+            if let Some((pool, id)) = mutate {
+                sqlx::query("UPDATE trains SET origin_crs = 'CHG' WHERE id = $1")
+                    .bind(id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
             }
             self.inner.put_opts(location, payload, opts).await
         }
@@ -1153,5 +1313,64 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// SVC-06: no row lock is held while an object is uploaded -- another
+    /// connection can lock the batch's rows (NOWAIT) during every PUT.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL=... cargo test -p aggregator -- --ignored"]
+    async fn uploads_run_without_holding_the_batch_row_locks() {
+        let pool = pool().await;
+        let date = NaiveDate::from_ymd_opt(2001, 6, 7).unwrap();
+        let ids = seed(&pool, "TEST-ARCHIVE-NOLOCK-", date, 2).await;
+        let flaky = Arc::new(FlakyStore::default());
+        *flaky.probe_locks.lock().unwrap() = Some((pool.clone(), ids.clone()));
+        let a = archiver(flaky.clone(), FailurePolicy::Retain);
+
+        let outcome = archive_and_prune_trains(&pool, &a, 30, 14, 1000)
+            .await
+            .unwrap();
+        assert!(!outcome.upload_failed);
+        assert_eq!(remaining(&pool, &ids).await, (0, 0, 0));
+        let probes = flaky.lock_free_during_put.lock().unwrap().clone();
+        assert_eq!(probes.len(), 3, "one probe per uploaded object");
+        assert!(
+            probes.iter().all(|free| *free),
+            "the batch's trains rows were locked during an upload: {probes:?}"
+        );
+    }
+
+    /// SVC-06: with the upload outside the lock, a batch that changes
+    /// between its export and its delete must not be deleted (its archive
+    /// would be stale); the next run re-exports and deletes it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL=... cargo test -p aggregator -- --ignored"]
+    async fn a_batch_changed_during_upload_is_kept_then_re_exported() {
+        let pool = pool().await;
+        let date = NaiveDate::from_ymd_opt(2001, 7, 8).unwrap();
+        let ids = seed(&pool, "TEST-ARCHIVE-CHANGED-", date, 2).await;
+        let flaky = Arc::new(FlakyStore::default());
+        *flaky.mutate_on_put.lock().unwrap() = Some((pool.clone(), ids[0]));
+        let a = archiver(flaky.clone(), FailurePolicy::Retain);
+
+        let first = archive_and_prune_trains(&pool, &a, 30, 14, 1000)
+            .await
+            .unwrap();
+        assert!(!first.upload_failed);
+        assert_eq!(first.pruned, 0, "a changed batch is not deleted");
+        assert_eq!(remaining(&pool, &ids).await, (2, 4, 2));
+
+        let second = archive_and_prune_trains(&pool, &a, 30, 14, 1000)
+            .await
+            .unwrap();
+        assert_eq!(second.pruned, 2);
+        assert_eq!(remaining(&pool, &ids).await, (0, 0, 0));
+        let path = a.object_path("trains", date, ids[0]);
+        let bytes = flaky.get(&path).await.unwrap().bytes().await.unwrap();
+        let rows = decode(&bytes);
+        assert_eq!(
+            rows[0]["origin_crs"], "CHG",
+            "the archive holds the rows as they were deleted"
+        );
     }
 }

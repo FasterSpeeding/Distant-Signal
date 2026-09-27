@@ -73,19 +73,31 @@ example in docker-compose: `ARCHIVE_ENABLED`, `ARCHIVE_TABLES`
 
 ## How it works
 
-Every retention cycle, the prune processes batches of up to 1,000
-`trains` rows. Each batch covers a single `service_date`: the oldest
-eligible date is taken first, and within that date the lowest ids are
-taken first. Each batch runs in its own database transaction:
+The retention prunes run on their own task in the aggregator, on the same
+interval as aggregation but independent of it, so a slow or failing upload
+never delays line-status aggregation.
 
-1. `SELECT ... FOR UPDATE` locks the batch's `trains` rows.
-2. The batch's rows from each table are streamed through
-   `to_jsonb(row)::text` into a zstd-compressed JSON Lines buffer. Only
-   the compressed bytes are held in memory, a few MB per batch.
-3. Each object is uploaded with a PUT. A HEAD request then confirms that
-   the stored size matches.
-4. `DELETE FROM trains WHERE id = ANY(batch)` runs (the child tables
-   cascade), and the transaction commits.
+Every retention run, the prune processes batches of up to 1,000 `trains`
+rows. Each batch covers a single `service_date`: the oldest eligible date
+is taken first, and within that date the lowest ids are taken first. No
+database transaction or row lock is held while object storage is being
+talked to. Each batch goes through three steps:
+
+1. **Export.** A short read-only transaction (one `REPEATABLE READ`
+   snapshot) streams the batch's rows from each table through
+   `to_jsonb(row)::text` into a zstd-compressed JSON Lines buffer, and takes
+   a fingerprint of each table's rows (row count plus a sum of row hashes).
+   Only the compressed bytes are held in memory, a few MB per batch.
+2. **Upload.** Each object is uploaded with a PUT, and a HEAD then confirms
+   the stored size and ETag (see "Upload verification" below).
+3. **Delete.** A short transaction locks the batch's `trains` rows
+   (`SELECT ... FOR UPDATE`), checks that every row is still eligible and
+   that every table's fingerprint is unchanged since the export, then runs
+   `DELETE FROM trains WHERE id = ANY(batch)` (the child tables cascade)
+   and commits. If anything changed in between (for example, someone
+   subscribed to one of the trains), nothing is deleted and the run stops.
+   The next run exports that batch again and overwrites the same keys.
+   `aggregator_archive_batches_changed_total` counts these.
 
 Object keys:
 
@@ -98,19 +110,19 @@ If a table has no rows in a batch, no object is written for it.
 **Failure behaviour** (`failurePolicy`):
 
 - `retain` (default): if an upload or its verification fails, the batch
-  rolls back, so no rows are deleted. The trains prune stops for this
-  cycle and runs again next cycle. The table grows past its retention
-  window for as long as storage stays unreachable. A failed upload does not
-  stop the other prunes that run later in the same cycle, including the
-  LDBWS 300-day-ceiling prunes.
-- `delete`: the failed batch and every later batch in that cycle are
+  is not deleted. The trains prune stops for this run and runs again next
+  time. The table grows past its retention window for as long as storage
+  stays unreachable. A failed upload does not stop the other prunes that
+  run later in the same pass, including the LDBWS 300-day-ceiling prunes.
+- `delete`: the failed batch and every later batch in that run are
   deleted without being archived, just as if archiving were disabled.
 
 **Idempotency.** Once a batch commits, its first id no longer exists, so
 no later batch can reuse its key. Suppose an upload lands but the batch
-then rolls back (verification failed, the DELETE or COMMIT failed, or the
-pod restarted). The rows are still in Postgres. The next cycle selects
-the same batch and overwrites the same keys, so no row is lost or
+is then not deleted (verification failed, the batch changed before the delete,
+the DELETE or COMMIT failed, or the pod restarted). The rows are still in
+Postgres. The next run selects the same batch and overwrites the same
+keys, so no row is lost or
 duplicated. One rare case can still leave a duplicate. It happens when the
 set of eligible trains for that date changes between the failed attempt
 and the retry, for example when someone subscribes to a 14-day-old train.
@@ -123,6 +135,13 @@ deduplicate on it (see below).
 - `aggregator_archive_rows_total{table}`
 - `aggregator_archive_objects_total`
 - `aggregator_archive_upload_failures_total`
+- `aggregator_archive_batches_changed_total`
+- `aggregator_retention_duration_seconds` (the whole retention pass)
+
+**Alert:** with `metrics.prometheusRule.enabled` and `archive.enabled`, the
+chart renders `DistantSignalArchiveUploadFailures`, which fires when at
+least `metrics.prometheusRule.archiveUploadFailures.minFailures` (3) batch
+uploads fail within its `window` (1h).
 
 `aggregator_trains_rows_pruned_total` keeps its existing meaning.
 
