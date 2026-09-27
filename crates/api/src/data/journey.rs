@@ -80,8 +80,8 @@ struct RawCallingPoint {
 ///   why the symptom read as missing reference data rather than as a
 ///   key-format bug.
 /// - **Uppercasing.** [`queries::crs_for_tiplocs_batch`] keys its returned
-///   map on the SQL-side `UPPER(TRIM(tiploc))`, so the Rust-side `get` has
-///   to produce the identical string.
+///   map on the stored, `normalize_code`d (trimmed, upper-cased) TIPLOC, so
+///   the Rust-side `get` has to produce the identical string.
 ///
 /// Every other TIPLOC comparison in this codebase already normalizes
 /// (`schedule_matching`'s own `crs_for_tiploc` call site,
@@ -1534,7 +1534,7 @@ mod tests {
     #[test]
     fn every_short_padded_tiploc_on_the_real_kingston_loop_journey_resolves_to_its_crs() {
         let service_date: NaiveDate = "2026-09-14".parse().unwrap();
-        // Keyed as `crs_for_tiplocs_batch` returns them: UPPER(TRIM(...)).
+        // Keyed as `crs_for_tiplocs_batch` returns them: normalised TIPLOCs.
         let tiploc_to_crs: HashMap<String, String> = [
             ("WATRLMN", "WAT"),
             ("ERLFLD", "EAD"),
@@ -3796,9 +3796,9 @@ mod db_tests {
     /// End-to-end (real Postgres) counterpart to the pure
     /// `every_short_padded_tiploc_on_the_real_kingston_loop_journey_resolves_to_its_crs`
     /// unit test:
-    /// proves the whole `crs_for_tiplocs_batch` round-trip -- the SQL
-    /// `UPPER(TRIM(tiploc))` on the stored side AND `tiploc_key` on the
-    /// Rust side -- resolves a real, sub-7-character, space-padded schedule
+    /// proves the whole `crs_for_tiplocs_batch` round-trip -- the
+    /// `normalize_code`d lookup against the stored (normalised) TIPLOC AND
+    /// `tiploc_key` on the Rust side -- resolves a real, sub-7-character, space-padded schedule
     /// TIPLOC. The stored `stanox_crs.tiploc` is written UNPADDED here
     /// because that is exactly what `schedule-reference`'s `parse_ti_lines`
     /// (`line[2..9].trim()`) writes, which is the whole asymmetry the live

@@ -1298,23 +1298,82 @@ async fn build_journey_detail_response(
         .await
         .map_err(internal_error("list journey legs"))?;
 
+    // Everything a leg needs from the database beyond its own row is read
+    // in batches for the whole journey up front: every tracked state in one
+    // query, every leg train's true origin in one, and every departure board
+    // the ETA blend and skip check read in one. Only `attach_journey_stops`
+    // (the per-train stop list) still runs per leg. This used to be ~8-10
+    // sequential queries per leg, up to 20 legs, on a route a share link
+    // exposes without a session (DB review part 2, DB2-14).
+    let tracking_ids: Vec<i64> = leg_rows
+        .iter()
+        .filter_map(|leg| leg.train_subscription_id)
+        .collect();
+    let mut states = train_tracking::get_by_tracking_ids(&app.database, &tracking_ids)
+        .await
+        .map_err(internal_error("read tracked train state"))?;
+
+    let trains_ids: Vec<i64> = states
+        .values()
+        .filter_map(|state| state.trains_id)
+        .collect();
+    // Best effort, like the per-leg reads it replaces: a failure here only
+    // loses the symmetric origin-skip check.
+    let train_origins: std::collections::HashMap<i64, String> = if trains_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        sqlx::query_as::<_, (i64, String)>(
+            "SELECT id, origin_crs FROM trains WHERE id = ANY($1) AND origin_crs IS NOT NULL",
+        )
+        .bind(&trains_ids)
+        .fetch_all(&app.database)
+        .await
+        .map(|rows| rows.into_iter().collect())
+        .unwrap_or_default()
+    };
+
+    let mut board_crs: Vec<String> = Vec::new();
+    for leg in &leg_rows {
+        let Some(state) = leg.train_subscription_id.and_then(|id| states.get(&id)) else {
+            continue;
+        };
+        board_crs.extend(crate::routes::train::darwin_blend_origin_crs(state).map(str::to_string));
+        if leg.origin_crs.is_some() && leg.destination_crs.is_some() {
+            board_crs.extend(leg.origin_crs.clone());
+            board_crs.extend(
+                state
+                    .trains_id
+                    .and_then(|id| train_origins.get(&id))
+                    .cloned(),
+            );
+        }
+    }
+    board_crs.sort();
+    board_crs.dedup();
+    // Best effort, as `blend_darwin_eta`/`leg_skip_status` always were: no
+    // boards just means no ETA overlay and no skip flags.
+    let boards =
+        crate::data::queries::latest_station_samples_for_crs_batch(&app.database, &board_crs)
+            .await
+            .unwrap_or_default();
+
     let mut legs = Vec::with_capacity(leg_rows.len());
     for leg in leg_rows {
-        let tracked_train_state = match leg.train_subscription_id {
-            Some(tracking_id) => {
-                match train_tracking::get_by_tracking_id(&app.database, tracking_id)
-                    .await
-                    .map_err(internal_error("read tracked train state"))?
-                {
-                    Some(state) => Some(
-                        crate::routes::train::attach_journey_stops(
-                            app,
-                            crate::routes::train::blend_darwin_eta(app, state).await,
-                        )
-                        .await,
-                    ),
-                    None => None,
-                }
+        // A leg can name the same subscription as another leg only through
+        // data the API never writes; clone rather than `remove` so such a
+        // leg still renders.
+        let tracked_train_state = match leg.train_subscription_id.and_then(|id| {
+            if tracking_ids.iter().filter(|&&t| t == id).count() > 1 {
+                states.get(&id).cloned()
+            } else {
+                states.remove(&id)
+            }
+        }) {
+            Some(state) => {
+                let origin_board = crate::routes::train::darwin_blend_origin_crs(&state)
+                    .and_then(|crs| boards.get(&crate::data::queries::normalize_code(crs)));
+                let state = crate::routes::train::apply_darwin_eta(state, origin_board);
+                Some(crate::routes::train::attach_journey_stops(app, state).await)
             }
             None => None,
         };
@@ -1350,16 +1409,13 @@ async fn build_journey_detail_response(
                     .as_deref()
                     .or(state.next_calling_point.as_deref());
                 let status = match state.trains_id {
-                    Some(trains_id) => {
-                        crate::data::station_skip::leg_skip_status(
-                            &app.database,
-                            trains_id,
-                            origin_crs,
-                            destination_crs,
-                            match_target,
-                        )
-                        .await
-                    }
+                    Some(trains_id) => crate::data::station_skip::leg_skip_status_from_samples(
+                        &boards,
+                        train_origins.get(&trains_id).map(String::as_str),
+                        origin_crs,
+                        destination_crs,
+                        match_target,
+                    ),
                     None => crate::data::station_skip::LegSkipStatus::default(),
                 };
                 Some(LegSkipResponse {
@@ -3212,7 +3268,7 @@ mod db_tests {
     /// (`create_journey_with_pin_leg`'s own doc comment), so it's the only
     /// mode that reliably exercises the "matched AND both ends known"
     /// branch without first seeding a real schedule fixture. No
-    /// `station_samples` row is seeded here, so `leg_skip_status` falls back
+    /// `station_samples` row is seeded here, so `leg_skip_status_from_samples` falls back
     /// to its own `LegSkipStatus::default()` (both flags `false`) -- fine,
     /// since this test is only proving the field is object-shaped once
     /// matched, not exercising the skip-detection logic itself (that's

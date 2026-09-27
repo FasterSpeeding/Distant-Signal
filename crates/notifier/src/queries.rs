@@ -1232,10 +1232,18 @@ pub async fn find_or_create_train<'e, E>(
 where
     E: sqlx::PgExecutor<'e>,
 {
+    // Read-first, as in `crates/api`'s copy: no row rewrite when the train
+    // already exists; the `DO UPDATE` only covers a concurrent insert.
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) \
-         ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
-         RETURNING id",
+        "WITH existing AS ( \
+             SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2 \
+         ), inserted AS ( \
+             INSERT INTO trains (train_uid, service_date) \
+             SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM existing) \
+             ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
+             RETURNING id \
+         ) \
+         SELECT id FROM existing UNION ALL SELECT id FROM inserted",
     )
     .bind(train_uid)
     .bind(service_date)

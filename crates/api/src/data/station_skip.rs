@@ -16,7 +16,6 @@
 //! this traveller's problem (§5.2's own framing).
 
 use common::{StationDeparture, departure_skips_station, match_darwin_departure};
-use sqlx::PgPool;
 
 use crate::data::queries;
 
@@ -70,50 +69,41 @@ pub fn find_leg_skip(
     }
 }
 
-/// Async wrapper: fetches the live sample(s) `find_leg_skip` needs and
-/// applies it. `trains_id` is the leg's bound `train_subscriptions.trains_id`
-/// -- used only to look up that train's own true `origin_crs`
-/// (`trains.origin_crs`, nullable,
-/// `crates/api/migrations/20260906100000_trains.sql:19`) for the symmetric
-/// origin-skip check; never re-derives the leg's own origin/destination,
-/// which the caller already has from its own `journey_legs` row. Any
-/// failure to fetch a sample degrades to `LegSkipStatus::default()`
-/// (both `false`) -- same best-effort posture as `blend_darwin_eta`.
-pub async fn leg_skip_status(
-    pool: &PgPool,
-    trains_id: i64,
+/// Whether the train's true origin board is a DIFFERENT board from the
+/// leg's own origin, i.e. worth reading for the symmetric origin-skip check.
+fn needs_train_origin_board(train_true_origin_crs: &str, leg_origin_crs: &str) -> bool {
+    queries::normalize_code(train_true_origin_crs) != queries::normalize_code(leg_origin_crs)
+}
+
+/// Applies [`find_leg_skip`] to boards the caller has already fetched --
+/// `samples` keyed by [`queries::normalize_code`]d CRS, exactly as
+/// `queries::latest_station_samples_for_crs_batch` returns them -- so a
+/// caller checking many legs (the journey detail) reads every board in one
+/// query instead of up to three per leg (DB review part 2, DB2-14; this
+/// replaced a per-leg async `leg_skip_status`).
+///
+/// `train_true_origin_crs` is the leg's train's own `trains.origin_crs`
+/// (nullable, `crates/api/migrations/20260906100000_trains.sql:19`), used
+/// only for the symmetric origin-skip check; the leg's own
+/// origin/destination come from its `journey_legs` row. A missing board
+/// degrades to `LegSkipStatus::default()` (both `false`) -- the same
+/// best-effort posture as `blend_darwin_eta`.
+pub fn leg_skip_status_from_samples(
+    samples: &std::collections::HashMap<String, common::StationSample>,
+    train_true_origin_crs: Option<&str>,
     leg_origin_crs: &str,
     leg_destination_crs: &str,
     match_target: Option<&str>,
 ) -> LegSkipStatus {
-    let Ok(Some(origin_sample)) = queries::latest_station_sample(pool, leg_origin_crs).await else {
+    let Some(origin_sample) = samples.get(&queries::normalize_code(leg_origin_crs)) else {
         return LegSkipStatus::default();
     };
-
-    let train_true_origin_crs: Option<String> =
-        sqlx::query_scalar("SELECT origin_crs FROM trains WHERE id = $1")
-            .bind(trains_id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten()
-            .flatten();
-
-    let train_origin_sample = match train_true_origin_crs.as_deref() {
-        Some(crs) if !crs.eq_ignore_ascii_case(leg_origin_crs) => {
-            queries::latest_station_sample(pool, crs)
-                .await
-                .ok()
-                .flatten()
-        }
-        _ => None,
-    };
-
+    let train_origin_sample = train_true_origin_crs
+        .filter(|crs| needs_train_origin_board(crs, leg_origin_crs))
+        .and_then(|crs| samples.get(&queries::normalize_code(crs)));
     find_leg_skip(
         &origin_sample.departures,
-        train_origin_sample
-            .as_ref()
-            .map(|s| s.departures.as_slice()),
+        train_origin_sample.map(|s| s.departures.as_slice()),
         match_target,
         leg_origin_crs,
         leg_destination_crs,

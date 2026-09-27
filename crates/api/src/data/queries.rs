@@ -18,6 +18,53 @@ use common::{
 use serde::Deserialize;
 use sqlx::PgPool;
 
+/// The one normal form for a CRS or TIPLOC code: surrounding whitespace
+/// trimmed, ASCII upper-cased. Every lookup in this file normalises its
+/// INPUT with this and compares against the plain stored column, and every
+/// writer stores codes in this form, so the columns' own primary keys and
+/// indexes serve the lookups. (The lookups used to apply
+/// `UPPER(TRIM(column))` on the stored side instead, which no index could
+/// serve -- a sequential scan per call; DB review 2026-09-27 F1. Production
+/// held no un-normalised code in any of these columns when that changed.)
+pub fn normalize_code(raw: &str) -> String {
+    raw.trim().to_ascii_uppercase()
+}
+
+/// `items` with only the LAST item per key kept, in input order -- what a
+/// per-row upsert loop left behind for a batch naming one key twice. A
+/// single `INSERT ... SELECT FROM UNNEST ... ON CONFLICT DO UPDATE` refuses
+/// to touch one row twice, so every batched upsert below dedups first.
+fn last_per_key<T, K: Eq + std::hash::Hash>(items: &[T], key: impl Fn(&T) -> K) -> Vec<&T> {
+    let mut last: HashMap<K, usize> = HashMap::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        last.insert(key(item), index);
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(index, item)| last.get(&key(item)) == Some(index))
+        .map(|(_, item)| item)
+        .collect()
+}
+
+/// Records that `source`'s poller delivered a (non-empty) batch just now.
+/// `ingest_freshness` is what the `last_*_fetch` freshness reads use for
+/// these sources: the upserts below leave an unchanged row completely
+/// untouched (no-op guards, DB review 2026-09-27 F3), so the per-row
+/// `fetched_at`/`computed_at` columns can no longer answer "when did this
+/// feed last land" by `MAX()` -- and one row per source is also what lets
+/// `/public/freshness` be a single cheap query.
+async fn record_ingest(conn: &mut sqlx::PgConnection, source: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO ingest_freshness (source, fetched_at) VALUES ($1, NOW()) \
+         ON CONFLICT (source) DO UPDATE SET fetched_at = EXCLUDED.fetched_at",
+    )
+    .bind(source)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Incidents are upserted in chunks of this size, each as its own
 /// transaction, rather than one transaction for the whole poll batch --
 /// see the `upsert_incidents` doc comment for why.
@@ -160,6 +207,15 @@ pub async fn upsert_incidents(
                     is_cleared        = EXCLUDED.is_cleared,
                     fetched_at        = NOW(),
                     affected_lines    = EXCLUDED.affected_lines
+                WHERE (incidents.summary, incidents.description, incidents.operators,
+                       incidents.affected_stations, incidents.priority,
+                       incidents.validity_periods, incidents.is_planned,
+                       incidents.is_cleared, incidents.affected_lines)
+                      IS DISTINCT FROM
+                      (EXCLUDED.summary, EXCLUDED.description, EXCLUDED.operators,
+                       EXCLUDED.affected_stations, EXCLUDED.priority,
+                       EXCLUDED.validity_periods, EXCLUDED.is_planned,
+                       EXCLUDED.is_cleared, EXCLUDED.affected_lines)
                 "#,
             )
             .bind(&incident.incident_id)
@@ -199,6 +255,25 @@ pub async fn upsert_incidents(
             }
 
             count += 1;
+        }
+
+        // `fetched_at` is shown per incident ("Last updated from National
+        // Rail") so it must still advance for every incident in the feed,
+        // changed or not. The upsert above skips an unchanged row entirely;
+        // this bumps ONLY `fetched_at` on those, in one statement. Updating
+        // just that unindexed column is a HOT update that reuses the row's
+        // TOASTed text/array values and touches none of the GIN indexes,
+        // instead of the full-row rewrite every incident got every cycle.
+        // Rows the upsert just wrote already hold this transaction's NOW().
+        sqlx::query(
+            "UPDATE incidents SET fetched_at = NOW() \
+             WHERE incident_id = ANY($1) AND fetched_at <> NOW()",
+        )
+        .bind(&chunk_ids)
+        .execute(&mut *tx)
+        .await?;
+        if !chunk.is_empty() {
+            record_ingest(&mut tx, "incidents").await?;
         }
 
         tx.commit().await?;
@@ -249,69 +324,100 @@ pub async fn upsert_incidents(
 /// reference data, not an event stream (see the reference-data migration's
 /// comment).
 pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-
-    for station in stations {
-        sqlx::query(
-            r#"
-            INSERT INTO stations (crs, name, latitude, longitude, station_operator, accessibility, fetched_at)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
-            ON CONFLICT (crs) DO UPDATE SET
-                name             = EXCLUDED.name,
-                latitude         = EXCLUDED.latitude,
-                longitude        = EXCLUDED.longitude,
-                station_operator = EXCLUDED.station_operator,
-                accessibility    = EXCLUDED.accessibility,
-                fetched_at       = NOW()
-            "#,
-        )
-        .bind(&station.crs)
-        .bind(&station.name)
-        .bind(station.latitude)
-        .bind(station.longitude)
-        .bind(&station.station_operator)
-        .bind(&station.accessibility)
-        .execute(&mut *tx)
-        .await?;
-
-        count += 1;
+    if stations.is_empty() {
+        return Ok(0);
     }
+    let batch = last_per_key(stations, |station| normalize_code(&station.crs));
+    let crs: Vec<String> = batch.iter().map(|s| normalize_code(&s.crs)).collect();
+    let names: Vec<&str> = batch.iter().map(|s| s.name.as_str()).collect();
+    let latitudes: Vec<Option<f64>> = batch.iter().map(|s| s.latitude).collect();
+    let longitudes: Vec<Option<f64>> = batch.iter().map(|s| s.longitude).collect();
+    let operators: Vec<Option<&str>> = batch
+        .iter()
+        .map(|s| s.station_operator.as_deref())
+        .collect();
+    let accessibility: Vec<&serde_json::Value> = batch.iter().map(|s| &s.accessibility).collect();
 
+    let mut tx = pool.begin().await?;
+    // `fetched_at` now means "when this row last CHANGED"; the feed-level
+    // "last fetched" lives in `ingest_freshness` (see `record_ingest`).
+    sqlx::query(
+        r#"
+        INSERT INTO stations (crs, name, latitude, longitude, station_operator, accessibility, fetched_at)
+        SELECT crs, name, latitude, longitude, station_operator, accessibility, NOW()
+        FROM UNNEST($1::text[], $2::text[], $3::float8[], $4::float8[], $5::text[], $6::jsonb[])
+            AS i(crs, name, latitude, longitude, station_operator, accessibility)
+        ON CONFLICT (crs) DO UPDATE SET
+            name             = EXCLUDED.name,
+            latitude         = EXCLUDED.latitude,
+            longitude        = EXCLUDED.longitude,
+            station_operator = EXCLUDED.station_operator,
+            accessibility    = EXCLUDED.accessibility,
+            fetched_at       = NOW()
+        WHERE (stations.name, stations.latitude, stations.longitude,
+               stations.station_operator, stations.accessibility)
+              IS DISTINCT FROM
+              (EXCLUDED.name, EXCLUDED.latitude, EXCLUDED.longitude,
+               EXCLUDED.station_operator, EXCLUDED.accessibility)
+        "#,
+    )
+    .bind(&crs)
+    .bind(&names)
+    .bind(&latitudes)
+    .bind(&longitudes)
+    .bind(&operators)
+    .bind(&accessibility)
+    .execute(&mut *tx)
+    .await?;
+    record_ingest(&mut tx, "stations").await?;
     tx.commit().await?;
-    Ok(count)
+    Ok(stations.len() as u64)
 }
 
 /// Upserts a batch of station samples (LDBWS departure-board snapshots).
 /// No history — this is a point-in-time sample, wholesale-replaced per
 /// poll, same rationale as `upsert_stations`/`upsert_tocs`.
 pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-
-    for sample in samples {
-        let departures_json = serde_json::to_value(&sample.departures)?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO station_samples (crs, polled_at, departures)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (crs) DO UPDATE SET
-                polled_at  = EXCLUDED.polled_at,
-                departures = EXCLUDED.departures
-            "#,
-        )
-        .bind(&sample.crs)
-        .bind(sample.polled_at)
-        .bind(&departures_json)
-        .execute(&mut *tx)
-        .await?;
-
-        count += 1;
+    if samples.is_empty() {
+        return Ok(0);
     }
+    let batch = last_per_key(samples, |sample| normalize_code(&sample.crs));
+    let crs: Vec<String> = batch.iter().map(|s| normalize_code(&s.crs)).collect();
+    let polled_at: Vec<chrono::DateTime<chrono::Utc>> = batch.iter().map(|s| s.polled_at).collect();
+    let departures: Vec<serde_json::Value> = batch
+        .iter()
+        .map(|s| serde_json::to_value(&s.departures))
+        .collect::<Result<_, _>>()?;
 
-    tx.commit().await?;
-    Ok(count)
+    // `polled_at` is the sample's own age, read per station, so it must
+    // advance on every poll even when the board is unchanged. The narrowest
+    // write that allows: skip the row only when NOTHING differs, and when
+    // only `polled_at` moved, carry the stored `departures` value over
+    // (`ELSE station_samples.departures`) rather than rewriting an equal
+    // one -- Postgres then reuses the existing TOAST chunks instead of
+    // writing new ones and leaving the old ones dead, and the update stays
+    // HOT (no indexed column changes).
+    sqlx::query(
+        r#"
+        INSERT INTO station_samples (crs, polled_at, departures)
+        SELECT * FROM UNNEST($1::text[], $2::timestamptz[], $3::jsonb[])
+        ON CONFLICT (crs) DO UPDATE SET
+            polled_at  = EXCLUDED.polled_at,
+            departures = CASE
+                WHEN station_samples.departures IS DISTINCT FROM EXCLUDED.departures
+                THEN EXCLUDED.departures
+                ELSE station_samples.departures
+            END
+        WHERE (station_samples.polled_at, station_samples.departures)
+              IS DISTINCT FROM (EXCLUDED.polled_at, EXCLUDED.departures)
+        "#,
+    )
+    .bind(&crs)
+    .bind(&polled_at)
+    .bind(&departures)
+    .execute(pool)
+    .await?;
+    Ok(samples.len() as u64)
 }
 
 /// Upserts a batch of per-(crs, operator) full-coverage rows. No
@@ -324,33 +430,46 @@ pub async fn upsert_station_full_coverage_samples(
     pool: &PgPool,
     samples: &[StationFullCoverageSample],
 ) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-
-    for sample in samples {
-        let stats_json = serde_json::to_value(&sample.stats)?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (crs, operator) DO UPDATE SET
-                resolved_at = EXCLUDED.resolved_at,
-                stats       = EXCLUDED.stats
-            "#,
-        )
-        .bind(&sample.crs)
-        .bind(&sample.operator)
-        .bind(sample.resolved_at)
-        .bind(&stats_json)
-        .execute(&mut *tx)
-        .await?;
-
-        count += 1;
+    if samples.is_empty() {
+        return Ok(0);
     }
+    let batch = last_per_key(samples, |sample| {
+        (normalize_code(&sample.crs), sample.operator.clone())
+    });
+    let crs: Vec<String> = batch.iter().map(|s| normalize_code(&s.crs)).collect();
+    let operators: Vec<&str> = batch.iter().map(|s| s.operator.as_str()).collect();
+    let resolved_at: Vec<chrono::DateTime<chrono::Utc>> =
+        batch.iter().map(|s| s.resolved_at).collect();
+    let stats: Vec<serde_json::Value> = batch
+        .iter()
+        .map(|s| serde_json::to_value(&s.stats))
+        .collect::<Result<_, _>>()?;
 
-    tx.commit().await?;
-    Ok(count)
+    // Same shape as `upsert_station_samples`: `resolved_at` is the row's
+    // own age and must advance each cycle; an identical row is skipped and
+    // an unchanged `stats` value is carried over, not rewritten.
+    sqlx::query(
+        r#"
+        INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats)
+        SELECT * FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::jsonb[])
+        ON CONFLICT (crs, operator) DO UPDATE SET
+            resolved_at = EXCLUDED.resolved_at,
+            stats       = CASE
+                WHEN station_full_coverage_samples.stats IS DISTINCT FROM EXCLUDED.stats
+                THEN EXCLUDED.stats
+                ELSE station_full_coverage_samples.stats
+            END
+        WHERE (station_full_coverage_samples.resolved_at, station_full_coverage_samples.stats)
+              IS DISTINCT FROM (EXCLUDED.resolved_at, EXCLUDED.stats)
+        "#,
+    )
+    .bind(&crs)
+    .bind(&operators)
+    .bind(&resolved_at)
+    .bind(&stats)
+    .execute(pool)
+    .await?;
+    Ok(samples.len() as u64)
 }
 
 /// Pure diff check, factored out of `upsert_tfl_line_status` so it's
@@ -472,11 +591,21 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
             r#"
             INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
             VALUES ($1, $2, $3, $4, $5, NOW(), 'tfl')
+            -- `computed_at` is served per line as the status's own
+            -- timestamp, so every TfL row in the feed is still written each
+            -- poll. The narrowing: an unchanged `statuses` value is carried
+            -- over (`ELSE line_status.statuses`) instead of rewritten, so
+            -- its TOAST chunks are reused rather than duplicated and left
+            -- dead (prod: 9770 dead vs 614 live TOAST tuples in 20 minutes).
             ON CONFLICT (line_id) DO UPDATE SET
                 name        = EXCLUDED.name,
                 mode_name   = EXCLUDED.mode_name,
                 operators   = EXCLUDED.operators,
-                statuses    = EXCLUDED.statuses,
+                statuses    = CASE
+                    WHEN line_status.statuses IS DISTINCT FROM EXCLUDED.statuses
+                    THEN EXCLUDED.statuses
+                    ELSE line_status.statuses
+                END,
                 computed_at = NOW(),
                 source      = 'tfl'
             WHERE line_status.source = 'tfl'
@@ -513,6 +642,8 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
 
         count += 1;
     }
+
+    record_ingest(&mut tx, "tfl").await?;
 
     // A TfL line that leaves the feed (a renamed id, a withdrawn service)
     // has no other way of disappearing — `/public/lines` derives its TfL
@@ -577,45 +708,87 @@ pub async fn tfl_line_summaries(pool: &PgPool) -> Result<Vec<TflLineSummaryRow>>
 pub async fn last_tfl_line_status_fetch(
     pool: &PgPool,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let (computed_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
-        sqlx::query_as("SELECT MAX(computed_at) FROM line_status WHERE source = 'tfl'")
-            .fetch_one(pool)
-            .await?;
-    Ok(computed_at)
+    last_ingest(pool, "tfl").await
+}
+
+/// `ingest_freshness.fetched_at` for one source (see `record_ingest`), or
+/// `None` if that source has never delivered.
+async fn last_ingest(pool: &PgPool, source: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    Ok(
+        sqlx::query_scalar("SELECT fetched_at FROM ingest_freshness WHERE source = $1")
+            .bind(source)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Every `/public/freshness` timestamp in ONE query (it used to be five
+/// concurrent `MAX()` scans on five pooled connections per request; DB
+/// review 2026-09-27 F10/F11). Same values as the five `last_*_fetch`
+/// functions: `(stations, tocs, incidents, tfl, schedule_feed)`.
+pub async fn data_freshness(pool: &PgPool) -> Result<[Option<chrono::DateTime<chrono::Utc>>; 5]> {
+    let row: (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT \
+            (SELECT fetched_at FROM ingest_freshness WHERE source = 'stations'), \
+            (SELECT fetched_at FROM ingest_freshness WHERE source = 'tocs'), \
+            (SELECT fetched_at FROM ingest_freshness WHERE source = 'incidents'), \
+            (SELECT fetched_at FROM ingest_freshness WHERE source = 'tfl'), \
+            (SELECT MAX(delivered_at) FROM schedule_feed_ingests)",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok([row.0, row.1, row.2, row.3, row.4])
 }
 
 /// Upserts a batch of TOC reference records. No history, same rationale as
 /// `upsert_stations`.
 pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-
-    for toc in tocs {
-        sqlx::query(
-            r#"
-            INSERT INTO tocs (atoc_code, name, legal_name, atoc_member, station_operator, fetched_at)
-            VALUES ($1, $2, $3, $4, $5, NOW())
-            ON CONFLICT (atoc_code) DO UPDATE SET
-                name             = EXCLUDED.name,
-                legal_name       = EXCLUDED.legal_name,
-                atoc_member      = EXCLUDED.atoc_member,
-                station_operator = EXCLUDED.station_operator,
-                fetched_at       = NOW()
-            "#,
-        )
-        .bind(&toc.atoc_code)
-        .bind(&toc.name)
-        .bind(&toc.legal_name)
-        .bind(toc.atoc_member)
-        .bind(toc.station_operator)
-        .execute(&mut *tx)
-        .await?;
-
-        count += 1;
+    if tocs.is_empty() {
+        return Ok(0);
     }
+    let batch = last_per_key(tocs, |toc| toc.atoc_code.clone());
+    let codes: Vec<&str> = batch.iter().map(|t| t.atoc_code.as_str()).collect();
+    let names: Vec<&str> = batch.iter().map(|t| t.name.as_str()).collect();
+    let legal_names: Vec<&str> = batch.iter().map(|t| t.legal_name.as_str()).collect();
+    let members: Vec<Option<bool>> = batch.iter().map(|t| t.atoc_member).collect();
+    let station_operators: Vec<Option<bool>> = batch.iter().map(|t| t.station_operator).collect();
 
+    let mut tx = pool.begin().await?;
+    // `fetched_at` now means "when this row last CHANGED"; the feed-level
+    // "last fetched" lives in `ingest_freshness` (see `record_ingest`).
+    sqlx::query(
+        r#"
+        INSERT INTO tocs (atoc_code, name, legal_name, atoc_member, station_operator, fetched_at)
+        SELECT atoc_code, name, legal_name, atoc_member, station_operator, NOW()
+        FROM UNNEST($1::text[], $2::text[], $3::text[], $4::bool[], $5::bool[])
+            AS i(atoc_code, name, legal_name, atoc_member, station_operator)
+        ON CONFLICT (atoc_code) DO UPDATE SET
+            name             = EXCLUDED.name,
+            legal_name       = EXCLUDED.legal_name,
+            atoc_member      = EXCLUDED.atoc_member,
+            station_operator = EXCLUDED.station_operator,
+            fetched_at       = NOW()
+        WHERE (tocs.name, tocs.legal_name, tocs.atoc_member, tocs.station_operator)
+              IS DISTINCT FROM
+              (EXCLUDED.name, EXCLUDED.legal_name, EXCLUDED.atoc_member, EXCLUDED.station_operator)
+        "#,
+    )
+    .bind(&codes)
+    .bind(&names)
+    .bind(&legal_names)
+    .bind(&members)
+    .bind(&station_operators)
+    .execute(&mut *tx)
+    .await?;
+    record_ingest(&mut tx, "tocs").await?;
     tx.commit().await?;
-    Ok(count)
+    Ok(tocs.len() as u64)
 }
 
 /// Timestamp of the most recent successful ingest for each poller-fed
@@ -628,27 +801,15 @@ pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
 /// (not `fetch_optional`) is deliberate here, matching that: it's the
 /// *column* that's optional, not the row.
 pub async fn last_stations_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
-        sqlx::query_as("SELECT MAX(fetched_at) FROM stations")
-            .fetch_one(pool)
-            .await?;
-    Ok(fetched_at)
+    last_ingest(pool, "stations").await
 }
 
 pub async fn last_tocs_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
-        sqlx::query_as("SELECT MAX(fetched_at) FROM tocs")
-            .fetch_one(pool)
-            .await?;
-    Ok(fetched_at)
+    last_ingest(pool, "tocs").await
 }
 
 pub async fn last_incidents_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
-        sqlx::query_as("SELECT MAX(fetched_at) FROM incidents")
-            .fetch_one(pool)
-            .await?;
-    Ok(fetched_at)
+    last_ingest(pool, "incidents").await
 }
 
 pub async fn last_station_samples_fetch(
@@ -782,37 +943,48 @@ pub async fn insert_schedule_reference_publish(pool: &PgPool, delivery: &str) ->
 /// for the cleanup half of a real publish cycle, and its own doc comment
 /// for why that is a SEPARATE function rather than folded into this one.
 pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord]) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-
-    for record in records {
-        sqlx::query(
-            r#"
-            INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, change_time_minutes, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
-            ON CONFLICT (stanox) DO UPDATE SET
-                crs                 = EXCLUDED.crs,
-                tiploc              = EXCLUDED.tiploc,
-                station_name        = EXCLUDED.station_name,
-                source_sequence     = EXCLUDED.source_sequence,
-                change_time_minutes = EXCLUDED.change_time_minutes,
-                updated_at          = NOW()
-            "#,
-        )
-        .bind(&record.stanox)
-        .bind(&record.crs)
-        .bind(&record.tiploc)
-        .bind(&record.station_name)
-        .bind(record.source_sequence)
-        .bind(record.change_time_minutes)
-        .execute(&mut *tx)
-        .await?;
-
-        count += 1;
+    if records.is_empty() {
+        return Ok(0);
     }
+    let batch = last_per_key(records, |record| record.stanox.clone());
+    let stanox: Vec<&str> = batch.iter().map(|r| r.stanox.as_str()).collect();
+    let crs: Vec<String> = batch.iter().map(|r| normalize_code(&r.crs)).collect();
+    let tiploc: Vec<String> = batch.iter().map(|r| normalize_code(&r.tiploc)).collect();
+    let station_name: Vec<&str> = batch.iter().map(|r| r.station_name.as_str()).collect();
+    let source_sequence: Vec<i32> = batch.iter().map(|r| r.source_sequence).collect();
+    let change_time: Vec<Option<i32>> = batch.iter().map(|r| r.change_time_minutes).collect();
 
-    tx.commit().await?;
-    Ok(count)
+    // `updated_at` means "last changed": an unchanged row is left alone
+    // (nothing reads `updated_at`; every delivery re-sends the whole table).
+    sqlx::query(
+        r#"
+        INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, change_time_minutes, updated_at)
+        SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes, NOW()
+        FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int4[], $6::int4[])
+            AS i(stanox, crs, tiploc, station_name, source_sequence, change_time_minutes)
+        ON CONFLICT (stanox) DO UPDATE SET
+            crs                 = EXCLUDED.crs,
+            tiploc              = EXCLUDED.tiploc,
+            station_name        = EXCLUDED.station_name,
+            source_sequence     = EXCLUDED.source_sequence,
+            change_time_minutes = EXCLUDED.change_time_minutes,
+            updated_at          = NOW()
+        WHERE (stanox_crs.crs, stanox_crs.tiploc, stanox_crs.station_name,
+               stanox_crs.source_sequence, stanox_crs.change_time_minutes)
+              IS DISTINCT FROM
+              (EXCLUDED.crs, EXCLUDED.tiploc, EXCLUDED.station_name,
+               EXCLUDED.source_sequence, EXCLUDED.change_time_minutes)
+        "#,
+    )
+    .bind(&stanox)
+    .bind(&crs)
+    .bind(&tiploc)
+    .bind(&station_name)
+    .bind(&source_sequence)
+    .bind(&change_time)
+    .execute(pool)
+    .await?;
+    Ok(records.len() as u64)
 }
 
 /// Deletes every `stanox_crs` row whose `stanox` is absent from
@@ -902,21 +1074,23 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
 /// station's code cover" lookup Decision 3 step 3 of
 /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md
 /// calls for (`list_stanox_crs`'s existing `WHERE`-less shape returns
-/// everything; this is its `WHERE crs = $1` sibling). `UPPER(TRIM(...))`
-/// on both sides, matching `TRACKED_TRAIN_STATE_SELECT`'s own established
-/// convention -- `tracked_trains.pin_origin_crs` is never
+/// everything; this is its `WHERE crs = $1` sibling). The input is
+/// normalised because callers pass un-normalised codes --
+/// `tracked_trains.pin_origin_crs` is never
 /// case-normalized at write time (`validate_pin` doesn't uppercase it),
 /// so a case-insensitive compare here is load-bearing, not defensive
 /// tidiness.
 ///
-/// This file's convention for every TIPLOC/CRS equality lookup is
-/// `UPPER(TRIM(column)) = UPPER(TRIM(parameter))`: a Signal Box Audit Low
+/// Every TIPLOC/CRS equality lookup in this file normalises its input with
+/// [`normalize_code`] and compares it to the plain column (here
+/// `UPPER(crs)` on `tiploc_crs`, matching `tiploc_crs_crs_idx`, and plain
+/// `crs` on `stanox_crs`, matching `stanox_crs_crs`). History: a Signal Box Audit Low
 /// finding found the lookups in this file disagreeing -- some raw, some
 /// `UPPER`-only, one pair (`crs_for_tiploc`/`crs_for_tiplocs_batch`)
 /// already `UPPER`+`TRIM` -- so two functions that both claimed to
 /// resolve "the same" code could silently return different answers for a
 /// lowercase or whitespace-padded input depending on which one a caller
-/// happened to call. `UPPER(TRIM(...))` is now applied uniformly across
+/// happened to call. The same normalisation is now applied uniformly across
 /// every such lookup in this file (see `latest_station_sample`,
 /// `latest_station_full_coverage_samples`,
 /// `latest_schedule_network_departures`, `list_fixed_links_from_crs`,
@@ -946,14 +1120,14 @@ pub async fn list_stanox_crs_for_crs(
         "SELECT DISTINCT ON (tiploc) tiploc, crs, station_name, stanox, source_sequence, change_time_minutes \
          FROM ( \
              SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 1 AS priority \
-             FROM tiploc_crs WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1)) \
+             FROM tiploc_crs WHERE UPPER(crs) = $1 \
              UNION ALL \
              SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 2 AS priority \
-             FROM stanox_crs WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1)) \
+             FROM stanox_crs WHERE crs = $1 \
          ) merged \
          ORDER BY tiploc, priority",
     )
-    .bind(crs)
+    .bind(normalize_code(crs))
     .fetch_all(pool)
     .await?;
 
@@ -979,37 +1153,47 @@ pub async fn list_stanox_crs_for_crs(
 /// [`prune_tiploc_crs_not_in`], the direct sibling of
 /// [`prune_stanox_crs_not_in`], for the cleanup half.
 pub async fn upsert_tiploc_crs(pool: &PgPool, records: &[common::TiplocCrsRecord]) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-
-    for record in records {
-        sqlx::query(
-            r#"
-            INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
-            ON CONFLICT (tiploc) DO UPDATE SET
-                crs                  = EXCLUDED.crs,
-                station_name         = EXCLUDED.station_name,
-                stanox               = EXCLUDED.stanox,
-                source_sequence      = EXCLUDED.source_sequence,
-                change_time_minutes  = EXCLUDED.change_time_minutes,
-                updated_at           = NOW()
-            "#,
-        )
-        .bind(&record.tiploc)
-        .bind(&record.crs)
-        .bind(&record.station_name)
-        .bind(&record.stanox)
-        .bind(record.source_sequence)
-        .bind(record.change_time_minutes)
-        .execute(&mut *tx)
-        .await?;
-
-        count += 1;
+    if records.is_empty() {
+        return Ok(0);
     }
+    let batch = last_per_key(records, |record| normalize_code(&record.tiploc));
+    let tiploc: Vec<String> = batch.iter().map(|r| normalize_code(&r.tiploc)).collect();
+    let crs: Vec<String> = batch.iter().map(|r| normalize_code(&r.crs)).collect();
+    let station_name: Vec<&str> = batch.iter().map(|r| r.station_name.as_str()).collect();
+    let stanox: Vec<&str> = batch.iter().map(|r| r.stanox.as_str()).collect();
+    let source_sequence: Vec<i32> = batch.iter().map(|r| r.source_sequence).collect();
+    let change_time: Vec<Option<i32>> = batch.iter().map(|r| r.change_time_minutes).collect();
 
-    tx.commit().await?;
-    Ok(count)
+    // `updated_at` means "last changed", as in `upsert_stanox_crs`.
+    sqlx::query(
+        r#"
+        INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, updated_at)
+        SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, NOW()
+        FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int4[], $6::int4[])
+            AS i(tiploc, crs, station_name, stanox, source_sequence, change_time_minutes)
+        ON CONFLICT (tiploc) DO UPDATE SET
+            crs                  = EXCLUDED.crs,
+            station_name         = EXCLUDED.station_name,
+            stanox               = EXCLUDED.stanox,
+            source_sequence      = EXCLUDED.source_sequence,
+            change_time_minutes  = EXCLUDED.change_time_minutes,
+            updated_at           = NOW()
+        WHERE (tiploc_crs.crs, tiploc_crs.station_name, tiploc_crs.stanox,
+               tiploc_crs.source_sequence, tiploc_crs.change_time_minutes)
+              IS DISTINCT FROM
+              (EXCLUDED.crs, EXCLUDED.station_name, EXCLUDED.stanox,
+               EXCLUDED.source_sequence, EXCLUDED.change_time_minutes)
+        "#,
+    )
+    .bind(&tiploc)
+    .bind(&crs)
+    .bind(&station_name)
+    .bind(&stanox)
+    .bind(&source_sequence)
+    .bind(&change_time)
+    .execute(pool)
+    .await?;
+    Ok(records.len() as u64)
 }
 
 /// Deletes every `tiploc_crs` row whose `tiploc` is absent from
@@ -1022,8 +1206,10 @@ pub async fn prune_tiploc_crs_not_in(pool: &PgPool, keep_tiplocs: &[String]) -> 
     if keep_tiplocs.is_empty() {
         return Ok(0);
     }
+    // Stored TIPLOCs are `normalize_code`d by `upsert_tiploc_crs`.
+    let keep: Vec<String> = keep_tiplocs.iter().map(|t| normalize_code(t)).collect();
     let result = sqlx::query("DELETE FROM tiploc_crs WHERE NOT (tiploc = ANY($1))")
-        .bind(keep_tiplocs)
+        .bind(&keep)
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
@@ -1071,10 +1257,12 @@ pub async fn list_tiploc_crs(pool: &PgPool) -> Result<Vec<common::TiplocCrsRecor
         .collect())
 }
 
-/// Wholesale-replaces `fixed_links` with `records` in one transaction --
-/// see this plan's Judgment Call 4 for why this is a full replace, not a
+/// Makes `fixed_links` hold exactly `records` in one transaction -- see
+/// this plan's Judgment Call 4 for why this is a full replace, not a
 /// per-row `ON CONFLICT` upsert like `upsert_stanox_crs`: a real ALF row
-/// has no natural stable per-row key. At ~4,222 real rows (confirmed
+/// has no natural stable per-row key. Since 2026-09-27 the replace is a
+/// diff (whole-row identity, duplicates counted), so an unchanged delivery
+/// writes nothing instead of deleting and re-inserting ~4,600 rows. At ~4,222 real rows (confirmed
 /// against the sibling `Distant-Signal-MCP` project's own measurement,
 /// see this plan's header), this is cheap on every ~30-minute publish
 /// cycle. Called only when `schedule-reference` actually found an ALF
@@ -1104,41 +1292,125 @@ pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecor
         return Ok(0);
     }
 
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM fixed_links")
-        .execute(&mut *tx)
-        .await?;
+    // Whole-row identity; CRS codes compared in their stored, normalised form.
+    type LinkKey = (String, String, String, i32, String, String, String, i32);
 
-    let mut count = 0u64;
+    let mut tx = pool.begin().await?;
+    // A multiset diff against the stored table instead of DELETE-everything
+    // then re-INSERT-everything (DB review 2026-09-27 F2): a row has no
+    // natural key (see above), so identity is the whole row, and an
+    // identical row appearing N times is kept N times. Rows that match are
+    // left untouched; only surplus stored rows are deleted and only
+    // missing incoming rows inserted. `FOR UPDATE` keeps two concurrent
+    // publishes from both diffing against the same snapshot.
+    let existing: Vec<(
+        i64,
+        String,
+        String,
+        String,
+        i32,
+        String,
+        String,
+        String,
+        i32,
+    )> = sqlx::query_as(
+        "SELECT id, mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, \
+                    source_sequence \
+             FROM fixed_links ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut stored: HashMap<LinkKey, Vec<i64>> = HashMap::with_capacity(existing.len());
+    for (id, mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, seq) in existing {
+        let k: LinkKey = (
+            mode,
+            normalize_code(&from_crs),
+            normalize_code(&to_crs),
+            minutes,
+            valid_from,
+            valid_to,
+            days_mask,
+            seq,
+        );
+        stored.entry(k).or_default().push(id);
+    }
+    // `pop` below then keeps the OLDEST of identical stored rows.
+    for ids in stored.values_mut() {
+        ids.reverse();
+    }
+    let mut to_insert: Vec<LinkKey> = Vec::new();
     for record in records {
+        let k: LinkKey = (
+            record.mode.clone(),
+            normalize_code(&record.from_crs),
+            normalize_code(&record.to_crs),
+            record.minutes,
+            record.valid_from.clone(),
+            record.valid_to.clone(),
+            record.days_mask.clone(),
+            record.source_sequence,
+        );
+        match stored.get_mut(&k).and_then(Vec::pop) {
+            Some(_kept) => {}
+            None => to_insert.push(k),
+        }
+    }
+    let to_delete: Vec<i64> = stored.into_values().flatten().collect();
+
+    if !to_delete.is_empty() {
+        sqlx::query("DELETE FROM fixed_links WHERE id = ANY($1)")
+            .bind(&to_delete)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if !to_insert.is_empty() {
+        let mut modes = Vec::with_capacity(to_insert.len());
+        let mut from = Vec::with_capacity(to_insert.len());
+        let mut to = Vec::with_capacity(to_insert.len());
+        let mut minutes = Vec::with_capacity(to_insert.len());
+        let mut valid_from = Vec::with_capacity(to_insert.len());
+        let mut valid_to = Vec::with_capacity(to_insert.len());
+        let mut days_mask = Vec::with_capacity(to_insert.len());
+        let mut seq = Vec::with_capacity(to_insert.len());
+        for (m, f, t, mins, vf, vt, dm, sq) in to_insert {
+            modes.push(m);
+            from.push(f);
+            to.push(t);
+            minutes.push(mins);
+            valid_from.push(vf);
+            valid_to.push(vt);
+            days_mask.push(dm);
+            seq.push(sq);
+        }
         sqlx::query(
             r#"
             INSERT INTO fixed_links (mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, source_sequence, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            SELECT *, NOW()
+            FROM UNNEST($1::text[], $2::text[], $3::text[], $4::int4[], $5::text[], $6::text[], $7::text[], $8::int4[])
             "#,
         )
-        .bind(&record.mode)
-        .bind(&record.from_crs)
-        .bind(&record.to_crs)
-        .bind(record.minutes)
-        .bind(&record.valid_from)
-        .bind(&record.valid_to)
-        .bind(&record.days_mask)
-        .bind(record.source_sequence)
+        .bind(&modes)
+        .bind(&from)
+        .bind(&to)
+        .bind(&minutes)
+        .bind(&valid_from)
+        .bind(&valid_to)
+        .bind(&days_mask)
+        .bind(&seq)
         .execute(&mut *tx)
         .await?;
-        count += 1;
     }
 
     tx.commit().await?;
-    Ok(count)
+    Ok(records.len() as u64)
 }
 
 /// Every `fixed_links` row whose `from_crs` matches `crs` -- Phase 2's own
 /// read-side lookup shape (mirrors `list_stanox_crs_for_crs`'s own
-/// `WHERE crs = $1` pattern). Case-insensitive and trim-insensitive,
-/// matching this file's single `UPPER(TRIM(...))` normalization
-/// convention for every TIPLOC/CRS lookup (see `list_stanox_crs_for_crs`'s
+/// `WHERE crs = $1` pattern). Case-insensitive and trim-insensitive via
+/// [`normalize_code`] on the input (the column is stored normalised, so
+/// `fixed_links_from_crs` serves it), matching this file's single
+/// normalization convention for every TIPLOC/CRS lookup (see `list_stanox_crs_for_crs`'s
 /// doc comment for the regression this convention closes).
 pub async fn list_fixed_links_from_crs(
     pool: &PgPool,
@@ -1146,9 +1418,9 @@ pub async fn list_fixed_links_from_crs(
 ) -> Result<Vec<common::FixedLinkRecord>> {
     let rows = sqlx::query_as::<_, FixedLinkRow>(
         "SELECT mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, source_sequence \
-         FROM fixed_links WHERE UPPER(TRIM(from_crs)) = UPPER(TRIM($1))",
+         FROM fixed_links WHERE from_crs = $1",
     )
-    .bind(crs)
+    .bind(normalize_code(crs))
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -1249,26 +1521,25 @@ impl From<FixedLinkRow> for common::FixedLinkRecord {
 pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT UPPER(crs) FROM ( \
-             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs \
+             SELECT crs, 1 AS priority FROM tiploc_crs WHERE tiploc = $1 \
              UNION ALL \
-             SELECT tiploc, crs, 2 AS priority FROM stanox_crs \
+             SELECT crs, 2 AS priority FROM stanox_crs WHERE tiploc = $1 \
          ) merged \
-         WHERE UPPER(TRIM(tiploc)) = UPPER($1) \
          ORDER BY priority \
          LIMIT 1",
     )
-    .bind(tiploc.trim())
+    .bind(normalize_code(tiploc))
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(crs,)| crs))
 }
 
-/// Batched sibling of `crs_for_tiploc` -- one `WHERE UPPER(TRIM(tiploc)) =
-/// ANY($1)` query resolving every distinct TIPLOC in a calling-point list,
+/// Batched sibling of `crs_for_tiploc` -- one `WHERE tiploc = ANY($1)`
+/// query resolving every distinct TIPLOC in a calling-point list,
 /// instead of one query per TIPLOC. Mirrors the existing single/batch
 /// pairing convention `trains::find_or_create_train`/
 /// `find_or_create_trains_batch` already establishes. Keys are
-/// `UPPER(TRIM(tiploc))` -- see `crs_for_tiploc`'s own doc comment for why
+/// [`normalize_code`]d TIPLOCs (stored TIPLOCs are in that form) -- see `crs_for_tiploc`'s own doc comment for why
 /// the `TRIM` is load-bearing rather than cosmetic, and
 /// `journey::tiploc_key` for the matching Rust-side key a caller's `get`
 /// has to build. A TIPLOC with no row in either table is simply absent
@@ -1280,8 +1551,7 @@ pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String
 /// deterministically preferring a `tiploc_crs` row when the SAME TIPLOC
 /// exists in both tables with DIFFERENT CRS values -- see `crs_for_tiploc`
 /// above for why that matters and the `priority` pattern both share.
-/// `DISTINCT ON (UPPER(TRIM(tiploc)))` with `ORDER BY UPPER(TRIM(tiploc)),
-/// priority` picks the `tiploc_crs` row (priority 1) first per TIPLOC
+/// `DISTINCT ON (tiploc)` with `ORDER BY tiploc, priority` picks the `tiploc_crs` row (priority 1) first per TIPLOC
 /// before `.collect()` builds the map, so the result no longer depends on
 /// unspecified `UNION` row order.
 pub async fn crs_for_tiplocs_batch(
@@ -1291,15 +1561,14 @@ pub async fn crs_for_tiplocs_batch(
     if tiplocs.is_empty() {
         return Ok(HashMap::new());
     }
-    let upper: Vec<String> = tiplocs.iter().map(|t| t.trim().to_uppercase()).collect();
+    let upper: Vec<String> = tiplocs.iter().map(|t| normalize_code(t)).collect();
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT ON (UPPER(TRIM(tiploc))) UPPER(TRIM(tiploc)), UPPER(crs) FROM ( \
-             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs \
+        "SELECT DISTINCT ON (tiploc) tiploc, UPPER(crs) FROM ( \
+             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs WHERE tiploc = ANY($1) \
              UNION ALL \
-             SELECT tiploc, crs, 2 AS priority FROM stanox_crs \
+             SELECT tiploc, crs, 2 AS priority FROM stanox_crs WHERE tiploc = ANY($1) \
          ) merged \
-         WHERE UPPER(TRIM(tiploc)) = ANY($1) \
-         ORDER BY UPPER(TRIM(tiploc)), priority",
+         ORDER BY tiploc, priority",
     )
     .bind(&upper)
     .fetch_all(pool)
@@ -1719,37 +1988,41 @@ pub struct ScheduleNetworkDeparturesRow {
 /// Upserts one cycle's batch of per-station CIF-derived departures --
 /// wholesale replaces any existing row for each `(crs, service_date)` (a
 /// fresh cycle's grouping pass supersedes the prior one entirely, never
-/// merged), same shape as `upsert_full_coverage_line_stats`/
-/// `upsert_stanox_crs`: one transaction, one `INSERT ... ON CONFLICT` per
-/// row.
+/// merged): one `INSERT ... SELECT FROM UNNEST ... ON CONFLICT` for the
+/// batch, skipping boards identical to the stored one.
 pub async fn upsert_schedule_network_departures(
     pool: &PgPool,
     rows: &[ScheduleNetworkDeparturesRow],
 ) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-
-    for row in rows {
-        sqlx::query(
-            r#"
-            INSERT INTO schedule_network_departures (crs, service_date, departures, updated_at)
-            VALUES ($1, $2, $3, now())
-            ON CONFLICT (crs, service_date) DO UPDATE SET
-                departures = EXCLUDED.departures,
-                updated_at = EXCLUDED.updated_at
-            "#,
-        )
-        .bind(&row.crs)
-        .bind(row.service_date)
-        .bind(&row.departures)
-        .execute(&mut *tx)
-        .await?;
-
-        count += 1;
+    if rows.is_empty() {
+        return Ok(0);
     }
+    let batch = last_per_key(rows, |row| (normalize_code(&row.crs), row.service_date));
+    let crs: Vec<String> = batch.iter().map(|r| normalize_code(&r.crs)).collect();
+    let service_date: Vec<chrono::NaiveDate> = batch.iter().map(|r| r.service_date).collect();
+    let departures: Vec<&serde_json::Value> = batch.iter().map(|r| &r.departures).collect();
 
-    tx.commit().await?;
-    Ok(count)
+    // An unchanged `(crs, service_date)` board is left alone -- each cycle
+    // republishes every station's JSONB board, most of them identical to the
+    // last cycle's. `updated_at` therefore means "last changed" (nothing
+    // reads it).
+    sqlx::query(
+        r#"
+        INSERT INTO schedule_network_departures (crs, service_date, departures, updated_at)
+        SELECT crs, service_date, departures, now()
+        FROM UNNEST($1::text[], $2::date[], $3::jsonb[]) AS i(crs, service_date, departures)
+        ON CONFLICT (crs, service_date) DO UPDATE SET
+            departures = EXCLUDED.departures,
+            updated_at = EXCLUDED.updated_at
+        WHERE schedule_network_departures.departures IS DISTINCT FROM EXCLUDED.departures
+        "#,
+    )
+    .bind(&crs)
+    .bind(&service_date)
+    .bind(&departures)
+    .execute(pool)
+    .await?;
+    Ok(rows.len() as u64)
 }
 
 /// Reads one station's CIF-derived departures for one service date, if
@@ -1761,7 +2034,7 @@ pub async fn upsert_schedule_network_departures(
 /// `404`, the same honesty split `get_station_departures` already uses for
 /// `station_samples`.
 ///
-/// `UPPER(TRIM(crs)) = UPPER(TRIM($1))`, not a raw `=`: `crs` here comes straight off
+/// Input normalised with [`normalize_code`], not bound raw: `crs` here comes straight off
 /// the URL path (`Path<String>` in `routes::departures`, no normalization
 /// applied), and this file's other CRS lookups --
 /// `list_stanox_crs_for_crs`, `list_fixed_links_from_crs`,
@@ -1778,9 +2051,9 @@ pub async fn latest_schedule_network_departures(
     use sqlx::Row;
     let row = sqlx::query(
         "SELECT departures FROM schedule_network_departures \
-         WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1)) AND service_date = $2",
+         WHERE crs = $1 AND service_date = $2",
     )
-    .bind(crs)
+    .bind(normalize_code(crs))
     .bind(service_date)
     .fetch_optional(pool)
     .await?;
@@ -3716,7 +3989,9 @@ pub async fn full_coverage_line_stats_for_range(
 /// `blend_darwin_eta`), which needs one station's current departure board
 /// to look up against a tracked train's pin/next-calling-point.
 ///
-/// `UPPER(TRIM(crs)) = UPPER(TRIM($1))`: this is the exact odd-one-out this doc
+/// Input normalised with [`normalize_code`] and compared as `bpchar` (the
+/// column is `CHAR(3)`; a `text` parameter would cast the column instead and
+/// defeat `station_samples_pkey`). This is the exact odd-one-out this doc
 /// comment used to warn about -- every sibling CRS lookup in this file
 /// (`list_stanox_crs_for_crs`, `list_fixed_links_from_crs`,
 /// `station_names_for_crs_batch`) case-folds before comparing, but this
@@ -3724,7 +3999,7 @@ pub async fn full_coverage_line_stats_for_range(
 /// callers: `routes::departures::get_station_departures`, which binds
 /// `crs` straight off the URL path with no normalization, would 404 for
 /// a lowercase path segment even though the uppercase form resolved; and
-/// `station_skip::leg_skip_status` (the "origin-skip detection" this
+/// `station_skip::leg_skip_status_from_samples` (the "origin-skip detection" this
 /// backs -- §5.2 of the journey-tracking design), which would silently
 /// treat a leg as "no sample, not skipped" instead of actually checking,
 /// for any `journey_legs.origin_crs`/`destination_crs` that wasn't stored
@@ -3732,9 +4007,9 @@ pub async fn full_coverage_line_stats_for_range(
 pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<StationSample>> {
     use sqlx::Row;
     let row = sqlx::query(
-        "SELECT crs, polled_at, departures FROM station_samples WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1))",
+        "SELECT crs, polled_at, departures FROM station_samples WHERE crs = $1::bpchar",
     )
-    .bind(crs)
+    .bind(normalize_code(crs))
     .fetch_optional(pool)
     .await?;
 
@@ -3751,7 +4026,7 @@ pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<St
 
 /// [`latest_station_sample`]'s batched sibling: the current
 /// `station_samples` row for every CRS in `crs_codes` that has one, keyed
-/// by `UPPER(TRIM(crs))` (the same key normalization as
+/// by the [`normalize_code`]d CRS (the same key normalization as
 /// [`station_names_for_crs_batch`]). A CRS with no row is simply absent
 /// from the map. One query regardless of how many calling points a train
 /// has -- backs `journey::apply_station_sample_platforms`, which needs every
@@ -3764,10 +4039,10 @@ pub async fn latest_station_samples_for_crs_batch(
     if crs_codes.is_empty() {
         return Ok(HashMap::new());
     }
-    let upper: Vec<String> = crs_codes.iter().map(|c| c.trim().to_uppercase()).collect();
+    let upper: Vec<String> = crs_codes.iter().map(|c| normalize_code(c)).collect();
     let rows = sqlx::query(
-        "SELECT UPPER(TRIM(crs)) AS key, crs, polled_at, departures FROM station_samples \
-         WHERE UPPER(TRIM(crs)) = ANY($1)",
+        "SELECT TRIM(crs) AS key, crs, polled_at, departures FROM station_samples \
+         WHERE crs = ANY($1::bpchar[])",
     )
     .bind(&upper)
     .fetch_all(pool)
@@ -3793,7 +4068,7 @@ pub async fn latest_station_samples_for_crs_batch(
 /// `latest_station_sample`, one level finer -- design doc Decision 2.
 /// Empty `Vec` for every station today: no producer writes this table yet.
 ///
-/// `UPPER(TRIM(crs)) = UPPER(TRIM($1))`, matching `latest_station_sample`'s own fix
+/// Normalised input compared as `bpchar`, matching `latest_station_sample`'s own fix
 /// directly above (same table family, same `routes::station_stats`
 /// caller passing an un-normalized path segment) -- kept consistent
 /// rather than letting this sibling drift back into the same raw-`=` bug.
@@ -3804,9 +4079,9 @@ pub async fn latest_station_full_coverage_samples(
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT crs, operator, resolved_at, stats FROM station_full_coverage_samples \
-         WHERE UPPER(TRIM(crs)) = UPPER(TRIM($1))",
+         WHERE crs = $1::bpchar",
     )
-    .bind(crs)
+    .bind(normalize_code(crs))
     .fetch_all(pool)
     .await?;
 
@@ -5734,7 +6009,7 @@ pub async fn movement_events_for_train(
 /// several separate CRS codes rather than one join target. A code with no
 /// reference row is simply absent from the map.
 ///
-/// Keys are `UPPER(TRIM(...))` on both the input and the column, matching
+/// Keys are [`normalize_code`]d CRS codes (the stored form), matching
 /// this file's single TIPLOC/CRS normalization convention (see
 /// `list_stanox_crs_for_crs`'s doc comment).
 pub async fn station_names_for_crs_batch(
@@ -5744,13 +6019,12 @@ pub async fn station_names_for_crs_batch(
     if crs_codes.is_empty() {
         return Ok(HashMap::new());
     }
-    let upper: Vec<String> = crs_codes.iter().map(|c| c.trim().to_uppercase()).collect();
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT UPPER(TRIM(crs)), name FROM stations WHERE UPPER(TRIM(crs)) = ANY($1)",
-    )
-    .bind(&upper)
-    .fetch_all(pool)
-    .await?;
+    let upper: Vec<String> = crs_codes.iter().map(|c| normalize_code(c)).collect();
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT TRIM(crs), name FROM stations WHERE crs = ANY($1::bpchar[])")
+            .bind(&upper)
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().collect())
 }
 
@@ -7449,7 +7723,7 @@ mod stanox_crs_lookup_query_tests {
 /// so two functions that both claimed to resolve "the same" CRS could
 /// silently return different answers for the identical lowercase input
 /// depending on which one a caller happened to call. Every lookup in this
-/// file now normalizes with `UPPER(TRIM(...))` (see
+/// file now normalizes its input with `normalize_code` (see
 /// `list_stanox_crs_for_crs`'s doc comment for the full list); these
 /// tests seed one row and prove that two lookups which previously
 /// disagreed -- `latest_station_sample` (used to compare with a raw `=`)
@@ -11780,5 +12054,649 @@ mod schedule_destination_departures_row_serde_tests {
         null["rsid"] = serde_json::Value::Null;
         let row: ScheduleDestinationDeparturesRow = serde_json::from_value(null).unwrap();
         assert_eq!(row.rsid, None);
+    }
+}
+
+/// DB review 2026-09-27 (F1/F2/F3/F10, part 2 DB2-7/DB2-14): the no-op
+/// guards leave an unchanged row physically untouched (same `xmin`), the
+/// batched upserts still write real changes, lookups normalise their input
+/// so lowercase/padded codes still match, and those lookups can use the
+/// tables' own indexes.
+#[cfg(test)]
+mod db_review_guard_and_normalisation_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    async fn xmin(pool: &PgPool, sql: &str) -> String {
+        sqlx::query_scalar(sql)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|err| panic!("{sql}: {err}"))
+    }
+
+    /// `EXPLAIN` with sequential scans disabled: shows whether a predicate
+    /// can use `index` at all (tiny test tables would always seq-scan).
+    async fn assert_can_use_index(pool: &PgPool, sql: &str, index: &str) {
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("SET LOCAL enable_seqscan = off")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let plan: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {sql}"))
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap_or_else(|err| panic!("EXPLAIN {sql}: {err}"));
+        tx.rollback().await.unwrap();
+        let plan = plan.join("\n");
+        assert!(
+            plan.contains(index),
+            "expected {index} in the plan for {sql}:\n{plan}"
+        );
+    }
+
+    fn station(crs: &str, name: &str) -> StationReference {
+        StationReference {
+            crs: crs.to_string(),
+            name: name.to_string(),
+            latitude: Some(51.5),
+            longitude: Some(-0.1),
+            station_operator: Some("ZZ".to_string()),
+            accessibility: serde_json::json!({"stepFree": true}),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn stations_and_tocs_upserts_skip_unchanged_rows_and_record_freshness() {
+        let pool = test_pool().await;
+        let before = last_stations_fetch(&pool).await.unwrap();
+
+        upsert_stations(&pool, &[station(" zqa ", "Test Guard A")])
+            .await
+            .unwrap();
+        let first = xmin(&pool, "SELECT xmin::text FROM stations WHERE crs = 'ZQA'").await;
+        let fresh = last_stations_fetch(&pool).await.unwrap();
+        assert!(fresh.is_some() && fresh >= before);
+
+        upsert_stations(&pool, &[station("ZQA", "Test Guard A")])
+            .await
+            .unwrap();
+        assert_eq!(
+            xmin(&pool, "SELECT xmin::text FROM stations WHERE crs = 'ZQA'").await,
+            first,
+            "an identical station must not be rewritten"
+        );
+        assert!(last_stations_fetch(&pool).await.unwrap() >= fresh);
+
+        upsert_stations(&pool, &[station("ZQA", "Test Guard A (renamed)")])
+            .await
+            .unwrap();
+        assert_ne!(
+            xmin(&pool, "SELECT xmin::text FROM stations WHERE crs = 'ZQA'").await,
+            first,
+            "a changed station must be written"
+        );
+
+        let toc = |name: &str| TocReference {
+            atoc_code: "Z9".to_string(),
+            name: name.to_string(),
+            legal_name: "Test Guard Rail Ltd".to_string(),
+            atoc_member: Some(true),
+            station_operator: None,
+        };
+        upsert_tocs(&pool, &[toc("Test Guard Rail")]).await.unwrap();
+        let first = xmin(&pool, "SELECT xmin::text FROM tocs WHERE atoc_code = 'Z9'").await;
+        upsert_tocs(&pool, &[toc("Test Guard Rail")]).await.unwrap();
+        assert_eq!(
+            xmin(&pool, "SELECT xmin::text FROM tocs WHERE atoc_code = 'Z9'").await,
+            first
+        );
+        upsert_tocs(&pool, &[toc("Test Guard Rail 2")])
+            .await
+            .unwrap();
+        assert_ne!(
+            xmin(&pool, "SELECT xmin::text FROM tocs WHERE atoc_code = 'Z9'").await,
+            first
+        );
+        assert!(last_tocs_fetch(&pool).await.unwrap().is_some());
+
+        let [stations, tocs, ..] = data_freshness(&pool).await.unwrap();
+        assert_eq!(stations, last_stations_fetch(&pool).await.unwrap());
+        assert_eq!(tocs, last_tocs_fetch(&pool).await.unwrap());
+
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZQA'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM tocs WHERE atoc_code = 'Z9'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn station_sample_upserts_skip_identical_rows_and_keep_polled_at_advancing() {
+        let pool = test_pool().await;
+        let polled_at = chrono::Utc::now() - chrono::Duration::minutes(5);
+        let sample = |polled_at| StationSample {
+            crs: "zqb".to_string(),
+            polled_at,
+            departures: vec![],
+        };
+        upsert_station_samples(&pool, &[sample(polled_at)])
+            .await
+            .unwrap();
+        let first = xmin(
+            &pool,
+            "SELECT xmin::text FROM station_samples WHERE crs = 'ZQB'",
+        )
+        .await;
+        upsert_station_samples(&pool, &[sample(polled_at)])
+            .await
+            .unwrap();
+        assert_eq!(
+            xmin(
+                &pool,
+                "SELECT xmin::text FROM station_samples WHERE crs = 'ZQB'"
+            )
+            .await,
+            first,
+            "an identical sample must not be rewritten"
+        );
+        let later = polled_at + chrono::Duration::minutes(1);
+        upsert_station_samples(&pool, &[sample(later)])
+            .await
+            .unwrap();
+        let stored = latest_station_sample(&pool, " zqb ")
+            .await
+            .unwrap()
+            .expect("padded lowercase CRS must match");
+        assert_eq!(
+            stored.polled_at.timestamp_micros(),
+            later.timestamp_micros(),
+            "polled_at must still advance when the board is unchanged"
+        );
+        let batch = latest_station_samples_for_crs_batch(&pool, &[" zqb".to_string()])
+            .await
+            .unwrap();
+        assert!(batch.contains_key("ZQB"), "{:?}", batch.keys());
+
+        let stats = |total| common::SampleStats {
+            total,
+            delayed: 0,
+            cancelled: 0,
+            skipped: 0,
+            avg_delay_minutes: 0.0,
+        };
+        let full = |total, resolved_at| StationFullCoverageSample {
+            crs: "ZQB".to_string(),
+            operator: "ZZ".to_string(),
+            resolved_at,
+            stats: stats(total),
+        };
+        upsert_station_full_coverage_samples(&pool, &[full(3, polled_at)])
+            .await
+            .unwrap();
+        let first = xmin(
+            &pool,
+            "SELECT xmin::text FROM station_full_coverage_samples WHERE crs = 'ZQB'",
+        )
+        .await;
+        upsert_station_full_coverage_samples(&pool, &[full(3, polled_at)])
+            .await
+            .unwrap();
+        assert_eq!(
+            xmin(
+                &pool,
+                "SELECT xmin::text FROM station_full_coverage_samples WHERE crs = 'ZQB'"
+            )
+            .await,
+            first
+        );
+        upsert_station_full_coverage_samples(&pool, &[full(4, later)])
+            .await
+            .unwrap();
+        let rows = latest_station_full_coverage_samples(&pool, "zqb ")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].stats.total, 4);
+
+        sqlx::query("DELETE FROM station_samples WHERE crs = 'ZQB'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM station_full_coverage_samples WHERE crs = 'ZQB'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn crosswalk_upserts_skip_unchanged_rows_and_lookups_normalise_input() {
+        let pool = test_pool().await;
+        let stanox = |name: &str| common::StanoxCrsRecord {
+            stanox: "TEST-GUARD-STANOX".to_string(),
+            crs: "zqc".to_string(),
+            tiploc: " zqctest".to_string(),
+            station_name: name.to_string(),
+            source_sequence: 1,
+            change_time_minutes: None,
+        };
+        upsert_stanox_crs(&pool, &[stanox("GUARD C")])
+            .await
+            .unwrap();
+        let sql = "SELECT xmin::text FROM stanox_crs WHERE stanox = 'TEST-GUARD-STANOX'";
+        let first = xmin(&pool, sql).await;
+        upsert_stanox_crs(&pool, &[stanox("GUARD C")])
+            .await
+            .unwrap();
+        assert_eq!(xmin(&pool, sql).await, first);
+        upsert_stanox_crs(&pool, &[stanox("GUARD C2")])
+            .await
+            .unwrap();
+        assert_ne!(xmin(&pool, sql).await, first);
+
+        let tiploc = |name: &str| common::TiplocCrsRecord {
+            tiploc: "zqdtest ".to_string(),
+            crs: " zqd".to_string(),
+            station_name: name.to_string(),
+            stanox: "TEST-GUARD-STANOX-D".to_string(),
+            source_sequence: 1,
+            change_time_minutes: Some(5),
+        };
+        upsert_tiploc_crs(&pool, &[tiploc("GUARD D")])
+            .await
+            .unwrap();
+        let sql = "SELECT xmin::text FROM tiploc_crs WHERE tiploc = 'ZQDTEST'";
+        let first = xmin(&pool, sql).await;
+        upsert_tiploc_crs(&pool, &[tiploc("GUARD D")])
+            .await
+            .unwrap();
+        assert_eq!(xmin(&pool, sql).await, first);
+
+        // Stored normalised; lowercase/padded input still resolves.
+        assert_eq!(
+            crs_for_tiploc(&pool, " zqctest ").await.unwrap().as_deref(),
+            Some("ZQC")
+        );
+        assert_eq!(
+            crs_for_tiploc(&pool, "ZQDtest").await.unwrap().as_deref(),
+            Some("ZQD")
+        );
+        let batch = crs_for_tiplocs_batch(&pool, &["zqctest ".to_string(), " zqdtest".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(batch.get("ZQCTEST").map(String::as_str), Some("ZQC"));
+        assert_eq!(batch.get("ZQDTEST").map(String::as_str), Some("ZQD"));
+        let rows = list_stanox_crs_for_crs(&pool, " zqc ").await.unwrap();
+        assert!(rows.iter().any(|r| r.tiploc == "ZQCTEST"), "{rows:?}");
+        let rows = list_stanox_crs_for_crs(&pool, "zqd").await.unwrap();
+        assert!(rows.iter().any(|r| r.tiploc == "ZQDTEST"), "{rows:?}");
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-GUARD-STANOX'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM tiploc_crs WHERE tiploc = 'ZQDTEST'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn schedule_network_departures_upsert_skips_identical_boards() {
+        let pool = test_pool().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2099, 3, 1).unwrap();
+        let row = |departures: serde_json::Value| ScheduleNetworkDeparturesRow {
+            crs: "zqe ".to_string(),
+            service_date: date,
+            departures,
+        };
+        upsert_schedule_network_departures(&pool, &[row(serde_json::json!([{"a": 1}]))])
+            .await
+            .unwrap();
+        let sql = "SELECT xmin::text FROM schedule_network_departures \
+                   WHERE crs = 'ZQE' AND service_date = '2099-03-01'";
+        let first = xmin(&pool, sql).await;
+        upsert_schedule_network_departures(&pool, &[row(serde_json::json!([{"a": 1}]))])
+            .await
+            .unwrap();
+        assert_eq!(xmin(&pool, sql).await, first);
+        upsert_schedule_network_departures(&pool, &[row(serde_json::json!([{"a": 2}]))])
+            .await
+            .unwrap();
+        assert_ne!(xmin(&pool, sql).await, first);
+        assert_eq!(
+            latest_schedule_network_departures(&pool, " zqe", date)
+                .await
+                .unwrap(),
+            Some(serde_json::json!([{"a": 2}]))
+        );
+        sqlx::query("DELETE FROM schedule_network_departures WHERE crs = 'ZQE'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn fixed_links_upsert_is_a_diff_that_keeps_unchanged_rows() {
+        let pool = test_pool().await;
+        let link = |from: &str, minutes| common::FixedLinkRecord {
+            mode: "WALK".to_string(),
+            from_crs: from.to_string(),
+            to_crs: "ZQG".to_string(),
+            minutes,
+            valid_from: "0000".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111111".to_string(),
+            source_sequence: 1,
+        };
+        // Two identical rows (a real ALF shape) plus one other.
+        let first_set = vec![link("zqf", 5), link("ZQF", 5), link("ZQH", 7)];
+        upsert_fixed_links(&pool, &first_set).await.unwrap();
+        let snapshot = |pool: PgPool| async move {
+            sqlx::query_as::<_, (i64, String, String, i32)>(
+                "SELECT id, xmin::text, from_crs, minutes FROM fixed_links ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        let before = snapshot(pool.clone()).await;
+        assert_eq!(before.len(), 3, "{before:?}");
+
+        upsert_fixed_links(&pool, &first_set).await.unwrap();
+        assert_eq!(
+            snapshot(pool.clone()).await,
+            before,
+            "an identical delivery must write nothing"
+        );
+
+        // One duplicate dropped, one row changed: exactly those change.
+        upsert_fixed_links(&pool, &[link("ZQF", 5), link("ZQH", 8)])
+            .await
+            .unwrap();
+        let after = snapshot(pool.clone()).await;
+        assert_eq!(after.len(), 2, "{after:?}");
+        assert_eq!(after[0], before[0], "the kept ZQF row is untouched");
+        assert_eq!((after[1].2.as_str(), after[1].3), ("ZQH", 8));
+
+        let from = list_fixed_links_from_crs(&pool, " zqf ").await.unwrap();
+        assert_eq!(from.len(), 1);
+
+        sqlx::query("DELETE FROM fixed_links WHERE to_crs = 'ZQG'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn incidents_upsert_skips_unchanged_content_but_advances_fetched_at() {
+        let pool = test_pool().await;
+        let matcher = common::matcher::LineMatcher::new(&[]);
+        // A real Redis/Valkey (`REDIS_URL`, default the local one): with an
+        // unreachable placeholder the new incident's text-changed publish
+        // stalls in connection retries for minutes before giving up.
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis = redis::Client::open(redis_url).expect("parse redis url");
+        let incident = IncidentMessage {
+            incident_id: "TEST-GUARD-INCIDENT".to_string(),
+            summary: "Guard test".to_string(),
+            description: "Unchanged description".to_string(),
+            operators: vec!["ZZ".to_string()],
+            affected_stations: vec![],
+            priority: 2,
+            validity: vec![],
+            is_planned: false,
+            is_cleared: false,
+        };
+        upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&incident))
+            .await
+            .unwrap();
+        let (fetched_1, history_1): (chrono::DateTime<chrono::Utc>, i64) = sqlx::query_as(
+            "SELECT fetched_at, (SELECT COUNT(*) FROM incident_history \
+                                 WHERE incident_id = 'TEST-GUARD-INCIDENT') \
+             FROM incidents WHERE incident_id = 'TEST-GUARD-INCIDENT'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&incident))
+            .await
+            .unwrap();
+        let (fetched_2, history_2, description): (chrono::DateTime<chrono::Utc>, i64, String) =
+            sqlx::query_as(
+                "SELECT fetched_at, (SELECT COUNT(*) FROM incident_history \
+                                     WHERE incident_id = 'TEST-GUARD-INCIDENT'), description \
+                 FROM incidents WHERE incident_id = 'TEST-GUARD-INCIDENT'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(fetched_2 > fetched_1, "fetched_at must still advance");
+        assert_eq!(
+            history_1, history_2,
+            "no history row for an unchanged incident"
+        );
+        assert_eq!(description, "Unchanged description");
+        assert!(last_incidents_fetch(&pool).await.unwrap() >= Some(fetched_2));
+
+        sqlx::query("DELETE FROM incident_history WHERE incident_id = 'TEST-GUARD-INCIDENT'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM incidents WHERE incident_id = 'TEST-GUARD-INCIDENT'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn tfl_line_status_keeps_computed_at_advancing_without_duplicate_history() {
+        let pool = test_pool().await;
+        let report = common::LineStatusReport {
+            id: "TEST-GUARD-TFL".to_string(),
+            name: "Guard line".to_string(),
+            mode_name: "tube".to_string(),
+            operators: vec!["TfL".to_string()],
+            statuses: vec![],
+        };
+        upsert_tfl_line_status(&pool, std::slice::from_ref(&report))
+            .await
+            .unwrap();
+        let read = |pool: PgPool| async move {
+            sqlx::query_as::<_, (chrono::DateTime<chrono::Utc>, i64)>(
+                "SELECT computed_at, (SELECT COUNT(*) FROM line_status_history \
+                                      WHERE line_id = 'TEST-GUARD-TFL') \
+                 FROM line_status WHERE line_id = 'TEST-GUARD-TFL'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        let (computed_1, history_1) = read(pool.clone()).await;
+        upsert_tfl_line_status(&pool, std::slice::from_ref(&report))
+            .await
+            .unwrap();
+        let (computed_2, history_2) = read(pool.clone()).await;
+        assert!(computed_2 > computed_1);
+        assert_eq!(history_1, history_2);
+        assert_eq!(
+            last_tfl_line_status_fetch(&pool).await.unwrap(),
+            Some(computed_2)
+        );
+        sqlx::query("DELETE FROM line_status_history WHERE line_id = 'TEST-GUARD-TFL'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM line_status WHERE line_id = 'TEST-GUARD-TFL'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn trains_identity_writes_leave_an_unchanged_row_alone() {
+        let pool = test_pool().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2099, 3, 2).unwrap();
+        sqlx::query("DELETE FROM trains WHERE train_uid LIKE 'TEST-GUARD-T%'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let id = crate::data::trains::find_or_create_train(&pool, "TEST-GUARD-T1", date)
+            .await
+            .unwrap();
+        let sql = format!("SELECT xmin::text FROM trains WHERE id = {id}");
+        let first = xmin(&pool, &sql).await;
+        assert_eq!(
+            crate::data::trains::find_or_create_train(&pool, "TEST-GUARD-T1", date)
+                .await
+                .unwrap(),
+            id
+        );
+        assert_eq!(
+            xmin(&pool, &sql).await,
+            first,
+            "a known train is not rewritten"
+        );
+
+        let pairs = vec![
+            ("TEST-GUARD-T1".to_string(), date),
+            ("TEST-GUARD-T2".to_string(), date),
+        ];
+        let ids = crate::data::trains::find_or_create_trains_batch(&pool, &pairs)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[&pairs[0]], id);
+        assert_eq!(xmin(&pool, &sql).await, first);
+        let again = crate::data::trains::find_or_create_trains_batch(&pool, &pairs)
+            .await
+            .unwrap();
+        assert_eq!(again, ids);
+
+        crate::data::trains::mark_train_resolved(&pool, id, "9Z99")
+            .await
+            .unwrap();
+        let resolved = xmin(&pool, &sql).await;
+        assert_ne!(resolved, first);
+        crate::data::trains::mark_train_resolved(&pool, id, "9Z99")
+            .await
+            .unwrap();
+        crate::data::trains::mark_trains_resolved_batch(&pool, &[(id, "9Z99".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            xmin(&pool, &sql).await,
+            resolved,
+            "re-resolving to the same train_id is a no-op"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE train_uid LIKE 'TEST-GUARD-T%'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn station_names_batch_normalises_input() {
+        let pool = test_pool().await;
+        upsert_stations(&pool, &[station("ZQI", "Test Names I")])
+            .await
+            .unwrap();
+        let names = station_names_for_crs_batch(&pool, &[" zqi ".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(names.get("ZQI").map(String::as_str), Some("Test Names I"));
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZQI'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn code_lookups_can_use_their_indexes() {
+        let pool = test_pool().await;
+        for (sql, index) in [
+            (
+                "SELECT 1 FROM station_samples WHERE crs = 'KGX'::text::bpchar",
+                "station_samples_pkey",
+            ),
+            (
+                "SELECT 1 FROM station_samples WHERE crs = ANY(ARRAY['KGX']::text[]::bpchar[])",
+                "station_samples_pkey",
+            ),
+            (
+                "SELECT 1 FROM station_full_coverage_samples WHERE crs = 'KGX'::text::bpchar",
+                "station_full_coverage_samples_pkey",
+            ),
+            (
+                "SELECT 1 FROM stations WHERE crs = ANY(ARRAY['KGX']::text[]::bpchar[])",
+                "stations_pkey",
+            ),
+            (
+                "SELECT 1 FROM schedule_network_departures \
+                 WHERE crs = 'KGX'::text AND service_date = '2026-09-27'",
+                "schedule_network_departures_pkey",
+            ),
+            (
+                "SELECT 1 FROM fixed_links WHERE from_crs = 'KGX'::text",
+                "fixed_links_from_crs",
+            ),
+            (
+                "SELECT 1 FROM tiploc_crs WHERE UPPER(crs) = 'KGX'::text",
+                "tiploc_crs_crs_idx",
+            ),
+            (
+                "SELECT 1 FROM stanox_crs WHERE crs = 'KGX'::text",
+                "stanox_crs_crs",
+            ),
+            (
+                "SELECT 1 FROM tiploc_crs WHERE tiploc = ANY(ARRAY['KNGX']::text[])",
+                "tiploc_crs_pkey",
+            ),
+            (
+                "SELECT 1 FROM stanox_crs WHERE tiploc = ANY(ARRAY['KNGX']::text[])",
+                "stanox_crs_tiploc",
+            ),
+            (
+                "SELECT so.name FROM train_subscriptions tt \
+                 LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs)::bpchar \
+                 WHERE tt.id = 1",
+                "stations_pkey",
+            ),
+        ] {
+            assert_can_use_index(&pool, sql, index).await;
+        }
     }
 }

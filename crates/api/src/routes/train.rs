@@ -1210,40 +1210,66 @@ static SCHEDULE_MATCH_FAILURE_CACHE: std::sync::LazyLock<ScheduleMatchFailureCac
 /// something either read route should fail over.
 pub(crate) async fn blend_darwin_eta(
     app: &App,
-    mut state: train_tracking::TrackedTrainState,
+    state: train_tracking::TrackedTrainState,
 ) -> train_tracking::TrackedTrainState {
-    let Some(destination) = state
-        .pin_destination_crs
-        .as_deref()
-        .or(state.next_calling_point.as_deref())
+    let Some(pin_origin_crs) = darwin_blend_origin_crs(&state) else {
+        return state;
+    };
+    let Ok(sample) =
+        crate::data::queries::latest_station_sample(&app.database, pin_origin_crs).await
     else {
         return state;
     };
-    // `pin_origin_crs` is `Option` as of Fix 2 (it is `NULL` for an
-    // NR-primary subscription whose `trains` row has no schedule data yet).
-    // There is no origin station to fetch a Darwin departure board for in
-    // that case, so this overlay simply doesn't apply -- the same
-    // return-`state`-unchanged posture as the two failure branches around
-    // it, not an error.
-    let Some(pin_origin_crs) = state.pin_origin_crs.as_deref() else {
-        return state;
-    };
+    apply_darwin_eta(state, sample.as_ref())
+}
+
+/// The origin CRS whose departure board `blend_darwin_eta` would read for
+/// `state`, or `None` when the overlay cannot apply at all (so no sample
+/// needs fetching). Split out so a caller blending many states at once
+/// (`routes::journeys`' journey detail) can fetch every board in one
+/// batched query and hand each state its sample via [`apply_darwin_eta`].
+pub(crate) fn darwin_blend_origin_crs(state: &train_tracking::TrackedTrainState) -> Option<&str> {
+    // A destination to match against: the pin's, or failing that the
+    // currently-known next calling point.
+    state
+        .pin_destination_crs
+        .as_deref()
+        .or(state.next_calling_point.as_deref())?;
     // `pin_scheduled_departure` is what identifies WHICH row on that origin's
     // departure board this pin is (2026-09-25 review, High 3 -- see
     // `eta_blend::find_darwin_eta`). It is `NULL` for exactly the same
     // NR-primary shape `pin_origin_crs` is, and without it there is no way to
     // tell the tracked service apart from the next one to the same
-    // destination -- so the overlay declines rather than guessing, the same
-    // return-`state`-unchanged posture as every other branch here.
-    let Some(pin_scheduled_departure) = state.pin_scheduled_departure else {
+    // destination -- so the overlay declines rather than guessing.
+    state.pin_scheduled_departure?;
+    // `pin_origin_crs` is `Option` as of Fix 2 (it is `NULL` for an
+    // NR-primary subscription whose `trains` row has no schedule data yet).
+    // There is no origin station to fetch a Darwin departure board for in
+    // that case, so this overlay simply doesn't apply.
+    state.pin_origin_crs.as_deref()
+}
+
+/// The pure half of [`blend_darwin_eta`]: overlays `eta_next`/`eta_source`
+/// from `origin_sample` (the board of [`darwin_blend_origin_crs`]'s
+/// station), or returns `state` unchanged when there is no sample or the
+/// overlay does not apply.
+pub(crate) fn apply_darwin_eta(
+    mut state: train_tracking::TrackedTrainState,
+    origin_sample: Option<&common::StationSample>,
+) -> train_tracking::TrackedTrainState {
+    if darwin_blend_origin_crs(&state).is_none() {
+        return state;
+    }
+    let (Some(destination), Some(pin_scheduled_departure)) = (
+        state
+            .pin_destination_crs
+            .as_deref()
+            .or(state.next_calling_point.as_deref()),
+        state.pin_scheduled_departure,
+    ) else {
         return state;
     };
-    let Ok(samples) =
-        crate::data::queries::latest_station_sample(&app.database, pin_origin_crs).await
-    else {
-        return state;
-    };
-    if let Some(sample) = samples
+    if let Some(sample) = origin_sample
         && let Some(eta) = eta_blend::find_darwin_eta(
             &sample.departures,
             Some(destination),

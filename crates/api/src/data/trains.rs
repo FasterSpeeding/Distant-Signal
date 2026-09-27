@@ -33,11 +33,23 @@ pub async fn find_or_create_train<'c, E>(
 where
     E: sqlx::PgExecutor<'c>,
 {
+    // Read first, insert only when the row is not visible (DB review part 2,
+    // DB2-7): the old unconditional `ON CONFLICT DO UPDATE SET train_uid =
+    // EXCLUDED.train_uid` rewrote the row (a dead tuple and a row lock) on
+    // every call, i.e. for every train in every TRUST batch. The `DO UPDATE`
+    // is kept on the insert branch only for the race where another
+    // transaction commits the row after this statement's snapshot: it then
+    // locks and returns that row rather than returning nothing.
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO trains (train_uid, service_date) \
-         VALUES ($1, $2) \
-         ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
-         RETURNING id",
+        "WITH existing AS ( \
+             SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2 \
+         ), inserted AS ( \
+             INSERT INTO trains (train_uid, service_date) \
+             SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM existing) \
+             ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
+             RETURNING id \
+         ) \
+         SELECT id FROM existing UNION ALL SELECT id FROM inserted",
     )
     .bind(train_uid)
     .bind(service_date)
@@ -49,11 +61,11 @@ where
 /// Batch-shaped sibling of [`find_or_create_train`] -- one multi-row
 /// `INSERT ... SELECT * FROM UNNEST(...) ... ON CONFLICT DO UPDATE
 /// ... RETURNING` covering every DISTINCT `(train_uid, service_date)` pair
-/// in `pairs`, instead of one single-row `INSERT` per pair. `DO UPDATE`
-/// (never `DO NOTHING`) is what makes every input pair come back in the
-/// `RETURNING` set even when it already existed, exactly like the
-/// single-row version -- callers can rely on the returned map having
-/// exactly one entry per element of `pairs` (never fewer).
+/// in `pairs`, instead of one single-row `INSERT` per pair. Existing pairs
+/// come back from the read half, new ones from the insert's `RETURNING`
+/// (whose `DO UPDATE` also covers a concurrently-committed row), exactly
+/// like the single-row version -- callers can rely on the returned map
+/// having exactly one entry per element of `pairs` (never fewer).
 ///
 /// `pairs` MUST already be deduplicated by the caller: passing the same
 /// `(train_uid, service_date)` pair twice in one call is a caller bug,
@@ -71,11 +83,27 @@ pub async fn find_or_create_trains_batch(
     let train_uids: Vec<&str> = pairs.iter().map(|(uid, _)| uid.as_str()).collect();
     let service_dates: Vec<NaiveDate> = pairs.iter().map(|(_, date)| *date).collect();
 
+    // Same read-first shape as `find_or_create_train`: only pairs not
+    // already visible are inserted, so a batch of known trains writes
+    // nothing.
     let rows: Vec<(String, NaiveDate, i64)> = sqlx::query_as(
-        "INSERT INTO trains (train_uid, service_date) \
-         SELECT * FROM UNNEST($1::text[], $2::date[]) \
-         ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
-         RETURNING train_uid, service_date, id",
+        "WITH input AS ( \
+             SELECT * FROM UNNEST($1::text[], $2::date[]) AS u(train_uid, service_date) \
+         ), existing AS ( \
+             SELECT t.train_uid, t.service_date, t.id FROM trains t \
+             JOIN input i ON i.train_uid = t.train_uid AND i.service_date = t.service_date \
+         ), inserted AS ( \
+             INSERT INTO trains (train_uid, service_date) \
+             SELECT i.train_uid, i.service_date FROM input i \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM existing e \
+                 WHERE e.train_uid = i.train_uid AND e.service_date = i.service_date \
+             ) \
+             ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
+             RETURNING train_uid, service_date, id \
+         ) \
+         SELECT train_uid, service_date, id FROM existing \
+         UNION ALL SELECT train_uid, service_date, id FROM inserted",
     )
     .bind(&train_uids)
     .bind(&service_dates)
@@ -189,11 +217,18 @@ pub async fn mark_train_resolved<'c, E>(
 where
     E: sqlx::PgExecutor<'c>,
 {
-    sqlx::query("UPDATE trains SET train_id = $2, resolved_at = NOW() WHERE id = $1")
-        .bind(trains_id)
-        .bind(train_id)
-        .execute(executor)
-        .await?;
+    // No-op when `train_id` is already this value (DB2-7): every movement
+    // for a resolved train used to rewrite the row, and `resolved_at` now
+    // records when the row was resolved to this `train_id`, not the time of
+    // its latest movement.
+    sqlx::query(
+        "UPDATE trains SET train_id = $2, resolved_at = NOW() \
+         WHERE id = $1 AND train_id IS DISTINCT FROM $2",
+    )
+    .bind(trains_id)
+    .bind(train_id)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 
@@ -224,7 +259,7 @@ pub async fn mark_trains_resolved_batch(
     sqlx::query(
         "UPDATE trains AS t SET train_id = u.train_id, resolved_at = NOW() \
          FROM UNNEST($1::bigint[], $2::text[]) AS u(trains_id, train_id) \
-         WHERE t.id = u.trains_id",
+         WHERE t.id = u.trains_id AND t.train_id IS DISTINCT FROM u.train_id",
     )
     .bind(&trains_ids)
     .bind(&train_ids)
@@ -462,8 +497,8 @@ pub async fn get_public_train_state(
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
          LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
-         LEFT JOIN stations so ON so.crs = UPPER(tr.origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(tr.destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(tr.origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(tr.destination_crs)::bpchar \
          WHERE tr.train_uid = $1 AND tr.service_date = $2",
     )
     .bind(train_uid)
@@ -511,8 +546,8 @@ pub async fn get_public_train_states_for_line(
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
          LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
-         LEFT JOIN stations so ON so.crs = UPPER(tr.origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(tr.destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(tr.origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(tr.destination_crs)::bpchar \
          WHERE tr.train_uid = ANY($1) AND tr.service_date = $2",
     )
     .bind(train_uids)

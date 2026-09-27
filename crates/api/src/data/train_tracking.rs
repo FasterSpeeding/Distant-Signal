@@ -1548,9 +1548,9 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
     FROM train_subscriptions tt \
     LEFT JOIN trains tr ON tr.id = tt.trains_id \
     LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
-    LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
-    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
-    LEFT JOIN stations ssd ON ssd.crs = UPPER(tr.destination_crs)";
+    LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs)::bpchar \
+    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)::bpchar \
+    LEFT JOIN stations ssd ON ssd.crs = UPPER(tr.destination_crs)::bpchar";
 
 /// A user's own tracked-train list, lighter than `TrackedTrainState`
 /// (Decision 1 of the design spec) -- excludes live movement detail
@@ -1633,8 +1633,8 @@ pub async fn list_tracked_trains_for_user(
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)::bpchar \
          WHERE tt.user_id = $1 \
          ORDER BY tt.tracked_at DESC \
          LIMIT $2",
@@ -1657,6 +1657,26 @@ pub async fn get_by_tracking_id(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// [`get_by_tracking_id`] for many ids in one query, keyed by id. An id with
+/// no row is simply absent. Backs the journey detail
+/// (`routes::journeys::build_journey_detail_response`), which used to call
+/// `get_by_tracking_id` once per leg (DB review part 2, DB2-14).
+pub async fn get_by_tracking_ids(
+    pool: &PgPool,
+    ids: &[i64],
+) -> anyhow::Result<std::collections::HashMap<i64, TrackedTrainState>> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let rows = sqlx::query_as::<_, TrackedTrainState>(&format!(
+        "{TRACKED_TRAIN_STATE_SELECT} WHERE tt.id = ANY($1)"
+    ))
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|row| (row.id, row)).collect())
 }
 
 /// Deletes a tracked train by id, scoped to the caller's ownership -- the
@@ -1979,8 +1999,8 @@ const TICKET_SELECT: &str = "\
            so.name AS origin_name, sd.name AS destination_name, t.current_departure_date, \
            t.source, t.created_at, t.custom_name \
     FROM tracked_train_tickets t \
-    LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
-    LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs)";
+    LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs)::bpchar \
+    LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs)::bpchar";
 
 /// Filters directly on `(tracked_train_id, user_id)` -- no join needed,
 /// per this table's own ownership-redundancy design (see Task 1's migration
@@ -2267,8 +2287,8 @@ pub async fn list_tickets_for_user(
          LEFT JOIN train_subscriptions tt ON tt.id = t.tracked_train_id \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs)::bpchar \
          WHERE t.user_id = $1 \
          ORDER BY t.created_at DESC \
          LIMIT $2",

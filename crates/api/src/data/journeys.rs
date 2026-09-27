@@ -1360,8 +1360,8 @@ pub async fn list_journeys_for_user(
                 rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes \
          FROM journeys j \
          JOIN ranked_legs rl ON rl.journey_id = j.id AND rl.rn = 1 \
-         LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(rl.destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(rl.destination_crs)::bpchar \
          WHERE j.user_id = $1 \
          ORDER BY j.created_at DESC \
          LIMIT $2",
@@ -1473,8 +1473,8 @@ pub async fn list_legs_for_journey(
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
                 jl.train_subscription_id, jl.match_mode, jl.window_searched \
          FROM journey_legs jl \
-         LEFT JOIN stations so ON so.crs = UPPER(jl.origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(jl.destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(jl.origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(jl.destination_crs)::bpchar \
          WHERE jl.journey_id = $1 ORDER BY jl.leg_order",
     )
     .bind(journey_id)
