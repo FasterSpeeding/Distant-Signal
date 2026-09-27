@@ -519,8 +519,11 @@ jobs:
 
   # A4 (DB review 2026-09-27): a migration added by this PR/push must have a
   # version above every migration already on the base. sqlx applies a
-  # missing lower version late and silently, out of order. Edits to merged
-  # migrations are caught by crates/api/tests/migration_checksums.rs.
+  # missing lower version late and silently, out of order. INF-16/DB2-35:
+  # the same script fails when a migration the base already had is
+  # modified, deleted or renamed, so it needs no lock-file upkeep;
+  # crates/api/tests/migration_checksums.rs is the second line of defence.
+  # The job name is unchanged in case a branch-protection rule requires it.
   migration-order:
     name: migration versions are newer than the base
     runs-on: ubuntu-24.04

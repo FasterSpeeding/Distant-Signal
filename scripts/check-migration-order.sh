@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Fails if a migration added since BASE has a version that is not greater
-# than every migration BASE already had (DB review 2026-09-27, A4/DB2-35).
+# Fails if, since BASE (DB review 2026-09-27, A4/A5, DB2-35, INF-16):
+#   - a migration was added whose version is not greater than every
+#     migration BASE already had; or
+#   - a migration BASE already had was modified, deleted or renamed.
 #
 # sqlx applies any local migration missing from _sqlx_migrations whatever
 # its version, so a branch whose migration timestamp predates one already
 # merged (and deployed) runs it late, out of order, with no error. Give it a
 # later timestamp instead.
 #
-# Editing or renaming an existing migration is caught separately by
-# crates/api/tests/migration_checksums.rs (checksum lock).
+# A merged migration is immutable: sqlx compares each applied file's SHA-384
+# with _sqlx_migrations.checksum at startup, so an edited file crash-loops
+# the api on every database that already ran it, and a renamed or deleted
+# one leaves an applied row with no file. This diff-against-BASE check needs
+# no upkeep; crates/api/tests/migration_checksums.rs (the checksum lock)
+# covers the same ground for migrations recorded in its .lock file, including
+# changes made outside a PR.
 #
 # Usage: scripts/check-migration-order.sh BASE
 #   BASE: a commit, e.g. `$(git merge-base origin/main HEAD)` for a branch,
@@ -29,8 +36,23 @@ if [ -z "$max_base" ]; then
     exit 0
 fi
 
-added="$(git diff --no-renames --name-only --diff-filter=A "$base" HEAD -- "$dir/" | grep '\.sql$' || true)"
 status=0
+
+# --no-renames reports a rename as a deletion plus an addition, so the old
+# name fails here and the new name is checked as an added file below.
+changed="$(git diff --no-renames --name-status --diff-filter=MDT "$base" HEAD -- "$dir/" \
+    | awk -F '\t' '$2 ~ /\.sql$/ { print $1 "\t" $2 }' || true)"
+while IFS=$'\t' read -r kind file; do
+    [ -n "$file" ] || continue
+    case "$kind" in
+        D) what="deleted (or renamed)" ;;
+        *) what="modified" ;;
+    esac
+    echo "::error file=$file::$file already exists on the base and was $what. Merged migrations are immutable: sqlx checks every applied file's checksum at startup. Add a new migration instead."
+    status=1
+done <<<"$changed"
+
+added="$(git diff --no-renames --name-only --diff-filter=A "$base" HEAD -- "$dir/" | grep '\.sql$' || true)"
 for file in $added; do
     version="$(printf '%s\n' "$file" | version_of)"
     if [ -z "$version" ]; then
@@ -44,4 +66,5 @@ for file in $added; do
     fi
 done
 [ -n "$added" ] || echo "no migrations added since $base (newest there: $max_base)"
+[ -n "$changed" ] || echo "no existing migrations modified, deleted or renamed since $base"
 exit "$status"
