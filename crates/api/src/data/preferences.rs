@@ -2,6 +2,8 @@
 //! operators. See
 //! `docs/superpowers/specs/2026-07-09-frontend-personalization-design.md`.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use sqlx::{PgPool, Row};
 
@@ -14,6 +16,19 @@ pub async fn list_pinned_line_ids(pool: &PgPool, user_id: &str) -> Result<Vec<St
     .await?;
     rows.into_iter()
         .map(|row| Ok(row.try_get("line_id")?))
+        .collect()
+}
+
+/// How many users have pinned each line, across all users. Only lines with
+/// at least one pin appear. Used by `GET /private/sample-stations`'s
+/// optional pinned-lines filter and cap priority (LEG-18); never exposed
+/// per user.
+pub async fn count_pins_per_line(pool: &PgPool) -> Result<HashMap<String, i64>> {
+    let rows = sqlx::query("SELECT line_id, COUNT(*) AS pins FROM pinned_lines GROUP BY line_id")
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter()
+        .map(|row| Ok((row.try_get("line_id")?, row.try_get("pins")?)))
         .collect()
 }
 
@@ -405,5 +420,58 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture user");
+    }
+
+    /// LEG-18: pins are counted per line across users. Asserts only on this
+    /// test's own synthetic line ids, so pins left by other fixtures in a
+    /// shared database cannot affect it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                count_pins_per_line_counts_each_line_across_users -- --ignored`"]
+    async fn count_pins_per_line_counts_each_line_across_users() {
+        let pool = connect().await;
+        let users = ["TEST-PIN-COUNT-USER-A", "TEST-PIN-COUNT-USER-B"];
+        for user in users {
+            sqlx::query(
+                "INSERT INTO users (id, email, name) VALUES ($1, 'pins@example.com', 'Test Rider') \
+                 ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(user)
+            .execute(&pool)
+            .await
+            .expect("seed fixture user");
+        }
+        replace_pinned_lines(
+            &pool,
+            users[0],
+            &[
+                "test-pin-count-both".to_string(),
+                "test-pin-count-one".to_string(),
+            ],
+        )
+        .await
+        .expect("pin lines for user A");
+        replace_pinned_lines(&pool, users[1], &["test-pin-count-both".to_string()])
+            .await
+            .expect("pin lines for user B");
+
+        let counts = count_pins_per_line(&pool).await.expect("count pins");
+
+        for user in users {
+            sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1")
+                .bind(user)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture pins");
+            sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(user)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture user");
+        }
+
+        assert_eq!(counts.get("test-pin-count-both"), Some(&2));
+        assert_eq!(counts.get("test-pin-count-one"), Some(&1));
+        assert_eq!(counts.get("test-pin-count-never"), None);
     }
 }
