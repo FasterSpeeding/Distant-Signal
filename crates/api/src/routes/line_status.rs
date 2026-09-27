@@ -769,6 +769,9 @@ async fn get_line_half_hourly_coverage_stats(
 /// aggregator's clock.
 const RANGE_CLAMP_SLACK: chrono::Duration = chrono::Duration::days(1);
 
+/// A clamped `(from, to)`, `None` when empty, or a 400.
+pub(crate) type ClampedRange<T> = Result<Option<(T, T)>, (StatusCode, String)>;
+
 /// API-10: validates and bounds a `{from}/to/{to}` instant range before it
 /// reaches a query.
 ///
@@ -784,7 +787,7 @@ pub(crate) fn clamp_instant_range(
     to: DateTime<Utc>,
     retention: chrono::Duration,
     now: DateTime<Utc>,
-) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>, (StatusCode, String)> {
+) -> ClampedRange<DateTime<Utc>> {
     if from > to {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -805,7 +808,7 @@ pub(crate) fn clamp_date_range(
     to: chrono::NaiveDate,
     retention_days: i64,
     today: chrono::NaiveDate,
-) -> Result<Option<(chrono::NaiveDate, chrono::NaiveDate)>, (StatusCode, String)> {
+) -> ClampedRange<chrono::NaiveDate> {
     if from > to {
         return Err((
             StatusCode::BAD_REQUEST,

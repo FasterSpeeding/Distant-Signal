@@ -260,7 +260,7 @@ impl RateLimiter {
         let quota = self.settings.quota(class);
         let mut state = self.state.lock().expect("rate limiter lock poisoned");
         state.checks += 1;
-        if state.checks % PRUNE_EVERY == 0 || state.tat.len() >= MAX_TRACKED_KEYS {
+        if state.checks.is_multiple_of(PRUNE_EVERY) || state.tat.len() >= MAX_TRACKED_KEYS {
             state.tat.retain(|_, tat| *tat > now);
             if state.tat.len() >= MAX_TRACKED_KEYS {
                 tracing::warn!(
