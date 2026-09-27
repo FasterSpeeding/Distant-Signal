@@ -828,3 +828,40 @@ fn statement_splitting_respects_quotes_dollar_quotes_and_comments() {
     assert_eq!(count("SELECT 'a;b', \"c;d\", 'it''s;';"), 1);
     assert_eq!(count("SELECT $1; SELECT 2;"), 2);
 }
+
+/// The first migration that follows the convention; everything before it is
+/// applied in production and can never be edited.
+const LOCK_TIMEOUT_CONVENTION_FROM: &str = "20260927050000";
+
+/// A3 / DB2-34: a transactional migration's first statement is
+/// `SET LOCAL lock_timeout = ...`, so DDL that queues behind a long
+/// transaction fails fast (and the crash-loop retry converges) instead of
+/// waiting -- and blocking every other query on the table behind its lock
+/// request -- until the startup probe kills the pod. api's migration
+/// connection also sets a session `lock_timeout` (`api::migrate`), but a
+/// hand-run `sqlx migrate run` does not.
+#[test]
+fn a_new_transactional_migration_starts_with_set_local_lock_timeout() {
+    let first = Regex::new(r"(?i)^SET\s+LOCAL\s+lock_timeout\s*(?:=|TO)\s*").unwrap();
+    let mut broken = Vec::new();
+    for path in migration_files() {
+        let name = file_name(&path);
+        if name.as_str() < LOCK_TIMEOUT_CONVENTION_FROM {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        if raw.starts_with("-- no-transaction") {
+            continue;
+        }
+        let statements = lex(&raw).statements;
+        if !statements.first().is_some_and(|s| first.is_match(s)) {
+            broken.push(name);
+        }
+    }
+    assert!(
+        broken.is_empty(),
+        "these transactional migrations must start with `SET LOCAL lock_timeout = '5s';`: {}",
+        broken.join(", ")
+    );
+}
