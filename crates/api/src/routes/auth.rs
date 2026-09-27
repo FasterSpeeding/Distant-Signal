@@ -269,8 +269,15 @@ async fn callback(
     };
 
     let session_token = auth::generate_session_token();
-    let insert_result = users::insert_session(
+    // L6 (2026-09-26 review): the session this browser was already carrying
+    // (if any) is ended in the same transaction, rather than left live for
+    // the rest of its TTL behind the cookie this response overwrites. See
+    // `users::replace_session`.
+    let prior_session_hash = auth::parse_cookie(&headers, auth::SESSION_COOKIE_NAME)
+        .map(|token| auth::hash_session_token(&token));
+    let insert_result = users::replace_session(
         &app.database,
+        prior_session_hash.as_deref(),
         &auth::hash_session_token(&session_token),
         &user.id,
         app.config.session_ttl_days,

@@ -166,8 +166,11 @@ async fn main() -> anyhow::Result<()> {
     //      request that carries the cookie. Every one of the no-body
     //      routes above is only ever called by the frontend through that
     //      proxy (never fetched directly against this service's own
-    //      origin from a browser), so that Origin check is the real
-    //      barrier for them, not anything in this file.
+    //      origin from a browser).
+    //   3. (L4, 2026-09-27) `auth::reject_cross_origin_cookie_mutation`,
+    //      layered below: the same Origin/Referer check at the api layer
+    //      itself, so a deployment that exposes this service directly
+    //      (`ingress.api.enabled`) isn't back to `SameSite=Lax` alone.
     let cors = CorsLayer::new()
         .allow_methods([axum::http::Method::GET])
         .allow_origin(Any);
@@ -212,7 +215,18 @@ async fn main() -> anyhow::Result<()> {
         spawn_metrics_listener(app.config.metrics_port, metrics_handle);
     }
 
+    // L4 (2026-09-26 review): api-layer Origin check on every
+    // session-cookie-bearing mutation, so the no-body routes described in
+    // the CORS comment above no longer rely on `SameSite=Lax` alone when
+    // this service is reached directly rather than through the frontend
+    // proxy. See `auth::reject_cross_origin_cookie_mutation`.
+    let expected_browser_origin: Option<std::sync::Arc<str>> =
+        api::auth::expected_browser_origin(&app.config.sso_redirect_url).map(Into::into);
     let router = router
+        .layer(axum::middleware::from_fn_with_state(
+            expected_browser_origin,
+            api::auth::reject_cross_origin_cookie_mutation,
+        ))
         .layer(cors)
         .layer(TraceLayer::new_for_http().make_span_with(
             |request: &axum::http::Request<axum::body::Body>| {

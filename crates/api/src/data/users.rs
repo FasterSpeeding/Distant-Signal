@@ -513,6 +513,51 @@ pub async fn insert_session(
     Ok(())
 }
 
+/// [`insert_session`] for a fresh OIDC login, which also DELETES the
+/// session the browser was carrying when it started that login (if any),
+/// in the same transaction.
+///
+/// **Why (2026-09-26 "Repeater Signal" review, L6).** Re-login used to just
+/// insert a new session and overwrite the browser's cookie. The session
+/// that cookie USED to name stayed live server-side for its full
+/// `session_ttl_days`, so a copy of the old cookie (a stolen one, or one
+/// left on another profile) kept working even though its owner had
+/// logged in again. Logging in again now ends the session it replaces, the
+/// same way `logout` would have.
+///
+/// `prior_hashed_token` is deleted regardless of which user it belongs to:
+/// the browser is replacing that cookie either way (re-login as the same
+/// user, or switching accounts), so nothing can use it after this.
+/// Every OTHER session of the user (other devices) is untouched -- that's
+/// what `invalidate_all_sessions_and_reissue` ("log out other sessions")
+/// is for.
+pub async fn replace_session(
+    pool: &PgPool,
+    prior_hashed_token: Option<&str>,
+    hashed_token: &str,
+    user_id: &str,
+    ttl_days: i64,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    if let Some(prior) = prior_hashed_token {
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(prior)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at) \
+         VALUES ($1, $2, NULL, NOW(), NOW() + make_interval(days => $3))",
+    )
+    .bind(hashed_token)
+    .bind(user_id)
+    .bind(session_ttl_days_i32(ttl_days))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Checked `i64` -> `i32` conversion for `ttl_days`, `make_interval(days =>
 /// ...)`'s own bind slot (sqlx sends an integer `days` argument as `INT4`).
 ///
@@ -979,6 +1024,89 @@ mod db_tests {
         // Cleanup -- cascades to sessions via ON DELETE CASCADE, though
         // the session row above was already explicitly deleted.
         sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-ROUND-TRIP'")
+            .execute(&pool)
+            .await
+            .expect("cleanup test user");
+    }
+
+    /// L6 (2026-09-26 review): logging in again must end the session the
+    /// browser's old cookie named, not leave it live for its full TTL --
+    /// while leaving the user's sessions on OTHER devices alone.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                replace_session_ends_the_replaced_session_but_not_other_devices -- --ignored`"]
+    async fn replace_session_ends_the_replaced_session_but_not_other_devices() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let identity = OidcIdentity {
+            sub: "TEST-USER-L6-RELOGIN".to_string(),
+            email: Some("test@example.com".to_string()),
+            email_verified: true,
+            name: Some("Test Rider".to_string()),
+            preferred_username: Some("test-rider".to_string()),
+            groups: Vec::new(),
+        };
+        let user = upsert_user(&pool, &identity).await.expect("upsert user");
+
+        insert_session(&pool, "test-l6-this-browser-old", &user.id, 14)
+            .await
+            .expect("insert this browser's old session");
+        insert_session(&pool, "test-l6-other-device", &user.id, 14)
+            .await
+            .expect("insert other device's session");
+
+        replace_session(
+            &pool,
+            Some("test-l6-this-browser-old"),
+            "test-l6-this-browser-new",
+            &user.id,
+            14,
+        )
+        .await
+        .expect("replace session");
+
+        assert!(
+            get_session_with_user(&pool, "test-l6-this-browser-old")
+                .await
+                .expect("lookup old")
+                .is_none(),
+            "the session the re-login replaced must be gone"
+        );
+        assert!(
+            get_session_with_user(&pool, "test-l6-this-browser-new")
+                .await
+                .expect("lookup new")
+                .is_some(),
+            "the new session must resolve"
+        );
+        assert!(
+            get_session_with_user(&pool, "test-l6-other-device")
+                .await
+                .expect("lookup other device")
+                .is_some(),
+            "re-login must not end the user's sessions on other devices"
+        );
+
+        // No prior cookie at all (first login in this browser) just inserts.
+        replace_session(&pool, None, "test-l6-first-login", &user.id, 14)
+            .await
+            .expect("replace with no prior session");
+        assert!(
+            get_session_with_user(&pool, "test-l6-first-login")
+                .await
+                .expect("lookup first-login")
+                .is_some()
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-L6-RELOGIN'")
             .execute(&pool)
             .await
             .expect("cleanup test user");
