@@ -5010,7 +5010,7 @@ mod db_tests {
     mod ticket_upload {
         use axum::extract::FromRequest;
 
-        use super::*;
+        use super::super::*;
         use crate::data::ticket_precheck::fixtures;
 
         async fn multipart_with(bytes: &[u8]) -> Multipart {
