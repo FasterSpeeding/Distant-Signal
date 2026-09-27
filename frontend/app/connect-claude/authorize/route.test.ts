@@ -135,6 +135,21 @@ describe('GET /connect-claude/authorize', () => {
     expect(res.status).toBe(410);
   });
 
+  // FE-12: a non-OK, non-404 lookup is a misconfiguration or outage, not
+  // something to paper over with a consent screen that can only fail.
+  it.each([401, 500])('502s, without a consent screen, when the lookup returns %i, and logs it', async (status) => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status })));
+    const req = makeRequest('/connect-claude/authorize?mcp_request_id=req1', {
+      cookie: 'distant_signal_session=raw-token-value',
+    });
+    const res = await GET(req);
+    expect(res.status).toBe(502);
+    expect(await res.text()).not.toContain('Approve');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining(`HTTP ${status}`));
+    spy.mockRestore();
+  });
+
   it('still renders the consent screen (without a client name) when the pending-authorization lookup itself fails', async () => {
     vi.stubGlobal(
       'fetch',
@@ -142,10 +157,13 @@ describe('GET /connect-claude/authorize', () => {
         throw new Error('network down');
       }),
     );
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const req = makeRequest('/connect-claude/authorize?mcp_request_id=req1', {
       cookie: 'distant_signal_session=raw-token-value',
     });
     const res = await GET(req);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain('An application');
