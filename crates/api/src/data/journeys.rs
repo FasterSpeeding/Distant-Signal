@@ -3430,7 +3430,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                add_known_train_leg_to_journey -- --ignored --test-threads=1`"]
+                add_leg_to_journey_a_non_owner_cannot_add_a_leg_to_someone_elses_journey -- --ignored --test-threads=1`"]
     async fn add_leg_to_journey_a_non_owner_cannot_add_a_leg_to_someone_elses_journey() {
         let pool = connect().await;
         let owner_id = "TEST-JOURNEY-ADD-LEG-OWNER";

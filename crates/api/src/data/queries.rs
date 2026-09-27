@@ -1414,7 +1414,16 @@ pub async fn list_tiploc_crs(pool: &PgPool) -> Result<Vec<common::TiplocCrsRecor
 /// functions' own doc comments describe, not a legitimate "this cycle's
 /// ALF file was empty" signal (that case is `main.rs`'s `publish_fixed_links`
 /// never calling this function at all, per the paragraph above).
-pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecord]) -> Result<u64> {
+///
+/// Generic over [`sqlx::Acquire`] so production passes the pool (the diff
+/// runs in its own transaction, exactly as before) while the DB-gated tests
+/// pass an outer transaction they roll back -- `begin` on a transaction is
+/// a savepoint, so the whole-table diff can never touch the real rows of
+/// the database the tests run against.
+pub async fn upsert_fixed_links<'c>(
+    conn: impl sqlx::Acquire<'c, Database = sqlx::Postgres>,
+    records: &[common::FixedLinkRecord],
+) -> Result<u64> {
     if records.is_empty() {
         return Ok(0);
     }
@@ -1422,7 +1431,7 @@ pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecor
     // Whole-row identity; CRS codes compared in their stored, normalised form.
     type LinkKey = (String, String, String, i32, String, String, String, i32);
 
-    let mut tx = pool.begin().await?;
+    let mut tx = conn.begin().await?;
     // A multiset diff against the stored table instead of DELETE-everything
     // then re-INSERT-everything (DB review 2026-09-27 F2): a row has no
     // natural key (see above), so identity is the whole row, and an
@@ -1541,7 +1550,7 @@ pub async fn upsert_fixed_links(pool: &PgPool, records: &[common::FixedLinkRecor
 /// normalization convention for every TIPLOC/CRS lookup (see `list_stanox_crs_for_crs`'s
 /// doc comment for the regression this convention closes).
 pub async fn list_fixed_links_from_crs(
-    pool: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     crs: &str,
 ) -> Result<Vec<common::FixedLinkRecord>> {
     let rows = sqlx::query_as::<_, FixedLinkRow>(
@@ -1549,7 +1558,7 @@ pub async fn list_fixed_links_from_crs(
          FROM fixed_links WHERE from_crs = $1",
     )
     .bind(normalize_code(crs))
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await?;
     Ok(rows
         .into_iter()
@@ -6504,7 +6513,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                tfl_line_summaries_lists_only_tfl_owned_rows -- --ignored`"]
+                tfl_line_summaries_lists_only_tfl_owned_rows -- --ignored --test-threads=1`"]
     async fn tfl_line_summaries_lists_only_tfl_owned_rows() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6559,7 +6568,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 upsert_tfl_line_status_refuses_to_steal_a_non_tfl_owned_row_with_the_same_line_id \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn upsert_tfl_line_status_refuses_to_steal_a_non_tfl_owned_row_with_the_same_line_id() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6617,7 +6626,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                a_re_post_with_a_changed_crs_overwrites_the_existing_row -- --ignored`"]
+                a_re_post_with_a_changed_crs_overwrites_the_existing_row -- --ignored --test-threads=1`"]
     async fn a_re_post_with_a_changed_crs_overwrites_the_existing_row() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6669,7 +6678,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                daily_stats_for_range -- --ignored`"]
+                daily_stats_for_range -- --ignored --test-threads=1`"]
     async fn daily_stats_for_range_filters_orders_and_handles_unknown_lines() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -6729,7 +6738,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored` \
+                half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored --test-threads=1` \
                 against docker compose's postgres"]
     async fn half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines() {
         let database_url =
@@ -6792,7 +6801,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets -- --ignored` \
+                sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets -- --ignored --test-threads=1` \
                 against docker compose's postgres"]
     async fn sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets() {
         let database_url =
@@ -6870,7 +6879,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together -- --ignored` \
+                sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together -- --ignored --test-threads=1` \
                 against docker compose's postgres"]
     async fn sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together() {
         let database_url =
@@ -6928,7 +6937,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                daily_stats_for_range_multi -- --ignored`"]
+                daily_stats_for_range_multi -- --ignored --test-threads=1`"]
     async fn daily_stats_for_range_multi_sums_across_lines_and_excludes_others() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -6980,7 +6989,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                daily_stats_for_range_multi_an_empty_line_id_set -- --ignored`"]
+                daily_stats_for_range_multi_an_empty_line_id_set -- --ignored --test-threads=1`"]
     async fn daily_stats_for_range_multi_an_empty_line_id_set_returns_empty_not_an_error() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -6999,7 +7008,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                half_hourly_stats_for_range_multi -- --ignored`"]
+                half_hourly_stats_for_range_multi -- --ignored --test-threads=1`"]
     async fn half_hourly_stats_for_range_multi_sums_across_lines() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -7046,7 +7055,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                sub_daily_stats_for_range_multi -- --ignored`"]
+                sub_daily_stats_for_range_multi -- --ignored --test-threads=1`"]
     async fn sub_daily_stats_for_range_multi_groups_by_bucket_and_sums_across_lines() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -7115,7 +7124,7 @@ mod incident_query_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api incident_by_id -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api incident_by_id -- --ignored --test-threads=1`"]
     async fn incident_by_id_finds_a_seeded_row_and_none_for_an_unknown_id() {
         let pool = test_pool().await;
         sqlx::query(
@@ -7146,7 +7155,7 @@ mod incident_query_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api incident_history_for_id -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api incident_history_for_id -- --ignored --test-threads=1`"]
     async fn incident_history_for_id_is_ordered_newest_first_and_empty_for_an_unknown_id() {
         let pool = test_pool().await;
         sqlx::query(
@@ -7179,7 +7188,7 @@ mod incident_query_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api lines_currently_reporting_incident -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api lines_currently_reporting_incident -- --ignored --test-threads=1`"]
     async fn lines_currently_reporting_incident_matches_only_the_exact_jsonb_source_string() {
         // The concrete regression test for Correction 2: this must match a
         // real `knowledgebase-incident-*` source and must NOT false-positive
@@ -7259,7 +7268,7 @@ mod schedule_feed_ingest_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_insert_then_last_fetch_returns_the_delivered_at \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn schedule_feed_insert_then_last_fetch_returns_the_delivered_at() {
         use chrono::SubsecRound;
 
@@ -7299,7 +7308,7 @@ mod schedule_feed_ingest_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_reinserting_the_same_delivered_at_does_not_change_the_row \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn schedule_feed_reinserting_the_same_delivered_at_does_not_change_the_row() {
         use chrono::SubsecRound;
 
@@ -7356,7 +7365,7 @@ mod schedule_feed_ingest_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_last_fetch_against_an_empty_table_returns_none \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn schedule_feed_last_fetch_against_an_empty_table_returns_none() {
         let pool = test_pool().await;
 
@@ -7412,7 +7421,7 @@ mod stanox_crs_lookup_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                list_stanox_crs_for_crs -- --ignored`"]
+                list_stanox_crs_for_crs -- --ignored --test-threads=1`"]
     async fn list_stanox_crs_for_crs_returns_only_matching_rows_case_insensitively() {
         let pool = test_pool().await;
         upsert_stanox_crs(
@@ -7452,7 +7461,7 @@ mod stanox_crs_lookup_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                crs_for_tiploc -- --ignored`"]
+                crs_for_tiploc -- --ignored --test-threads=1`"]
     async fn crs_for_tiploc_resolves_a_known_tiploc_and_none_for_an_unknown_one() {
         let pool = test_pool().await;
         upsert_stanox_crs(
@@ -7580,15 +7589,10 @@ mod stanox_crs_lookup_query_tests {
                 upsert_fixed_links -- --ignored --test-threads=1`"]
     async fn upsert_fixed_links_replaces_the_whole_table_each_call() {
         let pool = test_pool().await;
-        // `upsert_fixed_links` itself replaces the WHOLE table, so run this
-        // only against a database with no real fixed links (CI's is
-        // empty). The fixture rows use digit-bearing codes no real station
-        // has, and only they are cleaned up, before and after.
-        let _cleanup = crate::test_support::FixtureCleanup::new(
-            &pool,
-            ["DELETE FROM fixed_links WHERE from_crs = '9EU'"],
-        )
-        .await;
+        // `upsert_fixed_links` diffs against the WHOLE table, so everything
+        // runs inside one transaction that is rolled back: real fixed links
+        // in the database this runs against are never touched.
+        let mut tx = pool.begin().await.expect("begin");
         let first = vec![common::FixedLinkRecord {
             mode: "TUBE".to_string(),
             from_crs: "9EU".to_string(),
@@ -7599,10 +7603,10 @@ mod stanox_crs_lookup_query_tests {
             days_mask: "1111100".to_string(),
             source_sequence: 1,
         }];
-        upsert_fixed_links(&pool, &first)
+        upsert_fixed_links(&mut *tx, &first)
             .await
             .expect("first publish");
-        let after_first = list_fixed_links_from_crs(&pool, "9EU")
+        let after_first = list_fixed_links_from_crs(&mut *tx, "9EU")
             .await
             .expect("read back");
         assert_eq!(after_first.len(), 1);
@@ -7617,10 +7621,10 @@ mod stanox_crs_lookup_query_tests {
             days_mask: "1111111".to_string(),
             source_sequence: 2,
         }];
-        upsert_fixed_links(&pool, &second)
+        upsert_fixed_links(&mut *tx, &second)
             .await
             .expect("second publish replaces");
-        let after_second = list_fixed_links_from_crs(&pool, "9EU")
+        let after_second = list_fixed_links_from_crs(&mut *tx, "9EU")
             .await
             .expect("read back");
         assert_eq!(
@@ -7629,6 +7633,7 @@ mod stanox_crs_lookup_query_tests {
             "the first cycle's 9EU->9KG row must be gone -- this is a full replace, not an upsert"
         );
         assert_eq!(after_second[0].to_crs, "9ST");
+        tx.rollback().await.expect("rollback");
     }
 
     #[tokio::test]
@@ -7642,15 +7647,10 @@ mod stanox_crs_lookup_query_tests {
         // `upsert_with_an_empty_batch_does_not_wipe_the_day` (schedule_destination_departures)
         // and `upsert_schedule_calling_points_full`'s own guard.
         let pool = test_pool().await;
-        // `upsert_fixed_links` itself replaces the WHOLE table, so run this
-        // only against a database with no real fixed links (CI's is
-        // empty). The fixture rows use digit-bearing codes no real station
-        // has, and only they are cleaned up, before and after.
-        let _cleanup = crate::test_support::FixtureCleanup::new(
-            &pool,
-            ["DELETE FROM fixed_links WHERE from_crs = '9EU'"],
-        )
-        .await;
+        // `upsert_fixed_links` diffs against the WHOLE table, so everything
+        // runs inside one transaction that is rolled back: real fixed links
+        // in the database this runs against are never touched.
+        let mut tx = pool.begin().await.expect("begin");
         let seeded = vec![common::FixedLinkRecord {
             mode: "TUBE".to_string(),
             from_crs: "9EU".to_string(),
@@ -7661,16 +7661,16 @@ mod stanox_crs_lookup_query_tests {
             days_mask: "1111100".to_string(),
             source_sequence: 1,
         }];
-        upsert_fixed_links(&pool, &seeded)
+        upsert_fixed_links(&mut *tx, &seeded)
             .await
             .expect("seed a real row");
 
-        let upserted = upsert_fixed_links(&pool, &[])
+        let upserted = upsert_fixed_links(&mut *tx, &[])
             .await
             .expect("an empty batch must not error");
         assert_eq!(upserted, 0);
 
-        let after_empty = list_fixed_links_from_crs(&pool, "9EU")
+        let after_empty = list_fixed_links_from_crs(&mut *tx, "9EU")
             .await
             .expect("read back");
         assert_eq!(
@@ -7678,6 +7678,7 @@ mod stanox_crs_lookup_query_tests {
             1,
             "an empty batch must leave the previously-published row in place, never clear it"
         );
+        tx.rollback().await.expect("rollback");
     }
 
     #[tokio::test]
@@ -8052,7 +8053,7 @@ mod tiploc_crs_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back -- --ignored`"]
+                two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back -- --ignored --test-threads=1`"]
     async fn two_tiplocs_sharing_a_stanox_both_persist_and_both_come_back() {
         // The direct DB-level proof this plan's whole point (two TIPLOCs,
         // one STANOX, both persisted) actually works against a real
@@ -10246,7 +10247,7 @@ mod schedule_destination_departures_query_tests {
     /// this file (synthetic CRS codes like "ZRD"/"RDG") never exercised.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                search_journey_leg_candidates_eus_mkc -- --ignored --test-threads=1`"]
+                search_journey_leg_candidates_includes_every_real_operator_calling_at_a_shared_station -- --ignored --test-threads=1`"]
     async fn search_journey_leg_candidates_includes_every_real_operator_calling_at_a_shared_station()
      {
         // Real byte-verbatim BS/LO/LT block, quoted directly from
@@ -12387,6 +12388,10 @@ mod db_review_guard_and_normalisation_tests {
                 db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
     async fn fixed_links_upsert_is_a_diff_that_keeps_unchanged_rows() {
         let pool = test_pool().await;
+        // `upsert_fixed_links` diffs against the WHOLE table, so everything
+        // runs inside one transaction that is rolled back: real fixed links
+        // in the database this runs against are never touched.
+        let mut tx = pool.begin().await.expect("begin");
         let link = |from: &str, minutes| common::FixedLinkRecord {
             mode: "WALK".to_string(),
             from_crs: from.to_string(),
@@ -12399,41 +12404,38 @@ mod db_review_guard_and_normalisation_tests {
         };
         // Two identical rows (a real ALF shape) plus one other.
         let first_set = vec![link("zqf", 5), link("ZQF", 5), link("ZQH", 7)];
-        upsert_fixed_links(&pool, &first_set).await.unwrap();
-        let snapshot = |pool: PgPool| async move {
+        upsert_fixed_links(&mut *tx, &first_set).await.unwrap();
+        async fn snapshot(conn: &mut sqlx::PgConnection) -> Vec<(i64, String, String, i32)> {
             sqlx::query_as::<_, (i64, String, String, i32)>(
                 "SELECT id, xmin::text, from_crs, minutes FROM fixed_links ORDER BY id",
             )
-            .fetch_all(&pool)
+            .fetch_all(conn)
             .await
             .unwrap()
-        };
-        let before = snapshot(pool.clone()).await;
+        }
+        let before = snapshot(&mut tx).await;
         assert_eq!(before.len(), 3, "{before:?}");
 
-        upsert_fixed_links(&pool, &first_set).await.unwrap();
+        upsert_fixed_links(&mut *tx, &first_set).await.unwrap();
         assert_eq!(
-            snapshot(pool.clone()).await,
+            snapshot(&mut tx).await,
             before,
             "an identical delivery must write nothing"
         );
 
         // One duplicate dropped, one row changed: exactly those change.
-        upsert_fixed_links(&pool, &[link("ZQF", 5), link("ZQH", 8)])
+        upsert_fixed_links(&mut *tx, &[link("ZQF", 5), link("ZQH", 8)])
             .await
             .unwrap();
-        let after = snapshot(pool.clone()).await;
+        let after = snapshot(&mut tx).await;
         assert_eq!(after.len(), 2, "{after:?}");
         assert_eq!(after[0], before[0], "the kept ZQF row is untouched");
         assert_eq!((after[1].2.as_str(), after[1].3), ("ZQH", 8));
 
-        let from = list_fixed_links_from_crs(&pool, " zqf ").await.unwrap();
+        let from = list_fixed_links_from_crs(&mut *tx, " zqf ").await.unwrap();
         assert_eq!(from.len(), 1);
 
-        sqlx::query("DELETE FROM fixed_links WHERE to_crs = 'ZQG'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        tx.rollback().await.expect("rollback");
     }
 
     /// F2: the per-chunk batched upsert keeps every array column, records

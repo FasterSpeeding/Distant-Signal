@@ -412,7 +412,7 @@ mod sample_db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                island_of_ireland_samples -- --ignored --test-threads=1`"]
+                upsert_then_latest_round_trips_and_repeat_upsert_replaces -- --ignored --test-threads=1`"]
     async fn upsert_then_latest_round_trips_and_repeat_upsert_replaces() {
         let pool = connect().await;
         delete_fixture(&pool, "ZSAMP1").await;
@@ -464,7 +464,7 @@ mod sample_db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                island_of_ireland_samples -- --ignored --test-threads=1`"]
+                latest_for_an_unseen_station_is_none_not_an_error -- --ignored --test-threads=1`"]
     async fn latest_for_an_unseen_station_is_none_not_an_error() {
         let pool = connect().await;
         delete_fixture(&pool, "ZSAMPNONE").await;

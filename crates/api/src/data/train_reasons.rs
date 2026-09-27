@@ -373,7 +373,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL"]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                reasons_upsert_newest_wins_and_resolve_by_uid_or_train_id -- --ignored --test-threads=1`"]
     async fn reasons_upsert_newest_wins_and_resolve_by_uid_or_train_id() {
         let pool = pool().await;
         let date: chrono::NaiveDate = "2031-05-06".parse().unwrap();
@@ -487,7 +488,8 @@ mod tests {
     /// `train_reasons`, `cancelled` from the status, and every stop's
     /// status from both.
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL"]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                attach_to_public_state_fills_reasons_and_stop_statuses -- --ignored --test-threads=1`"]
     async fn attach_to_public_state_fills_reasons_and_stop_statuses() {
         use crate::data::stop_live_status::LiveStopStatus;
         let pool = pool().await;

@@ -39,7 +39,7 @@ const EXPECTED: &[(&str, &[&str])] = &[
 
 #[tokio::test]
 #[ignore = "requires a live, migrated database; run with `DATABASE_URL=... cargo test -p api \
-            --test autovacuum_reloptions -- --ignored`"]
+            --test autovacuum_reloptions -- --ignored --test-threads=1`"]
 async fn big_batch_delete_tables_carry_their_autovacuum_reloptions() {
     let database_url =
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -74,7 +74,7 @@ async fn big_batch_delete_tables_carry_their_autovacuum_reloptions() {
 /// and its TOAST table carry the 0.05 autovacuum scale factor.
 #[tokio::test]
 #[ignore = "requires a live, migrated database; run with `DATABASE_URL=... cargo test -p api \
-            --test autovacuum_reloptions -- --ignored`"]
+            --test autovacuum_reloptions -- --ignored --test-threads=1`"]
 async fn schedule_line_population_uses_lz4_and_tuned_toast_autovacuum() {
     let database_url =
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");

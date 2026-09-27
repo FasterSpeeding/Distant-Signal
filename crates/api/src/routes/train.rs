@@ -2889,7 +2889,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                post_track_schedule_matches -- --ignored --test-threads=1`"]
+                post_track_with_no_candidate_line_stays_pending -- --ignored --test-threads=1`"]
     async fn post_track_with_no_candidate_line_stays_pending() {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-ROUTE-SCHEDULE-NO-MATCH").await;

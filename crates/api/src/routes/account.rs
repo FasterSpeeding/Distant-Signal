@@ -321,7 +321,7 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn delete_account_route_requires_session_same_origin_and_confirmation() {
         let pool = connect().await;
         let user = "acct-route-user";
@@ -410,7 +410,7 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn export_route_returns_an_attachment_for_the_caller_only() {
         let pool = connect().await;
         let user = "acct-route-export";

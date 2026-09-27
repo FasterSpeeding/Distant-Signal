@@ -3241,7 +3241,7 @@ mod db_tests {
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_tracked_trains_for_user_resolves_the_station_name_join \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn list_tracked_trains_for_user_resolves_the_station_name_join() {
         // Proves the `LEFT JOIN stations ... ON so.crs = UPPER(...)` join
         // actually resolves -- and, critically, that it resolves for a
@@ -3310,7 +3310,7 @@ mod db_tests {
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 shared_group_count_reflects_how_many_groups_a_train_is_shared_into \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn shared_group_count_reflects_how_many_groups_a_train_is_shared_into() {
         // Exercises the correlated `(SELECT COUNT(*) FROM group_trains ...)`
         // subquery embedded directly in `TRACKED_TRAIN_STATE_SELECT` and

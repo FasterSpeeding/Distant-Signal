@@ -39,7 +39,7 @@ async fn apply(conn: &mut sqlx::PgConnection, name: &str) {
 
 #[tokio::test]
 #[ignore = "requires a live database; run with `cargo test -p api --test \
-            full_coverage_line_stats_history_migration -- --ignored`"]
+            full_coverage_line_stats_history_migration -- --ignored --test-threads=1`"]
 async fn the_rekey_migrations_apply_to_a_table_that_already_has_rows() {
     let database_url =
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");

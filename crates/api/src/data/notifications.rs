@@ -160,7 +160,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                upsert_same_user_resubscribe_updates_in_place -- --ignored`"]
+                upsert_same_user_resubscribe_updates_in_place -- --ignored --test-threads=1`"]
     async fn upsert_same_user_resubscribe_updates_in_place() {
         let pool = connect().await;
         seed_user(&pool, "TEST-NOTIF-SUB-USER-SAME").await;
@@ -218,7 +218,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                upsert_rejects_reassigning_another_users_endpoint -- --ignored`"]
+                upsert_rejects_reassigning_another_users_endpoint -- --ignored --test-threads=1`"]
     async fn upsert_rejects_reassigning_another_users_endpoint() {
         // 2026-09 security review finding: user B learning user A's real
         // endpoint URL must NOT let B silently take over A's push

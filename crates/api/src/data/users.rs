@@ -995,7 +995,7 @@ mod login_state_db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 peeking_login_state_never_consumes_it_but_consuming_is_still_single_use -- \
-                --ignored`"]
+                --ignored --test-threads=1`"]
     async fn peeking_login_state_never_consumes_it_but_consuming_is_still_single_use() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -1054,7 +1054,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                session_round_trip_creates_looks_up_and_deletes -- --ignored`"]
+                session_round_trip_creates_looks_up_and_deletes -- --ignored --test-threads=1`"]
     async fn session_round_trip_creates_looks_up_and_deletes() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -1128,7 +1128,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                replace_session_ends_the_replaced_session_but_not_other_devices -- --ignored`"]
+                replace_session_ends_the_replaced_session_but_not_other_devices -- --ignored --test-threads=1`"]
     async fn replace_session_ends_the_replaced_session_but_not_other_devices() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -1216,7 +1216,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                prune_expired_sessions_deletes_only_rows_past_their_expiry -- --ignored`"]
+                prune_expired_sessions_deletes_only_rows_past_their_expiry -- --ignored --test-threads=1`"]
     async fn prune_expired_sessions_deletes_only_rows_past_their_expiry() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -1293,7 +1293,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                groups_are_overwritten_not_merged_on_repeat_login -- --ignored`"]
+                groups_are_overwritten_not_merged_on_repeat_login -- --ignored --test-threads=1`"]
     async fn groups_are_overwritten_not_merged_on_repeat_login() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -1363,7 +1363,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 a_session_created_before_the_invalidation_marker_is_rejected_after_it -- \
-                --ignored`"]
+                --ignored --test-threads=1`"]
     async fn a_session_created_before_the_invalidation_marker_is_rejected_after_it() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -1431,7 +1431,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                a_session_created_after_the_invalidation_marker_is_not_rejected -- --ignored`"]
+                a_session_created_after_the_invalidation_marker_is_not_rejected -- --ignored --test-threads=1`"]
     async fn a_session_created_after_the_invalidation_marker_is_not_rejected() {
         use sqlx::postgres::PgPoolOptions;
 
@@ -1493,7 +1493,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 invalidate_all_sessions_and_reissue_ends_every_prior_session_and_reissues_a_working_one \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn invalidate_all_sessions_and_reissue_ends_every_prior_session_and_reissues_a_working_one()
      {
         use sqlx::postgres::PgPoolOptions;
@@ -1570,7 +1570,7 @@ mod db_tests {
     /// not an error; a login after the revocation works normally.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                revoke_all_sessions -- --ignored`"]
+                revoke_all_sessions -- --ignored --test-threads=1`"]
     async fn revoke_all_sessions_ends_every_session_and_a_later_login_still_works() {
         use sqlx::postgres::PgPoolOptions;
 

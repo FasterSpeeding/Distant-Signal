@@ -530,7 +530,7 @@ pub(crate) mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn every_users_fk_table_is_exported() {
         let pool = connect().await;
         let mut tables: Vec<String> = users_fk_columns(&pool)
@@ -552,7 +552,7 @@ pub(crate) mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn deleting_a_user_who_used_every_feature_leaves_no_rows_referencing_them() {
         let pool = connect().await;
         let (user, other) = ("acct-del-user", "acct-del-other");
@@ -676,7 +676,7 @@ pub(crate) mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored`"]
+    #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
     async fn export_contains_every_category() {
         let pool = connect().await;
         let (user, other) = ("acct-exp-user", "acct-exp-other");

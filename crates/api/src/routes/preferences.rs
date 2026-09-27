@@ -404,7 +404,7 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 a_pinned_tfl_line_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn a_pinned_tfl_line_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip()
      {
         use sqlx::postgres::PgPoolOptions;
@@ -484,7 +484,7 @@ mod db_tests {
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 a_pinned_operator_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn a_pinned_operator_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip()
      {
         use sqlx::postgres::PgPoolOptions;

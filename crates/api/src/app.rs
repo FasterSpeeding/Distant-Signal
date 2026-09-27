@@ -766,7 +766,7 @@ mod dead_client_detection_tests {
     /// server -- an unknown one would fail the connection outright).
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                dead_client_detection -- --ignored`"]
+                dead_client_detection -- --ignored --test-threads=1`"]
     async fn pool_connections_carry_the_dead_client_detection_settings() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -792,7 +792,7 @@ mod dead_client_detection_tests {
     /// top of the dead-client detection options rather than replacing them.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                dead_client_detection -- --ignored`"]
+                dead_client_detection -- --ignored --test-threads=1`"]
     async fn pool_settings_and_dead_client_detection_both_apply() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");

@@ -639,7 +639,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                find_or_create_train_returns_the_same_id_on_a_repeat_call -- --ignored"]
+                find_or_create_train_returns_the_same_id_on_a_repeat_call -- --ignored --test-threads=1`"]
     async fn find_or_create_train_returns_the_same_id_on_a_repeat_call() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -664,7 +664,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 find_or_create_trains_batch_dedups_and_resolves_every_distinct_pair \
-                -- --ignored"]
+                -- --ignored --test-threads=1`"]
     async fn find_or_create_trains_batch_dedups_and_resolves_every_distinct_pair() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -703,7 +703,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                mark_trains_resolved_batch_sets_train_id_for_every_pair -- --ignored"]
+                mark_trains_resolved_batch_sets_train_id_for_every_pair -- --ignored --test-threads=1`"]
     async fn mark_trains_resolved_batch_sets_train_id_for_every_pair() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -750,7 +750,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                mark_train_resolved_sets_train_id_and_resolved_at -- --ignored"]
+                mark_train_resolved_sets_train_id_and_resolved_at -- --ignored --test-threads=1`"]
     async fn mark_train_resolved_sets_train_id_and_resolved_at() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -780,7 +780,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                find_or_create_train_with_schedule_match_never_clobbers_an_earlier_match -- --ignored"]
+                find_or_create_train_with_schedule_match_never_clobbers_an_earlier_match -- --ignored --test-threads=1`"]
     async fn find_or_create_train_with_schedule_match_never_clobbers_an_earlier_match() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -851,7 +851,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                get_public_train_state_returns_none_for_no_matching_row -- --ignored"]
+                get_public_train_state_returns_none_for_no_matching_row -- --ignored --test-threads=1`"]
     async fn get_public_train_state_returns_none_for_no_matching_row() {
         let pool = connect().await;
         let result = get_public_train_state(&pool, "NOSUCHUID", "2026-09-06".parse().unwrap())
@@ -862,7 +862,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                get_public_train_state_reads_the_shared_row_and_its_current_state -- --ignored"]
+                get_public_train_state_reads_the_shared_row_and_its_current_state -- --ignored --test-threads=1`"]
     async fn get_public_train_state_reads_the_shared_row_and_its_current_state() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -929,7 +929,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                get_public_train_state_reads_the_cif_headcode_not_the_trust_train_id -- --ignored"]
+                get_public_train_state_reads_the_cif_headcode_not_the_trust_train_id -- --ignored --test-threads=1`"]
     async fn get_public_train_state_reads_the_cif_headcode_not_the_trust_train_id() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
@@ -997,7 +997,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 get_public_train_states_for_line_returns_only_existing_rows_for_the_requested_uids \
-                -- --ignored"]
+                -- --ignored --test-threads=1`"]
     async fn get_public_train_states_for_line_returns_only_existing_rows_for_the_requested_uids() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-09".parse().unwrap();
@@ -1069,7 +1069,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                get_public_train_states_for_line_returns_empty_for_an_empty_uid_list -- --ignored"]
+                get_public_train_states_for_line_returns_empty_for_an_empty_uid_list -- --ignored --test-threads=1`"]
     async fn get_public_train_states_for_line_returns_empty_for_an_empty_uid_list() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-09".parse().unwrap();
@@ -1086,7 +1086,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                is_known_scheduled_train_is_false_for_an_unpublished_uid -- --ignored"]
+                is_known_scheduled_train_is_false_for_an_unpublished_uid -- --ignored --test-threads=1`"]
     async fn is_known_scheduled_train_is_false_for_an_unpublished_uid() {
         let pool = connect().await;
         let known = is_known_scheduled_train(&pool, "NOSUCHUID", "2026-09-06".parse().unwrap())
@@ -1100,7 +1100,7 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                is_known_scheduled_train_is_true_for_a_published_row -- --ignored"]
+                is_known_scheduled_train_is_true_for_a_published_row -- --ignored --test-threads=1`"]
     async fn is_known_scheduled_train_is_true_for_a_published_row() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -1150,7 +1150,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 two_trains_rows_cannot_share_a_train_id_and_service_date_once_resolved \
-                -- --ignored"]
+                -- --ignored --test-threads=1`"]
     async fn two_trains_rows_cannot_share_a_train_id_and_service_date_once_resolved() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
@@ -1206,7 +1206,7 @@ mod db_tests {
     /// whole point (`WHERE train_id IS NOT NULL`) is to never block them.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                multiple_null_train_id_rows_for_the_same_service_date_are_allowed -- --ignored"]
+                multiple_null_train_id_rows_for_the_same_service_date_are_allowed -- --ignored --test-threads=1`"]
     async fn multiple_null_train_id_rows_for_the_same_service_date_are_allowed() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
