@@ -840,7 +840,7 @@ async fn post_schedule_destination_departures(
                 .await
         }
     }
-    .map_err(internal_error)?;
+    .map_err(schedule_publish_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
@@ -868,7 +868,7 @@ async fn post_schedule_calling_points_full(
                 .await
         }
     }
-    .map_err(internal_error)?;
+    .map_err(schedule_publish_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
@@ -959,6 +959,30 @@ async fn post_island_of_ireland_station_samples(
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
+}
+
+/// Error mapping for the two chunked schedule publish routes -- see
+/// `queries::finish_publish_part`. Both non-500 cases mean "the final
+/// chunk's delete did not run, nothing was deleted, try the whole publish
+/// again LATER"; `schedule-reference` does not retry either within a cycle:
+///
+/// * 409 Conflict -- another final chunk of the same product is still
+///   deleting (`queries::SchedulePublishBusy`).
+/// * 503 Service Unavailable -- the delete phase hit
+///   `PUBLISH_DELETE_STATEMENT_TIMEOUT` (SQLSTATE 57014) and rolled back.
+fn schedule_publish_error(err: anyhow::Error) -> (StatusCode, String) {
+    if let Some(busy) = err.downcast_ref::<queries::SchedulePublishBusy>() {
+        tracing::warn!(error = %busy, "schedule publish final chunk refused: delete already running");
+        return (StatusCode::CONFLICT, busy.to_string());
+    }
+    if queries::is_statement_timeout(&err) {
+        tracing::error!(error = ?err, "schedule publish final chunk hit its statement timeout; rolled back");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "schedule publish delete timed out and was rolled back".to_string(),
+        );
+    }
+    internal_error(err)
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
