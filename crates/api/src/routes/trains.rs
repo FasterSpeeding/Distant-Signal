@@ -831,7 +831,7 @@ mod db_tests {
     }
 
     /// Deletes every `schedule_destination_departures` row on each of
-    /// `dates` -- only ever a synthetic (2090+) fixture day, asserted.
+    /// `dates` -- only ever a synthetic (2050+) fixture day, asserted.
     async fn delete_days(pool: &PgPool, dates: &[chrono::NaiveDate]) {
         for &date in dates {
             crate::test_support::assert_synthetic_date(date);

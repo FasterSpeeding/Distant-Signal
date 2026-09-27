@@ -22,7 +22,7 @@ use sqlx::{Connection, PgConnection, PgPool};
 
 /// Fixture dates must be at least this far in the future, so a date-scoped
 /// delete can never touch a real published day. See [`assert_synthetic_date`].
-pub(crate) const FIRST_SYNTHETIC_YEAR: i32 = 2090;
+pub(crate) const FIRST_SYNTHETIC_YEAR: i32 = 2050;
 
 /// Panics unless `date` is a far-future fixture date. Every test helper that
 /// deletes "everything on `date`" calls this first: the tables involved
