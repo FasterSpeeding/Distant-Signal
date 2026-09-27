@@ -58,13 +58,10 @@ describe('OpenDataAttribution', () => {
     // OpenDataAttribution.tsx's own comment for the exact substring
     // argument). Asserting on the wrapping element's full text content,
     // not a `getByText` exact match, since the required phrase now spans
-    // the linked node plus a trailing plain-text node. Conditional: the
-    // audit did not confirm this is the actual product this app's
-    // Stations subscription is provisioned under (vs. the
-    // differently-scoped, blank-attribution "Stations Reference Data"
-    // product) -- see the plan doc's Task 1, Step 2. Confirmed by the
-    // 2026-09-27 legal audit (LEG-23): production uses the KB Stations JSON
-    // product, so this wording applies.
+    // the linked node plus a trailing plain-text node. The 2026-09-27
+    // legal audit (LEG-23) confirmed production uses the KB Stations JSON
+    // product, so this wording applies, and the operator's 2026-09-27
+    // decision treats the RDM terms as permitting current use: final.
     renderWithMantine(<OpenDataAttribution />);
     const link = screen.getByText('powered by NationalRail');
     expect(link.parentElement).toHaveTextContent('powered by NationalRail (Train Information Services Ltd)');

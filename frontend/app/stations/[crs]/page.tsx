@@ -18,7 +18,7 @@ import { ShareButton } from '@/components/ShareButton';
 import { StationAccessibilitySection } from '@/components/StationAccessibilitySection';
 import { StationTimetable } from '@/components/StationTimetable';
 import { TextLink } from '@/components/TextLink';
-import { NationalRailCredit } from '@/components/OpenDataAttribution';
+import { NationalRailCredit } from '@/components/NationalRailCredit';
 import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
@@ -358,7 +358,9 @@ export default async function StationDisruptionPage({
             </Group>
           ))}
         {/* LEG-23: these figures come from National Rail's live departure
-            boards (LDBWS), so the Schedule 1 credit sits right under them. */}
+            boards (LDBWS), so the National Rail credit sits right under
+            them. The "Departures" section below is the CIF timetable (RSP),
+            not Darwin, so it takes no National Rail credit. */}
         {sampleStatsResult.coverage === 'sampled' && <NationalRailCredit />}
       </Stack>
 
