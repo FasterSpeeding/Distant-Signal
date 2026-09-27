@@ -183,6 +183,13 @@ pub struct ArchiveArgs {
 
     #[arg(long, env, value_enum, default_value_t = FailurePolicy::Retain)]
     pub archive_failure_policy: FailurePolicy,
+
+    /// The operator's confirmation that the bucket (or the archive prefix)
+    /// has an S3 lifecycle expiration rule. Nothing in the app deletes an
+    /// archived object and it cannot inspect the bucket's rules, so
+    /// archiving refuses to start without this (triage DQ14 / LEG-27).
+    #[arg(long, env, default_value_t = false, action = clap::ArgAction::Set)]
+    pub archive_s3_lifecycle_confirmed: bool,
 }
 
 /// Validates `tables` against [`ARCHIVABLE_TABLES`], with a specific
@@ -238,6 +245,13 @@ impl Archiver {
             return Ok(None);
         }
         let tables = validate_tables(&args.archive_tables)?;
+        anyhow::ensure!(
+            args.archive_s3_lifecycle_confirmed,
+            "ARCHIVE_ENABLED is true but ARCHIVE_S3_LIFECYCLE_CONFIRMED is not: archived objects \
+             are never deleted by the app, so configure an S3 lifecycle expiration rule on the \
+             archive bucket/prefix first, then set ARCHIVE_S3_LIFECYCLE_CONFIRMED=true \
+             (docs/cold-archive.md, \"Object expiry\")"
+        );
         let bucket = args
             .archive_s3_bucket
             .as_deref()
@@ -337,9 +351,9 @@ impl Archiver {
     /// so the caller only deletes rows once the object is confirmed present
     /// in full. A PUT overwrites any stale object at the same key.
     ///
-    /// The ETag check (SVC-07): for a single-part PUT, S3 and the common
-    /// S3-compatible servers (MinIO, Garage, SeaweedFS, Ceph RGW) return the
-    /// hex MD5 of the stored body as the ETag, so both the PUT's and the
+    /// The ETag check (SVC-07): for a single-part PUT, S3 and most
+    /// S3-compatible servers return the hex MD5 of the stored body as the
+    /// ETag, so both the PUT's and the
     /// HEAD's ETag must equal the MD5 of the bytes sent. A size check alone
     /// would pass a same-length corrupted body. A store whose ETag is not
     /// the body's MD5 (AWS SSE-KMS or SSE-C encryption, for one) fails this
@@ -839,6 +853,7 @@ mod tests {
             archive_s3_path_style: true,
             archive_s3_allow_http: false,
             archive_failure_policy: FailurePolicy::Retain,
+            archive_s3_lifecycle_confirmed: true,
         }
     }
 
@@ -901,6 +916,23 @@ mod tests {
             assert!(err.contains(table), "{err}");
             assert!(err.contains("licens") || err.contains("300-day"), "{err}");
         }
+    }
+
+    /// DQ14 / LEG-27: archiving refuses to start until the operator confirms
+    /// an S3 lifecycle rule exists; a disabled archive needs no confirmation.
+    #[test]
+    fn enabling_requires_a_confirmed_lifecycle_rule() {
+        let unconfirmed = ArchiveArgs {
+            archive_s3_lifecycle_confirmed: false,
+            ..base_args()
+        };
+        let err = Archiver::from_args(&unconfirmed).unwrap_err().to_string();
+        assert!(err.contains("ARCHIVE_S3_LIFECYCLE_CONFIRMED"), "{err}");
+        let disabled = ArchiveArgs {
+            archive_enabled: false,
+            ..unconfirmed
+        };
+        assert!(Archiver::from_args(&disabled).unwrap().is_none());
     }
 
     #[test]

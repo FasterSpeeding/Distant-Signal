@@ -1313,6 +1313,13 @@ archive:
     pathStyle: true
     # -- Permit a plain http:// endpoint.
     allowHttp: false
+    # -- REQUIRED to be true when enabled; the chart refuses to render
+    # otherwise. Nothing in the app ever deletes an archived object, so the
+    # bucket (or the archive prefix) must carry an S3 lifecycle expiration
+    # rule, and the app cannot check that it does. Configure the rule on the
+    # bucket first, then set this to true to confirm it. See
+    # docs/cold-archive.md, "Object expiry".
+    lifecycleConfirmed: false
     # -- Required when enabled: a pre-existing Secret holding the access key
     # pair. The chart never renders the credentials itself.
     existingSecret: ""

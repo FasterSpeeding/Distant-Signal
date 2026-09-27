@@ -43,6 +43,42 @@ chart refuses to render, if one of them is listed:
 The app never reads archived data back. History routes read only the
 live (hot) tables in Postgres.
 
+## Object expiry
+
+The app never deletes an archived object, and it cannot see the bucket's
+lifecycle rules. Expiry is therefore the bucket's job, and enabling the
+archive requires you to confirm it:
+
+- The chart refuses to render with `archive.enabled: true` unless
+  `archive.s3.lifecycleConfirmed: true` is also set.
+- The aggregator refuses to start with `ARCHIVE_ENABLED=true` unless
+  `ARCHIVE_S3_LIFECYCLE_CONFIRMED=true` is also set. The chart sets it for
+  you once `lifecycleConfirmed` is true.
+
+Before you set it, add an expiration rule covering the archive prefix. The
+expiry age is a licensing decision, not a technical one: the archived rows
+are derived from TRUST (Network Rail's movement feed, via the Rail Data
+Marketplace), so pick an age your review of that licence allows. With the
+AWS CLI (most S3-compatible servers accept the same call):
+
+```sh
+aws --endpoint-url https://thoth.<tailnet>.ts.net s3api put-bucket-lifecycle-configuration \
+  --bucket distant-signal-archive --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "distant-signal-archive-expiry",
+      "Filter": {"Prefix": "prod/"},
+      "Status": "Enabled",
+      "Expiration": {"Days": 365}
+    }]
+  }'
+aws --endpoint-url https://thoth.<tailnet>.ts.net s3api get-bucket-lifecycle-configuration \
+  --bucket distant-signal-archive
+```
+
+The `365` above is only an example. S3-compatible servers differ in how
+much of the lifecycle API they implement, so check that yours actually
+enforces the expiration rule.
+
 ## Configuration
 
 ```yaml
@@ -60,6 +96,7 @@ archive:
     existingSecret: thoth-archive-creds
     accessKeyIdKey: access-key-id
     secretAccessKeyKey: secret-access-key
+    lifecycleConfirmed: true   # only after adding an expiry rule; see "Object expiry"
 ```
 
 The chart never creates the credentials Secret. Create it yourself:
@@ -75,7 +112,8 @@ example in docker-compose: `ARCHIVE_ENABLED`, `ARCHIVE_TABLES`
 (comma-separated), `ARCHIVE_FAILURE_POLICY`, `ARCHIVE_S3_ENDPOINT`,
 `ARCHIVE_S3_BUCKET`, `ARCHIVE_S3_PREFIX`, `ARCHIVE_S3_REGION`,
 `ARCHIVE_S3_PATH_STYLE`, `ARCHIVE_S3_ALLOW_HTTP`,
-`ARCHIVE_S3_ACCESS_KEY_ID` and `ARCHIVE_S3_SECRET_ACCESS_KEY`.
+`ARCHIVE_S3_LIFECYCLE_CONFIRMED`, `ARCHIVE_S3_ACCESS_KEY_ID` and
+`ARCHIVE_S3_SECRET_ACCESS_KEY`.
 
 ## How it works
 
@@ -116,9 +154,9 @@ If a table has no rows in a batch, no object is written for it.
 **Upload verification.** After each PUT, a HEAD must report the same size
 as the body sent, and both the PUT's and the HEAD's ETag must equal the
 hex MD5 of the body. For a single-part PUT (every archive object is one),
-AWS S3 and the common S3-compatible servers (MinIO, Garage, SeaweedFS,
-Ceph RGW) use the body's MD5 as the ETag, so this catches a stored object
-that differs from what was sent even when the length matches. A bucket
+AWS S3 and most S3-compatible servers use the body's MD5 as the ETag, so
+this catches a stored object that differs from what was sent even when
+the length matches. A bucket
 whose ETags are not content MD5s, such as AWS SSE-KMS or SSE-C encryption,
 fails verification on every upload, so under `retain` nothing is ever
 pruned. Use SSE-S3 or no server-side encryption for the archive bucket.
