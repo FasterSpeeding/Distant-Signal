@@ -390,6 +390,38 @@ pub struct ServiceArguments {
     /// user is waiting on).
     #[arg(long, env, default_value_t = 3600)]
     pub session_cleanup_interval_secs: u64,
+
+    /// Personal-data retention (UK legal audit LEG-5, 2026-09-27): days
+    /// after its travel date that a tracked train (with its attached
+    /// tickets, notification state and group shares), a standalone ticket,
+    /// a journey (with its legs and share link) and a journey template's
+    /// "skip this date" marker are kept before
+    /// `data::retention::prune_personal_data` deletes them. Checked hourly
+    /// by `session_cleanup_sweep_loop`. Default 548 days (18 months): the
+    /// audit's suggested figure, covering Delay Repay's 28-day claim window
+    /// with plenty of room for personal reliability history. 0 disables it.
+    /// Journey templates, groups, pins and custom lines are never pruned by
+    /// age. See docs/personal-data-retention.md.
+    #[arg(long, env, default_value_t = 548)]
+    pub past_travel_retention_days: i64,
+
+    /// Personal-data retention: push subscriptions are deleted once their
+    /// user has not logged in for this many days AND the subscription has
+    /// not been renewed in that time. `last_seen_at` alone is not an
+    /// activity signal (the browser only refreshes it on re-subscribe),
+    /// hence the login condition. Default 365. 0 disables it.
+    #[arg(long, env, default_value_t = 365)]
+    pub stale_push_subscription_days: i64,
+
+    /// Personal-data retention: whole accounts with no login for this many
+    /// days and no live session are deleted, through the same path as
+    /// self-service deletion (`data::account::delete_account`), so owned
+    /// groups are handed over rather than lost. **Off by default (0)**:
+    /// most accounts have no email address, so there is no way to warn a
+    /// user first, and turning this on is an operator decision that the
+    /// privacy notice must state. The audit suggests 730 (24 months).
+    #[arg(long, env, default_value_t = 0)]
+    pub inactive_account_retention_days: i64,
 }
 
 /// The one invariant this crate cannot check at compile time and that has now
@@ -532,6 +564,9 @@ mod chart_env_wiring_tests {
             "SCHEDULE_ENRICHMENT_GRACE_MINUTES",
             "BACKLOG_MATCH_SWEEP_INTERVAL_SECS",
             "SESSION_CLEANUP_INTERVAL_SECS",
+            "PAST_TRAVEL_RETENTION_DAYS",
+            "STALE_PUSH_SUBSCRIPTION_DAYS",
+            "INACTIVE_ACCOUNT_RETENTION_DAYS",
         ];
         let block = api_container_block();
         let command = ServiceArguments::command();

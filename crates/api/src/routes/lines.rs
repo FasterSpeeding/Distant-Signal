@@ -1133,6 +1133,9 @@ mod db_tests {
             schedule_enrichment_grace_minutes: 30,
             backlog_match_sweep_interval_secs: 300,
             session_cleanup_interval_secs: 3600,
+            past_travel_retention_days: 548,
+            stale_push_subscription_days: 365,
+            inactive_account_retention_days: 0,
         };
 
         std::sync::Arc::new(AppState {
