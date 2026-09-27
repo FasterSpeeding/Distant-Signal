@@ -553,6 +553,7 @@ pub async fn ingest_shared_movements_batch(
                     loc_stanox: None,
                     toc_id: None,
                     variation_status: event.variation_status.clone(),
+                    timetable_variation: None,
                 };
                 let destination_crs = destination_map.get(&trains_id).map(String::as_str);
                 let mut derived = journey::apply_movement(

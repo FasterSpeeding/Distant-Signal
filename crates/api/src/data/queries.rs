@@ -3895,28 +3895,47 @@ pub async fn upsert_full_coverage_line_stats(
     let mut tx = pool.begin().await?;
     let mut count = 0u64;
     for row in rows {
+        // The windowed-stats breakdown (2026-09-27). A row without one is
+        // the legacy whole-population method: the breakdown columns keep
+        // their defaults and `stats_version` is 1.
+        let breakdown = row.breakdown.clone().unwrap_or_default();
+        let stats_version = match (&row.breakdown, row.stats_version) {
+            (_, Some(version)) => version as i16,
+            (Some(_), None) => common::full_coverage_window::FULL_COVERAGE_STATS_VERSION as i16,
+            (None, None) => 1,
+        };
         let result = sqlx::query(
             r#"
             INSERT INTO full_coverage_line_stats
                 (line_id, service_date, availability, total, delayed, cancelled, skipped,
-                 avg_delay_minutes, partial, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+                 avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending,
+                 unobserved, stats_version, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
             ON CONFLICT (line_id, service_date) DO UPDATE SET
-                availability      = EXCLUDED.availability,
-                total             = EXCLUDED.total,
-                delayed           = EXCLUDED.delayed,
-                cancelled         = EXCLUDED.cancelled,
-                skipped           = EXCLUDED.skipped,
-                avg_delay_minutes = EXCLUDED.avg_delay_minutes,
-                partial           = EXCLUDED.partial,
-                updated_at        = EXCLUDED.updated_at
+                availability       = EXCLUDED.availability,
+                total              = EXCLUDED.total,
+                delayed            = EXCLUDED.delayed,
+                cancelled          = EXCLUDED.cancelled,
+                skipped            = EXCLUDED.skipped,
+                avg_delay_minutes  = EXCLUDED.avg_delay_minutes,
+                partial            = EXCLUDED.partial,
+                cancelled_explicit = EXCLUDED.cancelled_explicit,
+                cancelled_presumed = EXCLUDED.cancelled_presumed,
+                pending            = EXCLUDED.pending,
+                unobserved         = EXCLUDED.unobserved,
+                stats_version      = EXCLUDED.stats_version,
+                updated_at         = EXCLUDED.updated_at
             WHERE (full_coverage_line_stats.availability, full_coverage_line_stats.total,
                    full_coverage_line_stats.delayed, full_coverage_line_stats.cancelled,
                    full_coverage_line_stats.skipped, full_coverage_line_stats.avg_delay_minutes,
-                   full_coverage_line_stats.partial)
+                   full_coverage_line_stats.partial, full_coverage_line_stats.cancelled_explicit,
+                   full_coverage_line_stats.cancelled_presumed, full_coverage_line_stats.pending,
+                   full_coverage_line_stats.unobserved, full_coverage_line_stats.stats_version)
                 IS DISTINCT FROM
                   (EXCLUDED.availability, EXCLUDED.total, EXCLUDED.delayed, EXCLUDED.cancelled,
-                   EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial)
+                   EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial,
+                   EXCLUDED.cancelled_explicit, EXCLUDED.cancelled_presumed, EXCLUDED.pending,
+                   EXCLUDED.unobserved, EXCLUDED.stats_version)
             "#,
         )
         .bind(&row.line_id)
@@ -3928,6 +3947,11 @@ pub async fn upsert_full_coverage_line_stats(
         .bind(row.stats.skipped as i32)
         .bind(row.stats.avg_delay_minutes)
         .bind(row.partial)
+        .bind(breakdown.cancelled_explicit as i32)
+        .bind(breakdown.cancelled_presumed as i32)
+        .bind(breakdown.pending as i32)
+        .bind(breakdown.unobserved as i32)
+        .bind(stats_version)
         .execute(&mut *tx)
         .await?;
         count += result.rows_affected();
@@ -3952,12 +3976,13 @@ pub async fn last_full_coverage_line_stats_fetch(
     Ok(fetched_at)
 }
 
-const FULL_COVERAGE_LINE_STATS_COLUMNS: &str = "line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, partial";
+const FULL_COVERAGE_LINE_STATS_COLUMNS: &str = "line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending, unobserved, stats_version";
 
 fn full_coverage_line_stats_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<common::FullCoverageLineStatsRow> {
     use sqlx::Row;
+    let stats_version: i16 = row.try_get("stats_version")?;
     Ok(common::FullCoverageLineStatsRow {
         line_id: row.try_get("line_id")?,
         service_date: row.try_get("service_date")?,
@@ -3970,6 +3995,29 @@ fn full_coverage_line_stats_row(
             avg_delay_minutes: row.try_get("avg_delay_minutes")?,
         },
         partial: row.try_get("partial")?,
+        breakdown: (stats_version >= 2)
+            .then(|| -> Result<common::FullCoverageWindowCounts> {
+                let int =
+                    |name: &str| -> Result<u32> { Ok(row.try_get::<i32, _>(name)?.max(0) as u32) };
+                let total = int("total")?;
+                let delayed = int("delayed")?;
+                let cancelled_explicit = int("cancelled_explicit")?;
+                let cancelled_presumed = int("cancelled_presumed")?;
+                Ok(common::FullCoverageWindowCounts {
+                    total,
+                    on_time: total
+                        .saturating_sub(delayed + cancelled_explicit + cancelled_presumed),
+                    delayed,
+                    cancelled_explicit,
+                    cancelled_presumed,
+                    skipped: int("skipped")?,
+                    pending: int("pending")?,
+                    unobserved: int("unobserved")?,
+                    avg_delay_minutes: row.try_get("avg_delay_minutes")?,
+                })
+            })
+            .transpose()?,
+        stats_version: Some(stats_version as u16),
     })
 }
 

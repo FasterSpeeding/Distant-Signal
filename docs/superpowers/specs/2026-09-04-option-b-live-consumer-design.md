@@ -330,6 +330,14 @@ occasionally more for shared segments).
 
 **2d. Matching algorithm**, per event:
 
+> **Superseded (2026-09-27)** for severity purposes by
+> `docs/superpowers/specs/2026-09-27-full-coverage-windowed-stats-design.md`:
+> "unconfirmed = cancelled" over the whole day's population became "only
+> trains already due are counted; a train is presumed cancelled only if it
+> was never even activated, and only with a healthy feed" (its section
+> 4.3). The rule below still describes the legacy row the consumer writes
+> while `FULL_COVERAGE_WINDOWED_STATS=false`.
+
 - **Activation (`0001`)**: park `train_id -> train_uid` exactly as
   `trust-consumer::process::ProcessorState.pending_activations` already
   does (reused via `trust-schema::journey`, Decision 1) — no line
@@ -364,6 +372,10 @@ occasionally more for shared segments).
   the kind of correctness question shadow-mode's continuous production
   comparison against sampling exists to surface before any real line's
   `full_coverage_enabled` ever flips (see Open Questions).
+
+> **Superseded (2026-09-27)** by the windowed-stats design (sections 5-6):
+> the live signal is a `recent` window of trains due in the last hour,
+> ending a grace period ago, and the whole-day row is an audit record only.
 
 **2e. Resolved vs. Pending per line per cycle.** `FullCoverageAvailability::Available`'s
 own doc comment (`crates/common/src/lib.rs:838-843`) sets

@@ -348,6 +348,18 @@ pub(crate) fn build_internal_oauth_routes(
             Method::GET,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
+        // The windowed stats of the same producer (2026-09-27): same group,
+        // both methods, exactly like /full-coverage-stats.
+        (
+            "/full-coverage-window-stats",
+            Method::POST,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
+        (
+            "/full-coverage-window-stats",
+            Method::GET,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
         // Two independent producers write to each of these tables now --
         // poller-irish-rail-gtfs (RepublicOfIreland rows) and
         // poller-nir-stations (NorthernIreland rows) -- so both GET and
