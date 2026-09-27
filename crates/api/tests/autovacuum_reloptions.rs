@@ -68,3 +68,50 @@ async fn big_batch_delete_tables_carry_their_autovacuum_reloptions() {
         }
     }
 }
+
+/// `20260927140000_schedule_line_population_lz4_autovacuum.sql` (F4 / DQ8):
+/// the population column compresses new values with lz4, and both the heap
+/// and its TOAST table carry the 0.05 autovacuum scale factor.
+#[tokio::test]
+#[ignore = "requires a live, migrated database; run with `DATABASE_URL=... cargo test -p api \
+            --test autovacuum_reloptions -- --ignored`"]
+async fn schedule_line_population_uses_lz4_and_tuned_toast_autovacuum() {
+    let database_url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("connect to postgres");
+
+    let (heap, toast, compression): (Option<Vec<String>>, Option<Vec<String>>, String) =
+        sqlx::query_as(
+            "SELECT c.reloptions, t.reloptions, a.attcompression::text \
+             FROM pg_class c \
+             JOIN pg_class t ON t.oid = c.reltoastrelid \
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'population' \
+             WHERE c.oid = 'schedule_line_population'::regclass",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read schedule_line_population storage settings");
+
+    assert_eq!(compression, "l", "population should compress with lz4");
+    let heap = heap.unwrap_or_default();
+    for option in [
+        "autovacuum_vacuum_scale_factor=0.05",
+        "autovacuum_analyze_scale_factor=0.05",
+    ] {
+        assert!(
+            heap.iter().any(|actual| actual == option),
+            "heap missing {option}: {heap:?}"
+        );
+    }
+    let toast = toast.unwrap_or_default();
+    assert!(
+        toast
+            .iter()
+            .any(|actual| actual == "autovacuum_vacuum_scale_factor=0.05"),
+        "TOAST table missing its scale factor: {toast:?}"
+    );
+}
