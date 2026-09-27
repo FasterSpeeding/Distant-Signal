@@ -875,8 +875,11 @@ pub async fn run_once<F: MovementFeed + movement_feed::DeadLetterSink>(
         // assumption that looked right on paper (a JSON-array batch, then a
         // bare single-object envelope) but didn't match what a real broker
         // sent; the fix both times was a live payload, not another guess.
-        let messages = match trust_schema::schema::parse_batch(&raw) {
-            Ok(messages) => messages,
+        let messages = match trust_schema::schema::parse_batch_detailed(&raw) {
+            Ok(parsed) => {
+                count_envelope_failures(&parsed.failures);
+                parsed.messages
+            }
             Err(err) => {
                 tracing::error!(
                     error = ?err,
@@ -937,6 +940,20 @@ pub async fn run_once<F: MovementFeed + movement_feed::DeadLetterSink>(
     feed.dead_letter(&unparseable).await?;
 
     Ok(events)
+}
+
+/// PL-8: one `trust_consumer_errors_total{operation="parse_envelope",
+/// msg_type}` per envelope the parser dropped (the log is warn-once per
+/// type inside `trust_schema`, so the counter is what shows the rate).
+fn count_envelope_failures(failures: &[trust_schema::schema::EnvelopeFailure]) {
+    for failure in failures {
+        metrics::counter!(
+            common::metrics::metric_name("trust_consumer_errors_total"),
+            "operation" => "parse_envelope",
+            "msg_type" => failure.msg_type.clone()
+        )
+        .increment(1);
+    }
 }
 
 /// The raw `msg_type` string this `TrustMessage` was parsed from -- the
@@ -1720,6 +1737,36 @@ fn refine_late_delay_minutes(
 mod tests {
     use std::path::PathBuf;
     use std::sync::LazyLock;
+
+    /// PL-8: every dropped envelope reaches the errors counter with its
+    /// msg_type, instead of vanishing behind a log line.
+    #[test]
+    fn a_dropped_envelope_is_counted_with_its_msg_type() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let raw = r#"[
+            {"header":{"msg_type":"0003"},"body":{"train_id":null}},
+            {"header":{"msg_type":"0003"},"body":{"no":"train"}},
+            {"body":{}},
+            {"header":{"msg_type":"0002"},"body":{"train_id":"1"}}
+        ]"#;
+        let parsed = trust_schema::schema::parse_batch_detailed(raw).unwrap();
+        assert_eq!(parsed.messages.len(), 1);
+        metrics::with_local_recorder(&recorder, || count_envelope_failures(&parsed.failures));
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(
+                r#"distant_signal_trust_consumer_errors_total{operation="parse_envelope",msg_type="0003"} 2"#
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                r#"distant_signal_trust_consumer_errors_total{operation="parse_envelope",msg_type="missing"} 1"#
+            ),
+            "{rendered}"
+        );
+    }
 
     use super::*;
     use crate::feed::FakeMovementFeed;

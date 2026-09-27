@@ -5443,6 +5443,7 @@ dependencies = [
  "dotenv",
  "health-http",
  "metrics",
+ "metrics-exporter-prometheus",
  "movement-feed",
  "rdkafka",
  "reqwest 0.13.4",
