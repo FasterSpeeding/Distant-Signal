@@ -438,6 +438,81 @@ pub struct ServiceArguments {
     pub inactive_account_retention_days: i64,
 }
 
+/// LEG-6 (UK GDPR data minimisation): `users.groups` keeps only the IdP
+/// groups something reads, not every group the SSO user belongs to (the
+/// production IdP maps unrelated groups such as `grafana-access` into the
+/// claim). The groups read are:
+///
+/// - `chatbot_access_group` (the `/chat` gate);
+/// - `admin_group`, when set (admin session revocation);
+/// - the groups the separate `distant-signal-mcp` adapter reads back from
+///   `GET /public/auth/session` to gate its tools: `mcp-users` and
+///   `mcp-live-boards` by default, overridable as a comma-separated list in
+///   [`STORED_GROUPS_EXTRA_ENV`] (set it to an empty string to keep none).
+pub const STORED_GROUPS_EXTRA_ENV: &str = "OIDC_STORED_GROUPS_EXTRA";
+
+/// The default for [`STORED_GROUPS_EXTRA_ENV`]: the MCP adapter's two access
+/// groups.
+pub const DEFAULT_STORED_GROUPS_EXTRA: &str = "mcp-users,mcp-live-boards";
+
+impl ServiceArguments {
+    /// The IdP groups a login may store on `users.groups`; see
+    /// [`STORED_GROUPS_EXTRA_ENV`].
+    pub fn stored_group_allowlist(&self) -> Vec<String> {
+        let extra = std::env::var(STORED_GROUPS_EXTRA_ENV)
+            .unwrap_or_else(|_| DEFAULT_STORED_GROUPS_EXTRA.to_string());
+        stored_group_allowlist(&self.chatbot_access_group, &self.admin_group, &extra)
+    }
+}
+
+/// [`ServiceArguments::stored_group_allowlist`] without the environment.
+/// Blank entries are dropped, so an empty `admin_group` allows nothing.
+pub fn stored_group_allowlist(
+    chatbot_access_group: &str,
+    admin_group: &str,
+    extra: &str,
+) -> Vec<String> {
+    let mut allowed: Vec<String> = Vec::new();
+    for group in [chatbot_access_group, admin_group]
+        .into_iter()
+        .chain(extra.split(','))
+        .map(str::trim)
+        .filter(|group| !group.is_empty())
+    {
+        if !allowed.iter().any(|existing| existing == group) {
+            allowed.push(group.to_string());
+        }
+    }
+    allowed
+}
+
+#[cfg(test)]
+mod stored_group_allowlist_tests {
+    use super::stored_group_allowlist;
+
+    #[test]
+    fn includes_the_chatbot_admin_and_extra_groups() {
+        assert_eq!(
+            stored_group_allowlist("chat", "admins", "mcp-users, mcp-live-boards"),
+            ["chat", "admins", "mcp-users", "mcp-live-boards"]
+        );
+    }
+
+    #[test]
+    fn an_empty_admin_group_or_extra_list_allows_nothing_extra() {
+        assert_eq!(stored_group_allowlist("chat", "", ""), ["chat"]);
+        assert_eq!(stored_group_allowlist("chat", "  ", " , "), ["chat"]);
+    }
+
+    #[test]
+    fn duplicates_are_listed_once() {
+        assert_eq!(
+            stored_group_allowlist("chat", "chat", "chat,x"),
+            ["chat", "x"]
+        );
+    }
+}
+
 /// The one invariant this crate cannot check at compile time and that has now
 /// been broken in production: **every `INTERNAL_OAUTH_GROUP_*` env var this
 /// `ServiceArguments` declares must also be set on the `api` container in

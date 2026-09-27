@@ -264,6 +264,12 @@ async fn callback(
         }
     };
 
+    // LEG-6: store only the groups something reads, not every group the
+    // IdP asserts. Rows written before this are trimmed at the next login.
+    let mut identity = identity;
+    identity.groups =
+        users::retain_allowed_groups(&identity.groups, &app.config.stored_group_allowlist());
+
     let user = match users::upsert_user(&app.database, &identity).await {
         Ok(u) => u,
         Err(err) => {
