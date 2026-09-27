@@ -6,8 +6,11 @@ import {
   ACCOUNT_DELETE_LABEL,
   ACCOUNT_EXPORT_LABEL,
   ACCOUNT_ROUTE,
+  describeRetentionDays,
   LEGAL_CONFIG,
   legalPageMetadata,
+  retentionPolicy,
+  type RetentionPolicy,
 } from '@/lib/legal';
 
 // ============================================================================
@@ -16,11 +19,11 @@ import {
 // LEG-4, LEG-5, LEG-7, LEG-8, LEG-11, LEG-28 and "Lawful basis by data
 // category"). The operator, and ideally a lawyer, must check every statement
 // against how the service actually runs before setting LEGAL_PAGES_PUBLISHED.
-// Retention periods below describe what the code does TODAY. The audit
-// recommends shorter ones (accounts: 24 months after last login; tracked
-// trains, journeys and tickets: 18 months after the travel date; push
-// subscriptions: 12 months unseen). If those are implemented, update this
-// page in the same change.
+// Retention periods below follow the api's actual retention settings, which
+// the chart passes to the frontend (lib/legal.ts `retentionPolicy`): tracked
+// trains, tickets and journeys after the travel date, push subscriptions
+// after a long absence, and -- only once enabled (DQ7: 730 days, after this
+// notice is published) -- whole inactive accounts.
 // ============================================================================
 
 // Reads the legal-pages flags per request (see lib/legal.ts).
@@ -42,14 +45,23 @@ const CONTRACT = 'Contract (UK GDPR Art. 6(1)(b)): we need it to provide the ser
 const LEGITIMATE_INTERESTS =
   'Legitimate interests (UK GDPR Art. 6(1)(f)): keeping the service secure and working.';
 
-/** One entry per row of the audit's "Lawful basis by data category" table. */
-const DATA_CATEGORIES: readonly DataCategory[] = [
+/** One entry per row of the audit's "Lawful basis by data category" table.
+ * Built per request from the live retention settings. */
+function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
+  const travel =
+    retention.pastTravelDays > 0
+      ? `, or ${describeRetentionDays(retention.pastTravelDays)} after the travel date, whichever comes first`
+      : '';
+  return [
   {
     title: 'Your account',
     what: 'The ID our sign-in service gives you, your display name and username, your email address if the sign-in provider supplies a verified one (Discord sign-ins do not), the access groups needed to decide which features you can use, and when you signed up and last signed in.',
     why: 'To create and run your account.',
     basis: CONTRACT,
-    retention: 'Until you delete your account.',
+    retention:
+      retention.inactiveAccountDays > 0
+        ? `Until you delete your account. If you do not sign in for ${describeRetentionDays(retention.inactiveAccountDays)} (and have no active session), we delete your account and everything in it automatically. We cannot warn you first unless we hold your email address.`
+        : 'Until you delete your account.',
   },
   {
     title: 'Sign-in sessions',
@@ -70,14 +82,14 @@ const DATA_CATEGORIES: readonly DataCategory[] = [
     what: 'The date, origin, destination and operator of trains and journeys you track, and any names you give them.',
     why: 'To track your trains and journeys and tell you about delays.',
     basis: CONTRACT,
-    retention: 'Until you delete them or delete your account.',
+    retention: `Tracked trains and journeys: until you delete them or delete your account${travel}. Journey templates: until you delete them or delete your account.`,
   },
   {
     title: 'Tickets',
     what: 'Ticket details you add: operator, ticket type, origin and destination. Ticket files you upload (PDF, Apple Wallet pass or zip) are read in memory to extract these details and are never stored.',
     why: 'To attach tickets to your trains and estimate Delay Repay.',
     basis: CONTRACT,
-    retention: 'Until you delete them or delete your account. Uploaded files are not kept at all.',
+    retention: `Until you delete them or delete your account${travel}. Uploaded files are not kept at all.`,
   },
   {
     title: 'Groups',
@@ -99,7 +111,11 @@ const DATA_CATEGORIES: readonly DataCategory[] = [
     why: 'To send you the notifications you asked for.',
     basis: CONTRACT,
     retention:
-      'Until you turn notifications off, your browser’s push service tells us the address no longer works, you have more than 20 devices registered (the oldest is removed), or you delete your account.',
+      `Until you turn notifications off, your browser’s push service tells us the address no longer works, you have more than 20 devices registered (the oldest is removed)${
+        retention.stalePushSubscriptionDays > 0
+          ? `, you have not signed in (and your browser has not renewed the address) for ${describeRetentionDays(retention.stalePushSubscriptionDays)}`
+          : ''
+      }, or you delete your account.`,
   },
   {
     title: 'Your location',
@@ -122,11 +138,13 @@ const DATA_CATEGORIES: readonly DataCategory[] = [
     basis: 'The same basis as the data they contain.',
     retention: '7 days. Data you delete leaves our backups within 7 days.',
   },
-];
+  ];
+}
 
 export default function PrivacyPage() {
   const mode = requireLegalPages();
   const { OPERATOR_NAME, ICO_REGISTRATION, MINIMUM_AGE } = LEGAL_CONFIG;
+  const categories = dataCategories(retentionPolicy());
   return (
     <LegalPage draft={mode === 'preview'} title="Privacy notice">
       <LegalSection title="Who we are">
@@ -142,7 +160,7 @@ export default function PrivacyPage() {
           You can look at live rail information without an account. We only hold personal data about you if you sign
           in, or in the technical logs every website produces.
         </Text>
-        {DATA_CATEGORIES.map((category) => (
+        {categories.map((category) => (
           <Stack key={category.title} gap={4}>
             <Title order={3} size="h5">
               {category.title}
