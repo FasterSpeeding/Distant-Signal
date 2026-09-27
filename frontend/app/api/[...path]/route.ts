@@ -162,6 +162,66 @@ async function hasAcceptableOriginForMutation(req: NextRequest): Promise<boolean
   return origin === expectedOrigin;
 }
 
+/** The largest request body this proxy forwards (FE-7): the api's biggest
+ * per-route limit a browser can reach, the 8 MiB ticket upload
+ * (`crates/api/src/routes/train.rs`'s `DefaultBodyLimit`). Anything larger
+ * would be rejected upstream anyway, so it is refused here before being
+ * buffered into the frontend's heap. */
+export const MAX_PROXY_BODY_BYTES = 8 * 1024 * 1024;
+
+/** How long the proxy waits on the api (FE-7), covering the upstream
+ * response headers and body. Without it a hung api held every proxied
+ * request open until undici's own 300 s header timeout. */
+export const UPSTREAM_TIMEOUT_MS = 30_000;
+
+/** Reads a request body, refusing one larger than `MAX_PROXY_BODY_BYTES`
+ * (FE-7). A declared `Content-Length` over the cap is refused before any
+ * byte is read; a chunked body is counted as it streams in. */
+async function readCappedBody(req: NextRequest): Promise<ArrayBuffer | 'too-large'> {
+  const declared = Number(req.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_PROXY_BODY_BYTES) return 'too-large';
+  if (!req.body) return new ArrayBuffer(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_PROXY_BODY_BYTES) {
+      await reader.cancel();
+      return 'too-large';
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
+/** Structural, not `instanceof Error`: the abort reason is a `DOMException`,
+ * which isn't an `Error` subclass in every runtime. */
+function isTimeout(err: unknown): boolean {
+  const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : undefined;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
+function tooLarge(): NextResponse {
+  return new NextResponse('request body too large', { status: 413 });
+}
+
+function upstreamFailure(err: unknown): NextResponse {
+  if (isTimeout(err)) {
+    return new NextResponse('upstream timed out', { status: 504 });
+  }
+  console.error('api proxy: upstream request failed', err);
+  return new NextResponse('upstream unavailable', { status: 502 });
+}
+
 async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   if (!(await hasAcceptableOriginForMutation(req))) {
     return new NextResponse('cross-site request rejected', { status: 403 });
@@ -268,6 +328,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     // status in [300, 400) and a real `location` header -- rather than an
     // opaque one, so this is safe to branch on below.
     redirect: 'manual',
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   };
   if (req.method !== 'GET' && req.method !== 'DELETE') {
     // arrayBuffer(), not text(): .text() decodes the incoming body as
@@ -280,19 +341,29 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     // step -- a JSON body round-trips identically (JSON is always valid
     // UTF-8, so this is inert for PinToggle/TrackTrainForm/preferences/
     // auth) and a binary multipart body survives byte-for-byte.
-    init.body = await req.arrayBuffer();
+    // Read through `readCappedBody` (FE-7), which also returns an
+    // ArrayBuffer.
+    const body = await readCappedBody(req);
+    if (body === 'too-large') return tooLarge();
+    init.body = body;
   } else if (req.method === 'DELETE') {
     // A DELETE normally has no body and is forwarded without one, as
     // before. `DELETE /account` is the exception: it requires an explicit
     // JSON confirmation body (UK legal audit LEG-4), so a DELETE that does
     // carry one is forwarded byte-for-byte like a POST's.
-    const body = await req.arrayBuffer();
+    const body = await readCappedBody(req);
+    if (body === 'too-large') return tooLarge();
     if (body.byteLength > 0) {
       init.body = body;
     }
   }
 
-  const response = await fetch(target, init);
+  let response: Response;
+  try {
+    response = await fetch(target, init);
+  } catch (err) {
+    return upstreamFailure(err);
+  }
 
   // A response can carry *multiple* Set-Cookie headers, which
   // `Headers.get()` collapses into one comma-joined string -- unusable
@@ -312,7 +383,14 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     return new NextResponse(null, { status: response.status, headers: responseHeaders });
   }
 
-  const body = await response.text();
+  // arrayBuffer(), not text(): a binary download (Content-Disposition) must
+  // survive byte-for-byte. Still under the same timeout signal (FE-7).
+  let body: ArrayBuffer;
+  try {
+    body = await response.arrayBuffer();
+  } catch (err) {
+    return upstreamFailure(err);
+  }
   const responseHeaders = new Headers({
     'Content-Type': response.headers.get('Content-Type') ?? 'application/json',
   });
@@ -331,7 +409,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   // Null-body statuses (204/205/304) may not carry a body on the outgoing
   // Response, not even an empty string -- see the existing PUT/DELETE
   // endpoints this handled before this change; unaffected by this edit.
-  return new NextResponse(body === '' ? null : body, { status: response.status, headers: responseHeaders });
+  return new NextResponse(body.byteLength === 0 ? null : body, { status: response.status, headers: responseHeaders });
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {

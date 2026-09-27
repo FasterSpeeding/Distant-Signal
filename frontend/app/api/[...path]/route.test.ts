@@ -17,7 +17,7 @@ vi.mock('next/headers', () => ({
   }),
 }));
 
-import { GET, POST, PUT, DELETE } from './route';
+import { GET, POST, PUT, DELETE, MAX_PROXY_BODY_BYTES } from './route';
 
 describe('/api/[...path] proxy', () => {
   beforeEach(() => {
@@ -526,6 +526,83 @@ describe('/api/[...path] proxy', () => {
       const [, init] = vi.mocked(fetch).mock.calls[0];
       const headers = (init as { headers: Record<string, string> }).headers;
       expect(headers['X-Forwarded-For']).toBeUndefined();
+    });
+  });
+
+  // FE-7: upstream timeout, body-size cap, and upstream failures.
+  describe('upstream limits', () => {
+    it('passes an abort signal to the upstream fetch', async () => {
+      const req = makeRequest('/api/preferences');
+      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('returns 504 when the upstream request times out', async () => {
+      vi.mocked(fetch).mockRejectedValueOnce(new DOMException('The operation timed out.', 'TimeoutError'));
+      const req = makeRequest('/api/preferences');
+      const res = await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(504);
+    });
+
+    it('returns 502 when the upstream is unreachable', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(fetch).mockRejectedValueOnce(new TypeError('fetch failed'));
+      const req = makeRequest('/api/preferences');
+      const res = await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(502);
+      spy.mockRestore();
+    });
+
+    it('refuses a declared Content-Length over the cap with 413, without calling the api', async () => {
+      const req = makeRequest('/api/Train/track', {
+        method: 'POST',
+        headers: { 'content-length': String(MAX_PROXY_BODY_BYTES + 1) },
+        body: 'x',
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
+      expect(res.status).toBe(413);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses an undeclared (streamed) body that grows past the cap with 413', async () => {
+      const chunk = new Uint8Array(1024 * 1024);
+      let sent = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent > MAX_PROXY_BODY_BYTES) {
+            controller.close();
+            return;
+          }
+          sent += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+      });
+      const req = makeRequest('/api/Train/track', { method: 'POST', body: stream, duplex: 'half' } as ConstructorParameters<
+        typeof NextRequest
+      >[1]);
+      const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
+      expect(res.status).toBe(413);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('forwards a body exactly at the cap', async () => {
+      const body = new Uint8Array(MAX_PROXY_BODY_BYTES);
+      const req = makeRequest('/api/Train/track', { method: 'POST', body });
+      const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
+      expect(res.status).toBe(200);
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      expect(((init as RequestInit).body as ArrayBuffer).byteLength).toBe(MAX_PROXY_BODY_BYTES);
+    });
+
+    it('relays a binary response body byte-for-byte', async () => {
+      const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0xfe, 0x00, 0x80]);
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(bytes, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } }),
+      );
+      const req = makeRequest('/api/Train/ticket/1');
+      const res = await GET(req, { params: Promise.resolve({ path: ['Train', 'ticket', '1'] }) });
+      expect(Array.from(new Uint8Array(await res.arrayBuffer()))).toEqual(Array.from(bytes));
     });
   });
 });
