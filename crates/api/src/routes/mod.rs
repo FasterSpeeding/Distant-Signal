@@ -41,8 +41,44 @@ pub mod trips;
 /// yesterday. Routes -- and the db tests that seed "today" for them -- must
 /// all derive "today"/"now" from this one function so they can never
 /// disagree about which day it is.
+///
+/// Test builds can pin it per thread with [`pin_london_now_for_tests`], so a
+/// db test no longer depends on the wall clock (DB review 2026-09-27 B4).
 pub(crate) fn london_now() -> chrono::DateTime<chrono_tz::Tz> {
+    #[cfg(test)]
+    if let Some(pinned) = PINNED_NOW.with(std::cell::Cell::get) {
+        return pinned.with_timezone(&chrono_tz::Europe::London);
+    }
     chrono::Utc::now().with_timezone(&chrono_tz::Europe::London)
+}
+
+#[cfg(test)]
+thread_local! {
+    static PINNED_NOW: std::cell::Cell<Option<chrono::DateTime<chrono::Utc>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Pins [`london_now`] (and so [`london_today`]) to `instant` on the current
+/// thread until the returned guard is dropped. A `#[tokio::test]` uses the
+/// current-thread runtime, so the handler under test (driven through
+/// `oneshot`) runs on the same thread and sees the pinned value; a
+/// `multi_thread` test would not.
+#[cfg(test)]
+#[must_use = "the pin is lifted as soon as the guard is dropped"]
+pub(crate) fn pin_london_now_for_tests(instant: chrono::DateTime<chrono::Utc>) -> PinnedLondonNow {
+    PINNED_NOW.with(|cell| cell.set(Some(instant)));
+    PinnedLondonNow(())
+}
+
+/// Guard returned by [`pin_london_now_for_tests`].
+#[cfg(test)]
+pub(crate) struct PinnedLondonNow(());
+
+#[cfg(test)]
+impl Drop for PinnedLondonNow {
+    fn drop(&mut self) {
+        PINNED_NOW.with(|cell| cell.set(None));
+    }
 }
 
 /// London-local "today" -- see [`london_now`].

@@ -350,9 +350,12 @@ mod tests {
 /// live database -- mirrors `routes::station_stats::db_tests`' seed/assert/
 /// delete pattern and its `test_app` helper for constructing a real `App`
 /// around a live pool without needing every other part of
-/// `AppState::init` (OIDC discovery, etc). Uses the reserved `Z…` fixture
-/// CRS namespace (same convention as `data::reference::db_tests`) so
-/// cleanup can never touch real data.
+/// `AppState::init` (OIDC discovery, etc). Uses digit-bearing fixture CRS
+/// codes (`9…`; every real CRS is letters only -- same convention as
+/// `data::reference::db_tests`) so cleanup can never touch real data, and
+/// cleans up before seeding and again on drop (`FixtureCleanup`). The
+/// nearby-station fixtures sit in the southern oceans, far from any real
+/// station, so a table full of real stations can never outrank them.
 #[cfg(test)]
 mod db_tests {
     use axum::body::Body;
@@ -365,6 +368,7 @@ mod db_tests {
     use crate::app::{App, AppState};
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
+    use crate::test_support::FixtureCleanup;
 
     /// Copied from `routes::station_stats::db_tests::test_app` (that
     /// module's own doc comment: colocated per-file rather than shared).
@@ -479,12 +483,24 @@ mod db_tests {
         .expect("seed fixture station");
     }
 
-    async fn delete_fixture(pool: &PgPool, crs: &str) {
-        sqlx::query("DELETE FROM stations WHERE crs = $1")
-            .bind(crs)
-            .execute(pool)
-            .await
-            .expect("cleanup fixture station");
+    /// Deletes the given fixture station codes now and again on drop.
+    async fn station_cleanup(pool: &PgPool, codes: &[&str]) -> FixtureCleanup {
+        let list = codes
+            .iter()
+            .map(|code| {
+                assert!(
+                    code.bytes().any(|b| b.is_ascii_digit()),
+                    "fixture CRS {code} must contain a digit so it can never be a real station"
+                );
+                format!("'{code}'")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        FixtureCleanup::new(
+            pool,
+            [format!("DELETE FROM stations WHERE crs IN ({list})")],
+        )
+        .await
     }
 
     #[tokio::test]
@@ -492,11 +508,11 @@ mod db_tests {
                 station_accessibility_route -- --ignored --test-threads=1`"]
     async fn station_accessibility_route_404s_naming_the_crs_when_no_row_exists() {
         let pool = connect().await;
-        delete_fixture(&pool, "ZFC").await;
+        let _cleanup = station_cleanup(&pool, &["9FC"]).await;
 
-        let (status, body) = get(&pool, "/stations/ZFC/accessibility").await;
+        let (status, body) = get(&pool, "/stations/9FC/accessibility").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(body.contains("ZFC"), "404 body should name the CRS: {body}");
+        assert!(body.contains("9FC"), "404 body should name the CRS: {body}");
     }
 
     #[tokio::test]
@@ -505,15 +521,16 @@ mod db_tests {
     async fn station_accessibility_route_is_200_empty_object_when_the_row_has_no_allowlisted_keys()
     {
         let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9FD"]).await;
         seed(
             &pool,
-            "ZFD",
+            "9FD",
             "Fixture Quiet Station",
             serde_json::json!({ "ticketBuying": { "open": true } }),
         )
         .await;
 
-        let (status, body) = get(&pool, "/stations/ZFD/accessibility").await;
+        let (status, body) = get(&pool, "/stations/9FD/accessibility").await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -522,8 +539,6 @@ mod db_tests {
         );
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json, serde_json::json!({}));
-
-        delete_fixture(&pool, "ZFD").await;
     }
 
     #[tokio::test]
@@ -531,9 +546,10 @@ mod db_tests {
                 station_accessibility_route -- --ignored --test-threads=1`"]
     async fn station_accessibility_route_returns_the_filtered_object_unwrapped_verbatim() {
         let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9FE"]).await;
         seed(
             &pool,
-            "ZFE",
+            "9FE",
             "Fixture Facilities Station Two",
             serde_json::json!({
                 "lifts": [{ "location": "Platform 1" }],
@@ -543,7 +559,7 @@ mod db_tests {
         )
         .await;
 
-        let (status, body) = get(&pool, "/stations/ZFE/accessibility").await;
+        let (status, body) = get(&pool, "/stations/9FE/accessibility").await;
         assert_eq!(status, StatusCode::OK);
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
@@ -555,8 +571,6 @@ mod db_tests {
             "the body is the filtered object directly, not wrapped in an envelope, and \
              stationMap (non-allowlisted) is absent: {json}"
         );
-
-        delete_fixture(&pool, "ZFE").await;
     }
 
     /// The new route sits at `/stations/{crs}/accessibility`, one segment
@@ -594,25 +608,24 @@ mod db_tests {
                 nearby_stations_route -- --ignored --test-threads=1`"]
     async fn nearby_stations_route_returns_nearest_first() {
         let pool = connect().await;
-        seed_with_coords(&pool, "ZGA", "Near Route Fixture", 51.3200, -0.5600).await;
-        seed_with_coords(&pool, "ZGB", "Far Route Fixture", 52.4800, -1.9000).await;
+        let _cleanup = station_cleanup(&pool, &["9GA", "9GB"]).await;
+        // Southern Indian Ocean: nothing real is anywhere near.
+        seed_with_coords(&pool, "9GA", "Near Route Fixture", -55.0010, 80.0050).await;
+        seed_with_coords(&pool, "9GB", "Far Route Fixture", -56.1600, 78.6600).await;
 
-        let (status, body) = get(&pool, "/stations/nearby?lat=51.3191&lon=-0.5610").await;
+        let (status, body) = get(&pool, "/stations/nearby?lat=-55.0&lon=80.0").await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
         let codes: Vec<&str> = json
             .iter()
+            .take(2)
             .filter_map(|v| v.get("code").and_then(|c| c.as_str()))
-            .filter(|c| *c == "ZGA" || *c == "ZGB")
             .collect();
-        assert_eq!(codes, vec!["ZGA", "ZGB"], "nearest must come first: {body}");
+        assert_eq!(codes, vec!["9GA", "9GB"], "nearest must come first: {body}");
         assert!(
             json.iter().all(|v| v.get("distanceKm").is_some()),
             "each row must carry a camelCase distanceKm: {body}"
         );
-
-        delete_fixture(&pool, "ZGA").await;
-        delete_fixture(&pool, "ZGB").await;
     }
 
     #[tokio::test]
@@ -620,24 +633,23 @@ mod db_tests {
                 nearby_stations_route -- --ignored --test-threads=1`"]
     async fn nearby_stations_route_excludes_stations_with_no_coordinates() {
         let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9GC"]).await;
         seed(
             &pool,
-            "ZGC",
+            "9GC",
             "No Coords Route Fixture",
             serde_json::json!({}),
         )
         .await;
 
-        let (status, body) = get(&pool, "/stations/nearby?lat=51.3191&lon=-0.5610").await;
+        let (status, body) = get(&pool, "/stations/nearby?lat=-55.0&lon=80.0").await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
         assert!(
             json.iter()
-                .all(|v| v.get("code").and_then(|c| c.as_str()) != Some("ZGC")),
+                .all(|v| v.get("code").and_then(|c| c.as_str()) != Some("9GC")),
             "a station with null lat/lon must never appear: {body}"
         );
-
-        delete_fixture(&pool, "ZGC").await;
     }
 
     #[tokio::test]
@@ -645,23 +657,26 @@ mod db_tests {
                 nearby_stations_route -- --ignored --test-threads=1`"]
     async fn nearby_stations_route_respects_and_caps_the_limit() {
         let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9H0", "9H1", "9H2"]).await;
+        // South Atlantic, away from real stations and the tests above.
         for i in 0..3 {
             seed_with_coords(
                 &pool,
-                &format!("ZH{i}"),
+                &format!("9H{i}"),
                 &format!("Limit Route Fixture {i}"),
-                51.30 + f64::from(i) * 0.01,
-                -0.50,
+                -45.00 - f64::from(i) * 0.01,
+                -20.00,
             )
             .await;
         }
 
-        let (status, body) = get(&pool, "/stations/nearby?lat=51.30&lon=-0.50&limit=1").await;
+        let (status, body) = get(&pool, "/stations/nearby?lat=-45.0&lon=-20.0&limit=1").await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
         assert_eq!(json.len(), 1, "limit=1 must return exactly 1 row: {body}");
+        assert_eq!(json[0]["code"], "9H0", "and it is the nearest one: {body}");
 
-        let (status, body) = get(&pool, "/stations/nearby?lat=51.30&lon=-0.50&limit=100000").await;
+        let (status, body) = get(&pool, "/stations/nearby?lat=-45.0&lon=-20.0&limit=100000").await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -672,10 +687,6 @@ mod db_tests {
             json.len() <= NEARBY_MAX_LIMIT as usize,
             "must never exceed the cap: {body}"
         );
-
-        for i in 0..3 {
-            delete_fixture(&pool, &format!("ZH{i}")).await;
-        }
     }
 
     #[tokio::test]

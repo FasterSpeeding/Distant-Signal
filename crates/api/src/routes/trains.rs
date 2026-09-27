@@ -766,57 +766,100 @@ mod db_tests {
         })
     }
 
-    async fn connect() -> PgPool {
+    /// The instant every test in this module runs at: noon on a BST day in
+    /// 2099, via [`crate::routes::pin_london_now_for_tests`] (DB review
+    /// 2026-09-27 B3/B4). Pinning it means
+    ///
+    /// * no test depends on the wall clock any more -- the old
+    ///   `relative_times` had to skip every test between 22:30 and 00:01
+    ///   London, and the UTC-vs-London gap test could only assert during
+    ///   BST;
+    /// * "today" and every date in the route's +-7 day window are far-future,
+    ///   synthetic days this module owns outright, so the day-scoped deletes
+    ///   below (the route's "is anything published for this date?" check
+    ///   means a test must control the whole day) can never touch real data.
+    ///
+    /// No other test module uses August 2099.
+    fn pinned_now() -> chrono::DateTime<chrono::Utc> {
+        "2099-08-14T11:00:00Z"
+            .parse()
+            .expect("valid pinned instant (12:00 BST)")
+    }
+
+    /// Held for the whole test: the clock pin, plus a cleanup of this
+    /// module's fixture window and `RSLV*` rows that runs before the test
+    /// seeds anything and again on drop, pass or fail.
+    struct TestGuards {
+        _clock: crate::routes::PinnedLondonNow,
+        _cleanup: crate::test_support::FixtureCleanup,
+    }
+
+    async fn connect() -> (PgPool, TestGuards) {
+        let clock = crate::routes::pin_london_now_for_tests(pinned_now());
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        PgPoolOptions::new()
+        let pool = PgPoolOptions::new()
             .connect(&database_url)
             .await
-            .expect("connect to postgres")
+            .expect("connect to postgres");
+        let today = crate::routes::london_today();
+        let (first, last) = (
+            today - chrono::Duration::days(8),
+            today + chrono::Duration::days(8),
+        );
+        crate::test_support::assert_synthetic_date(first);
+        let cleanup = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [
+                format!(
+                    "DELETE FROM schedule_destination_departures \
+                     WHERE service_date BETWEEN '{first}' AND '{last}'"
+                ),
+                "DELETE FROM schedule_destination_departures WHERE train_uid LIKE 'RSLV%'"
+                    .to_string(),
+                "DELETE FROM trains WHERE train_uid LIKE 'RSLV%'".to_string(),
+            ],
+        )
+        .await;
+        (
+            pool,
+            TestGuards {
+                _clock: clock,
+                _cleanup: cleanup,
+            },
+        )
+    }
+
+    /// Deletes every `schedule_destination_departures` row on each of
+    /// `dates` -- only ever a synthetic (2090+) fixture day, asserted.
+    async fn delete_days(pool: &PgPool, dates: &[chrono::NaiveDate]) {
+        for &date in dates {
+            crate::test_support::assert_synthetic_date(date);
+            sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+                .bind(date)
+                .execute(pool)
+                .await
+                .expect("cleanup fixture-day schedule_destination_departures rows");
+        }
     }
 
     async fn delete_today(pool: &PgPool) {
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(crate::routes::london_today())
-            .execute(pool)
-            .await
-            .expect("cleanup today's schedule_destination_departures rows");
+        delete_days(pool, &[crate::routes::london_today()]).await;
     }
 
-    /// Returns `None` (after printing why) instead of the usual triple when
-    /// `now` sits inside the roughly-90-minute window around Europe/London
-    /// midnight where these tests' assumptions about "today" don't hold --
-    /// see the comment below. Callers are expected to bail out of the test
-    /// they're running (`let Some(...) = relative_times() else { return };`)
-    /// rather than treat `None` as a real result: a CI run that happens to
-    /// land in this window should report these tests as an inapplicable
-    /// no-op, not a hard, unrelated-looking failure. This used to be a bare
-    /// `assert!`/panic here, which turned an unlucky CI schedule into 17
-    /// simultaneous red tests with no actual bug behind them.
-    fn relative_times() -> Option<(chrono::NaiveTime, chrono::NaiveTime, chrono::NaiveTime)> {
-        use chrono::Timelike;
-
-        let now = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .time();
-        let now = chrono::NaiveTime::from_hms_opt(now.hour(), now.minute(), 0)
-            .expect("valid time from valid hour/minute");
+    /// `(past, soon, later)` relative to the pinned London `now` (12:00):
+    /// 00:00, 12:30 and 13:00, with plenty of room after `later` for the
+    /// callers that build stops a little past it.
+    fn relative_times() -> (chrono::NaiveTime, chrono::NaiveTime, chrono::NaiveTime) {
+        let now = crate::routes::london_now().time();
         let past = chrono::NaiveTime::MIN;
-        let (soon, soon_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(30));
-        let (later, later_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(60));
-        // Callers also build times a little PAST `later` (e.g. a final stop
-        // at `later + 5min`), so keep a margin beyond it too: without this,
-        // a run at ~22:56 put that stop past midnight and failed for real.
-        let (_, margin_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(90));
-        if soon_wrapped == 0 && later_wrapped == 0 && margin_wrapped == 0 && now > past {
-            Some((past, soon, later))
-        } else {
-            println!(
-                "skipping: these tests need at least an hour before midnight and a moment \
-                 after it; re-run outside 22:30-00:01 Europe/London"
-            );
-            None
-        }
+        let soon = now + chrono::Duration::minutes(30);
+        let later = now + chrono::Duration::minutes(60);
+        assert!(
+            past < now && now < soon && soon < later,
+            "the pinned clock must leave room either side of now: {now}"
+        );
+        (past, soon, later)
     }
 
     /// Seeds today with rows all sharing ONE `origin_crs` (`station_crs`,
@@ -824,18 +867,10 @@ mod db_tests {
     /// `true_origin_crs`, so the two optional filters can be exercised
     /// independently of the fixed station. One already-departed row (which
     /// the route must hide), and two future rows.
-    ///
-    /// Returns `false` (having seeded nothing) when `relative_times` reports
-    /// we're too close to Europe/London midnight for these fixtures to be
-    /// meaningful; callers must check this and bail out of the test rather
-    /// than run assertions against an empty/absent seed.
-    #[must_use]
-    async fn seed_today(pool: &PgPool, station_crs: &str) -> bool {
+    async fn seed_today(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = crate::routes::london_today();
-        let Some((past, soon, later)) = relative_times() else {
-            return false;
-        };
+        let (past, soon, later) = relative_times();
         for (scheduled, train_uid, destination_crs, true_origin_crs) in [
             (past, "C10000", "WAT", Some("PAD")),
             (soon, "C10001", "WAT", Some("PAD")),
@@ -856,7 +891,6 @@ mod db_tests {
             .await
             .expect("seed fixture row");
         }
-        true
     }
 
     async fn get(pool: &PgPool, uri: &str) -> (StatusCode, String) {
@@ -892,7 +926,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_missing_station_is_a_400() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let (status, _) = get(&pool, "/trains/search").await;
         assert_eq!(
             status,
@@ -905,7 +939,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_station_is_a_400_not_a_404() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let (status, body) = get(&pool, "/trains/search?station=NOTACRS").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
@@ -918,7 +952,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_time_is_a_400() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB&from=half+past+eight").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
@@ -931,7 +965,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_arrival_from_without_any_stops_at_is_a_400() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB&arrival_from=09:00").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
@@ -944,7 +978,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_arrival_to_without_any_stops_at_is_a_400() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let (status, _) = get(&pool, "/trains/search?station=ZRB&arrival_to=09:00").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
@@ -953,7 +987,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_arrival_from_is_a_400() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let (status, body) = get(
             &pool,
             "/trains/search?station=ZRB&stops_at=WAT&arrival_from=teatime",
@@ -970,10 +1004,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_after_cursor_is_a_400() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&after=!!!not-base64!!!").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -992,10 +1024,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_rejects_a_zero_or_unparseable_limit_but_clamps_an_over_large_one() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
 
         let (status, _) = get(&pool, "/trains/search?station=ZRB&limit=0").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1025,7 +1055,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_nothing_published_for_today_is_a_404() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         delete_today(&pool).await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1039,10 +1069,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_unknown_station_on_a_published_day_is_200_and_empty() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=ZRF").await;
         assert_eq!(status, StatusCode::OK);
         assert!(results(&body).is_empty());
@@ -1054,10 +1082,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_published_day_with_no_matches_is_200_with_an_empty_results_array() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB&origin=ZZZ").await;
         assert_eq!(
             status,
@@ -1073,16 +1099,12 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_renders_camel_case_rows_with_trimmed_time_and_station_attached() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=zrb").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
-        let Some((_, soon, _)) = relative_times() else {
-            return;
-        };
+        let (_, soon, _) = relative_times();
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["uid"], "C10001");
@@ -1109,10 +1131,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_hides_a_departure_that_has_already_gone() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
@@ -1133,14 +1153,11 @@ mod db_tests {
         // 09:00-12:00 at 3pm) must get the real matching rows, not an
         // empty result -- an explicit lower bound must never be silently
         // re-floored to `now` via `max(now, from)`. `seed_today` plants
-        // `C10000` at `NaiveTime::MIN` (00:00:00), already-departed by any
-        // time this test runs (guarded by `relative_times`'s own
-        // near-midnight assertion), so an explicit `from=00:00&to=00:00`
+        // `C10000` at `NaiveTime::MIN` (00:00:00), already-departed at the
+        // pinned noon clock, so an explicit `from=00:00&to=00:00`
         // window can only return it if the floor is gone.
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB&from=00:00&to=00:00").await;
         assert_eq!(status, StatusCode::OK);
         let uids: Vec<String> = results(&body)
@@ -1167,10 +1184,8 @@ mod db_tests {
         // one already-departed row (`C10000`) and two future ones
         // (`C10001`, `C10002`); with no `from` supplied, only the future
         // two must come back.
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         let mut uids: Vec<String> = results(&body)
@@ -1202,13 +1217,10 @@ mod db_tests {
     /// bearing fact `trains_search_stops_at_matches_regardless_of_true_destination`
     /// exists to exploit: the deleted `destination` filter could never have
     /// matched any of these trains on `AAA`, but `stops_at` does.
-    #[must_use]
-    async fn seed_stops_at(pool: &PgPool, station_crs: &str) -> bool {
+    async fn seed_stops_at(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = crate::routes::london_today();
-        let Some((_, soon, later)) = relative_times() else {
-            return false;
-        };
+        let (_, soon, later) = relative_times();
         let five = chrono::Duration::minutes(5);
         for (train_uid, true_origin_crs, calling_points) in [
             (
@@ -1253,17 +1265,14 @@ mod db_tests {
                 .expect("seed stops_at fixture row");
             }
         }
-        true
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_stops_at_matches_regardless_of_true_destination() {
-        let pool = connect().await;
-        if !seed_stops_at(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_stops_at(&pool, "ZRB").await;
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=AAA").await;
         assert_eq!(status, StatusCode::OK);
@@ -1293,13 +1302,9 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_combines_origin_stops_at_and_time_filters_together() {
-        let pool = connect().await;
-        if !seed_stops_at(&pool, "ZRB").await {
-            return;
-        }
-        let Some((_, soon, later)) = relative_times() else {
-            return;
-        };
+        let (pool, _guards) = connect().await;
+        seed_stops_at(&pool, "ZRB").await;
+        let (_, soon, later) = relative_times();
         let five = chrono::Duration::minutes(5);
         // T51001 (SWA, scheduled `soon`) and T51002 (SWA, scheduled
         // `soon + 4*5m`) both call AAA and share true_origin SWA; the
@@ -1331,13 +1336,10 @@ mod db_tests {
     /// * `T53003` -- the through-loop. Departs `station_crs` at +20, calls
     ///   `KNG`, departs `station_crs` AGAIN at +30 and terminates at
     ///   `EEE`. Only the FIRST of its two departures comes back.
-    #[must_use]
-    async fn seed_loop(pool: &PgPool, station_crs: &str) -> bool {
+    async fn seed_loop(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = crate::routes::london_today();
-        let Some((_, soon, _)) = relative_times() else {
-            return false;
-        };
+        let (_, soon, _) = relative_times();
         let five = chrono::Duration::minutes(5);
         for (train_uid, destination_crs, calls) in [
             ("T53001", station_crs, vec![(station_crs, 0), ("KNG", 2)]),
@@ -1365,7 +1367,6 @@ mod db_tests {
                 .expect("seed loop fixture row");
             }
         }
-        true
     }
 
     #[tokio::test]
@@ -1376,10 +1377,8 @@ mod db_tests {
         // fields used to be a tautology (every train out of that station
         // matched, because a row is a member of its own calling-point
         // list) and now asks "does this working come back here".
-        let pool = connect().await;
-        if !seed_loop(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_loop(&pool, "ZRB").await;
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=ZRB").await;
         assert_eq!(status, StatusCode::OK);
@@ -1439,13 +1438,10 @@ mod db_tests {
     /// ever reaching the search origin; `T54002` calls `station_crs` first
     /// and `FOO` after, so it remains reachable from there. Neither
     /// train's true destination is `FOO`.
-    #[must_use]
-    async fn seed_stops_at_ordering(pool: &PgPool, station_crs: &str) -> bool {
+    async fn seed_stops_at_ordering(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = crate::routes::london_today();
-        let Some((_, soon, _)) = relative_times() else {
-            return false;
-        };
+        let (_, soon, _) = relative_times();
         let five = chrono::Duration::minutes(5);
         for (train_uid, calling_points) in [
             ("T54001", vec![("FOO", 0), (station_crs, 1)]),
@@ -1468,7 +1464,6 @@ mod db_tests {
                 .expect("seed stops_at ordering fixture row");
             }
         }
-        true
     }
 
     #[tokio::test]
@@ -1481,10 +1476,8 @@ mod db_tests {
         // `station` now also requires that station's call to come LATER --
         // "stops at X" means you can actually get there from where you
         // searched, not that the train passed through X at some point.
-        let pool = connect().await;
-        if !seed_stops_at_ordering(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_stops_at_ordering(&pool, "ZRB").await;
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=FOO").await;
         assert_eq!(status, StatusCode::OK);
@@ -1515,13 +1508,10 @@ mod db_tests {
     /// instant never happens in real CIF timetables, and the `stops_at`
     /// ordering rule (`(day_offset, scheduled) >`) requires OXF's row to
     /// genuinely follow ZRB's to be reachable from it at all.
-    #[must_use]
-    async fn seed_stops_at_arrival(pool: &PgPool, station_crs: &str) -> bool {
+    async fn seed_stops_at_arrival(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = crate::routes::london_today();
-        let Some((_, soon, later)) = relative_times() else {
-            return false;
-        };
+        let (_, soon, later) = relative_times();
         let dwell = chrono::Duration::minutes(2);
         for (train_uid, oxf_arrival) in [("T52001", soon), ("T52002", later)] {
             let oxf_scheduled = oxf_arrival + dwell;
@@ -1556,7 +1546,6 @@ mod db_tests {
             .await
             .expect("seed the OXF row");
         }
-        true
     }
 
     #[tokio::test]
@@ -1564,13 +1553,9 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_stop_arrival_filters_by_the_named_intermediate_calling_points_own_arrival()
      {
-        let pool = connect().await;
-        if !seed_stops_at_arrival(&pool, "ZRB").await {
-            return;
-        }
-        let Some((_, _, later)) = relative_times() else {
-            return;
-        };
+        let (pool, _guards) = connect().await;
+        seed_stops_at_arrival(&pool, "ZRB").await;
+        let (_, _, later) = relative_times();
 
         let uri = format!(
             "/trains/search?station=ZRB&stops_at=OXF&arrival_from={}&arrival_to={}",
@@ -1595,10 +1580,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_returns_a_null_next_cursor_when_the_page_is_the_last_one() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(results(&body).len(), 2);
@@ -1615,10 +1598,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_paginates_with_a_cursor_and_after_continues_from_it() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
 
         let (status, first) = get(&pool, "/trains/search?station=ZRB&limit=1").await;
         assert_eq!(status, StatusCode::OK);
@@ -1650,22 +1631,23 @@ mod db_tests {
     fn london_is_currently_ahead_of_utc() -> bool {
         use chrono::Offset;
 
-        chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .offset()
-            .fix()
-            .local_minus_utc()
-            != 0
+        crate::routes::london_now().offset().fix().local_minus_utc() != 0
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_hides_a_departure_inside_the_utc_vs_london_gap() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         delete_today(&pool).await;
 
-        let is_bst = london_is_currently_ahead_of_utc();
+        // The pinned clock is in BST, so London is an hour ahead of UTC and
+        // there is a real gap to put the fixture in -- on every run, not
+        // only during British Summer Time as it was on the wall clock.
+        assert!(
+            london_is_currently_ahead_of_utc(),
+            "pinned_now() must be a BST instant for this test to discriminate anything"
+        );
         // ONE London clock read for both the seeded date and the seeded
         // time, and the same `london_now` the route itself reads.
         let london_now = crate::routes::london_now();
@@ -1677,18 +1659,10 @@ mod db_tests {
             chrono::NaiveTime::from_hms_opt(t.hour(), t.minute(), 0)
                 .expect("valid time from valid hour/minute")
         };
-        let (gap_time, wrapped) = london_time.overflowing_sub_signed(chrono::Duration::minutes(20));
-        // Same reasoning as `relative_times`: a run that lands inside this
-        // window is an inapplicable no-op, not a real failure (this used to
-        // be a bare `assert!`, i.e. a guaranteed red test for 20 minutes
-        // every night).
-        if wrapped != 0 || london_time < chrono::NaiveTime::from_hms_opt(0, 21, 0).unwrap() {
-            println!(
-                "skipping: this test needs at least 20 minutes since London midnight; \
-                 re-run outside 00:00-00:21 Europe/London"
-            );
-            return;
-        }
+        // 20 minutes before London `now` (so already departed), but 40
+        // minutes AFTER UTC `now` -- a route that regressed to bare UTC time
+        // would still list it.
+        let gap_time = london_time - chrono::Duration::minutes(20);
 
         sqlx::query(
             "INSERT INTO schedule_destination_departures \
@@ -1712,23 +1686,12 @@ mod db_tests {
             .map(|row| row["uid"].as_str().unwrap().to_string())
             .collect();
 
-        if is_bst {
-            assert!(
-                !uids.contains(&"C10099".to_string()),
-                "during BST, a row scheduled 20 minutes before the correct London-local `now` \
-                 has already departed and must be excluded; if this fails, `now` has regressed \
-                 to bare UTC time: {uids:?}"
-            );
-        } else {
-            // Not currently observing BST: `Europe::London` and UTC agree
-            // outside BST, so there is no gap between the two clocks to pin
-            // this fixture inside -- reverting the route to bare UTC would
-            // compute the exact same `now` this test just ran against, and
-            // the assertion above would pass either way. There is nothing
-            // this test COULD discriminate in that window, so skipping the
-            // core assertion here is a true no-op, not a flaky pass/fail or
-            // a silently-lost coverage gap.
-        }
+        assert!(
+            !uids.contains(&"C10099".to_string()),
+            "a row scheduled 20 minutes before the correct London-local `now` has already \
+             departed and must be excluded; if this fails, `now` has regressed to bare UTC \
+             time: {uids:?}"
+        );
 
         delete_today(&pool).await;
     }
@@ -1737,7 +1700,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_date_is_a_400() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB&date=not-a-date").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
@@ -1750,7 +1713,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_rejects_a_date_outside_the_supported_window() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let today = crate::routes::london_today();
         let too_far_future = today + chrono::Duration::days(8);
         let too_far_past = today - chrono::Duration::days(8);
@@ -1788,17 +1751,12 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_accepts_a_date_exactly_at_the_edge_of_the_window() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let today = crate::routes::london_today();
         let edge_future = today + chrono::Duration::days(7);
         let edge_past = today - chrono::Duration::days(7);
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)")
-            .bind(edge_future)
-            .bind(edge_past)
-            .execute(&pool)
-            .await
-            .expect("cleanup edge-date fixtures");
+        delete_days(&pool, &[edge_future, edge_past]).await;
 
         for (date, uid) in [(edge_future, "C30001"), (edge_past, "C30002")] {
             sqlx::query(
@@ -1834,27 +1792,18 @@ mod db_tests {
             assert_eq!(rows[0]["uid"], uid);
         }
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)")
-            .bind(edge_future)
-            .bind(edge_past)
-            .execute(&pool)
-            .await
-            .expect("cleanup edge-date fixtures");
+        delete_days(&pool, &[edge_future, edge_past]).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_applies_now_forward_only_when_date_is_today() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let today = crate::routes::london_today();
         let tomorrow = today + chrono::Duration::days(1);
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(tomorrow)
-            .execute(&pool)
-            .await
-            .expect("cleanup tomorrow's fixture");
+        delete_days(&pool, &[tomorrow]).await;
 
         // A row scheduled at the very start of tomorrow -- long "in the
         // past" relative to today's current clock time, which is exactly
@@ -1893,11 +1842,7 @@ mod db_tests {
             "a 00:05 row on a FUTURE date must not be hidden by today's now-forward filter: {uids:?}"
         );
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(tomorrow)
-            .execute(&pool)
-            .await
-            .expect("cleanup tomorrow's fixture");
+        delete_days(&pool, &[tomorrow]).await;
     }
 
     #[tokio::test]
@@ -1913,15 +1858,11 @@ mod db_tests {
         // bound with NO `now` floor applied at all, per this route's own
         // doc comment on `scheduled_from` in `get_trains_search` -- today's
         // clock is irrelevant to every OTHER date, explicit `from` or not.
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let today = crate::routes::london_today();
         let tomorrow = today + chrono::Duration::days(1);
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(tomorrow)
-            .execute(&pool)
-            .await
-            .expect("cleanup tomorrow's fixture");
+        delete_days(&pool, &[tomorrow]).await;
 
         // A row scheduled at the very start of tomorrow. If `from` were
         // wrongly combined with TODAY's `now` via `max(now, from)`, this row
@@ -1962,21 +1903,15 @@ mod db_tests {
              now-based floor leaking in from today's clock: {uids:?}"
         );
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(tomorrow)
-            .execute(&pool)
-            .await
-            .expect("cleanup tomorrow's fixture");
+        delete_days(&pool, &[tomorrow]).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_omitting_date_still_defaults_to_today() {
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
@@ -2008,13 +1943,9 @@ mod db_tests {
         // and the `arrival_from`/`arrival_to`-without-`stops_at`
         // 400 above) -- this test extends the same posture to malformed
         // (unrecognized) parameter NAMES.
-        let pool = connect().await;
-        if !seed_today(&pool, "ZRB").await {
-            return;
-        }
-        let Some((_, _, later)) = relative_times() else {
-            return;
-        };
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let (_, _, later) = relative_times();
 
         let uri = format!(
             "/trains/search?station=ZRB&arrivalFrom={}&arrivalTo={}",
@@ -2039,14 +1970,10 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_404_for_an_unpublished_in_window_date_names_that_date() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let today = crate::routes::london_today();
         let target = today + chrono::Duration::days(3);
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(target)
-            .execute(&pool)
-            .await
-            .expect("ensure target date has no rows");
+        delete_days(&pool, &[target]).await;
 
         let (status, body) = get(
             &pool,
@@ -2066,14 +1993,10 @@ mod db_tests {
     // --- GET /trains/resolve --------------------------------------------------
     //
     // Fixture rows use made-up `ZR*` station codes and `RSLV*` uids, on
-    // today+4 (and today+3 for the overnight case) so nothing depends on the
-    // wall clock beyond the +-7 day window.
+    // today+4 (and today+3 for the overnight case) of the pinned clock.
 
     fn resolve_day() -> chrono::NaiveDate {
-        chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive()
-            + chrono::Duration::days(4)
+        crate::routes::london_today() + chrono::Duration::days(4)
     }
 
     fn hm(h: u32, m: u32) -> chrono::NaiveTime {
@@ -2139,7 +2062,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_exact_rsid_picks_its_train_over_a_same_time_one() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         let none = (None, None);
@@ -2192,7 +2115,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_falls_back_to_the_six_character_rsid_prefix() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         seed_resolve_row(
@@ -2225,7 +2148,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_split_portions_are_a_409_until_destination_breaks_the_tie() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         let none = (None, None);
@@ -2281,7 +2204,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_after_midnight_finds_the_previous_service_date() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         let previous = d - chrono::Duration::days(1);
@@ -2324,7 +2247,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_without_an_rsid_uses_the_timetable_heuristic() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         let none = (None, None);
@@ -2388,7 +2311,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_nothing_matching_is_a_404() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         seed_resolve_row(
@@ -2420,7 +2343,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_rejects_malformed_input_naming_the_field() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         let d = resolve_day();
         let far = d + chrono::Duration::days(30);
         for (query, field) in [
@@ -2460,7 +2383,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_arrival_matches_the_terminus_and_intermediate_arrivals() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         // RSLVR1 calls at ZRA (arr 17:58, dep 18:00) and terminates at ZRT
@@ -2509,7 +2432,7 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_resolve -- --ignored --test-threads=1`"]
     async fn trains_resolve_href_is_accepted_by_train_by_uid() {
-        let pool = connect().await;
+        let (pool, _guards) = connect().await;
         clear_resolve_fixtures(&pool).await;
         let d = resolve_day();
         seed_resolve_row(
