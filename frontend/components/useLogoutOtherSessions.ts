@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { clearBrowserAccountData } from '@/lib/browserAccountData';
 
 /** "Log out everywhere else" -- the user-reachable half of the M14/L6 fix
  * (2026-09-26 Repeater Signal review): before this, authz data (`groups`)
@@ -23,7 +24,11 @@ import { useRouter } from 'next/navigation';
  * way `useLogout` does: unlike logout (idempotent, and "the cookie is
  * gone either way" regardless of the request's outcome), a failed request
  * here means nothing was actually revoked, which is worth surfacing
- * rather than silently refreshing as if it had worked. */
+ * rather than silently refreshing as if it had worked.
+ *
+ * DQ5 (FE-3): on success, also clears this browser's MCP tokens and
+ * Anthropic key, as logout does -- the MCP grant can outlive the revoked
+ * sessions, so "log out everywhere else" starts the chat connection over. */
 export function useLogoutOtherSessions() {
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
@@ -38,6 +43,7 @@ export function useLogoutOtherSessions() {
         setError(true);
         return;
       }
+      clearBrowserAccountData();
       router.refresh();
     } catch {
       setError(true);

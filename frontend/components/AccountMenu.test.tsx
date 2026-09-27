@@ -168,6 +168,62 @@ describe('AccountMenu', () => {
     });
   });
 
+  // DQ5 (FE-3/LEG-11/LEG-26): logout clears browser-held chat credentials.
+  function seedBrowserAccountData() {
+    localStorage.setItem('ds-mcp-oauth:tokens', '{"access_token":"t"}');
+    localStorage.setItem('ds-mcp-oauth:client-information', '{}');
+    localStorage.setItem('ds-anthropic-api-key', 'sk-ant-x');
+    localStorage.setItem('mantine-color-scheme-value', 'dark');
+  }
+
+  function expectBrowserAccountDataCleared() {
+    expect(localStorage.getItem('ds-mcp-oauth:tokens')).toBeNull();
+    expect(localStorage.getItem('ds-mcp-oauth:client-information')).toBeNull();
+    expect(localStorage.getItem('ds-anthropic-api-key')).toBeNull();
+    // Unrelated preferences survive.
+    expect(localStorage.getItem('mantine-color-scheme-value')).toBe('dark');
+  }
+
+  it('logging out clears the MCP tokens and Anthropic key from localStorage', async () => {
+    seedBrowserAccountData();
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 204 }));
+    renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
+    openMenu();
+    fireEvent.click(await menuItem('Log out'));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expectBrowserAccountDataCleared();
+  });
+
+  it('logging out clears them even when the logout request fails', async () => {
+    seedBrowserAccountData();
+    vi.mocked(fetch).mockRejectedValue(new Error('offline'));
+    renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
+    openMenu();
+    fireEvent.click(await menuItem('Log out'));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expectBrowserAccountDataCleared();
+  });
+
+  it('logging out other sessions clears them on success', async () => {
+    seedBrowserAccountData();
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 204 }));
+    renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
+    openMenu();
+    fireEvent.click(await menuItem('Log out other sessions'));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expectBrowserAccountDataCleared();
+  });
+
+  it('a failed log-out-other-sessions leaves them in place (nothing was revoked)', async () => {
+    seedBrowserAccountData();
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 500 }));
+    renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
+    openMenu();
+    fireEvent.click(await menuItem('Log out other sessions'));
+    expect(await menuItem('Could not log out other sessions -- try again')).toBeInTheDocument();
+    expect(localStorage.getItem('ds-mcp-oauth:tokens')).not.toBeNull();
+  });
+
   it('allows Tab to reach its items, as a navigation menu must', async () => {
     // Mantine's default `menuItemTabIndex` is -1, which is right for a
     // menu of actions and wrong for one that is mostly links.

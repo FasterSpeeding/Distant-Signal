@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { clearBrowserAccountData } from '@/lib/browserAccountData';
 
 /** The log-out action, as a hook rather than as a component — the
  * counterpart to `useLoginHref.ts`, and for the same reason: the control
@@ -17,7 +18,11 @@ import { useRouter } from 'next/navigation';
  * with no session, so this doesn't need to branch on the response status
  * before refreshing — either way the session cookie is gone (or was
  * already gone) once the request completes, so `router.refresh()` in
- * `finally` re-renders the nav's server-side session check regardless. */
+ * `finally` re-renders the nav's server-side session check regardless.
+ *
+ * DQ5 (FE-3): also clears the browser-held MCP tokens and Anthropic key
+ * (`clearBrowserAccountData`), whatever the request's outcome, so the next
+ * person to log in on this browser can't use the previous user's grant. */
 export function useLogout() {
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
@@ -35,6 +40,7 @@ export function useLogout() {
       // already the whole response: refresh, and let the server say
       // whether the session survived.
     } finally {
+      clearBrowserAccountData();
       setLoggingOut(false);
       router.refresh();
     }
