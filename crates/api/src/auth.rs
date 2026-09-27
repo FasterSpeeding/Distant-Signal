@@ -279,6 +279,82 @@ pub fn is_same_origin(origin: Option<&str>, referer: Option<&str>, expected_orig
     false
 }
 
+/// Is this a session-cookie-bearing, state-changing request whose
+/// browser-supplied `Origin` (or, absent that, `Referer`) names some other
+/// origin than this app's own? See [`reject_cross_origin_cookie_mutation`].
+///
+/// Deliberately LENIENT on absence, unlike the strict [`is_same_origin`]
+/// check `logout` uses: a request carrying neither header is let through,
+/// because the frontend's own server-side fetches (`lib/api.ts`) and
+/// non-browser clients never send one, while a browser always sends
+/// `Origin` on a cross-origin POST/PUT/PATCH/DELETE -- which is the only
+/// shape a CSRF attempt can take. Requests with no session cookie are not
+/// CSRF-relevant (nothing ambient to ride on) and are ignored, as is every
+/// safe method.
+pub fn is_cross_origin_cookie_mutation(
+    method: &axum::http::Method,
+    headers: &HeaderMap,
+    expected_origin: &str,
+) -> bool {
+    use axum::http::Method;
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return false;
+    }
+    if parse_cookie(headers, SESSION_COOKIE_NAME).is_none() {
+        return false;
+    }
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    let referer = headers
+        .get(axum::http::header::REFERER)
+        .and_then(|v| v.to_str().ok());
+    if origin.is_none() && referer.is_none() {
+        return false;
+    }
+    !is_same_origin(origin, referer, expected_origin)
+}
+
+/// Router-wide api-layer CSRF guard for cookie-authenticated mutations
+/// (2026-09-26 "Repeater Signal" review, L4).
+///
+/// Several session-authenticated routes -- group promote/demote, group
+/// join, invite-link create/revoke, journey share-link create/revoke -- are
+/// POST/DELETE with no body, i.e. CORS "simple requests" that never
+/// preflight, so `main.rs`'s CORS layer cannot stop them (see its comment).
+/// Before this, the only api-side barrier was the session cookie's
+/// `SameSite=Lax`, which doesn't cover a same-SITE sibling subdomain. The
+/// frontend proxy's `hasAcceptableOriginForMutation` covers requests that go
+/// through it, but nothing covered the api when it's reachable directly
+/// (`ingress.api.enabled`). This rejects any such request whose Origin/
+/// Referer names another origin with 403, for every route at once. The
+/// proxy forwards the browser's Origin/Referer verbatim, so proxied
+/// same-origin requests pass unchanged.
+///
+/// `expected_origin` is [`expected_browser_origin`] of `SSO_REDIRECT_URL`
+/// -- the same value `logout` compares against. `None` (unparseable
+/// config) disables the guard rather than rejecting everything, matching
+/// `logout`'s own behaviour.
+pub async fn reject_cross_origin_cookie_mutation(
+    State(expected_origin): State<Option<std::sync::Arc<str>>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(expected_origin) = expected_origin.as_deref()
+        && is_cross_origin_cookie_mutation(request.method(), request.headers(), expected_origin)
+    {
+        tracing::warn!(
+            method = %request.method(),
+            "rejected a session-cookie mutation whose Origin/Referer names another origin"
+        );
+        return axum::response::IntoResponse::into_response((
+            StatusCode::FORBIDDEN,
+            "cross-origin request rejected",
+        ));
+    }
+    next.run(request).await
+}
+
 /// A fresh, high-entropy opaque session/login-state token: 256 bits of OS
 /// randomness, base64url-encoded (no padding) for a clean cookie value.
 /// This is the value actually sent to the browser -- never stored
@@ -1359,5 +1435,141 @@ mod optional_authenticated_user_tests {
             ),
             Err(err) => assert_eq!(err.0, axum::http::StatusCode::INTERNAL_SERVER_ERROR),
         }
+    }
+}
+
+#[cfg(test)]
+mod cross_origin_mutation_tests {
+    use std::sync::Arc;
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode, header};
+    use axum::middleware;
+    use axum::routing::post;
+    use tower::ServiceExt;
+
+    use super::{SESSION_COOKIE_NAME, reject_cross_origin_cookie_mutation};
+
+    const SITE: &str = "https://ds.example.test";
+
+    fn router(expected: Option<&str>) -> Router {
+        Router::new()
+            .route(
+                "/groups/join/tok",
+                post(|| async { StatusCode::NO_CONTENT }).get(|| async { StatusCode::OK }),
+            )
+            .layer(middleware::from_fn_with_state(
+                expected.map(Arc::<str>::from),
+                reject_cross_origin_cookie_mutation,
+            ))
+    }
+
+    async fn status(
+        expected: Option<&str>,
+        method: Method,
+        cookie: bool,
+        origin: Option<&str>,
+        referer: Option<&str>,
+    ) -> StatusCode {
+        let mut builder = Request::builder().method(method).uri("/groups/join/tok");
+        if cookie {
+            builder = builder.header(header::COOKIE, format!("{SESSION_COOKIE_NAME}=abc"));
+        }
+        if let Some(origin) = origin {
+            builder = builder.header(header::ORIGIN, origin);
+        }
+        if let Some(referer) = referer {
+            builder = builder.header(header::REFERER, referer);
+        }
+        router(expected)
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The L4 attack: a no-body, cookie-bearing POST from a sibling origin.
+    #[tokio::test]
+    async fn a_cookie_bearing_post_from_another_origin_is_rejected() {
+        let got = status(
+            Some(SITE),
+            Method::POST,
+            true,
+            Some("https://evil.example.test"),
+            None,
+        )
+        .await;
+        assert_eq!(got, StatusCode::FORBIDDEN);
+        let got = status(
+            Some(SITE),
+            Method::DELETE,
+            true,
+            None,
+            Some("https://evil.example.test/x"),
+        )
+        .await;
+        assert_eq!(got, StatusCode::FORBIDDEN);
+        let got = status(Some(SITE), Method::POST, true, Some("null"), None).await;
+        assert_eq!(got, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_same_origin_cookie_bearing_post_passes() {
+        let got = status(Some(SITE), Method::POST, true, Some(SITE), None).await;
+        assert_eq!(got, StatusCode::NO_CONTENT);
+        let got = status(
+            Some(SITE),
+            Method::POST,
+            true,
+            None,
+            Some("https://ds.example.test/groups/1"),
+        )
+        .await;
+        assert_eq!(got, StatusCode::NO_CONTENT);
+    }
+
+    /// Server-side fetches (frontend `lib/api.ts`) and non-browser clients
+    /// send no Origin/Referer at all; a request with no session cookie has
+    /// nothing ambient to abuse; safe methods are never state-changing.
+    #[tokio::test]
+    async fn headerless_cookieless_safe_and_unconfigured_requests_pass() {
+        assert_eq!(
+            status(Some(SITE), Method::POST, true, None, None).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            status(
+                Some(SITE),
+                Method::POST,
+                false,
+                Some("https://evil.example.test"),
+                None
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            status(
+                Some(SITE),
+                Method::GET,
+                true,
+                Some("https://evil.example.test"),
+                None
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(
+                None,
+                Method::POST,
+                true,
+                Some("https://evil.example.test"),
+                None
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
     }
 }
