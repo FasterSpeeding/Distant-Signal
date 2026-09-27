@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
+    let progress = health_http::spawn_liveness(&config.health);
 
     let check_times = parse_check_times(&config.check_times)?;
     // The *last* entry in the configured (not sorted) list is treated as
@@ -145,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
     let mut interval = scan_interval(config.poll_interval_secs);
 
     loop {
-        interval.tick().await;
+        progress.idle(interval.tick()).await;
 
         // `check_times`/`final_check_time` no longer drive *when* a scan
         // happens (that's `poll_interval_secs` now) -- their one remaining
@@ -175,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
         {
             tracing::error!(error = ?err, "scan cycle failed unexpectedly; will retry next poll interval");
         }
+        progress.beat();
 
         metrics::histogram!(common::metrics::metric_name(
             "schedule_feed_scan_duration_seconds"
@@ -887,6 +889,10 @@ mod tests {
             metrics_port: 0,
             metrics: common::service_args::MetricsArgs {
                 metrics_enabled: false,
+            },
+            health: common::service_args::HealthArgs {
+                health_bind_url: "127.0.0.1:0".to_string(),
+                progress_stall_secs: 1800,
             },
         }
     }

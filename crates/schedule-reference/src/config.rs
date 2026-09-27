@@ -160,6 +160,10 @@ pub struct Config {
     #[command(flatten)]
     pub metrics: common::service_args::MetricsArgs,
 
+    /// `/livez` listener and stall window (SVC-08/INF-9).
+    #[command(flatten)]
+    pub health: common::service_args::HealthArgs,
+
     /// Backoff for the startup read of this service's own completion marker
     /// (`main::seed_last_processed_delivery`), retried until it succeeds.
     /// Not a CLI/env flag: fixed in production, overridden only by tests.

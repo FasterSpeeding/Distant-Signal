@@ -54,7 +54,7 @@ describe('proxy matcher', () => {
   // regex group, so an anchored RegExp over it is the same test.
   const re = new RegExp(`^${source}$`);
 
-  it.each(['/', '/lines', '/lines/abc', '/chat', '/chat/callback', '/connect-claude/authorize', '/apiary', '/icon.svg.bak'])(
+  it.each(['/', '/lines', '/lines/abc', '/chat', '/chat/callback', '/connect-claude/authorize', '/apiary', '/icon.svg.bak', '/attribution', '/privacy', '/terms', '/account', '/healthzz'])(
     'runs for page %s',
     (path) => {
       expect(re.test(path)).toBe(true);
@@ -67,6 +67,7 @@ describe('proxy matcher', () => {
     '/api/auth/callback',
     '/_next/static/chunks/x.js',
     '/_next/image',
+    '/healthz',
     '/robots.txt',
     '/sw.js',
     '/sw-cache-rules.js',

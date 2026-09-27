@@ -110,11 +110,14 @@ fn main() -> anyhow::Result<()> {
 async fn server_main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
+    // API-1: tracing FIRST, so nothing logged during `AppState::init` (the
+    // INF-5 Postgres wait included), the migrations or a sweep's first tick
+    // is dropped.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let app = AppState::init().await?;
-    tokio::spawn(schedule_match_sweep_loop(app.clone()));
-    tokio::spawn(reconciliation_sweep_loop(app.clone()));
-    tokio::spawn(backlog_match_sweep_loop(app.clone()));
-    tokio::spawn(session_cleanup_sweep_loop(app.clone()));
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public,
@@ -251,10 +254,6 @@ async fn server_main() -> anyhow::Result<()> {
         ))
         .with_state(app.clone());
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     // Report the admin group at startup (not secret): an empty value means
     // the admin session-revocation endpoint refuses everyone.
     if app.config.admin_group.trim().is_empty() {
@@ -266,7 +265,8 @@ async fn server_main() -> anyhow::Result<()> {
         );
     }
 
-    // MUST stay immediately before `sqlx::migrate!()`, never after.
+    // MUST stay immediately before the migrations (`api::migrate::run`),
+    // never after.
     // `migrations/20260906140000_drop_legacy_columns.sql` IRREVERSIBLY drops
     // `train_movement_events.tracked_train_id`, `train_current_state.tracked_train_id`
     // and `tracked_trains.train_uid` -- the only columns from which a
@@ -281,26 +281,65 @@ async fn server_main() -> anyhow::Result<()> {
     // `crates/api/src/data/legacy_backfill.rs`'s module doc for the full
     // required deploy sequence and for why this check cannot live inside
     // the migration file itself.
-    data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
-
-    // On its own connection, not the request pool: lock_timeout 10s and a
-    // statement_timeout under the startup probe's 300s budget instead of the
-    // pool's 60s, after dropping any INVALID index a failed CREATE INDEX
-    // CONCURRENTLY left behind. See `api::migrate`.
-    let migration_options: sqlx::postgres::PgConnectOptions = app
-        .config
-        .database_url
-        .parse()
-        .context("could not parse DATABASE_URL")?;
-    api::migrate::run(
-        api::app::with_dead_client_detection(migration_options),
-        api::migrate::MigrationSettings::from_env()?,
+    //
+    // The migrations then run on their own connection, not the request
+    // pool: lock_timeout 10s and a statement_timeout under the startup
+    // probe's 300s budget instead of the pool's 60s, after dropping any
+    // INVALID index a failed CREATE INDEX CONCURRENTLY left behind. See
+    // `api::migrate`.
+    let migrate = async {
+        data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
+        let migration_options: sqlx::postgres::PgConnectOptions = app
+            .config
+            .database_url
+            .parse()
+            .context("could not parse DATABASE_URL")?;
+        api::migrate::run(
+            api::app::with_dead_client_detection(migration_options),
+            api::migrate::MigrationSettings::from_env()?,
+        )
+        .await?;
+        anyhow::Ok(())
+    };
+    let bind_url = app.config.bind_url.clone();
+    run_startup(
+        migrate,
+        || spawn_background_loops(&app),
+        || async move {
+            let listener = tokio::net::TcpListener::bind(&bind_url).await?;
+            axum::serve(listener, router).await?;
+            Ok(())
+        },
     )
-    .await?;
+    .await
+}
 
-    let listener = tokio::net::TcpListener::bind(&app.config.bind_url).await?;
-    axum::serve(listener, router).await?;
-    Ok(())
+/// API-1: the startup order, isolated so it is testable. Migrations first;
+/// only then the background sweeps (whose first `interval` tick fires at
+/// once, so spawning them earlier ran DML against a possibly un-migrated
+/// schema while the migrator held its locks); only then the listener (so
+/// the startup/readiness probes only pass on a migrated schema). A failed
+/// migration starts nothing.
+async fn run_startup<M, S, B, BF>(migrate: M, spawn_background: S, serve: B) -> anyhow::Result<()>
+where
+    M: std::future::Future<Output = anyhow::Result<()>>,
+    S: FnOnce(),
+    B: FnOnce() -> BF,
+    BF: std::future::Future<Output = anyhow::Result<()>>,
+{
+    migrate.await?;
+    spawn_background();
+    serve().await
+}
+
+/// The four background sweeps (the session-cleanup one also runs the
+/// dead-link prune and the personal-data retention sweep). Only called once migrations have run -- see
+/// [`run_startup`].
+fn spawn_background_loops(app: &App) {
+    tokio::spawn(schedule_match_sweep_loop(app.clone()));
+    tokio::spawn(reconciliation_sweep_loop(app.clone()));
+    tokio::spawn(backlog_match_sweep_loop(app.clone()));
+    tokio::spawn(session_cleanup_sweep_loop(app.clone()));
 }
 
 /// Starts api's own internal-only `/metrics` listener on a SEPARATE port
@@ -535,6 +574,49 @@ async fn session_cleanup_sweep_loop(app: App) {
                 tracing::error!(error = ?err, "personal-data retention sweep failed; will retry next interval");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod run_startup_tests {
+    use std::cell::RefCell;
+
+    use super::run_startup;
+
+    /// API-1: migrate, then spawn the sweeps, then bind.
+    #[tokio::test]
+    async fn migrations_run_before_the_sweeps_and_the_listener() {
+        let steps = RefCell::new(Vec::new());
+        run_startup(
+            async {
+                steps.borrow_mut().push("migrate");
+                Ok(())
+            },
+            || steps.borrow_mut().push("spawn sweeps"),
+            || async {
+                steps.borrow_mut().push("bind");
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(*steps.borrow(), ["migrate", "spawn sweeps", "bind"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_migration_starts_nothing() {
+        let steps = RefCell::new(Vec::new());
+        let result = run_startup(
+            async { Err(anyhow::anyhow!("migration failed")) },
+            || steps.borrow_mut().push("spawn sweeps"),
+            || async {
+                steps.borrow_mut().push("bind");
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(steps.borrow().is_empty());
     }
 }
 

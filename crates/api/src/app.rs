@@ -519,6 +519,24 @@ impl AppState {
             connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10)),
         );
 
+        // INF-5: wait for Postgres (e.g. still in crash recovery after a
+        // node reboot) rather than exiting into CrashLoopBackOff. The
+        // listener isn't bound until after this and the migrations, so the
+        // startup/readiness probes stay failing meanwhile.
+        common::startup::retry_until_ready(
+            "Postgres",
+            common::startup::CONNECT_BACKOFF,
+            None,
+            || async {
+                use sqlx::Connection;
+                sqlx::PgConnection::connect_with(&connect_options)
+                    .await?
+                    .close()
+                    .await
+            },
+        )
+        .await;
+
         // application_name, statement_timeout (60s), idle-in-transaction
         // timeout (30s) and a 5s acquire_timeout, all overridable by env --
         // see `common::pg`. Statements that legitimately run longer (the

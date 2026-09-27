@@ -38,6 +38,8 @@ export function proxy(request: NextRequest) {
 //   `/sw-cache-rules.js`, `/offline.html`, the manifest and icons).
 //   next.config.mjs gives `/api/*`, the service worker scripts and
 //   `/offline.html` static policies of their own;
+// - `/healthz`: the probes' plain-text liveness route (app/healthz), which
+//   must stay dependency-free and cheap;
 // - `next/link` prefetches, as Next's guide recommends. They fetch an RSC
 //   payload, not a document, so there is nothing for a nonce to protect.
 //
@@ -46,7 +48,7 @@ export const config = {
   matcher: [
     {
       source:
-        '/((?!(?:api|_next/static|_next/image)(?:/|$)|(?:favicon\\.ico|robots\\.txt|sw\\.js|sw-cache-rules\\.js|offline\\.html|manifest\\.webmanifest|icon\\.svg|apple-icon\\.png|icon-192\\.png|icon-512\\.png)$).*)',
+        '/((?!(?:api|_next/static|_next/image)(?:/|$)|(?:healthz|favicon\\.ico|robots\\.txt|sw\\.js|sw-cache-rules\\.js|offline\\.html|manifest\\.webmanifest|icon\\.svg|apple-icon\\.png|icon-192\\.png|icon-512\\.png)$).*)',
       missing: [
         { type: 'header', key: 'next-router-prefetch' },
         { type: 'header', key: 'purpose', value: 'prefetch' },
