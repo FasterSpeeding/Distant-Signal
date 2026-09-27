@@ -317,9 +317,16 @@ async fn get_line_trains(
     };
     let uids: Vec<String> = entries.iter().filter_map(|e| e.uid.clone()).collect();
 
-    let live_states = trains::get_public_train_states_for_line(&app.database, &uids, service_date)
-        .await
-        .map_err(internal_error)?;
+    let mut live_states =
+        trains::get_public_train_states_for_line(&app.database, &uids, service_date)
+            .await
+            .map_err(internal_error)?;
+    crate::data::train_operator::attach_to_public_states(
+        &app.database,
+        &mut live_states,
+        service_date,
+    )
+    .await;
     let live_by_uid: HashMap<&str, &PublicTrainState> = live_states
         .iter()
         .map(|s| (s.train_uid.as_str(), s))

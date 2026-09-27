@@ -436,6 +436,17 @@ pub struct PublicTrainState {
     /// overlay" way by `routes::train::attach_journey_stops_public`.
     #[sqlx(skip)]
     pub may_have_arrived: bool,
+    /// The operating company's ATOC code (for example `"SW"`), from the CIF
+    /// schedule. Serialized as `operatorCode`. Filled after the read by
+    /// `data::train_operator`, hence `#[sqlx(skip)]`. `None` when no single
+    /// code is known; see that module's doc for when that happens.
+    #[sqlx(skip)]
+    pub operator_code: Option<String>,
+    /// The `tocs` display name for `operator_code` (for example
+    /// `"South Western Railway"`). Serialized as `operatorName`. `None` when
+    /// `operator_code` is `None` or the code has no `tocs` row.
+    #[sqlx(skip)]
+    pub operator_name: Option<String>,
 }
 
 /// Whether `(train_uid, service_date)` is a real, CIF-published scheduled

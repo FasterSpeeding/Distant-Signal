@@ -633,9 +633,13 @@ async fn get_by_tracking_id(
         .await
         .map_err(internal_error("read tracked train state"))?;
     match state {
-        Some(state) => Ok(Json(
-            attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await,
-        )),
+        Some(state) => {
+            let state =
+                crate::data::train_operator::attach_to_tracked_state(&app.database, state).await;
+            Ok(Json(
+                attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await,
+            ))
+        }
         None => Err((
             StatusCode::NOT_FOUND,
             "no tracked train with that id".to_string(),
@@ -823,7 +827,11 @@ async fn get_by_uid_and_date(
     }
 
     match state {
-        Some(state) => Ok(Json(attach_journey_stops_public(&app, state).await)),
+        Some(state) => {
+            let state =
+                crate::data::train_operator::attach_to_public_state(&app.database, state).await;
+            Ok(Json(attach_journey_stops_public(&app, state).await))
+        }
         None => Err((
             StatusCode::NOT_FOUND,
             "no known train for that uid/date".to_string(),
@@ -1709,6 +1717,8 @@ mod tests {
             trains_id: Some(1),
             journey_stops: None,
             may_have_arrived: false,
+            operator_code: None,
+            operator_name: None,
         }
     }
 
@@ -3702,6 +3712,89 @@ mod db_tests {
         assert_eq!(body.get("delayMinutes").and_then(Value::as_i64), Some(12));
 
         cleanup_public_train(&pool, "TEST-PUBLIC-BY-UID").await;
+    }
+
+    /// `operatorCode`/`operatorName` on the public train-detail route: filled
+    /// from the CIF schedule's ATOC code and the `tocs` name when known, and
+    /// present-but-null when the train has no schedule row.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_carries_the_operator -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_carries_the_operator() {
+        let pool = connect().await;
+        // Dates of their own, and one per train: `seed_public_train` gives
+        // every fixture the same TRUST `train_id`, which is unique per day.
+        let service_date: chrono::NaiveDate = "2026-09-16".parse().unwrap();
+        let other_date: chrono::NaiveDate = "2026-09-17".parse().unwrap();
+        for uid in ["TEST-OP-KNOWN", "TEST-OP-NONE"] {
+            cleanup_public_train(&pool, uid).await;
+        }
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-OP-KNOWN'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tocs (atoc_code, name, legal_name) \
+             VALUES ('Q7', 'Test Route Operator', 'Test Route Operator Ltd') \
+             ON CONFLICT (atoc_code) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                 (service_date, origin_crs, destination_crs, scheduled, train_uid, operator_atoc) \
+             VALUES ($1, 'ZZA', 'ZZB', TIME '08:00', 'TEST-OP-KNOWN', 'Q7')",
+        )
+        .bind(service_date)
+        .execute(&pool)
+        .await
+        .unwrap();
+        seed_public_train(&pool, "TEST-OP-KNOWN", service_date).await;
+        seed_public_train(&pool, "TEST-OP-NONE", other_date).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router.clone(),
+            format!("/Train/by-uid/TEST-OP-KNOWN/{service_date}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert_eq!(body["operatorCode"], "Q7");
+        assert_eq!(body["operatorName"], "Test Route Operator");
+
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/TEST-OP-NONE/{other_date}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert!(
+            body.get("operatorCode").is_some_and(Value::is_null),
+            "{body:?}"
+        );
+        assert!(
+            body.get("operatorName").is_some_and(Value::is_null),
+            "{body:?}"
+        );
+
+        for uid in ["TEST-OP-KNOWN", "TEST-OP-NONE"] {
+            cleanup_public_train(&pool, uid).await;
+        }
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-OP-KNOWN'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM tocs WHERE atoc_code = 'Q7'")
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

@@ -1368,6 +1368,9 @@ async fn build_journey_detail_response(
                 let origin_board = crate::routes::train::darwin_blend_origin_crs(&state)
                     .and_then(|crs| boards.get(&crate::data::queries::normalize_code(crs)));
                 let state = crate::routes::train::apply_darwin_eta(state, origin_board);
+                let state =
+                    crate::data::train_operator::attach_to_tracked_state(&app.database, state)
+                        .await;
                 Some(crate::routes::train::attach_journey_stops(app, state).await)
             }
             None => None,

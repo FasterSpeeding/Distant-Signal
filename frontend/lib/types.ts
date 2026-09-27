@@ -695,6 +695,13 @@ export interface TrainJourneyState {
   // `may_have_arrived`. Always `false` when there are no `journeyStops` to
   // compute it from.
   mayHaveArrived: boolean;
+  // The operating company's ATOC code (e.g. "SW") from the CIF schedule,
+  // and its display name from the TOC reference table
+  // (`crates/api/src/data/train_operator.rs`). `null` when no single code is
+  // known; `operatorName` is also `null` for a code the TOC table lacks.
+  // Optional so older fixtures and backends still type-check.
+  operatorCode?: string | null;
+  operatorName?: string | null;
 }
 
 /** `GET /Train/by-uid/{uid}/{date}`'s response shape
@@ -738,6 +745,9 @@ export interface PublicTrainState {
   // See `TrainJourneyState.mayHaveArrived`'s own doc comment -- same
   // contract.
   mayHaveArrived: boolean;
+  // See `TrainJourneyState.operatorCode`.
+  operatorCode?: string | null;
+  operatorName?: string | null;
 }
 
 /** `GET /public/trains/resolve`'s 200 body
@@ -1661,7 +1671,7 @@ export interface LineTrainCallingPoint {
  * triggers a `find_or_create_train` upsert the way
  * `GET /Train/by-uid/{uid}/{date}` does -- see `get_line_trains`'s own doc
  * comment). Deliberately its own type, not a reuse of `PublicTrainState`:
- * `line_train_json` (`render.rs:295-310`) includes only these 14 fields
+ * `line_train_json` (`render.rs`) includes only these 16 fields
  * inside `liveStatus`, explicitly omitting `journeyStops`/`callingPoints`/
  * `trainUid`/`serviceDate`/`mayHaveArrived` -- confirmed by that file's
  * `line_train_json_with_a_live_row_attaches_live_status_in_camel_case`
@@ -1681,6 +1691,9 @@ export interface LineTrainLiveStatus {
   nextCallingPoint: string | null;
   etaNext: string | null; // RFC3339
   etaSource: EtaSource | null;
+  // See `TrainJourneyState.operatorCode`.
+  operatorCode?: string | null;
+  operatorName?: string | null;
 }
 
 /** One `GET /public/lines/{id}/trains?date=` response entry
