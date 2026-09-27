@@ -306,12 +306,15 @@ pub struct ComparisonReport {
     pub from: NaiveDate,
     pub to: NaiveDate,
     pub days: Vec<DailyComparison>,
-    /// The current live `full_coverage_line_stats` row for this line, if
+    /// The line's most recent `full_coverage_line_stats` row, if
     /// `full-coverage-consumer` has ever published one -- context only,
-    /// not folded into `days` (that table is a live snapshot, not a
-    /// per-day history; see `crates/api/migrations/*_full_coverage_line_stats.sql`'s
-    /// own "one row per line" doc comment).
+    /// not folded into `days`.
     pub live_snapshot: Option<common::FullCoverageLineStatsRow>,
+    /// Every `full_coverage_line_stats` row for this line in `[from, to]`
+    /// -- the per-day history that table keeps since 2026-09-27 (it used to
+    /// hold one overwritten row per line). A `partial` day's row is not
+    /// clean signal.
+    pub full_coverage_history: Vec<common::FullCoverageLineStatsRow>,
 }
 
 /// Builds the full comparison for one line over `[from, to]` (inclusive),
@@ -330,7 +333,9 @@ pub async fn compare_line(
 ) -> Result<ComparisonReport> {
     let sample_rows = queries::daily_stats_for_range(pool, line_id, from, to).await?;
     let coverage_rows = queries::daily_coverage_stats_for_range(pool, line_id, from, to).await?;
-    let live_snapshot = queries::get_full_coverage_line_stats(pool, line_id).await?;
+    let live_snapshot = queries::get_full_coverage_line_stats(pool, line_id, None).await?;
+    let full_coverage_history =
+        queries::full_coverage_line_stats_for_range(pool, line_id, from, to).await?;
 
     let mut by_day: BTreeMap<NaiveDate, (Option<DailyRates>, Option<DailyRates>)> = BTreeMap::new();
     for row in &sample_rows {
@@ -366,6 +371,7 @@ pub async fn compare_line(
         to,
         days,
         live_snapshot,
+        full_coverage_history,
     })
 }
 

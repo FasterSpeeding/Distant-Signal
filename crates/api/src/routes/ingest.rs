@@ -1938,6 +1938,7 @@ mod db_tests {
                 skipped: 0,
                 avg_delay_minutes: 3.5,
             },
+            partial: false,
         }
     }
 
@@ -1968,10 +1969,127 @@ mod db_tests {
         delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
     }
 
+    /// Since 2026-09-27 the table keeps one row per line PER DAY: the next
+    /// day's row is added beside the previous day's, not over it, and the
+    /// readers take the date.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 full_coverage_line_stats -- --ignored --test-threads=1`"]
-    async fn a_second_post_for_the_same_line_updates_the_row_in_place() {
+    async fn full_coverage_line_stats_keeps_a_row_per_day_and_reads_by_date() {
+        let pool = connect().await;
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+        let day1: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let day2: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+
+        let closed = fixture_row(FIXTURE_LINE_ID, "available");
+        let mut today = fixture_row(FIXTURE_LINE_ID, "pending");
+        today.service_date = day2;
+        today.partial = true;
+        today.stats.cancelled = 0;
+        queries::upsert_full_coverage_line_stats(&pool, &[closed.clone(), today.clone()])
+            .await
+            .expect("upsert two days");
+
+        let latest = queries::get_full_coverage_line_stats(&pool, FIXTURE_LINE_ID, None)
+            .await
+            .unwrap()
+            .expect("a row");
+        assert_eq!(latest.service_date, day2, "no date: the most recent day");
+        assert!(latest.partial, "partial round-trips");
+        assert_eq!(latest.availability, "pending");
+
+        let first = queries::get_full_coverage_line_stats(&pool, FIXTURE_LINE_ID, Some(day1))
+            .await
+            .unwrap()
+            .expect("the closed day survives the next day's write");
+        assert_eq!(first.availability, "available");
+        assert!(!first.partial);
+        assert_eq!(first.stats.cancelled, 1);
+
+        let history =
+            queries::full_coverage_line_stats_for_range(&pool, FIXTURE_LINE_ID, day1, day2)
+                .await
+                .unwrap();
+        assert_eq!(
+            history.iter().map(|r| r.service_date).collect::<Vec<_>>(),
+            vec![day1, day2]
+        );
+        assert!(
+            queries::get_full_coverage_line_stats(
+                &pool,
+                FIXTURE_LINE_ID,
+                Some("2026-09-06".parse().unwrap())
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    /// DB review F3: the consumer re-posts every line every minute; an
+    /// identical row must not be rewritten (no dead tuple, `updated_at`
+    /// untouched), while a real change still is.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                full_coverage_line_stats -- --ignored --test-threads=1`"]
+    async fn an_unchanged_full_coverage_row_is_not_rewritten() {
+        let pool = connect().await;
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+        let row = fixture_row(FIXTURE_LINE_ID, "pending");
+        assert_eq!(
+            queries::upsert_full_coverage_line_stats(&pool, std::slice::from_ref(&row))
+                .await
+                .unwrap(),
+            1
+        );
+        let updated_at = || async {
+            sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+                "SELECT updated_at FROM full_coverage_line_stats WHERE line_id = $1",
+            )
+            .bind(FIXTURE_LINE_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        let first = updated_at().await;
+
+        assert_eq!(
+            queries::upsert_full_coverage_line_stats(&pool, std::slice::from_ref(&row))
+                .await
+                .unwrap(),
+            0,
+            "an identical post writes nothing"
+        );
+        assert_eq!(updated_at().await, first);
+
+        let mut changed = row.clone();
+        changed.stats.delayed += 1;
+        assert_eq!(
+            queries::upsert_full_coverage_line_stats(&pool, &[changed])
+                .await
+                .unwrap(),
+            1
+        );
+        let mut now_partial = row;
+        now_partial.stats.delayed += 1;
+        now_partial.partial = true;
+        assert_eq!(
+            queries::upsert_full_coverage_line_stats(&pool, &[now_partial])
+                .await
+                .unwrap(),
+            1,
+            "a change of the partial flag alone is a change"
+        );
+
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                full_coverage_line_stats -- --ignored --test-threads=1`"]
+    async fn a_second_post_for_the_same_line_and_day_updates_the_row_in_place() {
         let pool = connect().await;
         delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
 
