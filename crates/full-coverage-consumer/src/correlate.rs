@@ -161,6 +161,8 @@ mod tests {
             vec![schedule_query::LinePopulationEntry {
                 uid: "C11052".to_string(),
                 calling_points: vec![],
+                operator_atoc: None,
+                train_status: None,
             }],
         );
         population

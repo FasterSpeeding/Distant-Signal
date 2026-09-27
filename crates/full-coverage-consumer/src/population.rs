@@ -352,6 +352,8 @@ mod tests {
             vec![LinePopulationEntry {
                 uid: "C11052".to_string(),
                 calling_points: vec![fixture_calling_point("WATRLMN")],
+                operator_atoc: None,
+                train_status: None,
             }],
         );
         assert_eq!(
@@ -371,6 +373,8 @@ mod tests {
         let entry = |uid: &str| LinePopulationEntry {
             uid: uid.to_string(),
             calling_points: vec![fixture_calling_point("WATRLMN")],
+            operator_atoc: None,
+            train_status: None,
         };
 
         assert_eq!(population.etag_for("waterloo-reading", today), None);
@@ -453,6 +457,8 @@ mod tests {
             vec![LinePopulationEntry {
                 uid: "C11052".to_string(),
                 calling_points: heavy_calling_points,
+                operator_atoc: None,
+                train_status: None,
             }],
         );
 

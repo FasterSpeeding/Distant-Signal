@@ -434,6 +434,8 @@ pub(crate) mod tests {
             vec![schedule_query::LinePopulationEntry {
                 uid: "C11052".to_string(),
                 calling_points: vec![],
+                operator_atoc: None,
+                train_status: None,
             }],
         );
         let lines = vec!["waterloo-reading".to_string()];

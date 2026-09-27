@@ -682,6 +682,8 @@ mod tests {
                 vec![schedule_query::LinePopulationEntry {
                     uid: "C11052".to_string(),
                     calling_points: vec![],
+                    operator_atoc: None,
+                    train_status: None,
                 }],
             );
         }
@@ -994,6 +996,8 @@ mod tests {
             vec![schedule_query::LinePopulationEntry {
                 uid: "C11052".to_string(),
                 calling_points: vec![],
+                operator_atoc: None,
+                train_status: None,
             }],
         );
 
@@ -1085,6 +1089,8 @@ mod tests {
                 .map(|uid| schedule_query::LinePopulationEntry {
                     uid: uid.to_string(),
                     calling_points: vec![],
+                    operator_atoc: None,
+                    train_status: None,
                 })
                 .collect(),
         );
