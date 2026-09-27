@@ -364,9 +364,7 @@ async fn get_trains_resolve(
         }
     };
     // Same single London-local `today` read and window as `get_trains_search`.
-    let today = chrono::Utc::now()
-        .with_timezone(&chrono_tz::Europe::London)
-        .date_naive();
+    let today = super::london_today();
     let date = normalize_date(&params.date, today)?;
 
     let request = train_resolve::ResolveRequest {
@@ -592,7 +590,7 @@ async fn get_trains_search(
     // is validated against THIS SAME `today`, never a second, independently
     // computed one -- see
     // docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md §6.
-    let london_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::London);
+    let london_now = super::london_now();
     let today = london_now.date_naive();
     let now = london_now.time();
 
@@ -775,7 +773,7 @@ mod db_tests {
 
     async fn delete_today(pool: &PgPool) {
         sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(chrono::Utc::now().date_naive())
+            .bind(crate::routes::london_today())
             .execute(pool)
             .await
             .expect("cleanup today's schedule_destination_departures rows");
@@ -830,7 +828,7 @@ mod db_tests {
     #[must_use]
     async fn seed_today(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let Some((past, soon, later)) = relative_times() else {
             return false;
         };
@@ -1203,7 +1201,7 @@ mod db_tests {
     #[must_use]
     async fn seed_stops_at(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let Some((_, soon, later)) = relative_times() else {
             return false;
         };
@@ -1332,7 +1330,7 @@ mod db_tests {
     #[must_use]
     async fn seed_loop(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let Some((_, soon, _)) = relative_times() else {
             return false;
         };
@@ -1440,7 +1438,7 @@ mod db_tests {
     #[must_use]
     async fn seed_stops_at_ordering(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let Some((_, soon, _)) = relative_times() else {
             return false;
         };
@@ -1516,7 +1514,7 @@ mod db_tests {
     #[must_use]
     async fn seed_stops_at_arrival(pool: &PgPool, station_crs: &str) -> bool {
         delete_today(pool).await;
-        let today = chrono::Utc::now().date_naive();
+        let today = crate::routes::london_today();
         let Some((_, soon, later)) = relative_times() else {
             return false;
         };
@@ -1664,22 +1662,29 @@ mod db_tests {
         delete_today(&pool).await;
 
         let is_bst = london_is_currently_ahead_of_utc();
-        let today = chrono::Utc::now().date_naive();
+        // ONE London clock read for both the seeded date and the seeded
+        // time, and the same `london_now` the route itself reads.
+        let london_now = crate::routes::london_now();
+        let today = london_now.date_naive();
         let london_time = {
             use chrono::Timelike;
 
-            let t = chrono::Utc::now()
-                .with_timezone(&chrono_tz::Europe::London)
-                .time();
+            let t = london_now.time();
             chrono::NaiveTime::from_hms_opt(t.hour(), t.minute(), 0)
                 .expect("valid time from valid hour/minute")
         };
         let (gap_time, wrapped) = london_time.overflowing_sub_signed(chrono::Duration::minutes(20));
-        assert!(
-            wrapped == 0 && london_time >= chrono::NaiveTime::from_hms_opt(0, 20, 0).unwrap(),
-            "this test needs at least 20 minutes since London midnight; re-run outside \
-             00:00-00:20 Europe/London"
-        );
+        // Same reasoning as `relative_times`: a run that lands inside this
+        // window is an inapplicable no-op, not a real failure (this used to
+        // be a bare `assert!`, i.e. a guaranteed red test for 20 minutes
+        // every night).
+        if wrapped != 0 || london_time < chrono::NaiveTime::from_hms_opt(0, 21, 0).unwrap() {
+            println!(
+                "skipping: this test needs at least 20 minutes since London midnight; \
+                 re-run outside 00:00-00:21 Europe/London"
+            );
+            return;
+        }
 
         sqlx::query(
             "INSERT INTO schedule_destination_departures \
@@ -1742,9 +1747,7 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_rejects_a_date_outside_the_supported_window() {
         let pool = connect().await;
-        let today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let today = crate::routes::london_today();
         let too_far_future = today + chrono::Duration::days(8);
         let too_far_past = today - chrono::Duration::days(8);
 
@@ -1782,9 +1785,7 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_accepts_a_date_exactly_at_the_edge_of_the_window() {
         let pool = connect().await;
-        let today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let today = crate::routes::london_today();
         let edge_future = today + chrono::Duration::days(7);
         let edge_past = today - chrono::Duration::days(7);
 
@@ -1842,9 +1843,7 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_applies_now_forward_only_when_date_is_today() {
         let pool = connect().await;
-        let today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let today = crate::routes::london_today();
         let tomorrow = today + chrono::Duration::days(1);
 
         sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
@@ -1911,9 +1910,7 @@ mod db_tests {
         // doc comment on `scheduled_from` in `get_trains_search` -- today's
         // clock is irrelevant to every OTHER date, explicit `from` or not.
         let pool = connect().await;
-        let today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let today = crate::routes::london_today();
         let tomorrow = today + chrono::Duration::days(1);
 
         sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
@@ -2039,9 +2036,7 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_404_for_an_unpublished_in_window_date_names_that_date() {
         let pool = connect().await;
-        let today = chrono::Utc::now()
-            .with_timezone(&chrono_tz::Europe::London)
-            .date_naive();
+        let today = crate::routes::london_today();
         let target = today + chrono::Duration::days(3);
         sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
             .bind(target)
