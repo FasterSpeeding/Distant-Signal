@@ -358,18 +358,38 @@ async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Respo
     // Logout (see Global Constraints). If the session cookie is missing
     // or already invalid, logout is still a no-op success (idempotent),
     // not an error.
-    if let Some(token) = auth::parse_cookie(&headers, auth::SESSION_COOKIE_NAME)
-        && let Err(err) =
+    let deleted = match auth::parse_cookie(&headers, auth::SESSION_COOKIE_NAME) {
+        Some(token) => {
             users::delete_session(&app.database, &auth::hash_session_token(&token)).await
-    {
-        tracing::error!(error = ?err, "failed to delete session on logout");
+        }
+        None => Ok(()),
+    };
+    logout_response(deleted, cookie_secure(&app))
+}
+
+/// DB2-23: the cookie is cleared only once the server-side session row is
+/// gone. Clearing it after a failed `delete_session` told the browser it was
+/// logged out while the session stayed valid for the rest of its TTL to
+/// anyone holding the token. A failure is a 500 with the cookie left in
+/// place, so the user still sees they're logged in and can retry.
+fn logout_response(deleted: anyhow::Result<()>, secure: bool) -> Response {
+    if let Err(err) = deleted {
+        tracing::error!(
+            error = ?err,
+            "failed to delete session on logout; keeping the cookie so the user can retry"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "logout failed; please try again",
+        )
+            .into_response();
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_str(&auth::clear_cookie_header(
             auth::SESSION_COOKIE_NAME,
-            cookie_secure(&app),
+            secure,
         ))
         .expect("cookie header value is always valid ASCII"),
     );
@@ -574,6 +594,28 @@ async fn session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DB2-23: a failed session delete keeps the cookie and says so.
+    #[test]
+    fn a_failed_session_delete_keeps_the_cookie() {
+        let response = logout_response(Err(anyhow::anyhow!("db down")), true);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+    }
+
+    #[test]
+    fn a_successful_logout_clears_the_cookie() {
+        let response = logout_response(Ok(()), true);
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("the session cookie is cleared")
+            .to_str()
+            .unwrap();
+        assert!(cookie.starts_with(auth::SESSION_COOKIE_NAME), "{cookie}");
+        assert!(cookie.contains("Max-Age=0"), "{cookie}");
+    }
 
     #[test]
     fn captured_return_to_discards_an_invalid_return_to_rather_than_erroring() {
