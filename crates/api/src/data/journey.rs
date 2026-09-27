@@ -3865,6 +3865,7 @@ mod db_tests {
                 tracked_train_id: 0,
                 resolved_train_uid: None,
                 resolved_train_id: None,
+                identity_date: None,
                 dedup_key: "test-jrnb-a-dep".to_string(),
                 msg_type: "0003".to_string(),
                 event_type: Some("DEPARTURE".to_string()),
