@@ -827,7 +827,10 @@ async fn get_by_uid_and_date(
         && current.origin_crs.is_none()
         && !SCHEDULE_MATCH_FAILURE_CACHE.recently_failed(&train_uid, date)
     {
-        if !enrich_public_train_schedule(&app, &train_uid, date).await {
+        if enrich_public_train_schedule(&app, &train_uid, date)
+            .await
+            .should_negative_cache()
+        {
             SCHEDULE_MATCH_FAILURE_CACHE.record_failure(&train_uid, date);
         }
         state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
@@ -1070,28 +1073,27 @@ pub(crate) async fn enrich_shared_train(
 /// against whatever is already there -- safe to call for an
 /// already-matched row (fast no-op) or in a race with the tracked-train
 /// paths above (never clobbers, per that function's own doc comment).
-/// Returns `true` only when this attempt actually schedule-matched the
-/// row -- the caller (`get_by_uid_and_date`) uses that to decide whether to
-/// record a negative-cache entry via `SCHEDULE_MATCH_FAILURE_CACHE`. Every
-/// non-match outcome (no CIF origin found, an unresolvable local time, an
-/// attempted-but-unmatched schedule, or an outright lookup error) returns
-/// `false` -- from the caller's point of view all of those are equally "did
-/// not get a schedule this time," and equally expensive to blindly retry on
-/// every read.
-async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDate) -> bool {
+/// Returns a [`PublicEnrichment`]; the caller (`get_by_uid_and_date`)
+/// records a negative-cache entry via `SCHEDULE_MATCH_FAILURE_CACHE` only
+/// for [`PublicEnrichment::NoMatch`].
+async fn enrich_public_train_schedule(
+    app: &App,
+    train_uid: &str,
+    date: NaiveDate,
+) -> PublicEnrichment {
     let origin =
         match crate::data::reconciliation::true_origin_departure(&app.database, train_uid, date)
             .await
         {
             Ok(Some(origin)) => origin,
-            Ok(None) => return false,
+            Ok(None) => return PublicEnrichment::NoMatch,
             Err(err) => {
                 tracing::warn!(
                     error = ?err,
                     train_uid,
                     "true-origin-departure lookup failed for public schedule enrichment"
                 );
-                return false;
+                return PublicEnrichment::Failed;
             }
         };
     let (origin_crs, scheduled) = origin;
@@ -1103,7 +1105,7 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
             "scheduled departure did not resolve to a real London local time; skipping public \
              schedule enrichment"
         );
-        return false;
+        return PublicEnrichment::NoMatch;
     };
 
     match schedule_matching::attempt_schedule_match_for_shared_train(
@@ -1122,7 +1124,7 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
                 origin_crs,
                 "schedule-matched a previously-untracked shared train row from a public read"
             );
-            true
+            PublicEnrichment::Matched
         }
         Ok(false) => {
             tracing::debug!(
@@ -1130,7 +1132,7 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
                 origin_crs,
                 "no schedule match for this untracked train's true origin departure"
             );
-            false
+            PublicEnrichment::NoMatch
         }
         Err(err) => {
             tracing::warn!(
@@ -1138,8 +1140,29 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
                 train_uid,
                 "public schedule enrichment failed for an untracked shared train row"
             );
-            false
+            PublicEnrichment::Failed
         }
+    }
+}
+
+/// Outcome of [`enrich_public_train_schedule`] (DB2-11). It used to be a
+/// bool, so a transient DB error was negative-cached for
+/// `SCHEDULE_MATCH_FAILURE_TTL` (15 min) exactly like a genuine miss, and
+/// the train page showed no schedule for that long after a blip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicEnrichment {
+    /// This attempt schedule-matched the row.
+    Matched,
+    /// A real answer: no CIF origin, an unresolvable local time, or no
+    /// matching schedule. Worth negative-caching.
+    NoMatch,
+    /// A lookup or match query failed (logged). Retried on the next read.
+    Failed,
+}
+
+impl PublicEnrichment {
+    fn should_negative_cache(self) -> bool {
+        self == Self::NoMatch
     }
 }
 
@@ -4689,6 +4712,32 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-LEGACY-VALIDATION-STILL-ENFORCED").await;
+    }
+
+    /// DB2-11: only a genuine miss is negative-cached. A train with no CIF
+    /// schedule is `NoMatch`; the same lookup on a pool that can't reach
+    /// the database is `Failed`, which the caller does not cache.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                public_enrichment_distinguishes_a_miss_from_a_failure -- --ignored --test-threads=1`"]
+    async fn public_enrichment_distinguishes_a_miss_from_a_failure() {
+        let pool = connect().await;
+        let date: chrono::NaiveDate = "2026-09-22".parse().unwrap();
+        let app = test_app(pool.clone());
+        let outcome = super::enrich_public_train_schedule(&app, "DB2NOSCHED", date).await;
+        assert_eq!(outcome, super::PublicEnrichment::NoMatch);
+        assert!(outcome.should_negative_cache());
+
+        let closed = connect().await;
+        closed.close().await;
+        let outcome =
+            super::enrich_public_train_schedule(&test_app(closed), "DB2NOSCHED", date).await;
+        assert_eq!(outcome, super::PublicEnrichment::Failed);
+        assert!(
+            !outcome.should_negative_cache(),
+            "a DB error must not be cached as a miss"
+        );
+        assert!(!super::PublicEnrichment::Matched.should_negative_cache());
     }
 
     /// API-6: the per-user cap on upcoming subscriptions, on both ways to
