@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::PgConnectOptions;
 use sqlx::{ConnectOptions, PgPool};
 
 use crate::auth::oidc::{OidcClient, OidcConfig};
@@ -419,7 +419,10 @@ const DEAD_CLIENT_DETECTION_SETTINGS: [(&str, &str); 4] = [
     ("tcp_keepalives_count", "6"),
 ];
 
-fn with_dead_client_detection(options: PgConnectOptions) -> PgConnectOptions {
+/// `pg_stat_activity.application_name` of every `api` pool connection.
+pub const API_APPLICATION_NAME: &str = "distant-signal-api";
+
+pub fn with_dead_client_detection(options: PgConnectOptions) -> PgConnectOptions {
     options.options(DEAD_CLIENT_DETECTION_SETTINGS)
 }
 
@@ -516,9 +519,14 @@ impl AppState {
             connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10)),
         );
 
-        let db = PgPoolOptions::new()
-            .max_connections(50)
-            .connect_with(connect_options)
+        // application_name, statement_timeout (60s), idle-in-transaction
+        // timeout (30s) and a 5s acquire_timeout, all overridable by env --
+        // see `common::pg`. Statements that legitimately run longer (the
+        // schedule publish chunks) raise the timeout with `SET LOCAL`.
+        let pool_settings = common::pg::PoolSettings::from_env(API_APPLICATION_NAME, 50)?;
+        let db = pool_settings
+            .pool_options()
+            .connect_with(pool_settings.connect_options(connect_options))
             .await
             .context("Could not connect to database")?;
 
@@ -715,6 +723,7 @@ mod internal_oauth_startup_guard_tests {
 #[cfg(test)]
 mod dead_client_detection_tests {
     use super::*;
+    use sqlx::postgres::PgPoolOptions;
 
     /// The settings actually reach the session (and are accepted by the
     /// server -- an unknown one would fail the connection outright).
@@ -733,6 +742,35 @@ mod dead_client_detection_tests {
         for (name, expected) in [
             ("client_connection_check_interval", "10s"),
             ("tcp_keepalives_count", "6"),
+        ] {
+            let value: String = sqlx::query_scalar(&format!("SHOW {name}"))
+                .fetch_one(&pool)
+                .await
+                .expect("SHOW setting");
+            assert_eq!(value, expected, "{name}");
+        }
+    }
+
+    /// The pool `AppState::init` builds: the `common::pg` settings stack on
+    /// top of the dead-client detection options rather than replacing them.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                dead_client_detection -- --ignored`"]
+    async fn pool_settings_and_dead_client_detection_both_apply() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let options: PgConnectOptions = database_url.parse().expect("parse DATABASE_URL");
+        let settings = common::pg::PoolSettings::new(API_APPLICATION_NAME, 1);
+        let pool = settings
+            .pool_options()
+            .connect_with(settings.connect_options(with_dead_client_detection(options)))
+            .await
+            .expect("connect with the settings");
+        for (name, expected) in [
+            ("client_connection_check_interval", "10s"),
+            ("statement_timeout", "1min"),
+            ("idle_in_transaction_session_timeout", "30s"),
+            ("application_name", API_APPLICATION_NAME),
         ] {
             let value: String = sqlx::query_scalar(&format!("SHOW {name}"))
                 .fetch_one(&pool)
