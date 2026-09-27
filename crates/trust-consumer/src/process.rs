@@ -1431,7 +1431,12 @@ fn process_message(
                 Some(&movement.event_type),
                 movement.loc_stanox.as_deref(),
                 movement.planned_timestamp.as_deref(),
-                common::rail_day::current_rail_day(received_at),
+                // PL-3: the message's own date, so a redelivery across
+                // 02:00 or trust-backlog-consumer's copy keys the same.
+                trust_schema::dedup::event_date(
+                    message,
+                    common::rail_day::current_rail_day(received_at),
+                ),
             );
 
             tracked_train_ids
@@ -1504,7 +1509,12 @@ fn process_message(
                 None,
                 None,
                 cancellation.canx_timestamp.as_deref(),
-                common::rail_day::current_rail_day(received_at),
+                // PL-3: the message's own date, so a redelivery across
+                // 02:00 or trust-backlog-consumer's copy keys the same.
+                trust_schema::dedup::event_date(
+                    message,
+                    common::rail_day::current_rail_day(received_at),
+                ),
             );
 
             // TRUST's confirmed `canx_timestamp` is the time the
@@ -1587,7 +1597,12 @@ fn process_message(
                 None,
                 None,
                 None,
-                common::rail_day::current_rail_day(received_at),
+                // PL-3: the message's own date, so a redelivery across
+                // 02:00 or trust-backlog-consumer's copy keys the same.
+                trust_schema::dedup::event_date(
+                    message,
+                    common::rail_day::current_rail_day(received_at),
+                ),
             );
 
             tracked_train_ids
@@ -1617,10 +1632,10 @@ fn process_message(
         }
 
         TrustMessage::ChangeOfOrigin(change) => {
-            passthrough_event(&change.train_id, "0006", state, received_at)
+            passthrough_event(message, &change.train_id, "0006", state, received_at)
         }
         TrustMessage::ChangeOfIdentity(change) => {
-            passthrough_event(&change.train_id, "0007", state, received_at)
+            passthrough_event(message, &change.train_id, "0007", state, received_at)
         }
 
         // Not logged by `schema::parse_envelope` itself (parsing an
@@ -1649,6 +1664,7 @@ fn process_message(
 /// unchanged, exactly as `journey::apply_movement` already passes
 /// `next_calling_point` through when it lacks the information to update it.
 fn passthrough_event(
+    message: &TrustMessage,
     train_id: &str,
     msg_type: &str,
     state: &ProcessorState,
@@ -1668,7 +1684,7 @@ fn passthrough_event(
         None,
         None,
         None,
-        common::rail_day::current_rail_day(received_at),
+        trust_schema::dedup::event_date(message, common::rail_day::current_rail_day(received_at)),
     );
     tracked_train_ids
         .iter()
@@ -1882,6 +1898,47 @@ mod tests {
             service_date: service_date.parse().unwrap(),
             pin_scheduled_departure: Some(pin_scheduled_departure.parse().unwrap()),
         }
+    }
+
+    /// PL-3: the same Reinstatement processed either side of 02:00 London
+    /// (a redelivery across the cutover) keys identically, and the key is
+    /// the message-derived one trust-backlog-consumer computes too.
+    #[test]
+    fn a_redelivery_across_the_rail_day_cutover_keeps_its_dedup_key() {
+        let message = TrustMessage::Reinstatement(trust_schema::schema::Reinstatement {
+            train_id: "221832406".to_string(),
+            // 2026-09-27 01:59:30, raw TRUST epoch millis.
+            dep_timestamp: Some("1790474370000".to_string()),
+        });
+        let reference = reference_with_one_pending(1, "WAT", "2026-09-27T01:00:00Z");
+        let mut state = ProcessorState::default();
+        state.resolved.insert("221832406".to_string(), vec![1]);
+        let key_at = |state: &mut ProcessorState, at: &str| {
+            let events = process_message(
+                &message,
+                &reference,
+                state,
+                &TEST_STANOX_CRS,
+                at.parse().unwrap(),
+            );
+            assert_eq!(events.len(), 1);
+            events[0].dedup_key.clone()
+        };
+        // 00:59:30Z is 01:59:30 BST (rail day 09-26); 01:00:30Z is 02:00:30 BST (09-27).
+        let before = key_at(&mut state, "2026-09-27T00:59:30Z");
+        let after = key_at(&mut state, "2026-09-27T01:00:30Z");
+        assert_eq!(before, after);
+        assert_eq!(
+            before,
+            trust_schema::dedup::dedup_key(
+                "221832406",
+                "0005",
+                None,
+                None,
+                None,
+                "2026-09-27".parse().unwrap()
+            )
+        );
     }
 
     fn reference_with_one_pending(id: i64, crs: &str, scheduled: &str) -> Reference {

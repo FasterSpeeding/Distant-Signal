@@ -223,6 +223,11 @@ pub fn process_message(
     today: NaiveDate,
     received_at: chrono::DateTime<chrono::Utc>,
 ) -> Option<common::TrustBacklogEventMessage> {
+    // PL-3: `dedup_key`'s date comes from the message itself (the same
+    // rule `trust-consumer` uses), not from `today`, so a redelivery across
+    // 02:00 London or the other consumer's copy of the event keys the same.
+    // `today` is only the fallback for a message with no usable date.
+    let event_date = trust_schema::dedup::event_date(message, today);
     match message {
         TrustMessage::Activation(activation) => {
             // `schedule_start_date` is the CIF schedule's own multi-month
@@ -274,21 +279,16 @@ pub fn process_message(
                 .pending_train_uids
                 .insert(activation.train_id.clone(), activation.train_uid.clone());
 
-            // `today` (the processing rail day), not `service_date`, as the
-            // key's date component -- see `trust_schema::dedup::dedup_key`'s
-            // own doc comment for why every live consumer must use the same
-            // rule. Deliberately NOT the same value as `service_date` for a
-            // post-midnight Activation any more (see the M7 fix just
-            // above) -- `dedup_key`'s own contract is specifically the rail
-            // day every live consumer processed the message on, which is
-            // `today` by definition, not this event's own calendar date.
+            // `event_date` (from `tp_origin_timestamp`, else `today`), not
+            // `service_date`: see `trust_schema::dedup::event_date` for why
+            // every live consumer must use the same message-derived rule.
             let dedup = trust_schema::dedup::dedup_key(
                 &activation.train_id,
                 "0001",
                 None,
                 None,
                 None,
-                today,
+                event_date,
             );
             Some(common::TrustBacklogEventMessage {
                 crs: None,
@@ -390,14 +390,10 @@ pub fn process_message(
             // (both `planned_timestamp`/`actual_timestamp` missing or
             // corrupted) -- there is genuinely nothing else to date it by.
             //
-            // Deliberately NOT applied to `dedup`'s own `event_date` below:
-            // `trust_schema::dedup::dedup_key`'s doc comment makes that date
-            // a hard cross-consumer invariant (it MUST be "the rail day the
-            // message was processed on," in every caller, so this consumer
-            // and `trust-consumer` agree on the same key for the same live
-            // message) -- changing it here would desync the two and defeat
-            // `ON CONFLICT (trains_id, dedup_key)`'s de-duplication instead
-            // of fixing a bug.
+            // `dedup`'s own `event_date` is NOT this `service_date`: it is
+            // `trust_schema::dedup::event_date` (the raw timestamp's date,
+            // with no parked-Activation or skew-correction input), which
+            // `trust-consumer` computes identically for the same message.
             let service_date = state
                 .pending_service_dates
                 .get(&movement.train_id)
@@ -415,7 +411,7 @@ pub fn process_message(
                 Some(&movement.event_type),
                 movement.loc_stanox.as_deref(),
                 movement.planned_timestamp.as_deref(),
-                today,
+                event_date,
             );
 
             Some(common::TrustBacklogEventMessage {
@@ -465,9 +461,8 @@ pub fn process_message(
             // above -- this is why it's computed before this line rather
             // than after, unlike the pre-fix ordering), and only fall back
             // to the processing-time `today` when neither is available.
-            // `dedup`'s `event_date` below is deliberately left as `today`
-            // for the same cross-consumer-invariant reason documented on
-            // the Movement arm.
+            // `dedup`'s `event_date` is the shared message-derived date, for
+            // the same cross-consumer reason documented on the Movement arm.
             let service_date = state
                 .pending_service_dates
                 .get(&cancellation.train_id)
@@ -498,7 +493,7 @@ pub fn process_message(
                 None,
                 None,
                 cancellation.canx_timestamp.as_deref(),
-                today,
+                event_date,
             );
 
             Some(common::TrustBacklogEventMessage {
@@ -544,7 +539,7 @@ pub fn process_message(
                 None,
                 None,
                 None,
-                today,
+                event_date,
             );
 
             Some(common::TrustBacklogEventMessage {
@@ -1349,6 +1344,62 @@ mod tests {
         )
         .unwrap();
         assert_ne!(august.dedup_key, september.dedup_key);
+    }
+
+    /// PL-3: a redelivery processed on the NEXT rail day (reclaimed after
+    /// 02:00 London) keeps the key, and it is the same message-derived key
+    /// trust-consumer computes for the event.
+    #[test]
+    fn a_redelivery_on_the_next_rail_day_keeps_its_dedup_key() {
+        let message = TrustMessage::Reinstatement(trust_schema::schema::Reinstatement {
+            train_id: "221832406".to_string(),
+            // 2026-09-27 01:59:30, raw TRUST epoch millis.
+            dep_timestamp: Some("1790474370000".to_string()),
+        });
+        let mut state = ProcessorState::default();
+        let mut key_on = |day: &str| {
+            process_message(
+                &message,
+                &mut state,
+                &stanox_table(),
+                &crs_index_with(&["WAT"]),
+                day.parse().unwrap(),
+                test_received_at(),
+            )
+            .unwrap()
+            .dedup_key
+        };
+        let first = key_on("2026-09-26");
+        let redelivered = key_on("2026-09-27");
+        assert_eq!(first, redelivered);
+        assert_eq!(
+            first,
+            trust_schema::dedup::dedup_key(
+                "221832406",
+                "0005",
+                None,
+                None,
+                None,
+                "2026-09-27".parse().unwrap()
+            )
+        );
+
+        // A Movement too: its date comes from planned_timestamp.
+        let movement =
+            TrustMessage::Movement(movement("221832406", "ARRIVAL", Some("87212"), None));
+        let mut key_on = |day: &str| {
+            process_message(
+                &movement,
+                &mut state,
+                &stanox_table(),
+                &crs_index_with(&["WAT"]),
+                day.parse().unwrap(),
+                test_received_at(),
+            )
+            .unwrap()
+            .dedup_key
+        };
+        assert_eq!(key_on("2026-08-28"), key_on("2026-08-29"));
     }
 
     /// And the same real event processed twice on the same rail day still
