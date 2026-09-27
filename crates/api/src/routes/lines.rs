@@ -639,24 +639,68 @@ fn validate_station_crs_codes(stations: &[String]) -> Result<(), (StatusCode, St
     Ok(())
 }
 
+/// Most stations one custom line may list. The longest catalogue line
+/// (thameslink-southern) has 61; every station is polled by `poller-ldbws`,
+/// so this bounds recurring work as well as storage (API-7).
+const MAX_CUSTOM_LINE_STATIONS: usize = 200;
+/// Most entries in each of `operators`, `headcode_prefixes` and
+/// `destination_crs_filter` (API-7).
+const MAX_CUSTOM_LINE_LIST_ITEMS: usize = 32;
+
+/// Every body check `create_line` and `update_line` share. Only
+/// `stations` used to be validated; the other lists and the name went
+/// into TEXT/TEXT[] columns verbatim (API-7).
+fn validate_line_request(req: &CreateLineRequest) -> Result<(), (StatusCode, String)> {
+    let bad_request = |msg: String| (StatusCode::BAD_REQUEST, msg);
+    if req.name.trim().is_empty() {
+        return Err(bad_request("name must not be empty".to_string()));
+    }
+    super::validate_short_text("The line name", &req.name, common::CUSTOM_NAME_MAX_LENGTH)
+        .map_err(bad_request)?;
+    if req.stations.len() < 2 {
+        return Err(bad_request("a line needs at least 2 stations".to_string()));
+    }
+    if req.stations.len() > MAX_CUSTOM_LINE_STATIONS {
+        return Err(bad_request(format!(
+            "a line can have at most {MAX_CUSTOM_LINE_STATIONS} stations"
+        )));
+    }
+    validate_station_crs_codes(&req.stations)?;
+    // ATOC codes are two characters; three allows the `TFL` pseudo-code the
+    // catalogue's own TfL lines carry.
+    super::validate_code_list(
+        "Operators",
+        &req.operators,
+        MAX_CUSTOM_LINE_LIST_ITEMS,
+        "two-letter operator codes, like SW or GW",
+        |v| super::is_ascii_code(v.trim(), 2, 3, false),
+    )
+    .map_err(bad_request)?;
+    super::validate_code_list(
+        "Headcode prefixes",
+        &req.headcode_prefixes,
+        MAX_CUSTOM_LINE_LIST_ITEMS,
+        "up to four letters or digits, like 1P",
+        |v| super::is_ascii_code(v.trim(), 1, 4, false),
+    )
+    .map_err(bad_request)?;
+    super::validate_code_list(
+        "Destination stations",
+        &req.destination_crs_filter,
+        MAX_CUSTOM_LINE_LIST_ITEMS,
+        "three-letter station codes, like WAT",
+        |v| super::is_crs_code(v.trim()),
+    )
+    .map_err(bad_request)?;
+    Ok(())
+}
+
 async fn create_line(
     State(app): State<App>,
     user: AuthenticatedUser,
     Json(req): Json<CreateLineRequest>,
 ) -> Result<Json<LineSummary>, (StatusCode, String)> {
-    if req.name.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "name must not be empty".to_string(),
-        ));
-    }
-    if req.stations.len() < 2 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "a line needs at least 2 stations".to_string(),
-        ));
-    }
-    validate_station_crs_codes(&req.stations)?;
+    validate_line_request(&req)?;
     if custom_lines::slugify(&req.name) == "custom-" {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -791,19 +835,7 @@ async fn update_line(
             "cannot edit a catalogue line".to_string(),
         ));
     }
-    if req.name.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "name must not be empty".to_string(),
-        ));
-    }
-    if req.stations.len() < 2 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "a line needs at least 2 stations".to_string(),
-        ));
-    }
-    validate_station_crs_codes(&req.stations)?;
+    validate_line_request(&req)?;
     // Deliberately no `slugify(&req.name) == "custom-"` check here, unlike
     // `create_line`: that check exists solely to guard id derivation from
     // an all-punctuation name, and `update_line` never derives an id (see
@@ -1016,6 +1048,69 @@ mod tests {
         assert!(!is_three_letter_crs("W1K"));
         assert!(!is_three_letter_crs("W/K"));
         assert!(!is_three_letter_crs("W?K"));
+    }
+
+    fn line_request() -> CreateLineRequest {
+        CreateLineRequest {
+            name: "My Commute".to_string(),
+            operators: vec!["SW".to_string()],
+            stations: vec!["WOK".to_string(), "WAT".to_string()],
+            headcode_prefixes: vec!["1P".to_string()],
+            destination_crs_filter: vec!["WAT".to_string()],
+        }
+    }
+
+    #[test]
+    fn validate_line_request_accepts_a_well_formed_line() {
+        assert!(validate_line_request(&line_request()).is_ok());
+    }
+
+    #[test]
+    fn validate_line_request_bounds_every_text_field() {
+        let huge = "x".repeat(2 * 1024 * 1024);
+        type Mutation = Box<dyn Fn(&mut CreateLineRequest)>;
+        let cases: Vec<(&str, Mutation)> = vec![
+            ("long name", Box::new(|r| r.name = "n".repeat(101))),
+            (
+                "operator name",
+                Box::new(|r| r.operators = vec!["South Western".to_string()]),
+            ),
+            ("huge operator", {
+                let huge = huge.clone();
+                Box::new(move |r| r.operators = vec![huge.clone()])
+            }),
+            (
+                "too many operators",
+                Box::new(|r| r.operators = vec!["SW".to_string(); 33]),
+            ),
+            (
+                "long headcode",
+                Box::new(|r| r.headcode_prefixes = vec!["1P234".to_string()]),
+            ),
+            (
+                "headcode punctuation",
+                Box::new(|r| r.headcode_prefixes = vec!["1/".to_string()]),
+            ),
+            (
+                "bad destination",
+                Box::new(|r| r.destination_crs_filter = vec!["Waterloo".to_string()]),
+            ),
+            (
+                "too many stations",
+                Box::new(|r| r.stations = vec!["WAT".to_string(); 201]),
+            ),
+        ];
+        for (what, mutate) in cases {
+            let mut req = line_request();
+            mutate(&mut req);
+            let err = validate_line_request(&req).expect_err(what);
+            assert_eq!(err.0, StatusCode::BAD_REQUEST, "{what}");
+            assert!(
+                err.1.len() < 200,
+                "{what}: the error must not echo the input: {}",
+                err.1.len()
+            );
+        }
     }
 
     #[test]

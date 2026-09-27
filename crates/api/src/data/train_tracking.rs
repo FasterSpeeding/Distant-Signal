@@ -329,8 +329,20 @@ pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
                 .to_string(),
         );
     }
+    // API-7: the two free-text fields went into TEXT columns unbounded.
+    // They can hold an operator's full name from a `.pkpass`, so the bound
+    // is the custom-name one, not an ATOC code shape.
+    if let Some(operator) = &entry.operator {
+        crate::routes::validate_short_text("The operator", operator, TICKET_TEXT_MAX_CHARS)?;
+    }
+    if let Some(ticket_type) = &entry.ticket_type {
+        crate::routes::validate_short_text("The ticket type", ticket_type, TICKET_TEXT_MAX_CHARS)?;
+    }
     Ok(())
 }
+
+/// Bound on a ticket's free-text `operator` and `ticket_type` (API-7).
+const TICKET_TEXT_MAX_CHARS: usize = CUSTOM_NAME_MAX_LENGTH;
 
 /// Normalizes a raw `customName` request field into what should actually be
 /// written: `None` if the field was absent/JSON-`null`, or if what's left
@@ -481,6 +493,32 @@ mod ticket_entry_tests {
     #[test]
     fn an_unknown_source_is_rejected() {
         assert!(validate_ticket_entry(&entry(Some("KGX"), "barcode-decoded")).is_err());
+    }
+
+    #[test]
+    fn oversized_or_control_character_free_text_is_rejected() {
+        let mut long = entry(Some("KGX"), "manual");
+        long.operator = Some("x".repeat(TICKET_TEXT_MAX_CHARS + 1));
+        assert!(
+            validate_ticket_entry(&long)
+                .unwrap_err()
+                .contains("too long")
+        );
+
+        let mut long_type = entry(Some("KGX"), "manual");
+        long_type.ticket_type = Some("y".repeat(2 * 1024 * 1024));
+        assert!(validate_ticket_entry(&long_type).is_err());
+
+        let mut control = entry(Some("KGX"), "manual");
+        control.ticket_type = Some("Anytime\u{0}Return".to_string());
+        assert!(validate_ticket_entry(&control).is_err());
+
+        let mut at_limit = entry(Some("KGX"), "manual");
+        at_limit.operator = Some("é".repeat(TICKET_TEXT_MAX_CHARS));
+        assert!(
+            validate_ticket_entry(&at_limit).is_ok(),
+            "the bound counts characters, not bytes"
+        );
     }
 
     #[test]
