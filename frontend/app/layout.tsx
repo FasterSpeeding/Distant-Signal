@@ -2,6 +2,7 @@ import '@/app/globals.css';
 import { Suspense } from 'react';
 import { ColorSchemeScript, mantineHtmlProps, Container } from '@mantine/core';
 import type { Metadata, Viewport } from 'next';
+import { headers } from 'next/headers';
 import { AppNavBar } from '@/components/AppNavBar';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
@@ -11,6 +12,7 @@ import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
 import { getChatbotAccess, getDataFreshness, getMyGroups, getSessionOrLoggedOut, LOGGED_OUT_SESSION } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
+import { NONCE_HEADER } from '@/lib/csp';
 import type { DataFreshness } from '@/lib/types';
 
 // Site-wide fallback metadata, and still the live fallback for every route
@@ -208,10 +210,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // sequential wait in practice, just picking up a result that was already
   // being computed alongside it.
   const groups = await groupsPromise;
+  // Set by proxy.ts. Absent only where proxy.ts does not run (a prefetch),
+  // and then there is no document for the script to run in.
+  const nonce = (await headers()).get(NONCE_HEADER) ?? undefined;
   return (
     <html lang="en" {...mantineHtmlProps}>
       <head>
-        <ColorSchemeScript defaultColorScheme="auto" />
+        {/* The nonce proxy.ts minted for this request: the page CSP
+            (lib/csp.ts) blocks any inline script without it. */}
+        <ColorSchemeScript defaultColorScheme="auto" nonce={nonce} />
       </head>
       <body>
         <a href="#main-content" className="skip-link">
