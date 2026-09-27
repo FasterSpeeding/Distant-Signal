@@ -13,7 +13,7 @@ Code: `crates/aggregator/src/archive.rs`. Chart: `archive.*` in
 
 | `archive.tables` entry | Archived objects |
 | --- | --- |
-| `trains` | `trains`, `train_movement_events` and `train_current_state` (the two child tables that `ON DELETE CASCADE` removes along with each `trains` row) |
+| `trains` | `trains`, `train_movement_events` and `train_current_state` (the two child tables that `ON DELETE CASCADE` removes along with each `trains` row). `train_movement_events.raw_body` is left out (see below). |
 
 The two retention tiers stay as they are. An untracked train is archived
 and pruned after `untrackedTrainsRetentionDays` (14 days by default). A
@@ -26,6 +26,12 @@ chart refuses to render, if one of them is listed:
 - **`trust_event_backlog`**: its 1-day retention is a deliberate TRUST
   licensing safeguard (see `Config::trust_event_backlog_retention_days`),
   and an archived copy would defeat it.
+- **`train_movement_events.raw_body`**, the verbatim TRUST message, is
+  stripped from every archived movement event, which keeps only the derived
+  columns (event type, location, planned and actual times, variation
+  status). Keeping the licensed feed's raw messages indefinitely in a bucket
+  is what `trust_event_backlog`'s 1-day retention exists to avoid, so the
+  archive does not do it either (triage decision DQ14, 2026-09-27).
 - **LDBWS-derived tables** (`line_status_history`,
   `line_status_daily_stats`, `line_status_half_hourly_stats`,
   `line_coverage_*_stats`, `station_samples`): RDM's 300-day ceiling
@@ -159,7 +165,7 @@ uploads fail within its `window` (1h).
 
 Each object is newline-delimited JSON, one row per line, compressed with
 zstd. Column names match the Postgres table. Timestamps are ISO-8601
-strings, and `jsonb` columns such as `raw_body` and `calling_points` are
+strings, and `jsonb` columns such as `calling_points` are
 nested JSON.
 
 With [DuckDB](https://duckdb.org/) (its `httpfs` extension autoloads):

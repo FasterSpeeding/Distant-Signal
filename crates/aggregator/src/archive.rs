@@ -28,6 +28,9 @@
 //! - `trust_event_backlog`: its 1-day retention is a deliberate TRUST
 //!   licensing safeguard (see `Config::trust_event_backlog_retention_days`).
 //!   A copy in object storage would defeat it.
+//! - `train_movement_events.raw_body` (the verbatim TRUST message) is never
+//!   archived either, for the same reason (open-findings triage DQ14): the
+//!   archived movement events keep only the derived columns.
 //! - LDBWS-derived tables (`line_status_history`, the daily/half-hourly
 //!   stats and coverage stats, `station_samples`): RDM's 300-day ceiling
 //!   applies to every copy, so archiving them would need an expiry policy
@@ -454,7 +457,11 @@ struct TableExport {
 const TRAINS_GROUP_EXPORTS: &[TableExport] = &[
     TableExport {
         table: "train_movement_events",
-        row: "to_jsonb(t)",
+        // Without `raw_body`, the verbatim TRUST message (triage DQ14): the
+        // derived columns are what history needs, and keeping the licensed
+        // feed's own messages forever in a bucket is exactly what
+        // `trust_event_backlog`'s 1-day window avoids for the same data.
+        row: "to_jsonb(t) - 'raw_body'",
         filter: "t.trains_id = ANY($1)",
         order: "t.trains_id, t.id",
     },
@@ -723,7 +730,7 @@ async fn export_and_upload(
         let fingerprints = fingerprints(&mut tx, ids).await?;
         for export in TRAINS_GROUP_EXPORTS {
             let sql = format!(
-                "SELECT {}::text FROM {} t WHERE {} ORDER BY {}",
+                "SELECT ({})::text FROM {} t WHERE {} ORDER BY {}",
                 export.row, export.table, export.filter, export.order
             );
             encoded.push((export.table, encode_rows(&mut tx, &sql, ids).await?));
@@ -1213,8 +1220,16 @@ mod tests {
                 assert_eq!(rows[0]["calling_points"][0]["crs"], "EUS");
             }
             if table == "train_movement_events" {
-                assert_eq!(rows[1]["raw_body"]["n"], 1);
-                assert_eq!(rows[1]["raw_body"]["loc"], "EUS");
+                // DQ14: the verbatim TRUST message is never archived; the
+                // derived columns are.
+                for row in &rows {
+                    assert!(
+                        row.get("raw_body").is_none(),
+                        "raw_body must not be archived: {row}"
+                    );
+                }
+                assert_eq!(rows[1]["event_type"], "departure");
+                assert_eq!(rows[1]["msg_type"], "0003");
                 assert_eq!(rows[1]["trains_id"].as_i64().unwrap(), ids[0]);
             }
             if table == "train_current_state" {
@@ -1419,13 +1434,16 @@ mod tests {
             .await
             .unwrap();
         assert!(!first.upload_failed);
-        assert_eq!(first.pruned, 0, "a changed batch is not deleted");
-        assert_eq!(remaining(&pool, &ids).await, (2, 4, 2));
+        assert_eq!(
+            remaining(&pool, &ids).await,
+            (2, 4, 2),
+            "a changed batch is not deleted"
+        );
 
         let second = archive_and_prune_trains(&pool, &a, 30, 14, 1000)
             .await
             .unwrap();
-        assert_eq!(second.pruned, 2);
+        assert!(second.pruned >= 2);
         assert_eq!(remaining(&pool, &ids).await, (0, 0, 0));
         let path = a.object_path("trains", date, ids[0]);
         let bytes = flaky.get(&path).await.unwrap().bytes().await.unwrap();

@@ -1283,7 +1283,8 @@ archive:
   # -- Tables to archive before pruning (explicit opt-in). Supported:
   #   - trains  -> the trains row plus its cascaded train_movement_events and
   #                train_current_state rows, one object per table per batch
-  #                under service_date=YYYY-MM-DD/.
+  #                under service_date=YYYY-MM-DD/. Movement events are
+  #                archived WITHOUT raw_body (the verbatim TRUST message).
   # Deliberately NOT archivable (the binary refuses to start if listed):
   # trust_event_backlog (its 1-day retention is a TRUST licensing
   # safeguard) and every LDBWS-derived table (line_status_history,
