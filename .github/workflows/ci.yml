@@ -878,6 +878,39 @@ jobs:
           helm template distant-signal charts/distant-signal "${base[@]}" \
             --set api.replicaCount=2 --set postgresql.config.max_connections=200 > /dev/null
 
+      # networkPolicy.enabled: every policy must keep the traffic its
+      # workload needs. INF-2: the schedulefeed policy must admit SFTP.
+      - name: helm template (NetworkPolicy)
+        run: |
+          set -euo pipefail
+          base=(
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+            --set networkPolicy.enabled=true
+            --set scheduleFeed.enabled=true
+            --set scheduleFeed.sftp.authMethod=password
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+          # One policy per document, keyed by name.
+          policy() { awk -v n="$1" 'BEGIN{RS="\n---\n"} $0 ~ "\n  name: " n "\n" {print}'; }
+
+          feed=$(render --show-only templates/networkpolicy.yaml | policy distant-signal-schedulefeed)
+          [ -n "$feed" ] || fail "no schedulefeed NetworkPolicy rendered"
+          grep -q 'port: 2022' <<<"$feed" || fail "schedulefeed policy must allow SFTP on 2022"
+          if grep -q 'ipBlock' <<<"$feed"; then fail "empty allowedCidrs must not restrict SFTP sources"; fi
+          feed=$(render --set 'scheduleFeed.sftp.allowedCidrs={203.0.113.0/24}' \
+            --show-only templates/networkpolicy.yaml | policy distant-signal-schedulefeed)
+          grep -q 'cidr: "203.0.113.0/24"' <<<"$feed" || fail "allowedCidrs must render as ipBlocks"
+
       - name: helm template (values-example.yaml)
         run: |
           helm template distant-signal charts/distant-signal -f charts/distant-signal/values-example.yaml \

@@ -2216,6 +2216,13 @@ scheduleFeed:
     # -- SFTPGo's own default container port -- not independently
     # re-verified against a real deployed instance by this plan.
     port: 2022
+    # -- Source CIDRs allowed to reach the SFTP port when
+    # networkPolicy.enabled (INF-2), e.g. DTD's published egress range.
+    # Empty allows any source. Only effective when the pod sees the real
+    # client IP (Service `externalTrafficPolicy: Local`, or a load balancer
+    # that preserves it); behind source NAT a non-empty list blocks every
+    # push. See templates/networkpolicy.yaml.
+    allowedCidrs: []
     # -- Purely informational: the public hostname/DNS name an operator has
     # pointed at this Service's LoadBalancer, i.e. what actually gets
     # handed to DTD alongside the port/username/destination below. This
