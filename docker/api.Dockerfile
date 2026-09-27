@@ -51,7 +51,7 @@
 # its own leaves it at "release".
 ARG CARGO_PROFILE=release
 
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS builder
 ARG CARGO_PROFILE
 
 WORKDIR /app
@@ -87,7 +87,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     && cp /app/target/${CARGO_PROFILE}/backfill_trains /usr/local/bin/backfill_trains \
     && cp /app/target/${CARGO_PROFILE}/backfill_incident_lines /usr/local/bin/backfill_incident_lines
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 # sqlx's tls-native-tls feature verifies the Postgres connection's cert (when
 # TLS is in play) against the system store, so the runtime image needs a CA

@@ -93,9 +93,11 @@ on:
     # (currently disabled) weekly cron's minute choice.
     - cron: "23 5 * * *"
 
+# INF-14: read-only by default. Only the schedule-only report-findings job
+# below writes issues, so PR and push runs (which execute the PR's own code)
+# never hold issues: write.
 permissions:
   contents: read
-  issues: write
 
 jobs:
   scan:
@@ -167,6 +169,8 @@ jobs:
     needs: scan
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-24.04
+    permissions:
+      issues: write
     steps:
       - name: Download scan results
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
