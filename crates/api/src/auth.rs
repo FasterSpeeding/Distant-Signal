@@ -1252,6 +1252,61 @@ mod route_scoping_tests {
         }
     }
 
+    /// `/full-coverage-window-stats` (2026-09-27) is full-coverage-consumer's
+    /// alone, both methods, like `/full-coverage-stats`.
+    #[tokio::test]
+    async fn only_full_coverage_consumers_token_is_accepted_on_full_coverage_window_stats() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let config = test_config();
+        let token = token_for(
+            &server.uri(),
+            "svc-full-coverage-consumer-1",
+            &[config.internal_oauth_group_full_coverage.as_str()],
+        );
+        for method in [Method::GET, Method::POST] {
+            assert_eq!(
+                send(
+                    &router,
+                    method.clone(),
+                    "/full-coverage-window-stats",
+                    Some(&token)
+                )
+                .await,
+                StatusCode::OK,
+                "{method}"
+            );
+        }
+
+        let other_groups = [
+            &config.internal_oauth_group_incidents,
+            &config.internal_oauth_group_ldbws,
+            &config.internal_oauth_group_trust_consumer,
+            &config.internal_oauth_group_schedule_reference,
+            &config.internal_oauth_group_trust_backlog,
+        ];
+        for group in other_groups {
+            let token = token_for(&server.uri(), "svc-under-test", &[group.as_str()]);
+            for method in [Method::GET, Method::POST] {
+                assert_eq!(
+                    send(
+                        &router,
+                        method.clone(),
+                        "/full-coverage-window-stats",
+                        Some(&token)
+                    )
+                    .await,
+                    StatusCode::FORBIDDEN,
+                    "group {group} must be rejected on {method} /full-coverage-window-stats"
+                );
+            }
+        }
+        assert_eq!(
+            send(&router, Method::POST, "/full-coverage-window-stats", None).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
     #[tokio::test]
     async fn a_token_with_no_matching_group_at_all_is_rejected_on_stanox_crs() {
         let (server, app, _routes) = test_app().await;

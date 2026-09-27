@@ -95,6 +95,11 @@ pub fn router() -> Router {
             axum::routing::get(get_full_coverage_stats_last_fetched).post(post_full_coverage_stats),
         )
         .route(
+            "/full-coverage-window-stats",
+            axum::routing::get(get_full_coverage_window_stats_last_fetched)
+                .post(post_full_coverage_window_stats),
+        )
+        .route(
             "/schedule-network-departures",
             axum::routing::post(post_schedule_network_departures),
         )
@@ -895,6 +900,34 @@ async fn get_full_coverage_stats_last_fetched(
     let fetched_at = queries::last_full_coverage_line_stats_fetch(&app.database)
         .await
         .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
+}
+
+/// `full-coverage-consumer`'s windowed stats (`recent` and `day_to_date` per
+/// line, every minute, only with `FULL_COVERAGE_WINDOWED_STATS=true`) --
+/// same producer, same group, both methods, as `/full-coverage-stats`. A
+/// malformed row is a 400 (retrying cannot help); see
+/// `data::full_coverage_window`.
+async fn post_full_coverage_window_stats(
+    State(app): State<App>,
+    Json(rows): Json<Vec<common::FullCoverageWindowStatsRow>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    crate::data::full_coverage_window::validate(&rows)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    let upserted =
+        crate::data::full_coverage_window::upsert_full_coverage_window_stats(&app.database, &rows)
+            .await
+            .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+async fn get_full_coverage_window_stats_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at =
+        crate::data::full_coverage_window::last_full_coverage_window_stats_fetch(&app.database)
+            .await
+            .map_err(internal_error)?;
     Ok(Json(LastFetchedResponse { fetched_at }))
 }
 
@@ -1939,7 +1972,66 @@ mod db_tests {
                 avg_delay_minutes: 3.5,
             },
             partial: false,
+            breakdown: None,
+            stats_version: None,
         }
+    }
+
+    /// Version skew: a legacy row (an older consumer, or the windowed flag
+    /// off) is still accepted and reads back as `stats_version` 1 with no
+    /// breakdown; a v2 row round-trips its breakdown.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                full_coverage_line_stats -- --ignored --test-threads=1`"]
+    async fn full_coverage_line_stats_v1_and_v2_rows() {
+        let pool = connect().await;
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+
+        // The exact body an older consumer sends: no breakdown, no version.
+        let v1: common::FullCoverageLineStatsRow = serde_json::from_value(serde_json::json!({
+            "line_id": FIXTURE_LINE_ID, "service_date": "2026-09-04", "availability": "pending",
+            "stats": {"total": 10, "delayed": 2, "cancelled": 1, "skipped": 0,
+                      "avg_delay_minutes": 3.5}
+        }))
+        .unwrap();
+        queries::upsert_full_coverage_line_stats(&pool, &[v1])
+            .await
+            .unwrap();
+        let read = queries::get_full_coverage_line_stats(&pool, FIXTURE_LINE_ID, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.stats_version, Some(1));
+        assert_eq!(read.breakdown, None);
+
+        let mut v2 = fixture_row(FIXTURE_LINE_ID, "pending");
+        v2.stats_version = Some(2);
+        v2.breakdown = Some(common::FullCoverageWindowCounts {
+            total: 10,
+            on_time: 7,
+            delayed: 2,
+            cancelled_explicit: 1,
+            cancelled_presumed: 0,
+            skipped: 0,
+            pending: 4,
+            unobserved: 3,
+            avg_delay_minutes: 3.5,
+        });
+        assert_eq!(
+            queries::upsert_full_coverage_line_stats(&pool, std::slice::from_ref(&v2))
+                .await
+                .unwrap(),
+            1,
+            "the same counts under a new version and breakdown are a change"
+        );
+        let read = queries::get_full_coverage_line_stats(&pool, FIXTURE_LINE_ID, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.stats_version, Some(2));
+        assert_eq!(read.breakdown, v2.breakdown);
+
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
     }
 
     #[tokio::test]

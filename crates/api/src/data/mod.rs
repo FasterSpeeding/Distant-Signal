@@ -3,6 +3,7 @@ pub mod custom_lines;
 pub mod delay_repay_rules;
 pub mod eta_blend;
 pub mod full_coverage_comparison;
+pub mod full_coverage_window;
 pub mod groups;
 pub mod incident_line_backfill;
 pub mod island_of_ireland;
