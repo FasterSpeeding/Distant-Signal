@@ -1345,4 +1345,11 @@ What the implementation did differently from sections 4-9, and why:
   while the flag is on; and in `enforce`,
   `increase(aggregator_full_coverage_window_verdicts_total{verdict="missing"}[15m])`
   above the line count.
+  **Update (integration):** the first three are now in the chart's
+  PrometheusRule (`metrics.prometheusRule.fullCoverageWindow`) as
+  `DistantSignalFullCoverageWindowFeedStale`,
+  `DistantSignalFullCoverageWindowPostErrors` and
+  `DistantSignalFullCoverageWindowStatsStalled`, rendered only when
+  `fullCoverageConsumer.windowedStats.enabled` is true. The `enforce`
+  missing-verdicts alert is not added yet.
 
