@@ -199,7 +199,41 @@ pub async fn find_or_create_train_with_schedule_match(
     Ok(row.0)
 }
 
+/// Points subscription `subscription_id` at `trains_id` for the backlog
+/// CRS+time heuristic (DB2-5), but only when that cannot overwrite a
+/// DIFFERENT train: the subscription must be unbound, already bound to
+/// `trains_id`, or bound to a row with the same `train_uid` (a same-uid,
+/// other-date row, which the heuristic is allowed to correct). The check is
+/// in the UPDATE itself, so a schedule match that binds the subscription
+/// between the caller's own contradiction precheck and this write is seen
+/// (READ COMMITTED re-evaluates the WHERE on the new row version).
+///
+/// Returns `false` when nothing was written: the subscription is gone, or it
+/// is now bound to another train. The caller must then stop rather than
+/// replay another train's history onto it.
+pub async fn bind_subscription_unless_other_train(
+    pool: &PgPool,
+    subscription_id: i64,
+    trains_id: i64,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE train_subscriptions ts SET trains_id = $2 \
+         WHERE ts.id = $1 \
+           AND (ts.trains_id IS NULL \
+                OR ts.trains_id = $2 \
+                OR EXISTS (SELECT 1 FROM trains cur, trains new \
+                            WHERE cur.id = ts.trains_id AND new.id = $2 \
+                              AND UPPER(cur.train_uid) = UPPER(new.train_uid)))",
+    )
+    .bind(subscription_id)
+    .bind(trains_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Mirrors a live-TRUST resolution onto the shared row's own
+
 /// Live-TRUST-derived columns (`train_id`, `resolved_at`) -- never
 /// clobbers `train_uid`/schedule columns, which this function doesn't
 /// touch at all. Safe to call more than once for the same `trains_id`
@@ -1177,5 +1211,106 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    /// DB2-5: the backlog heuristic's bind never moves a subscription off a
+    /// DIFFERENT train, but may bind an unbound one or move it between two
+    /// rows of the same uid.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                bind_subscription_unless_other_train -- --ignored --test-threads=1`"]
+    async fn bind_subscription_unless_other_train_never_repoints_to_another_uid() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-5-BIND-USER";
+        let cleanup = || async {
+            sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM trains WHERE train_uid LIKE 'TEST-DB2-5-%'")
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .ok();
+        };
+        cleanup().await;
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, 'db2-5@example.com', $1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed user");
+
+        let day: NaiveDate = "2026-09-08".parse().unwrap();
+        let a_today = find_or_create_train(&pool, "TEST-DB2-5-A", day)
+            .await
+            .unwrap();
+        let a_tomorrow = find_or_create_train(&pool, "TEST-DB2-5-A", day.succ_opt().unwrap())
+            .await
+            .unwrap();
+        let b_today = find_or_create_train(&pool, "TEST-DB2-5-B", day)
+            .await
+            .unwrap();
+        let (subscription,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions (user_id, service_date) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(day)
+        .fetch_one(&pool)
+        .await
+        .expect("seed subscription");
+        let bound = |pool: PgPool| async move {
+            let (id,): (Option<i64>,) =
+                sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1")
+                    .bind(subscription)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            id
+        };
+
+        assert!(
+            bind_subscription_unless_other_train(&pool, subscription, a_tomorrow)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            bound(pool.clone()).await,
+            Some(a_tomorrow),
+            "an unbound pin binds"
+        );
+        assert!(
+            bind_subscription_unless_other_train(&pool, subscription, a_today)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            bound(pool.clone()).await,
+            Some(a_today),
+            "same uid, other date may move"
+        );
+        assert!(
+            bind_subscription_unless_other_train(&pool, subscription, a_today)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !bind_subscription_unless_other_train(&pool, subscription, b_today)
+                .await
+                .unwrap(),
+            "a different uid must not be written"
+        );
+        assert_eq!(bound(pool.clone()).await, Some(a_today));
+        assert!(
+            !bind_subscription_unless_other_train(&pool, -1, a_today)
+                .await
+                .unwrap()
+        );
+
+        cleanup().await;
     }
 }

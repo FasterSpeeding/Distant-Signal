@@ -517,11 +517,23 @@ pub async fn ingest_shared_movements_batch(
     // this data only refines status detection, it never gates whether the
     // event itself is written, so a lookup miss degrades gracefully to
     // "destination unknown" (the same as if no schedule had ever matched)
-    // rather than failing the whole batch.
+    // rather than failing the whole batch. It is logged, though (DB2-5): a
+    // connection error used to look exactly like "no destination known".
     let destination_map =
-        crate::data::trains::destination_crs_for_trains_batch(pool, &distinct_trains_ids)
+        match crate::data::trains::destination_crs_for_trains_batch(pool, &distinct_trains_ids)
             .await
-            .unwrap_or_default();
+        {
+            Ok(map) => map,
+            Err(err) => {
+                tracing::warn!(
+                    error = ?err,
+                    trains = distinct_trains_ids.len(),
+                    "destination_crs lookup failed; terminus ARRIVAL detection is degraded \
+                     for this batch"
+                );
+                HashMap::new()
+            }
+        };
 
     // Step 4: derive + write, one event at a time, in original batch
     // order -- preserving both intra-batch causality (see this function's
