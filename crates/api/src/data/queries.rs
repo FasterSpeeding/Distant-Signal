@@ -578,89 +578,117 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
         return Ok(0);
     }
 
+    // F2: three statements per batch (read owners, upsert, append history)
+    // instead of a SELECT and an INSERT per line. A repeated line_id keeps
+    // its LAST report, as the old sequential loop's final write did (one
+    // multi-row upsert cannot touch the same row twice).
+    let batch = last_per_key(reports, |report| report.id.clone());
+    let ids: Vec<&str> = batch.iter().map(|r| r.id.as_str()).collect();
+    let statuses: Vec<serde_json::Value> = batch
+        .iter()
+        .map(|r| serde_json::to_value(&r.statuses))
+        .collect::<std::result::Result<_, _>>()?;
+    let names: Vec<&str> = batch.iter().map(|r| r.name.as_str()).collect();
+    let mode_names: Vec<&str> = batch.iter().map(|r| r.mode_name.as_str()).collect();
+    // `operators` is a text[] per line; ragged arrays cannot ride in one
+    // text[][] parameter, so each travels as a JSON array.
+    let operators: Vec<serde_json::Value> = batch
+        .iter()
+        .map(|r| serde_json::Value::from(r.operators.clone()))
+        .collect();
+
     let mut tx = pool.begin().await?;
-    let mut count = 0u64;
 
-    for report in reports {
-        let statuses_json = serde_json::to_value(&report.statuses)?;
+    let existing_rows: Vec<(String, String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT line_id, source, CASE WHEN source = 'tfl' THEN statuses ELSE NULL END \
+         FROM line_status WHERE line_id = ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(&mut *tx)
+    .await?;
+    if let Some((line_id, owner, _)) = existing_rows.iter().find(|(_, owner, _)| owner != "tfl") {
+        anyhow::bail!(
+            "refusing to upsert TfL line status for line_id {:?}: that line_id is \
+             already owned by source {:?}, not 'tfl' -- this is a naming collision \
+             between two independent line-id schemes (see upsert_tfl_line_status's \
+             doc comment), not a legitimate TfL update",
+            line_id,
+            owner
+        );
+    }
+    let existing: HashMap<&str, &serde_json::Value> = existing_rows
+        .iter()
+        .filter_map(|(line_id, _, statuses)| statuses.as_ref().map(|s| (line_id.as_str(), s)))
+        .collect();
 
-        let existing_owner: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(
-            "SELECT source, CASE WHEN source = 'tfl' THEN statuses ELSE NULL END \
-             FROM line_status WHERE line_id = $1",
+    let written: Vec<String> = sqlx::query_scalar(
+        r#"
+        INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
+        SELECT i.line_id, i.name, i.mode_name,
+               ARRAY(SELECT jsonb_array_elements_text(i.operators)), i.statuses, NOW(), 'tfl'
+          FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::jsonb[])
+               AS i(line_id, name, mode_name, operators, statuses)
+        -- `computed_at` is served per line as the status's own
+        -- timestamp, so every TfL row in the feed is still written each
+        -- poll. The narrowing: an unchanged `statuses` value is carried
+        -- over (`ELSE line_status.statuses`) instead of rewritten, so
+        -- its TOAST chunks are reused rather than duplicated and left
+        -- dead (prod: 9770 dead vs 614 live TOAST tuples in 20 minutes).
+        ON CONFLICT (line_id) DO UPDATE SET
+            name        = EXCLUDED.name,
+            mode_name   = EXCLUDED.mode_name,
+            operators   = EXCLUDED.operators,
+            statuses    = CASE
+                WHEN line_status.statuses IS DISTINCT FROM EXCLUDED.statuses
+                THEN EXCLUDED.statuses
+                ELSE line_status.statuses
+            END,
+            computed_at = NOW(),
+            source      = 'tfl'
+        WHERE line_status.source = 'tfl'
+        RETURNING line_id
+        "#,
+    )
+    .bind(&ids)
+    .bind(&names)
+    .bind(&mode_names)
+    .bind(&operators)
+    .bind(&statuses)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    if written.len() != batch.len() {
+        let written: std::collections::HashSet<&str> = written.iter().map(String::as_str).collect();
+        let refused = ids.iter().find(|id| !written.contains(*id));
+        anyhow::bail!(
+            "refusing to upsert TfL line status for line_id {:?}: the write affected no \
+             rows, which only happens when a same-line_id row owned by a different source \
+             was created concurrently after this function's own ownership check -- \
+             aborting rather than silently no-op'ing what should have been an insert or \
+             update",
+            refused
+        );
+    }
+
+    let (changed_ids, changed_statuses): (Vec<&str>, Vec<&serde_json::Value>) = ids
+        .iter()
+        .zip(&statuses)
+        .filter(|(id, incoming)| tfl_statuses_changed(existing.get(**id).copied(), incoming))
+        .map(|(id, incoming)| (*id, incoming))
+        .unzip();
+    if !changed_ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO line_status_history (line_id, statuses, computed_at) \
+             SELECT line_id, statuses, NOW() \
+               FROM UNNEST($1::text[], $2::jsonb[]) WITH ORDINALITY AS h(line_id, statuses, ord) \
+              ORDER BY ord",
         )
-        .bind(&report.id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if let Some((owner, _)) = &existing_owner
-            && owner != "tfl"
-        {
-            anyhow::bail!(
-                "refusing to upsert TfL line status for line_id {:?}: that line_id is \
-                 already owned by source {:?}, not 'tfl' -- this is a naming collision \
-                 between two independent line-id schemes (see upsert_tfl_line_status's \
-                 doc comment), not a legitimate TfL update",
-                report.id,
-                owner
-            );
-        }
-        let existing = existing_owner.and_then(|(_, statuses)| statuses);
-
-        let write_result = sqlx::query(
-            r#"
-            INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
-            VALUES ($1, $2, $3, $4, $5, NOW(), 'tfl')
-            -- `computed_at` is served per line as the status's own
-            -- timestamp, so every TfL row in the feed is still written each
-            -- poll. The narrowing: an unchanged `statuses` value is carried
-            -- over (`ELSE line_status.statuses`) instead of rewritten, so
-            -- its TOAST chunks are reused rather than duplicated and left
-            -- dead (prod: 9770 dead vs 614 live TOAST tuples in 20 minutes).
-            ON CONFLICT (line_id) DO UPDATE SET
-                name        = EXCLUDED.name,
-                mode_name   = EXCLUDED.mode_name,
-                operators   = EXCLUDED.operators,
-                statuses    = CASE
-                    WHEN line_status.statuses IS DISTINCT FROM EXCLUDED.statuses
-                    THEN EXCLUDED.statuses
-                    ELSE line_status.statuses
-                END,
-                computed_at = NOW(),
-                source      = 'tfl'
-            WHERE line_status.source = 'tfl'
-            "#,
-        )
-        .bind(&report.id)
-        .bind(&report.name)
-        .bind(&report.mode_name)
-        .bind(&report.operators)
-        .bind(&statuses_json)
+        .bind(&changed_ids)
+        .bind(&changed_statuses)
         .execute(&mut *tx)
         .await?;
-
-        if write_result.rows_affected() == 0 {
-            anyhow::bail!(
-                "refusing to upsert TfL line status for line_id {:?}: the write affected no \
-                 rows, which only happens when a same-line_id row owned by a different source \
-                 was created concurrently after this function's own ownership check -- \
-                 aborting rather than silently no-op'ing what should have been an insert or \
-                 update",
-                report.id
-            );
-        }
-
-        if tfl_statuses_changed(existing.as_ref(), &statuses_json) {
-            sqlx::query(
-                "INSERT INTO line_status_history (line_id, statuses, computed_at) VALUES ($1, $2, NOW())",
-            )
-            .bind(&report.id)
-            .bind(&statuses_json)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        count += 1;
     }
+    let count = batch.len() as u64;
 
     record_ingest(&mut tx, "tfl").await?;
 
@@ -12688,6 +12716,84 @@ mod db_review_guard_and_normalisation_tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// F2: the batched TfL upsert writes every line in one statement, keeps
+    /// each line's operators, appends history only for new or changed lines,
+    /// and keeps the LAST report of a line_id repeated in one batch.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                tfl_line_status_batch -- --ignored --test-threads=1`"]
+    async fn tfl_line_status_batch_writes_each_line_and_history_only_for_changes() {
+        let pool = test_pool().await;
+        let cleanup = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM line_status_history WHERE line_id LIKE 'TEST-F2-TFL-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM line_status WHERE line_id LIKE 'TEST-F2-TFL-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        cleanup(pool.clone()).await;
+        let status = |severity: u8| -> Vec<common::LineStatus> {
+            serde_json::from_value(serde_json::json!([{
+                "severity": severity,
+                "reason": format!("severity {severity}"),
+                "validity": { "from_date": "2026-09-27T02:00:00Z", "to_date": null, "is_now": true },
+                "data_quality": "tfl"
+            }]))
+            .unwrap()
+        };
+        let report = |id: &str, severity: u8, operators: &[&str]| common::LineStatusReport {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            mode_name: "tube".to_string(),
+            operators: operators.iter().map(|s| s.to_string()).collect(),
+            statuses: status(severity),
+        };
+        let history = |pool: PgPool, id: &'static str| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM line_status_history WHERE line_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        let first = vec![
+            report("TEST-F2-TFL-A", 10, &["TfL"]),
+            report("TEST-F2-TFL-B", 10, &[]),
+        ];
+        assert_eq!(upsert_tfl_line_status(&pool, &first).await.unwrap(), 2);
+        assert_eq!(history(pool.clone(), "TEST-F2-TFL-A").await, 1);
+        assert_eq!(history(pool.clone(), "TEST-F2-TFL-B").await, 1);
+
+        let second = vec![
+            report("TEST-F2-TFL-A", 10, &["TfL"]),
+            report("TEST-F2-TFL-B", 10, &[]),
+            report("TEST-F2-TFL-B", 9, &["TfL", "LO"]),
+        ];
+        assert_eq!(upsert_tfl_line_status(&pool, &second).await.unwrap(), 2);
+        assert_eq!(history(pool.clone(), "TEST-F2-TFL-A").await, 1, "unchanged");
+        assert_eq!(
+            history(pool.clone(), "TEST-F2-TFL-B").await,
+            2,
+            "changed once"
+        );
+        let (operators, severity): (Vec<String>, String) = sqlx::query_as(
+            "SELECT operators, statuses->0->>'severity' FROM line_status \
+             WHERE line_id = 'TEST-F2-TFL-B'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(operators, vec!["TfL", "LO"]);
+        assert_eq!(severity, "9");
+
+        cleanup(pool.clone()).await;
     }
 
     #[tokio::test]
