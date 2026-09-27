@@ -303,4 +303,47 @@ describe('ChatPanel', () => {
     const texts = screen.getAllByText(/answer\.|^one$|^two$/).map((el) => el.textContent);
     expect(texts).toEqual(['one', 'First answer.', 'two', 'Second answer.']);
   });
+
+  // DQ12 (FE-6): tools not known to be read-only wait for the passenger.
+  describe('tool confirmation', () => {
+    function confirmingTurn() {
+      mockRunChatTurn.mockImplementation(
+        (opts: { confirmToolCall: (r: { toolName: string; args: Record<string, unknown> }) => Promise<boolean> }) =>
+          (async function* () {
+            const allowed = await opts.confirmToolCall({ toolName: 'track_train', args: { uid: 'C12345' } });
+            yield { type: 'text-delta', text: allowed ? 'Tool was allowed.' : 'Tool was declined.' };
+            yield { type: 'done' };
+          })(),
+      );
+    }
+
+    async function send() {
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'track it' } });
+      fireEvent.click(screen.getByRole('button', { name: /send/i }));
+      return screen.findByRole('alertdialog', { name: 'Allow this action?' });
+    }
+
+    it('shows the tool name and arguments and runs it only once allowed', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      confirmingTurn();
+      const dialog = await send();
+      expect(dialog).toHaveTextContent('track_train');
+      expect(dialog).toHaveTextContent('C12345');
+      expect(screen.queryByText('Tool was allowed.')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+      expect(await screen.findByText('Tool was allowed.')).toBeInTheDocument();
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    });
+
+    it('declines it on "Don\'t allow"', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      confirmingTurn();
+      await send();
+      fireEvent.click(screen.getByRole('button', { name: "Don't allow" }));
+      expect(await screen.findByText('Tool was declined.')).toBeInTheDocument();
+    });
+  });
 });

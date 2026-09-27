@@ -1,7 +1,7 @@
 'use client';
 
-import { useRef, useState, type FormEvent } from 'react';
-import { Alert, Button, Card, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -10,7 +10,7 @@ import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
-import { runChatTurn, type ChatEvent } from '@/lib/chatTurn';
+import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
 
 interface ChatMessage {
   /** Stable per-panel id (FE-11): streamed events find their assistant turn
@@ -78,6 +78,31 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   const viewport = useRef<HTMLDivElement>(null);
   const historyRef = useRef<Anthropic.Beta.Messages.BetaMessageParam[]>([]);
   const nextMessageId = useRef(0);
+  // DQ12 (FE-6): a tool call waiting on the passenger's Allow/Don't allow.
+  const [pendingTool, setPendingTool] = useState<{ toolName: string; args: Record<string, unknown> } | null>(null);
+  const confirmResolver = useRef<((allowed: boolean) => void) | null>(null);
+
+  const confirmToolCall: ConfirmToolCall = (request) =>
+    new Promise<boolean>((resolve) => {
+      confirmResolver.current?.(false);
+      confirmResolver.current = resolve;
+      setPendingTool(request);
+    });
+
+  function answerToolCall(allowed: boolean) {
+    confirmResolver.current?.(allowed);
+    confirmResolver.current = null;
+    setPendingTool(null);
+  }
+
+  // Never leave the tool loop waiting on a panel that has gone away.
+  useEffect(
+    () => () => {
+      confirmResolver.current?.(false);
+      confirmResolver.current = null;
+    },
+    [],
+  );
 
   function scrollToBottom() {
     // A convenience, never load-bearing: guarded so an environment without
@@ -131,6 +156,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
         mcpAuthProvider: provider,
         conversationHistory: historyRef.current,
         userMessage: trimmed,
+        confirmToolCall,
       })) {
         if (event.type === 'text-delta') assistantText += event.text;
         applyChatEvent(event, assistantId, setMessages);
@@ -149,6 +175,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       setError(classifyChatError(err));
     } finally {
+      answerToolCall(false);
       setSending(false);
     }
   }
@@ -169,6 +196,13 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
           ))}
         </Stack>
       </ScrollArea>
+      {pendingTool && (
+        <ToolConfirmation
+          toolName={pendingTool.toolName}
+          args={pendingTool.args}
+          onAnswer={answerToolCall}
+        />
+      )}
       {/* LEG-16: always visible, so it is read before the first answer. */}
       <Text size="xs" c="dimmed" data-ai-note>
         {CHAT_AI_NOTE}
@@ -325,6 +359,38 @@ function applyChatEvent(
     return;
   }
   // 'done' needs no state change -- the stream ending IS the signal.
+}
+
+/** DQ12 (FE-6): shown when the assistant wants a tool that isn't known to
+ * be read-only. Nothing runs until the passenger chooses. */
+function ToolConfirmation({
+  toolName,
+  args,
+  onAnswer,
+}: {
+  toolName: string;
+  args: Record<string, unknown>;
+  onAnswer: (allowed: boolean) => void;
+}) {
+  return (
+    <Alert color="orange" variant="light" title="Allow this action?" role="alertdialog" aria-label="Allow this action?">
+      <Stack gap="xs">
+        <Text size="sm">
+          The assistant wants to use <Code>{toolName}</Code>. It isn&apos;t marked as read-only, so it might change
+          something for you. Only allow it if you asked for this.
+        </Text>
+        <Code block>{JSON.stringify(args, null, 2)}</Code>
+        <Group gap="xs">
+          <Button size="xs" onClick={() => onAnswer(true)}>
+            Allow
+          </Button>
+          <Button size="xs" variant="default" onClick={() => onAnswer(false)}>
+            Don&apos;t allow
+          </Button>
+        </Group>
+      </Stack>
+    </Alert>
+  );
 }
 
 function ChatMessageRow({ message }: { message: ChatMessage }) {
