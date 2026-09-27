@@ -829,6 +829,15 @@ jobs:
             echo "PrometheusRule must not use an 'x unless x offset' new-series clause" >&2; exit 1
           fi
           echo "$names"
+          # SVC-04/SVC-08: the poller rules render (as <fullname>-pollers)
+          # once a poller is enabled.
+          pollers=$(helm template distant-signal charts/distant-signal "${base[@]}" \
+            --set metrics.prometheusRule.enabled=true \
+            --set pollers.ldbws.enabled=true \
+            --set pollers.ldbws.baseUrl=https://ldbws.example.com \
+            --show-only templates/prometheusrule.yaml)
+          grep -q 'alert: DistantSignalPollerFailing' <<<"$pollers"
+          grep -q 'alert: DistantSignalLdbwsStationStale' <<<"$pollers"
 
       # The PodMonitor must select every workload that serves a port named
       # "metrics". trust-backlog-consumer was missing (INF-6), so the

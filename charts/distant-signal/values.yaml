@@ -2866,6 +2866,26 @@ metrics:
       stalledWindow: 10m
       stalledFor: 15m
       severity: warning
+    # DistantSignalPollerFailing (SVC-08): a poller (any of
+    # .Values.pollers or the three island-of-Ireland ones) completed no
+    # successful cycle and at least one failed one over `window`. Keyed on
+    # distant_signal_poller_cycle_total{result}. Rendered in a separate
+    # `<fullname>-pollers` PrometheusRule.
+    pollerFailures:
+      enabled: true
+      window: 2h
+      for: 0m
+      severity: warning
+    # DistantSignalLdbwsStationStale (SVC-04): the least recently sampled
+    # LDBWS station was last sampled more than `maxAgeSeconds` ago
+    # (distant_signal_ldbws_stalest_station_age_seconds), i.e. the rotation
+    # has stopped reaching part of the list. Production's 7-day max was
+    # ~2,900s (2026-09-27). Only when pollers.ldbws.enabled.
+    ldbwsStalestStation:
+      enabled: true
+      maxAgeSeconds: 7200
+      for: 30m
+      severity: warning
 
 # ---------------------------------------------------------------------------
 # NetworkPolicy (optional)
