@@ -1563,6 +1563,38 @@ pub async fn get_schedule_line_population_entries(
         .transpose()
 }
 
+/// The entries of one line's population for `service_date` that run past
+/// midnight: those with at least one calling point on a later calendar day
+/// (`day_offset >= 1`), in published order. `None` when no row exists.
+///
+/// For `schedule_matching::find_schedule_match`'s untargeted path, which
+/// must also consider the PREVIOUS day's schedules for a pin after midnight
+/// (a pin is dated by its own departure, a schedule by its origin). Only
+/// overnight entries can have a calling point on the pin's day, so the
+/// filter runs in SQL and the rest of the day's population never leaves
+/// Postgres.
+pub async fn get_overnight_schedule_line_population_entries(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+) -> Result<Option<Vec<schedule_query::LinePopulationEntry>>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT COALESCE( \
+                    (SELECT jsonb_agg(x.e ORDER BY x.ord) \
+                     FROM jsonb_array_elements(population) WITH ORDINALITY AS x(e, ord) \
+                     WHERE jsonb_path_exists(x.e, '$.calling_points[*] ? (@.day_offset >= 1)')), \
+                    '[]'::jsonb)::text \
+         FROM schedule_line_population \
+         WHERE line_id = $1 AND service_date = $2",
+    )
+    .bind(line_id)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|(text,)| serde_json::from_str(&text).map_err(Into::into))
+        .transpose()
+}
+
 /// One element of a line's population as `GET /public/lines/{id}/trains`
 /// needs it, projected by [`list_line_train_entries`].
 #[derive(Debug)]
