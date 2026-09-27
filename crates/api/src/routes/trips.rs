@@ -42,9 +42,8 @@ const MAX_WAYPOINTS: usize = 8;
 /// layer: `tower::limit::ConcurrencyLimitLayer` QUEUES excess requests
 /// (unbounded, since axum awaits readiness through `oneshot`) instead of
 /// shedding them, which converts a CPU flood into a memory flood plus
-/// ever-growing latency, and `tower_governor` (a real per-IP limiter) is not
-/// a dependency of this workspace and would need trusted client-IP
-/// extraction to be meaningful behind this app's Ingress. Shedding with a 503
+/// ever-growing latency. The per-client limit is separate: `crate::rate_limit`
+/// keys this route on the frontend-set `X-Real-IP`. Shedding with a 503
 /// is the honest behaviour for work this expensive: the caller learns
 /// immediately, and every other route -- healthcheck included -- keeps its
 /// worker threads.

@@ -243,6 +243,9 @@ async fn server_main() -> anyhow::Result<()> {
     // (100 MB bodies, 120 s publish statements). The HTTP/1 header-read
     // timeout is on the listener itself; see `api::edge`.
     let edge_settings = api::edge::EdgeSettings::from_env()?;
+    let rate_limit_settings = api::rate_limit::RateLimitSettings::from_env()?;
+    tracing::info!(?rate_limit_settings, "api rate limits");
+    let rate_limiter = api::rate_limit::RateLimiter::new(rate_limit_settings);
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
@@ -283,6 +286,12 @@ async fn server_main() -> anyhow::Result<()> {
             api::auth::reject_cross_origin_cookie_mutation,
         ))
         .layer(cors)
+        // Per-client-IP limits on login, /Trips/plan, /Train/by-uid and
+        // public writes; /private/* is exempt. See `api::rate_limit`.
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter,
+            api::rate_limit::enforce,
+        ))
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .with_state(app.clone());
 
