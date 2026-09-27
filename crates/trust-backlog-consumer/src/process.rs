@@ -520,18 +520,40 @@ pub fn process_message(
         // resolves AFTER a cancel -> reinstate sequence can still replay the
         // reinstatement and land on the correct un-stuck status --
         // `api::data::trust_event_backlog_match`'s own replay function has
-        // the matching `"0005"` arm for exactly this. This minimal, confirmed
-        // shape (see `schema::Reinstatement`'s own doc comment) carries no
-        // timestamp of any kind, so `service_date` can only ever come from a
-        // parked Activation's own `service_date`, falling back to `today`
-        // (the processing day) same as the last-resort fallback on every
-        // other arm above.
+        // the matching `"0005"` arm for exactly this.
+        //
+        // `service_date`: the parked Activation's own `service_date` first,
+        // then this Reinstatement's own `dep_timestamp` (added to the
+        // modelled shape after this arm was written), dated exactly as the
+        // Cancellation arm dates its `canx_timestamp`, and only then the
+        // processing-time `today` (PL-15d of the 2026-09-27 pipelines
+        // review; this used to skip straight to `today`).
         TrustMessage::Reinstatement(reinstatement) => {
+            let dep_pair = common::trust_timestamp::parse_trust_epoch_millis_pair(
+                None,
+                reinstatement.dep_timestamp.as_deref(),
+                received_at,
+                state.trust_timestamp_correction_enabled,
+            );
+            if let Some(was_corrected) = dep_pair.was_corrected {
+                metrics::counter!(
+                    common::metrics::metric_name(
+                        "trust_backlog_consumer_timestamp_correction_total"
+                    ),
+                    "outcome" => if was_corrected { "corrected" } else { "raw" }
+                )
+                .increment(1);
+            }
             let service_date = state
                 .pending_service_dates
                 .get(&reinstatement.train_id)
                 .copied()
-                .unwrap_or(today);
+                .unwrap_or_else(|| {
+                    dep_pair
+                        .actual
+                        .map(service_date_for_instant)
+                        .unwrap_or(today)
+                });
 
             let dedup = trust_schema::dedup::dedup_key(
                 &reinstatement.train_id,
@@ -1516,6 +1538,59 @@ mod tests {
             result.service_date,
             today(),
             "no parked Activation and no timestamp of its own -- falls back to the processing day"
+        );
+    }
+
+    /// PL-15d: with no parked Activation, a Reinstatement is dated by its
+    /// own `dep_timestamp` (calendar date, like a Cancellation's), not by
+    /// the processing-time `today`.
+    #[test]
+    fn a_reinstatement_with_no_parked_activation_uses_its_dep_timestamps_calendar_date() {
+        // 1788568200000 == 2026-09-05T00:30:00Z, 01:30 BST: calendar date
+        // 2026-09-05 (its rail day would be 2026-09-04).
+        let reinstatement = TrustMessage::Reinstatement(trust_schema::schema::Reinstatement {
+            train_id: "999999999".to_string(),
+            dep_timestamp: Some("1788568200000".to_string()),
+        });
+        let mut state = ProcessorState::default();
+        let result = process_message(
+            &reinstatement,
+            &mut state,
+            &stanox_table(),
+            &crs_index_with(&["WAT"]),
+            "2026-09-01".parse().unwrap(),
+            test_received_at(),
+        )
+        .unwrap();
+        assert_eq!(
+            result.service_date,
+            "2026-09-05".parse::<NaiveDate>().unwrap()
+        );
+    }
+
+    /// The parked Activation's date still wins over `dep_timestamp`.
+    #[test]
+    fn a_reinstatement_prefers_the_parked_activations_service_date() {
+        let mut state = ProcessorState::default();
+        state
+            .pending_service_dates
+            .insert("999999999".to_string(), "2026-09-04".parse().unwrap());
+        let reinstatement = TrustMessage::Reinstatement(trust_schema::schema::Reinstatement {
+            train_id: "999999999".to_string(),
+            dep_timestamp: Some("1788568200000".to_string()),
+        });
+        let result = process_message(
+            &reinstatement,
+            &mut state,
+            &stanox_table(),
+            &crs_index_with(&["WAT"]),
+            "2026-09-01".parse().unwrap(),
+            test_received_at(),
+        )
+        .unwrap();
+        assert_eq!(
+            result.service_date,
+            "2026-09-04".parse::<NaiveDate>().unwrap()
         );
     }
 
