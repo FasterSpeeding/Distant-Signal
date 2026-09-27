@@ -115,8 +115,15 @@ postgresql:
     existingSecretPasswordKey: postgres-password
   image:
     repository: postgres
-    # -- Pinned to the same major the docker-compose stack uses.
-    tag: "16"
+    # -- Pinned to an exact patch release, Debian base AND content digest
+    # (INF-11); Renovate (renovate.json5, helm-values manager) proposes
+    # bumps, digest included. Stays on major 16: a new major needs
+    # pg_upgrade. Stays on the trixie base the floating `16` tag moved
+    # production to (16.15-1.pgdg13, checked 2026-09-27): switching the
+    # base OS changes glibc, whose collation changes can silently corrupt
+    # text indexes, so never change the `-trixie` suffix without a REINDEX
+    # plan.
+    tag: "16.15-trixie@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54"
     pullPolicy: IfNotPresent
   service:
     # -- Port the headless Service and the container listen on.
@@ -1048,8 +1055,9 @@ devAuthentik:
     # -- Pinned, same rationale/finite-shelf-life caveat as the compose
     # path's tag (design doc Research + Open questions: Authentik's
     # 3-month release cadence and 2-version support window mean this needs
-    # periodic bumping -- not automated by this chart).
-    tag: "2026.8.0"
+    # periodic bumping -- not automated by this chart). Digest-pinned
+    # (INF-11); Renovate proposes bumps.
+    tag: "2026.8.0@sha256:7421753cfea67e89a6d295a1f0173ccea3866b33768c88dad90453b151cdcfd5"
     pullPolicy: IfNotPresent
   # -- AUTHENTIK_SECRET_KEY. Chart-generated via the same lookup-then-
   # randAlphaNum pattern secret.yaml already uses for postgres-password/
@@ -1090,7 +1098,8 @@ devAuthentik:
   # pair there is no external-database escape hatch here, because this is a
   # throwaway dev-only database with no production posture to accommodate.
   postgresql:
-    image: postgres:16-alpine
+    # Digest-pinned (INF-11); Renovate proposes bumps.
+    image: postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     persistence:
       enabled: true
       size: 1Gi
@@ -1429,7 +1438,10 @@ redis:
   externalUrl: ""
   image:
     repository: redis
-    tag: "7"
+    # -- Pinned to an exact 7.4 patch release and content digest (INF-11);
+    # Renovate (helm-values manager) proposes bumps, digest included. 7.4.11
+    # is what the floating `7` tag resolved to on 2026-09-27.
+    tag: "7.4.11@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f"
     pullPolicy: IfNotPresent
   service:
     port: 6379
@@ -2211,7 +2223,8 @@ scheduleFeed:
       # this chart's other third-party images (devAuthentik.image.tag,
       # postgres/redis tags above) -- docker-compose.yml's schedule-sftp
       # service is pinned to the same tag for the same reason.
-      tag: "v2.7.5"
+      # Digest-pinned (INF-11): the digest above, which production runs.
+      tag: "v2.7.5@sha256:9011fe608d336d3daf6ed6224b16fd40443aab8f3335e0b20853d6a539c58738"
       pullPolicy: IfNotPresent
     # -- SFTPGo's own default container port -- not independently
     # re-verified against a real deployed instance by this plan.

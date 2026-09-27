@@ -24,6 +24,15 @@
   //     deliberately does not vendor the `piped` submodule)
   "extends": ["github>FasterSpeeding/Piped//config/renovate.json5"],
 
+  // INF-11: every third-party image is now pinned by digest -- the
+  // Dockerfile `FROM image:tag@sha256:...` lines and the chart's
+  // `tag: "<version>@sha256:..."` values (postgres, redis, sftpgo,
+  // authentik, devAuthentik's postgres). Renovate's dockerfile and
+  // helm-values managers update tag and digest together. Set here
+  // explicitly as well, so the pins keep getting bumped even if the shared
+  // preset above ever drops it.
+  "pinDigests": true,
+
   // --- What did NOT get carried over from Aurora-Fauxy, and why --------
   // Aurora-Fauxy (github.com/FasterSpeeding/Aurora-Fauxy) is a Python
   // project (confirmed via the GitHub API: language "Python"). Its own

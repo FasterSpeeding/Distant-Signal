@@ -16,7 +16,7 @@
 #                            `dev.env` pulls in via COMPOSE_FILE.
 # builder-base is shared so the prod-only `npm run build` step never runs
 # when only the dev target is requested.
-FROM node:22-bookworm-slim AS builder-base
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS builder-base
 
 # Next.js (^16.2.10 here) collects anonymous telemetry on `next dev`/
 # `next build`/`next start`/`next lint` by default and prints a notice on
@@ -64,7 +64,7 @@ FROM builder-base AS builder-prod
 # resulting layer.
 RUN --mount=type=cache,id=next-cache,target=/app/.next/cache npm run build
 
-FROM node:22-bookworm-slim AS runtime-prod
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime-prod
 
 # See builder-base's identical ENV above for why this is repeated per stage
 # rather than set once: the standalone `server.js` below still boots
@@ -155,7 +155,7 @@ USER 1000:1000
 EXPOSE 3000
 ENTRYPOINT ["node", "server.js"]
 
-FROM node:22-bookworm-slim AS runtime-dev
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime-dev
 
 # See builder-base's identical ENV above for why this is repeated per stage
 # rather than set once: `next dev` runs the `next` CLI too, and this stage
