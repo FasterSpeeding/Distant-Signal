@@ -315,13 +315,10 @@ where
 /// unique index would turn each of those `UPDATE`s into a hard failure
 /// inside schedule matching, backlog matching and live TRUST resolution.
 ///
-/// The honest residual limitation, stated rather than papered over: under
-/// READ COMMITTED, two genuinely simultaneous in-flight calls can both
-/// observe no existing row and both insert. This closes the ordinary
-/// repeat-click case, not a true concurrent double-submit; the frontend
-/// closes that one the way every other mutating control in this app does,
-/// by disabling the button while its request is in flight
-/// (`frontend/components/TrackThisTrainButton.tsx`).
+/// Before DB2-21, two genuinely simultaneous calls could both observe no
+/// existing row and both insert; the advisory lock described below closes
+/// that. The frontend still disables the button while its request is in
+/// flight (`frontend/components/TrackThisTrainButton.tsx`).
 /// Generic over `E: PgExecutor` (rather than `&PgPool`) -- same reason as
 /// [`create_pin`]'s own doc comment: `journeys::create_journey_with_known_train_leg`
 /// calls this with `&mut *tx` from inside its own transaction (19-pass
@@ -344,14 +341,27 @@ where
 /// it re-enables notifications for it -- an `UPDATE ... WHERE
 /// notifications_enabled = FALSE` alongside the existing lookup, in the
 /// same statement, so a fresh call always returns a live subscription.
-pub async fn create_subscription_for_train<'c, E>(
-    executor: E,
+///
+/// **Serialised per `(user_id, trains_id)` (DB2-21).** The statement runs
+/// in its own (nested) transaction after
+/// `common::pg::lock_user_train_subscription`, so a concurrent call for the
+/// same pair waits and then sees the first call's row, instead of both
+/// inserting. The lock is a separate statement on purpose: under READ
+/// COMMITTED a statement's snapshot is taken when it starts, so a lock
+/// taken inside the same statement would still read the old snapshot.
+/// Inside a caller's transaction the lock is held until that commits.
+/// Takes `Acquire` (a `&PgPool` or a `&mut` connection/transaction) rather
+/// than any executor, since it needs a transaction of its own.
+pub async fn create_subscription_for_train<'c, A>(
+    conn: A,
     trains_id: i64,
     user_id: &str,
 ) -> anyhow::Result<i64>
 where
-    E: sqlx::PgExecutor<'c>,
+    A: sqlx::Acquire<'c, Database = sqlx::Postgres>,
 {
+    let mut tx = conn.begin().await?;
+    common::pg::lock_user_train_subscription(&mut tx, user_id, trains_id).await?;
     // One statement, not a SELECT-then-INSERT round trip: the `inserted`
     // CTE's `NOT EXISTS (SELECT 1 FROM existing)` guard means the INSERT
     // never fires when a subscription is already there, and the final
@@ -388,8 +398,9 @@ where
     )
     .bind(user_id)
     .bind(trains_id)
-    .fetch_one(executor)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(row.0)
 }
 
@@ -4951,6 +4962,63 @@ mod db_tests {
             .ok();
         cleanup_user(&pool, user_a).await;
         cleanup_user(&pool, user_b).await;
+    }
+
+    /// DB2-21: a second call for the same `(user, train)` while the first
+    /// call's transaction is still open must wait for it and then return
+    /// the same row. Before the advisory lock it didn't wait: it saw no
+    /// committed row and inserted a duplicate.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                create_subscription_for_train_serialises_concurrent_calls \
+                -- --ignored --test-threads=1`"]
+    async fn create_subscription_for_train_serialises_concurrent_calls() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-21-CONCURRENT";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-DB2-21-UID",
+            "2026-09-07".parse().unwrap(),
+        )
+        .await
+        .expect("seed a trains row");
+
+        let mut first_tx = pool.begin().await.unwrap();
+        let first = create_subscription_for_train(&mut *first_tx, trains_id, user_id)
+            .await
+            .expect("first call");
+
+        let second = tokio::spawn({
+            let pool = pool.clone();
+            async move { create_subscription_for_train(&pool, trains_id, user_id).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(
+            !second.is_finished(),
+            "the second call must wait for the first call's transaction"
+        );
+        first_tx.commit().await.unwrap();
+        let second = second.await.unwrap().expect("second call");
+        assert_eq!(second, first, "both calls must return the one subscription");
+
+        let (rows,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM train_subscriptions WHERE user_id = $1 AND trains_id = $2",
+        )
+        .bind(user_id)
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, 1);
+
+        cleanup_user(&pool, user_id).await;
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     /// Guards the one thing the existing-row-wins CTE could plausibly get
