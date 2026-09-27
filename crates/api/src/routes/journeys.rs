@@ -2025,6 +2025,25 @@ mod db_tests {
     /// Deletes a fixture user and its fixtures -- see this module's own doc
     /// comment above for why this is NOT a byte-for-byte copy of
     /// `routes::train::db_tests::cleanup_user`.
+    /// Owns one synthetic far-future `schedule_destination_departures`
+    /// day: clears it before the test seeds and again on drop, pass or fail
+    /// (DB review 2026-09-27 B1/B3). The candidates search reads the whole
+    /// day, so the test must own all of it -- which is only safe because
+    /// the date is asserted to be a 2050+ fixture date, never a real one.
+    async fn fixture_day_cleanup(
+        pool: &PgPool,
+        service_date: chrono::NaiveDate,
+    ) -> crate::test_support::FixtureCleanup {
+        crate::test_support::assert_synthetic_date(service_date);
+        crate::test_support::FixtureCleanup::new(
+            pool,
+            [format!(
+                "DELETE FROM schedule_destination_departures WHERE service_date = '{service_date}'"
+            )],
+        )
+        .await
+    }
+
     async fn cleanup_user(pool: &PgPool, user_id: &str) {
         sqlx::query(
             "DELETE FROM journey_legs WHERE journey_id IN \
@@ -2619,14 +2638,7 @@ mod db_tests {
         // other agents' test runs included).
         let service_date =
             chrono::NaiveDate::from_ymd_opt(2099, 4, 17).expect("valid fixture date");
-        async fn delete_fixture_day(pool: &PgPool, service_date: chrono::NaiveDate) {
-            sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-                .bind(service_date)
-                .execute(pool)
-                .await
-                .expect("cleanup fixture schedule_destination_departures rows");
-        }
-        delete_fixture_day(&pool, service_date).await;
+        let _day = fixture_day_cleanup(&pool, service_date).await;
 
         // Two real WAT -> RDG candidates within the leg's own persisted
         // window (08:00-11:00): CTCHG1 (the first pick) and
@@ -2783,7 +2795,6 @@ mod db_tests {
                 .expect("read leg train_subscription_id");
         assert_eq!(train_subscription_id, Some(second_tracking_id));
 
-        delete_fixture_day(&pool, service_date).await;
         cleanup_user(&pool, "TEST-ROUTE-CHANGE-TRAIN-E2E").await;
     }
 
@@ -2816,11 +2827,7 @@ mod db_tests {
         // this database.
         let service_date =
             chrono::NaiveDate::from_ymd_opt(2099, 5, 21).expect("valid fixture date");
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(service_date)
-            .execute(&pool)
-            .await
-            .expect("cleanup fixture schedule_destination_departures rows");
+        let _day = fixture_day_cleanup(&pool, service_date).await;
 
         fn candidate_rows(
             train_uid: &str,
@@ -2947,11 +2954,6 @@ mod db_tests {
         );
         assert_eq!(results[0]["operator"], "SW");
 
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
-            .bind(service_date)
-            .execute(&pool)
-            .await
-            .expect("cleanup fixture schedule_destination_departures rows");
         cleanup_user(&pool, "TEST-ROUTE-CANDIDATES-OPERATOR").await;
     }
 

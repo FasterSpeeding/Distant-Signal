@@ -2911,6 +2911,18 @@ mod db_tests {
             .expect("connect to postgres")
     }
 
+    /// The database's own `CURRENT_DATE`, which is what every query under
+    /// test compares `service_date` against. Seeding from
+    /// `Utc::now().date_naive()` instead only agreed with it because the
+    /// server happened to run in UTC (DB review 2026-09-27 B4); this holds
+    /// whatever the server's or the session's `TimeZone` is.
+    async fn db_today(pool: &PgPool) -> NaiveDate {
+        sqlx::query_scalar("SELECT CURRENT_DATE")
+            .fetch_one(pool)
+            .await
+            .expect("read CURRENT_DATE")
+    }
+
     async fn seed_user(pool: &PgPool, user_id: &str) {
         sqlx::query(
             "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
@@ -4936,7 +4948,7 @@ mod db_tests {
         // fixture dated weeks in the past is (correctly) not active and would
         // make this test assert the wrong thing. Same change, same reason, in
         // every `list_active_tracked_trains` test below.
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             "TEST-LIST-ACTIVE-TRAINS-ID-UID",
@@ -5003,7 +5015,7 @@ mod db_tests {
         let user_id = "TEST-LIST-ACTIVE-TRAINS-DEST-USER";
         seed_user(&pool, user_id).await;
         // Today, for the `service_date` floor -- see the sibling test above.
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
         let scheduled_departure = service_date.and_hms_opt(18, 32, 0).unwrap().and_utc();
         let trains_id = crate::data::trains::find_or_create_train_with_schedule_match(
             &pool,
@@ -5434,7 +5446,7 @@ mod db_tests {
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             "TEST-PRUNED-NR-PRIMARY-UID",
-            chrono::Utc::now().date_naive(),
+            db_today(&pool).await,
         )
         .await
         .expect("seed a bare trains row with no schedule data");
@@ -5531,13 +5543,10 @@ mod db_tests {
         // Today, for `list_active_tracked_trains`' `service_date` floor (the
         // 2026-09-25 Medium 8 fix) -- `create_subscription_for_train` copies
         // this date onto both subscriptions.
-        let trains_id = crate::data::trains::find_or_create_train(
-            &pool,
-            train_uid,
-            chrono::Utc::now().date_naive(),
-        )
-        .await
-        .expect("find_or_create_train");
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, train_uid, db_today(&pool).await)
+                .await
+                .expect("find_or_create_train");
 
         let first_tracking_id = create_subscription_for_train(&pool, trains_id, first_user_id)
             .await
@@ -6041,7 +6050,7 @@ mod db_tests {
         // Today: this test reads the subscription back through
         // `list_active_tracked_trains`, which applies a `service_date` floor as
         // of the 2026-09-25 Medium 8 fix.
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
 
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-NR-LIVE-UID", service_date)
@@ -6330,7 +6339,7 @@ mod db_tests {
         let user_id = "TEST-BACKLOG-SWEEP-CANDIDATE";
         seed_user(&pool, user_id).await;
 
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
         let id = seed_backlog_candidate_pin(
             &pool,
             user_id,
@@ -6370,7 +6379,7 @@ mod db_tests {
         let user_id = "TEST-BACKLOG-SWEEP-NON-PENDING";
         seed_user(&pool, user_id).await;
 
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
         let id = seed_backlog_candidate_pin(
             &pool,
             user_id,
@@ -6421,7 +6430,7 @@ mod db_tests {
         .await
         .expect("seed a trains row");
 
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
         let id = seed_backlog_candidate_pin(
             &pool,
             user_id,
@@ -6470,7 +6479,7 @@ mod db_tests {
         let user_id = "TEST-BACKLOG-SWEEP-NULL-PINS";
         seed_user(&pool, user_id).await;
 
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
         let id =
             seed_backlog_candidate_pin(&pool, user_id, service_date, None, None, "pending", None)
                 .await;
@@ -6508,7 +6517,7 @@ mod db_tests {
         let user_id = "TEST-BACKLOG-SWEEP-STALE";
         seed_user(&pool, user_id).await;
 
-        let service_date = chrono::Utc::now().date_naive() - chrono::Duration::days(10);
+        let service_date = db_today(&pool).await - chrono::Duration::days(10);
         let id = seed_backlog_candidate_pin(
             &pool,
             user_id,
@@ -6550,7 +6559,7 @@ mod db_tests {
         let user_id = "TEST-BACKLOG-SWEEP-RECENT";
         seed_user(&pool, user_id).await;
 
-        let service_date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        let service_date = db_today(&pool).await - chrono::Duration::days(1);
         let id = seed_backlog_candidate_pin(
             &pool,
             user_id,
@@ -6601,8 +6610,8 @@ mod db_tests {
         let user_id = "TEST-SCHEDULE-SWEEP-FLOOR";
         seed_user(&pool, user_id).await;
 
-        let recent = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
-        let stale = chrono::Utc::now().date_naive() - chrono::Duration::days(10);
+        let recent = db_today(&pool).await - chrono::Duration::days(1);
+        let stale = db_today(&pool).await - chrono::Duration::days(10);
         let recent_id = seed_backlog_candidate_pin(
             &pool,
             user_id,
@@ -6655,7 +6664,7 @@ mod db_tests {
         let uid = "Z39001";
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
-        let service_date = chrono::Utc::now().date_naive() + chrono::Duration::days(3);
+        let service_date = db_today(&pool).await + chrono::Duration::days(3);
         sqlx::query(
             "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
              VALUES ('TEST-DB2-39-STANOX', 'ZZQ', 'ZZQTEST', 'TEST DB2-39', 1) \
@@ -6769,7 +6778,7 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
 
-        let today = chrono::Utc::now().date_naive();
+        let today = db_today(&pool).await;
         let mut ids = Vec::new();
         for date in [
             today + chrono::Duration::days(1),
@@ -6831,7 +6840,7 @@ mod db_tests {
         let user_id = "TEST-SCHEDULE-SWEEP-DEST";
         seed_user(&pool, user_id).await;
 
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
         let (id,): (i64,) = sqlx::query_as(
             "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
@@ -6882,7 +6891,7 @@ mod db_tests {
         let user_id = "TEST-ACTIVE-STALE";
         seed_user(&pool, user_id).await;
 
-        let today = chrono::Utc::now().date_naive();
+        let today = db_today(&pool).await;
         let stale = today - chrono::Duration::days(10);
         let today_id = seed_backlog_candidate_pin(
             &pool,
@@ -6944,7 +6953,7 @@ mod db_tests {
         let user_id = "TEST-ACTIVE-FUTURE";
         seed_user(&pool, user_id).await;
 
-        let today = chrono::Utc::now().date_naive();
+        let today = db_today(&pool).await;
         let tomorrow = today + chrono::Duration::days(1);
         let far_future = today + chrono::Duration::days(10);
         let today_id = seed_backlog_candidate_pin(
@@ -7036,7 +7045,7 @@ mod db_tests {
         // reason that has nothing to do with the code under test.
         cleanup_disagreement_fixture_trains(&pool).await;
         seed_user(&pool, user_id).await;
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
 
         // Train A: the identity this subscription is ALREADY correctly linked
         // to, deliberately left unresolved (`train_id` NULL) so the assertions
@@ -7151,7 +7160,7 @@ mod db_tests {
         // run would distort.
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
-        let service_date = chrono::Utc::now().date_naive();
+        let service_date = db_today(&pool).await;
 
         sqlx::query(
             "DELETE FROM train_movement_events WHERE trains_id IN \

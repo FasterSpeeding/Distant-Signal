@@ -1023,11 +1023,13 @@ pub async fn insert_schedule_feed_ingest(
 /// happens to sort chronologically today, but ordering on the column that
 /// actually means "when did this finish" cannot be broken by a future change
 /// to the directory-name format.
-pub async fn last_completed_schedule_reference_publish(pool: &PgPool) -> Result<Option<String>> {
+pub async fn last_completed_schedule_reference_publish(
+    executor: impl sqlx::PgExecutor<'_>,
+) -> Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT delivery FROM schedule_reference_publishes ORDER BY completed_at DESC LIMIT 1",
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     Ok(row.map(|(delivery,)| delivery))
 }
@@ -4077,11 +4079,11 @@ pub async fn upsert_full_coverage_line_stats(
 /// (`load_full_coverage_line_stats`, Task 14), not this route. Since the
 /// skip-if-unchanged upsert guard, this is when the stats last CHANGED.
 pub async fn last_full_coverage_line_stats_fetch(
-    pool: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
     let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
         sqlx::query_as("SELECT MAX(updated_at) FROM full_coverage_line_stats")
-            .fetch_one(pool)
+            .fetch_one(executor)
             .await?;
     Ok(fetched_at)
 }
@@ -7578,10 +7580,19 @@ mod stanox_crs_lookup_query_tests {
                 upsert_fixed_links -- --ignored --test-threads=1`"]
     async fn upsert_fixed_links_replaces_the_whole_table_each_call() {
         let pool = test_pool().await;
+        // `upsert_fixed_links` itself replaces the WHOLE table, so run this
+        // only against a database with no real fixed links (CI's is
+        // empty). The fixture rows use digit-bearing codes no real station
+        // has, and only they are cleaned up, before and after.
+        let _cleanup = crate::test_support::FixtureCleanup::new(
+            &pool,
+            ["DELETE FROM fixed_links WHERE from_crs = '9EU'"],
+        )
+        .await;
         let first = vec![common::FixedLinkRecord {
             mode: "TUBE".to_string(),
-            from_crs: "EUS".to_string(),
-            to_crs: "KGX".to_string(),
+            from_crs: "9EU".to_string(),
+            to_crs: "9KG".to_string(),
             minutes: 5,
             valid_from: "0500".to_string(),
             valid_to: "2359".to_string(),
@@ -7591,15 +7602,15 @@ mod stanox_crs_lookup_query_tests {
         upsert_fixed_links(&pool, &first)
             .await
             .expect("first publish");
-        let after_first = list_fixed_links_from_crs(&pool, "EUS")
+        let after_first = list_fixed_links_from_crs(&pool, "9EU")
             .await
             .expect("read back");
         assert_eq!(after_first.len(), 1);
 
         let second = vec![common::FixedLinkRecord {
             mode: "TRANSFER".to_string(),
-            from_crs: "EUS".to_string(),
-            to_crs: "STP".to_string(),
+            from_crs: "9EU".to_string(),
+            to_crs: "9ST".to_string(),
             minutes: 15,
             valid_from: "0000".to_string(),
             valid_to: "2359".to_string(),
@@ -7609,20 +7620,15 @@ mod stanox_crs_lookup_query_tests {
         upsert_fixed_links(&pool, &second)
             .await
             .expect("second publish replaces");
-        let after_second = list_fixed_links_from_crs(&pool, "EUS")
+        let after_second = list_fixed_links_from_crs(&pool, "9EU")
             .await
             .expect("read back");
         assert_eq!(
             after_second.len(),
             1,
-            "the first cycle's EUS->KGX row must be gone -- this is a full replace, not an upsert"
+            "the first cycle's 9EU->9KG row must be gone -- this is a full replace, not an upsert"
         );
-        assert_eq!(after_second[0].to_crs, "STP");
-
-        sqlx::query("DELETE FROM fixed_links")
-            .execute(&pool)
-            .await
-            .ok();
+        assert_eq!(after_second[0].to_crs, "9ST");
     }
 
     #[tokio::test]
@@ -7636,10 +7642,19 @@ mod stanox_crs_lookup_query_tests {
         // `upsert_with_an_empty_batch_does_not_wipe_the_day` (schedule_destination_departures)
         // and `upsert_schedule_calling_points_full`'s own guard.
         let pool = test_pool().await;
+        // `upsert_fixed_links` itself replaces the WHOLE table, so run this
+        // only against a database with no real fixed links (CI's is
+        // empty). The fixture rows use digit-bearing codes no real station
+        // has, and only they are cleaned up, before and after.
+        let _cleanup = crate::test_support::FixtureCleanup::new(
+            &pool,
+            ["DELETE FROM fixed_links WHERE from_crs = '9EU'"],
+        )
+        .await;
         let seeded = vec![common::FixedLinkRecord {
             mode: "TUBE".to_string(),
-            from_crs: "EUS".to_string(),
-            to_crs: "KGX".to_string(),
+            from_crs: "9EU".to_string(),
+            to_crs: "9KG".to_string(),
             minutes: 5,
             valid_from: "0500".to_string(),
             valid_to: "2359".to_string(),
@@ -7655,7 +7670,7 @@ mod stanox_crs_lookup_query_tests {
             .expect("an empty batch must not error");
         assert_eq!(upserted, 0);
 
-        let after_empty = list_fixed_links_from_crs(&pool, "EUS")
+        let after_empty = list_fixed_links_from_crs(&pool, "9EU")
             .await
             .expect("read back");
         assert_eq!(
@@ -7663,11 +7678,6 @@ mod stanox_crs_lookup_query_tests {
             1,
             "an empty batch must leave the previously-published row in place, never clear it"
         );
-
-        sqlx::query("DELETE FROM fixed_links")
-            .execute(&pool)
-            .await
-            .ok();
     }
 
     #[tokio::test]
@@ -8147,7 +8157,10 @@ mod schedule_destination_departures_query_tests {
         chrono::NaiveTime::MIN
     }
 
+    /// Whole-day, because the upsert under test replaces whole days -- so
+    /// only ever on a synthetic 2050+ fixture date (asserted).
     async fn delete_day(pool: &PgPool, service_date: chrono::NaiveDate) {
+        crate::test_support::assert_synthetic_date(service_date);
         sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
             .bind(service_date)
             .execute(pool)
@@ -10674,16 +10687,26 @@ mod schedule_pipeline_integrity_tests {
                 schedule_pipeline_integrity -- --ignored --test-threads=1`"]
     async fn the_completion_marker_round_trips_and_reports_the_most_recent_completion() {
         let pool = test_pool().await;
-        sqlx::query("DELETE FROM schedule_reference_publishes")
-            .execute(&pool)
-            .await
-            .expect("start from an empty marker table");
+        let _cleanup = crate::test_support::FixtureCleanup::new(
+            &pool,
+            ["DELETE FROM schedule_reference_publishes WHERE delivery LIKE 'TEST-%'"],
+        )
+        .await;
 
+        // The empty-table (first-run) case, emptied only inside a
+        // transaction that is rolled back, so real markers are never
+        // deleted (DB review 2026-09-27 B3).
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query("DELETE FROM schedule_reference_publishes")
+            .execute(&mut *tx)
+            .await
+            .expect("empty the marker table inside the rolled-back transaction");
+        let empty = last_completed_schedule_reference_publish(&mut *tx)
+            .await
+            .expect("read empty");
+        tx.rollback().await.expect("rollback");
         assert_eq!(
-            last_completed_schedule_reference_publish(&pool)
-                .await
-                .expect("read empty"),
-            None,
+            empty, None,
             "an empty marker table must read as None -- the first-run case \
              schedule-reference falls back on"
         );
@@ -10716,11 +10739,6 @@ mod schedule_pipeline_integrity_tests {
             Some("TEST-20990601T180000Z".to_string()),
             "ON CONFLICT DO UPDATE must refresh completed_at, not silently do nothing"
         );
-
-        sqlx::query("DELETE FROM schedule_reference_publishes WHERE delivery LIKE 'TEST-%'")
-            .execute(&pool)
-            .await
-            .expect("cleanup");
     }
 }
 

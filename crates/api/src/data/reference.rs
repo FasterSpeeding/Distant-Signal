@@ -483,19 +483,31 @@ mod accessibility_filter_tests {
     }
 }
 
-// These tests seed and delete their own rows in a reserved `Z…` CRS/ATOC
-// namespace with invented names, rather than reusing real reference data:
-// the CI database (`.github/workflows/ci.yml:216`) is freshly migrated and
-// empty, so a ranking test has to bring its own fixtures anyway, and a
-// developer's local database may hold real reference data that a test
-// seeded under a real code could corrupt or that could perturb the
-// assertions. Each fixture below stands in for a real-world case named in
-// its comment.
+// These tests seed and delete their own rows under DIGIT-BEARING CRS/ATOC
+// codes (`9…`, `Y01`) with invented names, rather than reusing real
+// reference data or the old `Z…` codes: every real CRS and ATOC code is
+// letters only, so a digit-bearing code can never collide with (and a
+// cleanup can never delete) a real row -- `Z…` offered no such guarantee
+// (ZFD is Farringdon). The CI database is freshly migrated and empty, but a
+// developer's local database may hold real reference data, so:
+//
+// * every test uses its own codes and its own search term, so no two tests
+//   (or a leftover from an earlier crashed run) can perturb each other;
+// * cleanup runs BEFORE seeding and again on drop (`FixtureCleanup`), so a
+//   failed assertion no longer leaks fixtures into later runs;
+// * the nearest-station tests sit in the Southern Ocean / South Pacific,
+//   thousands of kilometres from any real station, so the real table never
+//   ranks ahead of the fixtures.
+//
+// Each fixture below stands in for a real-world case named in its comment.
+// These share one database: run with
+// `DATABASE_URL=... cargo test -p api data::reference::db_tests -- --ignored --test-threads=1`.
 #[cfg(test)]
 mod db_tests {
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
+    use crate::test_support::FixtureCleanup;
 
     async fn connect() -> PgPool {
         let database_url =
@@ -506,32 +518,52 @@ mod db_tests {
             .expect("connect to postgres")
     }
 
+    /// Deletes the given fixture station codes now and again on drop.
+    async fn station_cleanup(pool: &PgPool, codes: &[&str]) -> FixtureCleanup {
+        let list = codes
+            .iter()
+            .map(|code| {
+                assert!(
+                    code.bytes().any(|b| b.is_ascii_digit()),
+                    "fixture CRS {code} must contain a digit so it can never be a real station"
+                );
+                format!("'{code}'")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        FixtureCleanup::new(
+            pool,
+            [format!("DELETE FROM stations WHERE crs IN ({list})")],
+        )
+        .await
+    }
+
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_stations_ranks_exact_code_then_name_prefix_then_substring \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn search_stations_ranks_exact_code_then_name_prefix_then_substring() {
         let pool = connect().await;
 
-        // Stands in for "York": ZOR is the exact-code match (tier 0) even
-        // though its own name doesn't contain "zor". ZBU/ZAA/ZRK are
+        // Stands in for "York": Z9R is the exact-code match (tier 0) even
+        // though its own name doesn't contain "z9r". 9BU/9AA/9RK are
         // name-prefix matches (tier 1) standing in for names that start
-        // with the query; they land in ZBU, ZAA, ZRK order because
+        // with the query; they land in 9BU, 9AA, 9RK order because
         // alphabetical-within-tier puts the shortest prefix match first
-        // ("Zorbury" < "Zork" < "Zorkton Parkway"), which is why no
-        // separate exact-name tier is needed (Decision 1). ZZR/ZBY/ZBL are
+        // ("Z9rbury" < "Z9rk" < "Z9rkton Parkway"), which is why no
+        // separate exact-name tier is needed (Decision 1). 9ZR/9BY/9BL are
         // substring-only matches (tier 2) standing in for Bentley (South
         // Yorkshire) / Bramley (West Yorkshire) style buried results.
         let fixtures: [(&str, &str); 7] = [
-            ("ZOR", "Somewhere Else"),
-            ("ZBU", "Zorbury"),
-            ("ZAA", "Zork"),
-            ("ZRK", "Zorkton Parkway"),
-            ("ZZR", "Ashby-de-la-Zork"),
-            ("ZBY", "Bentley (South Zorkshire)"),
-            ("ZBL", "Bramley (West Zorkshire)"),
+            ("Z9R", "Somewhere Else"),
+            ("9BU", "Z9rbury"),
+            ("9AA", "Z9rk"),
+            ("9RK", "Z9rkton Parkway"),
+            ("9ZR", "Ashby-de-la-Z9rk"),
+            ("9BY", "Bentley (South Z9rkshire)"),
+            ("9BL", "Bramley (West Z9rkshire)"),
         ];
+        let _cleanup = station_cleanup(&pool, &fixtures.map(|(crs, _)| crs)).await;
         for (crs, name) in fixtures {
             sqlx::query(
                 "INSERT INTO stations (crs, name) VALUES ($1, $2) \
@@ -546,28 +578,19 @@ mod db_tests {
 
         // Lowercase query: exercises case-insensitivity and all three
         // tiers in a single call.
-        let results = search_stations(&pool, "zor", 20).await.expect("search");
+        let results = search_stations(&pool, "z9r", 20).await.expect("search");
         let codes: Vec<&str> = results.iter().map(|r| r.code.as_str()).collect();
         assert_eq!(
             codes,
-            vec!["ZOR", "ZBU", "ZAA", "ZRK", "ZZR", "ZBY", "ZBL"],
+            vec!["Z9R", "9BU", "9AA", "9RK", "9ZR", "9BY", "9BL"],
             "full sequence, not just membership -- the defect being fixed is ordering"
         );
-
-        for (crs, _) in fixtures {
-            sqlx::query("DELETE FROM stations WHERE crs = $1")
-                .bind(crs)
-                .execute(&pool)
-                .await
-                .expect("cleanup fixture station");
-        }
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_stations_does_not_truncate_the_exact_code_match_out_of_the_limit \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn search_stations_does_not_truncate_the_exact_code_match_out_of_the_limit() {
         let pool = connect().await;
 
@@ -578,72 +601,70 @@ mod db_tests {
         // an exact code match, silently returns `null` -- making the UI
         // fall back to a bare code, which is the very thing Tasks 8-9
         // exist to remove. Under the tiered ordering the exact-code row is
-        // always row 1 and can never be capped away.
+        // always row 1 and can never be capped away. Uses its own search
+        // term ("z8r", not the ranking test's "z9r") so the two tests'
+        // fixtures can never show up in each other's results.
+        let filler_codes: Vec<String> = (1..=22).map(|i| format!("Y{i:02}")).collect();
+        let mut all_codes: Vec<&str> = filler_codes.iter().map(String::as_str).collect();
+        all_codes.push("Z8R");
+        let _cleanup = station_cleanup(&pool, &all_codes).await;
+
         sqlx::query(
-            "INSERT INTO stations (crs, name) VALUES ('ZOR', 'Somewhere Else') \
+            "INSERT INTO stations (crs, name) VALUES ('Z8R', 'Somewhere Else') \
              ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
         )
         .execute(&pool)
         .await
         .expect("seed exact-match station");
 
-        let mut filler_codes = Vec::with_capacity(22);
-        for i in 1..=22 {
-            let code = format!("Y{i:02}");
-            let name = format!("A-Zor Filler {i:02}");
+        for (i, code) in filler_codes.iter().enumerate() {
+            let name = format!("A-Z8r Filler {:02}", i + 1);
             sqlx::query(
                 "INSERT INTO stations (crs, name) VALUES ($1, $2) \
                  ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
             )
-            .bind(&code)
+            .bind(code)
             .bind(&name)
             .execute(&pool)
             .await
             .expect("seed filler station");
-            filler_codes.push(code);
         }
 
-        let results = search_stations(&pool, "zor", 20).await.expect("search");
+        let results = search_stations(&pool, "z8r", 20).await.expect("search");
         assert_eq!(
             results.first().map(|r| r.code.as_str()),
-            Some("ZOR"),
+            Some("Z8R"),
             "the exact-code match must be row 1, not capped out by 22 alphabetically-earlier \
              substring matches"
         );
-
-        sqlx::query("DELETE FROM stations WHERE crs = 'ZOR'")
-            .execute(&pool)
-            .await
-            .expect("cleanup exact-match station");
-        for code in filler_codes {
-            sqlx::query("DELETE FROM stations WHERE crs = $1")
-                .bind(&code)
-                .execute(&pool)
-                .await
-                .expect("cleanup filler station");
-        }
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 nearest_stations_orders_nearest_first_and_excludes_null_coordinates \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn nearest_stations_orders_nearest_first_and_excludes_null_coordinates() {
         let pool = connect().await;
 
-        // Woking-ish reference point. ZNA is a few hundred metres away,
-        // ZNB a few km away, ZNC much further, and ZND has no coordinates
-        // at all -- standing in for the real-world case where an RDM
-        // reference row simply never got a lat/lon populated.
+        // A reference point in the Southern Ocean, thousands of km from any
+        // real station, so the fixtures are the nearest rows whatever else
+        // the table holds. 9NA is a few hundred metres away, 9NB a few km
+        // away, 9NC much further, and 9ND has no coordinates at all --
+        // standing in for the real-world case where an RDM reference row
+        // simply never got a lat/lon populated.
         // crs, name, (latitude, longitude).
         type StationFixture = (&'static str, &'static str, Option<(f64, f64)>);
         let fixtures: [StationFixture; 4] = [
-            ("ZNA", "Near Fixture Station", Some((51.3200, -0.5600))),
-            ("ZNB", "Middling Fixture Station", Some((51.3600, -0.5200))),
-            ("ZNC", "Far Fixture Station", Some((52.4800, -1.9000))),
-            ("ZND", "No Coordinates Fixture Station", None),
+            ("9NA", "Near Fixture Station", Some((-60.0010, -30.0050))),
+            (
+                "9NB",
+                "Middling Fixture Station",
+                Some((-60.0400, -30.0400)),
+            ),
+            ("9NC", "Far Fixture Station", Some((-61.1600, -31.3400))),
+            ("9ND", "No Coordinates Fixture Station", None),
         ];
+        let _cleanup = station_cleanup(&pool, &fixtures.map(|(crs, _, _)| crs)).await;
         for (crs, name, coords) in fixtures {
             let (lat, lon) = coords.map_or((None, None), |(lat, lon)| (Some(lat), Some(lon)));
             sqlx::query(
@@ -660,62 +681,46 @@ mod db_tests {
             .expect("seed fixture station");
         }
 
-        let results = nearest_stations(&pool, 51.3191, -0.5610, 20)
+        let results = nearest_stations(&pool, -60.0, -30.0, 20)
             .await
             .expect("nearest_stations query");
-        let codes: Vec<&str> = results
-            .iter()
-            .filter(|r| {
-                r.code.starts_with('Z') && r.code.len() == 3 && r.code.as_bytes()[1] == b'N'
-            })
-            .map(|r| r.code.as_str())
-            .collect();
+        let codes: Vec<&str> = results.iter().take(3).map(|r| r.code.as_str()).collect();
         assert_eq!(
             codes,
-            vec!["ZNA", "ZNB", "ZNC"],
-            "nearest first, and ZND (null coordinates) must never appear"
+            vec!["9NA", "9NB", "9NC"],
+            "nearest first -- and, sitting nowhere near a real station, the fixtures are the \
+             three nearest rows outright"
         );
         assert!(
-            results.iter().all(|r| r.code != "ZND"),
+            results.iter().all(|r| r.code != "9ND"),
             "a station with null lat/lon must be excluded entirely, not returned with a bogus \
              distance"
         );
-        let distances: Vec<f64> = results
-            .iter()
-            .filter(|r| ["ZNA", "ZNB", "ZNC"].contains(&r.code.as_str()))
-            .map(|r| r.distance_km)
-            .collect();
+        let distances: Vec<f64> = results.iter().take(3).map(|r| r.distance_km).collect();
         assert!(
             distances.windows(2).all(|w| w[0] <= w[1]),
             "distances must be non-decreasing: {distances:?}"
         );
         assert!(
             distances[0] < 1.0,
-            "ZNA is a few hundred metres from the reference point: {distances:?}"
+            "9NA is a few hundred metres from the reference point: {distances:?}"
         );
-
-        for (crs, _, _) in fixtures {
-            sqlx::query("DELETE FROM stations WHERE crs = $1")
-                .bind(crs)
-                .execute(&pool)
-                .await
-                .expect("cleanup fixture station");
-        }
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 nearest_stations_respects_the_limit \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn nearest_stations_respects_the_limit() {
         let pool = connect().await;
 
+        // South Pacific, away from both real stations and the test above.
         let fixtures: [(&str, &str, f64, f64); 3] = [
-            ("ZLA", "Limit Fixture A", 51.30, -0.50),
-            ("ZLB", "Limit Fixture B", 51.31, -0.51),
-            ("ZLC", "Limit Fixture C", 51.32, -0.52),
+            ("9LA", "Limit Fixture A", -50.00, -140.00),
+            ("9LB", "Limit Fixture B", -50.01, -140.01),
+            ("9LC", "Limit Fixture C", -50.02, -140.02),
         ];
+        let _cleanup = station_cleanup(&pool, &fixtures.map(|(crs, _, _, _)| crs)).await;
         for (crs, name, lat, lon) in fixtures {
             sqlx::query(
                 "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, $2, $3, $4) \
@@ -731,25 +736,21 @@ mod db_tests {
             .expect("seed fixture station");
         }
 
-        let results = nearest_stations(&pool, 51.30, -0.50, 2)
+        let results = nearest_stations(&pool, -50.00, -140.00, 2)
             .await
             .expect("nearest_stations query");
-        assert_eq!(results.len(), 2, "limit=2 must return at most 2 rows");
-
-        for (crs, _, _, _) in fixtures {
-            sqlx::query("DELETE FROM stations WHERE crs = $1")
-                .bind(crs)
-                .execute(&pool)
-                .await
-                .expect("cleanup fixture station");
-        }
+        let codes: Vec<&str> = results.iter().map(|r| r.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            vec!["9LA", "9LB"],
+            "limit=2 must return exactly the 2 nearest rows"
+        );
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_stations_does_not_500_on_a_trailing_backslash_query \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn search_stations_does_not_500_on_a_trailing_backslash_query() {
         // Before the ESCAPE fix, Postgres rejected this query outright
         // ("ERROR: invalid escape string") because an unescaped trailing
@@ -766,18 +767,18 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_stations_treats_percent_and_underscore_as_literal_characters \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn search_stations_treats_percent_and_underscore_as_literal_characters() {
         // Regression for the wildcard half of the same bug: before
         // escaping, a station literally named with a `%` would have its
         // own name act as a wildcard against every other row instead of
         // matching only itself.
         let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9PC"]).await;
         sqlx::query(
-            "INSERT INTO stations (crs, name) VALUES ('ZPC', 'Zeta 100% Fixture') \
+            "INSERT INTO stations (crs, name) VALUES ('9PC', 'Zeta 100% Fixture') \
              ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
         )
         .execute(&pool)
@@ -790,40 +791,40 @@ mod db_tests {
         let codes: Vec<&str> = results.iter().map(|r| r.code.as_str()).collect();
         assert_eq!(
             codes,
-            vec!["ZPC"],
+            vec!["9PC"],
             "a literal '%' in the query must match only the row containing it, not act as a \
              wildcard over the whole table: {codes:?}"
         );
-
-        sqlx::query("DELETE FROM stations WHERE crs = 'ZPC'")
-            .execute(&pool)
-            .await
-            .expect("cleanup fixture station");
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_tocs_ranks_exact_code_then_name_prefix_then_substring \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn search_tocs_ranks_exact_code_then_name_prefix_then_substring() {
         let pool = connect().await;
 
         // `atoc_code` is CHAR(2), so the exact-code tier needs a 2-char
-        // query: "zz" against ZZ (tier 0, code is an exact case-insensitive
-        // match), a name starting with "Zz" (tier 1, name-prefix match),
-        // and a name that only contains "zz" as a substring (tier 2).
-        // `legal_name` is `NOT NULL`, so it is supplied even though
-        // `search_tocs` never selects it.
+        // query: "9z" against 9Z (tier 0, code is an exact case-insensitive
+        // match), a name starting with "9z" (tier 1, name-prefix match),
+        // and a name that only contains "9z" as a substring (tier 2). Real
+        // ATOC codes are letters only, so these digit-bearing codes can
+        // never be a real operator. `legal_name` is `NOT NULL`, so it is
+        // supplied even though `search_tocs` never selects it.
         let fixtures: [(&str, &str, &str); 3] = [
-            ("ZZ", "Somewhere Else Rail", "Somewhere Else Rail Ltd"),
-            ("ZY", "Zzebra Trains", "Zzebra Trains Ltd"),
+            ("9Z", "Somewhere Else Rail", "Somewhere Else Rail Ltd"),
+            ("9Y", "9zebra Trains", "9zebra Trains Ltd"),
             (
-                "ZA",
-                "Amalgamated Zzebra Holdings",
-                "Amalgamated Zzebra Holdings Ltd",
+                "9A",
+                "Amalgamated 9zebra Holdings",
+                "Amalgamated 9zebra Holdings Ltd",
             ),
         ];
+        let _cleanup = FixtureCleanup::new(
+            &pool,
+            ["DELETE FROM tocs WHERE atoc_code IN ('9Z', '9Y', '9A')"],
+        )
+        .await;
         for (code, name, legal_name) in fixtures {
             sqlx::query(
                 "INSERT INTO tocs (atoc_code, name, legal_name) VALUES ($1, $2, $3) \
@@ -838,38 +839,30 @@ mod db_tests {
             .expect("seed fixture toc");
         }
 
-        let results = search_tocs(&pool, "zz", 20).await.expect("search");
-        // ZZ's code is an exact case-insensitive match for "zz" (tier 0);
-        // ZY's name "Zzebra Trains" starts with "Zz" (tier 1); ZA's name
-        // "Amalgamated Zzebra Holdings" only contains "zz" as a substring
+        let results = search_tocs(&pool, "9z", 20).await.expect("search");
+        // 9Z's code is an exact case-insensitive match for "9z" (tier 0);
+        // 9Y's name "9zebra Trains" starts with "9z" (tier 1); 9A's name
+        // "Amalgamated 9zebra Holdings" only contains "9z" as a substring
         // (tier 2).
         let codes: Vec<&str> = results.iter().map(|r| r.code.as_str()).collect();
-        assert_eq!(codes, vec!["ZZ", "ZY", "ZA"]);
-
-        for (code, _, _) in fixtures {
-            sqlx::query("DELETE FROM tocs WHERE atoc_code = $1")
-                .bind(code)
-                .execute(&pool)
-                .await
-                .expect("cleanup fixture toc");
-        }
+        assert_eq!(codes, vec!["9Z", "9Y", "9A"]);
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_stations_handles_percent_underscore_and_trailing_backslash \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn search_stations_handles_percent_underscore_and_trailing_backslash() {
         let pool = connect().await;
 
         // Two fixtures that would be confused by unescaped ILIKE wildcards:
-        // a code containing a literal `_` and one containing a literal `%`.
+        // a name containing a literal `_` and one containing a literal `%`.
         // If `_`/`%` in the query term are not escaped, a search for
         // "Z_YZ" would match "ZXYZ" too (since `_` matches any one
         // character), and a search for "Z%YZ" would match any station
         // whose name contains "Z" then "YZ" anywhere after it.
-        let fixtures: [(&str, &str); 2] = [("ZAA", "Z_YZ Sidings"), ("ZAB", "Z%YZ Junction")];
+        let fixtures: [(&str, &str); 2] = [("9UA", "Z_YZ Sidings"), ("9UB", "Z%YZ Junction")];
+        let _cleanup = station_cleanup(&pool, &fixtures.map(|(crs, _)| crs)).await;
         for (crs, name) in fixtures {
             sqlx::query(
                 "INSERT INTO stations (crs, name) VALUES ($1, $2) \
@@ -904,7 +897,7 @@ mod db_tests {
         // "ERROR: LIKE pattern must not end with escape character". This
         // must now return an empty (not error) result, since no fixture
         // contains a literal trailing backslash.
-        let backslash_results = search_stations(&pool, "ZAA\\", 20)
+        let backslash_results = search_stations(&pool, "9UA\\", 20)
             .await
             .expect("a trailing backslash in the query must not make Postgres reject the query");
         assert!(
@@ -912,29 +905,21 @@ mod db_tests {
             "no fixture contains a literal trailing backslash, so this should be a clean empty \
              result, not an error"
         );
-
-        for (crs, _) in fixtures {
-            sqlx::query("DELETE FROM stations WHERE crs = $1")
-                .bind(crs)
-                .execute(&pool)
-                .await
-                .expect("cleanup fixture station");
-        }
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 station_accessibility_returns_the_filtered_set_for_an_existing_row \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn station_accessibility_returns_the_filtered_set_for_an_existing_row() {
         let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9FA"]).await;
 
         sqlx::query(
             "INSERT INTO stations (crs, name, accessibility) VALUES ($1, $2, $3) \
              ON CONFLICT (crs) DO UPDATE SET accessibility = EXCLUDED.accessibility",
         )
-        .bind("ZFA")
+        .bind("9FA")
         .bind("Fixture Facilities Station")
         .bind(serde_json::json!({
             "lifts": { "count": 2 },
@@ -945,65 +930,51 @@ mod db_tests {
         .await
         .expect("seed fixture station");
 
-        let result = station_accessibility(&pool, "ZFA").await.expect("query");
+        let result = station_accessibility(&pool, "9FA").await.expect("query");
         assert_eq!(
             result,
             Some(serde_json::json!({ "lifts": { "count": 2 } })),
             "carParks (null) and ticketBuying (non-allowlisted) must both be absent"
         );
-
-        sqlx::query("DELETE FROM stations WHERE crs = 'ZFA'")
-            .execute(&pool)
-            .await
-            .expect("cleanup fixture station");
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 station_accessibility_returns_some_empty_object_for_a_row_with_no_allowlisted_keys \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn station_accessibility_returns_some_empty_object_for_a_row_with_no_allowlisted_keys() {
         let pool = connect().await;
+        let _cleanup = station_cleanup(&pool, &["9FF"]).await;
 
         sqlx::query(
             "INSERT INTO stations (crs, name, accessibility) VALUES ($1, $2, $3) \
              ON CONFLICT (crs) DO UPDATE SET accessibility = EXCLUDED.accessibility",
         )
-        .bind("ZFF")
+        .bind("9FF")
         .bind("Fixture Quiet Reference Station")
         .bind(serde_json::json!({ "ticketBuying": { "open": true } }))
         .execute(&pool)
         .await
         .expect("seed fixture station");
 
-        let result = station_accessibility(&pool, "ZFF").await.expect("query");
+        let result = station_accessibility(&pool, "9FF").await.expect("query");
         assert_eq!(
             result,
             Some(serde_json::json!({})),
             "a row that exists but has no allowlisted keys is Some({{}}), never None -- the \
              404-vs-200-{{}} split above this depends on the two staying distinct"
         );
-
-        sqlx::query("DELETE FROM stations WHERE crs = 'ZFF'")
-            .execute(&pool)
-            .await
-            .expect("cleanup fixture station");
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 station_accessibility_returns_none_when_no_row_exists_for_the_crs \
-                -- --ignored`"]
+                -- --ignored --test-threads=1`"]
     async fn station_accessibility_returns_none_when_no_row_exists_for_the_crs() {
         let pool = connect().await;
-        sqlx::query("DELETE FROM stations WHERE crs = 'ZFB'")
-            .execute(&pool)
-            .await
-            .expect("ensure no fixture row present");
+        let _cleanup = station_cleanup(&pool, &["9FB"]).await;
 
-        let result = station_accessibility(&pool, "ZFB").await.expect("query");
+        let result = station_accessibility(&pool, "9FB").await.expect("query");
         assert_eq!(
             result, None,
             "no stations row at all must be None, not Some({{}})"

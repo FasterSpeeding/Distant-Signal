@@ -2313,14 +2313,18 @@ mod db_tests {
                 full_coverage_line_stats -- --ignored --test-threads=1`"]
     async fn last_fetch_against_an_empty_table_is_null() {
         let pool = connect().await;
+        // Empty the table only inside a transaction that is rolled back, so
+        // no other test's (or a developer's real) rows are ever deleted.
+        let mut tx = pool.begin().await.expect("begin");
         sqlx::query("DELETE FROM full_coverage_line_stats")
-            .execute(&pool)
+            .execute(&mut *tx)
             .await
-            .expect("clear the whole table for this test");
+            .expect("empty the table inside the rolled-back transaction");
 
-        let fetched_at = queries::last_full_coverage_line_stats_fetch(&pool)
+        let fetched_at = queries::last_full_coverage_line_stats_fetch(&mut *tx)
             .await
             .expect("query should succeed against an empty table");
+        tx.rollback().await.expect("rollback");
         assert_eq!(fetched_at, None);
     }
 
@@ -2531,14 +2535,23 @@ mod db_tests {
     /// this table is a whole `service_date`, not one destination's rows.
     /// The fixture date is in 2099 for the same reason Task 5's are: it
     /// must not collide with a real published day in a shared development
-    /// database. See `queries::schedule_destination_departures_query_tests`'
-    /// own module doc comment.
-    async fn delete_destination_departures_fixture(pool: &PgPool, service_date: &str) {
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1::date")
-            .bind(service_date)
-            .execute(pool)
-            .await
-            .expect("cleanup fixture schedule_destination_departures rows");
+    /// database (asserted). See `queries::schedule_destination_departures_query_tests`'
+    /// own module doc comment. Clears the day before the test seeds and
+    /// again on drop, pass or fail.
+    async fn destination_departures_day(
+        pool: &PgPool,
+        service_date: &str,
+    ) -> crate::test_support::FixtureCleanup {
+        crate::test_support::assert_synthetic_date(
+            service_date.parse().expect("valid fixture date"),
+        );
+        crate::test_support::FixtureCleanup::new(
+            pool,
+            [format!(
+                "DELETE FROM schedule_destination_departures WHERE service_date = '{service_date}'"
+            )],
+        )
+        .await
     }
 
     #[tokio::test]
@@ -2546,7 +2559,9 @@ mod db_tests {
                 post_schedule_destination_departures -- --ignored --test-threads=1`"]
     async fn post_schedule_destination_departures_upserts_the_rows() {
         let pool = connect().await;
-        delete_destination_departures_fixture(&pool, "2099-02-01").await;
+        // September 2099 is this test's alone (2099-02-01 used to be shared
+        // with `data::queries`' `fixture_date_feb(1)`).
+        let _day = destination_departures_day(&pool, "2099-09-01").await;
 
         let router: axum::Router = crate::app::Router::new()
             .merge(router())
@@ -2558,7 +2573,7 @@ mod db_tests {
         // Two rows, so "one row per departure" is actually discriminated.
         let body = serde_json::json!([
             {
-                "service_date": "2099-02-01",
+                "service_date": "2099-09-01",
                 "destination_crs": "ZRB",
                 "scheduled": "08:22:00",
                 "train_uid": "C10001",
@@ -2567,7 +2582,7 @@ mod db_tests {
                 "destination_arrival": "11:30:00"
             },
             {
-                "service_date": "2099-02-01",
+                "service_date": "2099-09-01",
                 "destination_crs": "ZRB",
                 "scheduled": "10:05:00",
                 "train_uid": "C10002",
@@ -2610,7 +2625,7 @@ mod db_tests {
         let stored: Vec<StoredDepartureRow> = sqlx::query_as(
             "SELECT destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival \
              FROM schedule_destination_departures \
-             WHERE service_date = '2099-02-01' \
+             WHERE service_date = '2099-09-01' \
              ORDER BY scheduled",
         )
         .fetch_all(&pool)
@@ -2637,8 +2652,6 @@ mod db_tests {
             stored[1].5, None,
             "an absent destination_arrival key must deserialize as None, not fail or default to a real time"
         );
-
-        delete_destination_departures_fixture(&pool, "2099-02-01").await;
     }
 
     /// The route-level contract for a partially rejected batch: still a
@@ -3147,15 +3160,17 @@ mod db_tests {
                 post_schedule_calling_points_full -- --ignored --test-threads=1`"]
     async fn post_schedule_calling_points_full_diff_protocol_publishes_the_union_of_its_chunks() {
         let pool = connect().await;
+        // A synthetic far-future day this test owns outright: the diff
+        // protocol replaces a whole date, so it must control all of it.
         let date = "2099-07-20";
-        let clear = || async {
-            sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = $1::date")
-                .bind(date)
-                .execute(&pool)
-                .await
-                .expect("cleanup fixture rows");
-        };
-        clear().await;
+        crate::test_support::assert_synthetic_date(date.parse().expect("valid fixture date"));
+        let _day = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [format!(
+                "DELETE FROM schedule_calling_points_full WHERE service_date = '{date}'"
+            )],
+        )
+        .await;
         let calling_point = |uid: &str| {
             json!({
                 "service_date": date,
@@ -3257,8 +3272,6 @@ mod db_tests {
         .await
         .expect("count");
         assert_eq!(remaining, 0, "an empty publish clears its date");
-
-        clear().await;
     }
 
     /// `POST /private/train-reasons` files a coded cancellation against the

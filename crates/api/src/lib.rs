@@ -29,3 +29,5 @@ pub mod migrate;
 pub mod rate_limit;
 pub mod render;
 pub mod routes;
+#[cfg(test)]
+pub(crate) mod test_support;
