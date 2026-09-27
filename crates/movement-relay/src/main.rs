@@ -166,7 +166,23 @@ where
 {
     for raw in batch {
         let envelopes = match trust_schema::schema::confirmed_envelope_bodies(raw) {
-            Ok(envelopes) => envelopes,
+            Ok(classified) => {
+                // PL-4: an envelope with no `header.msg_type` is skipped on
+                // its own; the rest of the record still publishes.
+                if classified.malformed > 0 {
+                    tracing::warn!(
+                        malformed = classified.malformed,
+                        raw = %raw,
+                        "skipping TRUST envelopes with no header.msg_type; publishing the rest of the record"
+                    );
+                    metrics::counter!(
+                        common::metrics::metric_name("movement_relay_errors_total"),
+                        "operation" => "classify_envelope"
+                    )
+                    .increment(classified.malformed as u64);
+                }
+                classified.envelopes
+            }
             Err(err) => {
                 tracing::error!(error = ?err, raw = %raw, "failed to classify Kafka record; not committing this record's offset");
                 metrics::counter!(
@@ -471,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unclassifiable_record_does_not_commit() {
-        let mut source = FakeRawSource::new(vec![vec![r#"{"not_an_envelope": true}"#.to_string()]]);
+        let mut source = FakeRawSource::new(vec![vec!["not json".to_string()]]);
         let mut sink = FakeEventSink::default();
 
         let outcome = run_cycle(&mut source, &mut sink).await;
@@ -666,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn an_unclassifiable_record_does_not_wedge_the_feed() {
         let mut source = FakeRawSource::new(vec![
-            vec![r#"{"not_an_envelope": true}"#.to_string()],
+            vec!["not json".to_string()],
             vec![movement_record("BBB")],
         ]);
         let mut sink = FakeEventSink::default();
@@ -680,6 +696,25 @@ mod tests {
             vec!["BBB".to_string()],
             "the poison record must not be re-delivered forever"
         );
+    }
+
+    /// PL-4: one envelope with no `header.msg_type` costs only itself; the
+    /// record's other envelopes still publish and the offset commits.
+    #[tokio::test]
+    async fn an_envelope_missing_msg_type_does_not_drop_its_neighbours() {
+        let raw = r#"[
+            {"header":{},"body":{"train_id":"XXX"}},
+            {"header":{"msg_type":"0003"},"body":{"train_id":"AAA","event_type":"DEPARTURE"}}
+        ]"#;
+        let mut source = FakeRawSource::new(vec![vec![raw.to_string()]]);
+        let mut sink = FakeEventSink::default();
+
+        assert_eq!(run_cycle(&mut source, &mut sink).await, Cycle::Committed);
+        assert_eq!(
+            published_train_ids(&sink.published),
+            vec!["AAA".to_string()]
+        );
+        assert_eq!(source.committed_count, 1);
     }
 
     #[tokio::test]
