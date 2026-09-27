@@ -173,89 +173,173 @@ pub async fn upsert_incidents(
             .map(|row| (row.incident_id.as_str(), row))
             .collect();
 
-        for (offset_in_chunk, incident) in chunk.iter().enumerate() {
-            let affected_lines = &affected_lines[chunk_offset + offset_in_chunk];
-            let validity_json = serde_json::to_value(&incident.validity)?;
-            let existing = existing_by_id.get(incident.incident_id.as_str()).copied();
+        // F2: one upsert and at most one history insert per chunk, instead
+        // of one or two statements per incident. A repeated incident_id in
+        // the same chunk keeps its LAST copy (a multi-row upsert cannot touch
+        // a row twice); the old loop's final write was that copy too.
+        let rows: Vec<(&IncidentMessage, &Vec<String>, serde_json::Value)> = chunk
+            .iter()
+            .enumerate()
+            .map(|(offset_in_chunk, incident)| {
+                serde_json::to_value(&incident.validity).map(|validity| {
+                    (
+                        incident,
+                        &affected_lines[chunk_offset + offset_in_chunk],
+                        validity,
+                    )
+                })
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let rows = last_per_key(&rows, |(incident, _, _)| incident.incident_id.as_str());
 
-            let changed = incident_changed(
+        let mut changed_rows = Vec::new();
+        for (incident, _, validity_json) in &rows {
+            let existing = existing_by_id.get(incident.incident_id.as_str()).copied();
+            if incident_changed(
                 existing,
                 &incident.summary,
                 &incident.description,
-                &validity_json,
-            );
+                validity_json,
+            ) {
+                changed_rows.push((*incident, validity_json));
+            }
             if text_changed(existing, &incident.summary, &incident.description) {
                 text_changed_ids.push(incident.incident_id.clone());
             }
+        }
 
+        let json_array = |values: &[String]| serde_json::Value::from(values.to_vec());
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|(i, _, _)| i.incident_id.as_str())
+            .collect();
+        let summaries: Vec<&str> = rows.iter().map(|(i, _, _)| i.summary.as_str()).collect();
+        let descriptions: Vec<&str> = rows
+            .iter()
+            .map(|(i, _, _)| i.description.as_str())
+            .collect();
+        let operators: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(i, _, _)| json_array(&i.operators))
+            .collect();
+        let stations: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(i, _, _)| json_array(&i.affected_stations))
+            .collect();
+        let priorities: Vec<i32> = rows.iter().map(|(i, _, _)| i.priority).collect();
+        let validities: Vec<&serde_json::Value> = rows.iter().map(|(_, _, v)| v).collect();
+        let planned: Vec<bool> = rows.iter().map(|(i, _, _)| i.is_planned).collect();
+        let cleared: Vec<bool> = rows.iter().map(|(i, _, _)| i.is_cleared).collect();
+        let lines: Vec<serde_json::Value> = rows.iter().map(|(_, l, _)| json_array(l)).collect();
+
+        sqlx::query(
+            r#"
+            INSERT INTO incidents (
+                incident_id, summary, description, operators, affected_stations,
+                priority, validity_periods, is_planned, is_cleared, fetched_at,
+                first_seen_at, affected_lines
+            )
+            SELECT i.incident_id, i.summary, i.description,
+                   ARRAY(SELECT jsonb_array_elements_text(i.operators)),
+                   ARRAY(SELECT jsonb_array_elements_text(i.affected_stations)),
+                   i.priority, i.validity_periods, i.is_planned, i.is_cleared, NOW(), NOW(),
+                   ARRAY(SELECT jsonb_array_elements_text(i.affected_lines))
+              FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::jsonb[],
+                          $6::int4[], $7::jsonb[], $8::bool[], $9::bool[], $10::jsonb[])
+                   AS i(incident_id, summary, description, operators, affected_stations,
+                        priority, validity_periods, is_planned, is_cleared, affected_lines)
+            ON CONFLICT (incident_id) DO UPDATE SET
+                summary           = EXCLUDED.summary,
+                description       = EXCLUDED.description,
+                operators         = EXCLUDED.operators,
+                affected_stations = EXCLUDED.affected_stations,
+                priority          = EXCLUDED.priority,
+                validity_periods  = EXCLUDED.validity_periods,
+                is_planned        = EXCLUDED.is_planned,
+                is_cleared        = EXCLUDED.is_cleared,
+                fetched_at        = NOW(),
+                affected_lines    = EXCLUDED.affected_lines
+            WHERE (incidents.summary, incidents.description, incidents.operators,
+                   incidents.affected_stations, incidents.priority,
+                   incidents.validity_periods, incidents.is_planned,
+                   incidents.is_cleared, incidents.affected_lines)
+                  IS DISTINCT FROM
+                  (EXCLUDED.summary, EXCLUDED.description, EXCLUDED.operators,
+                   EXCLUDED.affected_stations, EXCLUDED.priority,
+                   EXCLUDED.validity_periods, EXCLUDED.is_planned,
+                   EXCLUDED.is_cleared, EXCLUDED.affected_lines)
+            "#,
+        )
+        .bind(&ids)
+        .bind(&summaries)
+        .bind(&descriptions)
+        .bind(&operators)
+        .bind(&stations)
+        .bind(&priorities)
+        .bind(&validities)
+        .bind(&planned)
+        .bind(&cleared)
+        .bind(&lines)
+        .execute(&mut *tx)
+        .await?;
+
+        if !changed_rows.is_empty() {
+            let h_ids: Vec<&str> = changed_rows
+                .iter()
+                .map(|(i, _)| i.incident_id.as_str())
+                .collect();
+            let h_summaries: Vec<&str> = changed_rows
+                .iter()
+                .map(|(i, _)| i.summary.as_str())
+                .collect();
+            let h_descriptions: Vec<&str> = changed_rows
+                .iter()
+                .map(|(i, _)| i.description.as_str())
+                .collect();
+            let h_operators: Vec<serde_json::Value> = changed_rows
+                .iter()
+                .map(|(i, _)| json_array(&i.operators))
+                .collect();
+            let h_stations: Vec<serde_json::Value> = changed_rows
+                .iter()
+                .map(|(i, _)| json_array(&i.affected_stations))
+                .collect();
+            let h_priorities: Vec<i32> = changed_rows.iter().map(|(i, _)| i.priority).collect();
+            let h_validities: Vec<&serde_json::Value> =
+                changed_rows.iter().map(|(_, v)| *v).collect();
+            let h_planned: Vec<bool> = changed_rows.iter().map(|(i, _)| i.is_planned).collect();
+            let h_cleared: Vec<bool> = changed_rows.iter().map(|(i, _)| i.is_cleared).collect();
             sqlx::query(
                 r#"
-                INSERT INTO incidents (
+                INSERT INTO incident_history (
                     incident_id, summary, description, operators, affected_stations,
-                    priority, validity_periods, is_planned, is_cleared, fetched_at,
-                    first_seen_at, affected_lines
+                    priority, validity_periods, is_planned, is_cleared
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
-                ON CONFLICT (incident_id) DO UPDATE SET
-                    summary           = EXCLUDED.summary,
-                    description       = EXCLUDED.description,
-                    operators         = EXCLUDED.operators,
-                    affected_stations = EXCLUDED.affected_stations,
-                    priority          = EXCLUDED.priority,
-                    validity_periods  = EXCLUDED.validity_periods,
-                    is_planned        = EXCLUDED.is_planned,
-                    is_cleared        = EXCLUDED.is_cleared,
-                    fetched_at        = NOW(),
-                    affected_lines    = EXCLUDED.affected_lines
-                WHERE (incidents.summary, incidents.description, incidents.operators,
-                       incidents.affected_stations, incidents.priority,
-                       incidents.validity_periods, incidents.is_planned,
-                       incidents.is_cleared, incidents.affected_lines)
-                      IS DISTINCT FROM
-                      (EXCLUDED.summary, EXCLUDED.description, EXCLUDED.operators,
-                       EXCLUDED.affected_stations, EXCLUDED.priority,
-                       EXCLUDED.validity_periods, EXCLUDED.is_planned,
-                       EXCLUDED.is_cleared, EXCLUDED.affected_lines)
+                SELECT h.incident_id, h.summary, h.description,
+                       ARRAY(SELECT jsonb_array_elements_text(h.operators)),
+                       ARRAY(SELECT jsonb_array_elements_text(h.affected_stations)),
+                       h.priority, h.validity_periods, h.is_planned, h.is_cleared
+                  FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::jsonb[],
+                              $6::int4[], $7::jsonb[], $8::bool[], $9::bool[])
+                       WITH ORDINALITY
+                       AS h(incident_id, summary, description, operators, affected_stations,
+                            priority, validity_periods, is_planned, is_cleared, ord)
+                 ORDER BY h.ord
                 "#,
             )
-            .bind(&incident.incident_id)
-            .bind(&incident.summary)
-            .bind(&incident.description)
-            .bind(&incident.operators)
-            .bind(&incident.affected_stations)
-            .bind(incident.priority)
-            .bind(&validity_json)
-            .bind(incident.is_planned)
-            .bind(incident.is_cleared)
-            .bind(affected_lines)
+            .bind(&h_ids)
+            .bind(&h_summaries)
+            .bind(&h_descriptions)
+            .bind(&h_operators)
+            .bind(&h_stations)
+            .bind(&h_priorities)
+            .bind(&h_validities)
+            .bind(&h_planned)
+            .bind(&h_cleared)
             .execute(&mut *tx)
             .await?;
-
-            if changed {
-                sqlx::query(
-                    r#"
-                    INSERT INTO incident_history (
-                        incident_id, summary, description, operators, affected_stations,
-                        priority, validity_periods, is_planned, is_cleared
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    "#,
-                )
-                .bind(&incident.incident_id)
-                .bind(&incident.summary)
-                .bind(&incident.description)
-                .bind(&incident.operators)
-                .bind(&incident.affected_stations)
-                .bind(incident.priority)
-                .bind(&validity_json)
-                .bind(incident.is_planned)
-                .bind(incident.is_cleared)
-                .execute(&mut *tx)
-                .await?;
-            }
-
-            count += 1;
         }
+        count += chunk.len() as u64;
 
         // `fetched_at` is shown per incident ("Last updated from National
         // Rail") so it must still advance for every incident in the feed,
@@ -12606,6 +12690,109 @@ mod db_review_guard_and_normalisation_tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// F2: the per-chunk batched upsert keeps every array column, records
+    /// history only for new or changed incidents, and keeps the LAST copy of
+    /// an incident repeated inside one chunk.
+    #[tokio::test]
+    #[ignore = "requires a live database and Redis; run with `DATABASE_URL=... cargo test -p api \
+                incidents_batch_upsert -- --ignored --test-threads=1`"]
+    async fn incidents_batch_upsert_records_history_only_for_changes() {
+        let pool = test_pool().await;
+        let cleanup = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM incident_history WHERE incident_id LIKE 'TEST-F2-INC-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM incidents WHERE incident_id LIKE 'TEST-F2-INC-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        cleanup(pool.clone()).await;
+        let matcher = common::matcher::LineMatcher::new(&[]);
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis = redis::Client::open(redis_url).expect("parse redis url");
+        let incident = |id: &str, description: &str, stations: &[&str]| IncidentMessage {
+            incident_id: id.to_string(),
+            summary: format!("{id} summary"),
+            description: description.to_string(),
+            operators: vec!["ZZ".to_string(), "YY".to_string()],
+            affected_stations: stations.iter().map(|s| s.to_string()).collect(),
+            priority: 3,
+            validity: vec![],
+            is_planned: true,
+            is_cleared: false,
+        };
+        let history = |pool: PgPool, id: &'static str| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM incident_history WHERE incident_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        let first = vec![
+            incident("TEST-F2-INC-A", "a", &["EUS"]),
+            incident("TEST-F2-INC-B", "b", &[]),
+        ];
+        assert_eq!(
+            upsert_incidents(&pool, &redis, &matcher, &first)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-A").await, 1);
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-B").await, 1);
+
+        let second = vec![
+            incident("TEST-F2-INC-A", "a", &["EUS"]),
+            incident("TEST-F2-INC-B", "b", &[]),
+            incident("TEST-F2-INC-B", "b changed", &["KGX", "FPK"]),
+            incident("TEST-F2-INC-C", "c", &[]),
+        ];
+        upsert_incidents(&pool, &redis, &matcher, &second)
+            .await
+            .unwrap();
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-A").await, 1, "unchanged");
+        assert_eq!(
+            history(pool.clone(), "TEST-F2-INC-B").await,
+            2,
+            "changed once"
+        );
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-C").await, 1, "new");
+
+        let (description, operators, stations, priority, planned): (
+            String,
+            Vec<String>,
+            Vec<String>,
+            i32,
+            bool,
+        ) = sqlx::query_as(
+            "SELECT description, operators, affected_stations, priority, is_planned \
+             FROM incidents WHERE incident_id = 'TEST-F2-INC-B'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(description, "b changed");
+        assert_eq!(operators, vec!["ZZ", "YY"]);
+        assert_eq!(stations, vec!["KGX", "FPK"]);
+        assert_eq!((priority, planned), (3, true));
+        let history_stations: Vec<String> = sqlx::query_scalar(
+            "SELECT affected_stations FROM incident_history \
+             WHERE incident_id = 'TEST-F2-INC-B' ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(history_stations, vec!["KGX", "FPK"]);
+
+        cleanup(pool.clone()).await;
     }
 
     #[tokio::test]
