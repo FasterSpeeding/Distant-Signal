@@ -10,7 +10,7 @@ use common::{
     TrainMovementEventMessage,
 };
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{Connection, PgConnection, PgPool};
 
 use crate::data::delay_repay_rules;
 
@@ -721,7 +721,25 @@ pub async fn upsert_train_movement(
     trains_id: i64,
     event: &TrainMovementEventMessage,
 ) -> anyhow::Result<()> {
+    let mut conn = pool.acquire().await?;
+    upsert_train_movement_on(&mut conn, trains_id, event).await
+}
+
+/// [`upsert_train_movement`] on a caller-supplied connection, which may
+/// already be inside a transaction (`post_train_events` runs each event
+/// behind its own savepoint). The two writes run in one (nested)
+/// transaction of their own, so a failure in the `train_current_state`
+/// write no longer leaves the `train_movement_events` row committed on its
+/// own -- a redelivery of that event would otherwise hit `ON CONFLICT DO
+/// NOTHING` for the movement and never repair the stale current state
+/// (DB2-2).
+pub async fn upsert_train_movement_on(
+    conn: &mut PgConnection,
+    trains_id: i64,
+    event: &TrainMovementEventMessage,
+) -> anyhow::Result<()> {
     let event_time = event.actual_timestamp.or(event.planned_timestamp);
+    let mut tx = conn.begin().await?;
 
     sqlx::query(
         "INSERT INTO train_movement_events \
@@ -740,7 +758,7 @@ pub async fn upsert_train_movement(
     .bind(event.actual_timestamp)
     .bind(&event.variation_status)
     .bind(&event.raw_body)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -771,9 +789,10 @@ pub async fn upsert_train_movement(
     .bind(event.eta_next)
     .bind(&event.eta_source)
     .bind(event_time)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
+    tx.commit().await?;
     Ok(())
 }
 
@@ -820,7 +839,7 @@ pub async fn upsert_train_movement(
 /// `Some` by the time any live-TRUST resolution reaches this function for
 /// such a pin.
 async fn flip_legacy_resolution(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     tracked_train_id: i64,
     resolved_train_uid: Option<&str>,
     resolved_train_id: &str,
@@ -843,7 +862,12 @@ async fn flip_legacy_resolution(
     // write rolls the status flip back too, leaving the subscription
     // exactly where it started (still `'pending'`/`'schedule_matched'`, still
     // picked up by the next sweep/event) instead of stranded.
-    let mut tx = pool.begin().await?;
+    //
+    // `conn.begin()` is a real `BEGIN` on a bare connection and a
+    // `SAVEPOINT` when the caller already holds a transaction on it
+    // (`post_train_events`' per-event savepoints), so this stays atomic
+    // either way.
+    let mut tx = conn.begin().await?;
 
     // The scalar subquery reads the ALREADY-LINKED shared row's own
     // `train_uid` in the same round trip as the status flip -- the value the
@@ -976,7 +1000,7 @@ enum LegacyResolution {
 /// downgrading it would be exactly finding #1's "regress an already-advanced
 /// status" mistake played out one layer up.
 async fn mark_subscription_unresolved_on_cancellation(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     tracked_train_id: i64,
 ) -> anyhow::Result<()> {
     sqlx::query(
@@ -984,7 +1008,7 @@ async fn mark_subscription_unresolved_on_cancellation(
          WHERE id = $1 AND resolution_status IN ('pending', 'schedule_matched')",
     )
     .bind(tracked_train_id)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -1002,10 +1026,85 @@ pub async fn upsert_train_event(
     pool: &PgPool,
     event: &TrainMovementEventMessage,
 ) -> anyhow::Result<()> {
+    let mut conn = pool.acquire().await?;
+    upsert_train_event_on(&mut conn, event).await
+}
+
+/// What [`upsert_train_events_batch`] did with one batch.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct TrainEventsBatchOutcome {
+    /// Events whose writes committed (including the documented no-op
+    /// cases: no identity known yet, or a refused uid mismatch).
+    pub upserted: u64,
+    /// Events refused for a data error, each rolled back in full.
+    pub rejected: Vec<common::RejectedTrustBacklogRow>,
+}
+
+/// `POST /private/train-events`' write (DB2-2): the whole batch in one
+/// transaction, each event behind its own savepoint -- the same pattern as
+/// `trust_event_backlog::upsert_trust_event_backlog_batch`'s fallback path.
+///
+/// * A **data error** (SQLSTATE class 22/23, see
+///   `trust_event_backlog::classify_data_error`) rolls back exactly that
+///   event -- its resolution flip, its movement row and its current-state
+///   write together, so nothing is left half-applied -- and is reported in
+///   [`TrainEventsBatchOutcome::rejected`]. No retry could ever fix it.
+/// * **Any other error** (a dropped connection, a pool timeout, a
+///   serialization failure or deadlock, a lock or statement timeout, an
+///   unexpected SQLSTATE) returns `Err` straight away, rolling back the
+///   whole batch, so the route answers 500 and `trust-consumer` leaves the
+///   batch un-ACKed and retries it. Before this, every per-event error was
+///   logged and skipped behind a 200, so a transient failure lost the event
+///   for good -- including the one message that carries a pin's
+///   resolution. Every write here is idempotent (`dedup_key`,
+///   `ON CONFLICT`), so the retry is safe.
+pub async fn upsert_train_events_batch(
+    pool: &PgPool,
+    events: &[TrainMovementEventMessage],
+) -> anyhow::Result<TrainEventsBatchOutcome> {
+    let mut outcome = TrainEventsBatchOutcome::default();
+    if events.is_empty() {
+        return Ok(outcome);
+    }
+    let mut tx = pool.begin().await?;
+    for (index, event) in events.iter().enumerate() {
+        // A nested `begin` on a connection already in a transaction is a
+        // `SAVEPOINT`; its `commit`/`rollback` are `RELEASE`/`ROLLBACK TO`.
+        let mut savepoint = Connection::begin(&mut *tx).await?;
+        match upsert_train_event_on(&mut savepoint, event).await {
+            Ok(()) => {
+                savepoint.commit().await?;
+                outcome.upserted += 1;
+            }
+            Err(err) => {
+                let Some(data_error) =
+                    crate::data::trust_event_backlog::classify_anyhow_data_error(&err)
+                else {
+                    return Err(err);
+                };
+                savepoint.rollback().await?;
+                outcome
+                    .rejected
+                    .push(data_error.into_rejected_row(index, &event.dedup_key));
+            }
+        }
+    }
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+/// [`upsert_train_event`] on a caller-supplied connection, which may already
+/// be inside a transaction: `post_train_events` runs every event of a batch
+/// behind its own savepoint so a data error rolls back exactly that event
+/// (and nothing it half-wrote), while any other error fails the request.
+pub async fn upsert_train_event_on(
+    conn: &mut PgConnection,
+    event: &TrainMovementEventMessage,
+) -> anyhow::Result<()> {
     let resolved = match &event.resolved_train_id {
         Some(train_id) => {
             flip_legacy_resolution(
-                pool,
+                &mut *conn,
                 event.tracked_train_id,
                 event.resolved_train_uid.as_deref(),
                 train_id,
@@ -1036,7 +1135,7 @@ pub async fn upsert_train_event(
     // advance -- there is nothing further any sweep can do for it either
     // way.
     if event.status == "cancelled" {
-        mark_subscription_unresolved_on_cancellation(pool, event.tracked_train_id).await?;
+        mark_subscription_unresolved_on_cancellation(&mut *conn, event.tracked_train_id).await?;
     }
 
     let trains_id = match resolved {
@@ -1045,13 +1144,13 @@ pub async fn upsert_train_event(
             "SELECT trains_id FROM train_subscriptions WHERE id = $1",
         )
         .bind(event.tracked_train_id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?
         .flatten(),
     };
 
     match trains_id {
-        Some(trains_id) => upsert_train_movement(pool, trains_id, event).await?,
+        Some(trains_id) => upsert_train_movement_on(&mut *conn, trains_id, event).await?,
         None => {
             tracing::warn!(
                 tracked_train_id = event.tracked_train_id,

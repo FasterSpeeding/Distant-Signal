@@ -135,14 +135,9 @@ async fn insert_rows_individually(
                 sqlx::query("ROLLBACK TO SAVEPOINT backlog_row")
                     .execute(&mut *tx)
                     .await?;
-                outcome.rejected.push(common::RejectedTrustBacklogRow {
-                    index,
-                    dedup_key: event.dedup_key.clone(),
-                    sqlstate: data_error.sqlstate,
-                    reason: data_error.reason.to_string(),
-                    constraint: data_error.constraint,
-                    message: data_error.message,
-                });
+                outcome
+                    .rejected
+                    .push(data_error.into_rejected_row(index, &event.dedup_key));
             }
         }
     }
@@ -152,13 +147,74 @@ async fn insert_rows_individually(
 
 /// A Postgres error caused by the row itself rather than by the database
 /// or the connection -- see [`classify_data_error`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DataError {
     pub sqlstate: String,
     pub reason: &'static str,
     pub constraint: Option<String>,
     pub message: String,
 }
+
+impl DataError {
+    /// The wire shape a route reports this row's rejection in.
+    pub(crate) fn into_rejected_row(
+        self,
+        index: usize,
+        dedup_key: &str,
+    ) -> common::RejectedTrustBacklogRow {
+        common::RejectedTrustBacklogRow {
+            index,
+            dedup_key: dedup_key.to_string(),
+            sqlstate: self.sqlstate,
+            reason: self.reason.to_string(),
+            constraint: self.constraint,
+            message: self.message,
+        }
+    }
+}
+
+/// [`classify_data_error`] for an `anyhow::Error` from the data layer: walks
+/// the error chain for the underlying `sqlx::Error` (or a
+/// [`SharedMovementError`], which carries its classification with it).
+/// `None` -- "transient, fail the request so the caller retries" -- for
+/// anything else, including an error with no database cause at all.
+pub(crate) fn classify_anyhow_data_error(err: &anyhow::Error) -> Option<DataError> {
+    err.chain().find_map(|cause| {
+        if let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() {
+            return classify_data_error(sqlx_err);
+        }
+        cause
+            .downcast_ref::<SharedMovementError>()
+            .and_then(|shared| shared.data_error.clone())
+    })
+}
+
+/// One failure of a batched shared-movement step, reported against every
+/// event that step covered. An `anyhow::Error` cannot be cloned, so the
+/// fan-out keeps the message and -- what the route actually needs -- the
+/// data-vs-transient classification of the original error (PL-7).
+#[derive(Debug)]
+pub(crate) struct SharedMovementError {
+    message: String,
+    data_error: Option<DataError>,
+}
+
+impl SharedMovementError {
+    fn new(step: &str, err: &anyhow::Error) -> Self {
+        Self {
+            message: format!("{step} failed: {err:#}"),
+            data_error: classify_anyhow_data_error(err),
+        }
+    }
+}
+
+impl std::fmt::Display for SharedMovementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SharedMovementError {}
 
 /// `Some` only for a data error: SQLSTATE class 23 (integrity constraint
 /// violation: check, not-null, unique, foreign-key, exclusion) or class 22
@@ -333,12 +389,13 @@ pub async fn ingest_shared_movements_batch(
                         map.insert(pair.clone(), id);
                     }
                     Err(err) => {
-                        let message = format!("find_or_create_train failed: {err}");
                         for &i in &known_indices {
                             if events[i].train_uid.as_deref() == Some(pair.0.as_str())
                                 && events[i].service_date == pair.1
                             {
-                                results[i] = Err(anyhow::anyhow!("{message}"));
+                                results[i] =
+                                    Err(SharedMovementError::new("find_or_create_train", &err)
+                                        .into());
                             }
                         }
                     }
@@ -390,10 +447,10 @@ pub async fn ingest_shared_movements_batch(
             if let Err(err) =
                 crate::data::trains::mark_train_resolved(pool, *trains_id, train_id).await
             {
-                let message = format!("mark_train_resolved failed: {err}");
                 for &(i, tid) in &resolved {
                     if tid == *trains_id {
-                        results[i] = Err(anyhow::anyhow!("{message}"));
+                        results[i] =
+                            Err(SharedMovementError::new("mark_train_resolved", &err).into());
                     }
                 }
             }
@@ -436,10 +493,13 @@ pub async fn ingest_shared_movements_batch(
                         map.insert(id, state);
                     }
                     Err(err) => {
-                        let message = format!("fetch_previous_derived_state failed: {err}");
                         for &(i, tid) in &active {
                             if tid == id {
-                                results[i] = Err(anyhow::anyhow!("{message}"));
+                                results[i] = Err(SharedMovementError::new(
+                                    "fetch_previous_derived_state",
+                                    &err,
+                                )
+                                .into());
                             }
                         }
                     }
