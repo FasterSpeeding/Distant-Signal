@@ -878,7 +878,9 @@ api:
     # Pools: api this x replicaCount, aggregator 10, notifier 5, enricher 5
     # -- keep the sum under postgresql.config.max_connections minus a few
     # for psql/kubectl exec and the migration connection. Timeouts shared by
-    # every pool are in `databasePool`.
+    # every pool are in `databasePool`. With the bundled Postgres the chart
+    # fails to render when the pools can exceed max_connections - 3
+    # (templates/api-deployment.yaml, INF-7).
     maxConnections: 50
   # Settings for the dedicated connection api migrates on at startup,
   # before it binds (crates/api/src/migrate.rs). It first drops any INVALID
