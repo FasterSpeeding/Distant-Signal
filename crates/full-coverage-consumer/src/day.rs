@@ -177,7 +177,12 @@ pub fn dispatch_message(
             }
         }
         TrustMessage::Cancellation(cancellation) => {
-            correlate::apply_cancellation(correlation_state, &cancellation);
+            correlate::apply_cancellation(
+                correlation_state,
+                &cancellation,
+                population,
+                service_date,
+            );
         }
         TrustMessage::ChangeOfOrigin(_)
         | TrustMessage::ChangeOfIdentity(_)

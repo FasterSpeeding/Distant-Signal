@@ -225,6 +225,21 @@ impl Population {
             .is_some_and(|uids| uids.contains(uid))
     }
 
+    /// Every line whose `service_date` population contains `uid`. A scan of
+    /// the ~250 lines' hash sets, paid once per Cancellation, not per
+    /// Movement.
+    pub fn lines_containing(&self, service_date: chrono::NaiveDate, uid: &str) -> Vec<&str> {
+        self.by_line
+            .iter()
+            .filter(|(_, by_date)| {
+                by_date
+                    .get(&service_date)
+                    .is_some_and(|uids| uids.contains(uid))
+            })
+            .map(|(line_id, _)| line_id.as_str())
+            .collect()
+    }
+
     /// Total uids held across every line and date -- for the
     /// `population_uids` gauge and memory sizing.
     pub fn total_uids(&self) -> usize {

@@ -121,13 +121,36 @@ pub struct MovementMatch {
     pub loc_crs: Option<String>,
 }
 
+/// Flips every line of the cancelled train's UID to `"cancelled"`.
+///
+/// The UID comes from a matched Movement (`resolved`) OR, failing that, from
+/// the train's Activation (`pending_activations`), and every line whose
+/// `service_date` population holds the UID gets an entry, whether or not a
+/// Movement ever matched there. It used to need both a prior matched
+/// Movement and an existing `derived` entry, so a train cancelled before it
+/// moved -- most cancellations (windowed stats design, section 3.4) -- was
+/// ignored, and only read "cancelled" through the no-event rule, which a
+/// partial day switches off.
 pub fn apply_cancellation(
     state: &mut CorrelationState,
     cancellation: &Cancellation,
+    population: &Population,
+    service_date: chrono::NaiveDate,
 ) -> Vec<(String, String)> {
-    let Some(train_uid) = state.resolved.get(&cancellation.train_id).cloned() else {
+    let Some(train_uid) = state
+        .resolved
+        .get(&cancellation.train_id)
+        .or_else(|| state.pending_activations.get(&cancellation.train_id))
+        .cloned()
+    else {
         return vec![];
     };
+    for line_id in population.lines_containing(service_date, &train_uid) {
+        state
+            .derived
+            .entry((line_id.to_string(), train_uid.clone()))
+            .or_insert_with(DerivedState::awaiting_activation);
+    }
     let mut cancelled = vec![];
     for (key, derived) in state.derived.iter_mut() {
         if key.1 == train_uid {
@@ -135,6 +158,7 @@ pub fn apply_cancellation(
             cancelled.push(key.clone());
         }
     }
+    cancelled.sort();
     cancelled
 }
 
@@ -187,6 +211,17 @@ mod tests {
             schedule_start_date: Some("2026-09-04".to_string()),
             schedule_end_date: Some("2026-09-04".to_string()),
             tp_origin_timestamp: None,
+        }
+    }
+
+    fn cancellation(train_id: &str) -> Cancellation {
+        Cancellation {
+            train_id: train_id.to_string(),
+            canx_timestamp: None,
+            canx_reason_code: None,
+            canx_type: Some("AT ORIGIN".to_string()),
+            dep_timestamp: None,
+            loc_stanox: None,
         }
     }
 
@@ -350,14 +385,9 @@ mod tests {
 
         let cancelled = apply_cancellation(
             &mut state,
-            &Cancellation {
-                train_id: "T1".to_string(),
-                canx_timestamp: None,
-                canx_reason_code: None,
-                canx_type: None,
-                dep_timestamp: None,
-                loc_stanox: None,
-            },
+            &cancellation("T1"),
+            &population_with_uid_in_line_a(date),
+            date,
         );
 
         assert_eq!(
@@ -367,5 +397,52 @@ mod tests {
         let derived = &state.derived[&("line-a".to_string(), "C11052".to_string())];
         assert_eq!(derived.status, "cancelled");
         assert_eq!(derived.last_reported_location, Some("WAT".to_string()));
+    }
+
+    /// Regression test: a train cancelled at origin never moves, so no
+    /// Movement ever resolved its `train_id`. Its 0002 used to be ignored;
+    /// now its Activation is enough, and every line whose population holds
+    /// the UID reads it cancelled -- which matters on a partial day, where
+    /// an unseen train is left out rather than presumed cancelled.
+    #[test]
+    fn a_cancellation_before_any_movement_cancels_the_train_on_its_lines() {
+        let mut state = CorrelationState::default();
+        let date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let population = population_with_uid_in_line_a(date);
+        apply_activation(&mut state, &activation("T1", "C11052"));
+
+        let cancelled = apply_cancellation(&mut state, &cancellation("T1"), &population, date);
+
+        assert_eq!(
+            cancelled,
+            vec![("line-a".to_string(), "C11052".to_string())]
+        );
+        let row = crate::stats::build_line_row(
+            "line-a",
+            date,
+            &["C11052"],
+            &state.derived,
+            true,
+            true, // partial: unseen trains are left out
+            &common::Defaults::default(),
+        );
+        assert_eq!(row.stats.total, 1, "the explicit cancellation is counted");
+        assert_eq!(row.stats.cancelled, 1);
+    }
+
+    /// A 0002 for a train this process never saw activated still does
+    /// nothing: there is no UID to attribute it to.
+    #[test]
+    fn a_cancellation_for_an_unknown_train_id_does_nothing() {
+        let mut state = CorrelationState::default();
+        let date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let cancelled = apply_cancellation(
+            &mut state,
+            &cancellation("T9"),
+            &population_with_uid_in_line_a(date),
+            date,
+        );
+        assert!(cancelled.is_empty());
+        assert!(state.derived.is_empty());
     }
 }
