@@ -1386,6 +1386,20 @@ async fn build_journey_detail_response(
 
     let mut legs = Vec::with_capacity(leg_rows.len());
     for (leg, tracked_train_state) in leg_rows.into_iter().zip(leg_states) {
+        // Operator + TRUST reason overlays (train_operator / train_reasons),
+        // applied after the batched stop build so per-stop live status sees
+        // the stops.
+        let tracked_train_state = match tracked_train_state {
+            Some(state) => {
+                let state =
+                    crate::data::train_operator::attach_to_tracked_state(&app.database, state)
+                        .await;
+                Some(
+                    crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
+                )
+            }
+            None => None,
+        };
         // Low finding #5 (2026-09-25 review): `TrackedTrainState` is reused
         // verbatim here for BOTH the owner's own read and every non-owner
         // read this function serves -- a fellow group member

@@ -646,9 +646,14 @@ async fn get_by_tracking_id(
         .await
         .map_err(internal_error("read tracked train state"))?;
     match state {
-        Some(state) => Ok(Json(
-            attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await,
-        )),
+        Some(state) => {
+            let state =
+                crate::data::train_operator::attach_to_tracked_state(&app.database, state).await;
+            let state = attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await;
+            Ok(Json(
+                crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
+            ))
+        }
         None => Err((
             StatusCode::NOT_FOUND,
             "no tracked train with that id".to_string(),
@@ -839,7 +844,14 @@ async fn get_by_uid_and_date(
     }
 
     match state {
-        Some(state) => Ok(Json(attach_journey_stops_public(&app, state).await)),
+        Some(state) => {
+            let state =
+                crate::data::train_operator::attach_to_public_state(&app.database, state).await;
+            let state = attach_journey_stops_public(&app, state).await;
+            Ok(Json(
+                crate::data::train_reasons::attach_to_public_state(&app.database, state).await,
+            ))
+        }
         None => Err((
             StatusCode::NOT_FOUND,
             "no known train for that uid/date".to_string(),
@@ -1804,6 +1816,13 @@ mod tests {
             trains_id: Some(1),
             journey_stops: None,
             may_have_arrived: false,
+            operator_code: None,
+            operator_name: None,
+            cancelled: false,
+            cancel_reason_code: None,
+            cancel_reason: None,
+            change_of_origin_reason_code: None,
+            change_of_origin_reason: None,
         }
     }
 
@@ -3797,6 +3816,172 @@ mod db_tests {
         assert_eq!(body.get("delayMinutes").and_then(Value::as_i64), Some(12));
 
         cleanup_public_train(&pool, "TEST-PUBLIC-BY-UID").await;
+    }
+
+    /// `operatorCode`/`operatorName` on the public train-detail route: filled
+    /// from the CIF schedule's ATOC code and the `tocs` name when known, and
+    /// present-but-null when the train has no schedule row.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_carries_the_operator -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_carries_the_operator() {
+        let pool = connect().await;
+        // Dates of their own, and one per train: `seed_public_train` gives
+        // every fixture the same TRUST `train_id`, which is unique per day.
+        let service_date: chrono::NaiveDate = "2026-09-16".parse().unwrap();
+        let other_date: chrono::NaiveDate = "2026-09-17".parse().unwrap();
+        for uid in ["TEST-OP-KNOWN", "TEST-OP-NONE"] {
+            cleanup_public_train(&pool, uid).await;
+        }
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-OP-KNOWN'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tocs (atoc_code, name, legal_name) \
+             VALUES ('Q7', 'Test Route Operator', 'Test Route Operator Ltd') \
+             ON CONFLICT (atoc_code) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                 (service_date, origin_crs, destination_crs, scheduled, train_uid, operator_atoc) \
+             VALUES ($1, 'ZZA', 'ZZB', TIME '08:00', 'TEST-OP-KNOWN', 'Q7')",
+        )
+        .bind(service_date)
+        .execute(&pool)
+        .await
+        .unwrap();
+        seed_public_train(&pool, "TEST-OP-KNOWN", service_date).await;
+        seed_public_train(&pool, "TEST-OP-NONE", other_date).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router.clone(),
+            format!("/Train/by-uid/TEST-OP-KNOWN/{service_date}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert_eq!(body["operatorCode"], "Q7");
+        assert_eq!(body["operatorName"], "Test Route Operator");
+
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/TEST-OP-NONE/{other_date}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert!(
+            body.get("operatorCode").is_some_and(Value::is_null),
+            "{body:?}"
+        );
+        assert!(
+            body.get("operatorName").is_some_and(Value::is_null),
+            "{body:?}"
+        );
+
+        for uid in ["TEST-OP-KNOWN", "TEST-OP-NONE"] {
+            cleanup_public_train(&pool, uid).await;
+        }
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-OP-KNOWN'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM tocs WHERE atoc_code = 'Q7'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// `cancelled` and the cancellation reason on the public route: a coded
+    /// cancellation serves code and text, an unknown code serves the code
+    /// with null text, and a running train is not cancelled and shows no
+    /// cancellation reason even with one stored.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_carries_cancellation_reasons -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_carries_cancellation_reasons() {
+        let pool = connect().await;
+        // One date per train: `seed_public_train` reuses one TRUST train_id.
+        let cases = [
+            ("TEST-RSN-CODED", "2026-09-18", "cancelled", "TG"),
+            ("TEST-RSN-UNKNOWN", "2026-09-19", "cancelled", "Q?"),
+            ("TEST-RSN-RUNNING", "2026-09-20", "en_route", "TG"),
+        ];
+        for (uid, date, status, code) in cases {
+            cleanup_public_train(&pool, uid).await;
+            let date: chrono::NaiveDate = date.parse().unwrap();
+            let trains_id = seed_public_train(&pool, uid, date).await;
+            sqlx::query("UPDATE train_current_state SET status = $2 WHERE trains_id = $1")
+                .bind(trains_id)
+                .bind(status)
+                .execute(&pool)
+                .await
+                .unwrap();
+            crate::data::train_reasons::upsert_reasons(
+                &pool,
+                &[common::TrainReasonMessage {
+                    train_id: "1A23".to_string(),
+                    train_uid: Some(uid.to_string()),
+                    service_date: date,
+                    msg_type: "0002".to_string(),
+                    reason_code: code.to_string(),
+                    canx_type: Some("AT ORIGIN".to_string()),
+                    loc_stanox: None,
+                    event_at: None,
+                }],
+            )
+            .await
+            .unwrap();
+        }
+
+        let router = test_router(test_app(pool.clone()));
+        let get = |uid: &str, date: &str| {
+            let router = router.clone();
+            let uri = format!("/Train/by-uid/{uid}/{date}");
+            async move { request(router, uri, None).await }
+        };
+
+        let (status, body) = get("TEST-RSN-CODED", "2026-09-18").await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert_eq!(body["cancelled"], true);
+        assert_eq!(body["cancelReasonCode"], "TG");
+        assert_eq!(body["cancelReason"], "Driver");
+        assert!(
+            body.get("changeOfOriginReasonCode")
+                .is_some_and(Value::is_null)
+        );
+
+        let (_, body) = get("TEST-RSN-UNKNOWN", "2026-09-19").await;
+        assert_eq!(body["cancelled"], true);
+        assert_eq!(body["cancelReasonCode"], "Q?");
+        assert!(
+            body.get("cancelReason").is_some_and(Value::is_null),
+            "{body:?}"
+        );
+
+        let (_, body) = get("TEST-RSN-RUNNING", "2026-09-20").await;
+        assert_eq!(body["cancelled"], false);
+        assert!(
+            body.get("cancelReasonCode").is_some_and(Value::is_null),
+            "{body:?}"
+        );
+        assert!(
+            body.get("cancelReason").is_some_and(Value::is_null),
+            "{body:?}"
+        );
+
+        for (uid, ..) in cases {
+            cleanup_public_train(&pool, uid).await;
+        }
     }
 
     #[tokio::test]

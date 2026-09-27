@@ -471,6 +471,37 @@ pub struct PublicTrainState {
     /// overlay" way by `routes::train::attach_journey_stops_public`.
     #[sqlx(skip)]
     pub may_have_arrived: bool,
+    /// The operating company's ATOC code (for example `"SW"`), from the CIF
+    /// schedule. Serialized as `operatorCode`. Filled after the read by
+    /// `data::train_operator`, hence `#[sqlx(skip)]`. `None` when no single
+    /// code is known; see that module's doc for when that happens.
+    #[sqlx(skip)]
+    pub operator_code: Option<String>,
+    /// The `tocs` display name for `operator_code` (for example
+    /// `"South Western Railway"`). Serialized as `operatorName`. `None` when
+    /// `operator_code` is `None` or the code has no `tocs` row.
+    #[sqlx(skip)]
+    pub operator_name: Option<String>,
+    /// Whether the train is cancelled: `status == "cancelled"`. Filled
+    /// after the read by `data::train_reasons`, like every field below.
+    #[sqlx(skip)]
+    pub cancelled: bool,
+    /// The TRUST cancellation reason code (e.g. `"TG"`), only while
+    /// `cancelled` is true.
+    #[sqlx(skip)]
+    pub cancel_reason_code: Option<String>,
+    /// `cancel_reason_code`'s delay attribution glossary text (e.g.
+    /// `"Driver"`). `None` for a code the glossary lacks or a system code
+    /// (`PD`, `ZW`). There is no delay-reason equivalent: TRUST carries none.
+    #[sqlx(skip)]
+    pub cancel_reason: Option<String>,
+    /// The TRUST change-of-origin reason code, when the train's origin was
+    /// changed.
+    #[sqlx(skip)]
+    pub change_of_origin_reason_code: Option<String>,
+    /// Its glossary text, under the same rules as `cancel_reason`.
+    #[sqlx(skip)]
+    pub change_of_origin_reason: Option<String>,
 }
 
 /// Whether `(train_uid, service_date)` is a real, CIF-published scheduled

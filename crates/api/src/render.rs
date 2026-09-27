@@ -461,6 +461,13 @@ pub(crate) fn line_train_json(
                 "nextCallingPoint": s.next_calling_point,
                 "etaNext": s.eta_next,
                 "etaSource": s.eta_source,
+                "operatorCode": s.operator_code,
+                "operatorName": s.operator_name,
+                "cancelled": s.cancelled,
+                "cancelReasonCode": s.cancel_reason_code,
+                "cancelReason": s.cancel_reason,
+                "changeOfOriginReasonCode": s.change_of_origin_reason_code,
+                "changeOfOriginReason": s.change_of_origin_reason,
             })
         }),
     }
@@ -1489,6 +1496,13 @@ mod tests {
             planned_platform: None,
             journey_stops: None,
             may_have_arrived: false,
+            operator_code: Some("LM".to_string()),
+            operator_name: None,
+            cancelled: false,
+            cancel_reason_code: None,
+            cancel_reason: None,
+            change_of_origin_reason_code: None,
+            change_of_origin_reason: None,
         };
 
         let json = render_line_train(&entry, Some(&live), &ScheduleRouteEndpoints::default());
@@ -1507,6 +1521,10 @@ mod tests {
         );
         assert_eq!(json["liveStatus"]["delayMinutes"], 2);
         assert_eq!(json["liveStatus"]["nextCallingPoint"], "BHM");
+        assert_eq!(json["liveStatus"]["operatorCode"], "LM");
+        // Present and null, not omitted: the code has no `tocs` name here.
+        assert!(json["liveStatus"]["operatorName"].is_null());
+        assert!(json["liveStatus"].get("operatorName").is_some());
         // journeyStops/callingPoints must NOT appear inside liveStatus --
         // the batched route deliberately omits per-stop overlays (spec
         // §5.3, Decision point 3) and calling points come from the raw

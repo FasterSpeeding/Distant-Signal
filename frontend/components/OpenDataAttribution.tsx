@@ -195,6 +195,18 @@ export const DATA_SOURCES: readonly DataSource[] = [
     ),
   },
   {
+    id: 'network-rail-delay-attribution',
+    title: 'Network Rail (delay attribution glossary)',
+    use: 'The descriptions of the reason codes TRUST gives for a cancellation or a change of origin, from the Historic Delay Attribution Glossary (August 2021).',
+    statement: (
+      <>
+        Contains information of Network Rail Infrastructure Limited licensed under the{' '}
+        <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>.
+      </>
+    ),
+    licence: <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>,
+  },
+  {
     id: 'rsp-timetable',
     title: 'Timetable (CIF)',
     use: 'Scheduled services and calling points from the rail industry timetable feed.',

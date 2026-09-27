@@ -166,6 +166,13 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_trust_backlog.clone()],
         ),
+        // POST-only, same caller/group as /trust-event-backlog:
+        // trust-backlog-consumer's TRUST reason codes.
+        (
+            "/train-reasons",
+            Method::POST,
+            vec![config.internal_oauth_group_trust_backlog.clone()],
+        ),
         // ONE reader again: schedule-ingest reading back its own last write.
         //
         // schedule-reference's read grant here was REMOVED (2026-09-25): it
