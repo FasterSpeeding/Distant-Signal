@@ -1235,8 +1235,8 @@ mod tests {
         .await
         .expect("seed fixture incident row");
         sqlx::query(
-            "INSERT INTO incident_history (incident_id, summary, description, operators, affected_stations, is_planned) \
-             VALUES ($1, $2, $3, '{}', '{}', false)",
+            "INSERT INTO incident_history (incident_id, summary, description, operators, affected_stations, is_planned, priority) \
+             VALUES ($1, $2, $3, '{}', '{}', false, 3)",
         )
         .bind(incident_id)
         .bind(summary)
