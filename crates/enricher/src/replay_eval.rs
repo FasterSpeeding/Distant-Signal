@@ -1,30 +1,35 @@
-//! RESEARCH PROTOTYPE: offline replay harness for the diff-aware enricher
-//! study (/home/coder/ds-review/diff-aware-enricher-research.md). Test-only,
+//! Offline replay harness for the enricher's churn measurement
+//! (docs: /home/coder/ds-review/diff-aware-enricher-research.md). Test-only,
 //! every test `#[ignore]`d; reads a JSONL export of `incident_history`
 //! produced by `scripts/export-incident-history-for-replay.sql` (read-only).
 //! Writes nothing anywhere except stdout/stderr.
 //!
-//! Three modes:
+//! Two modes:
 //!
 //! - `replay_dry_run_edit_classes` -- no LLM. Classifies every consecutive
 //!   text-changing version pair with `text_delta::classify` and prints the
-//!   distribution (what option (a) would skip, what option (b) would see).
+//!   distribution (e.g. what `CARRY_FORWARD_SEMANTIC_NOOPS` would skip).
 //! - `replay_live_pairs` -- per edit class, a deterministic sample of pairs:
 //!   full extraction of the OLD text (stand-in for the stored extraction),
-//!   full extraction of the NEW text, and `churn::compare` between them.
-//!   Optional: a repeat full run of the new text (noise floor), and the
-//!   prototype incremental primary pass (`extract_primary_incremental`)
-//!   compared against the full new extraction.
-//! - `replay_live_chain` -- error accumulation: for incidents with many
-//!   versions, chains incremental extraction step by step and compares each
-//!   step against a from-scratch full extraction of the same version.
+//!   full extraction of the NEW text, and `churn::compare` between them --
+//!   the offline twin of the `enricher_extraction_churn_total{edit_class}`
+//!   metric. Optional: a repeat full run of the new text (noise floor).
+//!
+//! The research prototype's incremental ("diff-aware prompt") modes were
+//! deliberately not merged: only the measurement side was approved.
+//!
+//! Run (the crate is bin-only):
+//!
+//! ```text
+//! REPLAY_HISTORY_JSONL=incident-history.jsonl \
+//!   cargo test -p enricher --bin enricher replay_eval:: -- --ignored --nocapture --test-threads=1
+//! ```
 //!
 //! Env: `REPLAY_HISTORY_JSONL` (required), `REPLAY_SINCE` (RFC 3339, only
 //! pairs whose new version is at/after it), `REPLAY_SAMPLE_PER_CLASS`
-//! (default 15), `REPLAY_REPEAT=1`, `REPLAY_INCREMENTAL=1`,
-//! `REPLAY_CHAIN_INCIDENTS` (default 5), `REPLAY_CHAIN_DEPTH` (default 8),
-//! plus the live eval's `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`/
-//! `LIVE_EVAL_TIMEOUT_SECS`.
+//! (default 15), `REPLAY_REPEAT=1`, plus the live evals' `LLM_BASE_URL`/
+//! `LLM_MODEL`/`LLM_API_KEY`/`LIVE_EVAL_TIMEOUT_SECS` and provider-policy
+//! env vars (see `llm::live_client_from_env`).
 
 use std::collections::BTreeMap;
 
@@ -33,7 +38,7 @@ use serde::Deserialize;
 
 use crate::churn::{self, ChurnReport};
 use crate::combine;
-use crate::llm::{ExtractionPeriod, LlmClient, PrimaryExtraction};
+use crate::llm::{self, ExtractionPeriod, LlmClient, PrimaryExtraction};
 use crate::text_delta::{self, EditClass};
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +70,12 @@ struct Incident {
 fn load() -> Vec<Incident> {
     let path = std::env::var("REPLAY_HISTORY_JSONL").expect("REPLAY_HISTORY_JSONL must be set");
     let raw = std::fs::read_to_string(&path).expect("read REPLAY_HISTORY_JSONL");
+    parse(&raw)
+}
+
+/// Groups JSONL history rows into per-incident version lists -- split out
+/// of `load` so it's testable without a file.
+fn parse(raw: &str) -> Vec<Incident> {
     let mut by_id: BTreeMap<String, Vec<HistoryRow>> = BTreeMap::new();
     for line in raw.lines().filter(|l| !l.trim().is_empty()) {
         let row: HistoryRow = serde_json::from_str(line).expect("valid JSONL row");
@@ -188,61 +199,23 @@ fn replay_dry_run_edit_classes() {
     }
 }
 
-fn live_client() -> LlmClient {
-    let base_url = std::env::var("LLM_BASE_URL").expect("LLM_BASE_URL must be set");
-    let model = std::env::var("LLM_MODEL").expect("LLM_MODEL must be set");
-    let timeout_secs = env_usize("LIVE_EVAL_TIMEOUT_SECS", 180) as u64;
-    LlmClient::new(
-        base_url,
-        std::env::var("LLM_API_KEY").ok(),
-        model,
-        std::time::Duration::from_secs(timeout_secs),
-    )
-}
-
-/// One pipeline result: the primary pass (fed to the next incremental step)
-/// and the combined periods (what production would write).
+/// One pipeline result: the primary pass and the combined periods (what
+/// production would write).
 struct Extraction {
     primary: PrimaryExtraction,
     periods: Vec<ExtractionPeriod>,
 }
 
-/// The production pipeline minus the DB: primary (full or incremental),
-/// both adversarial passes, `combine_periods` -- same order as
-/// `main.rs::process_incident`.
+/// The production pipeline minus the DB: primary, both adversarial passes,
+/// `combine_periods` -- same order as `main.rs::process_incident`.
 async fn run_pipeline(
     llm: &LlmClient,
     version: &Version,
     reference_date: DateTime<Utc>,
-    incremental_from: Option<(&PrimaryExtraction, &Version)>,
 ) -> anyhow::Result<Extraction> {
-    let primary = match incremental_from {
-        None => {
-            llm.extract_primary(&version.summary, &version.description, reference_date)
-                .await?
-        }
-        Some((previous, previous_version)) => {
-            let diff = text_delta::render_diff(
-                &format!(
-                    "Summary: {}\nDescription: {}",
-                    previous_version.summary, previous_version.description
-                ),
-                &format!(
-                    "Summary: {}\nDescription: {}",
-                    version.summary, version.description
-                ),
-                6,
-            );
-            llm.extract_primary_incremental(
-                previous,
-                &diff,
-                &version.summary,
-                &version.description,
-                reference_date,
-            )
-            .await?
-        }
-    };
+    let primary = llm
+        .extract_primary(&version.summary, &version.description, reference_date)
+        .await?;
     let resolution = llm
         .extract_adversarial(&version.summary, &version.description, &primary.periods)
         .await?;
@@ -308,7 +281,7 @@ fn print_tallies(title: &str, tallies: &BTreeMap<&'static str, Tally>) {
 #[tokio::test]
 #[ignore = "needs REPLAY_HISTORY_JSONL and a real LLM_BASE_URL (self-hosted); see module doc"]
 async fn replay_live_pairs() {
-    let llm = live_client();
+    let llm = llm::live_client_from_env();
     let incidents = load();
     let mut pairs = classified_pairs(&incidents);
     // Deterministic, spread-out sample: order by a hash of (incident,
@@ -318,18 +291,17 @@ async fn replay_live_pairs() {
         common::text_hash::text_hash(&p.incident.id, &p.new.recorded_at.to_rfc3339())
     });
     let per_class = env_usize("REPLAY_SAMPLE_PER_CLASS", 15);
-    let (repeat, incremental) = (env_flag("REPLAY_REPEAT"), env_flag("REPLAY_INCREMENTAL"));
+    let repeat = env_flag("REPLAY_REPEAT");
 
     let mut full_vs_old: BTreeMap<&'static str, Tally> = BTreeMap::new();
     let mut noise: BTreeMap<&'static str, Tally> = BTreeMap::new();
-    let mut inc_vs_full: BTreeMap<&'static str, Tally> = BTreeMap::new();
     for class in CLASSES {
         for pair in pairs.iter().filter(|p| p.class == class).take(per_class) {
             let label = class.label();
             let reference = pair.incident.reference_date;
             let run = async {
-                let old = run_pipeline(&llm, pair.old, reference, None).await?;
-                let new = run_pipeline(&llm, pair.new, reference, None).await?;
+                let old = run_pipeline(&llm, pair.old, reference).await?;
+                let new = run_pipeline(&llm, pair.new, reference).await?;
                 let r = compare(&old, &new);
                 eprintln!(
                     "PAIR class={label} incident={} planned={} full_vs_old=[{}]",
@@ -339,18 +311,10 @@ async fn replay_live_pairs() {
                 );
                 full_vs_old.entry(label).or_default().add(&r);
                 if repeat {
-                    let again = run_pipeline(&llm, pair.new, reference, None).await?;
+                    let again = run_pipeline(&llm, pair.new, reference).await?;
                     let r = compare(&new, &again);
                     eprintln!("  noise=[{}]", fields(&r));
                     noise.entry(label).or_default().add(&r);
-                }
-                if incremental {
-                    let inc =
-                        run_pipeline(&llm, pair.new, reference, Some((&old.primary, pair.old)))
-                            .await?;
-                    let r = compare(&new, &inc);
-                    eprintln!("  incremental_vs_full=[{}]", fields(&r));
-                    inc_vs_full.entry(label).or_default().add(&r);
                 }
                 anyhow::Ok(())
             };
@@ -366,64 +330,31 @@ async fn replay_live_pairs() {
     if repeat {
         print_tallies("full(new) vs full(new) again: noise floor", &noise);
     }
-    if incremental {
-        print_tallies(
-            "incremental(new) vs full(new): disagreement the diff-aware prompt introduces",
-            &inc_vs_full,
-        );
-    }
 }
 
-#[tokio::test]
-#[ignore = "needs REPLAY_HISTORY_JSONL and a real LLM_BASE_URL (self-hosted); see module doc"]
-async fn replay_live_chain() {
-    let llm = live_client();
-    let incidents = load();
-    let depth = env_usize("REPLAY_CHAIN_DEPTH", 8);
-    let count = env_usize("REPLAY_CHAIN_INCIDENTS", 5);
-    let mut chosen: Vec<&Incident> = incidents
+/// Not ignored: exercises the JSONL grouping and pair classification the
+/// ignored replays depend on, with no file or LLM.
+#[test]
+fn parse_drops_metadata_only_snapshots_and_classifies_text_changes() {
+    let raw = [
+        r#"{"incident_id":"A","recorded_at":"2026-09-01T10:00:00Z","summary":"s","description":"<p>Lines closed.</p>","is_planned":false,"first_seen_at":"2026-09-01T09:00:00Z"}"#,
+        // Metadata-only snapshot (same text): not a version.
+        r#"{"incident_id":"A","recorded_at":"2026-09-01T10:05:00Z","summary":"s","description":"<p>Lines closed.</p>","is_planned":false,"first_seen_at":null}"#,
+        r#"{"incident_id":"A","recorded_at":"2026-09-01T10:10:00Z","summary":"s","description":"Lines closed","is_planned":false,"first_seen_at":null}"#,
+        r#"{"incident_id":"A","recorded_at":"2026-09-01T10:20:00Z","summary":"s","description":"Lines closed. Buses replace trains.","is_planned":false}"#,
+        "",
+    ]
+    .join("\n");
+    let incidents = parse(&raw);
+    assert_eq!(incidents.len(), 1);
+    assert_eq!(incidents[0].versions.len(), 3);
+    assert_eq!(
+        incidents[0].reference_date,
+        "2026-09-01T09:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+    let classes: Vec<EditClass> = classified_pairs(&incidents)
         .iter()
-        .filter(|i| !i.planned && i.versions.len() > depth)
+        .map(|p| p.class)
         .collect();
-    chosen.sort_by_key(|i| common::text_hash::text_hash(&i.id, ""));
-    let mut per_depth: BTreeMap<usize, Tally> = BTreeMap::new();
-    for incident in chosen.into_iter().take(count) {
-        let reference = incident.reference_date;
-        let run = async {
-            let mut chained = run_pipeline(&llm, &incident.versions[0], reference, None).await?;
-            for step in 1..=depth {
-                let (prev, cur) = (&incident.versions[step - 1], &incident.versions[step]);
-                let class = text_delta::classify(
-                    &prev.summary,
-                    &prev.description,
-                    &cur.summary,
-                    &cur.description,
-                );
-                chained =
-                    run_pipeline(&llm, cur, reference, Some((&chained.primary, prev))).await?;
-                let full = run_pipeline(&llm, cur, reference, None).await?;
-                let r = compare(&full, &chained);
-                eprintln!(
-                    "CHAIN incident={} step={step} class={} chained_vs_full=[{}]",
-                    &incident.id[..8.min(incident.id.len())],
-                    class.label(),
-                    fields(&r)
-                );
-                per_depth.entry(step).or_default().add(&r);
-            }
-            anyhow::Ok(())
-        };
-        if let Err(err) = run.await {
-            eprintln!("CHAIN incident={} FAILED: {err}", incident.id);
-        }
-    }
-    println!("\n== chained incremental vs full, by chain depth ==\ndepth\tn\tdiverged\tfields");
-    for (step, t) in &per_depth {
-        println!(
-            "{step}\t{}\t{:.0}%\t{:?}",
-            t.n,
-            100.0 * t.changed as f64 / t.n.max(1) as f64,
-            t.per_field
-        );
-    }
+    assert_eq!(classes, [EditClass::SemanticNoop, EditClass::Append]);
 }

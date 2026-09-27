@@ -1,12 +1,11 @@
-//! RESEARCH PROTOTYPE (worktree `research-diff-aware-enricher`, not for
-//! merge as-is) -- see /home/coder/ds-review/diff-aware-enricher-research.md.
-//!
 //! Classifies the change between the text an incident's stored extraction
-//! was computed from and its current text, so the enricher can
-//! (a) skip the LLM entirely for a *semantic no-op* (HTML/whitespace/
-//! entity/case/punctuation-only change) by carrying the previous extraction
-//! forward, and (b) label churn metrics by edit class so the decision on a
-//! diff-aware prompt can be made on data.
+//! was computed from and its current text (research:
+//! /home/coder/ds-review/diff-aware-enricher-research.md), so the enricher
+//! can (a) label the churn metrics by edit class
+//! (`enricher_extraction_churn_total{edit_class}` -- measurement, always on)
+//! and (b) behind `CARRY_FORWARD_SEMANTIC_NOOPS` (default off), skip the LLM
+//! entirely for a *semantic no-op* (HTML/whitespace/entity/case/punctuation-
+//! only change) by carrying the previous extraction forward.
 //!
 //! ## Semantic no-op normalisation
 //!
@@ -29,8 +28,8 @@
 //! gets a full extraction.
 
 /// One whitespace-delimited word of an incident's text after tag stripping
-/// and entity decoding: `key` is what's compared, `display` is what a
-/// diff-aware prompt would show.
+/// and entity decoding: `key` is what's compared, `display` the original
+/// word (kept for debugging/log output).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Word {
     pub key: String,
@@ -267,40 +266,6 @@ pub fn classify(
     }
 }
 
-/// Renders a compact, human/LLM-readable word diff of the description
-/// (`- removed` / `+ added` lines with a few words of context), for a
-/// diff-aware prompt. Used only by the offline replay harness today.
-#[cfg(test)]
-pub fn render_diff(old_text: &str, new_text: &str, context_words: usize) -> String {
-    let (old_words, new_words) = (words(old_text), words(new_text));
-    let old_keys: Vec<String> = old_words.iter().map(|w| w.key.clone()).collect();
-    let new_keys: Vec<String> = new_words.iter().map(|w| w.key.clone()).collect();
-    let (hunks, _) = diff(&old_keys, &new_keys);
-    let join = |ws: &[Word]| {
-        ws.iter()
-            .map(|w| w.display.as_str())
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let mut out = String::new();
-    for h in hunks {
-        let ctx_start = h.old_range.start.saturating_sub(context_words);
-        let ctx_end = (h.old_range.end + context_words).min(old_words.len());
-        out.push_str(&format!(
-            "@@ ...{} [CHANGE] {}...\n",
-            join(&old_words[ctx_start..h.old_range.start]),
-            join(&old_words[h.old_range.end..ctx_end]),
-        ));
-        if !h.old_range.is_empty() {
-            out.push_str(&format!("- {}\n", join(&old_words[h.old_range.clone()])));
-        }
-        if !h.new_range.is_empty() {
-            out.push_str(&format!("+ {}\n", join(&new_words[h.new_range.clone()])));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,14 +387,100 @@ mod tests {
         );
     }
 
+    const SAMPLES: [(&str, &str); 4] = [
+        (
+            "Signal failure at Crewe",
+            "<p>Trains may be delayed by up to 20 minutes.</p>",
+        ),
+        (
+            "Disruption between A and B",
+            "Lines are closed until 17:00. Tickets accepted on buses.",
+        ),
+        (
+            "Engineering works",
+            "Saturday 3 and Sunday 4 October: no service on platform 1, 2.",
+        ),
+        (
+            "London King's Cross",
+            "&#233;tape &amp; more; <b>Line</b> closed",
+        ),
+    ];
+
+    /// Property: every text is a semantic no-op of itself.
     #[test]
-    fn render_diff_shows_removed_and_added_words() {
-        let rendered = render_diff(
-            "Expected until 17:00 today.",
-            "Expected until 18:00 today.",
-            2,
-        );
-        assert!(rendered.contains("- 17:00"), "{rendered}");
-        assert!(rendered.contains("+ 18:00"), "{rendered}");
+    fn identical_text_is_always_a_noop() {
+        for (summary, description) in SAMPLES {
+            assert_eq!(
+                classify(summary, description, summary, description),
+                EditClass::SemanticNoop,
+                "{summary:?} / {description:?}"
+            );
+        }
+    }
+
+    /// Property: changing any single alphanumeric character that survives
+    /// normalisation (i.e. outside a tag or entity) is never a no-op --
+    /// exhaustively over every such position in the samples, to a digit and
+    /// to a letter that differ from the original.
+    #[test]
+    fn changing_any_one_alphanumeric_character_is_never_a_noop() {
+        for (summary, description) in SAMPLES {
+            for (field, text) in [(0, summary), (1, description)] {
+                let visible = words(text)
+                    .into_iter()
+                    .map(|w| w.key)
+                    .collect::<Vec<_>>()
+                    .concat();
+                for (i, c) in text.char_indices() {
+                    if !c.is_alphanumeric() {
+                        continue;
+                    }
+                    let replacement = if c.is_ascii_digit() { 'x' } else { '7' };
+                    let mut changed = String::with_capacity(text.len());
+                    changed.push_str(&text[..i]);
+                    changed.push(replacement);
+                    changed.push_str(&text[i + c.len_utf8()..]);
+                    let changed_visible = words(&changed)
+                        .into_iter()
+                        .map(|w| w.key)
+                        .collect::<Vec<_>>()
+                        .concat();
+                    if changed_visible == visible {
+                        // The character was inside a tag or entity name,
+                        // which normalisation drops anyway.
+                        continue;
+                    }
+                    let class = if field == 0 {
+                        classify(summary, description, &changed, description)
+                    } else {
+                        classify(summary, description, summary, &changed)
+                    };
+                    assert_ne!(class, EditClass::SemanticNoop, "{text:?} -> {changed:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn labels_are_a_fixed_distinct_set() {
+        let labels = [
+            EditClass::SemanticNoop,
+            EditClass::NumericOnly,
+            EditClass::Append,
+            EditClass::SmallEdit,
+            EditClass::PartialRewrite,
+            EditClass::Rewrite,
+        ]
+        .map(EditClass::label);
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len());
+    }
+
+    #[test]
+    fn oversized_inputs_degrade_to_one_whole_text_hunk() {
+        let big: Vec<String> = (0..2_100).map(|i| i.to_string()).collect();
+        let (hunks, matched) = diff(&big, &big);
+        assert_eq!(matched, 0);
+        assert_eq!(hunks.len(), 1);
     }
 }

@@ -257,9 +257,10 @@ pub fn compare(
 /// Emits the metrics and log line for one measured re-run -- see the module
 /// doc. Call only once the new extraction has actually been written.
 ///
-/// `edit_class` (RESEARCH PROTOTYPE) is `text_delta::EditClass::label` of
-/// how the text moved, or `"unknown"` -- a fixed set of 7 values, so the
-/// label adds at most 7x series. It is what lets churn be read per edit
+/// `edit_class` is `text_delta::EditClass::label` of how the text moved, or
+/// `"unknown"` (the previous text couldn't be recovered from
+/// `incident_history`) -- a fixed set of 7 values, so the label adds at most
+/// 7x series. It is what lets churn be read per edit
 /// class ("do small edits re-roll untouched fields?").
 pub fn record(incident_id: &str, report: &ChurnReport, edit_class: &'static str) {
     metrics::counter!(
