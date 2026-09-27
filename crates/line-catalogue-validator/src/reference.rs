@@ -2,9 +2,11 @@
 //! against, for both tiers described in `main.rs`'s module doc:
 //! [`ReferenceData::from_vendored_csvs`] (fast, no-secrets tier, reads the
 //! checked-in `reference-data/crs-tiploc.csv` / `reference-data/toc-codes.csv`)
-//! and [`ReferenceData::fetch_live`] (thorough tier, hits the same
-//! upstream site live over the network, plus the real RDM TOC feed when
-//! credentials are available).
+//! and [`ReferenceData::fetch_live`] (thorough tier, scrapes
+//! railwaycodes.org.uk live over the network, plus the real RDM TOC feed
+//! when credentials are available). `crs-tiploc.csv` is still a
+//! railwaycodes.org.uk snapshot; `toc-codes.csv` is now a Knowledgebase TOC
+//! List snapshot (DQ13) -- see `regenerate.rs`.
 //!
 //! Both tiers build the exact same [`ReferenceData`] shape, so
 //! `checks::validate_lines`/`checks::coverage_report` have no idea which
@@ -105,8 +107,8 @@ impl ReferenceData {
         Ok(data)
     }
 
-    /// Thorough, live tier: re-fetches the exact same
-    /// railwaycodes.org.uk pages the vendored CSVs were generated from
+    /// Thorough, live tier: re-fetches the
+    /// railwaycodes.org.uk pages the vendored CSVs were originally generated from
     /// (see `reference-data/line-catalogue-validation.md`), applying the
     /// identical extraction rules documented there, plus -- when
     /// `rdm_api_key`/`rdm_tocs_base_url` are both given -- the real RDM
