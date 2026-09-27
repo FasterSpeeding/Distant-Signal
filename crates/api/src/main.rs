@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum_prometheus::PrometheusMetricLayerBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -261,7 +262,20 @@ async fn main() -> anyhow::Result<()> {
     // the migration file itself.
     data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
 
-    sqlx::migrate!().run(&app.database).await?;
+    // On its own connection, not the request pool: lock_timeout 10s and a
+    // statement_timeout under the startup probe's 300s budget instead of the
+    // pool's 60s, after dropping any INVALID index a failed CREATE INDEX
+    // CONCURRENTLY left behind. See `api::migrate`.
+    let migration_options: sqlx::postgres::PgConnectOptions = app
+        .config
+        .database_url
+        .parse()
+        .context("could not parse DATABASE_URL")?;
+    api::migrate::run(
+        api::app::with_dead_client_detection(migration_options),
+        api::migrate::MigrationSettings::from_env()?,
+    )
+    .await?;
 
     let listener = tokio::net::TcpListener::bind(&app.config.bind_url).await?;
     axum::serve(listener, router).await?;

@@ -2039,6 +2039,7 @@ pub async fn upsert_schedule_destination_departures_chunk(
     distinct_dates.dedup();
 
     let mut tx = pool.begin().await?;
+    common::pg::set_local_statement_timeout(&mut tx, SCHEDULE_CHUNK_STATEMENT_TIMEOUT).await?;
 
     if first_chunk {
         sqlx::query(
@@ -2160,6 +2161,16 @@ struct PublishKeysSql {
     /// advisory locks exist as of 2026-09-27).
     final_lock_key: i64,
 }
+
+/// `statement_timeout` for every statement of a schedule ingest chunk's
+/// transaction (both products, legacy and diff publish), raised above the
+/// pool's 60s default (`common::pg`) with `SET LOCAL`. The bulk
+/// `INSERT ... SELECT FROM UNNEST` of up to ~250k rows takes 3-8s in
+/// production, and the legacy first chunk's whole-date `DELETE` longer; 120s
+/// keeps a healthy chunk far inside the budget while still bounding a
+/// runaway. A final chunk's delete phase then sets its own
+/// [`PUBLISH_DELETE_STATEMENT_TIMEOUT`].
+const SCHEDULE_CHUNK_STATEMENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// `statement_timeout` for every statement of a final chunk's delete phase
 /// (the advisory lock, `summarize`, `analyze`, `delete_missing`,
@@ -2429,6 +2440,7 @@ pub async fn upsert_schedule_destination_departures_publish_part(
 
     let sql = &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL;
     let mut tx = pool.begin().await?;
+    common::pg::set_local_statement_timeout(&mut tx, SCHEDULE_CHUNK_STATEMENT_TIMEOUT).await?;
 
     discard_superseded_publish_keys(&mut tx, sql, part, &distinct_dates).await?;
 
@@ -2622,6 +2634,7 @@ pub async fn upsert_schedule_calling_points_full_chunk(
     distinct_dates.dedup();
 
     let mut tx = pool.begin().await?;
+    common::pg::set_local_statement_timeout(&mut tx, SCHEDULE_CHUNK_STATEMENT_TIMEOUT).await?;
 
     if first_chunk {
         sqlx::query(
@@ -2687,6 +2700,7 @@ pub async fn upsert_schedule_calling_points_full_publish_part(
 
     let sql = &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL;
     let mut tx = pool.begin().await?;
+    common::pg::set_local_statement_timeout(&mut tx, SCHEDULE_CHUNK_STATEMENT_TIMEOUT).await?;
 
     discard_superseded_publish_keys(&mut tx, sql, part, &distinct_dates).await?;
 
