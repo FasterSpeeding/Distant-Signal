@@ -231,6 +231,7 @@ mod db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             redis_url: "redis://127.0.0.1:0".to_string(),
+            redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_incidents: "svc-poller-incidents".to_string(),

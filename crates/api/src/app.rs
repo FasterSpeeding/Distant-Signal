@@ -569,8 +569,12 @@ impl AppState {
 
         // No eager connect: only the URL is validated here. See the `redis`
         // field's doc comment on `AppState`.
-        let redis =
-            redis::Client::open(config.redis_url.clone()).context("Could not parse REDIS_URL")?;
+        // REDIS_PASSWORD, when set, is applied here (common::redis_auth).
+        let redis_url = common::redis_auth::redis_url_with_password(
+            &config.redis_url,
+            config.redis_password.as_ref(),
+        )?;
+        let redis = redis::Client::open(redis_url.expose()).context("Could not parse REDIS_URL")?;
 
         // An empty client secret would make every future confidential-client
         // token exchange fail anyway, but only after a real user has already
