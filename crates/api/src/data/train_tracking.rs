@@ -56,7 +56,7 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
     if pin.origin_crs.trim().is_empty() {
         return Err("Enter the station you're departing from.".to_string());
     }
-    if pin.origin_crs.len() != 3 {
+    if !crate::routes::is_crs_code(&pin.origin_crs) {
         return Err(
             "That doesn't look like a station code — CRS codes are three letters, like WOK \
              or EUS."
@@ -73,7 +73,119 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
             MAX_PIN_AGE.num_hours(),
         ));
     }
+    // API-6: a pin beyond the published timetable can never match, and
+    // used to sit in both 300 s sweeps until its date came round (a pin
+    // dated 2090 was swept for ever).
+    let london_today = now.with_timezone(&chrono_tz::Europe::London).date_naive();
+    if pin.service_date > london_today + chrono::Duration::days(PIN_MAX_DAYS_AHEAD)
+        || pin.scheduled_departure - now > chrono::Duration::days(PIN_MAX_DAYS_AHEAD + 1)
+    {
+        return Err(format!(
+            "That departure is too far ahead — trains can be tracked up to {PIN_MAX_DAYS_AHEAD} \
+             days before they run."
+        ));
+    }
+    if let Some(crs) = &pin.destination_crs
+        && !crate::routes::is_crs_code(crs)
+    {
+        return Err(
+            "That doesn't look like a destination station code — CRS codes are three \
+             letters, like WOK or EUS."
+                .to_string(),
+        );
+    }
+    // Free text, not an ATOC code: `TrackTrainForm` sends whatever the user
+    // typed in its Operator box, and the column is stored but never read.
+    if let Some(operator) = &pin.operator {
+        crate::routes::validate_short_text("The operator", operator, PIN_OPERATOR_MAX_CHARS)?;
+    }
+    for platform in [&pin.platform, &pin.planned_platform].into_iter().flatten() {
+        crate::routes::validate_short_text("The platform", platform, PIN_PLATFORM_MAX_CHARS)?;
+    }
+    crate::routes::validate_code_list(
+        "Skipped stations",
+        &pin.skipped_stations,
+        PIN_MAX_SKIPPED_STATIONS,
+        "three-letter station codes",
+        crate::routes::is_crs_code,
+    )?;
     Ok(())
+}
+
+/// How far ahead a pin's `service_date` may be (API-6): `schedule-reference`
+/// publishes today plus 7 days (`DESTINATION_DEPARTURES_FORWARD_DAYS`),
+/// so nothing later can schedule-match. The departure instant gets one
+/// more day for a service that runs past midnight.
+pub(crate) const PIN_MAX_DAYS_AHEAD: i64 = 7;
+/// Operator names from the track form, e.g. "South Western Railway".
+const PIN_OPERATOR_MAX_CHARS: usize = 64;
+/// Darwin platforms are short ("1", "10A", "13-14").
+const PIN_PLATFORM_MAX_CHARS: usize = 8;
+/// A long-distance service has well under 64 calling points.
+const PIN_MAX_SKIPPED_STATIONS: usize = 64;
+
+/// At most this many of a user's subscriptions may be dated today or
+/// later when they add a new one (API-6). Journeys, templates and groups
+/// already had caps; tracked-train pins had none, and every pending pin
+/// costs both 300 s sweeps a match attempt. Checked at the three user-facing
+/// ways to add one (`POST /Train/track`, `POST /Train/track-by-uid` for a
+/// train the user doesn't already track, and a pin-mode journey), count
+/// then insert with the same accepted small race as the other caps.
+/// Template materialisation and known-train journey legs are bounded by the
+/// journey and template caps instead, but their rows still count here.
+pub const MAX_FUTURE_PINS_PER_USER: i64 = 100;
+
+/// The count [`MAX_FUTURE_PINS_PER_USER`] is checked against.
+pub async fn count_future_subscriptions_for_user<'c, E>(
+    executor: E,
+    user_id: &str,
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM train_subscriptions \
+         WHERE user_id = $1 AND service_date >= CURRENT_DATE",
+    )
+    .bind(user_id)
+    .fetch_one(executor)
+    .await?;
+    Ok(count)
+}
+
+/// Whether `user_id` already tracks the shared train `(train_uid,
+/// service_date)`, so `create_subscription_for_train` would hand back that
+/// subscription rather than insert one. Looked up without creating the
+/// `trains` row, so a capped user can't mint rows either.
+pub async fn user_tracks_train_uid<'c, E>(
+    executor: E,
+    user_id: &str,
+    train_uid: &str,
+    service_date: chrono::NaiveDate,
+) -> anyhow::Result<bool>
+where
+    E: sqlx::PgExecutor<'c>,
+{
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM train_subscriptions s JOIN trains t ON t.id = s.trains_id \
+             WHERE s.user_id = $1 AND t.train_uid = $2 AND t.service_date = $3 \
+         )",
+    )
+    .bind(user_id)
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_one(executor)
+    .await?;
+    Ok(exists)
+}
+
+/// The user-facing 400 body for [`MAX_FUTURE_PINS_PER_USER`].
+pub fn pin_cap_message() -> String {
+    format!(
+        "You're already tracking {MAX_FUTURE_PINS_PER_USER} upcoming trains, which is the \
+         maximum. Remove some to make room."
+    )
 }
 
 /// `user_id` is the authenticated caller's id (the OIDC `sub`, per
@@ -1378,6 +1490,13 @@ pub struct PendingSchedulePin {
 /// matched. Nothing is lost past the floor that was reachable anyway -- a
 /// schedule match needs that date's `schedule_line_population`, and
 /// `schedule-reference` only publishes a rolling window of upcoming dates.
+///
+/// **Upper bound, API-6.** Both sweeps also skip a pin dated more than
+/// [`SWEEP_MAX_DAYS_AHEAD`] days ahead: nothing is published that far out,
+/// so every attempt was futile, and a pin dated 2090 (possible before
+/// `validate_pin` bounded the future) was swept every 300 s for ever. With
+/// the 2-day floor this gives every pin a sweep life of at most about ten
+/// days, whatever its date.
 pub async fn list_pending_pins_for_schedule_match(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
@@ -1386,12 +1505,18 @@ pub async fn list_pending_pins_for_schedule_match(
                 pin_skipped_stations, pin_platform, pin_planned_platform \
          FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending' \
          AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL \
-         AND service_date >= CURRENT_DATE - INTERVAL '2 days'",
+         AND service_date >= CURRENT_DATE - INTERVAL '2 days' \
+         AND service_date <= CURRENT_DATE + $1::int",
     )
+    .bind(SWEEP_MAX_DAYS_AHEAD)
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
+
+/// The sweeps' future bound: [`PIN_MAX_DAYS_AHEAD`] plus one day, since
+/// `CURRENT_DATE` here is the database's (UTC) date, not London's.
+pub(crate) const SWEEP_MAX_DAYS_AHEAD: i32 = PIN_MAX_DAYS_AHEAD as i32 + 1;
 
 /// Row shape for `list_pending_pins_for_backlog_match`'s query -- a
 /// separate type from `PendingSchedulePin` even though its fields are
@@ -1462,8 +1587,10 @@ pub async fn list_pending_pins_for_backlog_match(
         "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
          FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending' \
          AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL \
-         AND service_date >= CURRENT_DATE - INTERVAL '2 days'",
+         AND service_date >= CURRENT_DATE - INTERVAL '2 days' \
+         AND service_date <= CURRENT_DATE + $1::int",
     )
+    .bind(SWEEP_MAX_DAYS_AHEAD)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -1967,6 +2094,102 @@ mod tests {
     fn a_non_three_letter_crs_is_rejected() {
         let now: DateTime<Utc> = "2026-06-15T12:00:00Z".parse().unwrap();
         assert!(validate_pin(&pin("WATERLOO", now), now).is_err());
+    }
+
+    #[test]
+    fn a_pin_beyond_the_timetable_horizon_is_rejected() {
+        let now: DateTime<Utc> = "2026-06-15T12:00:00Z".parse().unwrap();
+        let last_day: DateTime<Utc> = "2026-06-22T18:00:00Z".parse().unwrap();
+        assert!(validate_pin(&pin("WAT", last_day), now).is_ok());
+        let too_far: DateTime<Utc> = "2026-06-23T08:00:00Z".parse().unwrap();
+        assert!(
+            validate_pin(&pin("WAT", too_far), now)
+                .unwrap_err()
+                .contains("too far ahead")
+        );
+        let far_future: DateTime<Utc> = "2090-01-01T08:00:00Z".parse().unwrap();
+        assert!(validate_pin(&pin("WAT", far_future), now).is_err());
+        // A near-term departure with a far-off service_date is caught too.
+        let mut mismatched = pin("WAT", now + chrono::Duration::hours(1));
+        mismatched.service_date = "2090-01-01".parse().unwrap();
+        assert!(validate_pin(&mismatched, now).is_err());
+    }
+
+    #[test]
+    fn pin_fields_are_bounded_and_shaped() {
+        let now: DateTime<Utc> = "2026-06-15T12:00:00Z".parse().unwrap();
+        let ok = || pin("WAT", now + chrono::Duration::hours(1));
+        let mut full = ok();
+        full.destination_crs = Some("RDG".to_string());
+        full.operator = Some("South Western Railway".to_string());
+        full.platform = Some("13-14".to_string());
+        full.planned_platform = Some("10A".to_string());
+        full.skipped_stations = vec!["CLJ".to_string(), "wok".to_string()];
+        assert!(validate_pin(&full, now).is_ok());
+
+        let huge = "x".repeat(8 * 1024 * 1024);
+        let cases: Vec<(&str, TrackPinRequest)> = vec![
+            (
+                "digit origin",
+                TrackPinRequest {
+                    origin_crs: "W1T".to_string(),
+                    ..ok()
+                },
+            ),
+            (
+                "bad destination",
+                TrackPinRequest {
+                    destination_crs: Some("Reading".to_string()),
+                    ..ok()
+                },
+            ),
+            (
+                "huge operator",
+                TrackPinRequest {
+                    operator: Some(huge.clone()),
+                    ..ok()
+                },
+            ),
+            (
+                "long platform",
+                TrackPinRequest {
+                    platform: Some("123456789".to_string()),
+                    ..ok()
+                },
+            ),
+            (
+                "long planned platform",
+                TrackPinRequest {
+                    planned_platform: Some(huge.clone()),
+                    ..ok()
+                },
+            ),
+            (
+                "bad skipped",
+                TrackPinRequest {
+                    skipped_stations: vec![huge.clone()],
+                    ..ok()
+                },
+            ),
+            (
+                "too many skipped",
+                TrackPinRequest {
+                    skipped_stations: vec!["CLJ".to_string(); 65],
+                    ..ok()
+                },
+            ),
+        ];
+        for (what, bad) in cases {
+            let err = validate_pin(&bad, now).expect_err(what);
+            assert!(
+                err.len() < 200,
+                "{what}: the message must not echo the input"
+            );
+            assert!(
+                !err.contains('_'),
+                "{what}: user-facing copy leaked an identifier: {err}"
+            );
+        }
     }
 
     #[test]
@@ -5913,6 +6136,66 @@ mod db_tests {
             "a ten-day-old pending pin can never schedule-match and must not be retried on \
              every sweep tick forever"
         );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// API-6: both sweeps skip a pin dated beyond the timetable horizon, so
+    /// a far-future pin (legal before `validate_pin` bounded it) is no
+    /// longer retried every 300 s until its date comes round.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                pending_pin_sweeps_skip_pins_beyond_the_timetable_horizon \
+                -- --ignored --test-threads=1`"]
+    async fn pending_pin_sweeps_skip_pins_beyond_the_timetable_horizon() {
+        let pool = connect().await;
+        let user_id = "TEST-API6-SWEEP-HORIZON";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+
+        let today = chrono::Utc::now().date_naive();
+        let mut ids = Vec::new();
+        for date in [
+            today + chrono::Duration::days(1),
+            today + chrono::Duration::days(i64::from(SWEEP_MAX_DAYS_AHEAD) + 1),
+            "2090-01-01".parse().unwrap(),
+        ] {
+            ids.push(
+                seed_backlog_candidate_pin(
+                    &pool,
+                    user_id,
+                    date,
+                    Some("EUS"),
+                    Some(date.and_hms_opt(18, 15, 0).unwrap().and_utc()),
+                    "pending",
+                    None,
+                )
+                .await,
+            );
+        }
+        let schedule: Vec<i64> = list_pending_pins_for_schedule_match(&pool)
+            .await
+            .expect("schedule sweep")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        let backlog: Vec<i64> = list_pending_pins_for_backlog_match(&pool)
+            .await
+            .expect("backlog sweep")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        for swept in [&schedule, &backlog] {
+            assert!(
+                swept.contains(&ids[0]),
+                "tomorrow's pin must still be swept"
+            );
+            assert!(
+                !swept.contains(&ids[1]),
+                "a pin past the horizon must not be swept yet"
+            );
+            assert!(!swept.contains(&ids[2]), "a 2090 pin must not be swept");
+        }
 
         cleanup_user(&pool, user_id).await;
     }

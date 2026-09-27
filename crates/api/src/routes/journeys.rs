@@ -641,6 +641,7 @@ async fn post_journey(
             };
             train_tracking::validate_pin(&pin, Utc::now())
                 .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            crate::routes::train::enforce_pin_cap(&app, &user.id).await?;
 
             let (journey_id, leg_id, tracking_id) = journeys::create_journey_with_pin_leg(
                 &app.database,
