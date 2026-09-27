@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ACCOUNT_DESTINATION,
   accountMenuDestinations,
   CHAT_DESTINATION,
   GROUPS_DESTINATION,
@@ -29,6 +30,11 @@ describe('navDrawerDestinations', () => {
     const hrefs = navDrawerDestinations(false, false).map((d) => d.href);
     expect(hrefs).not.toContain(GROUPS_DESTINATION.href);
     expect(hrefs).not.toContain(CHAT_DESTINATION.href);
+    expect(hrefs).not.toContain(ACCOUNT_DESTINATION.href);
+  });
+
+  it('includes the account page for an authenticated visitor', () => {
+    expect(navDrawerDestinations(true, false).map((d) => d.href)).toContain(ACCOUNT_DESTINATION.href);
   });
 
   it('includes Groups but not Chat for an authenticated, non-allow-listed visitor', () => {
@@ -58,7 +64,7 @@ describe('navDrawerDestinations', () => {
 describe('accountMenuDestinations', () => {
   it('always offers My Trains & Tickets and Groups', () => {
     const hrefs = accountMenuDestinations(false).map((d) => d.href);
-    expect(hrefs).toEqual([TRACKED_TRAINS_DESTINATION.href, GROUPS_DESTINATION.href]);
+    expect(hrefs).toEqual([TRACKED_TRAINS_DESTINATION.href, GROUPS_DESTINATION.href, ACCOUNT_DESTINATION.href]);
   });
 
   it('appends Chat only when allow-listed', () => {
@@ -67,6 +73,7 @@ describe('accountMenuDestinations', () => {
       TRACKED_TRAINS_DESTINATION.href,
       GROUPS_DESTINATION.href,
       CHAT_DESTINATION.href,
+      ACCOUNT_DESTINATION.href,
     ]);
   });
 });

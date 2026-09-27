@@ -281,6 +281,15 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     // UTF-8, so this is inert for PinToggle/TrackTrainForm/preferences/
     // auth) and a binary multipart body survives byte-for-byte.
     init.body = await req.arrayBuffer();
+  } else if (req.method === 'DELETE') {
+    // A DELETE normally has no body and is forwarded without one, as
+    // before. `DELETE /account` is the exception: it requires an explicit
+    // JSON confirmation body (UK legal audit LEG-4), so a DELETE that does
+    // carry one is forwarded byte-for-byte like a POST's.
+    const body = await req.arrayBuffer();
+    if (body.byteLength > 0) {
+      init.body = body;
+    }
   }
 
   const response = await fetch(target, init);
@@ -307,6 +316,15 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   const responseHeaders = new Headers({
     'Content-Type': response.headers.get('Content-Type') ?? 'application/json',
   });
+  // `GET /account/export` answers with an attachment filename and
+  // `no-store`, so the browser saves it as a file (the "Download my data"
+  // link) and nothing caches a copy of someone's personal data.
+  for (const name of ['Content-Disposition', 'Cache-Control']) {
+    const value = response.headers.get(name);
+    if (value) {
+      responseHeaders.set(name, value);
+    }
+  }
   for (const setCookie of setCookies) {
     responseHeaders.append('set-cookie', setCookie);
   }

@@ -469,6 +469,11 @@ async fn backlog_match_sweep_loop(app: App) {
 /// (1 hour) than theirs (5 minutes).
 async fn session_cleanup_sweep_loop(app: App) {
     let mut interval = sweep_interval(app.config.session_cleanup_interval_secs);
+    let retention_policy = data::retention::RetentionPolicy {
+        past_travel_days: app.config.past_travel_retention_days,
+        stale_push_subscription_days: app.config.stale_push_subscription_days,
+        inactive_account_days: app.config.inactive_account_retention_days,
+    };
     loop {
         interval.tick().await;
         match data::users::prune_expired_sessions(&app.database).await {
@@ -492,6 +497,28 @@ async fn session_cleanup_sweep_loop(app: App) {
             Ok(_) => {}
             Err(err) => {
                 tracing::error!(error = ?err, "dead-link prune failed; will retry next interval");
+            }
+        }
+        // Personal-data retention (UK legal audit LEG-5): past travel,
+        // stale push subscriptions and (only if enabled) inactive accounts.
+        // Same hourly cadence and "idempotent, retried next tick" posture.
+        // See `data::retention`.
+        match data::retention::prune_personal_data(
+            &app.database,
+            retention_policy,
+            chrono::Utc::now(),
+        )
+        .await
+        {
+            Ok(outcome) if outcome.total() > 0 => {
+                tracing::info!(
+                    ?outcome,
+                    "personal-data retention sweep pruned expired rows"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "personal-data retention sweep failed; will retry next interval");
             }
         }
     }

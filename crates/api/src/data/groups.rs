@@ -481,7 +481,31 @@ pub async fn remove_member(
     remover_is_target: bool,
 ) -> Result<RemoveMemberOutcome> {
     let mut tx = pool.begin().await?;
+    let outcome = remove_member_in_tx(&mut tx, group_id, target_user_id, remover_is_target).await?;
+    match outcome {
+        // Nothing was written on either path; roll back rather than commit
+        // an empty transaction, as this function always has.
+        RemoveMemberOutcome::NotAMember | RemoveMemberOutcome::OwnerCannotBeRemoved => {
+            tx.rollback().await?;
+        }
+        RemoveMemberOutcome::Removed { .. } | RemoveMemberOutcome::GroupDeleted => {
+            tx.commit().await?;
+        }
+    }
+    Ok(outcome)
+}
 
+/// [`remove_member`]'s body, run inside a caller-owned transaction and
+/// neither committing nor rolling it back. Split out so
+/// `data::account::delete_account` can apply the same ownership hand-over
+/// (or empty-group deletion) to every group a deleted user belonged to, in
+/// the same transaction as the account deletion itself.
+pub(crate) async fn remove_member_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: &str,
+    target_user_id: &str,
+    remover_is_target: bool,
+) -> Result<RemoveMemberOutcome> {
     // Finding #3 (2026-09-25 review): serializes concurrent `remove_member`
     // calls on the SAME group. Without this, two concurrent departures
     // (e.g. the owner leaving while their would-be successor leaves at the
@@ -501,17 +525,16 @@ pub async fn remove_member(
     // below for the regression coverage.
     sqlx::query("SELECT id FROM groups WHERE id = $1 FOR UPDATE")
         .bind(group_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
 
     let target_role: Option<String> =
         sqlx::query_scalar("SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2")
             .bind(group_id)
             .bind(target_user_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?;
     let Some(target_role) = target_role else {
-        tx.rollback().await?;
         return Ok(RemoveMemberOutcome::NotAMember);
     };
 
@@ -520,7 +543,6 @@ pub async fn remove_member(
     // above guarantees no concurrent `remove_member` on this group is still
     // in flight to race against.
     if target_role == "owner" && !remover_is_target {
-        tx.rollback().await?;
         return Ok(RemoveMemberOutcome::OwnerCannotBeRemoved);
     }
 
@@ -529,15 +551,14 @@ pub async fn remove_member(
     )
     .bind(group_id)
     .bind(target_user_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
     if target_role == "owner" && remaining == 0 {
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(group_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        tx.commit().await?;
         return Ok(RemoveMemberOutcome::GroupDeleted);
     }
 
@@ -569,12 +590,12 @@ pub async fn remove_member(
     sqlx::query("DELETE FROM group_trains WHERE group_id = $1 AND added_by = $2")
         .bind(group_id)
         .bind(target_user_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     sqlx::query("DELETE FROM group_journeys WHERE group_id = $1 AND added_by = $2")
         .bind(group_id)
         .bind(target_user_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
     // A KICKED member (removed by someone else, not leaving of their own
@@ -595,14 +616,14 @@ pub async fn remove_member(
              WHERE group_id = $1 AND revoked_at IS NULL",
         )
         .bind(group_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     }
 
     sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2")
         .bind(group_id)
         .bind(target_user_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
     let mut new_owner = None;
@@ -619,7 +640,7 @@ pub async fn remove_member(
              LIMIT 1",
         )
         .bind(group_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         if let Some((successor_id,)) = successor {
             sqlx::query(
@@ -627,13 +648,12 @@ pub async fn remove_member(
             )
             .bind(group_id)
             .bind(&successor_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             new_owner = Some(successor_id);
         }
     }
 
-    tx.commit().await?;
     Ok(RemoveMemberOutcome::Removed { new_owner })
 }
 
