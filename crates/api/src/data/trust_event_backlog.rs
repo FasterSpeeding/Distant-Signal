@@ -29,7 +29,7 @@ pub struct BacklogBatchOutcome {
 /// exceptional).
 ///
 /// **One bad row no longer fails the batch.** The whole batch is first
-/// inserted in one transaction, exactly as before. If that fails with a
+/// inserted in one UNNEST statement (DB2-4). If that fails with a
 /// *data* error (see [`classify_data_error`]: a constraint violation or
 /// invalid input, which no retry can ever fix), the batch is inserted again
 /// row by row, each row behind its own savepoint, so every valid row lands
@@ -49,7 +49,7 @@ pub async fn upsert_trust_event_backlog_batch(
     pool: &PgPool,
     events: &[TrustBacklogEventMessage],
 ) -> anyhow::Result<BacklogBatchOutcome> {
-    match insert_batch_in_one_transaction(pool, events).await {
+    match insert_batch_in_one_statement(pool, events).await {
         Ok(inserted) => Ok(BacklogBatchOutcome {
             inserted,
             rejected: Vec::new(),
@@ -89,21 +89,57 @@ fn insert_backlog_row(
     .bind(&event.dedup_key)
 }
 
-/// The fast path: the whole batch in one transaction.
-async fn insert_batch_in_one_transaction(
+/// The fast path: the whole batch in one `INSERT ... SELECT FROM UNNEST`
+/// (DB2-4), so a 100-1000 row batch is one round trip rather than one per
+/// row. One statement is also all-or-nothing, as the old single
+/// transaction was. `ON CONFLICT (dedup_key) DO NOTHING` also skips a
+/// duplicate key repeated within the same batch.
+async fn insert_batch_in_one_statement(
     pool: &PgPool,
     events: &[TrustBacklogEventMessage],
 ) -> Result<u64, sqlx::Error> {
-    let mut inserted = 0u64;
-    let mut tx = pool.begin().await?;
-    for event in events {
-        inserted += insert_backlog_row(event)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+    if events.is_empty() {
+        return Ok(0);
     }
-    tx.commit().await?;
-    Ok(inserted)
+    let crs: Vec<Option<&str>> = events.iter().map(|e| e.crs.as_deref()).collect();
+    let train_uid: Vec<Option<&str>> = events.iter().map(|e| e.train_uid.as_deref()).collect();
+    let train_id: Vec<&str> = events.iter().map(|e| e.train_id.as_str()).collect();
+    let service_date: Vec<NaiveDate> = events.iter().map(|e| e.service_date).collect();
+    let msg_type: Vec<&str> = events.iter().map(|e| e.msg_type.as_str()).collect();
+    let event_type: Vec<Option<&str>> = events.iter().map(|e| e.event_type.as_deref()).collect();
+    let planned: Vec<Option<chrono::DateTime<chrono::Utc>>> =
+        events.iter().map(|e| e.planned_timestamp).collect();
+    let actual: Vec<Option<chrono::DateTime<chrono::Utc>>> =
+        events.iter().map(|e| e.actual_timestamp).collect();
+    let variation: Vec<Option<&str>> = events
+        .iter()
+        .map(|e| e.variation_status.as_deref())
+        .collect();
+    let delay: Vec<Option<i32>> = events.iter().map(|e| e.delay_minutes).collect();
+    let dedup_key: Vec<&str> = events.iter().map(|e| e.dedup_key.as_str()).collect();
+    let result = sqlx::query(
+        "INSERT INTO trust_event_backlog \
+            (crs, train_uid, train_id, service_date, msg_type, event_type, \
+             planned_timestamp, actual_timestamp, variation_status, delay_minutes, dedup_key) \
+         SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::date[], $5::text[], \
+                              $6::text[], $7::timestamptz[], $8::timestamptz[], $9::text[], \
+                              $10::int4[], $11::text[]) \
+         ON CONFLICT (dedup_key) DO NOTHING",
+    )
+    .bind(&crs)
+    .bind(&train_uid)
+    .bind(&train_id)
+    .bind(&service_date)
+    .bind(&msg_type)
+    .bind(&event_type)
+    .bind(&planned)
+    .bind(&actual)
+    .bind(&variation)
+    .bind(&delay)
+    .bind(&dedup_key)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// The fallback path: still one transaction, but each row behind its own
@@ -517,11 +553,23 @@ pub async fn ingest_shared_movements_batch(
     // this data only refines status detection, it never gates whether the
     // event itself is written, so a lookup miss degrades gracefully to
     // "destination unknown" (the same as if no schedule had ever matched)
-    // rather than failing the whole batch.
+    // rather than failing the whole batch. It is logged, though (DB2-5): a
+    // connection error used to look exactly like "no destination known".
     let destination_map =
-        crate::data::trains::destination_crs_for_trains_batch(pool, &distinct_trains_ids)
+        match crate::data::trains::destination_crs_for_trains_batch(pool, &distinct_trains_ids)
             .await
-            .unwrap_or_default();
+        {
+            Ok(map) => map,
+            Err(err) => {
+                tracing::warn!(
+                    error = ?err,
+                    trains = distinct_trains_ids.len(),
+                    "destination_crs lookup failed; terminus ARRIVAL detection is degraded \
+                     for this batch"
+                );
+                HashMap::new()
+            }
+        };
 
     // Step 4: derive + write, one event at a time, in original batch
     // order -- preserving both intra-batch causality (see this function's
@@ -1015,9 +1063,74 @@ mod db_tests {
         assert!(result.is_err(), "got {result:?}");
     }
 
+    /// DB2-4: the single UNNEST insert keeps every column (NULLs included),
+    /// and skips a dedup_key repeated inside the same batch as well as one
+    /// already stored.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_batch_repeating_a_dedup_key -- --ignored`"]
+    async fn a_batch_repeating_a_dedup_key_inserts_it_once_and_keeps_every_column() {
+        let pool = connect().await;
+        let cleanup = || async {
+            sqlx::query("DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-db2-4-%'")
+                .execute(&pool)
+                .await
+                .expect("cleanup");
+        };
+        cleanup().await;
+        let stored = fixture_event("TEST-DB2-4-A", "test-db2-4-stored");
+        upsert_trust_event_backlog_batch(&pool, std::slice::from_ref(&stored))
+            .await
+            .expect("seed");
+
+        let activation = TrustBacklogEventMessage {
+            crs: None,
+            msg_type: "0001".to_string(),
+            event_type: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            ..fixture_event("TEST-DB2-4-B", "test-db2-4-activation")
+        };
+        let batch = vec![
+            stored,
+            fixture_event("TEST-DB2-4-C", "test-db2-4-twice"),
+            activation,
+            fixture_event("TEST-DB2-4-C", "test-db2-4-twice"),
+        ];
+        let outcome = upsert_trust_event_backlog_batch(&pool, &batch)
+            .await
+            .expect("batch insert");
+        assert_eq!(outcome.inserted, 2);
+        assert!(outcome.rejected.is_empty());
+
+        let row: (Option<String>, String, Option<String>, bool, Option<i32>) = sqlx::query_as(
+            "SELECT crs, msg_type, event_type, planned_timestamp IS NULL, delay_minutes \
+             FROM trust_event_backlog WHERE dedup_key = 'test-db2-4-activation'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read activation");
+        assert_eq!(row, (None, "0001".to_string(), None, true, None));
+        let (planned, delay): (Option<chrono::DateTime<chrono::Utc>>, Option<i32>) =
+            sqlx::query_as(
+                "SELECT planned_timestamp, delay_minutes FROM trust_event_backlog \
+                 WHERE dedup_key = 'test-db2-4-twice'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read movement");
+        assert_eq!(planned, Some("2026-09-05T19:15:00Z".parse().unwrap()));
+        assert_eq!(delay, Some(1));
+
+        cleanup().await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 a_redelivered_batch_inserts_nothing_twice -- --ignored`"]
+
     async fn a_redelivered_batch_inserts_nothing_twice() {
         let pool = connect().await;
         let event = fixture_event("TEST-TRUST-BACKLOG-3", "test-dedup-key-3");

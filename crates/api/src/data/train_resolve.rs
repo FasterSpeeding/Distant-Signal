@@ -218,6 +218,18 @@ pub fn resolve(candidates: &[ResolveCandidate], request: &ResolveRequest) -> Res
     )
 }
 
+/// Every service date from `first` to `last` inclusive (3-4 in practice).
+/// Bound as `service_date = ANY($dates)` rather than `BETWEEN`: every index
+/// on `schedule_destination_departures` leads with `service_date`, and on
+/// Postgres 16 (no skip scan) a range on the leading column scans every
+/// entry for those dates, filtering on the CRS, whereas equality probes
+/// can seek on `(service_date, origin_crs)` / `(service_date,
+/// destination_crs)` too (DB2-10; prod EXPLAIN 2026-09-27 for EUS:
+/// 4,576 buffers / 34.6 ms -> 586 buffers / 0.9 ms).
+fn candidate_service_dates(first: NaiveDate, last: NaiveDate) -> Vec<NaiveDate> {
+    first.iter_days().take_while(|d| *d <= last).collect()
+}
+
 /// Every stored call at `station` whose event falls within
 /// [`RSID_WINDOW_MINUTES`] of `target` (both London-local), on any service
 /// date that could reach it -- the same date with `day_offset = 0` and, just
@@ -245,8 +257,8 @@ pub async fn resolve_candidates(
     let latest = target + window;
     // A row's service_date is at most its day_offset (0..=2 in practice)
     // before the event's own date.
-    let earliest_date = earliest.date() - chrono::Duration::days(2);
-    let latest_date = latest.date();
+    let service_dates =
+        candidate_service_dates(earliest.date() - chrono::Duration::days(2), latest.date());
 
     let sql = match kind {
         ResolveKind::Departure => {
@@ -254,8 +266,8 @@ pub async fn resolve_candidates(
                 SELECT train_uid, service_date, rsid, destination_crs, operator_atoc, \
                        (service_date + day_offset::int) + scheduled AS at \
                   FROM schedule_destination_departures \
-                 WHERE origin_crs = $1 AND service_date BETWEEN $2 AND $3 \
-             ) d WHERE at BETWEEN $4 AND $5"
+                 WHERE origin_crs = $1 AND service_date = ANY($2) \
+             ) d WHERE at BETWEEN $3 AND $4"
         }
         ResolveKind::Arrival => {
             "SELECT DISTINCT train_uid, service_date, rsid, destination_crs, operator_atoc, at FROM ( \
@@ -264,22 +276,21 @@ pub async fn resolve_candidates(
                          - CASE WHEN calling_point_arrival > scheduled \
                                 THEN interval '1 day' ELSE interval '0' END AS at \
                   FROM schedule_destination_departures \
-                 WHERE origin_crs = $1 AND service_date BETWEEN $2 AND $3 \
+                 WHERE origin_crs = $1 AND service_date = ANY($2) \
                    AND calling_point_arrival IS NOT NULL \
                 UNION ALL \
                 SELECT train_uid, service_date, rsid, destination_crs, operator_atoc, \
                        (service_date + destination_arrival_day_offset::int) + destination_arrival AS at \
                   FROM schedule_destination_departures \
-                 WHERE destination_crs = $1 AND service_date BETWEEN $2 AND $3 \
+                 WHERE destination_crs = $1 AND service_date = ANY($2) \
                    AND destination_arrival IS NOT NULL \
-             ) a WHERE at BETWEEN $4 AND $5"
+             ) a WHERE at BETWEEN $3 AND $4"
         }
     };
 
     Ok(sqlx::query_as::<_, ResolveCandidate>(sql)
         .bind(station)
-        .bind(earliest_date)
-        .bind(latest_date)
+        .bind(&service_dates)
         .bind(earliest)
         .bind(latest)
         .fetch_all(pool)
@@ -289,6 +300,20 @@ pub async fn resolve_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_service_dates_is_every_date_in_the_inclusive_range() {
+        let d = |s: &str| s.parse::<NaiveDate>().unwrap();
+        assert_eq!(
+            candidate_service_dates(d("2026-09-25"), d("2026-09-27")),
+            vec![d("2026-09-25"), d("2026-09-26"), d("2026-09-27")]
+        );
+        assert_eq!(
+            candidate_service_dates(d("2026-09-27"), d("2026-09-27")),
+            vec![d("2026-09-27")]
+        );
+        assert!(candidate_service_dates(d("2026-09-28"), d("2026-09-27")).is_empty());
+    }
 
     fn at(date: &str, time: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(&format!("{date} {time}"), "%Y-%m-%d %H:%M").unwrap()

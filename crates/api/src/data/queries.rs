@@ -173,89 +173,173 @@ pub async fn upsert_incidents(
             .map(|row| (row.incident_id.as_str(), row))
             .collect();
 
-        for (offset_in_chunk, incident) in chunk.iter().enumerate() {
-            let affected_lines = &affected_lines[chunk_offset + offset_in_chunk];
-            let validity_json = serde_json::to_value(&incident.validity)?;
-            let existing = existing_by_id.get(incident.incident_id.as_str()).copied();
+        // F2: one upsert and at most one history insert per chunk, instead
+        // of one or two statements per incident. A repeated incident_id in
+        // the same chunk keeps its LAST copy (a multi-row upsert cannot touch
+        // a row twice); the old loop's final write was that copy too.
+        let rows: Vec<(&IncidentMessage, &Vec<String>, serde_json::Value)> = chunk
+            .iter()
+            .enumerate()
+            .map(|(offset_in_chunk, incident)| {
+                serde_json::to_value(&incident.validity).map(|validity| {
+                    (
+                        incident,
+                        &affected_lines[chunk_offset + offset_in_chunk],
+                        validity,
+                    )
+                })
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let rows = last_per_key(&rows, |(incident, _, _)| incident.incident_id.as_str());
 
-            let changed = incident_changed(
+        let mut changed_rows = Vec::new();
+        for (incident, _, validity_json) in &rows {
+            let existing = existing_by_id.get(incident.incident_id.as_str()).copied();
+            if incident_changed(
                 existing,
                 &incident.summary,
                 &incident.description,
-                &validity_json,
-            );
+                validity_json,
+            ) {
+                changed_rows.push((*incident, validity_json));
+            }
             if text_changed(existing, &incident.summary, &incident.description) {
                 text_changed_ids.push(incident.incident_id.clone());
             }
+        }
 
+        let json_array = |values: &[String]| serde_json::Value::from(values.to_vec());
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|(i, _, _)| i.incident_id.as_str())
+            .collect();
+        let summaries: Vec<&str> = rows.iter().map(|(i, _, _)| i.summary.as_str()).collect();
+        let descriptions: Vec<&str> = rows
+            .iter()
+            .map(|(i, _, _)| i.description.as_str())
+            .collect();
+        let operators: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(i, _, _)| json_array(&i.operators))
+            .collect();
+        let stations: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(i, _, _)| json_array(&i.affected_stations))
+            .collect();
+        let priorities: Vec<i32> = rows.iter().map(|(i, _, _)| i.priority).collect();
+        let validities: Vec<&serde_json::Value> = rows.iter().map(|(_, _, v)| v).collect();
+        let planned: Vec<bool> = rows.iter().map(|(i, _, _)| i.is_planned).collect();
+        let cleared: Vec<bool> = rows.iter().map(|(i, _, _)| i.is_cleared).collect();
+        let lines: Vec<serde_json::Value> = rows.iter().map(|(_, l, _)| json_array(l)).collect();
+
+        sqlx::query(
+            r#"
+            INSERT INTO incidents (
+                incident_id, summary, description, operators, affected_stations,
+                priority, validity_periods, is_planned, is_cleared, fetched_at,
+                first_seen_at, affected_lines
+            )
+            SELECT i.incident_id, i.summary, i.description,
+                   ARRAY(SELECT jsonb_array_elements_text(i.operators)),
+                   ARRAY(SELECT jsonb_array_elements_text(i.affected_stations)),
+                   i.priority, i.validity_periods, i.is_planned, i.is_cleared, NOW(), NOW(),
+                   ARRAY(SELECT jsonb_array_elements_text(i.affected_lines))
+              FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::jsonb[],
+                          $6::int4[], $7::jsonb[], $8::bool[], $9::bool[], $10::jsonb[])
+                   AS i(incident_id, summary, description, operators, affected_stations,
+                        priority, validity_periods, is_planned, is_cleared, affected_lines)
+            ON CONFLICT (incident_id) DO UPDATE SET
+                summary           = EXCLUDED.summary,
+                description       = EXCLUDED.description,
+                operators         = EXCLUDED.operators,
+                affected_stations = EXCLUDED.affected_stations,
+                priority          = EXCLUDED.priority,
+                validity_periods  = EXCLUDED.validity_periods,
+                is_planned        = EXCLUDED.is_planned,
+                is_cleared        = EXCLUDED.is_cleared,
+                fetched_at        = NOW(),
+                affected_lines    = EXCLUDED.affected_lines
+            WHERE (incidents.summary, incidents.description, incidents.operators,
+                   incidents.affected_stations, incidents.priority,
+                   incidents.validity_periods, incidents.is_planned,
+                   incidents.is_cleared, incidents.affected_lines)
+                  IS DISTINCT FROM
+                  (EXCLUDED.summary, EXCLUDED.description, EXCLUDED.operators,
+                   EXCLUDED.affected_stations, EXCLUDED.priority,
+                   EXCLUDED.validity_periods, EXCLUDED.is_planned,
+                   EXCLUDED.is_cleared, EXCLUDED.affected_lines)
+            "#,
+        )
+        .bind(&ids)
+        .bind(&summaries)
+        .bind(&descriptions)
+        .bind(&operators)
+        .bind(&stations)
+        .bind(&priorities)
+        .bind(&validities)
+        .bind(&planned)
+        .bind(&cleared)
+        .bind(&lines)
+        .execute(&mut *tx)
+        .await?;
+
+        if !changed_rows.is_empty() {
+            let h_ids: Vec<&str> = changed_rows
+                .iter()
+                .map(|(i, _)| i.incident_id.as_str())
+                .collect();
+            let h_summaries: Vec<&str> = changed_rows
+                .iter()
+                .map(|(i, _)| i.summary.as_str())
+                .collect();
+            let h_descriptions: Vec<&str> = changed_rows
+                .iter()
+                .map(|(i, _)| i.description.as_str())
+                .collect();
+            let h_operators: Vec<serde_json::Value> = changed_rows
+                .iter()
+                .map(|(i, _)| json_array(&i.operators))
+                .collect();
+            let h_stations: Vec<serde_json::Value> = changed_rows
+                .iter()
+                .map(|(i, _)| json_array(&i.affected_stations))
+                .collect();
+            let h_priorities: Vec<i32> = changed_rows.iter().map(|(i, _)| i.priority).collect();
+            let h_validities: Vec<&serde_json::Value> =
+                changed_rows.iter().map(|(_, v)| *v).collect();
+            let h_planned: Vec<bool> = changed_rows.iter().map(|(i, _)| i.is_planned).collect();
+            let h_cleared: Vec<bool> = changed_rows.iter().map(|(i, _)| i.is_cleared).collect();
             sqlx::query(
                 r#"
-                INSERT INTO incidents (
+                INSERT INTO incident_history (
                     incident_id, summary, description, operators, affected_stations,
-                    priority, validity_periods, is_planned, is_cleared, fetched_at,
-                    first_seen_at, affected_lines
+                    priority, validity_periods, is_planned, is_cleared
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
-                ON CONFLICT (incident_id) DO UPDATE SET
-                    summary           = EXCLUDED.summary,
-                    description       = EXCLUDED.description,
-                    operators         = EXCLUDED.operators,
-                    affected_stations = EXCLUDED.affected_stations,
-                    priority          = EXCLUDED.priority,
-                    validity_periods  = EXCLUDED.validity_periods,
-                    is_planned        = EXCLUDED.is_planned,
-                    is_cleared        = EXCLUDED.is_cleared,
-                    fetched_at        = NOW(),
-                    affected_lines    = EXCLUDED.affected_lines
-                WHERE (incidents.summary, incidents.description, incidents.operators,
-                       incidents.affected_stations, incidents.priority,
-                       incidents.validity_periods, incidents.is_planned,
-                       incidents.is_cleared, incidents.affected_lines)
-                      IS DISTINCT FROM
-                      (EXCLUDED.summary, EXCLUDED.description, EXCLUDED.operators,
-                       EXCLUDED.affected_stations, EXCLUDED.priority,
-                       EXCLUDED.validity_periods, EXCLUDED.is_planned,
-                       EXCLUDED.is_cleared, EXCLUDED.affected_lines)
+                SELECT h.incident_id, h.summary, h.description,
+                       ARRAY(SELECT jsonb_array_elements_text(h.operators)),
+                       ARRAY(SELECT jsonb_array_elements_text(h.affected_stations)),
+                       h.priority, h.validity_periods, h.is_planned, h.is_cleared
+                  FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::jsonb[],
+                              $6::int4[], $7::jsonb[], $8::bool[], $9::bool[])
+                       WITH ORDINALITY
+                       AS h(incident_id, summary, description, operators, affected_stations,
+                            priority, validity_periods, is_planned, is_cleared, ord)
+                 ORDER BY h.ord
                 "#,
             )
-            .bind(&incident.incident_id)
-            .bind(&incident.summary)
-            .bind(&incident.description)
-            .bind(&incident.operators)
-            .bind(&incident.affected_stations)
-            .bind(incident.priority)
-            .bind(&validity_json)
-            .bind(incident.is_planned)
-            .bind(incident.is_cleared)
-            .bind(affected_lines)
+            .bind(&h_ids)
+            .bind(&h_summaries)
+            .bind(&h_descriptions)
+            .bind(&h_operators)
+            .bind(&h_stations)
+            .bind(&h_priorities)
+            .bind(&h_validities)
+            .bind(&h_planned)
+            .bind(&h_cleared)
             .execute(&mut *tx)
             .await?;
-
-            if changed {
-                sqlx::query(
-                    r#"
-                    INSERT INTO incident_history (
-                        incident_id, summary, description, operators, affected_stations,
-                        priority, validity_periods, is_planned, is_cleared
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    "#,
-                )
-                .bind(&incident.incident_id)
-                .bind(&incident.summary)
-                .bind(&incident.description)
-                .bind(&incident.operators)
-                .bind(&incident.affected_stations)
-                .bind(incident.priority)
-                .bind(&validity_json)
-                .bind(incident.is_planned)
-                .bind(incident.is_cleared)
-                .execute(&mut *tx)
-                .await?;
-            }
-
-            count += 1;
         }
+        count += chunk.len() as u64;
 
         // `fetched_at` is shown per incident ("Last updated from National
         // Rail") so it must still advance for every incident in the feed,
@@ -305,11 +389,7 @@ pub async fn upsert_incidents(
         }
     };
     for incident_id in text_changed_ids {
-        let result: redis::RedisResult<String> = redis::cmd("XADD")
-            .arg("incident-text-changed")
-            .arg("*")
-            .arg("incident_id")
-            .arg(&incident_id)
+        let result: redis::RedisResult<String> = text_changed_xadd(&incident_id)
             .query_async(&mut redis)
             .await;
         if let Err(err) = result {
@@ -318,6 +398,28 @@ pub async fn upsert_incidents(
     }
 
     Ok(count)
+}
+
+/// Approximate cap on the `incident-text-changed` stream (API-8). The api
+/// is its only producer and nothing else trims it, so an enricher that is
+/// down, or never catches up, would otherwise grow it without bound in the
+/// same Redis that runs `maxmemory` for the movement streams. Text changes
+/// are rare (tens a day), so 10,000 entries is weeks of backlog; anything
+/// trimmed unprocessed is caught by the enricher's hourly sweep.
+const INCIDENT_TEXT_CHANGED_MAXLEN: usize = 10_000;
+
+/// `XADD incident-text-changed MAXLEN ~ <cap> * incident_id <id>`. `~` lets
+/// Redis trim whole macro-nodes only, so the cap costs nothing per write.
+fn text_changed_xadd(incident_id: &str) -> redis::Cmd {
+    let mut cmd = redis::cmd("XADD");
+    cmd.arg("incident-text-changed")
+        .arg("MAXLEN")
+        .arg("~")
+        .arg(INCIDENT_TEXT_CHANGED_MAXLEN)
+        .arg("*")
+        .arg("incident_id")
+        .arg(incident_id);
+    cmd
 }
 
 /// Upserts a batch of station reference records. No history — this is
@@ -559,89 +661,117 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
         return Ok(0);
     }
 
+    // F2: three statements per batch (read owners, upsert, append history)
+    // instead of a SELECT and an INSERT per line. A repeated line_id keeps
+    // its LAST report, as the old sequential loop's final write did (one
+    // multi-row upsert cannot touch the same row twice).
+    let batch = last_per_key(reports, |report| report.id.clone());
+    let ids: Vec<&str> = batch.iter().map(|r| r.id.as_str()).collect();
+    let statuses: Vec<serde_json::Value> = batch
+        .iter()
+        .map(|r| serde_json::to_value(&r.statuses))
+        .collect::<std::result::Result<_, _>>()?;
+    let names: Vec<&str> = batch.iter().map(|r| r.name.as_str()).collect();
+    let mode_names: Vec<&str> = batch.iter().map(|r| r.mode_name.as_str()).collect();
+    // `operators` is a text[] per line; ragged arrays cannot ride in one
+    // text[][] parameter, so each travels as a JSON array.
+    let operators: Vec<serde_json::Value> = batch
+        .iter()
+        .map(|r| serde_json::Value::from(r.operators.clone()))
+        .collect();
+
     let mut tx = pool.begin().await?;
-    let mut count = 0u64;
 
-    for report in reports {
-        let statuses_json = serde_json::to_value(&report.statuses)?;
+    let existing_rows: Vec<(String, String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT line_id, source, CASE WHEN source = 'tfl' THEN statuses ELSE NULL END \
+         FROM line_status WHERE line_id = ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(&mut *tx)
+    .await?;
+    if let Some((line_id, owner, _)) = existing_rows.iter().find(|(_, owner, _)| owner != "tfl") {
+        anyhow::bail!(
+            "refusing to upsert TfL line status for line_id {:?}: that line_id is \
+             already owned by source {:?}, not 'tfl' -- this is a naming collision \
+             between two independent line-id schemes (see upsert_tfl_line_status's \
+             doc comment), not a legitimate TfL update",
+            line_id,
+            owner
+        );
+    }
+    let existing: HashMap<&str, &serde_json::Value> = existing_rows
+        .iter()
+        .filter_map(|(line_id, _, statuses)| statuses.as_ref().map(|s| (line_id.as_str(), s)))
+        .collect();
 
-        let existing_owner: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(
-            "SELECT source, CASE WHEN source = 'tfl' THEN statuses ELSE NULL END \
-             FROM line_status WHERE line_id = $1",
+    let written: Vec<String> = sqlx::query_scalar(
+        r#"
+        INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
+        SELECT i.line_id, i.name, i.mode_name,
+               ARRAY(SELECT jsonb_array_elements_text(i.operators)), i.statuses, NOW(), 'tfl'
+          FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::jsonb[])
+               AS i(line_id, name, mode_name, operators, statuses)
+        -- `computed_at` is served per line as the status's own
+        -- timestamp, so every TfL row in the feed is still written each
+        -- poll. The narrowing: an unchanged `statuses` value is carried
+        -- over (`ELSE line_status.statuses`) instead of rewritten, so
+        -- its TOAST chunks are reused rather than duplicated and left
+        -- dead (prod: 9770 dead vs 614 live TOAST tuples in 20 minutes).
+        ON CONFLICT (line_id) DO UPDATE SET
+            name        = EXCLUDED.name,
+            mode_name   = EXCLUDED.mode_name,
+            operators   = EXCLUDED.operators,
+            statuses    = CASE
+                WHEN line_status.statuses IS DISTINCT FROM EXCLUDED.statuses
+                THEN EXCLUDED.statuses
+                ELSE line_status.statuses
+            END,
+            computed_at = NOW(),
+            source      = 'tfl'
+        WHERE line_status.source = 'tfl'
+        RETURNING line_id
+        "#,
+    )
+    .bind(&ids)
+    .bind(&names)
+    .bind(&mode_names)
+    .bind(&operators)
+    .bind(&statuses)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    if written.len() != batch.len() {
+        let written: std::collections::HashSet<&str> = written.iter().map(String::as_str).collect();
+        let refused = ids.iter().find(|id| !written.contains(*id));
+        anyhow::bail!(
+            "refusing to upsert TfL line status for line_id {:?}: the write affected no \
+             rows, which only happens when a same-line_id row owned by a different source \
+             was created concurrently after this function's own ownership check -- \
+             aborting rather than silently no-op'ing what should have been an insert or \
+             update",
+            refused
+        );
+    }
+
+    let (changed_ids, changed_statuses): (Vec<&str>, Vec<&serde_json::Value>) = ids
+        .iter()
+        .zip(&statuses)
+        .filter(|(id, incoming)| tfl_statuses_changed(existing.get(**id).copied(), incoming))
+        .map(|(id, incoming)| (*id, incoming))
+        .unzip();
+    if !changed_ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO line_status_history (line_id, statuses, computed_at) \
+             SELECT line_id, statuses, NOW() \
+               FROM UNNEST($1::text[], $2::jsonb[]) WITH ORDINALITY AS h(line_id, statuses, ord) \
+              ORDER BY ord",
         )
-        .bind(&report.id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if let Some((owner, _)) = &existing_owner
-            && owner != "tfl"
-        {
-            anyhow::bail!(
-                "refusing to upsert TfL line status for line_id {:?}: that line_id is \
-                 already owned by source {:?}, not 'tfl' -- this is a naming collision \
-                 between two independent line-id schemes (see upsert_tfl_line_status's \
-                 doc comment), not a legitimate TfL update",
-                report.id,
-                owner
-            );
-        }
-        let existing = existing_owner.and_then(|(_, statuses)| statuses);
-
-        let write_result = sqlx::query(
-            r#"
-            INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
-            VALUES ($1, $2, $3, $4, $5, NOW(), 'tfl')
-            -- `computed_at` is served per line as the status's own
-            -- timestamp, so every TfL row in the feed is still written each
-            -- poll. The narrowing: an unchanged `statuses` value is carried
-            -- over (`ELSE line_status.statuses`) instead of rewritten, so
-            -- its TOAST chunks are reused rather than duplicated and left
-            -- dead (prod: 9770 dead vs 614 live TOAST tuples in 20 minutes).
-            ON CONFLICT (line_id) DO UPDATE SET
-                name        = EXCLUDED.name,
-                mode_name   = EXCLUDED.mode_name,
-                operators   = EXCLUDED.operators,
-                statuses    = CASE
-                    WHEN line_status.statuses IS DISTINCT FROM EXCLUDED.statuses
-                    THEN EXCLUDED.statuses
-                    ELSE line_status.statuses
-                END,
-                computed_at = NOW(),
-                source      = 'tfl'
-            WHERE line_status.source = 'tfl'
-            "#,
-        )
-        .bind(&report.id)
-        .bind(&report.name)
-        .bind(&report.mode_name)
-        .bind(&report.operators)
-        .bind(&statuses_json)
+        .bind(&changed_ids)
+        .bind(&changed_statuses)
         .execute(&mut *tx)
         .await?;
-
-        if write_result.rows_affected() == 0 {
-            anyhow::bail!(
-                "refusing to upsert TfL line status for line_id {:?}: the write affected no \
-                 rows, which only happens when a same-line_id row owned by a different source \
-                 was created concurrently after this function's own ownership check -- \
-                 aborting rather than silently no-op'ing what should have been an insert or \
-                 update",
-                report.id
-            );
-        }
-
-        if tfl_statuses_changed(existing.as_ref(), &statuses_json) {
-            sqlx::query(
-                "INSERT INTO line_status_history (line_id, statuses, computed_at) VALUES ($1, $2, NOW())",
-            )
-            .bind(&report.id)
-            .bind(&statuses_json)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        count += 1;
     }
+    let count = batch.len() as u64;
 
     record_ingest(&mut tx, "tfl").await?;
 
@@ -3838,9 +3968,28 @@ pub async fn upsert_full_coverage_line_stats(
     pool: &PgPool,
     rows: &[common::FullCoverageLineStatsRow],
 ) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-    for row in rows {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    // F2: one UNNEST upsert for the whole batch instead of one statement per
+    // (line, date). A key repeated in one batch keeps its LAST row, as the
+    // old loop's final write did (one statement cannot touch a row twice).
+    let batch = last_per_key(rows, |row| (row.line_id.clone(), row.service_date));
+    let mut line_ids = Vec::with_capacity(batch.len());
+    let mut service_dates = Vec::with_capacity(batch.len());
+    let mut availability = Vec::with_capacity(batch.len());
+    let mut total = Vec::with_capacity(batch.len());
+    let mut delayed = Vec::with_capacity(batch.len());
+    let mut cancelled = Vec::with_capacity(batch.len());
+    let mut skipped = Vec::with_capacity(batch.len());
+    let mut avg_delay = Vec::with_capacity(batch.len());
+    let mut partial = Vec::with_capacity(batch.len());
+    let mut cancelled_explicit = Vec::with_capacity(batch.len());
+    let mut cancelled_presumed = Vec::with_capacity(batch.len());
+    let mut pending = Vec::with_capacity(batch.len());
+    let mut unobserved = Vec::with_capacity(batch.len());
+    let mut stats_versions = Vec::with_capacity(batch.len());
+    for row in batch {
         // The windowed-stats breakdown (2026-09-27). A row without one is
         // the legacy whole-population method: the breakdown columns keep
         // their defaults and `stats_version` is 1.
@@ -3850,60 +3999,75 @@ pub async fn upsert_full_coverage_line_stats(
             (Some(_), None) => common::full_coverage_window::FULL_COVERAGE_STATS_VERSION as i16,
             (None, None) => 1,
         };
-        let result = sqlx::query(
-            r#"
-            INSERT INTO full_coverage_line_stats
-                (line_id, service_date, availability, total, delayed, cancelled, skipped,
-                 avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending,
-                 unobserved, stats_version, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
-            ON CONFLICT (line_id, service_date) DO UPDATE SET
-                availability       = EXCLUDED.availability,
-                total              = EXCLUDED.total,
-                delayed            = EXCLUDED.delayed,
-                cancelled          = EXCLUDED.cancelled,
-                skipped            = EXCLUDED.skipped,
-                avg_delay_minutes  = EXCLUDED.avg_delay_minutes,
-                partial            = EXCLUDED.partial,
-                cancelled_explicit = EXCLUDED.cancelled_explicit,
-                cancelled_presumed = EXCLUDED.cancelled_presumed,
-                pending            = EXCLUDED.pending,
-                unobserved         = EXCLUDED.unobserved,
-                stats_version      = EXCLUDED.stats_version,
-                updated_at         = EXCLUDED.updated_at
-            WHERE (full_coverage_line_stats.availability, full_coverage_line_stats.total,
-                   full_coverage_line_stats.delayed, full_coverage_line_stats.cancelled,
-                   full_coverage_line_stats.skipped, full_coverage_line_stats.avg_delay_minutes,
-                   full_coverage_line_stats.partial, full_coverage_line_stats.cancelled_explicit,
-                   full_coverage_line_stats.cancelled_presumed, full_coverage_line_stats.pending,
-                   full_coverage_line_stats.unobserved, full_coverage_line_stats.stats_version)
-                IS DISTINCT FROM
-                  (EXCLUDED.availability, EXCLUDED.total, EXCLUDED.delayed, EXCLUDED.cancelled,
-                   EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial,
-                   EXCLUDED.cancelled_explicit, EXCLUDED.cancelled_presumed, EXCLUDED.pending,
-                   EXCLUDED.unobserved, EXCLUDED.stats_version)
-            "#,
-        )
-        .bind(&row.line_id)
-        .bind(row.service_date)
-        .bind(&row.availability)
-        .bind(row.stats.total as i32)
-        .bind(row.stats.delayed as i32)
-        .bind(row.stats.cancelled as i32)
-        .bind(row.stats.skipped as i32)
-        .bind(row.stats.avg_delay_minutes)
-        .bind(row.partial)
-        .bind(breakdown.cancelled_explicit as i32)
-        .bind(breakdown.cancelled_presumed as i32)
-        .bind(breakdown.pending as i32)
-        .bind(breakdown.unobserved as i32)
-        .bind(stats_version)
-        .execute(&mut *tx)
-        .await?;
-        count += result.rows_affected();
+        line_ids.push(row.line_id.as_str());
+        service_dates.push(row.service_date);
+        availability.push(row.availability.as_str());
+        total.push(row.stats.total as i32);
+        delayed.push(row.stats.delayed as i32);
+        cancelled.push(row.stats.cancelled as i32);
+        skipped.push(row.stats.skipped as i32);
+        avg_delay.push(row.stats.avg_delay_minutes);
+        partial.push(row.partial);
+        cancelled_explicit.push(breakdown.cancelled_explicit as i32);
+        cancelled_presumed.push(breakdown.cancelled_presumed as i32);
+        pending.push(breakdown.pending as i32);
+        unobserved.push(breakdown.unobserved as i32);
+        stats_versions.push(stats_version);
     }
-    tx.commit().await?;
-    Ok(count)
+    let result = sqlx::query(
+        r#"
+        INSERT INTO full_coverage_line_stats
+            (line_id, service_date, availability, total, delayed, cancelled, skipped,
+             avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending,
+             unobserved, stats_version, updated_at)
+        SELECT *, now()
+          FROM UNNEST($1::text[], $2::date[], $3::text[], $4::int4[], $5::int4[], $6::int4[],
+                      $7::int4[], $8::float8[], $9::bool[], $10::int4[], $11::int4[],
+                      $12::int4[], $13::int4[], $14::int2[])
+        ON CONFLICT (line_id, service_date) DO UPDATE SET
+            availability       = EXCLUDED.availability,
+            total              = EXCLUDED.total,
+            delayed            = EXCLUDED.delayed,
+            cancelled          = EXCLUDED.cancelled,
+            skipped            = EXCLUDED.skipped,
+            avg_delay_minutes  = EXCLUDED.avg_delay_minutes,
+            partial            = EXCLUDED.partial,
+            cancelled_explicit = EXCLUDED.cancelled_explicit,
+            cancelled_presumed = EXCLUDED.cancelled_presumed,
+            pending            = EXCLUDED.pending,
+            unobserved         = EXCLUDED.unobserved,
+            stats_version      = EXCLUDED.stats_version,
+            updated_at         = EXCLUDED.updated_at
+        WHERE (full_coverage_line_stats.availability, full_coverage_line_stats.total,
+               full_coverage_line_stats.delayed, full_coverage_line_stats.cancelled,
+               full_coverage_line_stats.skipped, full_coverage_line_stats.avg_delay_minutes,
+               full_coverage_line_stats.partial, full_coverage_line_stats.cancelled_explicit,
+               full_coverage_line_stats.cancelled_presumed, full_coverage_line_stats.pending,
+               full_coverage_line_stats.unobserved, full_coverage_line_stats.stats_version)
+            IS DISTINCT FROM
+              (EXCLUDED.availability, EXCLUDED.total, EXCLUDED.delayed, EXCLUDED.cancelled,
+               EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial,
+               EXCLUDED.cancelled_explicit, EXCLUDED.cancelled_presumed, EXCLUDED.pending,
+               EXCLUDED.unobserved, EXCLUDED.stats_version)
+        "#,
+    )
+    .bind(&line_ids)
+    .bind(&service_dates)
+    .bind(&availability)
+    .bind(&total)
+    .bind(&delayed)
+    .bind(&cancelled)
+    .bind(&skipped)
+    .bind(&avg_delay)
+    .bind(&partial)
+    .bind(&cancelled_explicit)
+    .bind(&cancelled_presumed)
+    .bind(&pending)
+    .bind(&unobserved)
+    .bind(&stats_versions)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// The most recent `updated_at` across every `full_coverage_line_stats`
@@ -6067,6 +6231,28 @@ pub async fn station_names_for_crs_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// API-8: the text-changed publish carries an approximate MAXLEN cap.
+    #[test]
+    fn text_changed_xadd_caps_the_stream() {
+        let packed = String::from_utf8(text_changed_xadd("INC-1").get_packed_command()).unwrap();
+        // RESP: `*<n>` then a `$<len>`, `<value>` pair per argument.
+        let parts: Vec<&str> = packed.trim_end().split("\r\n").collect();
+        let args: Vec<&str> = parts[1..].chunks(2).map(|pair| pair[1]).collect();
+        assert_eq!(
+            args,
+            [
+                "XADD",
+                "incident-text-changed",
+                "MAXLEN",
+                "~",
+                "10000",
+                "*",
+                "incident_id",
+                "INC-1"
+            ]
+        );
+    }
 
     fn existing(summary: &str, description: &str, validity: serde_json::Value) -> ExistingIncident {
         ExistingIncident {
@@ -12232,6 +12418,109 @@ mod db_review_guard_and_normalisation_tests {
             .unwrap();
     }
 
+    /// F2: the per-chunk batched upsert keeps every array column, records
+    /// history only for new or changed incidents, and keeps the LAST copy of
+    /// an incident repeated inside one chunk.
+    #[tokio::test]
+    #[ignore = "requires a live database and Redis; run with `DATABASE_URL=... cargo test -p api \
+                incidents_batch_upsert -- --ignored --test-threads=1`"]
+    async fn incidents_batch_upsert_records_history_only_for_changes() {
+        let pool = test_pool().await;
+        let cleanup = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM incident_history WHERE incident_id LIKE 'TEST-F2-INC-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM incidents WHERE incident_id LIKE 'TEST-F2-INC-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        cleanup(pool.clone()).await;
+        let matcher = common::matcher::LineMatcher::new(&[]);
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis = redis::Client::open(redis_url).expect("parse redis url");
+        let incident = |id: &str, description: &str, stations: &[&str]| IncidentMessage {
+            incident_id: id.to_string(),
+            summary: format!("{id} summary"),
+            description: description.to_string(),
+            operators: vec!["ZZ".to_string(), "YY".to_string()],
+            affected_stations: stations.iter().map(|s| s.to_string()).collect(),
+            priority: 3,
+            validity: vec![],
+            is_planned: true,
+            is_cleared: false,
+        };
+        let history = |pool: PgPool, id: &'static str| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM incident_history WHERE incident_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        let first = vec![
+            incident("TEST-F2-INC-A", "a", &["EUS"]),
+            incident("TEST-F2-INC-B", "b", &[]),
+        ];
+        assert_eq!(
+            upsert_incidents(&pool, &redis, &matcher, &first)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-A").await, 1);
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-B").await, 1);
+
+        let second = vec![
+            incident("TEST-F2-INC-A", "a", &["EUS"]),
+            incident("TEST-F2-INC-B", "b", &[]),
+            incident("TEST-F2-INC-B", "b changed", &["KGX", "FPK"]),
+            incident("TEST-F2-INC-C", "c", &[]),
+        ];
+        upsert_incidents(&pool, &redis, &matcher, &second)
+            .await
+            .unwrap();
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-A").await, 1, "unchanged");
+        assert_eq!(
+            history(pool.clone(), "TEST-F2-INC-B").await,
+            2,
+            "changed once"
+        );
+        assert_eq!(history(pool.clone(), "TEST-F2-INC-C").await, 1, "new");
+
+        let (description, operators, stations, priority, planned): (
+            String,
+            Vec<String>,
+            Vec<String>,
+            i32,
+            bool,
+        ) = sqlx::query_as(
+            "SELECT description, operators, affected_stations, priority, is_planned \
+             FROM incidents WHERE incident_id = 'TEST-F2-INC-B'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(description, "b changed");
+        assert_eq!(operators, vec!["ZZ", "YY"]);
+        assert_eq!(stations, vec!["KGX", "FPK"]);
+        assert_eq!((priority, planned), (3, true));
+        let history_stations: Vec<String> = sqlx::query_scalar(
+            "SELECT affected_stations FROM incident_history \
+             WHERE incident_id = 'TEST-F2-INC-B' ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(history_stations, vec!["KGX", "FPK"]);
+
+        cleanup(pool.clone()).await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
@@ -12340,6 +12629,150 @@ mod db_review_guard_and_normalisation_tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// F2: the batched full-coverage stats upsert writes several keys in one
+    /// statement, counts only changed rows, and keeps the LAST row of a key
+    /// repeated in one batch.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                full_coverage_line_stats_batch -- --ignored --test-threads=1`"]
+    async fn full_coverage_line_stats_batch_keeps_the_last_row_per_key() {
+        let pool = test_pool().await;
+        let cleanup = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM full_coverage_line_stats WHERE line_id LIKE 'test-f2-fc-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        cleanup(pool.clone()).await;
+        let row = |line_id: &str, date: &str, total: usize| common::FullCoverageLineStatsRow {
+            line_id: line_id.to_string(),
+            service_date: date.parse().unwrap(),
+            availability: "available".to_string(),
+            stats: common::SampleStats {
+                total,
+                delayed: 1,
+                cancelled: 0,
+                skipped: 0,
+                avg_delay_minutes: 2.5,
+            },
+            partial: false,
+            breakdown: None,
+            stats_version: None,
+        };
+        let batch = vec![
+            row("test-f2-fc-a", "2026-09-26", 5),
+            row("test-f2-fc-a", "2026-09-27", 6),
+            row("test-f2-fc-b", "2026-09-27", 7),
+            row("test-f2-fc-b", "2026-09-27", 8),
+        ];
+        assert_eq!(
+            upsert_full_coverage_line_stats(&pool, &batch)
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            upsert_full_coverage_line_stats(&pool, &batch)
+                .await
+                .unwrap(),
+            0
+        );
+        let totals: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT line_id || '/' || service_date, total FROM full_coverage_line_stats \
+             WHERE line_id LIKE 'test-f2-fc-%' ORDER BY 1",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            totals,
+            vec![
+                ("test-f2-fc-a/2026-09-26".to_string(), 5),
+                ("test-f2-fc-a/2026-09-27".to_string(), 6),
+                ("test-f2-fc-b/2026-09-27".to_string(), 8),
+            ]
+        );
+        cleanup(pool.clone()).await;
+    }
+
+    /// F2: the batched TfL upsert writes every line in one statement, keeps
+    /// each line's operators, appends history only for new or changed lines,
+    /// and keeps the LAST report of a line_id repeated in one batch.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                tfl_line_status_batch -- --ignored --test-threads=1`"]
+    async fn tfl_line_status_batch_writes_each_line_and_history_only_for_changes() {
+        let pool = test_pool().await;
+        let cleanup = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM line_status_history WHERE line_id LIKE 'TEST-F2-TFL-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM line_status WHERE line_id LIKE 'TEST-F2-TFL-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        cleanup(pool.clone()).await;
+        let status = |severity: u8| -> Vec<common::LineStatus> {
+            serde_json::from_value(serde_json::json!([{
+                "severity": severity,
+                "reason": format!("severity {severity}"),
+                "validity": { "from_date": "2026-09-27T02:00:00Z", "to_date": null, "is_now": true },
+                "data_quality": "tfl"
+            }]))
+            .unwrap()
+        };
+        let report = |id: &str, severity: u8, operators: &[&str]| common::LineStatusReport {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            mode_name: "tube".to_string(),
+            operators: operators.iter().map(|s| s.to_string()).collect(),
+            statuses: status(severity),
+        };
+        let history = |pool: PgPool, id: &'static str| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM line_status_history WHERE line_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        let first = vec![
+            report("TEST-F2-TFL-A", 10, &["TfL"]),
+            report("TEST-F2-TFL-B", 10, &[]),
+        ];
+        assert_eq!(upsert_tfl_line_status(&pool, &first).await.unwrap(), 2);
+        assert_eq!(history(pool.clone(), "TEST-F2-TFL-A").await, 1);
+        assert_eq!(history(pool.clone(), "TEST-F2-TFL-B").await, 1);
+
+        let second = vec![
+            report("TEST-F2-TFL-A", 10, &["TfL"]),
+            report("TEST-F2-TFL-B", 10, &[]),
+            report("TEST-F2-TFL-B", 9, &["TfL", "LO"]),
+        ];
+        assert_eq!(upsert_tfl_line_status(&pool, &second).await.unwrap(), 2);
+        assert_eq!(history(pool.clone(), "TEST-F2-TFL-A").await, 1, "unchanged");
+        assert_eq!(
+            history(pool.clone(), "TEST-F2-TFL-B").await,
+            2,
+            "changed once"
+        );
+        let (operators, severity): (Vec<String>, String) = sqlx::query_as(
+            "SELECT operators, statuses->0->>'severity' FROM line_status \
+             WHERE line_id = 'TEST-F2-TFL-B'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(operators, vec!["TfL", "LO"]);
+        assert_eq!(severity, "9");
+
+        cleanup(pool.clone()).await;
     }
 
     #[tokio::test]
