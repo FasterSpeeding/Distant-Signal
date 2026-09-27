@@ -1875,7 +1875,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let short = std::time::Duration::from_millis(100);
+        let short = std::time::Duration::from_millis(500);
         let default_client = LlmClient::new(server.uri(), None, "m".into(), short);
         let err = default_client
             .extract_primary("s", "d", reference_date())
@@ -1900,8 +1900,9 @@ mod tests {
             .await
             .unwrap_err();
         assert!(retrying_client.is_provider_transient(&err), "{err:?}");
-        // 1 (default client) + 1 initial + 1 retry.
-        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+        // No exact request count here: a request that times out client-side
+        // may never reach the server under load. The retry budget itself is
+        // covered deterministically by the 504 test above.
     }
 
     /// A `Retry-After` past `MAX_RETRY_AFTER` must fail the call at once
