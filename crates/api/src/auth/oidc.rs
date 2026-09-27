@@ -355,6 +355,10 @@ pub struct OidcClient {
     config: OidcConfig,
     http_client: reqwest::Client,
     inner: tokio::sync::OnceCell<DiscoveredClient>,
+    /// Back-channel logout token verification for this same issuer and
+    /// client (`auth::backchannel_logout`). Holds its own lazily discovered,
+    /// cached JWKS; constructing it makes no network call.
+    logout_verifier: super::backchannel_logout::LogoutTokenVerifier,
 }
 
 impl OidcClient {
@@ -378,11 +382,28 @@ impl OidcClient {
             .build()
             .context("failed to build OIDC HTTP client")?;
 
+        let logout_verifier = super::backchannel_logout::LogoutTokenVerifier::new(
+            config.issuer_url.clone(),
+            config.client_id.clone(),
+        )
+        .context("failed to build back-channel logout verifier")?;
+
         Ok(Self {
             config,
             http_client,
             inner: tokio::sync::OnceCell::new(),
+            logout_verifier,
         })
+    }
+
+    /// Validates an OIDC Back-Channel Logout token issued for this client.
+    /// See `auth::backchannel_logout` for every check made.
+    pub async fn verify_logout_token(
+        &self,
+        token: &str,
+    ) -> Result<super::backchannel_logout::LogoutSubject, super::backchannel_logout::LogoutTokenError>
+    {
+        self.logout_verifier.verify(token).await
     }
 
     /// Performs OIDC discovery on first use only, then caches the result

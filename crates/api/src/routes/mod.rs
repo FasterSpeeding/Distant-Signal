@@ -4,6 +4,7 @@ use axum::middleware;
 use crate::app::{App, Router};
 use crate::auth::require_internal_oauth;
 
+pub mod admin;
 pub mod auth;
 pub mod chatbot;
 pub mod departures;
@@ -83,6 +84,7 @@ pub fn public_router() -> Router {
         .merge(reference::router())
         .merge(island_of_ireland::router())
         .merge(auth::router())
+        .merge(admin::router())
         .merge(groups::router())
         .merge(chatbot::router())
         .merge(station_stats::router())

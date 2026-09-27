@@ -23,6 +23,7 @@
 //! presented it -- that scheme is retired outright, not kept alongside
 //! this one (no dual-acceptance window).
 
+pub mod backchannel_logout;
 pub mod internal_oauth;
 pub mod oidc;
 
@@ -933,6 +934,7 @@ mod route_scoping_tests {
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
+            admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),

@@ -25,6 +25,10 @@ pub fn router() -> Router {
             "/auth/sessions/revoke-others",
             axum::routing::post(revoke_other_sessions),
         )
+        .route(
+            "/auth/backchannel-logout",
+            axum::routing::post(backchannel_logout),
+        )
 }
 
 /// Whether the `Secure` cookie attribute is appropriate for the browser
@@ -429,6 +433,98 @@ async fn revoke_other_sessions(
         .expect("cookie header value is always valid ASCII"),
     );
     response
+}
+
+#[derive(Deserialize)]
+struct BackchannelLogoutForm {
+    logout_token: String,
+}
+
+/// A back-channel logout response: `Cache-Control: no-store` on every
+/// outcome (spec §2.8), with a JSON `error` on failure.
+fn backchannel_response(status: StatusCode, error: Option<&str>) -> Response {
+    let mut response = match error {
+        Some(error) => (status, Json(serde_json::json!({ "error": error }))).into_response(),
+        None => status.into_response(),
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// OpenID Connect Back-Channel Logout 1.0 receiver (M14, 2026-09-27).
+/// Authentik POSTs `logout_token=<signed JWT>` here
+/// (`application/x-www-form-urlencoded`) when an Authentik session that
+/// logged in to this app ends: the user logs out, an admin deletes the
+/// session, or the user is deactivated (which deletes all their sessions).
+/// Reached through the frontend proxy at `<site>/api/auth/backchannel-logout`;
+/// see docs/session-revocation.md for the Authentik provider settings.
+///
+/// Server-to-server, so no cookie and no Origin check: the router-wide L4
+/// guard only acts on cookie-bearing requests, and the signed token is the
+/// authentication. See `auth::backchannel_logout` for what is verified.
+///
+/// **Revocation is per user, not per session.** A token with `sub` ends
+/// EVERY session that user holds here (marker + delete,
+/// `users::revoke_all_sessions`), even though Authentik sends one token per
+/// Authentik session and also includes `sid`. This app doesn't store the
+/// `sid` its sessions were born from, and ending everything is the safe
+/// reading for the case that matters most, a deactivated user: Authentik
+/// only notifies for sessions whose access token is still unexpired, so a
+/// per-`sid` revocation would leave the user's older sessions alive. The
+/// cost is that logging out of Authentik on one device also logs that user
+/// out of this app on the others. A token with only `sid` can't be mapped to
+/// a user and is refused with `400` (Authentik 2026.8 always sends `sub`).
+///
+/// `200` for a valid token, whether or not the user has any sessions (or
+/// exists at all) -- there is nothing left to log out either way. `400` for
+/// an invalid token, `500` if the database write fails (Authentik retries).
+async fn backchannel_logout(
+    State(app): State<App>,
+    form: Result<
+        axum::extract::Form<BackchannelLogoutForm>,
+        axum::extract::rejection::FormRejection,
+    >,
+) -> Response {
+    let Ok(axum::extract::Form(form)) = form else {
+        tracing::warn!("back-channel logout rejected: no logout_token form field");
+        return backchannel_response(StatusCode::BAD_REQUEST, Some("invalid_request"));
+    };
+    let subject = match app.oidc.verify_logout_token(&form.logout_token).await {
+        Ok(subject) => subject,
+        Err(reason) => {
+            tracing::warn!(
+                ?reason,
+                "back-channel logout rejected: invalid logout token"
+            );
+            return backchannel_response(StatusCode::BAD_REQUEST, Some("invalid_request"));
+        }
+    };
+    let Some(sub) = subject.sub else {
+        tracing::warn!(
+            "back-channel logout rejected: token names only a sid, which this app cannot map \
+             to a user"
+        );
+        return backchannel_response(StatusCode::BAD_REQUEST, Some("invalid_request"));
+    };
+    match users::revoke_all_sessions(&app.database, &sub).await {
+        Ok(revoked) => {
+            tracing::info!(
+                audit = true,
+                event = "backchannel_logout",
+                user_id = %sub,
+                known_user = revoked.is_some(),
+                sessions_deleted = revoked.unwrap_or(0),
+                "IdP back-channel logout ended the user's sessions"
+            );
+            backchannel_response(StatusCode::OK, None)
+        }
+        Err(err) => {
+            tracing::error!(error = ?err, "back-channel logout: failed to revoke sessions");
+            backchannel_response(StatusCode::INTERNAL_SERVER_ERROR, Some("server_error"))
+        }
+    }
 }
 
 #[derive(Serialize)]

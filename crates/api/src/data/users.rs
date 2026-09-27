@@ -717,6 +717,55 @@ pub async fn invalidate_all_sessions_and_reissue(
     Ok(token)
 }
 
+/// Ends every session `user_id` holds, with no replacement: the server-side
+/// revocation behind the admin action (`routes::admin`) and OIDC back-channel
+/// logout (`routes::auth::backchannel_logout`), where the caller is not the
+/// user whose sessions end.
+///
+/// Same two steps as [`invalidate_all_sessions_and_reissue`], in one
+/// transaction: set `sessions_invalidated_at = NOW()` (so a session row
+/// that somehow survives, e.g. one inserted by a login that committed
+/// concurrently with an older snapshot, is still rejected by
+/// [`get_session_with_user`]) and delete the rows outright.
+///
+/// Returns `Ok(None)` when no user has this id (nothing to revoke), else the
+/// number of session rows deleted.
+pub async fn revoke_all_sessions(pool: &PgPool, user_id: &str) -> Result<Option<u64>> {
+    let mut tx = pool.begin().await?;
+    let found: Option<String> = sqlx::query_scalar(
+        "UPDATE users SET sessions_invalidated_at = NOW() WHERE id = $1 RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if found.is_none() {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let deleted = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(Some(deleted))
+}
+
+/// The ids of every user whose stored (verified) email matches `email`,
+/// case-insensitively. Lets an admin name a user by email rather than by the
+/// opaque OIDC subject. More than one match is possible (`users.email` is not
+/// unique), which the caller must treat as ambiguous rather than pick one.
+/// Capped at 2 rows: the caller only needs to know "none, one, or several".
+pub async fn find_user_ids_by_email(pool: &PgPool, email: &str) -> Result<Vec<String>> {
+    let ids = sqlx::query_scalar(
+        "SELECT id FROM users WHERE lower(email) = lower($1) ORDER BY id LIMIT 2",
+    )
+    .bind(email.trim())
+    .fetch_all(pool)
+    .await?;
+    Ok(ids)
+}
+
 pub async fn delete_session(pool: &PgPool, hashed_token: &str) -> Result<()> {
     sqlx::query("DELETE FROM sessions WHERE id = $1")
         .bind(hashed_token)
@@ -1467,6 +1516,84 @@ mod db_tests {
 
         // Cleanup -- cascades the reissued session via ON DELETE CASCADE.
         sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-LOGOUT-EVERYWHERE'")
+            .execute(&pool)
+            .await
+            .expect("cleanup test user");
+    }
+
+    /// `revoke_all_sessions` (admin revoke, back-channel logout) ends every
+    /// session the user holds and issues none; an unknown user is `None`,
+    /// not an error; a login after the revocation works normally.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                revoke_all_sessions -- --ignored`"]
+    async fn revoke_all_sessions_ends_every_session_and_a_later_login_still_works() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let identity = OidcIdentity {
+            sub: "TEST-USER-REVOKE-ALL".to_string(),
+            email: Some("Revoke-All@Example.com".to_string()),
+            email_verified: true,
+            name: None,
+            preferred_username: None,
+            groups: Vec::new(),
+        };
+        let user = upsert_user(&pool, &identity).await.expect("upsert user");
+        insert_session(&pool, "test-revoke-all-one", &user.id, 14)
+            .await
+            .expect("insert session one");
+        insert_session(&pool, "test-revoke-all-two", &user.id, 14)
+            .await
+            .expect("insert session two");
+
+        assert_eq!(
+            find_user_ids_by_email(&pool, "revoke-all@example.com")
+                .await
+                .expect("lookup by email"),
+            vec![user.id.clone()]
+        );
+
+        let deleted = revoke_all_sessions(&pool, &user.id)
+            .await
+            .expect("revoke all");
+        assert_eq!(deleted, Some(2));
+        for id in ["test-revoke-all-one", "test-revoke-all-two"] {
+            assert!(
+                get_session_with_user(&pool, id)
+                    .await
+                    .expect("lookup")
+                    .is_none(),
+                "{id} must be gone after revoke_all_sessions"
+            );
+        }
+
+        assert_eq!(
+            revoke_all_sessions(&pool, "TEST-USER-REVOKE-ALL-DOES-NOT-EXIST")
+                .await
+                .expect("revoke unknown user"),
+            None
+        );
+
+        // A fresh login afterwards (a later transaction, so a later NOW())
+        // is not caught by the marker.
+        insert_session(&pool, "test-revoke-all-after", &user.id, 14)
+            .await
+            .expect("insert session after");
+        assert!(
+            get_session_with_user(&pool, "test-revoke-all-after")
+                .await
+                .expect("lookup after")
+                .is_some()
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-REVOKE-ALL'")
             .execute(&pool)
             .await
             .expect("cleanup test user");
