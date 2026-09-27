@@ -1325,8 +1325,11 @@ archive:
 # would double-send every push.
 # ---------------------------------------------------------------------------
 notifier:
-  # -- /livez stall window (see workerHealth): one cycle can legitimately take tens of minutes while push endpoints time out (SVC-02).
-  progressStallSecs: 3600
+  # -- /livez stall window (see workerHealth). Was 3600s while a cycle sent
+  # its pushes inline and could take tens of minutes on timing-out endpoints;
+  # pushes now run on the bounded push queue (SVC-02, push_queue.rs), so a
+  # cycle is DB-only and 900s is ample (2026-09-27 decision).
+  progressStallSecs: 900
   image:
     repository: ghcr.io/fasterspeeding/distant-signal/notifier
     tag: ""
