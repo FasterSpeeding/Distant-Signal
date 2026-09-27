@@ -2832,6 +2832,15 @@ metrics:
       stalledWindow: 10m
       stalledFor: 15m
       severity: warning
+    # The schedule (CIF) pipeline: schedule-ingest and schedule-reference.
+    # Renders only when scheduleFeed.enabled.
+    # DistantSignalScheduleReferenceNotSeeded: schedule-reference has not
+    # read its last completed publish from api for `notSeededFor` since it
+    # started, so it publishes nothing.
+    schedulePipeline:
+      enabled: true
+      notSeededFor: 30m
+      severity: warning
 
 # ---------------------------------------------------------------------------
 # NetworkPolicy (optional)

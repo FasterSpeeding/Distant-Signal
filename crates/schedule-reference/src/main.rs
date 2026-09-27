@@ -116,11 +116,7 @@ async fn main() -> anyhow::Result<()> {
     let mut state = PublishState {
         // Waiting (with backoff) for api to answer is not a stall.
         last_processed_delivery: progress
-            .idle(seed_last_processed_delivery(
-                &client,
-                &config,
-                &internal_oauth,
-            ))
+            .idle(seed_and_report(&client, &config, &internal_oauth))
             .await,
         partial: None,
     };
@@ -795,6 +791,27 @@ async fn publish_fixed_links(
         }
     }
 }
+
+/// [`seed_last_processed_delivery`], reporting progress on the
+/// `schedule_reference_seeded` gauge: 0 from process start until the seed
+/// returns, then 1 (PL-15e of the 2026-09-27 pipelines review). The seed
+/// wait is `progress.idle`, so the liveness endpoint is healthy throughout
+/// it; without this gauge "never managed to seed" (api or the IdP down for
+/// hours) looked exactly like "idle between deliveries".
+async fn seed_and_report(
+    client: &Client,
+    config: &Config,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+) -> Option<String> {
+    metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(0.0);
+    let seeded = seed_last_processed_delivery(client, config, internal_oauth).await;
+    metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(1.0);
+    seeded
+}
+
+/// `schedule_reference_seeded` (see [`seed_and_report`]); the chart's
+/// `DistantSignalScheduleReferenceNotSeeded` alert reads it.
+const SEEDED_METRIC: &str = "schedule_reference_seeded";
 
 /// Seeds `last_processed_delivery` from THIS SERVICE'S OWN persisted record
 /// of the most recent delivery whose publish cycle actually completed (`GET
@@ -3283,6 +3300,35 @@ mod poll_once_tests {
             username: "test-user".to_string(),
             password: "test-password".to_string(),
         })
+    }
+
+    /// PL-15e: the seeded gauge reads 1 once the seed has returned.
+    #[tokio::test]
+    async fn seed_and_report_sets_the_seeded_gauge() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-reference-publishes",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "delivery": null })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config_for_server(&server.uri());
+
+        assert_eq!(seed_and_report(&client, &config, &tokens).await, None);
+        let rendered = handle.render();
+        assert!(
+            rendered.contains("distant_signal_schedule_reference_seeded 1"),
+            "{rendered}"
+        );
     }
 
     /// The seeding half of the 2026-09-25 restart-dedup fix: after a restart,

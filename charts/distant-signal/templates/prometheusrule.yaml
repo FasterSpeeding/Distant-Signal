@@ -32,7 +32,8 @@ so that clause fired on every rollout.
 {{- $extraLabels := $rule.ruleLabels | default dict }}
 {{- $movementOn := and .Values.movementRelay.enabled (or $rule.movementLag.enabled $rule.movementLagGrowing.enabled $rule.streamGap.enabled $rule.deadLetter.enabled $rule.deadLetterFull.enabled) }}
 {{- $fcwOn := and ($rule.fullCoverageWindow).enabled .Values.fullCoverageConsumer.windowedStats.enabled }}
-{{- $anyOn := or $movementOn $rule.enricherErrors.enabled $rule.componentMemory.enabled $fcwOn }}
+{{- $pipelineOn := and ($rule.schedulePipeline).enabled .Values.scheduleFeed.enabled }}
+{{- $anyOn := or $movementOn $rule.enricherErrors.enabled $rule.componentMemory.enabled $fcwOn $pipelineOn }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -360,6 +361,33 @@ spec:
               ({{ "{{ $labels.namespace }}" }}) has used more than {{ .ratio }} of
               its memory limit for {{ .for }}. It is at risk of being OOMKilled;
               raise its resources.limits.memory or find the growth.
+    {{- end }}
+    {{- end }}
+    {{- if $pipelineOn }}
+    {{- with $rule.schedulePipeline }}
+    - name: distant-signal.schedule-pipeline
+      rules:
+        {{- /*
+        PL-15e: schedule-reference waits (with backoff, while /healthz stays
+        healthy) for api to answer its startup seed GET. 0 until it does.
+        */}}
+        - alert: DistantSignalScheduleReferenceNotSeeded
+          expr: |
+            max by (namespace) (distant_signal_schedule_reference_seeded{namespace="{{ $ns }}"}) == 0
+          for: {{ .notSeededFor }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "schedule-reference has not seeded for {{ .notSeededFor }}"
+            description: >-
+              schedule-reference in {{ "{{ $labels.namespace }}" }} has been
+              waiting for {{ .notSeededFor }} to read its last completed publish
+              from api (GET /private/schedule-reference-publishes), so it
+              publishes nothing. Check api and the internal OAuth token
+              endpoint; the container's warn log names the error.
     {{- end }}
     {{- end }}
 {{- end }}
