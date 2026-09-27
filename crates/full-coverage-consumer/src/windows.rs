@@ -232,10 +232,14 @@ impl LineInputs<'_> {
         self.pop.relevance == Relevance::Full && !self.feed_stale
     }
 
-    /// Counts every train with `due` in `[from, to]` (inclusive, UTC).
+    /// Counts every train with `due` in `[from, to]` (inclusive, UTC
+    /// minutes).
     pub fn counts(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> FullCoverageWindowCounts {
+        self.counts_in(to_minutes(from), to_minutes(to))
+    }
+
+    fn counts_in(&self, from: u32, to: u32) -> FullCoverageWindowCounts {
         let ctx = self.ctx();
-        let (from, to) = (to_minutes(from), to_minutes(to));
         let trains = &self.pop.trains;
         let lo = trains.partition_point(|t| t.due_min < from);
         let hi = trains.partition_point(|t| t.due_min <= to);
@@ -258,7 +262,9 @@ impl LineInputs<'_> {
         counts
     }
 
-    /// One window row. `from`/`to` are the due-time range; a window that
+    /// One window row over the due-time range `from`..`to`: `(from, to]`
+    /// for `recent` (so W minutes long), `[from, to]` for `day_to_date`
+    /// (from the rail-day start itself). A window that
     /// starts less than an hour after `observed_from` (or on a line whose
     /// day is partial) is `partial` and never influences severity.
     pub fn window(
@@ -279,7 +285,12 @@ impl LineInputs<'_> {
             window_start: from,
             window_end: to,
             computed_at: now,
-            counts: self.counts(from, to),
+            counts: match kind {
+                FullCoverageWindowKind::Recent => {
+                    self.counts_in(to_minutes(from).saturating_add(1), to_minutes(to))
+                }
+                FullCoverageWindowKind::DayToDate => self.counts(from, to),
+            },
             relevance: self.pop.relevance.as_str().to_string(),
             presumed_enabled: self.presumed_enabled(),
             partial,
@@ -298,9 +309,8 @@ pub fn window_ranges(
     closed: bool,
 ) -> [(FullCoverageWindowKind, DateTime<Utc>, DateTime<Utc>); 2] {
     let end = now - chrono::Duration::minutes(i64::from(params.grace_minutes));
-    // (end - W, end]: inclusive minutes, so the start minute is excluded.
-    let recent_start = end - chrono::Duration::minutes(i64::from(params.recent_minutes))
-        + chrono::Duration::minutes(1);
+    // (end - W, end]: see `LineInputs::window`.
+    let recent_start = end - chrono::Duration::minutes(i64::from(params.recent_minutes));
     let day_start = crate::stats::rail_day_start(service_date);
     let day_end = if closed {
         crate::stats::rail_day_start(service_date + chrono::Duration::days(1))
@@ -575,7 +585,7 @@ mod tests {
         let date: chrono::NaiveDate = "2026-09-27".parse().unwrap();
         let [recent, day] = window_ranges(date, at("2026-09-27T12:00:00Z"), &params(), false);
         assert_eq!(recent.0, FullCoverageWindowKind::Recent);
-        assert_eq!(recent.1, at("2026-09-27T10:51:00Z"));
+        assert_eq!(recent.1, at("2026-09-27T10:50:00Z"), "exclusive");
         assert_eq!(recent.2, at("2026-09-27T11:50:00Z"));
         assert_eq!(day.1, at("2026-09-27T01:00:00Z"), "02:00 BST");
         assert_eq!(day.2, at("2026-09-27T11:50:00Z"));
@@ -691,7 +701,7 @@ mod tests {
         i.observed_from = at("2026-09-27T10:30:00Z");
         let now = at("2026-09-27T12:00:00Z");
         let [(kind, from, to), _] = window_ranges(i.service_date, now, &params(), false);
-        assert!(i.window(kind, from, to, now).partial, "10:51 < 11:30");
+        assert!(i.window(kind, from, to, now).partial, "10:50 < 11:30");
         let later = at("2026-09-27T12:45:00Z");
         let [(kind, from, to), _] = window_ranges(i.service_date, later, &params(), false);
         assert!(!i.window(kind, from, to, later).partial);
