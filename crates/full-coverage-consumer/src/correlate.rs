@@ -192,6 +192,7 @@ mod tests {
             loc_stanox: Some("87212".to_string()),
             toc_id: None,
             variation_status: Some("ON TIME".to_string()),
+            timetable_variation: None,
         }
     }
 
@@ -293,6 +294,8 @@ mod tests {
                 canx_timestamp: None,
                 canx_reason_code: None,
                 canx_type: None,
+                dep_timestamp: None,
+                loc_stanox: None,
             },
         );
 
