@@ -166,9 +166,10 @@ pub struct ChildLimits {
 impl Default for ChildLimits {
     fn default() -> Self {
         Self {
-            // 256 MiB: about eight times what a real parse needs, and 8
-            // concurrent children at this cap (2 GiB) still fit under the
-            // chart's 3 GiB api memory limit alongside the server's own
+            // 256 MiB: about eight times what a real parse needs, and the
+            // route's 4 concurrent children at this cap (1 GiB,
+            // `routes::train::TICKET_PARSE_PERMITS`) fit comfortably under
+            // the chart's 3 GiB api memory limit alongside the server's own
             // steady state. `oom_score_adj` covers the rest.
             address_space_bytes: 256 * 1024 * 1024,
             cpu_seconds: 12,

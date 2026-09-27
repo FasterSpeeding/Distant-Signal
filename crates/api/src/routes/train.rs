@@ -1599,12 +1599,13 @@ static TICKET_PARSER: LazyLock<TicketParser> = LazyLock::new(|| {
 
 /// Live parse children allowed at once (M13, 2026-09-26 review). Beyond
 /// this an upload is refused immediately with a 503, not queued -- same
-/// shedding posture as `routes::trips::PLAN_SLOTS`. 8 is generous for
+/// shedding posture as `routes::trips::PLAN_SLOTS`. 4 is still ample for
 /// interactive use (one boarding pass at a time) and bounds the worst case
-/// at 8 x `ChildLimits::address_space_bytes` of memory. Since the children
-/// are killed at [`TICKET_PARSE_TIMEOUT`], a flood of pathological uploads
-/// can hold every slot for at most that long.
-const TICKET_PARSE_PERMITS: usize = 8;
+/// at 4 x `ChildLimits::address_space_bytes` (256 MiB) = 1 GiB of memory;
+/// it was 8 (2 GiB) until the 2026-09-27 decision to halve it. Since the
+/// children are killed at [`TICKET_PARSE_TIMEOUT`], a flood of pathological
+/// uploads can hold every slot for at most that long.
+const TICKET_PARSE_PERMITS: usize = 4;
 
 /// Shared by this route and Task 9's PDF upload route: reads the single
 /// multipart field named `field_name` (expected to be `"file"` for both)
@@ -5062,6 +5063,16 @@ mod ticket_upload_tests {
             .body(axum::body::Body::from(body))
             .unwrap();
         Multipart::from_request(request, &()).await.unwrap()
+    }
+
+    /// The parse children's worst-case address space: 4 slots x 256 MiB =
+    /// 1 GiB (2026-09-27 decision; was 8 slots, 2 GiB).
+    #[test]
+    fn ticket_parse_worst_case_is_one_gib() {
+        assert_eq!(TICKET_PARSE_PERMITS, 4);
+        let per_child = ticket_subprocess::ChildLimits::default().address_space_bytes;
+        assert_eq!(per_child, 256 * 1024 * 1024);
+        assert_eq!(TICKET_PARSE_PERMITS as u64 * per_child, 1024 * 1024 * 1024);
     }
 
     /// A parser that must never be reached: its executable doesn't exist.
