@@ -2688,6 +2688,11 @@ async fn finish_publish_part(
              publisher's total; NOT deleting rows missing from this publish (stale rows stay \
              until the next complete publish)"
         );
+        metrics::counter!(
+            common::metrics::metric_name(SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC),
+            "product" => sql.product
+        )
+        .increment(1);
         0
     };
 
@@ -2697,6 +2702,28 @@ async fn finish_publish_part(
         .await?;
 
     Ok(deleted)
+}
+
+/// `api_schedule_publish_staged_mismatch_total{product}`: a final publish
+/// chunk whose staged key count did not match the publisher's total, so the
+/// rows missing from that publish were NOT deleted (SCHED-2). The chart's
+/// `DistantSignalSchedulePublishStagedMismatch` alert reads it.
+pub const SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC: &str =
+    "api_schedule_publish_staged_mismatch_total";
+
+/// Registers [`SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC`] at 0 for both
+/// products at startup, so the alert's `increase()` sees the first mismatch.
+pub fn register_schedule_publish_metrics() {
+    for sql in [
+        &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL,
+        &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL,
+    ] {
+        metrics::counter!(
+            common::metrics::metric_name(SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC),
+            "product" => sql.product
+        )
+        .increment(0);
+    }
 }
 
 /// One chunk of a diff-based `schedule_destination_departures` publish --
@@ -11458,6 +11485,10 @@ mod schedule_publish_diff_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_publish_diff -- --ignored --test-threads=1`"]
     async fn a_final_chunk_whose_staged_count_does_not_match_deletes_nothing() {
+        // SCHED-2: the skipped delete is counted, not only logged.
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
         let pool = test_pool().await;
         let date = fixture_date(8);
         clear_dates(&pool, &[date]).await;
@@ -11502,6 +11533,13 @@ mod schedule_publish_diff_tests {
             .await,
             0,
             "staged keys are dropped even when the delete is skipped"
+        );
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(
+                r#"distant_signal_api_schedule_publish_staged_mismatch_total{product="schedule_destination_departures"} 1"#
+            ),
+            "{rendered}"
         );
 
         clear_dates(&pool, &[date]).await;

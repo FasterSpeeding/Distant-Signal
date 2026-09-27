@@ -195,6 +195,7 @@ dependencies = [
  "libc",
  "log",
  "metrics",
+ "metrics-exporter-prometheus",
  "oauth2",
  "openidconnect",
  "pdf-extract",

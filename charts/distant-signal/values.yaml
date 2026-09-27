@@ -2839,10 +2839,16 @@ metrics:
     # started, so it publishes nothing.
     # DistantSignalScheduleFeedZipRejected: schedule-ingest quarantined an
     # uploaded delivery zip within `zipRejectedWindow` (PL-5 caps).
+    # DistantSignalScheduleReferencePublishStale: the last fully published
+    # delivery is older than `staleAfterHours` (deliveries land nightly).
+    # DistantSignalSchedulePublishStagedMismatch: api skipped a publish's
+    # delete (staged key count mismatch) within `mismatchWindow`.
     schedulePipeline:
       enabled: true
       notSeededFor: 30m
       zipRejectedWindow: 6h
+      staleAfterHours: 30
+      mismatchWindow: 6h
       severity: warning
 
 # ---------------------------------------------------------------------------

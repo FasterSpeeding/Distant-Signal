@@ -300,19 +300,25 @@ impl CycleOutcome {
 
     /// Records a successful publish of `product`.
     fn succeeded(&mut self, product: impl Into<String>) {
-        self.published.insert(product.into());
+        let product = product.into();
+        telemetry::record(&product, telemetry::PUBLISHED);
+        self.published.insert(product);
     }
 
     /// Records a failure a later attempt at the same delivery could fix --
     /// the classification that holds `last_processed_delivery` back.
     fn retryable(&mut self, product: impl Into<String>) {
-        self.retryable_failures.push(product.into());
+        let product = product.into();
+        telemetry::record(&product, telemetry::RETRYABLE);
+        self.retryable_failures.push(product);
     }
 
     /// Records a failure that is deterministic in this delivery's own input
     /// -- logged, but never worth reprocessing the delivery for.
     fn permanent(&mut self, product: impl Into<String>) {
-        self.permanent_failures.push(product.into());
+        let product = product.into();
+        telemetry::record(&product, telemetry::PERMANENT);
+        self.permanent_failures.push(product);
     }
 
     /// Whether this delivery may be marked processed. Deliberately keyed on
@@ -334,6 +340,100 @@ impl CycleOutcome {
     /// re-attempt a delivery whose last cycle did not fully publish.
     fn fully_published(&self) -> bool {
         self.retryable_failures.is_empty() && self.permanent_failures.is_empty()
+    }
+}
+
+/// This service's own metrics beyond the cycle-duration histogram (SCHED-2
+/// of the 2026-09-27 review): a counter of every product publish by outcome,
+/// and the delivery timestamp of the last fully published delivery, which
+/// the chart's staleness alert reads.
+mod telemetry {
+    /// `schedule_reference_publishes_total{product, outcome}`: one per
+    /// product publish attempt that [`super::CycleOutcome`] recorded (after
+    /// in-cycle retries). `product` is the product's kind, never its date or
+    /// line, so the label set stays small.
+    pub const PUBLISHES_METRIC: &str = "schedule_reference_publishes_total";
+    /// Unix seconds of the delivery (its directory's timestamp name) whose
+    /// every product last published, seeded at startup from `api`'s durable
+    /// marker. A healthy pipeline moves it forward about once a day.
+    pub const LAST_PUBLISHED_DELIVERY_METRIC: &str =
+        "schedule_reference_last_published_delivery_timestamp_seconds";
+
+    pub const PUBLISHED: &str = "published";
+    pub const RETRYABLE: &str = "retryable";
+    pub const PERMANENT: &str = "permanent";
+    const OUTCOMES: [&str; 3] = [PUBLISHED, RETRYABLE, PERMANENT];
+
+    /// Every `product` label value [`product_kind`] can return.
+    const PRODUCT_KINDS: [&str; 9] = [
+        "stanox_crs",
+        "tiploc_crs",
+        "fixed_links",
+        "schedule_line_population",
+        "schedule_network_departures",
+        "schedule_destination_departures",
+        "schedule_calling_points_full",
+        "all_cif_derived",
+        "other",
+    ];
+
+    /// The label for a product key: its kind, the part before any `/`
+    /// (a date, a line) or ` (` (a note on why it failed).
+    pub fn product_kind(key: &str) -> &'static str {
+        if key.starts_with("all CIF-derived") {
+            return "all_cif_derived";
+        }
+        let kind = key.split(['/', ' ']).next().unwrap_or(key);
+        PRODUCT_KINDS
+            .iter()
+            .find(|known| **known == kind)
+            .copied()
+            .unwrap_or("other")
+    }
+
+    pub fn record(product: &str, outcome: &'static str) {
+        metrics::counter!(
+            common::metrics::metric_name(PUBLISHES_METRIC),
+            "product" => product_kind(product),
+            "outcome" => outcome
+        )
+        .increment(1);
+    }
+
+    /// Registers every `(product, outcome)` series at 0, so an alert's
+    /// `increase()` sees the first failure of a kind.
+    pub fn register() {
+        for product in PRODUCT_KINDS {
+            for outcome in OUTCOMES {
+                metrics::counter!(
+                    common::metrics::metric_name(PUBLISHES_METRIC),
+                    "product" => product,
+                    "outcome" => outcome
+                )
+                .increment(0);
+            }
+        }
+    }
+
+    /// A delivery directory name (`YYYYMMDDTHHMMSSZ`, schedule-ingest's
+    /// `delivery_dir_name`) as Unix seconds.
+    pub fn delivery_timestamp(dir_name: &str) -> Option<i64> {
+        chrono::NaiveDateTime::parse_from_str(dir_name, "%Y%m%dT%H%M%SZ")
+            .ok()
+            .map(|at| at.and_utc().timestamp())
+    }
+
+    pub fn set_last_published_delivery(dir_name: &str) {
+        match delivery_timestamp(dir_name) {
+            Some(at) => {
+                metrics::gauge!(common::metrics::metric_name(LAST_PUBLISHED_DELIVERY_METRIC))
+                    .set(at as f64)
+            }
+            None => tracing::warn!(
+                delivery = dir_name,
+                "delivery directory name is not a timestamp; last-published gauge not updated"
+            ),
+        }
     }
 }
 
@@ -649,6 +749,7 @@ async fn poll_once(
     state.last_processed_delivery = Some(delivery.dir_name.clone());
 
     if outcome.fully_published() {
+        telemetry::set_last_published_delivery(&delivery.dir_name);
         record_completed_publish(client, config, internal_oauth, &delivery.dir_name).await;
     }
 
@@ -804,8 +905,12 @@ async fn seed_and_report(
     internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) -> Option<String> {
     metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(0.0);
+    telemetry::register();
     let seeded = seed_last_processed_delivery(client, config, internal_oauth).await;
     metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(1.0);
+    if let Some(delivery) = &seeded {
+        telemetry::set_last_published_delivery(delivery);
+    }
     seeded
 }
 
@@ -3300,6 +3405,90 @@ mod poll_once_tests {
             username: "test-user".to_string(),
             password: "test-password".to_string(),
         })
+    }
+
+    #[test]
+    fn telemetry_product_kinds_are_bounded() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
+        for (key, kind) in [
+            (product::STANOX_CRS.to_string(), "stanox_crs"),
+            (product::TIPLOC_CRS.to_string(), "tiploc_crs"),
+            (product::FIXED_LINKS.to_string(), "fixed_links"),
+            ("fixed_links (ALF read failed)".to_string(), "fixed_links"),
+            (
+                product::line_population("c2c", date),
+                "schedule_line_population",
+            ),
+            (
+                product::network_departures(date),
+                "schedule_network_departures",
+            ),
+            (
+                product::destination_departures(date),
+                "schedule_destination_departures",
+            ),
+            (
+                product::calling_points_full(date),
+                "schedule_calling_points_full",
+            ),
+            (
+                "all CIF-derived products (MCA SCHEDULE read failed)".to_string(),
+                "all_cif_derived",
+            ),
+            ("something new".to_string(), "other"),
+        ] {
+            assert_eq!(telemetry::product_kind(&key), kind, "{key}");
+        }
+    }
+
+    #[test]
+    fn telemetry_parses_a_delivery_dir_name() {
+        assert_eq!(
+            telemetry::delivery_timestamp("20260903T172830Z"),
+            Some(1_788_456_510)
+        );
+        assert_eq!(telemetry::delivery_timestamp("not-a-delivery"), None);
+    }
+
+    /// SCHED-2: a publish's outcome is counted per product kind, and a
+    /// seeded delivery sets the last-published gauge.
+    #[tokio::test]
+    async fn outcomes_and_the_seeded_delivery_are_exported() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/private/schedule-reference-publishes",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "delivery": "20260903T172830Z" })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config_for_server(&server.uri());
+        seed_and_report(&client, &config, &tokens).await;
+
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
+        let mut outcome = CycleOutcome::default();
+        outcome.succeeded(product::destination_departures(date));
+        outcome.retryable(product::calling_points_full(date));
+        outcome.permanent("fixed_links (ALF parsed to zero links)");
+
+        let rendered = handle.render();
+        for line in [
+            "distant_signal_schedule_reference_last_published_delivery_timestamp_seconds 1788456510",
+            r#"distant_signal_schedule_reference_publishes_total{product="schedule_destination_departures",outcome="published"} 1"#,
+            r#"distant_signal_schedule_reference_publishes_total{product="schedule_calling_points_full",outcome="retryable"} 1"#,
+            r#"distant_signal_schedule_reference_publishes_total{product="fixed_links",outcome="permanent"} 1"#,
+            r#"distant_signal_schedule_reference_publishes_total{product="stanox_crs",outcome="retryable"} 0"#,
+        ] {
+            assert!(rendered.contains(line), "missing {line} in:\n{rendered}");
+        }
     }
 
     /// PL-15e: the seeded gauge reads 1 once the seed has returned.

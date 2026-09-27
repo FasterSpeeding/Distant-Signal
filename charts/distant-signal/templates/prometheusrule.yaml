@@ -411,6 +411,52 @@ spec:
               or MAX_ZIP_ENTRIES, or an entry larger than it declares). The
               timetable is not refreshed until a new upload replaces it. The
               ingest container's error log names the reason.
+        {{- /*
+        SCHED-2: the delivery timestamp of the last delivery every product
+        of which published (seeded at startup from api's durable marker).
+        Deliveries land nightly, so this covers a missing delivery, a
+        delivery that keeps failing to publish, and a wedged publisher.
+        */}}
+        - alert: DistantSignalScheduleReferencePublishStale
+          expr: |
+            time() - max by (namespace) (distant_signal_schedule_reference_last_published_delivery_timestamp_seconds{namespace="{{ $ns }}"}) > {{ mul (int .staleAfterHours) 3600 }}
+          for: 15m
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "no CIF delivery fully published for {{ .staleAfterHours }}h"
+            description: >-
+              schedule-reference in {{ "{{ $labels.namespace }}" }} last fully
+              published a delivery timestamped over {{ .staleAfterHours }} hours
+              ago. Either no new delivery arrived (check schedule-ingest and the
+              SFTP upload) or one keeps failing to publish (check
+              distant_signal_schedule_reference_publishes_total by outcome, and
+              the reference container's error log).
+        {{- /*
+        SCHED-2: api skipped a final chunk's delete because the staged key
+        count did not match the publisher's total, so rows missing from that
+        publish stay until the next complete one.
+        */}}
+        - alert: DistantSignalSchedulePublishStagedMismatch
+          expr: |
+            sum by (namespace, product) (increase(distant_signal_api_schedule_publish_staged_mismatch_total{namespace="{{ $ns }}"}[{{ .mismatchWindow }}])) > 0
+          for: 0m
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "{{ "{{ $labels.product }}" }} publish kept stale rows"
+            description: >-
+              api in {{ "{{ $labels.namespace }}" }} finished a
+              {{ "{{ $labels.product }}" }} publish whose staged key count did not
+              match the publisher's total, so it did not delete the rows that
+              publish left out. They stay until the next complete publish;
+              api's warn log has the publish_id and both counts.
     {{- end }}
     {{- end }}
 {{- end }}
