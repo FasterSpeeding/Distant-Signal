@@ -229,7 +229,7 @@ fn lex(raw: &str) -> Lexed {
         } else if let Some(tag) = dollar_quote_tag(rest) {
             let body_start = i + tag.len();
             let end = raw[body_start..]
-                .find(&tag)
+                .find(tag)
                 .map_or(raw.len(), |n| body_start + n + tag.len());
             push(&mut text, &mut current, &raw[i..end]);
             i = end;
