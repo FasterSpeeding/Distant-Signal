@@ -397,7 +397,7 @@ mod tests {
             1
         );
         assert_eq!(
-            upsert_full_coverage_window_stats(&pool, &[later.clone()])
+            upsert_full_coverage_window_stats(&pool, std::slice::from_ref(&later))
                 .await
                 .unwrap(),
             1

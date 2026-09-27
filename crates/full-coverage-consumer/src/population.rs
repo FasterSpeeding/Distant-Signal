@@ -331,7 +331,6 @@ impl<'de> serde::de::Visitor<'de> for PopulationSeed<'_> {
             while let Some(entry) = seq.next_element::<EntryUidOnly>()? {
                 builder.admit(&entry.uid, entry.train_status, false);
             }
-            builder.saw_schedule_facts = false;
         }
         Ok(Some(builder.finish()))
     }

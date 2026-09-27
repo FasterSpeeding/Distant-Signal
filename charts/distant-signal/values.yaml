@@ -1642,6 +1642,24 @@ fullCoverageConsumer:
   movementFeed: kafka
   redisAutoclaimMinIdleSecs: 30
   redisGapCheckSecs: 60
+  # -- Windowed full-coverage stats
+  # (docs/superpowers/specs/2026-09-27-full-coverage-windowed-stats-design.md).
+  # OFF by default: with enabled=false the consumer writes exactly the
+  # legacy whole-day rows and posts no windows. Turn on only after api
+  # (the /full-coverage-window-stats route and its migrations) and
+  # schedule-reference (operator/train status on the population) are
+  # deployed; aggregator.fullCoverageWindow.mode is a separate switch.
+  windowedStats:
+    enabled: false
+    # -- W: the `recent` window covers trains due in the last W minutes.
+    recentWindowMinutes: 60
+    # -- Windows end this many minutes ago (feed lag p99 + write cadence).
+    graceMinutes: 10
+    # -- Feed health: fewer Activations than this in the last hour, or a
+    # newest event older than feedStaleSecs, marks the write feed_stale
+    # (no window from it may influence severity; no presumed cancellations).
+    activationsMin: 20
+    feedStaleSecs: 300
   logLevel: info
   extraEnv: []
   # Called out by the 2026-09-25 review as one of the two real leak/
