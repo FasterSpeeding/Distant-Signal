@@ -625,31 +625,46 @@ is worse than an absent one because it looks like protection.
 When enabled, the chart renders default-deny ingress per workload plus these
 explicit allows:
 
-- **postgres** ← api, aggregator, enricher only (the pollers never talk to
-  it; they reach the database only indirectly, via the api's ingest
-  endpoints).
-- **redis** ← api (publisher) and enricher (consumer) only. Rendered only
-  when `redis.enabled`.
-- **api** ← frontend, every enabled poller, and — when `ingress.enabled` and
+- **postgres** ← api, aggregator, enricher and notifier only (the pollers
+  and consumers never talk to it; they reach the database only indirectly,
+  via the api's ingest endpoints).
+- **redis** ← api, enricher, trust-consumer, trust-backlog-consumer,
+  full-coverage-consumer and movement-relay. Rendered only when
+  `redis.enabled`.
+- **api** ← frontend, every enabled poller, the consumers, schedulefeed, and — when `ingress.enabled` and
   `ingress.api.enabled` — the namespace named by
   `networkPolicy.ingressControllerNamespace`, all on `api.service.port`.
 - **frontend** ← that same ingress-controller namespace, when
   `ingress.enabled` and `ingress.frontend.enabled`.
-- **api**, **aggregator**, **enricher** and every poller: default-deny apart
-  from `metrics.port` from the namespace named by
-  `networkPolicy.monitoringNamespace`, and only when `metrics.enabled` is
-  true. With `metrics.enabled: false` these expose no other listener. api's
-  own `metrics.port` allow is separate from — and does not widen — its
-  `api.service.port` allow above: until 2026-09-25 api served `/metrics` on
-  `api.service.port` itself, so this same monitoring-namespace allow
-  doubled as the ingress-controller's own path to it whenever
-  `ingress.api.enabled` was also set (the finding `## Ingress`'s security
-  warning above now documents as fixed); api now has its own internal-only
-  `metrics.port` listener, same as every other workload.
+- **api**: `metrics.port` from the namespace named by
+  `networkPolicy.monitoringNamespace` when `metrics.enabled`. This is
+  separate from, and does not widen, the `api.service.port` allow above: api
+  serves `/metrics` on its own internal-only listener.
+- **Background workers** (aggregator, enricher, notifier, trust-consumer,
+  trust-backlog-consumer, full-coverage-consumer, movement-relay, every
+  poller including the three island-of-Ireland ones; INF-10): their own
+  metrics port from the monitoring namespace (when `metrics.enabled`), and
+  their health port(s) from any source, because kubelet probes come from the
+  node, which no selector can name. Nothing else.
+- **schedulefeed** (INF-2): SFTP on `scheduleFeed.sftp.port` from any source,
+  or only from `scheduleFeed.sftp.allowedCidrs` when set. The allow-list only
+  works when the pod sees the client's real address (Service
+  `externalTrafficPolicy: Local`, or a load balancer that preserves it);
+  behind source NAT it blocks every push. Also both containers' health ports
+  and metrics ports.
 
-**Egress is deliberately unrestricted.** The pollers must reach arbitrary
-external Rail Data Marketplace hosts, and constraining that would mean
-making every operator enumerate them.
+**Egress is unrestricted by default.** `networkPolicy.egress.enabled: true`
+(off by default) adds egress policies to the notifier, the consumers,
+movement-relay and every poller: DNS, the in-cluster services each one
+calls (api, the bundled Redis/Postgres, the bundled dev IdP), and the public
+internet minus `networkPolicy.egress.privateCidrs`/`privateCidrsV6`. That
+stops a notifier tricked into pushing to a private address, or a compromised
+poller, from reaching the rest of the cluster. Before enabling it, add a
+`networkPolicy.egress.extraRules` entry for anything these workers reach at
+a private address: an external Redis or Postgres, an OAuth token endpoint
+inside the cluster or on a tailnet (`100.64.0.0/10`), a private Kafka broker
+or a proxy. api, frontend, aggregator, enricher, schedulefeed, postgres and
+redis get no egress policy.
 
 ## Enabling the pollers
 
@@ -1205,6 +1220,11 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.enabled` | `false` | Render default-deny NetworkPolicies with explicit allows. |
 | `networkPolicy.ingressControllerNamespace` | `ingress-nginx` | Namespace the ingress controller runs in, matched by `kubernetes.io/metadata.name`. |
 | `networkPolicy.monitoringNamespace` | `monitoring` | Namespace Prometheus runs in, matched by `kubernetes.io/metadata.name`. Allowed to reach each workload's metrics port. Only used when `metrics.enabled` is true. |
+| `networkPolicy.egress.enabled` | `false` | Render egress policies for the notifier, consumers, movement-relay and pollers (see [NetworkPolicy](#networkpolicy)). |
+| `networkPolicy.egress.privateCidrs` | RFC 1918, CGNAT, loopback, link-local, reserved | IPv4 ranges excluded from the public-internet egress allow. |
+| `networkPolicy.egress.privateCidrsV6` | loopback, ULA, link-local, multicast, NAT64/6to4/Teredo | IPv6 ranges excluded from the public-internet egress allow. |
+| `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every worker's egress policy. |
+| `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. |
 
 ### tests
 

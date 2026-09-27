@@ -2849,9 +2849,12 @@ metrics:
 # NetworkPolicy at all, and a silently-unenforced policy is worse than an
 # absent one because it looks like protection.
 #
-# EGRESS IS DELIBERATELY UNRESTRICTED. The pollers must reach arbitrary
-# external Rail Data Marketplace hosts, and constraining that would mean
-# making every operator enumerate them.
+# Ingress: every workload gets a default-deny policy plus the allows it
+# needs (INF-10: the background workers get their metrics port from
+# monitoringNamespace and their health ports from anywhere, since kubelet
+# probes come from the node).
+#
+# Egress is unrestricted unless networkPolicy.egress.enabled (below).
 networkPolicy:
   enabled: false
   # -- Namespace your ingress controller runs in. Matched via the automatic
@@ -2862,6 +2865,57 @@ networkPolicy:
   # consulted when both networkPolicy.enabled and metrics.enabled are true.
   # Same pattern as the existing ingressControllerNamespace value.
   monitoringNamespace: monitoring
+  # Opt-in egress policies (INF-10, SVC-03 defence in depth) for the
+  # notifier, the Kafka/Redis consumers, movement-relay and every poller.
+  # OFF by default. Each of those may then reach only DNS (port 53, any
+  # destination), the in-cluster services it calls (api, the bundled
+  # Redis/Postgres, the bundled dev IdP) and the public internet minus
+  # `privateCidrs`/`privateCidrsV6` -- so a notifier tricked into pushing to
+  # a private address, or a compromised poller, cannot reach the rest of
+  # the cluster or the node's network. api, frontend, aggregator, enricher,
+  # schedulefeed, postgres and redis get no egress policy.
+  #
+  # BEFORE ENABLING, add an `extraRules` entry for anything these workers
+  # reach at a private address: an external Redis or Postgres
+  # (redis.enabled/postgresql.enabled false), an in-cluster or
+  # tailnet (100.64.0.0/10) OAuth token endpoint (internalOauth.tokenUrl),
+  # a private Kafka broker, or a proxy.
+  egress:
+    enabled: false
+    # -- Excluded from the public-internet allow: RFC 1918, CGNAT/tailnet,
+    # loopback, link-local (cloud metadata), "this network", IETF
+    # protocol assignments, benchmarking, multicast and reserved -- the same
+    # ranges the notifier's outbound guard refuses
+    # (crates/common/src/outbound_endpoint_guard.rs).
+    privateCidrs:
+      - 0.0.0.0/8
+      - 10.0.0.0/8
+      - 100.64.0.0/10
+      - 127.0.0.0/8
+      - 169.254.0.0/16
+      - 172.16.0.0/12
+      - 192.0.0.0/24
+      - 192.168.0.0/16
+      - 198.18.0.0/15
+      - 224.0.0.0/4
+      - 240.0.0.0/4
+    # -- IPv6 equivalents: loopback, ULA, link-local, multicast, and the
+    # NAT64/6to4/Teredo prefixes that can embed a private IPv4 address.
+    privateCidrsV6:
+      - ::1/128
+      - 64:ff9b::/96
+      - 2001::/32
+      - 2002::/16
+      - fc00::/7
+      - fe80::/10
+      - ff00::/8
+    # -- Extra NetworkPolicyEgressRule entries appended to every worker's
+    # egress policy, e.g.
+    #   - to:
+    #       - ipBlock: {cidr: 10.0.5.20/32}
+    #     ports:
+    #       - {protocol: TCP, port: 5432}
+    extraRules: []
 
 # ---------------------------------------------------------------------------
 # helm test
