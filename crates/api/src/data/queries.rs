@@ -423,7 +423,6 @@ fn text_changed_xadd(incident_id: &str) -> redis::Cmd {
 }
 
 /// Upserts a batch of station reference records. No history — this is
-
 /// reference data, not an event stream (see the reference-data migration's
 /// comment).
 pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Result<u64> {

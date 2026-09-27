@@ -231,7 +231,6 @@ fn candidate_service_dates(first: NaiveDate, last: NaiveDate) -> Vec<NaiveDate> 
 }
 
 /// Every stored call at `station` whose event falls within
-
 /// [`RSID_WINDOW_MINUTES`] of `target` (both London-local), on any service
 /// date that could reach it -- the same date with `day_offset = 0` and, just
 /// after midnight, the previous date with `day_offset = 1` (the event

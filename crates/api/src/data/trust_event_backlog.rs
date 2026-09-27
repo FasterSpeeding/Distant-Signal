@@ -1104,20 +1104,14 @@ mod db_tests {
         assert_eq!(outcome.inserted, 2);
         assert!(outcome.rejected.is_empty());
 
-        let row: (
-            Option<String>,
-            String,
-            Option<String>,
-            Option<chrono::DateTime<chrono::Utc>>,
-            Option<i32>,
-        ) = sqlx::query_as(
-            "SELECT crs, msg_type, event_type, planned_timestamp, delay_minutes \
+        let row: (Option<String>, String, Option<String>, bool, Option<i32>) = sqlx::query_as(
+            "SELECT crs, msg_type, event_type, planned_timestamp IS NULL, delay_minutes \
              FROM trust_event_backlog WHERE dedup_key = 'test-db2-4-activation'",
         )
         .fetch_one(&pool)
         .await
         .expect("read activation");
-        assert_eq!(row, (None, "0001".to_string(), None, None, None));
+        assert_eq!(row, (None, "0001".to_string(), None, true, None));
         let (planned, delay): (Option<chrono::DateTime<chrono::Utc>>, Option<i32>) =
             sqlx::query_as(
                 "SELECT planned_timestamp, delay_minutes FROM trust_event_backlog \

@@ -233,7 +233,6 @@ pub async fn bind_subscription_unless_other_train(
 }
 
 /// Mirrors a live-TRUST resolution onto the shared row's own
-
 /// Live-TRUST-derived columns (`train_id`, `resolved_at`) -- never
 /// clobbers `train_uid`/schedule columns, which this function doesn't
 /// touch at all. Safe to call more than once for the same `trains_id`
