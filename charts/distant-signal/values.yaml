@@ -121,6 +121,17 @@ postgresql:
   service:
     # -- Port the headless Service and the container listen on.
     port: 5432
+  probes:
+    # -- startupProbe budget (INF-4). Liveness only begins once pg_isready
+    # succeeds, so crash recovery (WAL redo after a node reboot) is never
+    # killed mid-way. periodSeconds x failureThreshold = 10s x 90 = 15
+    # minutes, generous for up to max_wal_size (4GB) of redo while every
+    # other pod on the node is also starting; the 2026-09-27 00:29 recovery
+    # replayed 1.7GB in 20s on an idle node. After startup the liveness probe
+    # keeps its normal 60s (10s x 6) budget.
+    startup:
+      periodSeconds: 10
+      failureThreshold: 90
   persistence:
     # -- Attach a PersistentVolumeClaim. When false, an emptyDir is used and
     # ALL DATA IS LOST when the pod is rescheduled -- ephemeral testing only.
@@ -2359,9 +2370,11 @@ frontend:
     type: ClusterIP
     port: 3000
   probes:
-    # -- Next.js ships no dedicated health route, so both probes hit "/".
-    # Change this if one is ever added.
-    path: /
+    # -- Dependency-free health route (frontend/app/healthz/route.ts). It
+    # must never call the api: "/" server-renders 5-7 api calls, so probing
+    # it killed the frontend whenever the api was down (FE-1, every node
+    # reboot), and CrashLoopBackOff then kept it down after the api was back.
+    path: /healthz
     readiness:
       periodSeconds: 10
       failureThreshold: 3
