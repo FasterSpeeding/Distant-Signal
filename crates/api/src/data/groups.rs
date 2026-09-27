@@ -1234,8 +1234,8 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
          JOIN users u ON u.id = gt.added_by \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
          WHERE gt.group_id = $1 \
          ORDER BY gt.added_at",
     )
@@ -1288,8 +1288,8 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
          WHERE gj.group_id = $1 \
          ORDER BY gj.added_at",
     )
@@ -1452,8 +1452,8 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
          JOIN users u ON u.id = gt.added_by \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
          WHERE me.user_id = $1 AND ts.user_id <> $1 \
          ORDER BY gt.added_at DESC, gt.train_subscription_id DESC \
          LIMIT $2",
@@ -1577,8 +1577,8 @@ pub async fn list_shared_journeys_for_user(
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
          WHERE me.user_id = $1 AND j.user_id <> $1 \
          ORDER BY gj.added_at DESC, gj.journey_id DESC \
          LIMIT $2",

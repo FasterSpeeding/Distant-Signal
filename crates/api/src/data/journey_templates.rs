@@ -372,8 +372,8 @@ pub async fn list_template_legs(
                 jtl.destination_crs, sd.name AS destination_name, \
                 jtl.depart_after, jtl.depart_before, jtl.arrive_after, jtl.arrive_before \
          FROM journey_template_legs jtl \
-         LEFT JOIN stations so ON so.crs = UPPER(jtl.origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(jtl.destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(jtl.origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(jtl.destination_crs)::bpchar \
          WHERE jtl.template_id = $1 ORDER BY jtl.leg_order",
     )
     .bind(template_id)
@@ -409,8 +409,8 @@ pub async fn list_templates_for_user(
              ON first_leg.template_id = jt.id AND first_leg.leg_order = leg_counts.min_order \
          LEFT JOIN journey_template_legs last_leg \
              ON last_leg.template_id = jt.id AND last_leg.leg_order = leg_counts.max_order \
-         LEFT JOIN stations so ON so.crs = UPPER(first_leg.origin_crs) \
-         LEFT JOIN stations sd ON sd.crs = UPPER(last_leg.destination_crs) \
+         LEFT JOIN stations so ON so.crs = UPPER(first_leg.origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(last_leg.destination_crs)::bpchar \
          WHERE jt.user_id = $1 \
          ORDER BY jt.created_at DESC \
          LIMIT $2",

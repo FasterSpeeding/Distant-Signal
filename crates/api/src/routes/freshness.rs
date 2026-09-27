@@ -2,9 +2,10 @@
 //! API are (stations reference data, TOC reference data, the raw incidents
 //! feed, the TfL line-status feed, and the CIF SCHEDULE feed pushed by
 //! `schedule-ingest`). Unauthenticated, read-only — same `public_router()`
-//! pattern as `reference.rs`. Reuses the same `last_*_fetch` queries the
-//! private poller-startup endpoints already call
-//! (`crates/api/src/routes/ingest.rs`) — this is a public read of the same
+//! pattern as `reference.rs`. Reads the same values as the `last_*_fetch`
+//! queries the private poller-startup endpoints call
+//! (`crates/api/src/routes/ingest.rs`), but in one query
+//! (`queries::data_freshness`) -- this is a public read of the same
 //! underlying data, just aimed at the frontend instead of poller backoff.
 //! Station-samples is deliberately omitted: it's per-station polling data,
 //! not one of the five sources this endpoint reports on.
@@ -41,14 +42,9 @@ pub struct DataFreshness {
 async fn get_freshness(
     State(app): State<App>,
 ) -> Result<Json<DataFreshness>, (StatusCode, String)> {
-    let (stations, tocs, incidents, tfl, schedule_feed) = tokio::try_join!(
-        queries::last_stations_fetch(&app.database),
-        queries::last_tocs_fetch(&app.database),
-        queries::last_incidents_fetch(&app.database),
-        queries::last_tfl_line_status_fetch(&app.database),
-        queries::last_schedule_feed_fetch(&app.database),
-    )
-    .map_err(internal_error)?;
+    let [stations, tocs, incidents, tfl, schedule_feed] = queries::data_freshness(&app.database)
+        .await
+        .map_err(internal_error)?;
     Ok(Json(DataFreshness {
         stations,
         tocs,
