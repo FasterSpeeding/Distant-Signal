@@ -279,6 +279,46 @@ describe('/api/[...path] proxy', () => {
       expect(fetch).not.toHaveBeenCalled();
     });
 
+    it('forwards a DELETE body when one is sent (DELETE /account confirmation)', async () => {
+      const req = makeRequest('/api/account', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:3000' },
+        body: JSON.stringify({ confirm: 'delete my account' }),
+      });
+      await DELETE(req, { params: Promise.resolve({ path: ['account'] }) });
+      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+      expect(calledUrl.toString()).toBe('http://test-api:8080/public/account');
+      const forwardedBody = new TextDecoder().decode((init as { body: ArrayBuffer }).body);
+      expect(JSON.parse(forwardedBody)).toEqual({ confirm: 'delete my account' });
+    });
+
+    it('still forwards a body-less DELETE without a body', async () => {
+      const req = makeRequest('/api/Train/1', { method: 'DELETE', headers: { origin: 'http://localhost:3000' } });
+      await DELETE(req, { params: Promise.resolve({ path: ['Train', '1'] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      expect((init as { body?: unknown }).body).toBeUndefined();
+    });
+
+    it('passes Content-Disposition and Cache-Control through (data export download)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response('{}', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Disposition': 'attachment; filename="distant-signal-my-data-2026-09-27.json"',
+            'Cache-Control': 'no-store',
+          },
+        }),
+      );
+      const res = await GET(makeRequest('/api/account/export'), {
+        params: Promise.resolve({ path: ['account', 'export'] }),
+      });
+      expect(res.headers.get('content-disposition')).toBe(
+        'attachment; filename="distant-signal-my-data-2026-09-27.json"',
+      );
+      expect(res.headers.get('cache-control')).toBe('no-store');
+    });
+
     it('403s a DELETE whose Origin does not match', async () => {
       const req = makeRequest('/api/Train/1', {
         method: 'DELETE',

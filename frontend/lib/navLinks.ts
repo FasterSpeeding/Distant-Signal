@@ -157,6 +157,12 @@ export const GROUPS_DESTINATION: NavDestination = { href: '/groups', label: 'Gro
  * nav item pointing at it. */
 export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Chat' };
 
+/** The account page: download your data, delete your account (UK legal
+ * audit LEG-4). Authenticated only, like `GROUPS_DESTINATION`, since there
+ * is nothing on it for an anonymous visitor. Listed last in the account
+ * menu, just above the session actions. */
+export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'Account & data' };
+
 /** What the mobile drawer lists: every primary destination, plus the
  * per-account ones the bar hands to the account menu on desktop. The
  * drawer is the ONLY nav surface below `md`, so it has to carry the union
@@ -167,6 +173,7 @@ export function navDrawerDestinations(authenticated: boolean, chatAllowed: boole
     TRACKED_TRAINS_DESTINATION,
     ...(authenticated ? [GROUPS_DESTINATION] : []),
     ...(chatAllowed ? [CHAT_DESTINATION] : []),
+    ...(authenticated ? [ACCOUNT_DESTINATION] : []),
   ];
 }
 
@@ -179,5 +186,10 @@ export function navDrawerDestinations(authenticated: boolean, chatAllowed: boole
  * an anonymous caller), so this never renders Chat for a logged-out
  * visitor. */
 export function accountMenuDestinations(chatAllowed: boolean): NavDestination[] {
-  return [TRACKED_TRAINS_DESTINATION, GROUPS_DESTINATION, ...(chatAllowed ? [CHAT_DESTINATION] : [])];
+  return [
+    TRACKED_TRAINS_DESTINATION,
+    GROUPS_DESTINATION,
+    ...(chatAllowed ? [CHAT_DESTINATION] : []),
+    ACCOUNT_DESTINATION,
+  ];
 }
