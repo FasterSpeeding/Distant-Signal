@@ -137,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
     let mut known_stray_files: HashSet<String> = HashSet::new();
     let mut last_ingested_mtime: Option<SystemTime> = None;
     let mut pending_post: Option<ScheduleFeedIngestRequest> = None;
+    let mut rejected_mtime: Option<SystemTime> = None;
 
     // `tokio::time::interval`'s first `tick()` fires immediately regardless
     // of missed-tick behavior, so every run -- including the very first --
@@ -170,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
             &mut known_stray_files,
             &mut last_ingested_mtime,
             &mut pending_post,
+            &mut rejected_mtime,
             is_final_check_of_day,
         )
         .await
@@ -205,6 +207,7 @@ async fn run_scan_cycle(
     known_stray_files: &mut HashSet<String>,
     last_ingested_mtime: &mut Option<SystemTime>,
     pending_post: &mut Option<ScheduleFeedIngestRequest>,
+    rejected_mtime: &mut Option<SystemTime>,
     is_final_check_of_day: bool,
 ) -> anyhow::Result<()> {
     // Retry a previously-extracted-but-not-yet-successfully-posted delivery
@@ -311,6 +314,15 @@ async fn run_scan_cycle(
         DeliveryRelation::New => {}
     }
 
+    // PL-5: this exact delivery was rejected as over the extraction caps
+    // (or internally inconsistent). Its bytes cannot change without its
+    // mtime changing, so it stays quarantined until a new upload replaces
+    // it, instead of being re-read every cycle.
+    if *rejected_mtime == Some(zip_mtime) {
+        tracing::debug!(zip = %zip_filename, "zip delivery is quarantined; waiting for a new upload");
+        return Ok(());
+    }
+
     let delivered_at: DateTime<Utc> = DateTime::<Utc>::from(zip_mtime);
     // PL-13: this delivery's POST already failed and is queued for retry at
     // the top of every cycle -- a second, identical request is pointless.
@@ -327,10 +339,28 @@ async fn run_scan_cycle(
 
     // PL-6/PL-13: atomic (temp dir, fsync, marker, rename), and a no-op for
     // a delivery that is already complete on disk.
-    let extracted = match delivery::ensure_extracted(&zip_path, &config.storage_dir, &dir_name) {
+    let limits = delivery::ExtractLimits {
+        max_total_bytes: config.max_extracted_bytes,
+        max_entries: config.max_zip_entries,
+    };
+    let extracted = match delivery::ensure_extracted(
+        &zip_path,
+        &config.storage_dir,
+        &dir_name,
+        limits,
+    ) {
         Ok((extracted, how)) => {
             tracing::info!(zip = %zip_filename, dir = %dir_name, outcome = ?how, "delivery directory complete");
             extracted
+        }
+        Err(err) if delivery::is_rejected(&err) => {
+            tracing::error!(error = %err, zip = %zip_filename, "quarantining a zip delivery that can never be extracted; waiting for a new upload");
+            metrics::counter!(common::metrics::metric_name(
+                "schedule_feed_zip_rejected_total"
+            ))
+            .increment(1);
+            *rejected_mtime = Some(zip_mtime);
+            return Ok(());
         }
         Err(err) => {
             tracing::error!(error = ?err, zip = %zip_filename, "failed to extract a stable zip delivery; retrying next cycle");
@@ -749,6 +779,7 @@ mod tests {
         let mut known_stray_files = HashSet::new();
         let mut last_ingested_mtime = None;
         let mut pending_post = None;
+        let mut rejected_mtime = None;
 
         // stability_cycles = 2 by default in test_config -- two identical
         // cycles reach stability.
@@ -762,6 +793,7 @@ mod tests {
                 &mut known_stray_files,
                 &mut last_ingested_mtime,
                 &mut pending_post,
+                &mut rejected_mtime,
                 false,
             )
             .await
@@ -792,6 +824,57 @@ mod tests {
         );
     }
 
+    /// PL-5: a zip over the extraction caps is quarantined: nothing is
+    /// written to storage_dir, no POST is queued, and later cycles do not
+    /// try it again until a new upload (a new mtime) replaces it.
+    #[tokio::test]
+    async fn an_oversized_zip_is_quarantined_not_retried_every_cycle() {
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let bytes = delivery::build_test_zip(&[
+            ("RJTTF942MCA.txt", b"mca content"),
+            ("RJTTF942MSN.txt", b"msn content"),
+        ]);
+        let zip_path = watch_dir.path().join("timetable_full.zip");
+        std::fs::write(&zip_path, &bytes).unwrap();
+
+        let mut config = test_config(watch_dir.path(), storage_dir.path());
+        config.max_extracted_bytes = 12;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let internal_oauth = test_oauth();
+        let mut tracker = StabilityTracker::new();
+        let mut known_stable = HashSet::new();
+        let mut known_stray_files = HashSet::new();
+        let mut last_ingested_mtime = None;
+        let mut pending_post = None;
+        let mut rejected_mtime = None;
+
+        for _ in 0..4 {
+            run_scan_cycle(
+                &client,
+                &config,
+                &internal_oauth,
+                &mut tracker,
+                &mut known_stable,
+                &mut known_stray_files,
+                &mut last_ingested_mtime,
+                &mut pending_post,
+                &mut rejected_mtime,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        let zip_mtime = std::fs::metadata(&zip_path).unwrap().modified().unwrap();
+        assert_eq!(rejected_mtime, Some(zip_mtime));
+        assert!(pending_post.is_none());
+        assert_eq!(
+            std::fs::read_dir(storage_dir.path()).unwrap().count(),
+            0,
+            "nothing extracted, and no scratch directory left behind"
+        );
+    }
+
     /// PL-13: while the api POST keeps failing, later cycles neither
     /// extract the zip again nor send a second copy of the request -- the
     /// queued retry is the only POST.
@@ -813,6 +896,7 @@ mod tests {
         let mut known_stray_files = HashSet::new();
         let mut last_ingested_mtime = None;
         let mut pending_post = None;
+        let mut rejected_mtime = None;
 
         let mut marker_stamp = None;
         for cycle in 0..6 {
@@ -825,6 +909,7 @@ mod tests {
                 &mut known_stray_files,
                 &mut last_ingested_mtime,
                 &mut pending_post,
+                &mut rejected_mtime,
                 false,
             )
             .await
@@ -875,6 +960,8 @@ mod tests {
             check_times: "22:00,16:00".to_string(),
             poll_interval_secs: 120,
             retention_keep_deliveries: 2,
+            max_extracted_bytes: 4 * 1024 * 1024 * 1024,
+            max_zip_entries: 64,
             stability_cycles: 2,
             // Deliberately an address nothing listens on -- these tests
             // only exercise up to the POST attempt, not a real server.

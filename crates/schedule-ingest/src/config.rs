@@ -67,6 +67,17 @@ pub struct Config {
     #[arg(long, env, default_value_t = 2)]
     pub retention_keep_deliveries: u32,
 
+    /// PL-5: the most uncompressed bytes one delivery zip may declare
+    /// across its entries. A real full CIF is ~1-2 GB; a zip over this is
+    /// quarantined (never extracted) rather than allowed to fill the volume.
+    #[arg(long, env, default_value_t = 4 * 1024 * 1024 * 1024)]
+    pub max_extracted_bytes: u64,
+
+    /// PL-5: the most entries one delivery zip may contain (a real one has
+    /// about a dozen).
+    #[arg(long, env, default_value_t = 64)]
+    pub max_zip_entries: usize,
+
     /// How many consecutive polling cycles the delivery zip's mtime and
     /// size must be unchanged before it's treated as stable/complete —
     /// see `scan.rs`. There is no manifest-declared size any more (there is
