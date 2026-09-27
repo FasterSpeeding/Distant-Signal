@@ -4023,9 +4023,28 @@ pub async fn upsert_full_coverage_line_stats(
     pool: &PgPool,
     rows: &[common::FullCoverageLineStatsRow],
 ) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
-    for row in rows {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    // F2: one UNNEST upsert for the whole batch instead of one statement per
+    // (line, date). A key repeated in one batch keeps its LAST row, as the
+    // old loop's final write did (one statement cannot touch a row twice).
+    let batch = last_per_key(rows, |row| (row.line_id.clone(), row.service_date));
+    let mut line_ids = Vec::with_capacity(batch.len());
+    let mut service_dates = Vec::with_capacity(batch.len());
+    let mut availability = Vec::with_capacity(batch.len());
+    let mut total = Vec::with_capacity(batch.len());
+    let mut delayed = Vec::with_capacity(batch.len());
+    let mut cancelled = Vec::with_capacity(batch.len());
+    let mut skipped = Vec::with_capacity(batch.len());
+    let mut avg_delay = Vec::with_capacity(batch.len());
+    let mut partial = Vec::with_capacity(batch.len());
+    let mut cancelled_explicit = Vec::with_capacity(batch.len());
+    let mut cancelled_presumed = Vec::with_capacity(batch.len());
+    let mut pending = Vec::with_capacity(batch.len());
+    let mut unobserved = Vec::with_capacity(batch.len());
+    let mut stats_versions = Vec::with_capacity(batch.len());
+    for row in batch {
         // The windowed-stats breakdown (2026-09-27). A row without one is
         // the legacy whole-population method: the breakdown columns keep
         // their defaults and `stats_version` is 1.
@@ -4035,60 +4054,75 @@ pub async fn upsert_full_coverage_line_stats(
             (Some(_), None) => common::full_coverage_window::FULL_COVERAGE_STATS_VERSION as i16,
             (None, None) => 1,
         };
-        let result = sqlx::query(
-            r#"
-            INSERT INTO full_coverage_line_stats
-                (line_id, service_date, availability, total, delayed, cancelled, skipped,
-                 avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending,
-                 unobserved, stats_version, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
-            ON CONFLICT (line_id, service_date) DO UPDATE SET
-                availability       = EXCLUDED.availability,
-                total              = EXCLUDED.total,
-                delayed            = EXCLUDED.delayed,
-                cancelled          = EXCLUDED.cancelled,
-                skipped            = EXCLUDED.skipped,
-                avg_delay_minutes  = EXCLUDED.avg_delay_minutes,
-                partial            = EXCLUDED.partial,
-                cancelled_explicit = EXCLUDED.cancelled_explicit,
-                cancelled_presumed = EXCLUDED.cancelled_presumed,
-                pending            = EXCLUDED.pending,
-                unobserved         = EXCLUDED.unobserved,
-                stats_version      = EXCLUDED.stats_version,
-                updated_at         = EXCLUDED.updated_at
-            WHERE (full_coverage_line_stats.availability, full_coverage_line_stats.total,
-                   full_coverage_line_stats.delayed, full_coverage_line_stats.cancelled,
-                   full_coverage_line_stats.skipped, full_coverage_line_stats.avg_delay_minutes,
-                   full_coverage_line_stats.partial, full_coverage_line_stats.cancelled_explicit,
-                   full_coverage_line_stats.cancelled_presumed, full_coverage_line_stats.pending,
-                   full_coverage_line_stats.unobserved, full_coverage_line_stats.stats_version)
-                IS DISTINCT FROM
-                  (EXCLUDED.availability, EXCLUDED.total, EXCLUDED.delayed, EXCLUDED.cancelled,
-                   EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial,
-                   EXCLUDED.cancelled_explicit, EXCLUDED.cancelled_presumed, EXCLUDED.pending,
-                   EXCLUDED.unobserved, EXCLUDED.stats_version)
-            "#,
-        )
-        .bind(&row.line_id)
-        .bind(row.service_date)
-        .bind(&row.availability)
-        .bind(row.stats.total as i32)
-        .bind(row.stats.delayed as i32)
-        .bind(row.stats.cancelled as i32)
-        .bind(row.stats.skipped as i32)
-        .bind(row.stats.avg_delay_minutes)
-        .bind(row.partial)
-        .bind(breakdown.cancelled_explicit as i32)
-        .bind(breakdown.cancelled_presumed as i32)
-        .bind(breakdown.pending as i32)
-        .bind(breakdown.unobserved as i32)
-        .bind(stats_version)
-        .execute(&mut *tx)
-        .await?;
-        count += result.rows_affected();
+        line_ids.push(row.line_id.as_str());
+        service_dates.push(row.service_date);
+        availability.push(row.availability.as_str());
+        total.push(row.stats.total as i32);
+        delayed.push(row.stats.delayed as i32);
+        cancelled.push(row.stats.cancelled as i32);
+        skipped.push(row.stats.skipped as i32);
+        avg_delay.push(row.stats.avg_delay_minutes);
+        partial.push(row.partial);
+        cancelled_explicit.push(breakdown.cancelled_explicit as i32);
+        cancelled_presumed.push(breakdown.cancelled_presumed as i32);
+        pending.push(breakdown.pending as i32);
+        unobserved.push(breakdown.unobserved as i32);
+        stats_versions.push(stats_version);
     }
-    tx.commit().await?;
-    Ok(count)
+    let result = sqlx::query(
+        r#"
+        INSERT INTO full_coverage_line_stats
+            (line_id, service_date, availability, total, delayed, cancelled, skipped,
+             avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending,
+             unobserved, stats_version, updated_at)
+        SELECT *, now()
+          FROM UNNEST($1::text[], $2::date[], $3::text[], $4::int4[], $5::int4[], $6::int4[],
+                      $7::int4[], $8::float8[], $9::bool[], $10::int4[], $11::int4[],
+                      $12::int4[], $13::int4[], $14::int2[])
+        ON CONFLICT (line_id, service_date) DO UPDATE SET
+            availability       = EXCLUDED.availability,
+            total              = EXCLUDED.total,
+            delayed            = EXCLUDED.delayed,
+            cancelled          = EXCLUDED.cancelled,
+            skipped            = EXCLUDED.skipped,
+            avg_delay_minutes  = EXCLUDED.avg_delay_minutes,
+            partial            = EXCLUDED.partial,
+            cancelled_explicit = EXCLUDED.cancelled_explicit,
+            cancelled_presumed = EXCLUDED.cancelled_presumed,
+            pending            = EXCLUDED.pending,
+            unobserved         = EXCLUDED.unobserved,
+            stats_version      = EXCLUDED.stats_version,
+            updated_at         = EXCLUDED.updated_at
+        WHERE (full_coverage_line_stats.availability, full_coverage_line_stats.total,
+               full_coverage_line_stats.delayed, full_coverage_line_stats.cancelled,
+               full_coverage_line_stats.skipped, full_coverage_line_stats.avg_delay_minutes,
+               full_coverage_line_stats.partial, full_coverage_line_stats.cancelled_explicit,
+               full_coverage_line_stats.cancelled_presumed, full_coverage_line_stats.pending,
+               full_coverage_line_stats.unobserved, full_coverage_line_stats.stats_version)
+            IS DISTINCT FROM
+              (EXCLUDED.availability, EXCLUDED.total, EXCLUDED.delayed, EXCLUDED.cancelled,
+               EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial,
+               EXCLUDED.cancelled_explicit, EXCLUDED.cancelled_presumed, EXCLUDED.pending,
+               EXCLUDED.unobserved, EXCLUDED.stats_version)
+        "#,
+    )
+    .bind(&line_ids)
+    .bind(&service_dates)
+    .bind(&availability)
+    .bind(&total)
+    .bind(&delayed)
+    .bind(&cancelled)
+    .bind(&skipped)
+    .bind(&avg_delay)
+    .bind(&partial)
+    .bind(&cancelled_explicit)
+    .bind(&cancelled_presumed)
+    .bind(&pending)
+    .bind(&unobserved)
+    .bind(&stats_versions)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// The most recent `updated_at` across every `full_coverage_line_stats`
@@ -12903,6 +12937,72 @@ mod db_review_guard_and_normalisation_tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// F2: the batched full-coverage stats upsert writes several keys in one
+    /// statement, counts only changed rows, and keeps the LAST row of a key
+    /// repeated in one batch.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                full_coverage_line_stats_batch -- --ignored --test-threads=1`"]
+    async fn full_coverage_line_stats_batch_keeps_the_last_row_per_key() {
+        let pool = test_pool().await;
+        let cleanup = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM full_coverage_line_stats WHERE line_id LIKE 'test-f2-fc-%'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        cleanup(pool.clone()).await;
+        let row = |line_id: &str, date: &str, total: usize| common::FullCoverageLineStatsRow {
+            line_id: line_id.to_string(),
+            service_date: date.parse().unwrap(),
+            availability: "available".to_string(),
+            stats: common::SampleStats {
+                total,
+                delayed: 1,
+                cancelled: 0,
+                skipped: 0,
+                avg_delay_minutes: 2.5,
+            },
+            partial: false,
+            breakdown: None,
+            stats_version: None,
+        };
+        let batch = vec![
+            row("test-f2-fc-a", "2026-09-26", 5),
+            row("test-f2-fc-a", "2026-09-27", 6),
+            row("test-f2-fc-b", "2026-09-27", 7),
+            row("test-f2-fc-b", "2026-09-27", 8),
+        ];
+        assert_eq!(
+            upsert_full_coverage_line_stats(&pool, &batch)
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            upsert_full_coverage_line_stats(&pool, &batch)
+                .await
+                .unwrap(),
+            0
+        );
+        let totals: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT line_id || '/' || service_date, total FROM full_coverage_line_stats \
+             WHERE line_id LIKE 'test-f2-fc-%' ORDER BY 1",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            totals,
+            vec![
+                ("test-f2-fc-a/2026-09-26".to_string(), 5),
+                ("test-f2-fc-a/2026-09-27".to_string(), 6),
+                ("test-f2-fc-b/2026-09-27".to_string(), 8),
+            ]
+        );
+        cleanup(pool.clone()).await;
     }
 
     /// F2: the batched TfL upsert writes every line in one statement, keeps
