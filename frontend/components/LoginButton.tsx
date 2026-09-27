@@ -2,8 +2,9 @@
 
 import { Suspense } from 'react';
 import Link from 'next/link';
-import { Button } from '@mantine/core';
+import { Button, Stack } from '@mantine/core';
 import { useLoginHref } from './useLoginHref';
+import { LoginConsentNote } from './LoginConsentNote';
 
 /** Isolates the one `useLoginHref()` call behind its own `<Suspense>`
  * boundary -- same reasoning as `LoginPromptModal.tsx`'s own internal
@@ -51,8 +52,12 @@ function LoginButtonLink({ children, title }: { children: React.ReactNode; title
  * does own). */
 export function LoginButton({ children, title }: { children: React.ReactNode; title?: string }) {
   return (
-    <Suspense fallback={<Button disabled title={title}>{children}</Button>}>
-      <LoginButtonLink title={title}>{children}</LoginButtonLink>
-    </Suspense>
+    <Stack gap={4}>
+      <Suspense fallback={<Button disabled title={title}>{children}</Button>}>
+        <LoginButtonLink title={title}>{children}</LoginButtonLink>
+      </Suspense>
+      {/* LEG-1: renders nothing until the legal pages are published. */}
+      <LoginConsentNote />
+    </Stack>
   );
 }

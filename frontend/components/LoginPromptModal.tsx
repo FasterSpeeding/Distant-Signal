@@ -4,6 +4,7 @@ import { Suspense } from 'react';
 import Link from 'next/link';
 import { Button, Group, Modal, Text } from '@mantine/core';
 import { useLoginHref } from './useLoginHref';
+import { LoginConsentNote } from './LoginConsentNote';
 
 /** Isolates the one `useLoginHref()` call (and therefore
  * `usePathname()`/`useSearchParams()`) behind its own `<Suspense>`
@@ -76,6 +77,8 @@ export function LoginPromptModal({
   return (
     <Modal opened={opened} onClose={onClose} title="Log in required" closeButtonProps={{ 'aria-label': 'Close' }}>
       <Text>{children}</Text>
+      {/* LEG-1: only once the terms and privacy notice are published. */}
+      <LoginConsentNote mt="sm" />
       <Group justify="end" mt="md">
         <Suspense fallback={<Button disabled>Log in</Button>}>
           <LoginButtonLink />

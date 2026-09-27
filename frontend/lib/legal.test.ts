@@ -51,8 +51,12 @@ describe('legal pages flag', () => {
     expect(vi.mocked(console.warn).mock.calls[0][0]).toContain('CONTACT_EMAIL');
   });
 
-  it('ships with every operator value still a placeholder, so the pages cannot go live by accident', () => {
-    expect(unfilledLegalPlaceholders(LEGAL_CONFIG)).toEqual(Object.keys(LEGAL_CONFIG));
+  it('ships with every operator-identity value still a placeholder, so the pages cannot go live by accident', () => {
+    // MINIMUM_AGE is the one value already decided (DQ1: 18).
+    expect(LEGAL_CONFIG.MINIMUM_AGE).toBe('18');
+    expect(unfilledLegalPlaceholders(LEGAL_CONFIG)).toEqual(
+      Object.keys(LEGAL_CONFIG).filter((key) => key !== 'MINIMUM_AGE'),
+    );
     expect(legalPagesPublished({ LEGAL_PAGES_PUBLISHED: 'true' })).toBe(false);
   });
 
