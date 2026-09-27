@@ -713,7 +713,6 @@ async fn post_journey(
                 tracking_id,
                 &pin.origin_crs,
                 pin.scheduled_departure,
-                pin.service_date,
             )
             .await
             {
