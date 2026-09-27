@@ -1,6 +1,7 @@
-//! Per-query build of a service date's [`schedule_query::Connection`] array
-//! and [`schedule_query::InterchangeData`] -- built fresh from Postgres on
-//! every trip-planning query and discarded after, never held resident.
+//! Build of a service date's [`schedule_query::Connection`] array and
+//! [`schedule_query::InterchangeData`] from Postgres. Originally built per
+//! query and discarded; since TRIPS-1 the route keeps the last few dates'
+//! graphs in a [`GraphCache`], invalidated by a new schedule publish.
 //! See
 //! docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase2-connections-array-plan.md's
 //! Judgment Call 1 for why this shape (an already-ingested, indexed
@@ -8,9 +9,11 @@
 //! design spec's own named hosting options.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use schedule_query::{CallingPointForConnections, Connection, FixedLink, InterchangeData};
 use sqlx::PgPool;
 
@@ -196,6 +199,313 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
         crs_to_tiplocs,
         fixed_links_from_crs,
     })
+}
+
+/// A service date's connections graph and the interchange data it is
+/// searched with: everything `routes::trips::get_trip_plan` reads from the
+/// database before searching, built once and shared by every request for
+/// that date through [`GraphCache`].
+pub struct PlanningGraph {
+    pub connections: Vec<Connection>,
+    pub interchange: InterchangeData,
+}
+
+/// When `schedule-reference` last finished publishing a delivery
+/// (`schedule_reference_publishes.completed_at`), or `None` before the first.
+/// [`GraphCache`] keys on it, so a new publish invalidates every cached
+/// graph. One index-only top-1 read.
+pub async fn latest_schedule_publish(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
+    Ok(
+        sqlx::query_scalar("SELECT max(completed_at) FROM schedule_reference_publishes")
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// TRIPS-1: a small per-date cache of built [`PlanningGraph`]s.
+///
+/// Building a date's graph reads ~490k `schedule_calling_points_full` rows
+/// and sorts the day's connections, so before this every `/Trips/plan`
+/// request, anonymous and unauthenticated, did that from scratch, and one
+/// client looping on it kept every planning slot busy.
+///
+/// An entry is reused while both hold:
+///
+/// - the latest publish marker ([`latest_schedule_publish`]) is the one it
+///   was built under, so a completed delivery invalidates it at once;
+/// - it is younger than `max_age`. The marker is written only when a whole
+///   delivery's products have published, so a calling-points publish that
+///   lands without one (another product failed, or a request raced a
+///   publish in progress and cached a half-written day) is picked up within
+///   `max_age` instead of never.
+///
+/// At most `capacity` dates are kept (least recently used evicted); each is
+/// on the order of 100 MB, so the default is 2 (today and tomorrow).
+/// `capacity` 0 disables caching. Builds run one at a time, in a spawned
+/// task: concurrent misses for one date build it once, and a client that
+/// disconnects mid-build doesn't abandon a build that another request will
+/// then start again.
+pub struct GraphCache<T> {
+    entries: std::sync::Mutex<Vec<CacheEntry<T>>>,
+    build_lock: tokio::sync::Mutex<()>,
+    capacity: usize,
+    max_age: Duration,
+}
+
+struct CacheEntry<T> {
+    date: NaiveDate,
+    marker: Option<DateTime<Utc>>,
+    built_at: Instant,
+    last_used: Instant,
+    value: Arc<T>,
+}
+
+/// Whether a lookup was served from the cache; for the metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheOutcome {
+    Hit,
+    Built,
+}
+
+impl<T: Send + Sync + 'static> GraphCache<T> {
+    pub fn new(capacity: usize, max_age: Duration) -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+            build_lock: tokio::sync::Mutex::new(()),
+            capacity,
+            max_age,
+        }
+    }
+
+    fn lookup(&self, date: NaiveDate, marker: Option<DateTime<Utc>>) -> Option<Arc<T>> {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().expect("graph cache lock poisoned");
+        let entry = entries.iter_mut().find(|entry| {
+            entry.date == date
+                && entry.marker == marker
+                && now.duration_since(entry.built_at) < self.max_age
+        })?;
+        entry.last_used = now;
+        Some(entry.value.clone())
+    }
+
+    fn insert(&self, date: NaiveDate, marker: Option<DateTime<Utc>>, value: Arc<T>) {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().expect("graph cache lock poisoned");
+        entries.retain(|entry| entry.date != date);
+        while entries.len() >= self.capacity {
+            let Some(oldest) = entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(index, _)| index)
+            else {
+                break;
+            };
+            entries.swap_remove(oldest);
+        }
+        entries.push(CacheEntry {
+            date,
+            marker,
+            built_at: now,
+            last_used: now,
+            value,
+        });
+    }
+
+    /// The cached value for `date` under `marker`, else `build()`'s, cached.
+    /// `build` returning `Ok(None)` (nothing published for the date) is not
+    /// cached: that answer costs one index probe, and a publish can change it
+    /// at any moment.
+    pub async fn get_or_build<F, Fut>(
+        self: &Arc<Self>,
+        date: NaiveDate,
+        marker: Option<DateTime<Utc>>,
+        build: F,
+    ) -> Result<Option<(Arc<T>, CacheOutcome)>>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Option<T>>> + Send + 'static,
+    {
+        if self.capacity == 0 {
+            return Ok(build()
+                .await?
+                .map(|value| (Arc::new(value), CacheOutcome::Built)));
+        }
+        if let Some(hit) = self.lookup(date, marker) {
+            return Ok(Some((hit, CacheOutcome::Hit)));
+        }
+        let this = self.clone();
+        tokio::spawn(async move {
+            let _building = this.build_lock.lock().await;
+            // Another request may have built it while this one waited.
+            if let Some(hit) = this.lookup(date, marker) {
+                return Ok(Some((hit, CacheOutcome::Hit)));
+            }
+            let Some(value) = build().await? else {
+                return Ok(None);
+            };
+            let value = Arc::new(value);
+            this.insert(date, marker, value.clone());
+            Ok(Some((value, CacheOutcome::Built)))
+        })
+        .await
+        .map_err(|err| anyhow::anyhow!("trip-planning graph build task failed: {err}"))?
+    }
+
+    #[cfg(test)]
+    fn cached_dates(&self) -> Vec<NaiveDate> {
+        let entries = self.entries.lock().unwrap();
+        let mut dates: Vec<NaiveDate> = entries.iter().map(|entry| entry.date).collect();
+        dates.sort();
+        dates
+    }
+}
+
+#[cfg(test)]
+mod graph_cache_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    fn date(day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 9, day).unwrap()
+    }
+
+    fn marker(hour: u32) -> Option<DateTime<Utc>> {
+        Some(
+            NaiveDate::from_ymd_opt(2026, 9, 27)
+                .unwrap()
+                .and_hms_opt(hour, 0, 0)
+                .unwrap()
+                .and_utc(),
+        )
+    }
+
+    /// Builds `day * 100 + n` where n counts builds, so a rebuild is visible.
+    async fn get(
+        cache: &Arc<GraphCache<u32>>,
+        builds: &Arc<AtomicUsize>,
+        day: u32,
+        marker: Option<DateTime<Utc>>,
+    ) -> (u32, CacheOutcome) {
+        let builds = builds.clone();
+        let (value, outcome) = cache
+            .get_or_build(date(day), marker, move || async move {
+                let n = builds.fetch_add(1, Ordering::SeqCst) as u32;
+                Ok(Some(day * 100 + n))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        (*value, outcome)
+    }
+
+    #[tokio::test]
+    async fn a_second_request_for_the_same_date_is_a_hit() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        assert_eq!(
+            get(&cache, &builds, 1, marker(1)).await,
+            (100, CacheOutcome::Built)
+        );
+        assert_eq!(
+            get(&cache, &builds, 1, marker(1)).await,
+            (100, CacheOutcome::Hit)
+        );
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+    }
+
+    /// A new publish marker invalidates the cached graph.
+    #[tokio::test]
+    async fn a_new_publish_rebuilds() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        get(&cache, &builds, 1, marker(1)).await;
+        assert_eq!(
+            get(&cache, &builds, 1, marker(2)).await,
+            (101, CacheOutcome::Built)
+        );
+        assert_eq!(
+            cache.cached_dates(),
+            [date(1)],
+            "the stale entry is replaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_older_than_max_age_is_rebuilt() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_millis(50)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        get(&cache, &builds, 1, marker(1)).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            get(&cache, &builds, 1, marker(1)).await,
+            (101, CacheOutcome::Built)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_least_recently_used_date_is_evicted_at_capacity() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        get(&cache, &builds, 1, marker(1)).await;
+        get(&cache, &builds, 2, marker(1)).await;
+        // Touch day 1, so day 2 is the least recently used.
+        get(&cache, &builds, 1, marker(1)).await;
+        get(&cache, &builds, 3, marker(1)).await;
+        assert_eq!(cache.cached_dates(), [date(1), date(3)]);
+    }
+
+    #[tokio::test]
+    async fn concurrent_misses_for_one_date_build_it_once() {
+        let cache = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let builds = builds.clone();
+            tasks.push(tokio::spawn(async move {
+                cache
+                    .get_or_build(date(1), marker(1), move || async move {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Ok(Some(7u32))
+                    })
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .0
+            }));
+        }
+        for task in tasks {
+            assert_eq!(*task.await.unwrap(), 7);
+        }
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn nothing_published_is_not_cached() {
+        let cache: Arc<GraphCache<u32>> = Arc::new(GraphCache::new(2, Duration::from_secs(600)));
+        let result = cache
+            .get_or_build(date(1), marker(1), || async { Ok(None) })
+            .await
+            .unwrap();
+        assert!(result.is_none());
+        assert!(cache.cached_dates().is_empty());
+    }
+
+    #[tokio::test]
+    async fn capacity_zero_disables_the_cache() {
+        let cache = Arc::new(GraphCache::new(0, Duration::from_secs(600)));
+        let builds = Arc::new(AtomicUsize::new(0));
+        get(&cache, &builds, 1, marker(1)).await;
+        assert_eq!(
+            get(&cache, &builds, 1, marker(1)).await,
+            (101, CacheOutcome::Built)
+        );
+        assert!(cache.cached_dates().is_empty());
+    }
 }
 
 #[cfg(test)]

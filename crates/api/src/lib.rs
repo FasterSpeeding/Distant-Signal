@@ -24,6 +24,8 @@
 pub mod app;
 pub mod auth;
 pub mod data;
+pub mod edge;
 pub mod migrate;
+pub mod rate_limit;
 pub mod render;
 pub mod routes;

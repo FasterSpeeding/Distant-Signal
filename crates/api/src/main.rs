@@ -6,34 +6,66 @@ use tower_http::trace::TraceLayer;
 use api::app::{App, AppState, Router};
 use api::{data, routes};
 
-/// Redacts an unlisted-link share token out of a request URI before it
-/// reaches `tracing`'s per-request span. 2026-09 Signal Box Audit Low
-/// finding: `TraceLayer::new_for_http()`'s default `make_span_with` logs
-/// the full request URI verbatim as a span field -- for `GET
-/// /Journeys/shared/{token}` (`routes::journeys::get_journey_by_share_token`)
-/// that means the raw, unauthenticated-bearer share token travels into
-/// every trace/log line this request produces, stacked on top of the
-/// exposure this codebase does NOT control (ingress access logs, browser
-/// history, a `Referer` header on any outbound link/asset request the
-/// shared page makes) -- the token is the entire access control for that
-/// route, so leaking it anywhere is equivalent to leaking the resource
-/// itself.
+/// What the per-request tracing span records as `uri` (API-3, LEG-7).
 ///
-/// Complements, rather than replaces, the share link's own TTL: as of the
-/// 2026-09-26 review's L17 fix every journey share link expires after
-/// `routes::journeys::JOURNEY_SHARE_LINK_TTL` (30 days, extendable by the
-/// owner), which bounds how long a token leaked through any of the channels
-/// above stays useful -- but a token that's still live must not be written
-/// into this service's own logs either, so the redaction stays.
-fn redact_share_token_uri(uri: &axum::http::Uri) -> String {
-    let path = uri.path();
-    if let Some(token) = path.strip_prefix("/Journeys/shared/")
-        && !token.is_empty()
-        && !token.contains('/')
-    {
-        return "/Journeys/shared/[REDACTED]".to_string();
+/// `TraceLayer::new_for_http()`'s default span logs the full request URI, and
+/// every `warn!`/`error!` inside a request prints the span's fields. Several
+/// URIs carry secrets or personal data:
+///
+/// - bearer tokens in the path: `/Journeys/shared/{token}` (a journey share
+///   link) and `/public/groups/join/{token}` (a group invite, valid for 7
+///   days; the tokens are hashed at rest, so the logs were the weakest copy);
+/// - the query string: `/public/auth/callback?code=&state=` (OIDC) and
+///   `lat`/`lon` on the nearby-stations lookup.
+///
+/// So a request that matched a route is logged by its route TEMPLATE
+/// (`/public/groups/join/{token}`), never its concrete path or query. A
+/// request that matched nothing is logged by its path, with the query string
+/// dropped, the two token prefixes above redacted (a trailing-slash variant
+/// of a real token URL is unmatched), and the length capped.
+fn loggable_request_uri(
+    uri: &axum::http::Uri,
+    matched_path: Option<&axum::extract::MatchedPath>,
+) -> String {
+    if let Some(matched) = matched_path {
+        return matched.as_str().to_string();
     }
-    uri.to_string()
+    redact_unmatched_path(uri.path())
+}
+
+/// Longest unmatched path logged; scanners send arbitrarily long ones.
+const MAX_LOGGED_UNMATCHED_PATH: usize = 200;
+
+fn redact_unmatched_path(path: &str) -> String {
+    const SECRET_PREFIXES: [&str; 2] = ["/Journeys/shared/", "/public/groups/join/"];
+    for prefix in SECRET_PREFIXES {
+        if let Some(rest) = path.strip_prefix(prefix)
+            && !rest.is_empty()
+        {
+            return format!("{prefix}[REDACTED]");
+        }
+    }
+    if path.len() <= MAX_LOGGED_UNMATCHED_PATH {
+        return path.to_string();
+    }
+    let mut end = MAX_LOGGED_UNMATCHED_PATH;
+    while !path.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}[...]", &path[..end])
+}
+
+/// The per-request span: method, [`loggable_request_uri`] and version.
+fn request_span(request: &axum::http::Request<axum::body::Body>) -> tracing::Span {
+    tracing::info_span!(
+        "request",
+        method = %request.method(),
+        uri = %loggable_request_uri(
+            request.uri(),
+            request.extensions().get::<axum::extract::MatchedPath>(),
+        ),
+        version = ?request.version(),
+    )
 }
 
 /// Collapses every request that didn't match a registered route onto one
@@ -206,6 +238,14 @@ async fn server_main() -> anyhow::Result<()> {
         ))
         .build_pair();
 
+    // API-2: whole-request time limits, body reads included -- a short one
+    // for everything public, a longer one for the internal ingest routes
+    // (100 MB bodies, 120 s publish statements). The HTTP/1 header-read
+    // timeout is on the listener itself; see `api::edge`.
+    let edge_settings = api::edge::EdgeSettings::from_env()?;
+    let rate_limit_settings = api::rate_limit::RateLimitSettings::from_env()?;
+    tracing::info!(?rate_limit_settings, "api rate limits");
+    let rate_limiter = api::rate_limit::RateLimiter::new(rate_limit_settings);
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
@@ -213,7 +253,11 @@ async fn server_main() -> anyhow::Result<()> {
         .merge(routes::journey_templates::router())
         .merge(routes::trips::router())
         .nest("/public", routes::public_router())
-        .nest("/private", routes::private_router(app.clone()));
+        .layer(edge_settings.public_timeout_layer())
+        .nest(
+            "/private",
+            routes::private_router(app.clone()).layer(edge_settings.private_timeout_layer()),
+        );
 
     // Unlike the other seven binaries, api's own PUBLIC listener stays up
     // either way -- metrics_enabled only decides whether requests are
@@ -242,16 +286,13 @@ async fn server_main() -> anyhow::Result<()> {
             api::auth::reject_cross_origin_cookie_mutation,
         ))
         .layer(cors)
-        .layer(TraceLayer::new_for_http().make_span_with(
-            |request: &axum::http::Request<axum::body::Body>| {
-                tracing::info_span!(
-                    "request",
-                    method = %request.method(),
-                    uri = %redact_share_token_uri(request.uri()),
-                    version = ?request.version(),
-                )
-            },
+        // Per-client-IP limits on login, /Trips/plan, /Train/by-uid and
+        // public writes; /private/* is exempt. See `api::rate_limit`.
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter,
+            api::rate_limit::enforce,
         ))
+        .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .with_state(app.clone());
 
     // Report the admin group at startup (not secret): an empty value means
@@ -302,12 +343,13 @@ async fn server_main() -> anyhow::Result<()> {
         anyhow::Ok(())
     };
     let bind_url = app.config.bind_url.clone();
+    let header_read_timeout = edge_settings.header_read_timeout();
     run_startup(
         migrate,
         || spawn_background_loops(&app),
         || async move {
             let listener = tokio::net::TcpListener::bind(&bind_url).await?;
-            axum::serve(listener, router).await?;
+            api::edge::serve(listener, router, header_read_timeout).await?;
             Ok(())
         },
     )
@@ -685,46 +727,116 @@ mod unmatched_route_endpoint_label_tests {
 }
 
 #[cfg(test)]
-mod redact_share_token_uri_tests {
-    use super::redact_share_token_uri;
+mod request_span_tests {
+    use std::sync::{Arc, Mutex};
 
-    #[test]
-    // 2026-09 Signal Box Audit Low finding regression: the whole point of
-    // this function is that the raw token never reaches the returned
-    // string.
-    fn redacts_a_journey_share_token() {
-        let uri: axum::http::Uri = "/Journeys/shared/super-secret-token-123"
-            .parse()
-            .expect("valid uri");
-        let redacted = redact_share_token_uri(&uri);
-        assert_eq!(redacted, "/Journeys/shared/[REDACTED]");
-        assert!(!redacted.contains("super-secret-token-123"));
+    use axum::routing::{get, post};
+    use tower::ServiceExt;
+
+    use super::{loggable_request_uri, redact_unmatched_path, request_span};
+
+    /// Runs `uri` through a router shaped like the real one (the same
+    /// `Router::layer` placement, nested `/public`) and returns what the
+    /// span recorded as `uri`.
+    async fn logged_uri(method: &str, uri: &str) -> String {
+        let seen = Arc::new(Mutex::new(None::<String>));
+        let seen_in_layer = seen.clone();
+        let public = axum::Router::new()
+            .route("/groups/join/{token}", get(|| async {}).post(|| async {}))
+            .route("/auth/callback", get(|| async {}))
+            .route("/reference/stations/nearest", get(|| async {}));
+        let router = axum::Router::new()
+            .route("/Journeys/shared/{token}", get(|| async {}))
+            .route("/Journeys/{id}", post(|| async {}))
+            .nest("/public", public)
+            .layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| {
+                    let seen = seen_in_layer.clone();
+                    async move {
+                        *seen.lock().unwrap() = Some(loggable_request_uri(
+                            request.uri(),
+                            request.extensions().get::<axum::extract::MatchedPath>(),
+                        ));
+                        // The real span builder must accept the same request.
+                        let _span = request_span(&request);
+                        next.run(request).await
+                    }
+                },
+            ));
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        router.oneshot(request).await.unwrap();
+        seen.lock().unwrap().clone().expect("the layer ran")
+    }
+
+    /// API-3: a group invite token never reaches the log.
+    #[tokio::test]
+    async fn a_group_join_token_is_logged_as_the_route_template() {
+        for method in ["GET", "POST"] {
+            let logged = logged_uri(method, "/public/groups/join/secret-invite-123").await;
+            assert_eq!(logged, "/public/groups/join/{token}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_journey_share_token_is_logged_as_the_route_template() {
+        let logged = logged_uri("GET", "/Journeys/shared/super-secret-token-123").await;
+        assert_eq!(logged, "/Journeys/shared/{token}");
+    }
+
+    /// API-3: the OIDC code and state are in the query string, which is never
+    /// logged.
+    #[tokio::test]
+    async fn the_oidc_callback_query_is_not_logged() {
+        let logged = logged_uri("GET", "/public/auth/callback?code=abc123&state=xyz789").await;
+        assert_eq!(logged, "/public/auth/callback");
+    }
+
+    /// LEG-7: coordinates in the query string are never logged.
+    #[tokio::test]
+    async fn coordinates_in_the_query_are_not_logged() {
+        let logged = logged_uri(
+            "GET",
+            "/public/reference/stations/nearest?lat=51.5074&lon=-0.1278",
+        )
+        .await;
+        assert!(!logged.contains("51.5074"), "{logged}");
+        assert!(!logged.contains('?'), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn an_unmatched_path_is_logged_without_its_query() {
+        let logged = logged_uri("GET", "/wp-login.php?user=admin").await;
+        assert_eq!(logged, "/wp-login.php");
+    }
+
+    /// A trailing-slash variant of a real token URL matches no route, so it
+    /// takes the unmatched branch; the token is still redacted.
+    #[tokio::test]
+    async fn an_unmatched_token_url_is_still_redacted() {
+        let logged = logged_uri("GET", "/public/groups/join/secret-invite-123/").await;
+        assert_eq!(logged, "/public/groups/join/[REDACTED]");
+        assert!(!logged.contains("secret-invite-123"));
+        let logged = logged_uri("GET", "/Journeys/shared/tok/extra").await;
+        assert_eq!(logged, "/Journeys/shared/[REDACTED]");
     }
 
     #[test]
-    fn leaves_an_ordinary_request_uri_untouched() {
-        let uri: axum::http::Uri = "/Journeys/mine".parse().expect("valid uri");
-        assert_eq!(redact_share_token_uri(&uri), "/Journeys/mine");
+    fn a_long_unmatched_path_is_capped() {
+        let long = "/".to_string() + &"x".repeat(5000);
+        let logged = redact_unmatched_path(&long);
+        assert!(logged.len() < 220, "{}", logged.len());
+        assert!(logged.ends_with("[...]"));
     }
 
     #[test]
-    fn leaves_a_journey_detail_uri_untouched() {
-        // Only the PUBLIC share-token route carries a bare secret in the
-        // path -- an ordinary `/Journeys/{id}` uses an opaque-but-not-
-        // secret numeric id behind session auth, nothing to redact.
-        let uri: axum::http::Uri = "/Journeys/42".parse().expect("valid uri");
-        assert_eq!(redact_share_token_uri(&uri), "/Journeys/42");
-    }
-
-    #[test]
-    fn does_not_redact_the_bare_shared_prefix_with_no_token() {
-        let uri: axum::http::Uri = "/Journeys/shared/".parse().expect("valid uri");
-        assert_eq!(redact_share_token_uri(&uri), "/Journeys/shared/");
-    }
-
-    #[test]
-    fn preserves_the_query_string_shape_for_non_matching_paths() {
-        let uri: axum::http::Uri = "/Journeys/mine?foo=bar".parse().expect("valid uri");
-        assert_eq!(redact_share_token_uri(&uri), "/Journeys/mine?foo=bar");
+    fn the_bare_share_prefix_is_left_alone() {
+        assert_eq!(
+            redact_unmatched_path("/Journeys/shared/"),
+            "/Journeys/shared/"
+        );
     }
 }

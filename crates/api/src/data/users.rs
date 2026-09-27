@@ -213,6 +213,36 @@ impl MemberDisplay {
 mod tests {
     use super::*;
 
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    /// LEG-6: groups outside the allow-list are never stored.
+    #[test]
+    fn retain_allowed_groups_drops_every_group_nothing_reads() {
+        let claim = strings(&[
+            "grafana-access",
+            "mcp-users",
+            "coder-users",
+            "distant-signal-chatbot-users",
+            "mcp-users",
+        ]);
+        let allowlist = strings(&[
+            "distant-signal-chatbot-users",
+            "mcp-users",
+            "mcp-live-boards",
+        ]);
+        assert_eq!(
+            retain_allowed_groups(&claim, &allowlist),
+            strings(&["mcp-users", "distant-signal-chatbot-users"])
+        );
+    }
+
+    #[test]
+    fn retain_allowed_groups_with_an_empty_allowlist_keeps_nothing() {
+        assert!(retain_allowed_groups(&strings(&["a", "b"]), &[]).is_empty());
+    }
+
     fn identity(email_verified: bool) -> OidcIdentity {
         OidcIdentity {
             sub: "user-123".to_string(),
@@ -440,6 +470,20 @@ pub struct User {
     pub email: Option<String>,
     pub name: Option<String>,
     pub username: Option<String>,
+}
+
+/// LEG-6: the IdP `groups` claim cut down to `allowlist` (see
+/// `data::config::ServiceArguments::stored_group_allowlist`), in claim
+/// order, each group once. Applied before [`upsert_user`] stores the
+/// groups, so a group nothing reads is never written.
+pub fn retain_allowed_groups(groups: &[String], allowlist: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for group in groups {
+        if allowlist.contains(group) && !kept.contains(group) {
+            kept.push(group.clone());
+        }
+    }
+    kept
 }
 
 /// Creates the user on first login, or updates `email`/`name`/`groups`/

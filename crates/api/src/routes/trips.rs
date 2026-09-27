@@ -42,9 +42,8 @@ const MAX_WAYPOINTS: usize = 8;
 /// layer: `tower::limit::ConcurrencyLimitLayer` QUEUES excess requests
 /// (unbounded, since axum awaits readiness through `oneshot`) instead of
 /// shedding them, which converts a CPU flood into a memory flood plus
-/// ever-growing latency, and `tower_governor` (a real per-IP limiter) is not
-/// a dependency of this workspace and would need trusted client-IP
-/// extraction to be meaningful behind this app's Ingress. Shedding with a 503
+/// ever-growing latency. The per-client limit is separate: `crate::rate_limit`
+/// keys this route on the frontend-set `X-Real-IP`. Shedding with a 503
 /// is the honest behaviour for work this expensive: the caller learns
 /// immediately, and every other route -- healthcheck included -- keeps its
 /// worker threads.
@@ -54,6 +53,46 @@ const MAX_WAYPOINTS: usize = 8;
 /// ample capacity for the PDF parser and sqlx's own work.
 static PLAN_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(4));
+
+/// How many service dates' graphs [`GRAPH_CACHE`] keeps (each ~100 MB);
+/// 0 disables it. `TRIP_PLAN_GRAPH_CACHE_DATES`, default 2.
+const GRAPH_CACHE_DATES_ENV: &str = "TRIP_PLAN_GRAPH_CACHE_DATES";
+const DEFAULT_GRAPH_CACHE_DATES: usize = 2;
+/// Oldest a cached graph may be before it is rebuilt even with no new
+/// publish marker. `TRIP_PLAN_GRAPH_CACHE_MAX_AGE_SECS`, default 600.
+const GRAPH_CACHE_MAX_AGE_ENV: &str = "TRIP_PLAN_GRAPH_CACHE_MAX_AGE_SECS";
+const DEFAULT_GRAPH_CACHE_MAX_AGE_SECS: u64 = 600;
+
+/// TRIPS-1: built graphs, shared across requests for the same date. See
+/// [`trip_planning::GraphCache`].
+static GRAPH_CACHE: LazyLock<
+    std::sync::Arc<trip_planning::GraphCache<trip_planning::PlanningGraph>>,
+> = LazyLock::new(|| {
+    // Off in unit tests: the DB tests reseed the same date with different
+    // rows and must each see their own.
+    let default_dates = if cfg!(test) {
+        0
+    } else {
+        DEFAULT_GRAPH_CACHE_DATES
+    };
+    let dates = env_or_default(GRAPH_CACHE_DATES_ENV, default_dates);
+    let max_age = env_or_default(GRAPH_CACHE_MAX_AGE_ENV, DEFAULT_GRAPH_CACHE_MAX_AGE_SECS);
+    std::sync::Arc::new(trip_planning::GraphCache::new(
+        dates,
+        std::time::Duration::from_secs(max_age),
+    ))
+});
+
+/// A numeric env var, or `default` (with a warning) when unset or invalid.
+fn env_or_default<T: std::str::FromStr + std::fmt::Display + Copy>(name: &str, default: T) -> T {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => raw.trim().parse().unwrap_or_else(|_| {
+            tracing::warn!(name, raw, %default, "invalid value; using the default");
+            default
+        }),
+    }
+}
 
 pub fn router() -> crate::app::Router {
     crate::app::Router::new().route("/Trips/plan", axum::routing::get(get_trip_plan))
@@ -145,6 +184,10 @@ fn default_results() -> String {
 ///    including `/public/health`, so the API looked dead rather than slow and
 ///    orchestration would restart a pod that was merely busy. Same treatment,
 ///    for the same reason, as `routes::train`'s PDF ticket parser.
+/// 5. (TRIPS-1) [`GRAPH_CACHE`]: the whole-day read and graph build happen
+///    once per date per schedule publish (or per cache max-age), not once per
+///    request, and only one build runs at a time. A request for a cached date
+///    costs one marker read, the searches and the leg-details read.
 async fn get_trip_plan(
     State(app): State<App>,
     Query(params): Query<TripPlanParams>,
@@ -173,11 +216,35 @@ async fn get_trip_plan(
         ));
     };
 
-    let Some(calling_points) =
-        trip_planning::fetch_calling_points_for_date(&app.database, params.date)
-            .await
-            .map_err(internal_error("read calling points"))?
-    else {
+    // TRIPS-1: the day's graph comes from the per-date cache, keyed on the
+    // latest schedule publish; only a miss reads and builds it.
+    let marker = trip_planning::latest_schedule_publish(&app.database)
+        .await
+        .map_err(internal_error("read the latest schedule publish"))?;
+    let date = params.date;
+    let pool = app.database.clone();
+    let cached = GRAPH_CACHE
+        .get_or_build(date, marker, move || async move {
+            let Some(calling_points) =
+                trip_planning::fetch_calling_points_for_date(&pool, date).await?
+            else {
+                return Ok(None);
+            };
+            let interchange = trip_planning::fetch_interchange_data(&pool).await?;
+            // The sort over every calling point of the day, on the blocking
+            // pool (bound 4 in this fn's doc comment).
+            let connections = tokio::task::spawn_blocking(move || {
+                trip_planning::build_connections(calling_points)
+            })
+            .await?;
+            Ok(Some(trip_planning::PlanningGraph {
+                connections,
+                interchange,
+            }))
+        })
+        .await
+        .map_err(internal_error("build the connections graph"))?;
+    let Some((graph, outcome)) = cached else {
         return Err((
             StatusCode::NOT_FOUND,
             format!(
@@ -186,17 +253,17 @@ async fn get_trip_plan(
             ),
         ));
     };
+    metrics::counter!(
+        common::metrics::metric_name("api_trip_plan_graph_cache_total"),
+        "result" => match outcome {
+            trip_planning::CacheOutcome::Hit => "hit",
+            trip_planning::CacheOutcome::Built => "miss",
+        }
+    )
+    .increment(1);
 
-    let interchange = trip_planning::fetch_interchange_data(&app.database)
-        .await
-        .map_err(internal_error("fetch interchange data"))?;
-
-    // Everything CPU-bound in one hop onto the blocking pool: building the
-    // connections graph (a sort over every calling point of the day) AND the
-    // per-leg searches. Owned values are moved in rather than borrowed --
-    // `spawn_blocking` needs `'static`, and both were built for this request
-    // alone and are dropped when it ends.
-    let date = params.date;
+    // The per-leg searches, on the blocking pool. The graph is shared, not
+    // copied: an `Arc` into the cache.
     let origin = params.origin.trim().to_ascii_uppercase();
     let destination = params.destination.trim().to_ascii_uppercase();
     let depart_after = params.depart_after.unwrap_or(NaiveTime::MIN);
@@ -205,10 +272,9 @@ async fn get_trip_plan(
         // Held until the search itself finishes, not until this handler's
         // future does -- see bound 3 in this fn's doc comment.
         let _permit = permit;
-        let connections = trip_planning::build_connections(calling_points);
         trip_planning_itinerary::plan_via_waypoints(
-            &connections,
-            &interchange,
+            &graph.connections,
+            &graph.interchange,
             date,
             &origin,
             &waypoints,
