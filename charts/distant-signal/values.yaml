@@ -2845,6 +2845,9 @@ metrics:
     # delete (staged key count mismatch) within `mismatchWindow`.
     # DistantSignalScheduleReferencePublishRejected: api answered 400/413/422
     # to a product within `rejectedWindow` (permanent for that delivery).
+    # DistantSignalLinePopulationMissing: past 06:00 London, some line still
+    # has no schedule population for today's rail day (full-coverage-consumer
+    # metric) for `populationMissingFor`.
     schedulePipeline:
       enabled: true
       notSeededFor: 30m
@@ -2852,6 +2855,7 @@ metrics:
       staleAfterHours: 30
       mismatchWindow: 6h
       rejectedWindow: 6h
+      populationMissingFor: 15m
       severity: warning
 
 # ---------------------------------------------------------------------------

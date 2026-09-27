@@ -481,6 +481,31 @@ spec:
               published, so that product keeps its previous rows. Usually a
               schema skew between the two services or an oversized chunk; the
               reference container's error log has api's response body.
+        {{- /*
+        DQ11/PL-9: schedule-reference publishes each line's population for
+        today and tomorrow, so the rail day's population normally exists a
+        day early. full-coverage-consumer exports how many lines still have
+        none for the current rail day, but only once it is past 06:00 London
+        (0 before), so this alert needs no time-of-day logic.
+        */}}
+        - alert: DistantSignalLinePopulationMissing
+          expr: |
+            max by (namespace) (distant_signal_full_coverage_consumer_population_missing_past_deadline_lines{namespace="{{ $ns }}"}) > 0
+          for: {{ .populationMissingFor }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "{{ "{{ $value }}" }} lines have no schedule population for today"
+            description: >-
+              After 06:00 London, full-coverage-consumer in
+              {{ "{{ $labels.namespace }}" }} still has no schedule line population
+              for today's rail day on {{ "{{ $value }}" }} line(s), so their
+              full-coverage stats stay Pending. Check that last night's and the
+              previous CIF delivery published (DistantSignalScheduleReferencePublishStale),
+              and the consumer's population reload errors.
     {{- end }}
     {{- end }}
 {{- end }}

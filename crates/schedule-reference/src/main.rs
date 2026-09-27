@@ -1246,7 +1246,11 @@ async fn publish_cif_derived_products(
     let dates = forward_publish_dates(today, DESTINATION_DEPARTURES_FORWARD_DAYS);
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
     let cif_products: Vec<String> = lines_to_publish(&config.lines, &crs_to_tiploc)
-        .map(|line| product::line_population(&line.id, today))
+        .flat_map(|line| {
+            line_population_dates(today)
+                .into_iter()
+                .map(|date| product::line_population(&line.id, date))
+        })
         .chain(std::iter::once(product::network_departures(today)))
         .chain(dates.iter().flat_map(|&date| {
             [
@@ -1323,8 +1327,9 @@ async fn publish_cif_derived_products(
     .await;
     // Third CIF-derived product off the SAME one-per-cycle ScheduleIndex --
     // the design doc's Approach B is explicit that this must not trigger a
-    // second parse or a resident index. Unlike the two products above,
-    // this one publishes a WINDOW of dates, not just `today`: see
+    // second parse or a resident index. Unlike the two products above (line
+    // populations: today and tomorrow; network departures: today), this one
+    // publishes the whole 8-day WINDOW of dates: see
     // docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md
     // §1/§2. `publish_schedule_destination_departures` itself is
     // unmodified -- it already accepts an arbitrary date; only the number
@@ -1425,34 +1430,47 @@ async fn publish_schedule_line_population(
 ) {
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
     for line in lines_to_publish(&config.lines, &crs_to_tiploc) {
-        let key = product::line_population(&line.id, today);
-        if outcome.is_published(&key) {
-            continue;
-        }
-        let tiplocs = line_tiplocs(line, &crs_to_tiploc);
-        let resolved = schedule_query::schedules_touching(&index, &tiplocs, today);
-        let population: Vec<schedule_query::LinePopulationEntry> =
-            resolved.into_iter().map(Into::into).collect();
-        let body = serde_json::json!({
-            "line_id": line.id,
-            "service_date": today,
-            "population": population,
-        });
-        match publish_with_retry(&config.publish_retry, &key, async || {
-            post_schedule_line_population(
-                client,
-                &config.schedule_line_population_url,
-                internal_oauth,
-                &body,
-            )
+        for date in line_population_dates(today) {
+            let key = product::line_population(&line.id, date);
+            if outcome.is_published(&key) {
+                continue;
+            }
+            let tiplocs = line_tiplocs(line, &crs_to_tiploc);
+            let resolved = schedule_query::schedules_touching(&index, &tiplocs, date);
+            let population: Vec<schedule_query::LinePopulationEntry> =
+                resolved.into_iter().map(Into::into).collect();
+            let body = serde_json::json!({
+                "line_id": line.id,
+                "service_date": date,
+                "population": population,
+            });
+            match publish_with_retry(&config.publish_retry, &key, async || {
+                post_schedule_line_population(
+                    client,
+                    &config.schedule_line_population_url,
+                    internal_oauth,
+                    &body,
+                )
+                .await
+            })
             .await
-        })
-        .await
-        {
-            Ok(()) => outcome.succeeded(key),
-            Err(err) => outcome.failed(key, &err),
+            {
+                Ok(()) => outcome.succeeded(key),
+                Err(err) => outcome.failed(key, &err),
+            }
         }
     }
+}
+
+/// The dates each line's population is published for: today and tomorrow
+/// (DQ11/PL-9 of the 2026-09-27 review). `full-coverage-consumer` loads the
+/// rail day's and the next day's population so the 02:00 rollover finds
+/// the new day already loaded; only today's used to be published, so the
+/// next day's request was always `null` and a late delivery left the new
+/// rail day with no population at all. Publishing tomorrow's too means a
+/// day's population normally exists a full day before it is needed.
+fn line_population_dates(today: chrono::NaiveDate) -> [chrono::NaiveDate; 2] {
+    [today, today + chrono::Duration::days(1)]
 }
 
 /// Real, CIF-derived CRS -> TIPLOC(s) map, inverted from the UNION of
@@ -4433,6 +4451,68 @@ mod per_product_retry_tests {
             posts_to(&server, "/private/schedule-reference-publishes").await,
             0
         );
+    }
+
+    /// DQ11/PL-9: each line's population is published for today AND
+    /// tomorrow, so the rail-day rollover finds the new day already there.
+    #[tokio::test]
+    async fn line_populations_are_published_for_today_and_tomorrow() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, mut config, client, _storage) = setup(&server).await;
+        config.lines = common::config::LineCatalogue(vec![common::LineDefinition {
+            id: "test-euston-line".to_string(),
+            name: "Test".to_string(),
+            mode: "rail".to_string(),
+            category: "national-rail".to_string(),
+            operators: vec![],
+            stations: vec![common::Station {
+                crs: "EUS".to_string(),
+                tiploc: None,
+                role: "major".to_string(),
+                segment: None,
+            }],
+            sample_stations: vec![],
+            match_keywords: vec![],
+            excluded_keywords: vec![],
+            severity_overrides: std::collections::HashMap::new(),
+            destination_crs_filter: vec![],
+            headcode_prefixes: vec![],
+            full_coverage_enabled: true,
+        }]);
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&client, &config, &mut state, &tokens)
+            .await
+            .expect("cycle");
+
+        let today = london_local_date_now();
+        let mut dates: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|req| req.url.path() == "/private/schedule-line-population")
+            .map(|req| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(body["line_id"], "test-euston-line");
+                assert_eq!(
+                    body["population"].as_array().map(Vec::len),
+                    Some(1),
+                    "the fixture schedule runs both days"
+                );
+                body["service_date"].as_str().unwrap().to_string()
+            })
+            .collect();
+        dates.sort();
+        assert_eq!(
+            dates,
+            vec![
+                today.to_string(),
+                (today + chrono::Duration::days(1)).to_string()
+            ]
+        );
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
     }
 
     /// A newer delivery supersedes a partly published one: it is published
