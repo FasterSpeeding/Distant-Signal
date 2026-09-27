@@ -15,11 +15,15 @@ test('/attribution renders every required data-source credit', async ({ page }) 
   await expect(main.getByText(/Contains public sector information licensed under the/)).toBeVisible();
 });
 
+// The footer is in the root layout, so any page shows it. /attribution is
+// used because it needs no backend data to render.
 test('the footer links to /attribution', async ({ page }) => {
-  await page.goto('/');
-  const footerNav = page.getByRole('navigation', { name: 'Site information' });
-  await footerNav.getByRole('link', { name: 'Data sources and licences' }).click();
-  await expect(page).toHaveURL(/\/attribution$/);
+  await page.goto('/attribution');
+  const footerNav = page.getByRole('contentinfo').getByRole('navigation', { name: 'Site information' });
+  await expect(footerNav.getByRole('link', { name: 'Data sources and licences' })).toHaveAttribute(
+    'href',
+    '/attribution',
+  );
 });
 
 const LEGAL_PAGES_RENDERED =

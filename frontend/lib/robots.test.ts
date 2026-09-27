@@ -77,6 +77,7 @@ describe('buildRobots', () => {
       '/privacy',
       '/terms',
       '/cookies',
+      '/contact',
     ]) {
       expect(disallowed.filter((prefix) => publicPath.startsWith(prefix))).toEqual([]);
     }
