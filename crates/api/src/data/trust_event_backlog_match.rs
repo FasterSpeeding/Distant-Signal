@@ -9,8 +9,9 @@
 //!    TRUST window has already closed, plus a `train_uid` (CIF's own
 //!    identifier) if an Activation for that `train_id` is also in the
 //!    backlog.
-//! 2. Full backfill: every backlog row for that `train_id`+`service_date`,
-//!    in `received_at` order. Keyed on `train_id`, NOT `train_uid` --
+//! 2. Full backfill: every backlog row for that `train_id` on the matched
+//!    row's own `service_date` (never the pin's -- see `find_backlog_match`
+//!    on absolute-time matching), in `received_at` order. Keyed on `train_id`, NOT `train_uid` --
 //!    see `fetch_backlog_history`'s own doc comment for why (a real bug
 //!    caught in this plan's second review pass: `train_uid` is only ever
 //!    non-NULL on an Activation row in this table, never on a Movement/
