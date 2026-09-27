@@ -1349,48 +1349,87 @@ pub(crate) fn apply_darwin_eta(
 /// `blend_darwin_eta` already has for its own overlay.
 pub(crate) async fn attach_journey_stops(
     app: &App,
-    mut state: train_tracking::TrackedTrainState,
+    state: train_tracking::TrackedTrainState,
 ) -> train_tracking::TrackedTrainState {
-    let (Some(trains_id), Some(train_uid)) = (state.trains_id, state.train_uid.clone()) else {
-        return state;
+    attach_journey_stops_batch(app, vec![state])
+        .await
+        .pop()
+        .expect("one state in, one state out")
+}
+
+/// [`attach_journey_stops`] for several states with one batched stop build
+/// (`journey::build_journey_stops_batch`, DB2-14), returned in the same
+/// order. Same best-effort posture: a failure degrades the affected
+/// states to `journey_stops: None`, never the request.
+pub(crate) async fn attach_journey_stops_batch(
+    app: &App,
+    mut states: Vec<train_tracking::TrackedTrainState>,
+) -> Vec<train_tracking::TrackedTrainState> {
+    // Only a state with both `trains_id` and `train_uid` gets stops (§1 of
+    // the design doc); a `pending`/`unresolved` one is returned unchanged.
+    let buildable: Vec<usize> = states
+        .iter()
+        .enumerate()
+        .filter(|(_, state)| state.trains_id.is_some() && state.train_uid.is_some())
+        .map(|(index, _)| index)
+        .collect();
+    if buildable.is_empty() {
+        return states;
+    }
+    let results = {
+        let requests: Vec<crate::data::journey::JourneyStopsRequest<'_>> = buildable
+            .iter()
+            .map(|&index| {
+                let state = &states[index];
+                crate::data::journey::JourneyStopsRequest {
+                    trains_id: state.trains_id.expect("filtered above"),
+                    train_uid: state.train_uid.as_deref().expect("filtered above"),
+                    service_date: state.service_date,
+                    calling_points_json: state.schedule_calling_points.as_ref(),
+                    current_delay_minutes: state.delay_minutes,
+                    skipped_stations: &state.schedule_skipped_stations,
+                    platform: state.schedule_platform.as_deref(),
+                    planned_platform: state.schedule_planned_platform.as_deref(),
+                }
+            })
+            .collect();
+        crate::data::journey::build_journey_stops_batch(&app.database, &requests).await
     };
-    match crate::data::journey::build_journey_stops(
-        &app.database,
-        trains_id,
-        &train_uid,
-        state.service_date,
-        state.schedule_calling_points.as_ref(),
-        state.delay_minutes,
-        &state.schedule_skipped_stations,
-        state.schedule_platform.as_deref(),
-        state.schedule_planned_platform.as_deref(),
-    )
-    .await
-    {
-        Ok(stops) => {
-            // `may_have_arrived` is computed from the SAME `stops` this
-            // just built (it reads the final stop's `estimated_arrival`,
-            // which `build_journey_stops` only just populated), not
-            // recomputed later against whatever `state.journey_stops` ends
-            // up holding -- so it's derived before the move below.
-            state.may_have_arrived = stops
-                .as_deref()
-                .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
-            // Sequence-anchored confirmed arrival -- see
-            // `journey::apply_confirmed_arrival`'s own doc comment for why
-            // the stored status alone can leave a long-finished train
-            // reading `'en_route'` forever.
-            state.status = crate::data::journey::apply_confirmed_arrival(
-                state.status.take(),
-                stops.as_deref(),
-            );
-            state.journey_stops = stops;
-        }
+    let results = match results {
+        Ok(results) => results,
         Err(err) => {
-            tracing::warn!(error = ?err, trains_id, "could not build journey stops");
+            tracing::warn!(error = ?err, "could not build journey stops");
+            return states;
+        }
+    };
+    for (index, stops) in buildable.into_iter().zip(results) {
+        let state = &mut states[index];
+        match stops {
+            Ok(stops) => {
+                // `may_have_arrived` is computed from the SAME `stops` this
+                // just built (it reads the final stop's `estimated_arrival`,
+                // which `build_journey_stops` only just populated), not
+                // recomputed later against whatever `state.journey_stops` ends
+                // up holding -- so it's derived before the move below.
+                state.may_have_arrived = stops
+                    .as_deref()
+                    .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
+                // Sequence-anchored confirmed arrival -- see
+                // `journey::apply_confirmed_arrival`'s own doc comment for why
+                // the stored status alone can leave a long-finished train
+                // reading `'en_route'` forever.
+                state.status = crate::data::journey::apply_confirmed_arrival(
+                    state.status.take(),
+                    stops.as_deref(),
+                );
+                state.journey_stops = stops;
+            }
+            Err(err) => {
+                tracing::warn!(error = ?err, trains_id = state.trains_id, "could not build journey stops");
+            }
         }
     }
-    state
+    states
 }
 
 /// Public-route sibling of `attach_journey_stops`, for `PublicTrainState`.

@@ -578,20 +578,73 @@ pub async fn build_journey_stops(
     platform: Option<&str>,
     planned_platform: Option<&str>,
 ) -> anyhow::Result<Option<Vec<JourneyStop>>> {
-    let raw: Vec<RawCallingPoint> = match calling_points_json {
-        Some(json) => serde_json::from_value(json.clone())?,
-        None => {
-            let rows =
-                queries::list_schedule_calling_points_full_for_train(pool, train_uid, service_date)
-                    .await?;
-            if rows.is_empty() {
-                return Ok(None);
-            }
-            rows.iter()
-                .filter_map(raw_calling_point_from_full_row)
-                .collect()
-        }
+    let request = JourneyStopsRequest {
+        trains_id,
+        train_uid,
+        service_date,
+        calling_points_json,
+        current_delay_minutes,
+        skipped_stations,
+        platform,
+        planned_platform,
     };
+    build_journey_stops_batch(pool, std::slice::from_ref(&request))
+        .await?
+        .pop()
+        .unwrap_or(Ok(None))
+}
+
+/// One train's inputs to [`build_journey_stops_batch`]; the fields are
+/// [`build_journey_stops`]'s parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct JourneyStopsRequest<'a> {
+    pub trains_id: i64,
+    pub train_uid: &'a str,
+    pub service_date: NaiveDate,
+    pub calling_points_json: Option<&'a serde_json::Value>,
+    pub current_delay_minutes: Option<i32>,
+    pub skipped_stations: &'a [String],
+    pub platform: Option<&'a str>,
+    pub planned_platform: Option<&'a str>,
+}
+
+/// [`build_journey_stops`] for several trains at once, one result per
+/// request in the same order (DB2-14). The journey detail route (also
+/// served unauthenticated through share links) used to build each leg's
+/// stops separately, about four queries per leg. This does one TIPLOC->CRS
+/// lookup, one station-name lookup, one movement-event read and one
+/// station-sample read for all the legs together, so a 20-leg journey is
+/// four round trips instead of about 80. The only per-train query left is
+/// the `schedule_calling_points_full` fallback, for a train whose shared
+/// row has no `calling_points` yet.
+///
+/// A failure that belongs to one train (its stored calling points don't
+/// parse, or its fallback read fails) is that train's own `Err`, so one bad
+/// leg still can't blank the others; a failure of a shared read is the
+/// outer `Err`.
+pub async fn build_journey_stops_batch(
+    pool: &PgPool,
+    requests: &[JourneyStopsRequest<'_>],
+) -> anyhow::Result<Vec<anyhow::Result<Option<Vec<JourneyStop>>>>> {
+    let mut raws: Vec<anyhow::Result<Option<Vec<RawCallingPoint>>>> =
+        Vec::with_capacity(requests.len());
+    for request in requests {
+        let raw: anyhow::Result<Vec<RawCallingPoint>> = match request.calling_points_json {
+            Some(json) => serde_json::from_value(json.clone()).map_err(anyhow::Error::from),
+            None => queries::list_schedule_calling_points_full_for_train(
+                pool,
+                request.train_uid,
+                request.service_date,
+            )
+            .await
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(raw_calling_point_from_full_row)
+                    .collect()
+            }),
+        };
+        raws.push(raw.map(|raw| (!raw.is_empty()).then_some(raw)));
+    }
 
     // `tiploc_key`, not the raw stored value, on BOTH sides -- see that
     // function's own doc comment for the padding bug this closes. Shared
@@ -603,37 +656,114 @@ pub async fn build_journey_stops(
     // fix (see `queries::list_calling_point_departures_for_train`'s own
     // doc comment for the "missing" vs "unresolved" inconsistency this
     // closes).
-    let tiplocs: Vec<String> = raw.iter().map(|cp| tiploc_key(&cp.tiploc)).collect();
+    let mut tiplocs: Vec<String> = raws
+        .iter()
+        .flatten()
+        .flatten()
+        .flatten()
+        .map(|cp| tiploc_key(&cp.tiploc))
+        .collect();
+    tiplocs.sort();
+    tiplocs.dedup();
     let tiploc_to_crs = queries::crs_for_tiplocs_batch(pool, &tiplocs).await?;
-    let mut stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
 
-    if stops.is_empty() {
-        return Ok(None);
+    let mut built: Vec<anyhow::Result<Option<Vec<JourneyStop>>>> = requests
+        .iter()
+        .zip(raws)
+        .map(|(request, raw)| {
+            raw.map(|raw| {
+                let stops =
+                    stops_from_calling_points(raw.as_ref()?, &tiploc_to_crs, request.service_date);
+                (!stops.is_empty()).then_some(stops)
+            })
+        })
+        .collect();
+    if !built.iter().any(|stops| matches!(stops, Ok(Some(_)))) {
+        return Ok(built);
     }
 
-    // Station names, batched over every distinct CRS this stop list has.
-    let stop_crs: Vec<String> = stops.iter().filter_map(|s| s.crs.clone()).collect();
+    // Station names and current boards, batched over every distinct CRS
+    // any of these stop lists has.
+    let mut stop_crs: Vec<String> = built
+        .iter()
+        .flatten()
+        .flatten()
+        .flatten()
+        .filter_map(|stop| stop.crs.clone())
+        .collect();
+    stop_crs.sort();
+    stop_crs.dedup();
     let names = queries::station_names_for_crs_batch(pool, &stop_crs).await?;
-    apply_station_names(&mut stops, &names);
 
-    // Live overlay.
-    let events = queries::movement_events_for_train(pool, trains_id).await?;
-    overlay_movement_events(&mut stops, &events);
-
-    apply_stop_status(&mut stops, skipped_stations);
-
-    apply_origin_platform(&mut stops, platform, planned_platform);
+    // Live overlay: every train's movement events in one read.
+    let mut trains_ids: Vec<i64> = requests
+        .iter()
+        .zip(&built)
+        .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+        .map(|(request, _)| request.trains_id)
+        .collect();
+    trains_ids.sort_unstable();
+    trains_ids.dedup();
+    let events = movement_events_for_trains(pool, &trains_ids).await?;
 
     // Every calling point's own CURRENT departure board (one batched
     // query), for `apply_station_sample_platforms` -- see its own doc
-    // comment. Deliberately after `apply_origin_platform`: a live board
-    // row is fresher than the origin's pin-time snapshot, so it wins.
+    // comment.
     let samples = queries::latest_station_samples_for_crs_batch(pool, &stop_crs).await?;
-    apply_station_sample_platforms(&mut stops, &samples);
 
-    apply_delay_estimates(&mut stops, current_delay_minutes);
+    for (request, stops) in requests.iter().zip(built.iter_mut()) {
+        let Ok(Some(stops)) = stops else {
+            continue;
+        };
+        apply_station_names(stops, &names);
+        overlay_movement_events(
+            stops,
+            events
+                .get(&request.trains_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        );
+        apply_stop_status(stops, request.skipped_stations);
+        apply_origin_platform(stops, request.platform, request.planned_platform);
+        // Deliberately after `apply_origin_platform`: a live board row is
+        // fresher than the origin's pin-time snapshot, so it wins.
+        apply_station_sample_platforms(stops, &samples);
+        apply_delay_estimates(stops, request.current_delay_minutes);
+    }
 
-    Ok(Some(stops))
+    Ok(built)
+}
+
+/// `queries::movement_events_for_train` for several trains in one query,
+/// grouped by `trains_id`, each group in the same `received_at, id` order.
+async fn movement_events_for_trains(
+    pool: &PgPool,
+    trains_ids: &[i64],
+) -> anyhow::Result<HashMap<i64, Vec<queries::MovementEventRow>>> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        trains_id: i64,
+        #[sqlx(flatten)]
+        event: queries::MovementEventRow,
+    }
+    if trains_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT trains_id, UPPER(loc_crs) AS loc_crs, event_type, \
+                planned_timestamp, actual_timestamp, variation_status \
+         FROM train_movement_events \
+         WHERE trains_id = ANY($1) AND loc_crs IS NOT NULL \
+         ORDER BY trains_id, received_at ASC, id ASC",
+    )
+    .bind(trains_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut grouped: HashMap<i64, Vec<queries::MovementEventRow>> = HashMap::new();
+    for row in rows {
+        grouped.entry(row.trains_id).or_default().push(row.event);
+    }
+    Ok(grouped)
 }
 
 /// Merges the train's reported movement events onto its ordered stop list
@@ -3666,6 +3796,165 @@ mod db_tests {
             .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// DB2-14: the batched build gives every train exactly what
+    /// `build_journey_stops` gives it alone (movement events land on their
+    /// own train only), a train with nothing to build is `Ok(None)`, and a
+    /// train whose stored calling points don't parse fails alone.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_batch_matches_the_per_train_build -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_batch_matches_the_per_train_build() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let train = |uid: &'static str| {
+            let pool = pool.clone();
+            async move {
+                crate::data::trains::find_or_create_train(&pool, uid, service_date)
+                    .await
+                    .expect("find_or_create_train")
+            }
+        };
+        let (a, b, c, d) = (
+            train("TEST-JRNB-A").await,
+            train("TEST-JRNB-B").await,
+            train("TEST-JRNB-C").await,
+            train("TEST-JRNB-D").await,
+        );
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                ("TEST-JRNB-1", "ZBA", "TEST-JRNB-X"),
+                ("TEST-JRNB-2", "ZBB", "TEST-JRNB-Y"),
+            ]
+            .map(|(stanox, crs, tiploc)| common::StanoxCrsRecord {
+                stanox: stanox.to_string(),
+                crs: crs.to_string(),
+                tiploc: tiploc.to_string(),
+                station_name: crs.to_string(),
+                source_sequence: 1,
+                change_time_minutes: None,
+            }),
+        )
+        .await
+        .expect("seed stanox_crs");
+        let cp = |from: &str, to: &str| {
+            serde_json::json!([
+                {"tiploc": from, "kind": "Origin", "bookedArrival": null,
+                 "bookedDeparture": "09:00:00", "isHalfMinuteArrival": false,
+                 "isHalfMinuteDeparture": false},
+                {"tiploc": to, "kind": "Terminate", "bookedArrival": "10:00:00",
+                 "bookedDeparture": null, "isHalfMinuteArrival": false,
+                 "isHalfMinuteDeparture": false}
+            ])
+        };
+        let cp_a = cp("TEST-JRNB-X", "TEST-JRNB-Y");
+        let cp_b = cp("TEST-JRNB-Y", "TEST-JRNB-X");
+        let bad = serde_json::json!({"not": "a list"});
+
+        // A departure event for train A only.
+        let departed: DateTime<Utc> = "2026-09-08T08:03:00Z".parse().unwrap();
+        crate::data::train_tracking::upsert_train_movement(
+            &pool,
+            a,
+            &common::TrainMovementEventMessage {
+                tracked_train_id: 0,
+                resolved_train_uid: None,
+                resolved_train_id: None,
+                dedup_key: "test-jrnb-a-dep".to_string(),
+                msg_type: "0003".to_string(),
+                event_type: Some("DEPARTURE".to_string()),
+                loc_stanox: Some("TEST-JRNB-1".to_string()),
+                loc_crs: Some("ZBA".to_string()),
+                planned_timestamp: Some("2026-09-08T08:00:00Z".parse().unwrap()),
+                actual_timestamp: Some(departed),
+                variation_status: Some("LATE".to_string()),
+                raw_body: serde_json::json!({}),
+                status: "en_route".to_string(),
+                last_reported_location: Some("ZBA".to_string()),
+                last_event_type: Some("DEPARTURE".to_string()),
+                delay_minutes: Some(3),
+                next_calling_point: None,
+                eta_next: None,
+                eta_source: None,
+            },
+        )
+        .await
+        .expect("seed movement");
+
+        let request = |trains_id, uid, json| JourneyStopsRequest {
+            trains_id,
+            train_uid: uid,
+            service_date,
+            calling_points_json: json,
+            current_delay_minutes: None,
+            skipped_stations: &[],
+            platform: None,
+            planned_platform: None,
+        };
+        let requests = [
+            request(a, "TEST-JRNB-A", Some(&cp_a)),
+            request(b, "TEST-JRNB-B", Some(&cp_b)),
+            request(c, "TEST-JRNB-C", Some(&bad)),
+            request(d, "TEST-JRNB-D", None),
+        ];
+        let batch = build_journey_stops_batch(&pool, &requests)
+            .await
+            .expect("shared reads succeed");
+        assert_eq!(batch.len(), 4);
+
+        for (index, json) in [(0, &cp_a), (1, &cp_b)] {
+            let alone = build_journey_stops(
+                &pool,
+                requests[index].trains_id,
+                requests[index].train_uid,
+                service_date,
+                Some(json),
+                None,
+                &[],
+                None,
+                None,
+            )
+            .await
+            .expect("single build")
+            .expect("stops");
+            let batched = batch[index]
+                .as_ref()
+                .expect("no per-train error")
+                .as_ref()
+                .expect("stops");
+            assert_eq!(
+                serde_json::to_value(batched).unwrap(),
+                serde_json::to_value(&alone).unwrap(),
+                "train {index}"
+            );
+        }
+        let a_stops = batch[0].as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(a_stops[0].actual_departure, Some(departed), "A's own event");
+        let b_stops = batch[1].as_ref().unwrap().as_ref().unwrap();
+        assert!(
+            b_stops.iter().all(|stop| stop.actual_departure.is_none()),
+            "A's event must not land on B"
+        );
+        assert!(
+            batch[2].is_err(),
+            "unparseable calling points fail that train only"
+        );
+        assert!(
+            matches!(batch[3], Ok(None)),
+            "no calling points and no fallback"
+        );
+
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRNB-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = ANY($1)")
+            .bind(vec![a, b, c, d])
             .execute(&pool)
             .await
             .ok();
