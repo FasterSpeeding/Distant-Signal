@@ -270,4 +270,37 @@ describe('ChatPanel', () => {
     await vi.waitFor(() => expect(mockRunChatTurn).toHaveBeenCalled());
     expect(mockRunChatTurn.mock.calls[0][0]).toMatchObject({ mcpUrl: 'https://runtime-mcp.example.com/mcp' });
   });
+
+  // FE-11: each turn's streamed text lands on its own assistant message.
+  it('routes a second turn\'s streamed text to the second assistant message, leaving the first intact', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn
+      .mockReturnValueOnce(
+        (async function* () {
+          yield { type: 'text-delta', text: 'First answer.' };
+          yield { type: 'done' };
+        })(),
+      )
+      .mockReturnValueOnce(
+        (async function* () {
+          await Promise.resolve();
+          yield { type: 'text-delta', text: 'Second ' };
+          yield { type: 'text-delta', text: 'answer.' };
+          yield { type: 'done' };
+        })(),
+      );
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+    const input = screen.getByPlaceholderText(/ask about/i);
+    fireEvent.change(input, { target: { value: 'one' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText('First answer.')).toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.getByPlaceholderText(/ask about/i)).not.toBeDisabled());
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'two' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText('Second answer.')).toBeInTheDocument();
+    expect(screen.getByText('First answer.')).toBeInTheDocument();
+    const texts = screen.getAllByText(/answer\.|^one$|^two$/).map((el) => el.textContent);
+    expect(texts).toEqual(['one', 'First answer.', 'two', 'Second answer.']);
+  });
 });

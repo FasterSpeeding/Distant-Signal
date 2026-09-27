@@ -13,6 +13,9 @@ import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent } from '@/lib/chatTurn';
 
 interface ChatMessage {
+  /** Stable per-panel id (FE-11): streamed events find their assistant turn
+   * by id, not by an array index captured from React's scheduler. */
+  id: number;
   role: 'user' | 'assistant';
   content: string;
   /** `plan_journey` tool-result events whose `structuredContent` looks
@@ -74,6 +77,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   const [error, setError] = useState<ChatError | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const historyRef = useRef<Anthropic.Beta.Messages.BetaMessageParam[]>([]);
+  const nextMessageId = useRef(0);
 
   function scrollToBottom() {
     // A convenience, never load-bearing: guarded so an environment without
@@ -105,18 +109,16 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
     setError(null);
     setInput('');
     setSending(true);
-    setMessages((prev) => [...prev, { role: 'user', content: trimmed, legs: [] }]);
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', legs: [] }]);
-    // Index of the assistant turn just pushed above -- both pushes above
-    // are synchronous state updates within this same handler, so `prev`
-    // reflects the array as of the previous call each time; capturing the
-    // resulting length up front avoids any ambiguity from relying on
-    // "the last element" after further updates land.
-    let assistantIndex = -1;
-    setMessages((prev) => {
-      assistantIndex = prev.length - 1;
-      return prev;
-    });
+    // FE-11: the assistant turn is addressed by an id allocated here, not
+    // by an index read back out of a no-op state updater (which only worked
+    // because React happened to flush it before the first await).
+    const userId = nextMessageId.current++;
+    const assistantId = nextMessageId.current++;
+    setMessages((prev) => [
+      ...prev,
+      { id: userId, role: 'user', content: trimmed, legs: [] },
+      { id: assistantId, role: 'assistant', content: '', legs: [] },
+    ]);
 
     try {
       const anthropic = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
@@ -131,7 +133,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
         userMessage: trimmed,
       })) {
         if (event.type === 'text-delta') assistantText += event.text;
-        applyChatEvent(event, assistantIndex, setMessages);
+        applyChatEvent(event, assistantId, setMessages);
         scrollToBottom();
       }
 
@@ -144,7 +146,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       // Drop only the empty pending assistant turn -- the user's own
       // message stays visible, with the error shown alongside it, rather
       // than silently disappearing too.
-      setMessages((prev) => prev.slice(0, -1));
+      setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       setError(classifyChatError(err));
     } finally {
       setSending(false);
@@ -162,8 +164,8 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
               Ask about live departures, disruptions, or plan a journey.
             </Text>
           )}
-          {messages.map((message, index) => (
-            <ChatMessageRow key={index} message={message} />
+          {messages.map((message) => (
+            <ChatMessageRow key={message.id} message={message} />
           ))}
         </Stack>
       </ScrollArea>
@@ -307,31 +309,19 @@ function ChatErrorAlert({ error }: { error: ChatError }) {
 
 function applyChatEvent(
   event: ChatEvent,
-  assistantIndex: number,
+  assistantId: number,
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
 ) {
   if (event.type === 'text-delta') {
-    setMessages((prev) => {
-      const next = [...prev];
-      const target = next[assistantIndex];
-      if (target) {
-        next[assistantIndex] = { ...target, content: target.content + event.text };
-      }
-      return next;
-    });
+    setMessages((prev) =>
+      prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + event.text } : m)),
+    );
     return;
   }
   if (event.type === 'tool-result') {
     const leg = asRenderedTrainLeg(event.structuredContent);
     if (!leg) return;
-    setMessages((prev) => {
-      const next = [...prev];
-      const target = next[assistantIndex];
-      if (target) {
-        next[assistantIndex] = { ...target, legs: [...target.legs, leg] };
-      }
-      return next;
-    });
+    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, legs: [...m.legs, leg] } : m)));
     return;
   }
   // 'done' needs no state change -- the stream ending IS the signal.
