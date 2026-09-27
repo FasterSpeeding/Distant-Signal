@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { DatePickerInput } from '@mantine/dates';
 import { Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import type { RangePreset } from '@/lib/history';
+import { londonCalendarDay, londonDayEndIso, londonDayStartIso } from '@/lib/londonWallClock';
 
 /** The one selector state this control's `SegmentedControl` actually needs
  * -- a `RangePreset` plus a fourth option with no `lib/history.ts`
@@ -14,8 +15,10 @@ import type { RangePreset } from '@/lib/history';
  * `preset: null` for that case). */
 type Selection = RangePreset | 'custom';
 
+/** The London calendar day an instant from the URL falls on (FE-5), so a
+ * London-evening bound doesn't display as the next UTC day. */
 function toCalendarDay(iso: string): string {
-  return iso.slice(0, 10);
+  return londonCalendarDay(iso);
 }
 
 /** `preset`/`from`/`to` come from the page, which resolved them out of the
@@ -89,9 +92,9 @@ export function HistoryRangePicker({
   function handleSearch() {
     const [start, end] = value;
     if (!start || !end) return;
-    router.push(
-      `${basePath}?from=${new Date(start).toISOString()}&to=${new Date(end).toISOString()}`,
-    );
+    // FE-5: the picked days are London days, and the range includes the
+    // whole of the end day (it used to stop at UTC midnight at its start).
+    router.push(`${basePath}?from=${londonDayStartIso(start)}&to=${londonDayEndIso(end)}`);
   }
 
   // Presets navigate by name, not by baked-in instants, so a shared link

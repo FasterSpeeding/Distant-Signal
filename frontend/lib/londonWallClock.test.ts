@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { londonWallClockToUtc, nowInLondon } from './londonWallClock';
+import {
+  londonCalendarDay,
+  londonDayEndIso,
+  londonDayStartIso,
+  londonWallClockToUtc,
+  nowInLondon,
+} from './londonWallClock';
 
 // 2026-09-26 "Repeater Signal" review, finding M8. Each case that depends on
 // the process zone flips `process.env.TZ` (same technique, and same
@@ -49,5 +55,37 @@ describe('nowInLondon', () => {
     // 23:30Z on 5 Sep is 00:30 on 6 Sep in BST.
     vi.setSystemTime(new Date('2026-09-05T23:30:00.000Z'));
     expect(nowInLondon().format('YYYY-MM-DD')).toBe('2026-09-06');
+  });
+});
+
+// FE-5: date-only filters are London days, not UTC days.
+describe('London day bounds', () => {
+  it('starts and ends a BST day at London midnight', () => {
+    expect(londonDayStartIso('2026-05-10')).toBe('2026-05-09T23:00:00.000Z');
+    expect(londonDayEndIso('2026-05-10')).toBe('2026-05-10T22:59:59.999Z');
+  });
+
+  it('uses UTC+0 in GMT', () => {
+    expect(londonDayStartIso('2026-01-10')).toBe('2026-01-10T00:00:00.000Z');
+    expect(londonDayEndIso('2026-01-10')).toBe('2026-01-10T23:59:59.999Z');
+  });
+
+  it('handles the 23-hour and 25-hour clock-change days', () => {
+    expect(londonDayStartIso('2026-03-29')).toBe('2026-03-29T00:00:00.000Z');
+    expect(londonDayEndIso('2026-03-29')).toBe('2026-03-29T22:59:59.999Z');
+    expect(londonDayStartIso('2026-10-25')).toBe('2026-10-24T23:00:00.000Z');
+    expect(londonDayEndIso('2026-10-25')).toBe('2026-10-25T23:59:59.999Z');
+  });
+
+  it('is independent of the host zone', () => {
+    process.env.TZ = 'America/Los_Angeles';
+    expect(londonDayStartIso('2026-05-10')).toBe('2026-05-09T23:00:00.000Z');
+    expect(londonCalendarDay('2026-05-09T23:30:00Z')).toBe('2026-05-10');
+  });
+
+  it('maps an instant to its London calendar day, round-tripping the bounds', () => {
+    expect(londonCalendarDay('2026-05-09T23:00:00.000Z')).toBe('2026-05-10');
+    expect(londonCalendarDay(londonDayEndIso('2026-05-10'))).toBe('2026-05-10');
+    expect(londonCalendarDay('garbage-value-x')).toBe('garbage-va');
   });
 });
