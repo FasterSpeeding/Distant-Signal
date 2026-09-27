@@ -165,6 +165,16 @@ describe('OpenDataAttributionDetails (/attribution)', () => {
     expect(link).toHaveAttribute('href', NRIL_LICENCE_URL);
   });
 
+  it('credits the delay attribution glossary under the OGL', () => {
+    renderWithMantine(<OpenDataAttributionDetails />);
+    const statement = statementOf('network-rail-delay-attribution');
+    expect(statement).toHaveTextContent(/^Contains information of Network Rail Infrastructure Limited/);
+    expect(within(statement).getByRole('link', { name: 'Open Government Licence v3.0' })).toHaveAttribute(
+      'href',
+      OGL_V3_URL,
+    );
+  });
+
   it('credits the CIF timetable as "Source: RSP" with a Rail Delivery Group link', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     const statement = statementOf('rsp-timetable');

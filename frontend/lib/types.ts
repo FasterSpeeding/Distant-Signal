@@ -529,6 +529,21 @@ export type JourneyStopKind = 'Origin' | 'Intermediate' | 'Terminate';
  * same as before this field existed. */
 export type StopStatus = 'Unknown' | 'Scheduled' | 'Called' | 'Skipped';
 
+/** `JourneyStop.status`, mirroring LDBWS's per-calling-point vocabulary:
+ * 'OnTime'/'Late' ~ `et: "On time"`/a later time, 'Cancelled' ~
+ * `isCancelled`, 'NoReport' ~ `at: "No report"`, 'Arrived'/'Departed' ~ an
+ * actual time. 'Scheduled' means no live estimate yet (LDBWS would say
+ * "On time"). There is no 'Delayed': DS has no delay-without-estimate
+ * state. */
+export type LiveStopStatus =
+  | 'OnTime'
+  | 'Late'
+  | 'Cancelled'
+  | 'NoReport'
+  | 'Arrived'
+  | 'Departed'
+  | 'Scheduled';
+
 /** `crates/api/src/data/journey.rs`'s `SkipSource` -- which signal(s)
  * support a `stopStatus: 'Skipped'` verdict, carried as a SIBLING field on
  * `JourneyStop` rather than nested inside `stopStatus` itself, mirroring
@@ -603,6 +618,12 @@ export interface JourneyStop {
   // schedule row predates it. Optional only so older fixtures stay valid;
   // the API always sends it.
   bookedPlatform?: string | null;
+  // LDBWS-style live status of this stop
+  // (`crates/api/src/data/stop_live_status.rs` has the mapping table).
+  // `null` only from an older backend. Optional so older fixtures stay valid.
+  status?: LiveStopStatus | null;
+  // Minutes late the stop is expected to be; set only when `status` is 'Late'.
+  lateMinutes?: number | null;
 }
 
 /** `GET /Train/{trackingId}`'s response shape
@@ -702,6 +723,18 @@ export interface TrainJourneyState {
   // Optional so older fixtures and backends still type-check.
   operatorCode?: string | null;
   operatorName?: string | null;
+  // `status === 'cancelled'` (`crates/api/src/data/train_reasons.rs`).
+  cancelled?: boolean;
+  // TRUST cancellation reason code (e.g. "TG") and its Network Rail delay
+  // attribution glossary text (e.g. "Driver"), only while `cancelled`. The
+  // text is `null` for a code the 2021 glossary lacks and for the system
+  // codes PD/ZW. There is NO `delayReason`: TRUST's open feed carries no
+  // reason for a delay, only for a cancellation or change of origin.
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
+  // TRUST change-of-origin reason code and text, same rules.
+  changeOfOriginReasonCode?: string | null;
+  changeOfOriginReason?: string | null;
 }
 
 /** `GET /Train/by-uid/{uid}/{date}`'s response shape
@@ -748,6 +781,12 @@ export interface PublicTrainState {
   // See `TrainJourneyState.operatorCode`.
   operatorCode?: string | null;
   operatorName?: string | null;
+  // See `TrainJourneyState.cancelled` and the reason fields after it.
+  cancelled?: boolean;
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
+  changeOfOriginReasonCode?: string | null;
+  changeOfOriginReason?: string | null;
 }
 
 /** `GET /public/trains/resolve`'s 200 body
@@ -1671,7 +1710,7 @@ export interface LineTrainCallingPoint {
  * triggers a `find_or_create_train` upsert the way
  * `GET /Train/by-uid/{uid}/{date}` does -- see `get_line_trains`'s own doc
  * comment). Deliberately its own type, not a reuse of `PublicTrainState`:
- * `line_train_json` (`render.rs`) includes only these 16 fields
+ * `line_train_json` (`render.rs`) includes only these 21 fields
  * inside `liveStatus`, explicitly omitting `journeyStops`/`callingPoints`/
  * `trainUid`/`serviceDate`/`mayHaveArrived` -- confirmed by that file's
  * `line_train_json_with_a_live_row_attaches_live_status_in_camel_case`
@@ -1694,6 +1733,12 @@ export interface LineTrainLiveStatus {
   // See `TrainJourneyState.operatorCode`.
   operatorCode?: string | null;
   operatorName?: string | null;
+  // See `TrainJourneyState.cancelled` and the reason fields after it.
+  cancelled?: boolean;
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
+  changeOfOriginReasonCode?: string | null;
+  changeOfOriginReason?: string | null;
 }
 
 /** One `GET /public/lines/{id}/trains?date=` response entry
