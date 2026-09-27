@@ -102,4 +102,13 @@ pub struct Config {
     /// declarative.
     #[arg(long, env, default_value_t = true)]
     pub metrics_enabled: bool,
+
+    /// RESEARCH PROTOTYPE (diff-aware enricher, option a). When true, a
+    /// text change that `text_delta::classify` judges a semantic no-op
+    /// (HTML/whitespace/entity/case/in-word-punctuation only) re-stamps the
+    /// existing extraction's `source_text_hash` instead of running the LLM.
+    /// Off by default: with it off, the only behavior change is the extra
+    /// `edit_class` label on the churn metric (measurement only).
+    #[arg(long, env, default_value_t = false)]
+    pub carry_forward_semantic_noops: bool,
 }

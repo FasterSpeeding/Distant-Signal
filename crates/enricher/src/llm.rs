@@ -910,6 +910,78 @@ impl LlmClient {
     }
 }
 
+/// RESEARCH PROTOTYPE (diff-aware enricher, option b) -- appended to
+/// `PRIMARY_PROMPT` for an incremental primary pass. Test-only: exercised by
+/// `replay_eval`'s live harness, never by the service.
+#[cfg(test)]
+const INCREMENTAL_ADDENDUM: &str = " INCREMENTAL MODE. You are ALSO given (1) the extraction \
+    previously produced for an EARLIER version of this incident's text and (2) a word-level diff from \
+    that earlier text to the CURRENT text (`-` lines removed, `+` lines added). Produce the complete \
+    extraction for the CURRENT text in the same schema. Keep every period and field the change does \
+    not affect exactly as it was -- same period order, same `scope_description` wording, same dates -- \
+    and change only what the diff changes. The CURRENT text is authoritative: if the previous \
+    extraction contradicts the current text anywhere, even outside the diff, follow the current text. \
+    Pay particular attention to: a changed time or date (update that period's `date_range`); a \
+    statement that the disruption has ended, lines have reopened, or services are recovering \
+    (`resolution_status`); added or removed replacement-bus, no-service or diversion statements \
+    (`impact_type`, and whether a period must be added or removed); and changed delay/closure \
+    wording (`apparent_severity`).";
+
+#[cfg(test)]
+impl LlmClient {
+    /// RESEARCH PROTOTYPE: the diff-aware primary pass. Returns a full
+    /// `PrimaryExtraction` (not a JSON patch -- a full object stays
+    /// constrainable by the same strict `json_schema` on every backend,
+    /// whereas a patch's paths/values can't be schema-validated), so the
+    /// adversarial passes and `combine_periods` apply unchanged.
+    pub async fn extract_primary_incremental(
+        &self,
+        previous: &PrimaryExtraction,
+        diff: &str,
+        summary: &str,
+        description: &str,
+        reference_date: DateTime<Utc>,
+    ) -> anyhow::Result<PrimaryExtraction> {
+        // Confidence fields are combine-output, not model output -- strip
+        // them so the model isn't shown fields its schema doesn't have.
+        let previous_json = serde_json::json!({
+            "category": previous.category,
+            "periods": previous.periods.iter().map(|p| serde_json::json!({
+                "scope_description": p.scope_description,
+                "date_range": p.date_range,
+                "schedule_window": p.schedule_window,
+                "resolution_status": p.resolution_status,
+                "apparent_severity": p.apparent_severity,
+                "impact_type": p.impact_type,
+            })).collect::<Vec<_>>(),
+        });
+        let user_content = format!(
+            "This incident was first reported around {}. Resolve any year-less date in the text below \
+             relative to that reference date.\nPrevious extraction (for the EARLIER text):\n{}\n\
+             Changes from the earlier text to the current text:\n{diff}\n\
+             CURRENT text:\nSummary: {summary}\nDescription: {description}",
+            reference_date.to_rfc3339(),
+            serde_json::to_string(&previous_json)?,
+        );
+        let system = format!("{PRIMARY_PROMPT}{INCREMENTAL_ADDENDUM}");
+        let content = self
+            .chat_completion(&system, user_content, PRIMARY_SCHEMA_NAME, primary_schema())
+            .await?;
+        let mut extraction: PrimaryExtraction = serde_json::from_str(&content).map_err(|err| {
+            anyhow::anyhow!("incremental primary extraction returned malformed JSON: {err}")
+        })?;
+        if extraction.periods.is_empty() {
+            anyhow::bail!("incremental primary extraction returned an empty `periods` array");
+        }
+        let original_count = extraction.periods.len();
+        if original_count > MAX_PERIODS {
+            extraction.periods = select_periods_within_cap(extraction.periods);
+        }
+        extraction.dropped_period_count = original_count.saturating_sub(MAX_PERIODS);
+        Ok(extraction)
+    }
+}
+
 /// `None` (whether from a wholly absent `date_range`, or an explicit
 /// `date_range.from_date: null`) sorts first in the truncation selection
 /// below -- both already mean "treat as already active" per `DateRange`'s

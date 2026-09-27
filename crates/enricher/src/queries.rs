@@ -151,6 +151,75 @@ pub async fn write_extraction(
     Ok(result.rows_affected() > 0)
 }
 
+/// RESEARCH PROTOTYPE. The summary/description a stored extraction was
+/// computed from, recovered from `incident_history` by recomputing
+/// `common::text_hash::text_hash` in SQL (`sha256(summary || 0x00 ||
+/// description)`, hex) -- every text version is snapshotted there by
+/// `upsert_incidents`, so no schema change is needed. Verified read-only in
+/// production on 2026-09-27: all 1,801 stored `source_text_hash` values
+/// match a history row. `Ok(None)` if nothing matches (history purged, or a
+/// hash written by some other path) -- the caller then does a full
+/// extraction, exactly as today.
+pub async fn fetch_extracted_source_text(
+    pool: &PgPool,
+    incident_id: &str,
+    source_text_hash: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT summary, description FROM incident_history \
+         WHERE incident_id = $1 \
+           AND encode(sha256(convert_to(summary, 'UTF8') || '\\x00'::bytea \
+                             || convert_to(description, 'UTF8')), 'hex') = $2 \
+         ORDER BY recorded_at DESC, id DESC LIMIT 1",
+    )
+    .bind(incident_id)
+    .bind(source_text_hash)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// RESEARCH PROTOTYPE. Re-stamps an incident's *existing* extraction as
+/// describing its current text, for a change `text_delta::classify` judged a
+/// semantic no-op -- no LLM call, extraction columns untouched,
+/// `extracted_at` untouched (it still says when the LLM last ran).
+///
+/// Guards, all in the WHERE clause so the check and the write are atomic:
+/// - `summary = $4 AND description = $5`: the same stale-text guard as
+///   [`write_extraction`] -- the text must still be what was classified.
+/// - `source_text_hash = $3`: the extraction being carried forward must
+///   still be the one classified against (a concurrent full extraction may
+///   have replaced it; then this is a no-op and that one wins).
+/// - `extraction_model_version = $6`: never carry an old model's reading
+///   past a model bump -- the sweep must re-extract those.
+///
+/// `Ok(false)` = a guard rejected it; the caller falls back to a full
+/// extraction (or acks, if the text moved -- same as a stale write).
+pub async fn carry_forward_extraction(
+    pool: &PgPool,
+    incident_id: &str,
+    new_text_hash: &str,
+    old_text_hash: &str,
+    expected_summary: &str,
+    expected_description: &str,
+    model_version: &str,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE incidents SET source_text_hash = $2 \
+         WHERE incident_id = $1 AND source_text_hash = $3 \
+           AND summary = $4 AND description = $5 AND extraction_model_version = $6",
+    )
+    .bind(incident_id)
+    .bind(new_text_hash)
+    .bind(old_text_hash)
+    .bind(expected_summary)
+    .bind(expected_description)
+    .bind(model_version)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::postgres::PgPoolOptions;

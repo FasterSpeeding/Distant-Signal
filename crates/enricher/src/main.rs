@@ -9,9 +9,12 @@ mod combine;
 mod config;
 mod llm;
 mod queries;
+#[cfg(test)]
+mod replay_eval;
 mod retry_backoff;
 mod stream;
 mod sweep;
+mod text_delta;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -87,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let model_version = format!("{}@periods-v2", config.llm_model);
 
+    let carry_forward = config.carry_forward_semantic_noops;
     let mismatch_tracker = Arc::new(MismatchTracker::default());
     let retry_backoff = Arc::new(RetryBackoff::default());
 
@@ -97,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&mismatch_tracker),
         Arc::clone(&retry_backoff),
         config.sweep_interval_secs,
+        carry_forward,
     ));
 
     let reclaim_redis = redis_client.get_connection_manager().await?;
@@ -109,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         reclaim_redis,
         config.reclaim_interval_secs,
         config.reclaim_min_idle_secs,
+        carry_forward,
     ));
 
     loop {
@@ -121,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
                     &incident_id,
                     &mismatch_tracker,
                     &retry_backoff,
+                    carry_forward,
                 )
                 .await
                 {
@@ -251,6 +258,7 @@ async fn sweep_loop(
     mismatch_tracker: Arc<MismatchTracker>,
     retry_backoff: Arc<RetryBackoff>,
     interval_secs: u64,
+    carry_forward: bool,
 ) {
     let mut interval = ticking_interval(interval_secs);
     loop {
@@ -270,6 +278,7 @@ async fn sweep_loop(
                         &id,
                         &mismatch_tracker,
                         &retry_backoff,
+                        carry_forward,
                     )
                     .await;
                 }
@@ -368,6 +377,7 @@ async fn process_incident(
     incident_id: &str,
     mismatch_tracker: &MismatchTracker,
     retry_backoff: &RetryBackoff,
+    carry_forward_noops: bool,
 ) -> bool {
     let state = match queries::fetch_incident_state(pool, incident_id).await {
         Ok(Some(state)) => state,
@@ -405,6 +415,68 @@ async fn process_incident(
             "text unchanged since last successful extraction; skipping"
         );
         return true;
+    }
+
+    // RESEARCH PROTOTYPE (diff-aware enricher): classify how the text moved
+    // since the stored extraction was computed -- only for a same-model
+    // text-change re-run (`churn_baseline` is `Some` exactly then). Used to
+    // label the churn metric and, behind `carry_forward_noops`, to skip the
+    // LLM for a semantic no-op. Any failure here just means "no class":
+    // measurement and the skip must never be able to block a full extraction.
+    let edit_class = match (&churn_baseline, state.source_text_hash.as_deref()) {
+        (Some(_), Some(old_hash)) => {
+            match queries::fetch_extracted_source_text(pool, incident_id, old_hash).await {
+                Ok(Some((old_summary, old_description))) => Some(text_delta::classify(
+                    &old_summary,
+                    &old_description,
+                    &summary,
+                    &description,
+                )),
+                Ok(None) => None,
+                Err(err) => {
+                    tracing::warn!(error = ?err, incident_id, "could not fetch the previously extracted text; classifying as unknown");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    if carry_forward_noops
+        && edit_class == Some(text_delta::EditClass::SemanticNoop)
+        && let Some(old_hash) = state.source_text_hash.as_deref()
+    {
+        match queries::carry_forward_extraction(
+            pool,
+            incident_id,
+            &text_hash,
+            old_hash,
+            &summary,
+            &description,
+            model_version,
+        )
+        .await
+        {
+            Ok(true) => {
+                metrics::counter!(common::metrics::metric_name(
+                    "enricher_extraction_carried_forward_total"
+                ))
+                .increment(1);
+                tracing::info!(
+                    incident_id,
+                    "semantic no-op text change; carried the previous extraction forward without an LLM call"
+                );
+                return true;
+            }
+            Ok(false) => tracing::info!(
+                incident_id,
+                "carry-forward guard rejected (text or extraction moved); falling back to a full extraction"
+            ),
+            Err(err) => tracing::warn!(
+                error = ?err,
+                incident_id,
+                "carry-forward write failed; falling back to a full extraction"
+            ),
+        }
     }
 
     if retry_backoff.should_skip(incident_id, &text_hash) {
@@ -599,7 +671,11 @@ async fn process_incident(
         "extraction written"
     );
     if let Some(report) = &churn_report {
-        churn::record(incident_id, report);
+        churn::record(
+            incident_id,
+            report,
+            edit_class.map_or("unknown", text_delta::EditClass::label),
+        );
     }
     true
 }
@@ -625,6 +701,7 @@ async fn reclaim_loop(
     mut redis: redis::aio::ConnectionManager,
     interval_secs: u64,
     min_idle_secs: u64,
+    carry_forward: bool,
 ) {
     let mut interval = ticking_interval(interval_secs);
     let min_idle = Duration::from_secs(min_idle_secs);
@@ -658,6 +735,7 @@ async fn reclaim_loop(
                         &incident_id,
                         &mismatch_tracker,
                         &retry_backoff,
+                        carry_forward,
                     )
                     .await
                     {
@@ -808,6 +886,7 @@ mod tests {
             incident_id,
             &mismatch_tracker,
             &retry_backoff,
+            false,
         )
         .await;
         assert!(
@@ -925,6 +1004,7 @@ mod tests {
                 incident_id,
                 &mismatch_tracker,
                 &retry_backoff,
+                false,
             )
             .await;
             assert!(!ok, "a malformed response must never be treated as success");
@@ -945,6 +1025,7 @@ mod tests {
             incident_id,
             &mismatch_tracker,
             &retry_backoff,
+            false,
         )
         .await;
         assert!(!ok, "a backed-off attempt still has nothing to ack");
