@@ -467,6 +467,15 @@ async fn find_schedule_match(
     crs_line_index: &HashMap<String, Vec<String>>,
     expected_uid: Option<&str>,
 ) -> anyhow::Result<Option<ScheduleMatch>> {
+    // DB2-12: cheapest check first. The in-memory `crs_line_index` lookup
+    // needs no database, so an untargeted pin at a station on no catalogued
+    // line returns before any query; the indexed TIPLOC lookup comes next,
+    // and the population-scanning fallback below (F4) only after both.
+    let indexed_lines = crs_line_index.get(&pin_origin_crs.to_uppercase());
+    if indexed_lines.is_none() && expected_uid.is_none() {
+        return Ok(None);
+    }
+
     let origin_tiplocs = queries::list_stanox_crs_for_crs(pool, pin_origin_crs).await?;
     if origin_tiplocs.is_empty() {
         return Ok(None);
@@ -477,24 +486,21 @@ async fn find_schedule_match(
     // `lines/*.toml` at all is fatal only for the untargeted path. With a
     // known uid, ask the published populations directly which lines carry
     // it -- the uid filter below makes which line we found it on irrelevant.
-    let candidate_lines: Vec<String> = match crs_line_index.get(&pin_origin_crs.to_uppercase()) {
-        Some(lines) => lines.clone(),
-        None => match expected_uid {
-            Some(expected) => {
-                let lines =
-                    queries::list_line_ids_with_uid_in_population(pool, service_date, expected)
-                        .await?;
-                tracing::debug!(
-                    expected_uid = expected,
-                    origin_crs = pin_origin_crs,
-                    candidate_lines = lines.len(),
-                    "origin CRS is on no catalogued line; falling back to searching every \
-                     published line population that carries this uid"
-                );
-                lines
-            }
-            None => return Ok(None),
-        },
+    let candidate_lines: Vec<String> = match (indexed_lines, expected_uid) {
+        (Some(lines), _) => lines.clone(),
+        (None, Some(expected)) => {
+            let lines =
+                queries::list_line_ids_with_uid_in_population(pool, service_date, expected).await?;
+            tracing::debug!(
+                expected_uid = expected,
+                origin_crs = pin_origin_crs,
+                candidate_lines = lines.len(),
+                "origin CRS is on no catalogued line; falling back to searching every \
+                 published line population that carries this uid"
+            );
+            lines
+        }
+        (None, None) => return Ok(None),
     };
 
     // Round 4(a)'s tie-break signal, resolved ONCE rather than per candidate
@@ -995,6 +1001,30 @@ pub async fn run_schedule_match_sweep(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DB2-12: an untargeted pin at a station on no catalogued line must be
+    /// rejected by the in-memory index alone. The pool points nowhere, so any
+    /// query would be an error rather than `Ok(None)`.
+    #[tokio::test]
+    async fn an_uncatalogued_untargeted_pin_is_rejected_before_any_query() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let departure: DateTime<Utc> = "2026-09-07T08:00:00Z".parse().unwrap();
+        let date: NaiveDate = "2026-09-07".parse().unwrap();
+        let index = HashMap::from([("ZZA".to_string(), vec!["line".to_string()])]);
+
+        let outcome = find_schedule_match(&pool, "ZZB", departure, None, date, &index, None).await;
+        assert!(matches!(outcome, Ok(None)), "got {outcome:?}");
+
+        let catalogued =
+            find_schedule_match(&pool, "ZZA", departure, None, date, &index, None).await;
+        assert!(
+            catalogued.is_err(),
+            "a catalogued station does query the database"
+        );
+    }
 
     /// `trains.calling_points` (this DTO's stored shape, read back by
     /// `journey::RawCallingPoint` and relayed verbatim as `callingPoints`)
