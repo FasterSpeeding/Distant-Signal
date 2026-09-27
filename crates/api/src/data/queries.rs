@@ -3457,8 +3457,20 @@ pub async fn search_journey_leg_candidates(
     }))
 }
 
-/// Upserts one line's full-coverage stats row -- wholesale replaces any
-/// existing row for that `line_id` (a live snapshot, never merged/append).
+/// Upserts full-coverage stats rows, one per `(line_id, service_date)`.
+///
+/// **Keyed by day since 2026-09-27** (was `line_id` alone): a line's row
+/// for each rail day is kept, not overwritten by the next day's, so a day's
+/// final ("available" or `partial`) row can be audited afterwards -- the
+/// 2026-09-25/26 rows that restarts had corrupted could not be. Writing the
+/// current day's row replaces only that day's.
+///
+/// **Skip if unchanged** (DB review F3): the consumer posts every line
+/// every 60s whether or not anything moved, and an unconditional
+/// `DO UPDATE` rewrote every row each time (3,645 updates for 253 live
+/// rows in 20 minutes). The `WHERE ... IS DISTINCT FROM` leaves an
+/// identical row alone, so `updated_at` now means "last changed", not
+/// "last posted". Returns the number of rows actually written.
 pub async fn upsert_full_coverage_line_stats(
     pool: &PgPool,
     rows: &[common::FullCoverageLineStatsRow],
@@ -3466,20 +3478,28 @@ pub async fn upsert_full_coverage_line_stats(
     let mut tx = pool.begin().await?;
     let mut count = 0u64;
     for row in rows {
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             INSERT INTO full_coverage_line_stats
-                (line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
-            ON CONFLICT (line_id) DO UPDATE SET
-                service_date      = EXCLUDED.service_date,
+                (line_id, service_date, availability, total, delayed, cancelled, skipped,
+                 avg_delay_minutes, partial, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+            ON CONFLICT (line_id, service_date) DO UPDATE SET
                 availability      = EXCLUDED.availability,
                 total             = EXCLUDED.total,
                 delayed           = EXCLUDED.delayed,
                 cancelled         = EXCLUDED.cancelled,
                 skipped           = EXCLUDED.skipped,
                 avg_delay_minutes = EXCLUDED.avg_delay_minutes,
+                partial           = EXCLUDED.partial,
                 updated_at        = EXCLUDED.updated_at
+            WHERE (full_coverage_line_stats.availability, full_coverage_line_stats.total,
+                   full_coverage_line_stats.delayed, full_coverage_line_stats.cancelled,
+                   full_coverage_line_stats.skipped, full_coverage_line_stats.avg_delay_minutes,
+                   full_coverage_line_stats.partial)
+                IS DISTINCT FROM
+                  (EXCLUDED.availability, EXCLUDED.total, EXCLUDED.delayed, EXCLUDED.cancelled,
+                   EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial)
             "#,
         )
         .bind(&row.line_id)
@@ -3490,9 +3510,10 @@ pub async fn upsert_full_coverage_line_stats(
         .bind(row.stats.cancelled as i32)
         .bind(row.stats.skipped as i32)
         .bind(row.stats.avg_delay_minutes)
+        .bind(row.partial)
         .execute(&mut *tx)
         .await?;
-        count += 1;
+        count += result.rows_affected();
     }
     tx.commit().await?;
     Ok(count)
@@ -3502,7 +3523,8 @@ pub async fn upsert_full_coverage_line_stats(
 /// row -- the freshness-only GET shape (Correction 2), mirroring
 /// `last_station_samples_fetch`'s own shape. The real reader of the rows
 /// themselves is `aggregator`'s own direct SQL
-/// (`load_full_coverage_line_stats`, Task 14), not this route.
+/// (`load_full_coverage_line_stats`, Task 14), not this route. Since the
+/// skip-if-unchanged upsert guard, this is when the stats last CHANGED.
 pub async fn last_full_coverage_line_stats_fetch(
     pool: &PgPool,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
@@ -3513,42 +3535,74 @@ pub async fn last_full_coverage_line_stats_fetch(
     Ok(fetched_at)
 }
 
-/// One line's current `full_coverage_line_stats` row, if
-/// `full-coverage-consumer` has ever published one -- unlike
-/// `last_full_coverage_line_stats_fetch` (a bare freshness timestamp for
-/// `poller`-style startup-skip logic), this returns the actual row.
+const FULL_COVERAGE_LINE_STATS_COLUMNS: &str = "line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, partial";
+
+fn full_coverage_line_stats_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<common::FullCoverageLineStatsRow> {
+    use sqlx::Row;
+    Ok(common::FullCoverageLineStatsRow {
+        line_id: row.try_get("line_id")?,
+        service_date: row.try_get("service_date")?,
+        availability: row.try_get("availability")?,
+        stats: common::SampleStats {
+            total: row.try_get::<i32, _>("total")? as usize,
+            delayed: row.try_get::<i32, _>("delayed")? as usize,
+            cancelled: row.try_get::<i32, _>("cancelled")? as usize,
+            skipped: row.try_get::<i32, _>("skipped")? as usize,
+            avg_delay_minutes: row.try_get("avg_delay_minutes")?,
+        },
+        partial: row.try_get("partial")?,
+    })
+}
+
+/// One line's `full_coverage_line_stats` row for `service_date`, or -- with
+/// `service_date: None` -- its most recent one (the day
+/// `full-coverage-consumer` is currently writing, or the last it wrote).
+/// `None` if there is no such row.
+///
 /// Added for `data::full_coverage_comparison`'s own "live snapshot" section
 /// (this crate had no full-row reader for this table at all before that --
 /// every other caller either upserts it or only needs the freshness
-/// timestamp).
+/// timestamp). Takes the date since 2026-09-27: the table keeps one row per
+/// line per day, so "the line's row" is no longer unique.
 pub async fn get_full_coverage_line_stats(
     pool: &PgPool,
     line_id: &str,
+    service_date: Option<chrono::NaiveDate>,
 ) -> Result<Option<common::FullCoverageLineStatsRow>> {
-    use sqlx::Row;
-    let row = sqlx::query(
-        "SELECT service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes
-         FROM full_coverage_line_stats WHERE line_id = $1",
-    )
+    let row = sqlx::query(&format!(
+        "SELECT {FULL_COVERAGE_LINE_STATS_COLUMNS} FROM full_coverage_line_stats
+         WHERE line_id = $1 AND ($2::date IS NULL OR service_date = $2)
+         ORDER BY service_date DESC LIMIT 1"
+    ))
     .bind(line_id)
+    .bind(service_date)
     .fetch_optional(pool)
     .await?;
-    row.map(|row| {
-        Ok(common::FullCoverageLineStatsRow {
-            line_id: line_id.to_string(),
-            service_date: row.try_get("service_date")?,
-            availability: row.try_get("availability")?,
-            stats: common::SampleStats {
-                total: row.try_get::<i32, _>("total")? as usize,
-                delayed: row.try_get::<i32, _>("delayed")? as usize,
-                cancelled: row.try_get::<i32, _>("cancelled")? as usize,
-                skipped: row.try_get::<i32, _>("skipped")? as usize,
-                avg_delay_minutes: row.try_get("avg_delay_minutes")?,
-            },
-            partial: false,
-        })
-    })
-    .transpose()
+    row.as_ref().map(full_coverage_line_stats_row).transpose()
+}
+
+/// Every `full_coverage_line_stats` row for `line_id` with a `service_date`
+/// in `[from, to]`, oldest first -- the per-day history the table has kept
+/// since 2026-09-27.
+pub async fn full_coverage_line_stats_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<common::FullCoverageLineStatsRow>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {FULL_COVERAGE_LINE_STATS_COLUMNS} FROM full_coverage_line_stats
+         WHERE line_id = $1 AND service_date BETWEEN $2 AND $3
+         ORDER BY service_date"
+    ))
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(full_coverage_line_stats_row).collect()
 }
 
 /// The latest `StationSample` polled for a single station, or `None` if

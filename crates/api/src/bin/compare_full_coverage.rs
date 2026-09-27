@@ -154,9 +154,10 @@ fn print_report(report: &ComparisonReport, severity_threshold: f64) {
     match &report.live_snapshot {
         Some(snapshot) => println!(
             "current live full_coverage_line_stats row: service_date={} availability={} \
-             total={} delayed={} cancelled={} skipped={} avg_delay_minutes={:.1}\n",
+             partial={} total={} delayed={} cancelled={} skipped={} avg_delay_minutes={:.1}\n",
             snapshot.service_date,
             snapshot.availability,
+            snapshot.partial,
             snapshot.stats.total,
             snapshot.stats.delayed,
             snapshot.stats.cancelled,
@@ -167,6 +168,23 @@ fn print_report(report: &ComparisonReport, severity_threshold: f64) {
             "current live full_coverage_line_stats row: none yet -- full-coverage-consumer has \
              not published anything for this line, or this line isn't in its shadow_lines scope\n"
         ),
+    }
+
+    if !report.full_coverage_history.is_empty() {
+        println!("full_coverage_line_stats by day (a partial day is not clean signal):");
+        for row in &report.full_coverage_history {
+            println!(
+                "  {} availability={} partial={} total={} delayed={} cancelled={} skipped={}",
+                row.service_date,
+                row.availability,
+                row.partial,
+                row.stats.total,
+                row.stats.delayed,
+                row.stats.cancelled,
+                row.stats.skipped
+            );
+        }
+        println!();
     }
 
     if report.days.is_empty() {
