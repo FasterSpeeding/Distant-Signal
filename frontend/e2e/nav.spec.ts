@@ -74,7 +74,7 @@ function sessionState(value: string) {
 
 /** The nav's own rendered height, border included. */
 async function navHeight(page: Page): Promise<number> {
-  const box = await page.locator('nav').boundingBox();
+  const box = await page.locator('nav[aria-label="Main"]').boundingBox();
   if (!box) throw new Error('The nav did not render at all.');
   return Math.round(box.height);
 }
@@ -85,7 +85,7 @@ async function navHeight(page: Page): Promise<number> {
  * alone says nothing about whether wrapping actually happened. */
 async function barRowCount(page: Page): Promise<number> {
   return page.evaluate(() => {
-    const group = document.querySelector('nav .mantine-Group-root');
+    const group = document.querySelector('nav[aria-label="Main"] .mantine-Group-root');
     if (!group) throw new Error('The nav Group did not render.');
     const tops = new Set<number>();
     for (const child of group.children) {
@@ -113,7 +113,7 @@ test.describe('desktop nav bar (1440x900)', () => {
 
   test('renders on a single row, at the standard height, logged out', async ({ page }) => {
     await page.goto('/lines');
-    await expect(page.locator('nav')).toBeVisible();
+    await expect(page.locator('nav[aria-label="Main"]')).toBeVisible();
     expect(await barRowCount(page)).toBe(1);
     expect(await navHeight(page)).toBe(61);
     expect(await hasHorizontalOverflow(page)).toBe(false);
@@ -121,7 +121,7 @@ test.describe('desktop nav bar (1440x900)', () => {
 
   test('shows the primary links inline, and no burger', async ({ page }) => {
     await page.goto('/lines');
-    const nav = page.locator('nav');
+    const nav = page.locator('nav[aria-label="Main"]');
     // `exact: true` matters here specifically for 'Trains': Playwright's
     // default accessible-name match is substring-based, and 'Trains' is
     // also a substring of the separate 'My Trains & Tickets' destination
@@ -145,7 +145,7 @@ test.describe('desktop nav bar (1440x900)', () => {
     // bar next to it was 61px and one row.
     test('renders on a single row, at the same height as the logged-out bar', async ({ page }) => {
       await page.goto('/lines');
-      await expect(page.locator('nav').getByRole('button', { name: /^Account menu for/ })).toBeVisible();
+      await expect(page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ })).toBeVisible();
       expect(await barRowCount(page)).toBe(1);
       expect(await navHeight(page)).toBe(61);
       expect(await hasHorizontalOverflow(page)).toBe(false);
@@ -155,7 +155,7 @@ test.describe('desktop nav bar (1440x900)', () => {
       page,
     }) => {
       await page.goto('/lines');
-      await page.locator('nav').getByRole('button', { name: /^Account menu for/ }).click();
+      await page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ }).click();
 
       const menu = page.getByRole('menu');
       await expect(menu.getByRole('menuitem', { name: 'My Trains & Tickets' })).toHaveAttribute(
@@ -171,7 +171,7 @@ test.describe('desktop nav bar (1440x900)', () => {
 
     test('keeps those three OUT of the bar itself', async ({ page }) => {
       await page.goto('/lines');
-      const nav = page.locator('nav');
+      const nav = page.locator('nav[aria-label="Main"]');
       await expect(nav.getByRole('link', { name: 'My Trains & Tickets' })).toHaveCount(0);
       await expect(nav.getByRole('link', { name: 'Groups' })).toHaveCount(0);
       await expect(nav.getByRole('button', { name: 'Log out', exact: true })).toHaveCount(0);
@@ -190,7 +190,7 @@ test.describe('phone nav bar (390x844)', () => {
   });
 
   test('keeps the brand and the three always-on controls in the bar', async ({ page }) => {
-    const nav = page.locator('nav');
+    const nav = page.locator('nav[aria-label="Main"]');
     await page.goto('/lines');
     await expect(nav.getByRole('link', { name: 'Distant Signal' })).toBeVisible();
     await expect(nav.getByRole('button', { name: /^Theme:/ })).toBeVisible();
@@ -200,7 +200,7 @@ test.describe('phone nav bar (390x844)', () => {
 
   test('moves the destinations into a burger-opened drawer', async ({ page }) => {
     await page.goto('/lines');
-    const nav = page.locator('nav');
+    const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
 
     const drawer = await openNavDrawer(page);
@@ -251,7 +251,7 @@ test.describe('the md breakpoint the bar pivots on', () => {
   test('shows the inline links and no burger at exactly 992px', async ({ page }) => {
     await page.setViewportSize({ width: 992, height: 900 });
     await page.goto('/lines');
-    const nav = page.locator('nav');
+    const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeVisible();
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);
@@ -261,7 +261,7 @@ test.describe('the md breakpoint the bar pivots on', () => {
   test('shows the burger and no inline links at 991px', async ({ page }) => {
     await page.setViewportSize({ width: 991, height: 900 });
     await page.goto('/lines');
-    const nav = page.locator('nav');
+    const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);

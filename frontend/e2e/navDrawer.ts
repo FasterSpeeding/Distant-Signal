@@ -12,7 +12,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
  * repeated, and once the drawer is visible no further click is made.
  */
 export async function openNavDrawer(page: Page): Promise<Locator> {
-  const burger = page.locator('nav').getByRole('button', { name: 'Navigation menu' });
+  const burger = page.locator('nav[aria-label="Main"]').getByRole('button', { name: 'Navigation menu' });
   const drawer = page.getByRole('dialog', { name: 'Menu' });
   await expect(async () => {
     if (!(await drawer.isVisible())) {

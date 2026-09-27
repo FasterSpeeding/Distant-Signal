@@ -538,6 +538,9 @@ pub(crate) mod db_tests {
             .into_iter()
             .map(|(table, _)| table)
             .collect();
+        // Sort in Rust: the query's ORDER BY uses the database collation,
+        // which orders e.g. "groups"/"group_trains" differently from byte order.
+        tables.sort();
         tables.dedup();
         let mut expected: Vec<String> = USER_KEYED_TABLES.iter().map(|t| t.to_string()).collect();
         expected.sort();

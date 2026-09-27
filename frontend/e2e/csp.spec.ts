@@ -47,7 +47,7 @@ async function watchCsp(page: Page): Promise<() => Promise<string[]>> {
 /** Waits for React to hydrate: the nav's burger/links only respond once it has. */
 async function waitForHydration(page: Page) {
   await page.waitForFunction(() => {
-    const el = document.querySelector('nav');
+    const el = document.querySelector('nav[aria-label="Main"]');
     return !!el && Object.keys(el).some((k) => k.startsWith('__react'));
   });
 }

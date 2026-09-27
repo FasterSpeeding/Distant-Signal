@@ -179,7 +179,7 @@ export function AppNavBar({
     // every page already applies its own `p="lg"`, and Container's
     // default `md` inline padding on top of that is 40px of gutter on a
     // 390px screen.
-    <Box component="nav" style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}>
+    <Box component="nav" aria-label="Main" style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}>
       <Container size="lg" px={0}>
         {/* `gap="xs"` on a `space-between` row is not about spacing --
             nothing normally sits at the gap -- it is the MINIMUM the two

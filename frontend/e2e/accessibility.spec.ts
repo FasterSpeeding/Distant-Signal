@@ -571,7 +571,7 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
   // a full-ruleset sweep is here to keep honest.
   test('the account menu, opened', async ({ page }) => {
     await page.goto('/lines');
-    await page.locator('nav').getByRole('button', { name: /^Account menu for/ }).click();
+    await page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ }).click();
     await expect(page.getByRole('menu')).toBeVisible();
     await expectNoViolations(page, MENU_PORTAL_WAIVERS);
   });
