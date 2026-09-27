@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
-use crate::population::Population;
+use crate::population::{Population, UidOnly};
 use crate::queries;
 
 /// The current population snapshot, swapped whole by the reloader.
@@ -103,18 +103,17 @@ pub async fn reload_cycle(
                         "result" => "fetched"
                     )
                     .increment(1);
-                    // Straight from the body text into the typed entries --
-                    // no intermediate `serde_json::Value` tree. The body is
-                    // dropped as soon as it is parsed, and the parsed entries
-                    // as soon as their uids are taken, so a cold start holds
-                    // at most one line's wire payload at a time.
-                    let parsed = serde_json::from_str::<
-                        Option<Vec<schedule_query::LinePopulationEntry>>,
-                    >(&body);
+                    // Straight from the body text into uids only -- no
+                    // `serde_json::Value` tree and no calling points (see
+                    // `UidOnly`). The body is dropped as soon as it is
+                    // parsed, so a cold start holds at most one line's wire
+                    // payload at a time.
+                    let parsed = serde_json::from_str::<Option<Vec<UidOnly>>>(&body);
                     drop(body);
                     match parsed {
                         Ok(Some(entries)) => {
-                            next.insert_with_etag(line_id, date, entries, etag);
+                            let uids = entries.into_iter().map(|e| e.uid).collect();
+                            next.insert_uids(line_id, date, uids, etag);
                             outcome.succeeded += 1;
                         }
                         Ok(None) => {

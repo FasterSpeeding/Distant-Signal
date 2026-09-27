@@ -5,7 +5,21 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+#[cfg(test)]
 use schedule_query::LinePopulationEntry;
+
+/// One `schedule-line-population` wire entry, reduced to the only field
+/// this crate reads. Deserializing into this instead of
+/// `schedule_query::LinePopulationEntry` skips each entry's
+/// `calling_points` array without building it (serde ignores unknown
+/// fields): the largest production line (3,357 entries, ~22 calling points
+/// each, 21 MB of JSON on 2026-09-27) used to be materialized in full --
+/// every `CallingPoint` of every entry -- just to take the uids and drop
+/// the rest. Now a line costs its body text plus its uids.
+#[derive(Debug, serde::Deserialize)]
+pub struct UidOnly {
+    pub uid: String,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Population {
@@ -78,8 +92,8 @@ impl Population {
     /// except the data driving that footprint was never actually read at
     /// runtime, so the fix is to stop retaining it, not to raise the limit.
     ///
-    /// Test-only since 2026-09-26: the reload loop calls
-    /// [`Population::insert_with_etag`], which this delegates to.
+    /// Test-only since 2026-09-26: the reload calls
+    /// [`Population::insert_uids`].
     #[cfg(test)]
     pub fn insert(
         &mut self,
@@ -91,8 +105,9 @@ impl Population {
     }
 
     /// [`Population::insert`], also recording the `ETag` the population
-    /// arrived with (`None` when `api` sent none, which clears any previous
+    /// arrived with. Test-only: see [`Population::insert_uids`] (`None` when `api` sent none, which clears any previous
     /// one for this key -- the new data is no longer described by it).
+    #[cfg(test)]
     pub fn insert_with_etag(
         &mut self,
         line_id: &str,
@@ -101,6 +116,20 @@ impl Population {
         etag: Option<String>,
     ) {
         let uids: HashSet<String> = entries.into_iter().map(|e| e.uid).collect();
+        self.insert_uids(line_id, service_date, uids, etag);
+    }
+
+    /// Stores `(line_id, service_date)`'s uid set and the `ETag` it arrived
+    /// with (`None` clears any previous one -- the new data is no longer
+    /// described by it). What the reload calls, with uids parsed straight
+    /// off the wire by [`UidOnly`].
+    pub fn insert_uids(
+        &mut self,
+        line_id: &str,
+        service_date: chrono::NaiveDate,
+        uids: HashSet<String>,
+        etag: Option<String>,
+    ) {
         self.by_line
             .entry(line_id.to_string())
             .or_default()
@@ -291,6 +320,26 @@ mod tests {
             public_departure: None,
             platform: None,
         }
+    }
+
+    /// The reload parses the real wire shape (full calling points, as
+    /// `api` serves them) into uids alone; `null` (nothing published) still
+    /// parses as `None`.
+    #[test]
+    fn uid_only_parses_the_real_wire_shape_and_skips_calling_points() {
+        let body = r#"[{"uid": "W45448", "calling_points": [{"kind": "Origin", "tiploc": "THBDGS ",
+            "activity": "TB", "platform": "1", "day_offset": 0, "booked_arrival": null,
+            "public_arrival": null, "booked_departure": "17:28:00", "public_departure": "17:28:00",
+            "is_half_minute_arrival": false, "is_half_minute_departure": false}]},
+            {"uid": "W45449", "calling_points": []}]"#;
+        let parsed: Option<Vec<UidOnly>> = serde_json::from_str(body).unwrap();
+        let uids: Vec<String> = parsed.unwrap().into_iter().map(|e| e.uid).collect();
+        assert_eq!(uids, vec!["W45448", "W45449"]);
+        assert!(
+            serde_json::from_str::<Option<Vec<UidOnly>>>("null")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
