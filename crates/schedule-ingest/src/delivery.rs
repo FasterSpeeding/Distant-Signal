@@ -12,19 +12,27 @@
 //!    ingested, or a new one" by comparing the candidate's own mtime against
 //!    the last one this process successfully ingested, since there is no
 //!    sequence number to compare instead.
-//! 3. [`extract_zip`] -- unzipping a stable candidate's contents directly
-//!    into a timestamp-named storage directory (see [`delivery_dir_name`]),
-//!    so `schedule-reference` keeps reading real flat `RJTTFnnn*.txt` files
-//!    off disk, unchanged.
+//! 3. [`ensure_extracted`] -- unzipping a stable candidate's contents into
+//!    a timestamp-named storage directory (see [`delivery_dir_name`]), so
+//!    `schedule-reference` keeps reading real flat `RJTTFnnn*.txt` files off
+//!    disk. Since PL-6 this is atomic: the zip is extracted into
+//!    `storage_dir/.tmp-<dir_name>`, every file is fsynced, the
+//!    `common::schedule_delivery::COMPLETE_MARKER` file is written last, and
+//!    only then is the directory renamed into place. `schedule-reference`
+//!    requires the marker, so it can never read a half-written MCA. And a
+//!    directory that already has the marker is never extracted again
+//!    (PL-13), however many times the api POST fails.
 //!
 //! Stability detection itself is unchanged -- `scan::StabilityTracker` is
 //! reused as-is, just pointed at the zip candidate instead of a manifest
 //! candidate.
 
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
+use common::schedule_delivery::{COMPLETE_MARKER, TEMP_DIR_PREFIX};
 
 use crate::scan::DirSnapshot;
 
@@ -121,6 +129,11 @@ pub fn is_delivery_dir_name(name: &str) -> bool {
 /// Entry paths are sanitized via `enclosed_name()` (guards against a
 /// zip-slip-style `../` escape) -- a real delivery's entries are all flat
 /// top-level files, but this is defensive, not assumed.
+///
+/// Every file is fsynced, and its extracted size checked against the size
+/// the zip's own central directory records for it, so a short write can
+/// never pass for a complete file. Callers outside tests go through
+/// [`ensure_extracted`], never this directly: `dest_dir` is written in place.
 pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::Result<Vec<(String, u64)>> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)
@@ -153,10 +166,270 @@ pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::Result<Vec<(Stri
         let out_path = dest_dir.join(&enclosed);
         let mut out_file = std::fs::File::create(&out_path)?;
         let bytes = std::io::copy(&mut entry, &mut out_file)?;
+        out_file.sync_all()?;
+        if bytes != entry.size() {
+            anyhow::bail!(
+                "extracted {} bytes of {} but the zip records {}",
+                bytes,
+                enclosed.display(),
+                entry.size()
+            );
+        }
         extracted.push((enclosed.to_string_lossy().into_owned(), bytes));
     }
 
     Ok(extracted)
+}
+
+/// How [`ensure_extracted`] arrived at a complete delivery directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extraction {
+    /// The directory already carried the completion marker: nothing was
+    /// extracted (PL-13 -- this is the steady state while an api POST keeps
+    /// failing, and after a restart).
+    AlreadyComplete,
+    /// A directory from before the marker existed whose files match the
+    /// zip's recorded sizes exactly: the marker was added, nothing extracted.
+    Adopted,
+    /// The zip was extracted (atomically) into place.
+    Extracted,
+}
+
+/// Makes `storage_dir/<dir_name>` a complete, marked extraction of
+/// `zip_path`, doing as little as possible:
+///
+/// 1. Already marked complete: returns the file list recorded in the
+///    marker. No extraction, no IO beyond reading the marker.
+/// 2. Present but unmarked (written by a version before PL-6) and every
+///    zip entry is on disk at exactly its recorded size: marks it complete.
+/// 3. Otherwise extracts into `storage_dir/.tmp-<dir_name>` (a stale one
+///    from a crash is removed first), fsyncs every file, writes the marker,
+///    fsyncs the directory, and renames it into place. A pre-existing
+///    unmarked (so incomplete) final directory is first renamed aside and
+///    removed after the swap. `storage_dir` is on one volume, so each rename
+///    is atomic: a reader sees either no directory or a complete one.
+pub fn ensure_extracted(
+    zip_path: &Path,
+    storage_dir: &Path,
+    dir_name: &str,
+) -> anyhow::Result<(Vec<(String, u64)>, Extraction)> {
+    let final_dir = storage_dir.join(dir_name);
+    if let Some(files) = read_marker(&final_dir)? {
+        return Ok((files, Extraction::AlreadyComplete));
+    }
+    if final_dir.is_dir()
+        && let Some(files) = files_matching_zip(zip_path, &final_dir)?
+    {
+        write_marker(&final_dir, &files)?;
+        return Ok((files, Extraction::Adopted));
+    }
+
+    std::fs::create_dir_all(storage_dir)?;
+    let temp_dir = storage_dir.join(format!("{TEMP_DIR_PREFIX}{dir_name}"));
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(&temp_dir)?;
+    }
+    let files = extract_zip(zip_path, &temp_dir)?;
+    write_marker(&temp_dir, &files)?;
+    fsync_dir(&temp_dir)?;
+
+    if final_dir.exists() {
+        let aside = storage_dir.join(format!("{STALE_DIR_PREFIX}{dir_name}"));
+        if aside.exists() {
+            std::fs::remove_dir_all(&aside)?;
+        }
+        std::fs::rename(&final_dir, &aside)?;
+        std::fs::rename(&temp_dir, &final_dir)?;
+        fsync_dir(storage_dir)?;
+        if let Err(err) = std::fs::remove_dir_all(&aside) {
+            tracing::warn!(error = ?err, path = ?aside, "failed to remove a replaced incomplete delivery directory");
+        }
+    } else {
+        std::fs::rename(&temp_dir, &final_dir)?;
+        fsync_dir(storage_dir)?;
+    }
+    Ok((files, Extraction::Extracted))
+}
+
+/// Where [`ensure_extracted`] moves an incomplete final directory it is
+/// about to replace. Hidden, so neither discovery nor pruning ever sees it.
+const STALE_DIR_PREFIX: &str = ".stale-";
+
+/// The file list the completion marker in `dir` records, or `None` when
+/// `dir` has no marker (or an unreadable one, which is treated the same:
+/// the delivery is simply extracted again).
+pub fn read_marker(dir: &Path) -> anyhow::Result<Option<Vec<(String, u64)>>> {
+    let contents = match std::fs::read_to_string(dir.join(COMPLETE_MARKER)) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let mut files = Vec::new();
+    for line in contents.lines().filter(|line| !line.is_empty()) {
+        let Some((name, bytes)) = line.split_once('\t') else {
+            return Ok(None);
+        };
+        let Ok(bytes) = bytes.parse() else {
+            return Ok(None);
+        };
+        files.push((name.to_string(), bytes));
+    }
+    Ok(Some(files))
+}
+
+/// Writes the completion marker into `dir` atomically (a temp file, fsynced,
+/// then renamed), so the marker itself can never be seen half-written.
+fn write_marker(dir: &Path, files: &[(String, u64)]) -> anyhow::Result<()> {
+    let temp = dir.join(format!("{COMPLETE_MARKER}.tmp"));
+    {
+        let mut out = std::fs::File::create(&temp)?;
+        for (name, bytes) in files {
+            writeln!(out, "{name}\t{bytes}")?;
+        }
+        out.sync_all()?;
+    }
+    std::fs::rename(&temp, dir.join(COMPLETE_MARKER))?;
+    fsync_dir(dir)?;
+    Ok(())
+}
+
+/// fsyncs a directory, making the renames and file creations inside it
+/// durable.
+fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// The zip's flat regular-file entries with their recorded sizes, when every
+/// one of them exists in `dir` at exactly that size; `None` otherwise (or
+/// for an empty zip).
+fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<(String, u64)>>> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|err| anyhow::anyhow!("failed to open {zip_path:?} as a zip archive: {err}"))?;
+    let mut files = Vec::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(enclosed) = entry.enclosed_name() else {
+            continue;
+        };
+        if enclosed.components().count() != 1 {
+            continue;
+        }
+        let on_disk = match std::fs::metadata(dir.join(&enclosed)) {
+            Ok(metadata) if metadata.is_file() => metadata.len(),
+            Ok(_) => return Ok(None),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        if on_disk != entry.size() {
+            return Ok(None);
+        }
+        files.push((enclosed.to_string_lossy().into_owned(), on_disk));
+    }
+    Ok((!files.is_empty()).then_some(files))
+}
+
+/// One-off startup pass for directories written before PL-6 introduced the
+/// completion marker, so `schedule-reference` (which now requires it) keeps
+/// seeing the deliveries already on the volume. Also removes scratch
+/// directories (`.tmp-*`, `.stale-*`) a crash left behind -- nothing else
+/// is running in `storage_dir` at startup, so none of them is in progress.
+///
+/// An unmarked delivery directory is adopted (marked complete) when:
+/// * it belongs to a zip still in `watch_dir` (same timestamp name) and
+///   every entry of that zip is on disk at exactly its recorded size -- a
+///   truncated one is left unmarked, and the next scan cycle re-extracts it
+///   atomically; or
+/// * it belongs to an older delivery and holds both an `RJTTF*MCA.txt` and
+///   an `RJTTF*MSN.txt` -- exactly the old completeness rule, the best
+///   available for a delivery whose zip is gone.
+///
+/// Returns the names adopted.
+pub fn adopt_legacy_deliveries(
+    storage_dir: &Path,
+    watch_dir: &Path,
+) -> anyhow::Result<Vec<String>> {
+    let read_dir = match std::fs::read_dir(storage_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+    let mut delivery_dirs: Vec<(String, PathBuf)> = Vec::new();
+    for entry in read_dir {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if name.starts_with(TEMP_DIR_PREFIX) || name.starts_with(STALE_DIR_PREFIX) {
+            tracing::warn!(dir = %name, "removing a scratch delivery directory left behind by an interrupted extraction");
+            std::fs::remove_dir_all(entry.path())?;
+        } else if is_delivery_dir_name(&name) {
+            delivery_dirs.push((name, entry.path()));
+        }
+    }
+
+    let current_zips: std::collections::HashMap<String, PathBuf> =
+        find_zip_candidates(&crate::scan::scan_incoming(watch_dir)?)
+            .into_iter()
+            .map(|(name, mtime)| (delivery_dir_name(mtime), watch_dir.join(name)))
+            .collect();
+
+    let mut adopted = Vec::new();
+    for (name, path) in delivery_dirs {
+        if path.join(COMPLETE_MARKER).exists() {
+            continue;
+        }
+        let files = match current_zips.get(&name) {
+            Some(zip_path) => files_matching_zip(zip_path, &path)?,
+            None => legacy_files_if_complete(&path)?,
+        };
+        match files {
+            Some(files) => {
+                write_marker(&path, &files)?;
+                tracing::info!(dir = %name, "adopted a delivery directory extracted before the completion marker existed");
+                adopted.push(name);
+            }
+            None => {
+                tracing::warn!(dir = %name, "delivery directory without a completion marker is incomplete; leaving it for re-extraction or pruning");
+            }
+        }
+    }
+    Ok(adopted)
+}
+
+/// Every regular, non-hidden file in `dir` with its size, when `dir` has
+/// both an `RJTTF*MCA.txt` and an `RJTTF*MSN.txt` (the pre-PL-6 rule).
+fn legacy_files_if_complete(dir: &Path) -> anyhow::Result<Option<Vec<(String, u64)>>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        files.push((name, metadata.len()));
+    }
+    let has = |suffix: &str| {
+        files
+            .iter()
+            .any(|(name, _)| name.starts_with("RJTTF") && name.ends_with(suffix))
+    };
+    if has("MCA.txt") && has("MSN.txt") {
+        files.sort();
+        Ok(Some(files))
+    } else {
+        Ok(None)
+    }
 }
 
 /// A minimal in-memory `.zip` writer, used only by this module's own tests
@@ -328,5 +601,211 @@ mod tests {
         extract_zip(&zip_path, &dest_dir).unwrap();
         let extracted_again = extract_zip(&zip_path, &dest_dir).unwrap();
         assert_eq!(extracted_again.len(), 1);
+    }
+
+    fn fixture_zip(dir: &Path) -> PathBuf {
+        let bytes = build_test_zip(&[
+            ("RJTTF942MCA.txt", b"mca content"),
+            ("RJTTF942MSN.txt", b"msn content"),
+        ]);
+        let zip_path = dir.join("timetable_full.zip");
+        std::fs::write(&zip_path, &bytes).unwrap();
+        zip_path
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// PL-6: the delivery appears in `storage_dir` complete and marked, with
+    /// no scratch directory left behind.
+    #[test]
+    fn ensure_extracted_renames_a_complete_marked_directory_into_place() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(watch.path());
+
+        let (mut files, how) =
+            ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+        files.sort();
+
+        assert_eq!(how, Extraction::Extracted);
+        assert_eq!(
+            names_in(storage.path()),
+            vec!["20260903T172830Z".to_string()]
+        );
+        let final_dir = storage.path().join("20260903T172830Z");
+        assert_eq!(
+            names_in(&final_dir),
+            vec![
+                COMPLETE_MARKER.to_string(),
+                "RJTTF942MCA.txt".to_string(),
+                "RJTTF942MSN.txt".to_string()
+            ]
+        );
+        let mut recorded = read_marker(&final_dir).unwrap().unwrap();
+        recorded.sort();
+        assert_eq!(recorded, files);
+        assert_eq!(
+            std::fs::read_to_string(final_dir.join("RJTTF942MCA.txt")).unwrap(),
+            "mca content"
+        );
+    }
+
+    /// PL-13: a delivery already marked complete is never extracted again --
+    /// the file list comes from the marker.
+    #[test]
+    fn ensure_extracted_does_not_re_extract_a_marked_directory() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(watch.path());
+        ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+        let mca = storage.path().join("20260903T172830Z/RJTTF942MCA.txt");
+        std::fs::write(&mca, b"untouched since").unwrap();
+
+        for _ in 0..3 {
+            let (files, how) =
+                ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+            assert_eq!(how, Extraction::AlreadyComplete);
+            assert_eq!(files.len(), 2);
+        }
+        assert_eq!(std::fs::read_to_string(&mca).unwrap(), "untouched since");
+    }
+
+    /// PL-6: an unmarked directory with a truncated file (an extraction by
+    /// the old in-place code that was interrupted) is replaced whole.
+    #[test]
+    fn ensure_extracted_replaces_an_unmarked_truncated_directory() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(watch.path());
+        let final_dir = storage.path().join("20260903T172830Z");
+        std::fs::create_dir_all(&final_dir).unwrap();
+        std::fs::write(final_dir.join("RJTTF942MCA.txt"), b"mca con").unwrap();
+        std::fs::write(final_dir.join("RJTTF942MSN.txt"), b"msn content").unwrap();
+
+        let (_, how) = ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+
+        assert_eq!(how, Extraction::Extracted);
+        assert_eq!(
+            std::fs::read_to_string(final_dir.join("RJTTF942MCA.txt")).unwrap(),
+            "mca content"
+        );
+        assert!(final_dir.join(COMPLETE_MARKER).is_file());
+        assert_eq!(
+            names_in(storage.path()),
+            vec!["20260903T172830Z".to_string()]
+        );
+    }
+
+    /// Compatibility: an unmarked directory whose files match the zip
+    /// exactly (a complete extraction by the old code) is adopted, not
+    /// extracted again.
+    #[test]
+    fn ensure_extracted_adopts_an_unmarked_directory_matching_the_zip() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(watch.path());
+        let final_dir = storage.path().join("20260903T172830Z");
+        extract_zip(&zip_path, &final_dir).unwrap();
+
+        let (files, how) = ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+
+        assert_eq!(how, Extraction::Adopted);
+        assert_eq!(files.len(), 2);
+        assert!(final_dir.join(COMPLETE_MARKER).is_file());
+    }
+
+    /// A scratch directory from a crashed extraction is discarded, not
+    /// extracted into on top of.
+    #[test]
+    fn ensure_extracted_discards_a_stale_scratch_directory() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(watch.path());
+        let scratch = storage
+            .path()
+            .join(format!("{TEMP_DIR_PREFIX}20260903T172830Z"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join("RJTTF000ZZZ.txt"), b"leftover").unwrap();
+
+        ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
+
+        assert_eq!(
+            names_in(storage.path()),
+            vec!["20260903T172830Z".to_string()]
+        );
+        assert!(
+            !storage
+                .path()
+                .join("20260903T172830Z/RJTTF000ZZZ.txt")
+                .exists()
+        );
+    }
+
+    /// The startup pass: older complete legacy directories are adopted, an
+    /// incomplete one is not, the current zip's truncated directory is left
+    /// for re-extraction, and scratch directories are removed.
+    #[test]
+    fn adopt_legacy_deliveries_marks_only_complete_directories() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(watch.path());
+        let current = delivery_dir_name(std::fs::metadata(&zip_path).unwrap().modified().unwrap());
+
+        let write = |dir: &str, files: &[(&str, &[u8])]| {
+            let path = storage.path().join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            for (name, content) in files {
+                std::fs::write(path.join(name), content).unwrap();
+            }
+        };
+        write(
+            "20200101T000000Z",
+            &[("RJTTF1MCA.txt", b"a"), ("RJTTF1MSN.txt", b"b")],
+        );
+        write("20200102T000000Z", &[("RJTTF2MCA.txt", b"a")]);
+        write(
+            &current,
+            &[
+                ("RJTTF942MCA.txt", b"mca"),
+                ("RJTTF942MSN.txt", b"msn content"),
+            ],
+        );
+        write(".tmp-20200103T000000Z", &[("RJTTF3MCA.txt", b"a")]);
+
+        let adopted = adopt_legacy_deliveries(storage.path(), watch.path()).unwrap();
+
+        assert_eq!(adopted, vec!["20200101T000000Z".to_string()]);
+        assert!(
+            storage
+                .path()
+                .join("20200101T000000Z")
+                .join(COMPLETE_MARKER)
+                .is_file()
+        );
+        assert!(
+            !storage
+                .path()
+                .join("20200102T000000Z")
+                .join(COMPLETE_MARKER)
+                .exists()
+        );
+        assert!(!storage.path().join(&current).join(COMPLETE_MARKER).exists());
+        assert!(!storage.path().join(".tmp-20200103T000000Z").exists());
+
+        // And once the current zip's directory is complete, it is adopted.
+        std::fs::write(
+            storage.path().join(&current).join("RJTTF942MCA.txt"),
+            b"mca content",
+        )
+        .unwrap();
+        let adopted = adopt_legacy_deliveries(storage.path(), watch.path()).unwrap();
+        assert_eq!(adopted, vec![current]);
     }
 }

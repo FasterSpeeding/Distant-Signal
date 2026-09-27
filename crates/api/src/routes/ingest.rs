@@ -251,50 +251,58 @@ async fn post_tfl_line_status(
 }
 
 /// `trust-consumer`'s per-poll-cycle batch of TRUST-derived events for
-/// tracked trains -- see `queries_train_tracking::upsert_train_event`.
-/// Non-transactional across the batch, deliberately, and the returned
-/// `upserted` count now reflects that honestly (2026-09-25 Low-severity
-/// auth-core review: previously, a per-event error aborted the WHOLE
-/// request via `?` on the first failure -- so a caller got either a `500`
-/// with no count at all, discarding whatever prefix of the batch had
-/// already committed, or (on full success) `events.len()`; there was no
-/// response shape that ever reported a genuinely partial result).
-/// `upsert_train_event` runs several independent statements per event
-/// (legacy-resolution lookups via `flip_legacy_resolution`, the shared
-/// `trains`/`train_movement_events`/`train_current_state` writes, etc.),
-/// each against `pool: &PgPool` directly rather than a shared transaction
-/// handle -- wrapping this whole per-cycle batch in one transaction would
-/// mean threading a `Transaction` all the way through
-/// `upsert_train_event`/`flip_legacy_resolution` and every one of their
-/// own sibling call sites (`data::trust_event_backlog_match`, and this
-/// module's own ~15 direct test call sites), a much larger refactor than
-/// this fix's own scope justifies for a Low-severity finding. Instead:
-/// a per-event failure is logged and skipped -- exactly the same
-/// log-and-continue posture `post_trust_event_backlog` just below already
-/// takes for its own secondary shared-movement write, for the same
-/// reason (one bad event must not sacrifice the rest of an otherwise-good
-/// batch) -- and `upserted` reports how many actually committed. The
-/// upserts this loop performs are themselves idempotent (keyed
-/// `INSERT ... ON CONFLICT`-style writes further down the call chain), so
-/// `trust-consumer` retrying a batch that partially failed is safe.
+/// tracked trains -- see `queries_train_tracking::upsert_train_events_batch`.
+///
+/// Same contract as `post_trust_event_backlog` (DB2-2):
+///
+/// * **A partially rejected batch is still a 200.** An event refused for a
+///   data error (SQLSTATE class 22/23) is rolled back on its own, behind a
+///   savepoint, and listed in the response's `rejected` field (the same
+///   `common::TrustBacklogIngestResponse` shape); every other event lands.
+///   `trust-consumer` dead-letters the rejected events and ACKs the batch.
+///   This route also logs every rejected event in full and counts it in
+///   `distant_signal_api_train_events_rejected_rows_total{reason}`, so an
+///   older consumer that ignores `rejected` loses nothing silently.
+/// * **Any other failure is a 500** with nothing committed -- a connection
+///   error, pool timeout, serialization failure, deadlock, lock or
+///   statement timeout. Previously every per-event error was logged and
+///   swallowed behind a 200, the consumer ACKed, and a transient error lost
+///   the event permanently. Now the consumer keeps the batch and retries;
+///   every write is idempotent by `dedup_key`.
 async fn post_train_events(
     State(app): State<App>,
     Json(events): Json<Vec<common::TrainMovementEventMessage>>,
-) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let mut upserted = 0u64;
-    for event in &events {
-        match queries_train_tracking::upsert_train_event(&app.database, event).await {
-            Ok(()) => upserted += 1,
-            Err(err) => {
-                tracing::warn!(
-                    error = ?err,
-                    tracked_train_id = event.tracked_train_id,
-                    "failed to upsert train event; continuing with the rest of the batch"
-                );
-            }
-        }
+) -> Result<Json<common::TrustBacklogIngestResponse>, (StatusCode, String)> {
+    let outcome = queries_train_tracking::upsert_train_events_batch(&app.database, &events)
+        .await
+        .map_err(|err| {
+            metrics::counter!(common::metrics::metric_name(
+                "api_train_events_transient_failures_total"
+            ))
+            .increment(1);
+            internal_error(err)
+        })?;
+    for rejected in &outcome.rejected {
+        tracing::warn!(
+            index = rejected.index,
+            dedup_key = %rejected.dedup_key,
+            sqlstate = %rejected.sqlstate,
+            reason = %rejected.reason,
+            constraint = ?rejected.constraint,
+            message = %rejected.message,
+            event = ?events.get(rejected.index),
+            "rejected train event for a data error; wrote the rest of its batch"
+        );
+        metrics::counter!(
+            common::metrics::metric_name("api_train_events_rejected_rows_total"),
+            "reason" => rejected.reason.clone()
+        )
+        .increment(1);
     }
-    Ok(Json(UpsertResponse { upserted }))
+    Ok(Json(common::TrustBacklogIngestResponse {
+        upserted: outcome.upserted,
+        rejected: outcome.rejected,
+    }))
 }
 
 /// `trust-consumer`'s fast-path forwarding signals for the notifier-
@@ -361,24 +369,78 @@ async fn post_trust_event_backlog(
 
     // Additional, parallel write onto the shared trains/train_movement_events/
     // train_current_state tables -- see ingest_shared_movements_batch's own
-    // doc comment (in particular, why this can safely call the whole
-    // batch through in one shot rather than looping call-per-event the way
-    // this used to). A per-event failure here is logged and skipped, never
-    // propagated: this route's own contract (backlog archival) must not
-    // start failing because of a problem in the newer, separate shared-store
-    // write path.
-    let shared_movement_results =
-        crate::data::trust_event_backlog::ingest_shared_movements_batch(&app.database, &events)
-            .await;
-    for (event, result) in events.iter().zip(shared_movement_results) {
-        if let Err(err) = result {
-            tracing::warn!(error = ?err, train_id = %event.train_id, "failed to ingest shared movement");
+    // doc comment. Only for rows the backlog insert accepted (API-4): a row
+    // Postgres refused there is already reported as rejected, and must not
+    // go on to create `trains` rows or movements.
+    //
+    // PL-7: a failure here is no longer warned about and swallowed behind a
+    // 200. Classified like the backlog insert: a data error on one event is
+    // reported in `rejected` (the consumer dead-letters it), while anything
+    // transient fails the request with a 500 so the consumer keeps the batch
+    // and retries it. The retry is safe: the backlog rows that already
+    // committed conflict harmlessly on `dedup_key`, and every shared write is
+    // idempotent too.
+    let already_rejected: std::collections::HashSet<usize> =
+        outcome.rejected.iter().map(|r| r.index).collect();
+    let accepted: Vec<usize> = (0..events.len())
+        .filter(|index| !already_rejected.contains(index))
+        .collect();
+    let accepted_events: Vec<common::TrustBacklogEventMessage> = accepted
+        .iter()
+        .map(|&index| events[index].clone())
+        .collect();
+    let shared_movement_results = crate::data::trust_event_backlog::ingest_shared_movements_batch(
+        &app.database,
+        &accepted_events,
+    )
+    .await;
+    let mut rejected = outcome.rejected;
+    let mut transient: Option<anyhow::Error> = None;
+    for (&index, result) in accepted.iter().zip(shared_movement_results) {
+        let Err(err) = result else { continue };
+        let event = &events[index];
+        match crate::data::trust_event_backlog::classify_anyhow_data_error(&err) {
+            Some(data_error) => {
+                tracing::warn!(
+                    index,
+                    error = ?err,
+                    train_id = %event.train_id,
+                    event = ?event,
+                    "shared movement write rejected this backlog event for a data error"
+                );
+                metrics::counter!(
+                    common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
+                    "class" => "data"
+                )
+                .increment(1);
+                let mut row = data_error.into_rejected_row(index, &event.dedup_key);
+                row.message = format!("shared movement write: {}", row.message);
+                rejected.push(row);
+            }
+            None => {
+                tracing::error!(
+                    index,
+                    error = ?err,
+                    train_id = %event.train_id,
+                    "shared movement write failed transiently; failing the batch so it is retried"
+                );
+                metrics::counter!(
+                    common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
+                    "class" => "transient"
+                )
+                .increment(1);
+                transient.get_or_insert(err);
+            }
         }
     }
+    if let Some(err) = transient {
+        return Err(internal_error(err));
+    }
+    rejected.sort_by_key(|row| row.index);
 
     Ok(Json(common::TrustBacklogIngestResponse {
         upserted: outcome.inserted,
-        rejected: outcome.rejected,
+        rejected,
     }))
 }
 
@@ -2572,49 +2634,102 @@ mod db_tests {
             .ok();
     }
 
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api \
-                train_events_batch_reports_an_accurate_upserted_count -- --ignored --test-threads=1`"]
-    async fn train_events_batch_reports_an_accurate_upserted_count_when_one_event_fails_mid_batch()
-    {
-        // The regression this test exists to pin (2026-09-25 Low-severity
-        // auth-core review, "ingest batch writes are non-transactional"):
-        // before the fix, `post_train_events` used `?` to abort the WHOLE
-        // request on the first per-event error, so a caller either got a
-        // bare `500` (no count reported at all, silently discarding
-        // whatever prefix of the batch had already committed) or, on full
-        // success, `events.len()` -- there was no response shape that ever
-        // reported a genuinely partial result. This drives one real,
-        // deliberately-invalid event (a `status` value the DB's own CHECK
-        // constraint on `train_current_state.status` rejects) through the
-        // real router, alongside two harmless ones, and asserts:
-        //  1. the request still succeeds overall (`200`, not `500`) --
-        //     one bad event no longer sacrifices the rest of the batch;
-        //  2. `upserted` counts only the two that actually succeeded, not
-        //     all three; and
-        //  3. the failing event's OWN partial application is visible: its
-        //     `train_movement_events` row landed (that INSERT ran and
-        //     committed before the CHECK-violating one) even though its
-        //     `train_current_state` row never did -- the literal
-        //     "non-transactional, partial application" shape this finding
-        //     names, now at least honestly reported via the count.
-        let pool = connect().await;
-        let user_id = "TEST-INGEST-TRAIN-EVENTS-BATCH-USER";
+    /// A pool whose every connection gives up on a row lock after 300 ms,
+    /// so a test can force a real transient failure (SQLSTATE 55P03,
+    /// `lock_not_available`) by holding a row lock on another connection.
+    async fn connect_with_short_lock_timeout() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("SET lock_timeout = '300ms'")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    async fn post_json_to(router: axum::Router, uri: &str, body: &Value) -> (StatusCode, Vec<u8>) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, body)
+    }
+
+    async fn seed_train_events_subscription(pool: &PgPool, user_id: &str, date: &str) -> i64 {
         sqlx::query("INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING")
             .bind(user_id)
-            .execute(&pool)
+            .execute(pool)
             .await
             .expect("seed fixture user");
-        let subscription_id: i64 = sqlx::query_scalar(
+        sqlx::query_scalar(
             "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
-             VALUES ($1, '2099-03-01', 'ZFA', '2099-03-01T08:00:00Z') \
+             VALUES ($1, $2::date, 'ZFA', ($2 || 'T08:00:00Z')::timestamptz) \
              RETURNING id",
         )
         .bind(user_id)
-        .fetch_one(&pool)
+        .bind(date)
+        .fetch_one(pool)
         .await
-        .expect("seed fixture train_subscriptions row");
+        .expect("seed fixture train_subscriptions row")
+    }
+
+    async fn cleanup_train_events_fixture(pool: &PgPool, user_id: &str, train_uids: &[&str]) {
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+            .bind(train_uids)
+            .execute(pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .ok();
+    }
+
+    /// DB2-2: an event that fails for a DATA error (here a `status` the
+    /// `train_current_state` CHECK refuses) is rolled back on its own -- its
+    /// resolution flip, its `trains` row and its movement row included, so
+    /// nothing is left half-applied -- and reported in `rejected`; the rest
+    /// of the batch lands and the request is still a 200.
+    ///
+    /// (Before DB2-2 this test asserted the opposite shape: the bad event's
+    /// movement row committed on its own and the error was only visible as
+    /// a lower `upserted` count, with no way for the consumer to know which
+    /// event failed or why.)
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                train_events_batch_with_a_data_error -- --ignored --test-threads=1`"]
+    async fn train_events_batch_with_a_data_error_rejects_only_that_event_atomically() {
+        let pool = connect().await;
+        let user_id = "TEST-INGEST-TRAIN-EVENTS-BATCH-USER";
+        let uid = "TEST-INGEST-BATCH-PARTIAL-UID";
+        cleanup_train_events_fixture(&pool, user_id, &[uid]).await;
+        let subscription_id = seed_train_events_subscription(&pool, user_id, "2099-03-01").await;
 
         let router: axum::Router = crate::app::Router::new()
             .merge(router())
@@ -2622,14 +2737,12 @@ mod db_tests {
 
         let events = json!([
             {
-                // Resolves a real trains_id (via flip_legacy_resolution's
-                // (None, Some(train_uid)) arm) and so actually reaches
-                // upsert_train_movement -- but with an invalid `status`
-                // that violates train_current_state's own CHECK
-                // constraint, forcing a genuine DB error on this one
-                // event only.
+                // Resolves a real trains_id (flip_legacy_resolution's
+                // (None, Some(train_uid)) arm) and reaches
+                // upsert_train_movement -- with a `status` the
+                // train_current_state CHECK constraint refuses.
                 "tracked_train_id": subscription_id,
-                "resolved_train_uid": "TEST-INGEST-BATCH-PARTIAL-UID",
+                "resolved_train_uid": uid,
                 "resolved_train_id": "T99999",
                 "dedup_key": "test-ingest-batch-partial-dedup",
                 "msg_type": "0003",
@@ -2637,11 +2750,8 @@ mod db_tests {
                 "status": "not-a-real-status-value"
             },
             {
-                // No identity resolvable at all (an unknown
-                // tracked_train_id) -- upsert_train_event drops this as a
-                // logged no-op and returns Ok(()), same as before this
-                // fix; included to prove the batch keeps processing past
-                // the failing event above.
+                // No identity resolvable (an unknown tracked_train_id):
+                // a logged no-op, which counts as written.
                 "tracked_train_id": -9_123_456_001i64,
                 "dedup_key": "test-ingest-batch-harmless-1",
                 "msg_type": "0003",
@@ -2657,80 +2767,244 @@ mod db_tests {
             }
         ]);
 
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/train-events")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&events).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let (status, body) = post_json_to(router, "/train-events", &events).await;
+
+        let trains_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM trains WHERE train_uid = $1")
+                .bind(uid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let movement_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM train_movement_events WHERE dedup_key = 'test-ingest-batch-partial-dedup'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let (resolution_status, trains_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = $1",
+        )
+        .bind(subscription_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        cleanup_train_events_fixture(&pool, user_id, &[uid]).await;
 
         assert_eq!(
-            response.status(),
+            status,
             StatusCode::OK,
-            "one bad event in the batch must not fail the whole request"
+            "a data error must not fail the batch"
         );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let parsed: common::TrustBacklogIngestResponse =
+            serde_json::from_slice(&body).expect("response parses");
+        assert_eq!(parsed.upserted, 2);
+        assert_eq!(parsed.rejected.len(), 1);
+        assert_eq!(parsed.rejected[0].index, 0);
+        assert_eq!(
+            parsed.rejected[0].dedup_key,
+            "test-ingest-batch-partial-dedup"
+        );
+        assert_eq!(parsed.rejected[0].sqlstate, "23514");
+        assert_eq!(parsed.rejected[0].reason, "check_violation");
+        assert_eq!(
+            trains_rows, 0,
+            "the rejected event's trains row rolled back"
+        );
+        assert_eq!(movement_rows, 0, "...and its movement row");
+        assert_eq!(resolution_status, "pending", "...and its resolution flip");
+        assert_eq!(trains_id, None);
+    }
+
+    /// DB2-2: a TRANSIENT failure (a real lock timeout, SQLSTATE 55P03) is a
+    /// 500 with nothing committed -- including the events before it in the
+    /// batch -- so trust-consumer keeps the batch and retries it, instead of
+    /// ACKing a 200 and losing the event for good. Once the lock is gone the
+    /// very same batch goes through.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                train_events_batch_with_a_transient_error -- --ignored --test-threads=1`"]
+    async fn train_events_batch_with_a_transient_error_is_a_500_and_commits_nothing() {
+        let pool = connect().await;
+        let user_id = "TEST-INGEST-TRAIN-EVENTS-TRANSIENT-USER";
+        let uids = ["TEST-TRANSIENT-UID-A", "TEST-TRANSIENT-UID-B"];
+        cleanup_train_events_fixture(&pool, user_id, &uids).await;
+        let first = seed_train_events_subscription(&pool, user_id, "2099-03-02").await;
+        let second = seed_train_events_subscription(&pool, user_id, "2099-03-02").await;
+        let event = |subscription: i64, uid: &str, dedup_key: &str| {
+            json!({
+                "tracked_train_id": subscription,
+                "resolved_train_uid": uid,
+                // Distinct per event: (train_id, service_date) is unique.
+                "resolved_train_id": format!("T8888{}", &uid[uid.len() - 1..]),
+                "dedup_key": dedup_key,
+                "msg_type": "0003",
+                "raw_body": {},
+                "status": "en_route"
+            })
+        };
+        let events = json!([
+            event(first, uids[0], "test-transient-dedup-a"),
+            event(second, uids[1], "test-transient-dedup-b"),
+        ]);
+
+        // Hold the second subscription's row lock on another connection.
+        let mut blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM train_subscriptions WHERE id = $1 FOR UPDATE")
+            .bind(second)
+            .execute(&mut *blocker)
             .await
             .unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
+
+        let short_timeout_pool = connect_with_short_lock_timeout().await;
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(short_timeout_pool.clone()));
+        let (status, _) = post_json_to(router.clone(), "/train-events", &events).await;
+        let trains_rows_during: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM trains WHERE train_uid = ANY($1)")
+                .bind(&uids[..])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        blocker.rollback().await.unwrap();
+
+        let (retry_status, retry_body) = post_json_to(router, "/train-events", &events).await;
+        let trains_rows_after: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM trains WHERE train_uid = ANY($1)")
+                .bind(&uids[..])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        cleanup_train_events_fixture(&pool, user_id, &uids).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
-            json,
-            serde_json::json!({"upserted": 2}),
-            "upserted must count only the two events that actually succeeded, not all three"
+            trains_rows_during, 0,
+            "the first event, which succeeded before the lock timeout, rolled back with the batch"
         );
+        assert_eq!(retry_status, StatusCode::OK);
+        let parsed: common::TrustBacklogIngestResponse =
+            serde_json::from_slice(&retry_body).unwrap();
+        assert_eq!(parsed.upserted, 2);
+        assert!(parsed.rejected.is_empty());
+        assert_eq!(trains_rows_after, 2);
+    }
 
-        let fixture_service_date: chrono::NaiveDate = "2099-03-01".parse().unwrap();
-        let trains_id: i64 =
-            sqlx::query_scalar("SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2")
-                .bind("TEST-INGEST-BATCH-PARTIAL-UID")
-                .bind(fixture_service_date)
-                .fetch_one(&pool)
-                .await
-                .expect("the failing event's own resolution still created a trains row");
+    fn backlog_event(train_uid: &str, msg_type: &str, dedup_key: &str) -> Value {
+        json!({
+            "crs": "EUS",
+            "train_uid": train_uid,
+            "train_id": "TEST-PL7",
+            "service_date": "2099-03-03",
+            "msg_type": msg_type,
+            "event_type": "DEPARTURE",
+            "planned_timestamp": "2099-03-03T08:00:00Z",
+            "actual_timestamp": "2099-03-03T08:01:00Z",
+            "variation_status": "LATE",
+            "dedup_key": dedup_key,
+        })
+    }
 
-        let movement_dedup_key: String =
-            sqlx::query_scalar("SELECT dedup_key FROM train_movement_events WHERE trains_id = $1")
-                .bind(trains_id)
-                .fetch_one(&pool)
-                .await
-                .expect(
-                    "the failing event's train_movement_events write committed before the \
-             CHECK-violating train_current_state write ran -- exactly the partial-application \
-             shape this finding names",
-                );
-        assert_eq!(movement_dedup_key, "test-ingest-batch-partial-dedup");
-
-        let current_state_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM train_current_state WHERE trains_id = $1")
-                .bind(trains_id)
-                .fetch_one(&pool)
-                .await
-                .expect("count train_current_state rows");
-        assert_eq!(
-            current_state_count, 0,
-            "the CHECK-violating insert must not have landed a train_current_state row"
-        );
-
-        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
-            .bind(subscription_id)
-            .execute(&pool)
+    async fn cleanup_backlog_fixture(pool: &PgPool, uids: &[&str]) {
+        sqlx::query("DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-pl7-%'")
+            .execute(pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM trains WHERE id = $1")
+        sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+            .bind(uids)
+            .execute(pool)
+            .await
+            .ok();
+    }
+
+    /// API-4: a row the backlog insert rejected does not go on to drive the
+    /// shared-movement write (no `trains` row is created for it), while its
+    /// good batch-mate does.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                trust_event_backlog_rejected_rows_skip -- --ignored --test-threads=1`"]
+    async fn trust_event_backlog_rejected_rows_skip_the_shared_movement_write() {
+        let pool = connect().await;
+        let uids = ["TEST-PL7-GOOD", "TEST-PL7-BAD"];
+        cleanup_backlog_fixture(&pool, &uids).await;
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let body = json!([
+            backlog_event(uids[0], "0003", "test-pl7-good"),
+            backlog_event(uids[1], "0009", "test-pl7-bad"),
+        ]);
+
+        let (status, body) = post_json_to(router, "/trust-event-backlog", &body).await;
+        let created: Vec<String> =
+            sqlx::query_scalar("SELECT train_uid FROM trains WHERE train_uid = ANY($1)")
+                .bind(&uids[..])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        cleanup_backlog_fixture(&pool, &uids).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let parsed: common::TrustBacklogIngestResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed.rejected.len(), 1);
+        assert_eq!(parsed.rejected[0].index, 1);
+        assert_eq!(
+            created,
+            vec!["TEST-PL7-GOOD".to_string()],
+            "the rejected row must not create a shared trains row"
+        );
+    }
+
+    /// PL-7: a transient failure in the shared-movement write (a real lock
+    /// timeout on the `trains` row) is now a 500 -- so the consumer keeps
+    /// the batch and retries -- instead of a warn and a 200. The retry, once
+    /// the lock is released, lands the shared movement; the backlog row that
+    /// already committed conflicts harmlessly.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                trust_event_backlog_shared_movement_transient -- --ignored --test-threads=1`"]
+    async fn trust_event_backlog_shared_movement_transient_failure_is_a_500() {
+        let pool = connect().await;
+        let uids = ["TEST-PL7-LOCKED"];
+        cleanup_backlog_fixture(&pool, &uids).await;
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            uids[0],
+            "2099-03-03".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        let body = json!([backlog_event(uids[0], "0003", "test-pl7-locked")]);
+
+        let mut blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM trains WHERE id = $1 FOR UPDATE")
             .bind(trains_id)
-            .execute(&pool)
+            .execute(&mut *blocker)
             .await
-            .ok();
-        sqlx::query("DELETE FROM users WHERE id = $1")
-            .bind(user_id)
-            .execute(&pool)
-            .await
-            .ok();
+            .unwrap();
+        let short_timeout_pool = connect_with_short_lock_timeout().await;
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(short_timeout_pool.clone()));
+        let (status, _) = post_json_to(router.clone(), "/trust-event-backlog", &body).await;
+        blocker.rollback().await.unwrap();
+
+        let (retry_status, retry_body) = post_json_to(router, "/trust-event-backlog", &body).await;
+        let movements: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM train_movement_events WHERE trains_id = $1 AND dedup_key = 'test-pl7-locked'",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        cleanup_backlog_fixture(&pool, &uids).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(retry_status, StatusCode::OK);
+        let parsed: common::TrustBacklogIngestResponse =
+            serde_json::from_slice(&retry_body).unwrap();
+        assert!(parsed.rejected.is_empty());
+        assert_eq!(movements, 1, "the retry landed the shared movement");
     }
 
     /// The diff chunk protocol end to end through the router, exactly as

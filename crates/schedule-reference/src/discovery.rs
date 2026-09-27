@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use common::schedule_delivery::COMPLETE_MARKER;
+
 /// One `schedule-ingest`-produced delivery directory that has both a
 /// `RJTTF*MCA.txt`-shaped and a `RJTTF*MSN.txt`-shaped file directly inside
 /// it.
@@ -42,8 +44,19 @@ pub struct CompleteDelivery {
 /// number shouldn't be relied on as a stable identifier either (see
 /// `docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`).
 ///
-/// `None` if `storage_dir` doesn't exist yet, or no subdirectory has both
-/// files -- not an error, matching `schedule-ingest::scan::scan_incoming`'s
+/// **A directory is only a candidate once `schedule-ingest` has marked it
+/// complete** (PL-6): it must contain `common::schedule_delivery::COMPLETE_MARKER`,
+/// which `schedule-ingest` writes last, after extracting and fsyncing every
+/// file, before atomically renaming the directory into place. MCA+MSN being
+/// *present* used to be the whole test, so a poll during the tens of
+/// seconds the ~1-2 GB MCA takes to write could publish a truncated
+/// timetable as the day's, and mark it done. Hidden directories (the
+/// `.tmp-*` extraction scratch space among them) are never candidates.
+/// Directories extracted before the marker existed are marked by
+/// `schedule-ingest`'s startup adoption pass.
+///
+/// `None` if `storage_dir` doesn't exist yet, or no subdirectory is
+/// complete -- not an error, matching `schedule-ingest::scan::scan_incoming`'s
 /// own "not-yet-existing is empty, not an error" posture.
 pub fn latest_complete_delivery(storage_dir: &Path) -> anyhow::Result<Option<CompleteDelivery>> {
     let read_dir = match std::fs::read_dir(storage_dir) {
@@ -61,12 +74,18 @@ pub fn latest_complete_delivery(storage_dir: &Path) -> anyhow::Result<Option<Com
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
+        if name.starts_with('.') {
+            continue;
+        }
         dir_names.push(name);
     }
     dir_names.sort();
 
     for name in dir_names.into_iter().rev() {
         let dir = storage_dir.join(&name);
+        if !dir.join(COMPLETE_MARKER).is_file() {
+            continue;
+        }
         let mca_path = find_file_matching(&dir, "RJTTF", "MCA.txt")?;
         let msn_path = find_file_matching(&dir, "RJTTF", "MSN.txt")?;
         if let (Some(mca_path), Some(msn_path)) = (mca_path, msn_path) {
@@ -103,8 +122,58 @@ fn find_file_matching(dir: &Path, prefix: &str, suffix: &str) -> anyhow::Result<
 mod tests {
     use super::*;
 
+    /// Creates the file, and marks the delivery complete the way
+    /// `schedule-ingest` does -- every fixture below is about which files a
+    /// COMPLETE delivery holds; the marker itself has its own tests.
     fn touch(dir: &Path, delivery: &str, name: &str) {
         std::fs::write(dir.join(delivery).join(name), b"x").unwrap();
+        std::fs::write(dir.join(delivery).join(COMPLETE_MARKER), b"").unwrap();
+    }
+
+    fn write_unmarked(dir: &Path, delivery: &str) {
+        std::fs::create_dir_all(dir.join(delivery)).unwrap();
+        std::fs::write(dir.join(delivery).join("RJTTF942MCA.txt"), b"x").unwrap();
+        std::fs::write(dir.join(delivery).join("RJTTF942MSN.txt"), b"x").unwrap();
+    }
+
+    /// PL-6: a directory whose MCA and MSN are both present but that has no
+    /// completion marker is still being extracted (or was interrupted) --
+    /// discovery must fall back to the newest MARKED delivery, not read it.
+    #[test]
+    fn an_unmarked_in_progress_delivery_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("20260902T090000Z")).unwrap();
+        touch(dir.path(), "20260902T090000Z", "RJTTF941MCA.txt");
+        touch(dir.path(), "20260902T090000Z", "RJTTF941MSN.txt");
+        write_unmarked(dir.path(), "20260903T090000Z");
+
+        let delivery = latest_complete_delivery(dir.path()).unwrap().unwrap();
+        assert_eq!(delivery.dir_name, "20260902T090000Z");
+
+        // ...and nothing at all when the only delivery is in progress.
+        let only_in_progress = tempfile::tempdir().unwrap();
+        write_unmarked(only_in_progress.path(), "20260903T090000Z");
+        assert_eq!(
+            latest_complete_delivery(only_in_progress.path()).unwrap(),
+            None
+        );
+    }
+
+    /// PL-6: the `.tmp-<dir_name>` scratch directory `schedule-ingest`
+    /// extracts into is never a candidate, even once its marker is written
+    /// (the instant before the rename).
+    #[test]
+    fn the_extraction_scratch_directory_is_never_a_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = format!(
+            "{}20260903T090000Z",
+            common::schedule_delivery::TEMP_DIR_PREFIX
+        );
+        std::fs::create_dir_all(dir.path().join(&scratch)).unwrap();
+        touch(dir.path(), &scratch, "RJTTF942MCA.txt");
+        touch(dir.path(), &scratch, "RJTTF942MSN.txt");
+
+        assert_eq!(latest_complete_delivery(dir.path()).unwrap(), None);
     }
 
     #[test]

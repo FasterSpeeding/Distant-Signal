@@ -3567,6 +3567,8 @@ mod poll_once_retry_tests {
         )
         .unwrap();
         std::fs::write(dir.join("RJTTF942MSN.txt"), format!("{A_WATRLMN}\n")).unwrap();
+        // Marked complete, as schedule-ingest does last (PL-6).
+        std::fs::write(dir.join(common::schedule_delivery::COMPLETE_MARKER), b"").unwrap();
     }
 
     /// Mounts a 200-answering POST mock for every publish route, then lets the
