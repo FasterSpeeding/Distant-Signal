@@ -5003,122 +5003,123 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
         cleanup_public_train(&pool, train_uid).await;
     }
+}
 
-    /// Ticket-upload handler tests (M13). These drive `handle_ticket_upload`
-    /// with a real `Multipart` and a local `TicketParser`, never the
-    /// process-wide one (whose `current_exe` would be this test binary).
-    mod ticket_upload {
-        use axum::extract::FromRequest;
+/// Ticket-upload handler tests (M13). These drive `handle_ticket_upload`
+/// with a real `Multipart` and a local `TicketParser`, never the
+/// process-wide one (whose `current_exe` would be this test binary).
+#[cfg(test)]
+mod ticket_upload_tests {
+    use axum::extract::FromRequest;
 
-        use super::super::*;
-        use crate::data::ticket_precheck::fixtures;
+    use super::*;
+    use crate::data::ticket_precheck::fixtures;
 
-        async fn multipart_with(bytes: &[u8]) -> Multipart {
-            let boundary = "ticketboundary";
-            let mut body = format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
-                 filename=\"ticket\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    async fn multipart_with(bytes: &[u8]) -> Multipart {
+        let boundary = "ticketboundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"ticket\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
             )
-            .into_bytes();
-            body.extend_from_slice(bytes);
-            body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-            let request = axum::http::Request::builder()
-                .method("POST")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(axum::body::Body::from(body))
-                .unwrap();
-            Multipart::from_request(request, &()).await.unwrap()
-        }
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        Multipart::from_request(request, &()).await.unwrap()
+    }
 
-        /// A parser that must never be reached: its executable doesn't exist.
-        fn unreachable_parser(slots: usize) -> TicketParser {
-            TicketParser::new(
-                "/nonexistent/api".into(),
-                slots,
-                std::time::Duration::from_secs(1),
-                ticket_subprocess::ChildLimits::default(),
-            )
-        }
+    /// A parser that must never be reached: its executable doesn't exist.
+    fn unreachable_parser(slots: usize) -> TicketParser {
+        TicketParser::new(
+            "/nonexistent/api".into(),
+            slots,
+            std::time::Duration::from_secs(1),
+            ticket_subprocess::ChildLimits::default(),
+        )
+    }
 
-        #[tokio::test]
-        async fn every_slot_busy_is_a_503() {
-            let parser = unreachable_parser(0);
-            let multipart = multipart_with(&fixtures::train_pdf()).await;
-            let err = handle_ticket_upload(&parser, TicketKind::Pdf, multipart)
+    #[tokio::test]
+    async fn every_slot_busy_is_a_503() {
+        let parser = unreachable_parser(0);
+        let multipart = multipart_with(&fixtures::train_pdf()).await;
+        let err = handle_ticket_upload(&parser, TicketKind::Pdf, multipart)
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE, "{}", err.1);
+        assert!(err.1.contains("retry"), "{}", err.1);
+    }
+
+    #[tokio::test]
+    async fn precheck_rejections_map_to_413_415_and_422_without_spawning() {
+        let parser = unreachable_parser(1);
+        let cases: Vec<(TicketKind, Vec<u8>, StatusCode)> = vec![
+            (
+                TicketKind::Pdf,
+                {
+                    let mut big = fixtures::train_pdf();
+                    big.resize(5 * 1024 * 1024, b' ');
+                    big
+                },
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                TicketKind::Pkpass,
+                fixtures::train_pdf(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                TicketKind::Pdf,
+                fixtures::train_pkpass(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                TicketKind::Pkpass,
+                fixtures::zip_with(&[("readme.txt", b"x")]),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ];
+        for (kind, bytes, expected) in cases {
+            let err = handle_ticket_upload(&parser, kind, multipart_with(&bytes).await)
                 .await
                 .unwrap_err();
-            assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE, "{}", err.1);
-            assert!(err.1.contains("retry"), "{}", err.1);
+            assert_eq!(err.0, expected, "{kind:?}: {}", err.1);
         }
+        assert_eq!(parser.available_slots(), 1);
+    }
 
-        #[tokio::test]
-        async fn precheck_rejections_map_to_413_415_and_422_without_spawning() {
-            let parser = unreachable_parser(1);
-            let cases: Vec<(TicketKind, Vec<u8>, StatusCode)> = vec![
-                (
-                    TicketKind::Pdf,
-                    {
-                        let mut big = fixtures::train_pdf();
-                        big.resize(5 * 1024 * 1024, b' ');
-                        big
-                    },
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                ),
-                (
-                    TicketKind::Pkpass,
-                    fixtures::train_pdf(),
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                ),
-                (
-                    TicketKind::Pdf,
-                    fixtures::train_pkpass(),
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                ),
-                (
-                    TicketKind::Pkpass,
-                    fixtures::zip_with(&[("readme.txt", b"x")]),
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                ),
-            ];
-            for (kind, bytes, expected) in cases {
-                let err = handle_ticket_upload(&parser, kind, multipart_with(&bytes).await)
-                    .await
-                    .unwrap_err();
-                assert_eq!(err.0, expected, "{kind:?}: {}", err.1);
-            }
-            assert_eq!(parser.available_slots(), 1);
-        }
-
-        #[test]
-        fn parse_failures_map_to_their_statuses() {
-            let cases = [
-                (ParseFailure::Busy, StatusCode::SERVICE_UNAVAILABLE),
-                (ParseFailure::TimedOut, StatusCode::GATEWAY_TIMEOUT),
-                (
-                    ParseFailure::Unparseable("nope".into()),
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                ),
-                (
-                    ParseFailure::ChildDied {
-                        status: "signal 6".into(),
-                        stderr: String::new(),
-                    },
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                ),
-                (
-                    ParseFailure::Internal(anyhow::anyhow!("boom")),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ),
-            ];
-            for (failure, expected) in cases {
-                assert_eq!(
-                    ticket_parse_failure_response(TicketKind::Pdf, failure).0,
-                    expected
-                );
-            }
+    #[test]
+    fn parse_failures_map_to_their_statuses() {
+        let cases = [
+            (ParseFailure::Busy, StatusCode::SERVICE_UNAVAILABLE),
+            (ParseFailure::TimedOut, StatusCode::GATEWAY_TIMEOUT),
+            (
+                ParseFailure::Unparseable("nope".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                ParseFailure::ChildDied {
+                    status: "signal 6".into(),
+                    stderr: String::new(),
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                ParseFailure::Internal(anyhow::anyhow!("boom")),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (failure, expected) in cases {
+            assert_eq!(
+                ticket_parse_failure_response(TicketKind::Pdf, failure).0,
+                expected
+            );
         }
     }
 }
