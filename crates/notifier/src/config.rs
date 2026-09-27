@@ -120,6 +120,11 @@ pub struct Config {
     /// drifting out of sync with the chart again.
     #[arg(long, env, default_value = "info")]
     pub log_level: String,
+
+    /// `/livez` (liveness: loop progress) and `/healthz` (readiness: also
+    /// false until the initial database connection is up) -- SVC-08/INF-5.
+    #[command(flatten)]
+    pub health: common::service_args::HealthArgs,
 }
 
 impl Config {
@@ -183,6 +188,10 @@ mod tests {
             vapid_public_key: "test".to_string(),
             vapid_subject: "mailto:test@example.invalid".to_string(),
             log_level: "info".to_string(),
+            health: common::service_args::HealthArgs {
+                health_bind_url: "127.0.0.1:0".to_string(),
+                progress_stall_secs: 3600,
+            },
         }
     }
 

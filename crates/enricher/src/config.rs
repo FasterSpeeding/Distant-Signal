@@ -78,4 +78,9 @@ pub struct Config {
     /// declarative.
     #[arg(long, env, default_value_t = true)]
     pub metrics_enabled: bool,
+
+    /// `/livez` (liveness: loop progress) and `/healthz` (readiness: also
+    /// false until the initial database connection is up) -- SVC-08/INF-5.
+    #[command(flatten)]
+    pub health: common::service_args::HealthArgs,
 }

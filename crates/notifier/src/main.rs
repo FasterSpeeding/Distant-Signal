@@ -74,10 +74,28 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::new(&config.log_level))
         .init();
 
+    let (ready, progress) = health_http::spawn_worker(&config.health);
+    // INF-5: wait for Postgres (e.g. still in crash recovery after a node
+    // reboot) instead of exiting into CrashLoopBackOff. `/healthz` stays
+    // 503 until this returns; `/livez` stays 200 while it retries.
+    common::startup::retry_until_ready(
+        "Postgres",
+        common::startup::CONNECT_BACKOFF,
+        Some(&progress),
+        || async {
+            use sqlx::Connection;
+            sqlx::PgConnection::connect(&config.database_url)
+                .await?
+                .close()
+                .await
+        },
+    )
+    .await;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&config.database_url)
         .await?;
+    ready.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let cooldown = chrono::Duration::minutes(config.cooldown_minutes);
     let cursor_grace = chrono::Duration::seconds(config.cursor_grace_seconds);
@@ -86,8 +104,12 @@ async fn main() -> anyhow::Result<()> {
     let mut skip_check_interval = poll_interval(config.skip_check_poll_interval_secs);
     let mut template_sweep_interval = poll_interval(config.template_sweep_poll_interval_secs);
     loop {
+        // Every arm is one cycle; the wait for the next tick is idle time
+        // (`Progress::idle`), so only a single cycle running past
+        // PROGRESS_STALL_SECS reads as a stall.
+        progress.beat();
         tokio::select! {
-            _ = interval.tick() => {
+            _ = progress.idle(interval.tick()) => {
                 let result = run_cycle(
                     &pool,
                     Utc::now(),
@@ -102,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::error!(error = ?err, "notifier cycle failed; will retry next interval");
                 }
             }
-            _ = forward_interval.tick() => {
+            _ = progress.idle(forward_interval.tick()) => {
                 let result = run_forward_queue_cycle(
                     &pool,
                     Utc::now(),
@@ -116,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::error!(error = ?err, "notifier forward-queue cycle failed; will retry next interval");
                 }
             }
-            _ = skip_check_interval.tick() => {
+            _ = progress.idle(skip_check_interval.tick()) => {
                 let result = run_skip_check_cycle(
                     &pool,
                     Utc::now(),
@@ -128,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::error!(error = ?err, "notifier skip-check cycle failed; will retry next interval");
                 }
             }
-            _ = template_sweep_interval.tick() => {
+            _ = progress.idle(template_sweep_interval.tick()) => {
                 let result = run_template_sweep_cycle(
                     &pool,
                     Utc::now(),

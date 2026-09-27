@@ -109,11 +109,18 @@ async fn main() -> anyhow::Result<()> {
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
+    let progress = health_http::spawn_liveness(&config.health);
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
     let mut interval = poll_interval(config.poll_interval_secs);
     let mut state = PublishState {
-        last_processed_delivery: seed_last_processed_delivery(&client, &config, &internal_oauth)
+        // Waiting (with backoff) for api to answer is not a stall.
+        last_processed_delivery: progress
+            .idle(seed_last_processed_delivery(
+                &client,
+                &config,
+                &internal_oauth,
+            ))
             .await,
         partial: None,
     };
@@ -129,9 +136,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     loop {
-        interval.tick().await;
+        progress.idle(interval.tick()).await;
         let cycle_start = std::time::Instant::now();
         let result = poll_once(&client, &config, &mut state, &internal_oauth).await;
+        progress.beat();
         metrics::histogram!(common::metrics::metric_name(
             "schedule_reference_cycle_duration_seconds"
         ))
@@ -3228,6 +3236,10 @@ mod poll_once_tests {
             metrics_port: 0,
             metrics: common::service_args::MetricsArgs {
                 metrics_enabled: false,
+            },
+            health: common::service_args::HealthArgs {
+                health_bind_url: "127.0.0.1:0".to_string(),
+                progress_stall_secs: 1800,
             },
             startup_backoff: FAST_BACKOFF,
             publish_retry: config::PublishRetry {
