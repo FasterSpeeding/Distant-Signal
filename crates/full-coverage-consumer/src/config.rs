@@ -98,9 +98,10 @@ pub struct Config {
     /// legitimate one, every HTTP call in it being bounded by
     /// `common::ingest::CONSUMER_REQUEST_TIMEOUT` (60s).
     /// Larger than the other two consumers': one iteration here can also
-    /// run a full population reload and a stats write, each several
-    /// requests, and a restart costs this consumer its in-memory
-    /// correlation state for the rail day.
+    /// run a stats write (several requests), and a restart costs a startup
+    /// replay of the rail day so far (see `replay.rs`). The population
+    /// reload no longer runs in this loop, and startup waits (for `api`,
+    /// Redis) beat the watchdog themselves.
     #[arg(long, env, default_value_t = 900)]
     pub progress_stall_secs: u64,
     #[arg(long, env, default_value_t = 9093)]
