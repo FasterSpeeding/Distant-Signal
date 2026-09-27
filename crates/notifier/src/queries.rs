@@ -1360,6 +1360,15 @@ async fn cif_train_schedule(
 ///   left to the api: a leg is auto-committed BEFORE its train has run, so
 ///   there is no retained history to replay yet, and once it does run
 ///   `trust-consumer` feeds this shared `trains_id` live anyway.
+/// * `schedule_matched_at` is deliberately NOT stamped (DB review part 2,
+///   DB2-9). The api reads it as "fully schedule-matched": its
+///   reconciliation sweep (`api::data::reconciliation`, `WHERE
+///   schedule_matched_at IS NULL`) and `enrich_shared_train`'s precheck both
+///   skip a stamped row. Stamping it here, without the `calling_points` and
+///   `matched_line_id` a real match writes, left the row permanently
+///   unenriched. Leaving it NULL lets the api's own match fill those in
+///   later; the `COALESCE`s below mean that match keeps the origin and
+///   terminus written here.
 ///
 /// Every column is `COALESCE`d against the existing value, exactly like
 /// `api::data::trains::find_or_create_train_with_schedule_match` -- so this
@@ -1381,15 +1390,13 @@ pub async fn find_or_create_train_with_cif_schedule(
 
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO trains \
-            (train_uid, service_date, origin_crs, scheduled_departure, destination_crs, \
-             schedule_matched_at) \
-         VALUES ($1, $2, $3, $4, $5, NOW()) \
+            (train_uid, service_date, origin_crs, scheduled_departure, destination_crs) \
+         VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (train_uid, service_date) DO UPDATE SET \
             train_uid           = EXCLUDED.train_uid, \
             origin_crs          = COALESCE(trains.origin_crs, EXCLUDED.origin_crs), \
             scheduled_departure = COALESCE(trains.scheduled_departure, EXCLUDED.scheduled_departure), \
-            destination_crs     = COALESCE(trains.destination_crs, EXCLUDED.destination_crs), \
-            schedule_matched_at = COALESCE(trains.schedule_matched_at, EXCLUDED.schedule_matched_at) \
+            destination_crs     = COALESCE(trains.destination_crs, EXCLUDED.destination_crs) \
          RETURNING id",
     )
     .bind(train_uid)
@@ -3679,6 +3686,64 @@ mod sweep_tests {
             .await
             .ok();
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// DB2-9: the CIF enrichment must leave `schedule_matched_at` NULL, or
+    /// the api's reconciliation sweep (`WHERE schedule_matched_at IS NULL`)
+    /// never gives the row its calling points.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p notifier \
+                find_or_create_train_with_cif_schedule_leaves_schedule_matched_at_null \
+                -- --ignored --test-threads=1`"]
+    async fn find_or_create_train_with_cif_schedule_leaves_schedule_matched_at_null() {
+        let pool = connect().await;
+        let train_uid = "TEST-CIF-DB29-UID";
+        let service_date: chrono::NaiveDate = "2001-09-25".parse().unwrap();
+        let cleanup = || async {
+            sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+                .bind(train_uid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+                .bind(train_uid)
+                .execute(&pool)
+                .await
+                .ok();
+        };
+        cleanup().await;
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, \
+                 true_origin_crs, destination_arrival, destination_arrival_day_offset) \
+             VALUES ($1, 'WOK', '09:05:00', 0, $2, 'RDG', 'RDG', '09:25:00', 0)",
+        )
+        .bind(service_date)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed CIF");
+
+        let trains_id = find_or_create_train_with_cif_schedule(&pool, train_uid, service_date)
+            .await
+            .expect("first call creates the row");
+        let again = find_or_create_train_with_cif_schedule(&pool, train_uid, service_date)
+            .await
+            .expect("second call finds it");
+        assert_eq!(trains_id, again);
+
+        let (origin_crs, matched_at): (Option<String>, Option<DateTime<Utc>>) =
+            sqlx::query_as("SELECT origin_crs, schedule_matched_at FROM trains WHERE id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back");
+        assert_eq!(origin_crs.as_deref(), Some("RDG"));
+        assert_eq!(
+            matched_at, None,
+            "schedule_matched_at is the api's 'fully matched' marker; the notifier must not set it"
+        );
+        cleanup().await;
     }
 
     #[tokio::test]
