@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   __resetLegalWarningForTests,
+  DEFAULT_RETENTION_POLICY,
+  describeRetentionDays,
+  retentionPolicy,
   LEGAL_CONFIG,
   legalPageMetadata,
   legalPagesMode,
@@ -48,8 +51,12 @@ describe('legal pages flag', () => {
     expect(vi.mocked(console.warn).mock.calls[0][0]).toContain('CONTACT_EMAIL');
   });
 
-  it('ships with every operator value still a placeholder, so the pages cannot go live by accident', () => {
-    expect(unfilledLegalPlaceholders(LEGAL_CONFIG)).toEqual(Object.keys(LEGAL_CONFIG));
+  it('ships with every operator-identity value still a placeholder, so the pages cannot go live by accident', () => {
+    // MINIMUM_AGE is the one value already decided (DQ1: 18).
+    expect(LEGAL_CONFIG.MINIMUM_AGE).toBe('18');
+    expect(unfilledLegalPlaceholders(LEGAL_CONFIG)).toEqual(
+      Object.keys(LEGAL_CONFIG).filter((key) => key !== 'MINIMUM_AGE'),
+    );
     expect(legalPagesPublished({ LEGAL_PAGES_PUBLISHED: 'true' })).toBe(false);
   });
 
@@ -79,5 +86,41 @@ describe('legalPageMetadata', () => {
     expect(legalPageMetadata('Terms of use', 'd', false).robots).toEqual({ index: false, follow: false });
     expect(legalPageMetadata('Terms of use', 'd', true).robots).toBeUndefined();
     expect(legalPageMetadata('Terms of use', 'd', true).title).toBe('Terms of use — Distant Signal');
+  });
+});
+
+// LEG-28 / DQ7: the privacy notice follows the api's retention settings.
+describe('retentionPolicy', () => {
+  it('defaults to the chart defaults (inactive-account deletion off)', () => {
+    expect(retentionPolicy({})).toEqual({ pastTravelDays: 548, stalePushSubscriptionDays: 365, inactiveAccountDays: 0 });
+  });
+
+  it('reads the values the chart copies from the api', () => {
+    expect(
+      retentionPolicy({
+        RETENTION_PAST_TRAVEL_DAYS: '400',
+        RETENTION_STALE_PUSH_SUBSCRIPTION_DAYS: '0',
+        RETENTION_INACTIVE_ACCOUNT_DAYS: '730',
+      }),
+    ).toEqual({ pastTravelDays: 400, stalePushSubscriptionDays: 0, inactiveAccountDays: 730 });
+  });
+
+  it('falls back to the default for a malformed value', () => {
+    expect(retentionPolicy({ RETENTION_INACTIVE_ACCOUNT_DAYS: 'soon', RETENTION_PAST_TRAVEL_DAYS: '-1' })).toEqual(
+      DEFAULT_RETENTION_POLICY,
+    );
+  });
+});
+
+describe('describeRetentionDays', () => {
+  it.each([
+    [365, '12 months'],
+    [548, '18 months'],
+    [730, '24 months'],
+    [30, '1 month'],
+    [45, '45 days'],
+    [1, '1 day'],
+  ])('%i -> %s', (days, words) => {
+    expect(describeRetentionDays(days)).toBe(words);
   });
 });

@@ -70,16 +70,28 @@ export async function getStationNames(codes: string[], signal?: AbortSignal): Pr
  * `.catch()`-driven error state (`StationSearchForm.tsx`'s `handleNearMe`)
  * -- collapsing a real backend/validation failure into an empty result
  * would render the calm "nothing found near you" copy for what is actually
- * an error, giving the user no reason to retry. */
+ * an error, giving the user no reason to retry.
+ *
+ * LEG-7: the position is rounded to 3 decimal places (about 110 m of
+ * latitude) before it leaves the browser -- plenty to rank the nearest
+ * stations, without sending (or logging) a precise location. */
 export async function searchNearbyStations(
   lat: number,
   lon: number,
   signal?: AbortSignal,
 ): Promise<NearbyStation[]> {
-  const params = new URLSearchParams({ lat: String(lat), lon: String(lon) });
+  const params = new URLSearchParams({ lat: String(roundCoordinate(lat)), lon: String(roundCoordinate(lon)) });
   const response = await fetch(`/api/stations/nearby?${params.toString()}`, { signal });
   if (!response.ok) {
     throw new Error(`nearby station lookup failed: ${response.status}`);
   }
   return response.json() as Promise<NearbyStation[]>;
+}
+
+/** LEG-7: a coordinate rounded to {@link LOCATION_DECIMAL_PLACES} places. */
+export const LOCATION_DECIMAL_PLACES = 3;
+export function roundCoordinate(value: number): number {
+  const factor = 10 ** LOCATION_DECIMAL_PLACES;
+  // `+ 0` turns a rounded -0 into 0, so it never reaches the URL as "-0".
+  return Math.round(value * factor) / factor + 0;
 }

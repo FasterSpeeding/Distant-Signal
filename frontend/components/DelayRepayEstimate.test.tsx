@@ -91,4 +91,11 @@ describe('DelayRepayEstimate', () => {
     expect(screen.queryByText(/^Claim now$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/^Submit claim$/)).not.toBeInTheDocument();
   });
+
+  // LEG-14
+  it('says when the rules were last checked and that delays may differ from the operator\'s records', () => {
+    renderWithMantine(<DelayRepayEstimate response={response({ estimate: null, delayMinutes: 12 })} />);
+    expect(screen.getByText(/Rules last checked: 29 August 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/may differ from the operator.s own records/)).toBeInTheDocument();
+  });
 });

@@ -249,7 +249,8 @@ describe('StationSearchForm', () => {
         'fetch',
         vi.fn(async (url: string) => {
           expect(url).toContain('/api/stations/nearby?');
-          expect(url).toContain('lat=51.3191');
+          // Rounded to 3 dp before it leaves the browser (LEG-7).
+          expect(url).toContain('lat=51.319&');
           expect(url).toContain('lon=-0.561');
           return new Response(
             JSON.stringify([

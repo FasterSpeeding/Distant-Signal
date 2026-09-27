@@ -18,6 +18,7 @@ import { ShareButton } from '@/components/ShareButton';
 import { StationAccessibilitySection } from '@/components/StationAccessibilitySection';
 import { StationTimetable } from '@/components/StationTimetable';
 import { TextLink } from '@/components/TextLink';
+import { NationalRailCredit } from '@/components/OpenDataAttribution';
 import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
@@ -356,6 +357,9 @@ export default async function StationDisruptionPage({
               </Text>
             </Group>
           ))}
+        {/* LEG-23: these figures come from National Rail's live departure
+            boards (LDBWS), so the Schedule 1 credit sits right under them. */}
+        {sampleStatsResult.coverage === 'sampled' && <NationalRailCredit />}
       </Stack>
 
       <Divider />

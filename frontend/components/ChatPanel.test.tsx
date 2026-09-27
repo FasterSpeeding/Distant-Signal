@@ -19,19 +19,18 @@ describe('ChatPanel', () => {
   beforeEach(() => {
     localStorage.clear();
     mockRunChatTurn.mockReset();
-    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
   });
 
   it('renders a placeholder prompt before any message is sent', () => {
     seedMcpTokens();
     setAnthropicApiKey('sk-ant-test');
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     expect(screen.getByText(/Ask about live departures/)).toBeInTheDocument();
   });
 
   it('shows a "no key" error when submitting without an Anthropic key set', async () => {
     seedMcpTokens();
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByText(/set your anthropic api key/i)).toBeInTheDocument();
@@ -40,7 +39,7 @@ describe('ChatPanel', () => {
 
   it('shows a "reconnect" error when no MCP token is stored', async () => {
     setAnthropicApiKey('sk-ant-test');
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
@@ -53,7 +52,7 @@ describe('ChatPanel', () => {
   it('gives the user\'s own message bubble a grape background, not blue', () => {
     seedMcpTokens();
     setAnthropicApiKey('sk-ant-test');
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     const bubble = screen.getByText('when is the next train').closest('.mantine-Card-root');
@@ -70,7 +69,7 @@ describe('ChatPanel', () => {
         yield { type: 'done' };
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByText(/next train is at 10:15/i)).toBeInTheDocument();
@@ -99,7 +98,7 @@ describe('ChatPanel', () => {
         yield { type: 'done' };
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'plan a trip' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByRole('link', { name: /track this train/i })).toBeInTheDocument();
@@ -113,7 +112,7 @@ describe('ChatPanel', () => {
         throw Object.assign(new Error('invalid api key'), { status: 401, constructor: { name: 'APIError' } });
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByText(/anthropic api key was rejected/i)).toBeInTheDocument();
@@ -127,7 +126,7 @@ describe('ChatPanel', () => {
         throw new Error('get_departures failed: upstream Darwin timeout');
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByText(/darwin timeout/i)).toBeInTheDocument();
@@ -145,7 +144,7 @@ describe('ChatPanel', () => {
         throw new Error('Train reporting number 401 was cancelled');
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
@@ -165,7 +164,7 @@ describe('ChatPanel', () => {
         throw new StreamableHTTPError(401, 'Server returned 401 after successful authentication');
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
@@ -184,7 +183,7 @@ describe('ChatPanel', () => {
         throw new Error('get_departures failed: 401 Unauthorized');
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
@@ -208,7 +207,7 @@ describe('ChatPanel', () => {
         throw new Error('HTTP 401 trying to load well-known OAuth protected resource metadata.');
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
@@ -218,7 +217,7 @@ describe('ChatPanel', () => {
   it('does not submit an empty or whitespace-only message', () => {
     setAnthropicApiKey('sk-ant-test');
     seedMcpTokens();
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(mockRunChatTurn).not.toHaveBeenCalled();
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: '   ' } });
@@ -230,7 +229,7 @@ describe('ChatPanel', () => {
   it('always shows a visible "AI-generated, may be inaccurate" note', () => {
     seedMcpTokens();
     setAnthropicApiKey('sk-ant-test');
-    const { container } = renderWithMantine(<ChatPanel />);
+    const { container } = renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     expect(container.querySelector('[data-ai-note]')).toHaveTextContent(CHAT_AI_NOTE);
     expect(CHAT_AI_NOTE).toMatch(/may be inaccurate/);
   });
@@ -244,7 +243,7 @@ describe('ChatPanel', () => {
         yield { type: 'done' };
       })(),
     );
-    renderWithMantine(<ChatPanel />);
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     await screen.findByText(/next train is at 10:15/i);
@@ -253,5 +252,98 @@ describe('ChatPanel', () => {
     expect(badges[0].closest('[data-ai-badge]')).toHaveAccessibleDescription(CHAT_AI_NOTE);
     const userBubble = screen.getByText('when is the next train').closest('.mantine-Card-root')!;
     expect(userBubble.querySelector('[data-ai-badge]')).toBeNull();
+  });
+
+  // FE-2: the MCP URL comes from the server-supplied prop, not a
+  // build-time NEXT_PUBLIC_ inline.
+  it('passes `${mcpServerUrl}/mcp` to runChatTurn, ignoring a trailing slash', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn.mockReturnValue(
+      (async function* () {
+        yield { type: 'done' };
+      })(),
+    );
+    renderWithMantine(<ChatPanel mcpServerUrl="https://runtime-mcp.example.com/" />);
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    await vi.waitFor(() => expect(mockRunChatTurn).toHaveBeenCalled());
+    expect(mockRunChatTurn.mock.calls[0][0]).toMatchObject({ mcpUrl: 'https://runtime-mcp.example.com/mcp' });
+  });
+
+  // FE-11: each turn's streamed text lands on its own assistant message.
+  it('routes a second turn\'s streamed text to the second assistant message, leaving the first intact', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn
+      .mockReturnValueOnce(
+        (async function* () {
+          yield { type: 'text-delta', text: 'First answer.' };
+          yield { type: 'done' };
+        })(),
+      )
+      .mockReturnValueOnce(
+        (async function* () {
+          await Promise.resolve();
+          yield { type: 'text-delta', text: 'Second ' };
+          yield { type: 'text-delta', text: 'answer.' };
+          yield { type: 'done' };
+        })(),
+      );
+    renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+    const input = screen.getByPlaceholderText(/ask about/i);
+    fireEvent.change(input, { target: { value: 'one' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText('First answer.')).toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.getByPlaceholderText(/ask about/i)).not.toBeDisabled());
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'two' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText('Second answer.')).toBeInTheDocument();
+    expect(screen.getByText('First answer.')).toBeInTheDocument();
+    const texts = screen.getAllByText(/answer\.|^one$|^two$/).map((el) => el.textContent);
+    expect(texts).toEqual(['one', 'First answer.', 'two', 'Second answer.']);
+  });
+
+  // DQ12 (FE-6): tools not known to be read-only wait for the passenger.
+  describe('tool confirmation', () => {
+    function confirmingTurn() {
+      mockRunChatTurn.mockImplementation(
+        (opts: { confirmToolCall: (r: { toolName: string; args: Record<string, unknown> }) => Promise<boolean> }) =>
+          (async function* () {
+            const allowed = await opts.confirmToolCall({ toolName: 'track_train', args: { uid: 'C12345' } });
+            yield { type: 'text-delta', text: allowed ? 'Tool was allowed.' : 'Tool was declined.' };
+            yield { type: 'done' };
+          })(),
+      );
+    }
+
+    async function send() {
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'track it' } });
+      fireEvent.click(screen.getByRole('button', { name: /send/i }));
+      return screen.findByRole('alertdialog', { name: 'Allow this action?' });
+    }
+
+    it('shows the tool name and arguments and runs it only once allowed', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      confirmingTurn();
+      const dialog = await send();
+      expect(dialog).toHaveTextContent('track_train');
+      expect(dialog).toHaveTextContent('C12345');
+      expect(screen.queryByText('Tool was allowed.')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+      expect(await screen.findByText('Tool was allowed.')).toBeInTheDocument();
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    });
+
+    it('declines it on "Don\'t allow"', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      confirmingTurn();
+      await send();
+      fireEvent.click(screen.getByRole('button', { name: "Don't allow" }));
+      expect(await screen.findByText('Tool was declined.')).toBeInTheDocument();
+    });
   });
 });

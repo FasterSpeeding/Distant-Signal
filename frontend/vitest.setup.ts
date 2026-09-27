@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { afterAll, vi } from 'vitest';
+import { installTimerLeakGuard } from './test/timerLeakGuard';
 
 // Note on theme parity: this file runs once before test *modules* load, so
 // it can't inject props into a component tree — there's no JSX here to
@@ -68,33 +69,40 @@ if (typeof window !== 'undefined' && !window.Element.prototype.scrollTo) {
 // (and tests calling `localStorage.clear()` between cases) actually use —
 // `key`/`length` are part of the Storage interface but nothing here
 // exercises them, so they're deliberately omitted.
-if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+//
+// FE-13: installed UNCONDITIONALLY, on both `window` and `globalThis`. This
+// used to be guarded by `typeof window.localStorage !== 'undefined'`. Node
+// 25+ ships its own global `localStorage`, which is `undefined` unless
+// `--localstorage-file` is given, and it shadows jsdom's -- so the guard was
+// false, the polyfill was skipped, and every test touching storage threw.
+if (typeof window !== 'undefined') {
   const store: Record<string, string> = {};
-
-  Object.defineProperty(window, 'localStorage', {
-    value: {
-      getItem(key: string) {
-        return store[key] ?? null;
-      },
-      setItem(key: string, value: string) {
-        store[key] = value;
-      },
-      removeItem(key: string) {
-        delete store[key];
-      },
-      clear() {
-        for (const key of Object.keys(store)) {
-          delete store[key];
-        }
-      },
+  const storage = {
+    getItem(key: string) {
+      return store[key] ?? null;
     },
-    writable: true,
-    configurable: true,
-  });
+    setItem(key: string, value: string) {
+      store[key] = String(value);
+    },
+    removeItem(key: string) {
+      delete store[key];
+    },
+    clear() {
+      for (const key of Object.keys(store)) {
+        delete store[key];
+      }
+    },
+  };
+  for (const target of new Set<object>([window, globalThis])) {
+    Object.defineProperty(target, 'localStorage', {
+      value: storage,
+      writable: true,
+      configurable: true,
+    });
+  }
 }
 
-
-// Let any Mantine transition timer a test file leaked finish BEFORE Vitest
+// Cancel any Mantine transition timer a test file leaked BEFORE Vitest
 // tears the jsdom environment down (which deletes `window` from the
 // global scope).
 //
@@ -109,18 +117,19 @@ if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined')
 // that fails `npm test`) if the file's environment has already been torn
 // down. The leak predates Vitest 4, but only under Vitest 4 does the
 // worker stay alive past teardown long enough for such a timer to fire
-// there (intermittently, under CPU load: a same-load A/B of `components/`
-// gave 0 such errors on Vitest 3.2.7 vs 2 on 4.1.11).
+// there.
 //
-// Node fires timers in expiry order, so waiting out a timer registered
-// after every leaked one, with a longer delay than any Mantine transition
-// (the longest default is `Transition`'s 250ms), guarantees they have all
-// run first. The initial short wait lets a still-pending second rAF (jsdom
-// drives rAF from a ~16ms interval) schedule its timer before the long
-// wait is registered. Skipped under fake timers: a leaked timer is then a
-// fake one that never fires on its own, and a real wait couldn't resolve.
-afterAll(async () => {
+// FE-9: this used to SLEEP 50 ms + 300 ms after every file, waiting for the
+// leaked timers to fire -- ~0.35 s per file, and timing-dependent under
+// load. Instead, every real timer and animation frame is tracked while it
+// is pending, and whatever is still pending once the file's tests (and its
+// own afterAll hooks, which run before this one) are done is cancelled:
+// animation frames first, so none can schedule a new timer, then timers.
+// Fake timers are unaffected: `vi.useFakeTimers()` replaces these globals
+// and `vi.useRealTimers()` puts these tracking wrappers back.
+const timerLeakGuard = installTimerLeakGuard();
+
+afterAll(() => {
   if (vi.isFakeTimers()) return;
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  timerLeakGuard.cancelPending();
 });

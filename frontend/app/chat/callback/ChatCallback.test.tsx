@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { renderWithMantine } from '@/test/render';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
+import { ChatCallback } from './ChatCallback';
 import ChatCallbackPage from './page';
 
 const mockAuth = vi.fn();
@@ -26,7 +30,7 @@ vi.mock('next/navigation', () => ({
 
 function renderAt(search: string) {
   window.history.pushState({}, '', `/chat/callback${search}`);
-  return renderWithMantine(<ChatCallbackPage />);
+  return renderWithMantine(<ChatCallback serverUrl="https://mcp.example.com" />);
 }
 
 // Finding 3 of the deferred fapp Low-severity batch (2026-09-24 security
@@ -43,7 +47,7 @@ function renderAtWithValidState(search: string) {
   return renderAt(`${search}${separator}state=${state}`);
 }
 
-describe('ChatCallbackPage', () => {
+describe('ChatCallback', () => {
   beforeEach(() => {
     localStorage.clear();
     mockAuth.mockReset();
@@ -179,5 +183,70 @@ describe('ChatCallbackPage', () => {
       renderAtWithValidState('?code=abc123');
       await waitFor(() => expect(mockAuth).toHaveBeenCalled());
     });
+  });
+
+  // FE-2: the server wrapper reads the URL from the runtime environment.
+  describe('server wrapper (page.tsx)', () => {
+    it('passes the runtime NEXT_PUBLIC_RAILMCP_PUBLIC_URL down as the auth() serverUrl', async () => {
+      vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://runtime-mcp.example.com');
+      mockAuth.mockResolvedValue('AUTHORIZED');
+      const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+      const state = provider.state();
+      window.history.pushState({}, '', `/chat/callback?code=abc123&state=${state}`);
+      renderWithMantine(ChatCallbackPage());
+      await waitFor(() =>
+        expect(mockAuth).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ serverUrl: 'https://runtime-mcp.example.com' }),
+        ),
+      );
+    });
+
+    it('shows an error, and never calls auth(), when the URL is not configured', async () => {
+      vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', '');
+      window.history.pushState({}, '', '/chat/callback?code=abc123&state=x');
+      renderWithMantine(ChatCallbackPage());
+      expect(await screen.findByRole('heading', { name: "Couldn't connect" })).toBeInTheDocument();
+      expect(screen.getByText(/not configured/i)).toBeInTheDocument();
+      expect(mockAuth).not.toHaveBeenCalled();
+    });
+  });
+
+  // StrictMode must be the ROOT: React 19 only double-runs mount effects
+  // under a root-level StrictMode, not one nested inside renderWithMantine.
+  function renderStrict(ui: React.ReactNode) {
+    return render(
+      <StrictMode>
+        <MantineProvider theme={theme}>{ui}</MantineProvider>
+      </StrictMode>,
+    );
+  }
+
+  // FE-9: StrictMode's dev-only double effect run must attach to the same
+  // exchange, not re-verify the single-use state and show an error.
+  it('under StrictMode, exchanges once and redirects, never showing a verification error', async () => {
+    mockAuth.mockResolvedValue('AUTHORIZED');
+    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+    const state = provider.state();
+    window.history.pushState({}, '', `/chat/callback?code=abc123&state=${state}`);
+    renderStrict(<ChatCallback serverUrl="https://mcp.example.com" />);
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/chat'));
+    expect(mockAuth).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/could not be verified/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connected, taking you to Chat…' })).toBeInTheDocument();
+  });
+
+  it('under StrictMode, keeps showing "Connecting…" (not an error) while the exchange is in flight', async () => {
+    mockAuth.mockReturnValue(new Promise(() => {})); // never resolves
+    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+    const state = provider.state();
+    window.history.pushState({}, '', `/chat/callback?code=abc123&state=${state}`);
+    renderStrict(<ChatCallback serverUrl="https://mcp.example.com" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('heading', { name: 'Connecting…' })).toBeInTheDocument();
+    expect(screen.queryByText(/could not be verified/i)).not.toBeInTheDocument();
+    expect(mockAuth).toHaveBeenCalledTimes(1);
   });
 });

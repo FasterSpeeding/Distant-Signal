@@ -7,6 +7,7 @@ import PrivacyPage, { dynamic as privacyDynamic, generateMetadata as PrivacyGene
 import TermsPage, { dynamic as termsDynamic } from './terms/page';
 import CookiesPage, { dynamic as cookiesDynamic } from './cookies/page';
 import ContactPage, { dynamic as contactDynamic } from './contact/page';
+import AccessibilityPage, { dynamic as accessibilityDynamic } from './accessibility/page';
 import AttributionPage, { dynamic as attributionDynamic } from './attribution/page';
 
 // Real Next throws from notFound(); mirror that so an unpublished page never
@@ -27,6 +28,7 @@ const PAGES = [
   ['/terms', TermsPage, termsDynamic, 'Terms of use'],
   ['/cookies', CookiesPage, cookiesDynamic, 'Cookies and browser storage'],
   ['/contact', ContactPage, contactDynamic, 'Contact'],
+  ['/accessibility', AccessibilityPage, accessibilityDynamic, 'Accessibility statement'],
 ] as const;
 
 afterEach(() => {

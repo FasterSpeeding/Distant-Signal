@@ -25,10 +25,21 @@ import type { DelayRepayEstimateResponse } from '@/lib/types';
  * `claimUrl` is always rendered as a real outbound link, labelled to
  * describe leaving this app -- never phrasing that could read as this app
  * performing a claim itself. */
+/** LEG-14: when the Delay Repay rules the api applies were last checked
+ * against each operator's own page -- the "as of 2026-08-29" date in
+ * `crates/api/src/data/delay_repay_rules.rs`. Update both together. */
+export const DELAY_REPAY_RULES_CHECKED_ON = '29 August 2026';
+
 export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateResponse }) {
   return (
     <Stack gap={4}>
       <EstimateSummary response={response} />
+      {/* LEG-14: say how current the rules are and where the delay figure
+          comes from. */}
+      <Text size="xs" c="dimmed">
+        Rules last checked: {DELAY_REPAY_RULES_CHECKED_ON}. Delays are based on public running data and may differ
+        from the operator&apos;s own records.
+      </Text>
       <Text size="sm">This app never submits a claim on your behalf.</Text>
       {/* The only place in this feature that opens a new tab -- every
           other action stays same-page. */}

@@ -219,7 +219,7 @@ describe('IncidentSearchForm', () => {
     expect(await screen.findByText('Signal failure at Woking')).toBeTruthy();
   });
 
-  it('sends an end-of-day UTC "to" bound so the selected day is genuinely included', async () => {
+  it('sends an end-of-London-day "to" bound so the selected day is genuinely included (FE-5)', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
 
@@ -233,7 +233,19 @@ describe('IncidentSearchForm', () => {
     // The LAST call: mount's own auto-search (review §3.3) fired first,
     // against the default period (no "to" bound at all).
     const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0], 'http://localhost');
-    expect(requestedUrl.searchParams.get('to')).toBe('2026-09-15T23:59:59.999Z');
+    // 15 Sep is in BST, so the London day ends at 22:59:59.999Z.
+    expect(requestedUrl.searchParams.get('to')).toBe('2026-09-15T22:59:59.999Z');
+  });
+
+  it('sends a start-of-London-day "from" bound for a picked date (FE-5)', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
+    fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '2026-05-10' } });
+    await clickSearch();
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0], 'http://localhost');
+    expect(requestedUrl.searchParams.get('from')).toBe('2026-05-09T23:00:00.000Z');
   });
 
   it('keeps the original filters on a "Load more" request, ignoring a filter change made afterward', async () => {
@@ -787,7 +799,9 @@ describe('IncidentSearchForm', () => {
       await awaitMountSettled();
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
-      expect(requestedUrl.searchParams.get('from')).toBe('2026-08-01T00:00:00.000Z');
+      // 00:00Z on 1 Aug is 01:00 London on 1 Aug, so the London day starts at
+      // 23:00Z the day before (FE-5).
+      expect(requestedUrl.searchParams.get('from')).toBe('2026-07-31T23:00:00.000Z');
       expect(requestedUrl.searchParams.get('planned')).toBe('true');
       expect(requestedUrl.searchParams.get('cleared')).toBe('false');
       expect(requestedUrl.searchParams.get('priority_min')).toBe('2');

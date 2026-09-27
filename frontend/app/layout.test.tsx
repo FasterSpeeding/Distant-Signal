@@ -202,3 +202,10 @@ describe('group summaries provider threading', () => {
 // exports and the source-level threading assertions above, both of which
 // exist because RootLayout renders <html>/<body> and awaits its fetches,
 // so @testing-library/react cannot mount it.
+
+// LEG-25: describe line status without borrowing TfL's name.
+describe('metadata.description', () => {
+  it('does not describe the product as "TfL-style"', () => {
+    expect(String(metadata.description)).not.toMatch(/TfL/);
+  });
+});

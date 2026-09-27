@@ -8,6 +8,8 @@ import { AutoRefresh } from '@/components/AutoRefresh';
 import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
+import { LoginConsentProvider } from '@/components/LoginConsentNote';
+import { legalPagesPublished } from '@/lib/legal';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
 import { getChatbotAccess, getDataFreshness, getMyGroups, getSessionOrLoggedOut, LOGGED_OUT_SESSION } from '@/lib/api';
@@ -44,7 +46,7 @@ import type { DataFreshness } from '@/lib/types';
 export const metadata: Metadata = {
   title: 'Distant Signal',
   description:
-    'A personal UK rail companion: TfL-style line status, live train tracking, and ticket/Delay-Repay support — with first-class handling of operators whose routes share trunk track, so an incident is only ever flagged on the lines it actually affects.',
+    'A personal UK rail companion: at-a-glance line status, live train tracking, and ticket/Delay-Repay support — with first-class handling of operators whose routes share trunk track, so an incident is only ever flagged on the lines it actually affects.',
   // `capable: false` is required, not redundant: Next's own
   // `resolveAppleWebApp` (node_modules/next/dist/lib/metadata/resolvers/
   // resolve-basics.js) defaults `capable` to `true` whenever `appleWebApp`
@@ -229,6 +231,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               independent of one another, and this ordering just keeps the
               server-fetched-data providers grouped together at the top of
               the tree rather than implying any dependency between them. */}
+          {/* LEG-1: lets client-side login controls show "by logging in you
+              agree" only once the terms and privacy notice are published. */}
+          <LoginConsentProvider published={legalPagesPublished()}>
           <GroupSummariesProvider groups={groups}>
             {/* Wraps the whole shell rather than only <Container
                 component="main">: the banner's fixed positioning is then not
@@ -317,6 +322,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <OpenDataAttribution />
             </ConnectivityMonitor>
           </GroupSummariesProvider>
+          </LoginConsentProvider>
         </AppMantineProvider>
       </body>
     </html>

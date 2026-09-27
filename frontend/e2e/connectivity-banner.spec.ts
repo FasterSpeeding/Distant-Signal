@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 // The route-level sweep in e2e/accessibility.spec.ts cannot see this state:
@@ -13,6 +13,19 @@ import AxeBuilder from '@axe-core/playwright';
 // 3.32:1 on white. See the matching comment in app/globals.css.
 const RULES = ['color-contrast', 'landmark-one-main', 'region', 'heading-order', 'page-has-heading-one'];
 
+/** Fires the browser's own `offline` event until ConnectivityMonitor shows
+ * its banner. FE-9: this used to be a fixed 1.5 s sleep after hydration,
+ * guessing when useNetwork's listener was attached; retrying the (idempotent)
+ * event until the banner appears waits exactly as long as needed. */
+async function goOffline(page: Page) {
+  const status = page.getByRole('status');
+  await expect(async () => {
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await expect(status).toContainText('Reconnecting', { timeout: 500 });
+  }).toPass({ timeout: 15_000 });
+  return status;
+}
+
 test.describe('connectivity banner', () => {
   test('renders with no axe violations while disconnected', async ({ page }) => {
     // axe's recursive frame walk is slow on this page; the default 30s is
@@ -23,16 +36,12 @@ test.describe('connectivity banner', () => {
     // Hydration gate: ThemeToggle is a client component, so its button
     // being visible means React has attached its window listeners.
     await expect(page.getByRole('button', { name: /Theme:/ })).toBeVisible();
-    await page.waitForTimeout(1500);
 
     // The same event the browser itself fires when connectivity drops, and
     // the one @mantine/hooks' useNetwork listens for. Deliberately NOT
     // `context.setOffline(true)`: that also blocks axe-core's own injection
     // and stalls the analyze() call.
-    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-
-    const status = page.getByRole('status');
-    await expect(status).toContainText('Reconnecting');
+    const status = await goOffline(page);
     await expect(status).toHaveAttribute('aria-live', 'polite');
 
     const results = await new AxeBuilder({ page }).withRules(RULES).analyze();
@@ -42,10 +51,7 @@ test.describe('connectivity banner', () => {
   test('keeps the page content on screen while the banner is up', async ({ page }) => {
     await page.goto('/lines');
     await expect(page.getByRole('button', { name: /Theme:/ })).toBeVisible();
-    await page.waitForTimeout(1500);
-    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-
-    await expect(page.getByRole('status')).toContainText('Reconnecting');
+    await goOffline(page);
     // The whole point of the feature: the banner is non-blocking and the
     // last-known content stays put rather than being replaced by an error.
     await expect(page.getByRole('heading', { name: 'All Lines', level: 1 })).toBeVisible();

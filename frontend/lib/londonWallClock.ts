@@ -66,3 +66,26 @@ export function nowInLondon(): Dayjs {
 export function londonWallClockToUtc(value: string): Date {
   return dayjs.tz(value, LONDON_TZ).toDate();
 }
+
+/** The first instant of London calendar day `dateOnly` (`'YYYY-MM-DD'`), as
+ * an ISO string. FE-5: `new Date('YYYY-MM-DD')` is UTC midnight, which in
+ * BST is 01:00 London -- the wrong day boundary for a product that groups
+ * everything by London day (`lib/dateFormat.ts`'s `londonDayKey`). */
+export function londonDayStartIso(dateOnly: string): string {
+  return dayjs.tz(dateOnly, LONDON_TZ).startOf('day').toDate().toISOString();
+}
+
+/** The last millisecond of London calendar day `dateOnly`, as an ISO
+ * string -- the inclusive upper bound matching `londonDayStartIso`. */
+export function londonDayEndIso(dateOnly: string): string {
+  return dayjs.tz(dateOnly, LONDON_TZ).endOf('day').toDate().toISOString();
+}
+
+/** The London calendar day (`'YYYY-MM-DD'`) an ISO instant falls on, or
+ * the string's own first ten characters if it doesn't parse -- for turning
+ * a URL `from`/`to` instant back into a date-picker value. */
+export function londonCalendarDay(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso.slice(0, 10);
+  return dayjs(ms).tz(LONDON_TZ).format('YYYY-MM-DD');
+}

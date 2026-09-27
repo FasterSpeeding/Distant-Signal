@@ -194,6 +194,8 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     await renderPage();
 
     expect(screen.getByText("This station isn't part of our live departure sampling.")).toBeInTheDocument();
+    // LEG-23: no National Rail data shown, so no credit under it.
+    expect(document.querySelector('[data-nre-credit]')).toBeNull();
   });
 
   it('renders the "no live departures currently recorded" copy for a covered-but-quiet board', async () => {
@@ -203,6 +205,19 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     await renderPage();
 
     expect(screen.getByText('No live departures currently recorded at this station.')).toBeInTheDocument();
+  });
+
+  // LEG-23: the Schedule 1 credit sits directly under the LDBWS-derived block.
+  it('credits National Rail directly under the live-sampled stats', async () => {
+    vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getAllTocs).mockResolvedValue([]);
+
+    await renderPage();
+
+    const credit = document.querySelector('#stats [data-nre-credit]');
+    expect(credit).not.toBeNull();
+    expect(credit).toHaveTextContent('powered by NationalRail');
+    expect(credit?.querySelector('a')).toHaveAttribute('href', 'https://www.nationalrail.co.uk');
   });
 
   it('renders one row per operator in the order returned, resolving names via tocs with a bare-code fallback', async () => {

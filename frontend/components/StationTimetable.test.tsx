@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { StationTimetable } from './StationTimetable';
@@ -36,6 +36,10 @@ function expand() {
 }
 
 describe('StationTimetable', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('renders collapsed by default: the control is present, but no fetch happens and no panel content is in the document', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -72,6 +76,9 @@ describe('StationTimetable', () => {
   });
 
   it('renders one row per result, with time/origin/destination and a link to the live status page for today', async () => {
+    // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
     renderWithMantine(<StationTimetable crs="RDG" />);
 
@@ -80,8 +87,8 @@ describe('StationTimetable', () => {
     expect(await screen.findByText('08:22 · PAD → RDG → BRI')).toBeInTheDocument();
     expect(screen.getByText('10:05 · WAT → RDG → EXD')).toBeInTheDocument();
     const links = screen.getAllByRole('link', { name: 'View live status' });
-    const today = new Date().toISOString().slice(0, 10);
-    expect(links[0]).toHaveAttribute('href', `/train/C10001/${today}`);
+    // London's service date, not the host's (UTC) one.
+    expect(links[0]).toHaveAttribute('href', '/train/C10001/2026-07-16');
   });
 
   it('renders a "?" placeholder when origin or destination is unresolved', async () => {

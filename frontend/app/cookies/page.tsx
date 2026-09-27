@@ -61,12 +61,12 @@ const LOCAL_STORAGE: readonly StorageItem[] = [
     name: 'ds-anthropic-api-key',
     purpose:
       'Only if you choose to use the AI chat: your own Anthropic API key, stored in your browser at your choice and never sent to us. You can remove it in the chat settings.',
-    lasts: 'Until you remove it.',
+    lasts: 'Until you remove it, log out, or delete your account.',
   },
   {
     name: 'ds-mcp-oauth:…',
     purpose: 'Only if you use the AI chat: the sign-in details that let the chat look up rail data for you.',
-    lasts: 'Until you clear it.',
+    lasts: 'Until you log out, delete your account, or clear it.',
   },
 ];
 

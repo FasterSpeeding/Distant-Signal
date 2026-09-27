@@ -4,35 +4,13 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Group, List, Modal, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
+import { clearBrowserAccountData } from '@/lib/browserAccountData';
 
 /** The phrase the visitor types to confirm, and the exact value `DELETE
  * /public/account` requires in its `confirm` body field
  * (`crates/api/src/data/account.rs`'s `DELETE_ACCOUNT_CONFIRMATION`). The
  * backend compares case-insensitively; so does this. */
 export const DELETE_ACCOUNT_CONFIRMATION = 'delete my account';
-
-/** Browser-only data this app keeps for a signed-in visitor: the chat's
- * MCP OAuth client and tokens (`lib/mcpOAuthProvider.ts`, keys prefixed
- * `ds-mcp-oauth:`, listed in `BROWSER_ACCOUNT_KEYS` below) and the visitor's own Anthropic key
- * (`lib/anthropicKey.ts`). Neither is ever sent to Distant Signal, so the
- * backend cannot delete them; deleting the account clears them here. */
-function clearBrowserAccountData() {
-  try {
-    for (const key of BROWSER_ACCOUNT_KEYS) {
-      localStorage.removeItem(key);
-    }
-  } catch {
-    // Storage blocked (private mode, disabled site data): nothing stored.
-  }
-}
-
-const BROWSER_ACCOUNT_KEYS = [
-  'ds-mcp-oauth:client-information',
-  'ds-mcp-oauth:tokens',
-  'ds-mcp-oauth:code-verifier',
-  'ds-mcp-oauth:oauth-state',
-  'ds-anthropic-api-key',
-];
 
 /** "Delete my account" (UK legal audit LEG-4; UK GDPR Art. 17). Opens a
  * confirmation step that spells out what is deleted, what happens to

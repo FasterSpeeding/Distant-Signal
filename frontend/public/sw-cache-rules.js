@@ -31,9 +31,51 @@ function isCacheable(pathname) {
   );
 }
 
+// The two push helpers below live here, not in sw.js, only because this is
+// the one service-worker file that is also loadable by the unit tests (and
+// already served/no-cached by proxy.ts and next.config.mjs). FE-10.
+
+/**
+ * Parses a push message's payload, returning null (never throwing) for one
+ * that isn't a JSON object.
+ * @param {{ json(): unknown } | null | undefined} data - a PushEvent's `data`
+ * @returns {Record<string, unknown> | null}
+ */
+function parsePushPayload(data) {
+  if (!data) return null;
+  try {
+    const parsed = data.json();
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves a notification's `url` (documented as app-relative) against this
+ * site's origin, returning the absolute URL only when it stays on that
+ * origin -- a push naming `https://evil.example` or `//evil.example` opens
+ * nothing. Anything unparseable or non-string falls back to the site root.
+ * @param {unknown} url
+ * @param {string} origin - `self.location.origin`
+ * @returns {string | null}
+ */
+function sameOriginNotificationUrl(url, origin) {
+  if (typeof url !== 'string' || url === '') return `${origin}/`;
+  let resolved;
+  try {
+    resolved = new URL(url, origin);
+  } catch {
+    return `${origin}/`;
+  }
+  return resolved.origin === origin ? resolved.href : null;
+}
+
 if (typeof self !== 'undefined') {
   self.isCacheable = isCacheable;
+  self.parsePushPayload = parsePushPayload;
+  self.sameOriginNotificationUrl = sameOriginNotificationUrl;
 }
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isCacheable };
+  module.exports = { isCacheable, parsePushPayload, sameOriginNotificationUrl };
 }

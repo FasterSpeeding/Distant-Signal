@@ -1,7 +1,7 @@
 'use client';
 
-import { useRef, useState, type FormEvent } from 'react';
-import { Alert, Button, Card, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -10,9 +10,12 @@ import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
-import { runChatTurn, type ChatEvent } from '@/lib/chatTurn';
+import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
 
 interface ChatMessage {
+  /** Stable per-panel id (FE-11): streamed events find their assistant turn
+   * by id, not by an array index captured from React's scheduler. */
+  id: number;
   role: 'user' | 'assistant';
   content: string;
   /** `plan_journey` tool-result events whose `structuredContent` looks
@@ -51,6 +54,15 @@ type ChatError =
   | { kind: 'mcp-reconnect' }
   | { kind: 'tool-error'; message: string };
 
+interface ChatPanelProps {
+  /** The MCP server's public base URL (`railMcp.publicUrl`), read at
+   * request time by the `/chat` Server Component and passed down. FE-2: this
+   * used to be `process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL`, which Next
+   * inlines into the browser bundle at `next build` -- and the image is
+   * built without it, so the shipped bundle said `"undefined/mcp"`. */
+  mcpServerUrl: string;
+}
+
 /** The chat UI's own message list + input (embedded-chatbot-option-b-
  * client-side-tokens plan, Task 10). A Client Component -- it needs the
  * user's own localStorage-held Anthropic key and MCP tokens, and runs the
@@ -58,13 +70,39 @@ type ChatError =
  * relocated) directly in the browser now, not through a server-side
  * proxy -- there is no longer a server-side orchestrator to talk to
  * (Decision 1/3 of the client-side-tokens design doc). */
-export function ChatPanel() {
+export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<ChatError | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const historyRef = useRef<Anthropic.Beta.Messages.BetaMessageParam[]>([]);
+  const nextMessageId = useRef(0);
+  // DQ12 (FE-6): a tool call waiting on the passenger's Allow/Don't allow.
+  const [pendingTool, setPendingTool] = useState<{ toolName: string; args: Record<string, unknown> } | null>(null);
+  const confirmResolver = useRef<((allowed: boolean) => void) | null>(null);
+
+  const confirmToolCall: ConfirmToolCall = (request) =>
+    new Promise<boolean>((resolve) => {
+      confirmResolver.current?.(false);
+      confirmResolver.current = resolve;
+      setPendingTool(request);
+    });
+
+  function answerToolCall(allowed: boolean) {
+    confirmResolver.current?.(allowed);
+    confirmResolver.current = null;
+    setPendingTool(null);
+  }
+
+  // Never leave the tool loop waiting on a panel that has gone away.
+  useEffect(
+    () => () => {
+      confirmResolver.current?.(false);
+      confirmResolver.current = null;
+    },
+    [],
+  );
 
   function scrollToBottom() {
     // A convenience, never load-bearing: guarded so an environment without
@@ -96,18 +134,16 @@ export function ChatPanel() {
     setError(null);
     setInput('');
     setSending(true);
-    setMessages((prev) => [...prev, { role: 'user', content: trimmed, legs: [] }]);
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', legs: [] }]);
-    // Index of the assistant turn just pushed above -- both pushes above
-    // are synchronous state updates within this same handler, so `prev`
-    // reflects the array as of the previous call each time; capturing the
-    // resulting length up front avoids any ambiguity from relying on
-    // "the last element" after further updates land.
-    let assistantIndex = -1;
-    setMessages((prev) => {
-      assistantIndex = prev.length - 1;
-      return prev;
-    });
+    // FE-11: the assistant turn is addressed by an id allocated here, not
+    // by an index read back out of a no-op state updater (which only worked
+    // because React happened to flush it before the first await).
+    const userId = nextMessageId.current++;
+    const assistantId = nextMessageId.current++;
+    setMessages((prev) => [
+      ...prev,
+      { id: userId, role: 'user', content: trimmed, legs: [] },
+      { id: assistantId, role: 'assistant', content: '', legs: [] },
+    ]);
 
     try {
       const anthropic = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
@@ -116,13 +152,14 @@ export function ChatPanel() {
       for await (const event of runChatTurn({
         anthropic,
         model: CHAT_MODEL,
-        mcpUrl: `${process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL}/mcp`,
+        mcpUrl: `${mcpServerUrl.replace(/\/+$/, '')}/mcp`,
         mcpAuthProvider: provider,
         conversationHistory: historyRef.current,
         userMessage: trimmed,
+        confirmToolCall,
       })) {
         if (event.type === 'text-delta') assistantText += event.text;
-        applyChatEvent(event, assistantIndex, setMessages);
+        applyChatEvent(event, assistantId, setMessages);
         scrollToBottom();
       }
 
@@ -135,9 +172,10 @@ export function ChatPanel() {
       // Drop only the empty pending assistant turn -- the user's own
       // message stays visible, with the error shown alongside it, rather
       // than silently disappearing too.
-      setMessages((prev) => prev.slice(0, -1));
+      setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       setError(classifyChatError(err));
     } finally {
+      answerToolCall(false);
       setSending(false);
     }
   }
@@ -153,11 +191,18 @@ export function ChatPanel() {
               Ask about live departures, disruptions, or plan a journey.
             </Text>
           )}
-          {messages.map((message, index) => (
-            <ChatMessageRow key={index} message={message} />
+          {messages.map((message) => (
+            <ChatMessageRow key={message.id} message={message} />
           ))}
         </Stack>
       </ScrollArea>
+      {pendingTool && (
+        <ToolConfirmation
+          toolName={pendingTool.toolName}
+          args={pendingTool.args}
+          onAnswer={answerToolCall}
+        />
+      )}
       {/* LEG-16: always visible, so it is read before the first answer. */}
       <Text size="xs" c="dimmed" data-ai-note>
         {CHAT_AI_NOTE}
@@ -298,34 +343,54 @@ function ChatErrorAlert({ error }: { error: ChatError }) {
 
 function applyChatEvent(
   event: ChatEvent,
-  assistantIndex: number,
+  assistantId: number,
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
 ) {
   if (event.type === 'text-delta') {
-    setMessages((prev) => {
-      const next = [...prev];
-      const target = next[assistantIndex];
-      if (target) {
-        next[assistantIndex] = { ...target, content: target.content + event.text };
-      }
-      return next;
-    });
+    setMessages((prev) =>
+      prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + event.text } : m)),
+    );
     return;
   }
   if (event.type === 'tool-result') {
     const leg = asRenderedTrainLeg(event.structuredContent);
     if (!leg) return;
-    setMessages((prev) => {
-      const next = [...prev];
-      const target = next[assistantIndex];
-      if (target) {
-        next[assistantIndex] = { ...target, legs: [...target.legs, leg] };
-      }
-      return next;
-    });
+    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, legs: [...m.legs, leg] } : m)));
     return;
   }
   // 'done' needs no state change -- the stream ending IS the signal.
+}
+
+/** DQ12 (FE-6): shown when the assistant wants a tool that isn't known to
+ * be read-only. Nothing runs until the passenger chooses. */
+function ToolConfirmation({
+  toolName,
+  args,
+  onAnswer,
+}: {
+  toolName: string;
+  args: Record<string, unknown>;
+  onAnswer: (allowed: boolean) => void;
+}) {
+  return (
+    <Alert color="orange" variant="light" title="Allow this action?" role="alertdialog" aria-label="Allow this action?">
+      <Stack gap="xs">
+        <Text size="sm">
+          The assistant wants to use <Code>{toolName}</Code>. It isn&apos;t marked as read-only, so it might change
+          something for you. Only allow it if you asked for this.
+        </Text>
+        <Code block>{JSON.stringify(args, null, 2)}</Code>
+        <Group gap="xs">
+          <Button size="xs" onClick={() => onAnswer(true)}>
+            Allow
+          </Button>
+          <Button size="xs" variant="default" onClick={() => onAnswer(false)}>
+            Don&apos;t allow
+          </Button>
+        </Group>
+      </Stack>
+    </Alert>
+  );
 }
 
 function ChatMessageRow({ message }: { message: ChatMessage }) {

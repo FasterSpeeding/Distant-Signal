@@ -17,7 +17,7 @@ vi.mock('next/headers', () => ({
   }),
 }));
 
-import { GET, POST, PUT, DELETE } from './route';
+import { GET, POST, PUT, DELETE, MAX_PROXY_BODY_BYTES } from './route';
 
 describe('/api/[...path] proxy', () => {
   beforeEach(() => {
@@ -496,36 +496,126 @@ describe('/api/[...path] proxy', () => {
     });
   });
 
-  // Finding L16 of the 2026-09-26 "Repeater Signal" review: this proxy
-  // forwarded no client-IP signal at all, so a future per-IP rate limit on
-  // the login route or a token lookup would have nothing to key on.
-  describe('X-Forwarded-For forwarding', () => {
-    it("forwards the incoming request's X-Forwarded-For header to the backend", async () => {
-      const req = makeRequest('/api/preferences', {
-        headers: { 'x-forwarded-for': '203.0.113.5' },
-      });
+  // FE-8: the client IP for the api's per-IP rate limits comes only from
+  // Cloudflare's CF-Connecting-IP; client-supplied X-Forwarded-For and
+  // X-Real-IP never reach the api.
+  describe('client IP forwarding (X-Real-IP)', () => {
+    async function outboundHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
+      const req = makeRequest('/api/preferences', { headers });
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
       const [, init] = vi.mocked(fetch).mock.calls[0];
-      const headers = (init as { headers: Record<string, string> }).headers;
-      expect(headers['X-Forwarded-For']).toBe('203.0.113.5');
+      return (init as { headers: Record<string, string> }).headers;
+    }
+
+    it('sets X-Real-IP from CF-Connecting-IP', async () => {
+      const headers = await outboundHeaders({ 'cf-connecting-ip': '203.0.113.5' });
+      expect(headers['X-Real-IP']).toBe('203.0.113.5');
     });
 
-    it('forwards a multi-hop X-Forwarded-For value unchanged', async () => {
-      const req = makeRequest('/api/preferences', {
-        headers: { 'x-forwarded-for': '203.0.113.5, 10.0.4.2' },
+    it('accepts an IPv6 CF-Connecting-IP', async () => {
+      const headers = await outboundHeaders({ 'cf-connecting-ip': '2001:db8::1' });
+      expect(headers['X-Real-IP']).toBe('2001:db8::1');
+    });
+
+    it('overwrites a spoofed client X-Real-IP with CF-Connecting-IP, and drops a spoofed X-Forwarded-For', async () => {
+      const headers = await outboundHeaders({
+        'cf-connecting-ip': '203.0.113.5',
+        'x-real-ip': '198.51.100.66',
+        'x-forwarded-for': '198.51.100.77, 10.0.4.2',
       });
-      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
-      const headers = (init as { headers: Record<string, string> }).headers;
-      expect(headers['X-Forwarded-For']).toBe('203.0.113.5, 10.0.4.2');
+      expect(headers['X-Real-IP']).toBe('203.0.113.5');
+      const names = Object.keys(headers).map((n) => n.toLowerCase());
+      expect(names.filter((n) => n === 'x-real-ip')).toHaveLength(1);
+      expect(names).not.toContain('x-forwarded-for');
     });
 
-    it('omits X-Forwarded-For from the outbound fetch when the incoming request carries none', async () => {
+    it('sends neither header when there is no CF-Connecting-IP, even if the client supplied both', async () => {
+      const headers = await outboundHeaders({ 'x-real-ip': '198.51.100.66', 'x-forwarded-for': '198.51.100.77' });
+      const names = Object.keys(headers).map((n) => n.toLowerCase());
+      expect(names).not.toContain('x-real-ip');
+      expect(names).not.toContain('x-forwarded-for');
+    });
+
+    it('ignores a CF-Connecting-IP that is not a literal IP address', async () => {
+      const headers = await outboundHeaders({ 'cf-connecting-ip': 'not-an-ip' });
+      expect(headers['X-Real-IP']).toBeUndefined();
+    });
+  });
+
+  // FE-7: upstream timeout, body-size cap, and upstream failures.
+  describe('upstream limits', () => {
+    it('passes an abort signal to the upstream fetch', async () => {
       const req = makeRequest('/api/preferences');
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
       const [, init] = vi.mocked(fetch).mock.calls[0];
-      const headers = (init as { headers: Record<string, string> }).headers;
-      expect(headers['X-Forwarded-For']).toBeUndefined();
+      expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('returns 504 when the upstream request times out', async () => {
+      vi.mocked(fetch).mockRejectedValueOnce(new DOMException('The operation timed out.', 'TimeoutError'));
+      const req = makeRequest('/api/preferences');
+      const res = await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(504);
+    });
+
+    it('returns 502 when the upstream is unreachable', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(fetch).mockRejectedValueOnce(new TypeError('fetch failed'));
+      const req = makeRequest('/api/preferences');
+      const res = await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
+      expect(res.status).toBe(502);
+      spy.mockRestore();
+    });
+
+    it('refuses a declared Content-Length over the cap with 413, without calling the api', async () => {
+      const req = makeRequest('/api/Train/track', {
+        method: 'POST',
+        headers: { 'content-length': String(MAX_PROXY_BODY_BYTES + 1) },
+        body: 'x',
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
+      expect(res.status).toBe(413);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses an undeclared (streamed) body that grows past the cap with 413', async () => {
+      const chunk = new Uint8Array(1024 * 1024);
+      let sent = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent > MAX_PROXY_BODY_BYTES) {
+            controller.close();
+            return;
+          }
+          sent += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+      });
+      const req = makeRequest('/api/Train/track', { method: 'POST', body: stream, duplex: 'half' } as ConstructorParameters<
+        typeof NextRequest
+      >[1]);
+      const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
+      expect(res.status).toBe(413);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('forwards a body exactly at the cap', async () => {
+      const body = new Uint8Array(MAX_PROXY_BODY_BYTES);
+      const req = makeRequest('/api/Train/track', { method: 'POST', body });
+      const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
+      expect(res.status).toBe(200);
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      expect(((init as RequestInit).body as ArrayBuffer).byteLength).toBe(MAX_PROXY_BODY_BYTES);
+    });
+
+    it('relays a binary response body byte-for-byte', async () => {
+      const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0xfe, 0x00, 0x80]);
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(bytes, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } }),
+      );
+      const req = makeRequest('/api/Train/ticket/1');
+      const res = await GET(req, { params: Promise.resolve({ path: ['Train', 'ticket', '1'] }) });
+      expect(Array.from(new Uint8Array(await res.arrayBuffer()))).toEqual(Array.from(bytes));
     });
   });
 });

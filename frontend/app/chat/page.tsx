@@ -4,6 +4,7 @@ import { AutoOpenLoginPrompt } from '@/app/track/mine/AutoOpenLoginPrompt';
 import { LoginLink } from '@/components/LoginLink';
 import { ChatPanel } from '@/components/ChatPanel';
 import { TextLink } from '@/components/TextLink';
+import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 
 // Same reasoning as app/page.tsx's own `revalidate = 0` (and
 // track/mine/page.tsx's identical comment): no dynamic segment, so without
@@ -71,10 +72,23 @@ export default async function ChatPage() {
     );
   }
 
+  // FE-2: read at request time on the server and passed down as a prop.
+  // A `process.env.NEXT_PUBLIC_*` read inside the Client Component would be
+  // inlined at `next build`, where the image has no value for it.
+  const mcpServerUrl = runtimeRailMcpPublicUrl();
+  if (!mcpServerUrl) {
+    return (
+      <Stack p="lg" gap="md">
+        <Title order={1}>Chat</Title>
+        <Text c="dimmed">Chat is not configured on this deployment.</Text>
+      </Stack>
+    );
+  }
+
   return (
     <Stack p="lg" gap="md" h="100%">
       <Title order={1}>Chat</Title>
-      <ChatPanel />
+      <ChatPanel mcpServerUrl={mcpServerUrl} />
     </Stack>
   );
 }

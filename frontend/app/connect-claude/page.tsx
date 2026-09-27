@@ -2,6 +2,7 @@ import { Alert, Code, CopyButton, Group, List, ListItem, Stack, Text, Title, Act
 import { getSession } from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
 import { InfoIcon } from '@/components/InfoIcon';
+import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 
 // This route has no dynamic segment, so without this Next.js treats it as
 // eligible for static generation and tries to prerender it during `next
@@ -10,19 +11,14 @@ import { InfoIcon } from '@/components/InfoIcon';
 // network, not at build time).
 export const revalidate = 0;
 
-/** The MCP server's own public URL -- baked in at container-start-read time
- * via NEXT_PUBLIC_RAILMCP_PUBLIC_URL (must match railMcp.publicUrl /
- * ingress.railMcp.host from the chart -- charts/distant-signal/templates/
- * frontend-deployment.yaml). Read fresh inside the component body (not
- * hoisted to a module-level constant) so it's picked up per-request, the
- * same way lib/api.ts's own baseUrl() reads API_BASE_URL at request time
- * rather than at module-load time -- the NEXT_PUBLIC_ prefix does not force
- * a build-time bake for a read that only ever happens server-side. Blank in
- * any deployment where railMcp isn't enabled; this page still renders in
- * that case, just with a placeholder, since hiding the whole route behind a
- * feature flag is more chart-wiring than this thin a page needs. */
+/** The MCP server's own public URL (`railMcp.publicUrl` in the chart).
+ * FE-2: read through `runtimeRailMcpPublicUrl()`, which looks the name up
+ * via a variable. A literal `process.env.NEXT_PUBLIC_…` reference is
+ * inlined by Next at `next build` -- in Server Components too -- and the
+ * image is built without it. Blank in any deployment where railMcp isn't
+ * enabled; this page still renders then, with a placeholder. */
 function railMcpPublicUrl(): string {
-  return process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL ?? '(not configured on this deployment)';
+  return runtimeRailMcpPublicUrl() || '(not configured on this deployment)';
 }
 
 /** Two overlapping rectangles -- the conventional "copy" glyph, in the

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isIP } from 'node:net';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 
 // Client Components can't read `API_BASE_URL` (server-only env var, not
@@ -162,6 +163,81 @@ async function hasAcceptableOriginForMutation(req: NextRequest): Promise<boolean
   return origin === expectedOrigin;
 }
 
+/** The largest request body this proxy forwards (FE-7): the api's biggest
+ * per-route limit a browser can reach, the 8 MiB ticket upload
+ * (`crates/api/src/routes/train.rs`'s `DefaultBodyLimit`). Anything larger
+ * would be rejected upstream anyway, so it is refused here before being
+ * buffered into the frontend's heap. */
+export const MAX_PROXY_BODY_BYTES = 8 * 1024 * 1024;
+
+/** How long the proxy waits on the api (FE-7), covering the upstream
+ * response headers and body. Without it a hung api held every proxied
+ * request open until undici's own 300 s header timeout. */
+export const UPSTREAM_TIMEOUT_MS = 30_000;
+
+/** The client IP to send upstream as `X-Real-IP` (FE-8), or null.
+ *
+ * Only `CF-Connecting-IP` is trusted: in production the frontend is reached
+ * only through the Cloudflare tunnel, which sets it. There is no other
+ * trustworthy source -- Next 16 exposes no socket peer address to route
+ * handlers (`request.ip` is gone), and the `X-Forwarded-For` it passes in
+ * is the client's own whenever the client sent one. With no trustworthy
+ * value the header is omitted and the api falls back to its own peer
+ * address. A value that isn't a literal IP is ignored. */
+export function clientIpForUpstream(req: NextRequest): string | null {
+  const cf = req.headers.get('cf-connecting-ip')?.trim();
+  if (cf && isIP(cf) !== 0) return cf;
+  return null;
+}
+
+/** Reads a request body, refusing one larger than `MAX_PROXY_BODY_BYTES`
+ * (FE-7). A declared `Content-Length` over the cap is refused before any
+ * byte is read; a chunked body is counted as it streams in. */
+async function readCappedBody(req: NextRequest): Promise<ArrayBuffer | 'too-large'> {
+  const declared = Number(req.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_PROXY_BODY_BYTES) return 'too-large';
+  if (!req.body) return new ArrayBuffer(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_PROXY_BODY_BYTES) {
+      await reader.cancel();
+      return 'too-large';
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
+/** Structural, not `instanceof Error`: the abort reason is a `DOMException`,
+ * which isn't an `Error` subclass in every runtime. */
+function isTimeout(err: unknown): boolean {
+  const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : undefined;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
+function tooLarge(): NextResponse {
+  return new NextResponse('request body too large', { status: 413 });
+}
+
+function upstreamFailure(err: unknown): NextResponse {
+  if (isTimeout(err)) {
+    return new NextResponse('upstream timed out', { status: 504 });
+  }
+  console.error('api proxy: upstream request failed', err);
+  return new NextResponse('upstream unavailable', { status: 502 });
+}
+
 async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   if (!(await hasAcceptableOriginForMutation(req))) {
     return new NextResponse('cross-site request rejected', { status: 403 });
@@ -217,24 +293,16 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   if (cookie) {
     headers.Cookie = cookie;
   }
-  // Forward whatever `X-Forwarded-For` this app's own Ingress already set on
-  // the incoming request (`charts/distant-signal/templates/ingress.yaml` --
-  // a plain host-routed `nginx` Ingress, which sets this header itself on
-  // every request it forwards, same as any standard reverse proxy) through
-  // to the backend fetch call -- same reasoning as the Origin/Referer
-  // forwarding immediately below: Node's own `fetch` does not carry over ANY
-  // of the inbound request's headers automatically, so without this, every
-  // request `api` ever saw through this proxy looked like it came from the
-  // frontend pod's own address, with nothing to attribute a future per-IP
-  // rate limit (on `/auth/login`, say) to the real client (2026-09-26
-  // review, finding L16). This app's own Next.js server (App Router route
-  // handlers, this Next.js version) exposes no lower-level access to the raw
-  // TCP peer address of the request it received to append its own hop onto
-  // the chain -- what's relayed here is exactly what the Ingress already put
-  // in the header, unmodified.
-  const forwardedFor = req.headers.get('x-forwarded-for');
-  if (forwardedFor) {
-    headers['X-Forwarded-For'] = forwardedFor;
+  // FE-8: the client address for the api's per-IP rate limits. Never relay
+  // the browser's own `X-Forwarded-For` or `X-Real-IP`: both are
+  // client-controlled, and Next itself only fills `X-Forwarded-For` from
+  // the socket when the client didn't send one (`??=` in base-server.js),
+  // so no value on the incoming request reflects the real peer. `headers`
+  // is built from scratch above, so neither incoming header reaches the
+  // api; `clientIpForUpstream` supplies the one trustworthy value, if any.
+  const realIp = clientIpForUpstream(req);
+  if (realIp) {
+    headers['X-Real-IP'] = realIp;
   }
   // Forward the browser's own Origin/Referer through verbatim -- api's
   // own strict same-origin check on POST /auth/logout (2026-09-25
@@ -268,6 +336,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     // status in [300, 400) and a real `location` header -- rather than an
     // opaque one, so this is safe to branch on below.
     redirect: 'manual',
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   };
   if (req.method !== 'GET' && req.method !== 'DELETE') {
     // arrayBuffer(), not text(): .text() decodes the incoming body as
@@ -280,19 +349,29 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     // step -- a JSON body round-trips identically (JSON is always valid
     // UTF-8, so this is inert for PinToggle/TrackTrainForm/preferences/
     // auth) and a binary multipart body survives byte-for-byte.
-    init.body = await req.arrayBuffer();
+    // Read through `readCappedBody` (FE-7), which also returns an
+    // ArrayBuffer.
+    const body = await readCappedBody(req);
+    if (body === 'too-large') return tooLarge();
+    init.body = body;
   } else if (req.method === 'DELETE') {
     // A DELETE normally has no body and is forwarded without one, as
     // before. `DELETE /account` is the exception: it requires an explicit
     // JSON confirmation body (UK legal audit LEG-4), so a DELETE that does
     // carry one is forwarded byte-for-byte like a POST's.
-    const body = await req.arrayBuffer();
+    const body = await readCappedBody(req);
+    if (body === 'too-large') return tooLarge();
     if (body.byteLength > 0) {
       init.body = body;
     }
   }
 
-  const response = await fetch(target, init);
+  let response: Response;
+  try {
+    response = await fetch(target, init);
+  } catch (err) {
+    return upstreamFailure(err);
+  }
 
   // A response can carry *multiple* Set-Cookie headers, which
   // `Headers.get()` collapses into one comma-joined string -- unusable
@@ -312,7 +391,14 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     return new NextResponse(null, { status: response.status, headers: responseHeaders });
   }
 
-  const body = await response.text();
+  // arrayBuffer(), not text(): a binary download (Content-Disposition) must
+  // survive byte-for-byte. Still under the same timeout signal (FE-7).
+  let body: ArrayBuffer;
+  try {
+    body = await response.arrayBuffer();
+  } catch (err) {
+    return upstreamFailure(err);
+  }
   const responseHeaders = new Headers({
     'Content-Type': response.headers.get('Content-Type') ?? 'application/json',
   });
@@ -331,7 +417,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   // Null-body statuses (204/205/304) may not carry a body on the outgoing
   // Response, not even an empty string -- see the existing PUT/DELETE
   // endpoints this handled before this change; unaffected by this edit.
-  return new NextResponse(body === '' ? null : body, { status: response.status, headers: responseHeaders });
+  return new NextResponse(body.byteLength === 0 ? null : body, { status: response.status, headers: responseHeaders });
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
-import dayjs from 'dayjs';
+import { nowInLondon } from '@/lib/londonWallClock';
 import { renderWithMantine } from '@/test/render';
 import { RunTemplateNowButton } from './RunTemplateNowButton';
 
@@ -12,9 +12,9 @@ vi.mock('next/navigation', () => ({
 }));
 
 // Computed at test time, not hardcoded -- matches exactly what the
-// component's own `dayjs().format('YYYY-MM-DD')` produces, regardless of
-// what day this suite happens to run on.
-const today = dayjs().format('YYYY-MM-DD');
+// component's own `nowInLondon().format('YYYY-MM-DD')` produces, regardless
+// of what day this suite happens to run on.
+const today = nowInLondon().format('YYYY-MM-DD');
 
 describe('RunTemplateNowButton', () => {
   beforeEach(() => {
@@ -24,6 +24,7 @@ describe('RunTemplateNowButton', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('defaults the service date field to today on open', async () => {
@@ -31,6 +32,15 @@ describe('RunTemplateNowButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
 
     expect(await screen.findByLabelText('Service date')).toHaveValue(today);
+  });
+
+  it('defaults to London\'s today, not the host zone\'s (FE-4)', async () => {
+    // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
+    renderWithMantine(<RunTemplateNowButton templateId={167} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-07-16');
   });
 
   it('submits {serviceDate} to the materialize endpoint', async () => {

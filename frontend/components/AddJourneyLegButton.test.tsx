@@ -22,6 +22,16 @@ describe('AddJourneyLegButton', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('defaults the service date to London\'s today, not the host zone\'s (FE-4)', async () => {
+    // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-07-16');
   });
 
   it('pre-fills the origin field from priorDestinationCrs on open', async () => {

@@ -18,7 +18,7 @@ import {
   Text,
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
-import dayjs from 'dayjs';
+import { londonCalendarDay, londonDayEndIso, londonDayStartIso, nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { formatDateTime } from '@/lib/dateFormat';
@@ -33,7 +33,7 @@ type DatePreset = '7d' | '30d' | '90d' | 'all';
 const MAX_LINE_BADGES = 4;
 
 function calendarDaysAgo(days: number): string {
-  return dayjs().subtract(days, 'day').format('YYYY-MM-DD');
+  return nowInLondon().subtract(days, 'day').format('YYYY-MM-DD');
 }
 
 /** Parses `priority_min`/`priority_max`'s raw URL string into the numeric
@@ -173,10 +173,10 @@ export function IncidentSearchForm({
    * through to the existing 30-day floor exactly as before this prop
    * existed. */
   const [fromDate, setFromDate] = useState<string | null>(
-    initialPeriod === 'all' ? null : initialFrom ? initialFrom.slice(0, 10) : calendarDaysAgo(30),
+    initialPeriod === 'all' ? null : initialFrom ? londonCalendarDay(initialFrom) : calendarDaysAgo(30),
   );
   const [toDate, setToDate] = useState<string | null>(
-    initialPeriod === 'all' ? null : initialTo ? initialTo.slice(0, 10) : null,
+    initialPeriod === 'all' ? null : initialTo ? londonCalendarDay(initialTo) : null,
   );
   const [preset, setPreset] = useState<DatePreset | null>(
     initialPeriod === 'all' ? 'all' : initialFrom ? null : '30d',
@@ -225,21 +225,6 @@ export function IncidentSearchForm({
     applyPreset(next as DatePreset);
   }
 
-  /** `toDate` is a date-only (`YYYY-MM-DD`) value from `DatePickerInput`, and
-   * the backend's `to` bound is an inclusive `first_seen_at <= to` comparison
-   * (see `crates/api/src/routes/incidents.rs`/
-   * `queries::search_incidents`). `new Date(toDate).toISOString()` resolves
-   * to UTC midnight at the START of that day, which would make the bound
-   * exclude nearly every incident actually first seen on the selected day --
-   * contradicting the inclusive "To" framing shown in this form. This names
-   * the END of that same UTC calendar day instead, matching the same
-   * "date-only string is a UTC calendar day" convention `fromDate` already
-   * relies on (`new Date(fromDate).toISOString()` below lands on that day's
-   * UTC midnight, i.e. its start). */
-  function endOfUtcDay(dateOnly: string): string {
-    return `${dateOnly}T23:59:59.999Z`;
-  }
-
   /** The current filter set as query parameters. Shared by the initial
    * search and by "Load more" so that page 2 is unambiguously a
    * continuation of page 1's query. */
@@ -247,8 +232,12 @@ export function IncidentSearchForm({
     const params = new URLSearchParams();
     if (operators.length > 0) params.set('operator', operators.join(','));
     if (lineId) params.set('line', lineId);
-    if (fromDate) params.set('from', new Date(fromDate).toISOString());
-    if (toDate) params.set('to', endOfUtcDay(toDate));
+    // `fromDate`/`toDate` are date-only (`YYYY-MM-DD`) picker values naming
+    // LONDON calendar days (FE-5), like every other day grouping in this
+    // app. The backend's `to` is an inclusive `first_seen_at <= to`
+    // comparison, so it gets the last millisecond of that London day.
+    if (fromDate) params.set('from', londonDayStartIso(fromDate));
+    if (toDate) params.set('to', londonDayEndIso(toDate));
     if (plannedFilter === 'planned') params.set('planned', 'true');
     if (plannedFilter === 'realtime') params.set('planned', 'false');
     if (clearedFilter === 'active') params.set('cleared', 'false');

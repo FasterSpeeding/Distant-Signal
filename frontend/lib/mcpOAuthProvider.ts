@@ -11,6 +11,18 @@ const TOKENS_KEY = `${STORAGE_PREFIX}tokens`;
 const CODE_VERIFIER_KEY = `${STORAGE_PREFIX}code-verifier`;
 const OAUTH_STATE_KEY = `${STORAGE_PREFIX}oauth-state`;
 
+/** The prefix every key this provider stores starts with. */
+export const MCP_OAUTH_STORAGE_PREFIX = STORAGE_PREFIX;
+
+/** Every key this provider stores -- cleared on logout and account
+ * deletion (`lib/browserAccountData.ts`). */
+export const MCP_OAUTH_STORAGE_KEYS: readonly string[] = [
+  CLIENT_INFO_KEY,
+  TOKENS_KEY,
+  CODE_VERIFIER_KEY,
+  OAUTH_STATE_KEY,
+];
+
 /** A per-viewer, browser-local OAuth client against `distant-signal-mcp`'s
  * own OAuth 2.1 authorization server -- the same DCR/PKCE-only public-
  * client shape Claude Desktop already gets from `RailMcpOAuthProvider`,

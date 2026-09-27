@@ -1,5 +1,5 @@
 /** Operator-specific values for the legal pages (`/privacy`, `/terms`,
- * `/cookies`, `/contact`), and the flag that publishes them.
+ * `/cookies`, `/contact`, `/accessibility`), and the flag that publishes them.
  *
  * DRAFT -- NOT YET REVIEWED. The page text under `app/privacy`, `app/terms`,
  * `app/cookies` and `app/contact` was drafted from the 2026-09-27 UK legal
@@ -51,7 +51,8 @@ export const LEGAL_CONFIG: LegalConfig = {
   OPERATOR_NAME: '[[OPERATOR_NAME]]',
   CONTACT_EMAIL: '[[CONTACT_EMAIL]]',
   ICO_REGISTRATION: '[[ICO_REGISTRATION]]',
-  MINIMUM_AGE: '[[MINIMUM_AGE]]',
+  // DQ1 (2026-09-27): the operator chose 18.
+  MINIMUM_AGE: '18',
   SSO_LOG_RETENTION: '[[SSO_LOG_RETENTION]]',
   LAST_UPDATED: '[[LAST_UPDATED]]',
 };
@@ -128,6 +129,7 @@ export const LEGAL_LINKS: readonly { href: string; label: string }[] = [
   { href: '/terms', label: 'Terms' },
   { href: '/cookies', label: 'Cookies' },
   { href: '/contact', label: 'Contact' },
+  { href: '/accessibility', label: 'Accessibility' },
 ];
 
 /** Metadata for a legal page. Unless the pages are really published
@@ -146,4 +148,53 @@ export function legalPageMetadata(
     twitter: { card: 'summary', title: fullTitle, description },
     ...(published ? {} : { robots: { index: false, follow: false } }),
   };
+}
+
+/** The api's personal-data retention settings, as the privacy notice
+ * states them (LEG-5, LEG-28, DQ7). The chart copies the api's own values
+ * (`api.pastTravelRetentionDays`, `api.stalePushSubscriptionDays`,
+ * `api.inactiveAccountRetentionDays`) into the frontend's env, so the
+ * notice follows the real configuration; the defaults below match the
+ * chart's. 0 means that limit is off. Read per request, like the flags. */
+export interface RetentionPolicy {
+  /** Tracked trains, tickets and journeys: days after the travel date. */
+  pastTravelDays: number;
+  /** Push subscriptions: days without a login or renewal. */
+  stalePushSubscriptionDays: number;
+  /** Whole accounts: days with no login and no live session. OFF (0) by
+   * default; DQ7: set to 730 once the privacy notice is published. */
+  inactiveAccountDays: number;
+}
+
+export const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
+  pastTravelDays: 548,
+  stalePushSubscriptionDays: 365,
+  inactiveAccountDays: 0,
+};
+
+function retentionDays(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+export function retentionPolicy(env: Record<string, string | undefined> = process.env): RetentionPolicy {
+  return {
+    pastTravelDays: retentionDays(env.RETENTION_PAST_TRAVEL_DAYS, DEFAULT_RETENTION_POLICY.pastTravelDays),
+    stalePushSubscriptionDays: retentionDays(
+      env.RETENTION_STALE_PUSH_SUBSCRIPTION_DAYS,
+      DEFAULT_RETENTION_POLICY.stalePushSubscriptionDays,
+    ),
+    inactiveAccountDays: retentionDays(env.RETENTION_INACTIVE_ACCOUNT_DAYS, DEFAULT_RETENTION_POLICY.inactiveAccountDays),
+  };
+}
+
+/** A retention period in plain words: whole months where the day count is
+ * one (365 -> "12 months", 548 -> "18 months", 730 -> "24 months"),
+ * otherwise days. */
+export function describeRetentionDays(days: number): string {
+  const months = days / (365.25 / 12);
+  const rounded = Math.round(months);
+  if (rounded >= 1 && Math.abs(months - rounded) < 0.1) return rounded === 1 ? '1 month' : `${rounded} months`;
+  return days === 1 ? '1 day' : `${days} days`;
 }

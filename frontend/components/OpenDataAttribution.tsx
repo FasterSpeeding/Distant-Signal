@@ -95,6 +95,19 @@ function ExternalLink({ href, children }: { href: string; children: ReactNode })
   );
 }
 
+/** LEG-23: the Darwin/LDBWS Schedule 1 credit ("powered by NationalRail"),
+ * placed directly under a block whose data is predominantly from National
+ * Rail -- NRE's developer guidelines ask for it "alongside" such data, not
+ * only in the site-wide footer. Same wording and link as the footer; no
+ * logo (that needs National Rail's written permission). */
+export function NationalRailCredit() {
+  return (
+    <Text size="xs" c="dimmed" data-nre-credit>
+      Live departure data <ExternalLink href="https://www.nationalrail.co.uk">powered by NationalRail</ExternalLink>
+    </Text>
+  );
+}
+
 /** The legal links are decided at render time. Routes Next prerenders at
  * build time (`○` in the `next build` route list: today `/stations`,
  * `/lines/new`, `/groups/new`, `/journeys/new`, `/chat/callback`) render

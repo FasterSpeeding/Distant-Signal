@@ -5,7 +5,8 @@ import { renderWithMantine } from '@/test/render';
 import { theme } from '@/lib/theme';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+const pushMock = vi.hoisted(() => vi.fn());
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }) }));
 
 describe('HistoryRangePicker', () => {
   it('labels the period control and gives it an accessible name', () => {
@@ -91,5 +92,24 @@ describe('HistoryRangePicker', () => {
 
     expect(screen.getByRole('radio', { name: '7 days' })).toBeChecked();
     expect(screen.queryByText('Pick a date range')).not.toBeInTheDocument();
+  });
+
+  // FE-5: the picker shows and submits London calendar days.
+  it('displays the London day of a London-evening bound, not the UTC day', () => {
+    renderWithMantine(
+      <HistoryRangePicker basePath="/lines/northern/history" preset={null} from="2026-08-13T23:30:00Z" to="2026-08-20T23:30:00Z" />,
+    );
+    expect(screen.getByDisplayValue('2026-08-14 – 2026-08-21')).toBeInTheDocument();
+  });
+
+  it('submits London-day bounds covering the whole of the end day', () => {
+    pushMock.mockClear();
+    renderWithMantine(
+      <HistoryRangePicker basePath="/lines/northern/history" preset={null} from="2026-08-14T12:00:00Z" to="2026-08-21T12:00:00Z" />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Show history' }));
+    expect(pushMock).toHaveBeenCalledWith(
+      '/lines/northern/history?from=2026-08-13T23:00:00.000Z&to=2026-08-21T22:59:59.999Z',
+    );
   });
 });

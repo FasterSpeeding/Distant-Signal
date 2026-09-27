@@ -11,7 +11,7 @@ import {
   Stack,
   Text,
 } from '@mantine/core';
-import dayjs from 'dayjs';
+import { nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 
@@ -53,11 +53,12 @@ type Results =
   | 'error'
   | null;
 
-/** Today's date, computed once per render for every row's live-status
- * link -- there is no date picker on this stripped-down view (spec
- * §3.2). */
+/** Today's London date, computed once per render for every row's
+ * live-status link -- there is no date picker on this stripped-down view
+ * (spec §3.2). Europe/London, not the browser's zone (FE-4): the link names
+ * a rail service date. */
 function today(): string {
-  return dayjs().format('YYYY-MM-DD');
+  return nowInLondon().format('YYYY-MM-DD');
 }
 
 /** Narrows `Results` to the "has rows" branch -- factored out because

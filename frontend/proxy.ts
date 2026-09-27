@@ -34,6 +34,7 @@ export function proxy(request: NextRequest) {
 // - `/api/*`: the backend proxy returns JSON; no nonce needed, and not paying
 //   the proxy hop on every API call;
 // - `/_next/static`, `/_next/image`: build assets;
+// - `/.well-known/security.txt` (LEG-2), plain text;
 // - the root-level static files (`/robots.txt`, `/sw.js` and its
 //   `/sw-cache-rules.js`, `/offline.html`, the manifest and icons).
 //   next.config.mjs gives `/api/*`, the service worker scripts and
@@ -48,7 +49,7 @@ export const config = {
   matcher: [
     {
       source:
-        '/((?!(?:api|_next/static|_next/image)(?:/|$)|(?:healthz|favicon\\.ico|robots\\.txt|sw\\.js|sw-cache-rules\\.js|offline\\.html|manifest\\.webmanifest|icon\\.svg|apple-icon\\.png|icon-192\\.png|icon-512\\.png)$).*)',
+        '/((?!(?:api|_next/static|_next/image)(?:/|$)|(?:healthz|favicon\\.ico|robots\\.txt|\\.well-known/security\\.txt|sw\\.js|sw-cache-rules\\.js|offline\\.html|manifest\\.webmanifest|icon\\.svg|apple-icon\\.png|icon-192\\.png|icon-512\\.png)$).*)',
       missing: [
         { type: 'header', key: 'next-router-prefetch' },
         { type: 'header', key: 'purpose', value: 'prefetch' },
