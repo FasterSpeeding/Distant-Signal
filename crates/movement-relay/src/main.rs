@@ -10,14 +10,11 @@ mod event_sink;
 mod health;
 mod kafka_source;
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use clap::Parser;
 use config::Config;
 use event_sink::{EventSink, RedisEventSink};
-use health_http::ConnectionState;
 use kafka_source::{KafkaRawSource, RawKafkaSource};
 
 #[tokio::main]
@@ -32,17 +29,28 @@ async fn main() -> anyhow::Result<()> {
         common::metrics::install(config.metrics_port)?;
     }
 
-    let ready: ConnectionState = Arc::new(AtomicBool::new(false));
-    health_http::spawn_with_state(
+    // Readiness (`/healthz`) stays "confirmed Kafka partition assignment"
+    // (`health::RelayContext`); liveness (`/livez`) is loop progress only, so
+    // neither a slow group rebalance nor Redis being unavailable (the Redis
+    // pod being recreated by the same rollout) gets this pod killed. Same
+    // split as the movement-stream consumers (SVC-08/INF-9).
+    let (ready, progress) = health_http::spawn_with_progress(
         config.health_bind_url.clone(),
-        Arc::clone(&ready),
         "partitions assigned",
         "no confirmed partition assignment",
+        Duration::from_secs(config.progress_stall_secs),
     );
 
-    let mut source = KafkaRawSource::connect(&config, ready)?;
-    let mut sink =
-        RedisEventSink::connect(&config.redis_url, config.movement_stream_maxlen).await?;
+    // Redis first: joining the Kafka group (which only happens once the
+    // loop polls) is pointless until there is somewhere to publish to.
+    let mut sink = RedisEventSink::connect_until_ready(
+        &config.redis_url,
+        config.movement_stream_maxlen,
+        common::startup::CONNECT_BACKOFF,
+        &progress,
+    )
+    .await?;
+    let mut source = KafkaRawSource::connect(&config, ready, progress.clone())?;
 
     tokio::spawn(stream_lag_loop::<redis::aio::ConnectionManager>(
         config.redis_url.clone(),
@@ -55,6 +63,10 @@ async fn main() -> anyhow::Result<()> {
             Cycle::Committed => {}
             Cycle::Failed => tokio::time::sleep(ERROR_BACKOFF).await,
         }
+        // One loop iteration completed, however it went -- a failed cycle
+        // (Redis down) is the process alive and retrying, not a wedge. See
+        // `health_http::Progress`.
+        progress.beat();
     }
 }
 
@@ -241,7 +253,11 @@ trait LagConnection: Sized + Send + 'static {
 impl LagConnection for redis::aio::ConnectionManager {
     async fn connect(redis_url: &str) -> anyhow::Result<Self> {
         let client = redis::Client::open(redis_url)?;
-        Ok(client.get_connection_manager().await?)
+        // One bounded attempt per tick (see `redis_connection_config`):
+        // `run_lag_tick` already retries every tick.
+        Ok(client
+            .get_connection_manager_with_config(event_sink::redis_connection_config())
+            .await?)
     }
 
     async fn group_lag(&mut self, group: &str) -> anyhow::Result<Option<i64>> {
