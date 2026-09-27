@@ -36,15 +36,27 @@ pub struct CursorState {
     pub pending_observed_at: Option<DateTime<Utc>>,
 }
 
-/// Upserts a zero row on first use -- the migration declares the table's
+/// Inserts a zero row on first use -- the migration declares the table's
 /// shape but deliberately does not seed rows (Task 1), so the first ever
 /// poll cycle for a given `name` creates its own starting-at-zero cursor
 /// here.
+///
+/// A read, not a write (DB review part 2, DB2-26): this used to be
+/// `ON CONFLICT DO UPDATE SET name = EXCLUDED.name`, which rewrote the row
+/// (a dead tuple and WAL) on every read, several times a minute.
+/// `DO NOTHING` writes nothing when the row exists, and the second arm
+/// reads it.
 pub async fn read_cursor(pool: &PgPool, name: &str) -> anyhow::Result<CursorState> {
     let row = sqlx::query_as::<_, CursorState>(
-        "INSERT INTO notifier_cursor (name, last_processed_id) VALUES ($1, 0) \
-         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name \
-         RETURNING last_processed_id, pending_id, pending_observed_at",
+        "WITH inserted AS ( \
+             INSERT INTO notifier_cursor (name, last_processed_id) VALUES ($1, 0) \
+             ON CONFLICT (name) DO NOTHING \
+             RETURNING last_processed_id, pending_id, pending_observed_at \
+         ) \
+         SELECT last_processed_id, pending_id, pending_observed_at FROM inserted \
+         UNION ALL \
+         SELECT last_processed_id, pending_id, pending_observed_at FROM notifier_cursor \
+         WHERE name = $1 AND NOT EXISTS (SELECT 1 FROM inserted)",
     )
     .bind(name)
     .fetch_one(pool)
@@ -144,10 +156,14 @@ pub async fn advance_cursor_with_grace(
         }
     };
 
+    // Only when something changed (DB2-26): most cycles store exactly the
+    // values already there, and an unguarded UPDATE rewrote the row anyway.
     sqlx::query(
         "UPDATE notifier_cursor \
          SET last_processed_id = $1, pending_id = $2, pending_observed_at = $3 \
-         WHERE name = $4",
+         WHERE name = $4 \
+           AND (last_processed_id, pending_id, pending_observed_at) \
+               IS DISTINCT FROM ($1, $2, $3)",
     )
     .bind(new_last)
     .bind(new_pending)
@@ -2273,6 +2289,73 @@ mod tests {
             .await
             .expect("re-read cursor");
         assert_eq!(after_seventh.pending_id, Some(140));
+
+        sqlx::query("DELETE FROM notifier_cursor WHERE name = $1")
+            .bind(cursor_name)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// DB2-26: reading a cursor and "advancing" it to the values it already
+    /// holds must not rewrite the row (same `xmin`); a real change must.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p notifier \
+                read_and_unchanged_advance_do_not_rewrite_the_cursor_row -- --ignored \
+                --test-threads=1`"]
+    async fn read_and_unchanged_advance_do_not_rewrite_the_cursor_row() {
+        let pool = connect().await;
+        let cursor_name = "TEST-NOTIFIER-DB226-CURSOR";
+        sqlx::query("DELETE FROM notifier_cursor WHERE name = $1")
+            .bind(cursor_name)
+            .execute(&pool)
+            .await
+            .expect("clear fixture cursor");
+        let xmin = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT xmin::text FROM notifier_cursor WHERE name = $1",
+            )
+            .bind(cursor_name)
+            .fetch_one(&pool)
+            .await
+            .expect("xmin")
+        };
+        let grace = chrono::Duration::seconds(120);
+        let t0 = Utc::now();
+
+        let fresh = read_cursor(&pool, cursor_name)
+            .await
+            .expect("first read inserts");
+        assert_eq!(fresh.last_processed_id, 0);
+        let created = xmin().await;
+        let reread = read_cursor(&pool, cursor_name).await.expect("second read");
+        assert_eq!(reread.last_processed_id, 0);
+        assert_eq!(xmin().await, created, "a read must not rewrite the row");
+
+        advance_cursor_with_grace(&pool, cursor_name, &reread, 50, t0, grace)
+            .await
+            .expect("propose 50");
+        let proposed = read_cursor(&pool, cursor_name).await.expect("read");
+        assert_eq!(proposed.pending_id, Some(50));
+        let after_proposal = xmin().await;
+        assert_ne!(after_proposal, created, "a real change is written");
+
+        // Same observation, still inside the grace window: nothing changes.
+        advance_cursor_with_grace(
+            &pool,
+            cursor_name,
+            &proposed,
+            50,
+            t0 + chrono::Duration::seconds(60),
+            grace,
+        )
+        .await
+        .expect("unchanged advance");
+        assert_eq!(
+            xmin().await,
+            after_proposal,
+            "an advance that stores the same values must not rewrite the row"
+        );
 
         sqlx::query("DELETE FROM notifier_cursor WHERE name = $1")
             .bind(cursor_name)
