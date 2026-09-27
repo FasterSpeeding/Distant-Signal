@@ -1388,16 +1388,37 @@ pub async fn find_or_create_train_with_cif_schedule(
     // instant to store; the rest of the enrichment is still worth writing.
     let scheduled_departure = crate::london_to_utc(service_date.and_time(schedule.scheduled));
 
+    // Read first, as in `find_or_create_train` above and `crates/api`'s
+    // copy (DB review part 2, DB2-7): the old unconditional `ON CONFLICT
+    // DO UPDATE` rewrote the row (a dead tuple and a row lock) on every
+    // call, even when nothing changed. Now an existing row is only
+    // UPDATEd when it is missing a column this call can fill, and the
+    // insert's `DO UPDATE` only covers a concurrent insert that committed
+    // after this statement's snapshot.
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO trains \
-            (train_uid, service_date, origin_crs, scheduled_departure, destination_crs) \
-         VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (train_uid, service_date) DO UPDATE SET \
-            train_uid           = EXCLUDED.train_uid, \
-            origin_crs          = COALESCE(trains.origin_crs, EXCLUDED.origin_crs), \
-            scheduled_departure = COALESCE(trains.scheduled_departure, EXCLUDED.scheduled_departure), \
-            destination_crs     = COALESCE(trains.destination_crs, EXCLUDED.destination_crs) \
-         RETURNING id",
+        "WITH existing AS ( \
+             SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2 \
+         ), filled AS ( \
+             UPDATE trains t SET \
+                origin_crs          = COALESCE(t.origin_crs, $3), \
+                scheduled_departure = COALESCE(t.scheduled_departure, $4), \
+                destination_crs     = COALESCE(t.destination_crs, $5) \
+             WHERE t.id IN (SELECT id FROM existing) \
+               AND ((t.origin_crs IS NULL AND $3::text IS NOT NULL) \
+                 OR (t.scheduled_departure IS NULL AND $4::timestamptz IS NOT NULL) \
+                 OR (t.destination_crs IS NULL AND $5::text IS NOT NULL)) \
+             RETURNING t.id \
+         ), inserted AS ( \
+             INSERT INTO trains \
+                (train_uid, service_date, origin_crs, scheduled_departure, destination_crs) \
+             SELECT $1, $2, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM existing) \
+             ON CONFLICT (train_uid, service_date) DO UPDATE SET \
+                origin_crs          = COALESCE(trains.origin_crs, EXCLUDED.origin_crs), \
+                scheduled_departure = COALESCE(trains.scheduled_departure, EXCLUDED.scheduled_departure), \
+                destination_crs     = COALESCE(trains.destination_crs, EXCLUDED.destination_crs) \
+             RETURNING id \
+         ) \
+         SELECT id FROM existing UNION ALL SELECT id FROM inserted",
     )
     .bind(train_uid)
     .bind(service_date)
@@ -3742,6 +3763,82 @@ mod sweep_tests {
         assert_eq!(
             matched_at, None,
             "schedule_matched_at is the api's 'fully matched' marker; the notifier must not set it"
+        );
+        cleanup().await;
+    }
+
+    /// DB2-7 (notifier copy): a repeat call on an already-complete row must
+    /// not rewrite it (same `xmin`), while a bare row still gets filled.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p notifier \
+                find_or_create_train_with_cif_schedule_does_not_rewrite_a_complete_row \
+                -- --ignored --test-threads=1`"]
+    async fn find_or_create_train_with_cif_schedule_does_not_rewrite_a_complete_row() {
+        let pool = connect().await;
+        let train_uid = "TEST-CIF-DB27-UID";
+        let service_date: chrono::NaiveDate = "2001-09-26".parse().unwrap();
+        let cleanup = || async {
+            sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+                .bind(train_uid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+                .bind(train_uid)
+                .execute(&pool)
+                .await
+                .ok();
+        };
+        cleanup().await;
+        // A bare row, as the plain find_or_create_train leaves it.
+        let bare_id = find_or_create_train(&pool, train_uid, service_date)
+            .await
+            .expect("bare row");
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, \
+                 true_origin_crs, destination_arrival, destination_arrival_day_offset) \
+             VALUES ($1, 'WOK', '09:05:00', 0, $2, 'RDG', 'RDG', '09:25:00', 0)",
+        )
+        .bind(service_date)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed CIF");
+
+        let xmin = |id: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT xmin::text FROM trains WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("xmin")
+            }
+        };
+
+        let filled_id = find_or_create_train_with_cif_schedule(&pool, train_uid, service_date)
+            .await
+            .expect("fills the bare row");
+        assert_eq!(filled_id, bare_id);
+        let (origin_crs, destination_crs): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT origin_crs, destination_crs FROM trains WHERE id = $1")
+                .bind(bare_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back");
+        assert_eq!(origin_crs.as_deref(), Some("RDG"));
+        assert_eq!(destination_crs.as_deref(), Some("WOK"));
+
+        let before = xmin(bare_id).await;
+        let again = find_or_create_train_with_cif_schedule(&pool, train_uid, service_date)
+            .await
+            .expect("repeat call");
+        assert_eq!(again, bare_id);
+        assert_eq!(
+            xmin(bare_id).await,
+            before,
+            "a complete row must be returned without being rewritten"
         );
         cleanup().await;
     }
