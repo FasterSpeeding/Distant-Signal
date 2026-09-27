@@ -113,13 +113,44 @@ pub async fn post_batch<T: Serialize>(
     items: &[T],
     noun: &str,
 ) -> anyhow::Result<()> {
+    post_batch_with_timeout(client, url, tokens, items, noun, None).await
+}
+
+/// A non-2xx answer from [`post_batch`] / [`post_batch_with_timeout`].
+/// Its `Display` is the `"ingestion POST failed: ..."` text those have
+/// always produced; the type exists so a caller can branch on the status
+/// with `anyhow::Error::downcast_ref` instead of parsing that text.
+#[derive(Debug)]
+pub struct IngestStatusError {
+    pub status: reqwest::StatusCode,
+    pub body: String,
+}
+
+impl std::fmt::Display for IngestStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ingestion POST failed: {} {}", self.status, self.body)
+    }
+}
+
+impl std::error::Error for IngestStatusError {}
+
+/// [`post_batch`], optionally overriding the client's own request timeout
+/// for this one request (`reqwest::RequestBuilder::timeout`) -- for a call
+/// known to legitimately take longer than the client-wide default.
+pub async fn post_batch_with_timeout<T: Serialize>(
+    client: &reqwest::Client,
+    url: &str,
+    tokens: &OAuthTokenCache,
+    items: &[T],
+    noun: &str,
+    timeout: Option<Duration>,
+) -> anyhow::Result<()> {
     let token = tokens.get_token(client).await?;
-    let response = client
-        .post(url)
-        .bearer_auth(&token)
-        .json(items)
-        .send()
-        .await?;
+    let mut request = client.post(url).bearer_auth(&token).json(items);
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
+    }
+    let response = request.send().await?;
 
     if response.status().is_success() {
         tracing::info!(count = items.len(), "posted {noun} to ingestion API");
@@ -127,8 +158,8 @@ pub async fn post_batch<T: Serialize>(
     } else {
         let status = response.status();
         invalidate_on_auth_rejection(tokens, status);
-        let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("ingestion POST failed: {status} {text}");
+        let body = response.text().await.unwrap_or_default();
+        Err(IngestStatusError { status, body }.into())
     }
 }
 

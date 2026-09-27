@@ -21,6 +21,59 @@ use reqwest::Client;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// HTTP timeout for the FINAL chunk of a per-date diff publish, overriding
+/// [`REQUEST_TIMEOUT`] for that one request. The final chunk is the one
+/// where `api` deletes the rows the publish did not carry, under its own
+/// 120s `statement_timeout` (`PUBLISH_DELETE_STATEMENT_TIMEOUT` in
+/// `crates/api/src/data/queries.rs`). This must stay comfortably above that,
+/// so a slow delete ends with `api`'s own answer (a 503 after rolling back)
+/// rather than with this client hanging up while the server keeps working --
+/// which, retried, is how 8+ deletes piled up on 2026-09-27.
+const FINAL_CHUNK_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// A publish failure that must NOT be retried within this cycle -- see
+/// [`publish_with_retry`] and [`final_chunk_failure_defers_to_next_cycle`].
+/// Still an ordinary retryable failure for [`CycleOutcome`]: the next cycle
+/// republishes the product.
+#[derive(Debug)]
+struct DeferToNextCycle(String);
+
+impl std::fmt::Display for DeferToNextCycle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (not retried within this cycle)", self.0)
+    }
+}
+
+impl std::error::Error for DeferToNextCycle {}
+
+/// Whether a failed FINAL chunk means `api` may still be (or just was) busy
+/// with that product's delete, so an immediate in-cycle retry -- a whole new
+/// publish, re-staging every key and ending in another full delete -- would
+/// only add load (the 2026-09-27 incident):
+///
+/// * the request timed out on this side: the server may well still be
+///   executing the delete;
+/// * 409: another final chunk of the product is still deleting
+///   (`api`'s advisory lock refused this one);
+/// * 503: the delete hit `api`'s statement timeout and was rolled back --
+///   the same delete would very likely time out again right now.
+///
+/// Anything else (a 502 from an `api` restart, a deadlock's 500, a
+/// connection refused) is still retried in-cycle as before.
+fn final_chunk_failure_defers_to_next_cycle(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+            || cause
+                .downcast_ref::<common::ingest::IngestStatusError>()
+                .is_some_and(|e| {
+                    e.status == reqwest::StatusCode::CONFLICT
+                        || e.status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                })
+    })
+}
+
 /// Builds the poll-cycle `tokio::time::Interval`, ticking every
 /// `poll_interval` -- with `MissedTickBehavior::Delay` rather than the
 /// default `Burst`.
@@ -337,6 +390,12 @@ struct PartialDelivery {
 /// inside [`post_date_scoped_row_stream`], a new `publish_id` -- a retry is a
 /// brand-new diff publish whose first chunk makes `api` discard whatever the
 /// abandoned attempt had staged, never a continuation of it.
+///
+/// A [`DeferToNextCycle`] error is returned at once, without retrying. And
+/// attempts never overlap: each is awaited to completion (a timed-out
+/// request is dropped, i.e. its connection closed) before the next starts --
+/// what can still be in flight is the SERVER's work for a timed-out final
+/// chunk, which is exactly the case `DeferToNextCycle` covers.
 async fn publish_with_retry(
     retry: &config::PublishRetry,
     product: &str,
@@ -350,6 +409,16 @@ async fn publish_with_retry(
                     tracing::info!(product, attempts = tries + 1, "published after retrying");
                 }
                 return Ok(());
+            }
+            Err(err) if err.downcast_ref::<DeferToNextCycle>().is_some() => {
+                tracing::warn!(
+                    error = ?err,
+                    product,
+                    attempt = tries + 1,
+                    "publish's final chunk failed in a way that suggests api is still busy with \
+                     it; not retrying within this cycle"
+                );
+                return Err(err);
             }
             Err(err) if tries + 1 < retry.attempts => {
                 let delay = retry.backoff.delay(tries);
@@ -1511,6 +1580,7 @@ async fn publish_schedule_destination_departures(
             internal_oauth,
             rows,
             "schedule-derived destination departures rows",
+            FINAL_CHUNK_REQUEST_TIMEOUT,
         )
         .await
     })
@@ -1683,6 +1753,7 @@ async fn publish_schedule_calling_points_full(
             internal_oauth,
             rows,
             "schedule-derived full calling-point rows",
+            FINAL_CHUNK_REQUEST_TIMEOUT,
         )
         .await
     })
@@ -1842,7 +1913,15 @@ async fn post_date_scoped_rows_in_chunks(
     rows: &[serde_json::Value],
     noun: &str,
 ) -> anyhow::Result<()> {
-    post_date_scoped_row_stream(client, url, tokens, rows.iter(), noun).await
+    post_date_scoped_row_stream(
+        client,
+        url,
+        tokens,
+        rows.iter(),
+        noun,
+        FINAL_CHUNK_REQUEST_TIMEOUT,
+    )
+    .await
 }
 
 /// [`post_date_scoped_rows_in_chunks`], pulling rows from an iterator one
@@ -1863,12 +1942,18 @@ async fn post_date_scoped_rows_in_chunks(
 /// filling it. The chunk count in an error message is exact when the
 /// iterator's size hint is (always, for the slice wrapper above) and `?`
 /// otherwise.
+///
+/// The final chunk is sent with `final_chunk_timeout` (production:
+/// [`FINAL_CHUNK_REQUEST_TIMEOUT`]) instead of the client's own timeout, and
+/// a final-chunk failure that [`final_chunk_failure_defers_to_next_cycle`]
+/// is returned as [`DeferToNextCycle`].
 async fn post_date_scoped_row_stream<T: serde::Serialize>(
     client: &Client,
     url: &str,
     tokens: &common::oauth_client::OAuthTokenCache,
     rows: impl Iterator<Item = T>,
     noun: &str,
+    final_chunk_timeout: Duration,
 ) -> anyhow::Result<()> {
     let mut rows = rows.peekable();
     let exact_total = match rows.size_hint() {
@@ -1913,21 +1998,27 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
                 |total| total.div_ceil(PUBLISH_CHUNK_ROWS).to_string(),
             )
         };
-        common::ingest::post_batch(
+        common::ingest::post_batch_with_timeout(
             client,
             &diff_chunk_url(url, &publish_id, first_chunk, final_total_rows),
             tokens,
             &chunk,
             noun,
+            last_chunk.then_some(final_chunk_timeout),
         )
         .await
         .map_err(|err| {
-            anyhow::anyhow!(
+            let message = format!(
                 "chunk {}/{chunk_count} ({} rows, first_chunk={first_chunk}, \
                  publish_id={publish_id}) failed: {err}",
                 index + 1,
                 chunk.len(),
-            )
+            );
+            if last_chunk && final_chunk_failure_defers_to_next_cycle(&err) {
+                anyhow::Error::new(DeferToNextCycle(message))
+            } else {
+                anyhow::anyhow!(message)
+            }
         })?;
         if last_chunk {
             return Ok(());
@@ -4104,6 +4195,175 @@ mod chunked_publish_tests {
             message.contains("chunk 1/1") && message.contains("first_chunk=true"),
             "error must identify the chunk and its first_chunk flag; got: {message}"
         );
+    }
+}
+
+/// 2026-09-27 incident: the in-cycle retry of a per-date publish whose final
+/// chunk timed out client-side started a whole new publish -- and a whole new
+/// server-side delete -- while `api` was still running the first one. Driven
+/// through the real [`publish_with_retry`] + [`post_date_scoped_row_stream`]
+/// pair the per-date publishers use.
+#[cfg(test)]
+mod final_chunk_retry_tests {
+    use super::*;
+
+    const ATTEMPTS: u32 = 3;
+
+    fn retry() -> config::PublishRetry {
+        config::PublishRetry {
+            attempts: ATTEMPTS,
+            backoff: common::backoff::Backoff::new(
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+            ),
+        }
+    }
+
+    fn rows(count: usize) -> Vec<serde_json::Value> {
+        (0..count)
+            .map(|i| serde_json::json!({ "service_date": "2026-09-27", "seq": i }))
+            .collect()
+    }
+
+    /// Publishes 3 rows (one chunk, so it is also the final chunk) with
+    /// `final_response` as `api`'s answer to it, under the production retry
+    /// wrapper; returns the result and how many final chunks were POSTed.
+    async fn publish_against(
+        final_response: wiremock::ResponseTemplate,
+        final_chunk_timeout: Duration,
+    ) -> (anyhow::Result<()>, usize) {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/private/chunked"))
+            .and(wiremock::matchers::query_param("last_chunk", "true"))
+            .respond_with(final_response)
+            .mount(&server)
+            .await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+        let rows = rows(3);
+
+        let result = publish_with_retry(&retry(), "test/2026-09-27", async || {
+            post_date_scoped_row_stream(
+                &client,
+                &url,
+                &tokens,
+                rows.iter(),
+                "test rows",
+                final_chunk_timeout,
+            )
+            .await
+        })
+        .await;
+
+        let finals = server
+            .received_requests()
+            .await
+            .expect("wiremock records requests")
+            .iter()
+            .filter(|req| {
+                req.url.path() == "/private/chunked"
+                    && req
+                        .url
+                        .query()
+                        .unwrap_or_default()
+                        .contains("last_chunk=true")
+            })
+            .count();
+        (result, finals)
+    }
+
+    #[test]
+    fn the_final_chunk_timeout_outlasts_apis_delete_statement_timeout() {
+        // api's PUBLISH_DELETE_STATEMENT_TIMEOUT is 120s.
+        const _: () = assert!(FINAL_CHUNK_REQUEST_TIMEOUT.as_secs() >= 120 + 30);
+        const _: () = assert!(FINAL_CHUNK_REQUEST_TIMEOUT.as_secs() > REQUEST_TIMEOUT.as_secs());
+    }
+
+    /// **The regression.** A client-side timeout on the final chunk is not
+    /// retried in-cycle: exactly one final chunk reaches `api`.
+    #[tokio::test]
+    async fn a_final_chunk_that_times_out_is_not_retried_within_the_cycle() {
+        let (result, finals) = publish_against(
+            wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(2)),
+            Duration::from_millis(200),
+        )
+        .await;
+
+        let err = result.expect_err("the timed-out final chunk must fail the publish");
+        assert!(
+            err.downcast_ref::<DeferToNextCycle>().is_some(),
+            "expected DeferToNextCycle, got {err:?}"
+        );
+        assert_eq!(finals, 1, "no in-cycle retry after a final-chunk timeout");
+    }
+
+    /// The final chunk's own timeout, not the client's 30s default, applies
+    /// to it: a delete slower than `REQUEST_TIMEOUT` would be fine, which is
+    /// shown here in miniature with a client whose default is shorter than
+    /// the response.
+    #[tokio::test]
+    async fn the_final_chunk_uses_its_own_longer_timeout() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/private/chunked"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_delay(Duration::from_millis(500)),
+            )
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+
+        post_date_scoped_row_stream(
+            &client,
+            &url,
+            &tokens,
+            rows(3).iter(),
+            "test rows",
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("the final chunk waits past the client-wide timeout");
+    }
+
+    /// `api`'s 409 (another final chunk of the product is still deleting) and
+    /// 503 (the delete hit its statement timeout and rolled back) are not
+    /// retried in-cycle either.
+    #[tokio::test]
+    async fn a_final_chunk_refused_with_409_or_503_is_not_retried_within_the_cycle() {
+        for status in [409, 503] {
+            let (result, finals) = publish_against(
+                wiremock::ResponseTemplate::new(status),
+                FINAL_CHUNK_REQUEST_TIMEOUT,
+            )
+            .await;
+            let err = result.expect_err("a refused final chunk must fail the publish");
+            assert!(
+                err.downcast_ref::<DeferToNextCycle>().is_some(),
+                "{status}: expected DeferToNextCycle, got {err:?}"
+            );
+            assert_eq!(finals, 1, "{status}: no in-cycle retry");
+        }
+    }
+
+    /// Unchanged: any other final-chunk failure (here a 502, as during an
+    /// `api` restart) is still retried in-cycle.
+    #[tokio::test]
+    async fn other_final_chunk_failures_are_still_retried_within_the_cycle() {
+        let (result, finals) = publish_against(
+            wiremock::ResponseTemplate::new(502),
+            FINAL_CHUNK_REQUEST_TIMEOUT,
+        )
+        .await;
+        let err = result.expect_err("a persistently failing final chunk fails the publish");
+        assert!(err.downcast_ref::<DeferToNextCycle>().is_none());
+        assert_eq!(finals, ATTEMPTS as usize);
     }
 }
 
