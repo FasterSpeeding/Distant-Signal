@@ -46,6 +46,31 @@ impl std::fmt::Display for DeferToNextCycle {
 
 impl std::error::Error for DeferToNextCycle {}
 
+/// What [`post_date_scoped_row_stream`] does when a date has no rows at all
+/// (PL-14).
+#[derive(Debug, Clone, Copy)]
+enum EmptyPublish {
+    /// Publish the empty date, so `api` deletes that date's previous rows.
+    Clear(chrono::NaiveDate),
+    /// Send nothing and fail with [`RefusedToClear`]: used when EVERY date of
+    /// the publish window is empty, which is far more likely a broken
+    /// delivery than a network with no trains for a week.
+    Refuse,
+}
+
+/// See [`EmptyPublish::Refuse`]. Recorded as a permanent failure for the
+/// delivery: re-reading the same delivery finds the same nothing.
+#[derive(Debug)]
+struct RefusedToClear(String);
+
+impl std::fmt::Display for RefusedToClear {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RefusedToClear {}
+
 /// Whether a failed FINAL chunk means `api` may still be (or just was) busy
 /// with that product's delete, so an immediate in-cycle retry -- a whole new
 /// publish, re-staging every key and ending in another full delete -- would
@@ -317,6 +342,11 @@ impl CycleOutcome {
     /// is retryable.
     fn failed(&mut self, product: impl Into<String>, err: &anyhow::Error) {
         let product = product.into();
+        if err.downcast_ref::<RefusedToClear>().is_some() {
+            tracing::error!(error = %err, product, "refusing to clear this product's date");
+            self.permanent(product);
+            return;
+        }
         match common::ingest::classify_failure(err) {
             common::ingest::FailureClass::Rejected => {
                 tracing::error!(
@@ -1307,6 +1337,15 @@ async fn publish_cif_derived_products(
     // outputs" precedent, Task 1 Step 4). The compile-time `const _: ()`
     // assertion next to both constants' declarations, above, is what keeps
     // this reused bound honest if either constant ever changes.
+    // PL-14: an empty date is published as empty (clearing its previous
+    // rows) only when some date of the window has schedules at all -- a
+    // delivery that yields nothing for a whole week is broken, and must not
+    // wipe a week of good rows. Stops at the first public calling point.
+    let window_has_schedules = dates.iter().any(|&date| {
+        schedule_calling_points_full_row_iter(&index, date)
+            .next()
+            .is_some()
+    });
     for date in dates {
         publish_schedule_destination_departures(
             client,
@@ -1315,6 +1354,7 @@ async fn publish_cif_derived_products(
             date,
             tiploc_crs_records,
             internal_oauth,
+            window_has_schedules,
             outcome,
         )
         .await;
@@ -1322,8 +1362,16 @@ async fn publish_cif_derived_products(
         // ScheduleIndex and the SAME per-date loop as the sibling call
         // directly above -- one pass, multiple outputs, this file's own
         // established precedent.
-        publish_schedule_calling_points_full(client, config, &index, date, internal_oauth, outcome)
-            .await;
+        publish_schedule_calling_points_full(
+            client,
+            config,
+            &index,
+            date,
+            internal_oauth,
+            window_has_schedules,
+            outcome,
+        )
+        .await;
     }
 }
 
@@ -1712,6 +1760,7 @@ fn schedule_destination_departures_row_iter(
 ///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom, but it is
 ///    sent in [`PUBLISH_CHUNK_ROWS`]-row chunks anyway, as one diff publish
 ///    -- see [`post_date_scoped_rows_in_chunks`] for the chunk contract.
+#[allow(clippy::too_many_arguments)]
 async fn publish_schedule_destination_departures(
     client: &Client,
     config: &Config,
@@ -1719,6 +1768,7 @@ async fn publish_schedule_destination_departures(
     today: chrono::NaiveDate,
     tiploc_crs_records: &[common::TiplocCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    window_has_schedules: bool,
     outcome: &mut CycleOutcome,
 ) {
     let key = product::destination_departures(today);
@@ -1752,6 +1802,7 @@ async fn publish_schedule_destination_departures(
             rows,
             "schedule-derived destination departures rows",
             FINAL_CHUNK_REQUEST_TIMEOUT,
+            empty_publish(today, window_has_schedules),
         )
         .await
     })
@@ -1885,7 +1936,7 @@ fn schedule_calling_points_full_row_iter(
 /// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`)
 /// and/or this crate's 30s `REQUEST_TIMEOUT`. See [`PUBLISH_CHUNK_ROWS`] for
 /// the sizing and [`post_date_scoped_rows_in_chunks`] for the chunk contract
-/// (`publish_id`/`last_chunk`/`total_rows`, plus the legacy `first_chunk`)
+/// (`publish_id`/`first_chunk`/`last_chunk`/`total_rows`)
 /// that keeps chunking from turning into per-chunk data loss.
 ///
 /// **Non-public calling points are filtered out before publish (2026-09-25;
@@ -1905,6 +1956,7 @@ async fn publish_schedule_calling_points_full(
     index: &schedule_query::ScheduleIndex,
     date: chrono::NaiveDate,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    window_has_schedules: bool,
     outcome: &mut CycleOutcome,
 ) {
     let key = product::calling_points_full(date);
@@ -1922,6 +1974,7 @@ async fn publish_schedule_calling_points_full(
             rows,
             "schedule-derived full calling-point rows",
             FINAL_CHUNK_REQUEST_TIMEOUT,
+            empty_publish(date, window_has_schedules),
         )
         .await
     })
@@ -2050,15 +2103,15 @@ const PUBLISH_CHUNK_ROWS: usize = 50_000;
 /// `crates/api`). This replaced a delete-the-whole-date-then-reinsert publish
 /// that left the target tables' indexes 52-66% bloated in production.
 ///
-/// **`first_chunk` is still sent, for rolling-deploy compatibility.** An
-/// `api` that predates `publish_id` ignores the new parameters and applies
-/// its own legacy contract: `first_chunk=true` clears the date then inserts,
-/// `first_chunk=false` only inserts. That is still correct for exactly this
-/// sequence of calls (it is what this function sent before the diff
-/// protocol existed), so either service can deploy first. Getting that name
-/// wrong would be silent and catastrophic against such an `api`: it would
-/// default every chunk to `first_chunk=true`, each chunk's `DELETE` would
-/// wipe the chunks before it, and each date would keep only its last chunk.
+/// **`first_chunk`** marks the chunk on which `api` discards staged keys
+/// left by an abandoned earlier publish of the date. (It also once told an
+/// `api` predating `publish_id` which chunk cleared the date; `api` dropped
+/// that legacy path with F-LEGACY on 2026-09-27 and now answers 400 to a
+/// chunk without `publish_id`.)
+///
+/// **An empty date (PL-14)** is one POST with no rows, `total_rows=0` and
+/// `service_date`, so `api` deletes the date's previous rows -- see
+/// [`EmptyPublish`].
 ///
 /// **Partial-date exposure.** Each chunk is its own transaction on the `api`
 /// side. Under the diff protocol a failure part way through a date (chunk 5
@@ -2085,6 +2138,7 @@ async fn post_date_scoped_rows_in_chunks(
         rows.iter(),
         noun,
         FINAL_CHUNK_REQUEST_TIMEOUT,
+        EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).expect("valid date")),
     )
     .await
 }
@@ -2119,6 +2173,7 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
     rows: impl Iterator<Item = T>,
     noun: &str,
     final_chunk_timeout: Duration,
+    empty: EmptyPublish,
 ) -> anyhow::Result<()> {
     let mut rows = rows.peekable();
     let exact_total = match rows.size_hint() {
@@ -2126,22 +2181,49 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
         _ => None,
     };
 
-    // An empty publish is still POSTed, exactly once, rather than skipped:
-    // both receiving routes treat an empty batch as a deliberate no-op that
-    // must NOT delete the date (see `queries::upsert_schedule_calling_points_full`'s
-    // own "an empty `rows` is a no-op, and that is load-bearing"), and
-    // sending it keeps this cycle's `posted 0 <noun>` log line -- the only
-    // evidence that the publish ran at all and genuinely had nothing to say.
+    // PL-14: a date with no rows is published as exactly that -- one POST
+    // with no rows that is both the first and the final chunk
+    // (`total_rows=0`) and names its `service_date`, so `api` deletes the
+    // previous publish's rows for the date instead of keeping them as stale
+    // data. It used to be a bare `first_chunk=true` POST with no publish_id
+    // or date, which `api` could only treat as a no-op. Unless the caller
+    // says the whole window looks broken (`EmptyPublish::Refuse`), in which
+    // case nothing is sent and the previous rows stay.
     if rows.peek().is_none() {
+        let service_date = match empty {
+            EmptyPublish::Clear(service_date) => service_date,
+            EmptyPublish::Refuse => {
+                return Err(anyhow::Error::new(RefusedToClear(format!(
+                    "no {noun} for this date and none for any date of the publish window; not \
+                     clearing the date's previous rows"
+                ))));
+            }
+        };
         let empty: [T; 0] = [];
-        return common::ingest::post_batch(
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let clear_url = format!(
+            "{url}{separator}first_chunk=true&publish_id={}&last_chunk=true&total_rows=0\
+             &service_date={service_date}",
+            new_publish_id()
+        );
+        return common::ingest::post_batch_with_timeout(
             client,
-            &first_chunk_url(url, true),
+            &clear_url,
             tokens,
             &empty,
             noun,
+            Some(final_chunk_timeout),
         )
-        .await;
+        .await
+        .map_err(|err| {
+            if final_chunk_failure_defers_to_next_cycle(&err) {
+                anyhow::Error::new(DeferToNextCycle(format!(
+                    "empty publish of {noun} for {service_date} failed: {err}"
+                )))
+            } else {
+                err.context(format!("empty publish of {noun} for {service_date} failed"))
+            }
+        });
     }
 
     let publish_id = new_publish_id();
@@ -2194,6 +2276,16 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
     }
 }
 
+/// [`EmptyPublish`] for `date`, given whether any date of the publish window
+/// has schedules.
+fn empty_publish(date: chrono::NaiveDate, window_has_schedules: bool) -> EmptyPublish {
+    if window_has_schedules {
+        EmptyPublish::Clear(date)
+    } else {
+        EmptyPublish::Refuse
+    }
+}
+
 /// A publish id for [`post_date_scoped_rows_in_chunks`]: unique per publish
 /// (wall-clock nanoseconds plus a per-process counter, so two publishes in
 /// the same nanosecond -- or after a clock step -- still differ), and made of
@@ -2205,9 +2297,8 @@ fn new_publish_id() -> String {
     format!("sr-{nanos}-{}-{sequence}", std::process::id())
 }
 
-/// Appends the `first_chunk` query parameter -- the legacy (pre-`publish_id`)
-/// half of [`post_date_scoped_rows_in_chunks`]'s contract, telling an older
-/// `api` whether this chunk is the one that clears the date. Handles a URL
+/// Appends the `first_chunk` query parameter of
+/// [`post_date_scoped_rows_in_chunks`]'s contract. Handles a URL
 /// that already carries a query string, since these URLs come from
 /// configuration and nothing stops an operator setting one.
 fn first_chunk_url(url: &str, first_chunk: bool) -> String {
@@ -4480,9 +4571,9 @@ mod chunked_publish_tests {
                     )
                 ),
             ],
-            "only the first chunk may clear the date for a legacy api, and only the last \
-             chunk (carrying the whole publish's row count) may delete missing rows for a \
-             diff-protocol api (publish_id {publish_id})"
+            "only the first chunk discards an abandoned publish's staged keys, and only the \
+             last chunk (carrying the whole publish's row count) may delete missing rows \
+             (publish_id {publish_id})"
         );
     }
 
@@ -4530,8 +4621,8 @@ mod chunked_publish_tests {
     }
 
     /// A publish small enough to fit in one chunk is exactly one POST that is
-    /// both the first chunk (clears the date on a legacy api) and the last
-    /// (deletes missing rows on a diff-protocol api).
+    /// both the first chunk (discards abandoned staged keys) and the last
+    /// (deletes missing rows).
     #[tokio::test]
     async fn a_publish_that_fits_in_one_chunk_is_still_exactly_one_replacing_post() {
         let server = wiremock::MockServer::start().await;
@@ -4558,10 +4649,9 @@ mod chunked_publish_tests {
         );
     }
 
-    /// An empty publish is still exactly one POST -- the receiving route
-    /// treats an empty batch as a deliberate no-op that must NOT delete the
-    /// date, and sending it keeps the `posted 0 <noun>` log line that is the
-    /// only evidence the publish ran and had nothing to say.
+    /// PL-14: an empty publish is exactly one POST that is both the first
+    /// and the final chunk, with `total_rows=0` and its `service_date`, so
+    /// `api` clears the date's previous rows.
     #[tokio::test]
     async fn an_empty_publish_is_one_post_and_never_silently_skipped() {
         let server = wiremock::MockServer::start().await;
@@ -4578,10 +4668,45 @@ mod chunked_publish_tests {
             .await
             .expect("accepted");
 
+        let (_, posts) = one_publish_id(capture_posts(&server, "/private/chunked").await);
         assert_eq!(
-            capture_posts(&server, "/private/chunked").await,
-            vec![(0, "first_chunk=true".to_string())]
+            posts,
+            vec![(
+                0,
+                "first_chunk=true&publish_id=<id>&last_chunk=true&total_rows=0\
+                 &service_date=2026-09-27"
+                    .to_string()
+            )]
         );
+    }
+
+    /// PL-14's guard: when the whole window is empty, nothing is sent and
+    /// the failure is permanent for the delivery (not a clearing publish).
+    #[tokio::test]
+    async fn an_empty_publish_is_refused_when_the_whole_window_is_empty() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let url = format!("{}/private/chunked", server.uri());
+
+        let err = post_date_scoped_row_stream(
+            &client,
+            &url,
+            &tokens,
+            std::iter::empty::<serde_json::Value>(),
+            "test rows",
+            FINAL_CHUNK_REQUEST_TIMEOUT,
+            EmptyPublish::Refuse,
+        )
+        .await
+        .expect_err("refused");
+        assert!(err.downcast_ref::<RefusedToClear>().is_some());
+        assert!(capture_posts(&server, "/private/chunked").await.is_empty());
+
+        let mut outcome = CycleOutcome::default();
+        outcome.failed("schedule_calling_points_full/2026-09-27", &err);
+        assert!(outcome.may_advance_marker());
+        assert!(!outcome.fully_published());
     }
 
     /// A failing chunk must surface as an error naming WHICH chunk failed, so
@@ -4664,6 +4789,7 @@ mod final_chunk_retry_tests {
                 rows.iter(),
                 "test rows",
                 final_chunk_timeout,
+                EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
             )
             .await
         })
@@ -4739,6 +4865,7 @@ mod final_chunk_retry_tests {
             rows(3).iter(),
             "test rows",
             Duration::from_secs(5),
+            EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
         )
         .await
         .expect("the final chunk waits past the client-wide timeout");

@@ -783,24 +783,23 @@ async fn get_schedule_line_population(
 /// `schedule-reference` splits across several calls per service date
 /// (`post_date_scoped_rows_in_chunks`, `PUBLISH_CHUNK_ROWS` rows each).
 ///
-/// Two protocols, chosen by whether `publish_id` is present:
+/// The diff protocol (2026-09-26+): every chunk of one publish carries the
+/// same `publish_id`; the final chunk also carries `last_chunk=true` and
+/// `total_rows=<rows across all chunks>`. Each chunk upserts its rows
+/// without rewriting unchanged ones; the final chunk deletes the rows the
+/// publish did not carry. `first_chunk` marks the chunk that discards an
+/// abandoned earlier publish's staged keys. See
+/// `queries::SchedulePublishPart` for the full protocol.
 ///
-/// * **Diff protocol (`publish_id` present, 2026-09-26+).** Every chunk of
-///   one publish carries the same `publish_id`; the final chunk also carries
-///   `last_chunk=true` and `total_rows=<rows across all chunks>`. Each chunk
-///   upserts its rows without rewriting unchanged ones; the final chunk
-///   deletes the rows the publish did not carry. See
-///   `queries::SchedulePublishPart` for the full protocol. `first_chunk` is
-///   still sent (and used, to discard an abandoned earlier publish's staged
-///   keys) because an OLDER `api` only understands `first_chunk` -- it
-///   ignores the unknown new parameters and falls back to its own
-///   delete-then-insert behavior, which is correct for the same sequence of
-///   calls.
-/// * **Legacy protocol (no `publish_id`).** Exactly the pre-2026-09-26
-///   behavior, for an older `schedule-reference` during a rolling deploy:
-///   `first_chunk=true` (the default when omitted, so an unaware caller gets
-///   whole-day-replace rather than silently becoming insert-only) clears
-///   the touched dates before inserting; `first_chunk=false` only inserts.
+/// `service_date` is the date the publish covers (PL-14). It is only read
+/// for a final chunk with no rows and `total_rows=0` -- a date that
+/// legitimately has no trains -- where there are no staged keys to learn
+/// the date from: every existing row of that date is then deleted. Such a
+/// chunk without `service_date` is a 400.
+///
+/// A request without `publish_id` is a 400 (F-LEGACY, 2026-09-27). It used
+/// to select the pre-2026-09-26 delete-then-insert chunk path, kept only
+/// for rolling deploys that are long past.
 fn default_true() -> bool {
     true
 }
@@ -813,6 +812,7 @@ struct ScheduleChunkParams {
     #[serde(default)]
     last_chunk: bool,
     total_rows: Option<u64>,
+    service_date: Option<chrono::NaiveDate>,
 }
 
 /// Longest `publish_id` accepted -- `schedule-reference`'s own ids are well
@@ -820,19 +820,17 @@ struct ScheduleChunkParams {
 /// large keys.
 const MAX_PUBLISH_ID_LEN: usize = 128;
 
-/// Which publish protocol one `ScheduleChunkParams` selects -- see that
-/// struct's doc comment.
-enum ScheduleChunkMode<'a> {
-    Legacy { first_chunk: bool },
-    Diff(queries::SchedulePublishPart<'a>),
-}
-
 impl ScheduleChunkParams {
-    fn mode(&self) -> Result<ScheduleChunkMode<'_>, (StatusCode, String)> {
+    /// This chunk's place in its publish, or a 400 for a request the diff
+    /// protocol cannot apply.
+    fn part(&self) -> Result<queries::SchedulePublishPart<'_>, (StatusCode, String)> {
         let Some(publish_id) = self.publish_id.as_deref() else {
-            return Ok(ScheduleChunkMode::Legacy {
-                first_chunk: self.first_chunk,
-            });
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "publish_id is required (the legacy delete-then-insert chunk protocol was \
+                 removed)"
+                    .to_string(),
+            ));
         };
         if publish_id.is_empty() || publish_id.len() > MAX_PUBLISH_ID_LEN {
             return Err((
@@ -850,11 +848,23 @@ impl ScheduleChunkParams {
             }
             (false, _) => None,
         };
-        Ok(ScheduleChunkMode::Diff(queries::SchedulePublishPart {
+        Ok(queries::SchedulePublishPart {
             publish_id,
             first_chunk: self.first_chunk,
             final_total_rows,
-        }))
+        })
+    }
+
+    /// For a chunk with no rows: the date an empty final publish clears, or
+    /// a 400 when a `total_rows=0` final chunk does not say which date.
+    fn empty_publish_date(&self) -> Result<Option<chrono::NaiveDate>, (StatusCode, String)> {
+        if self.last_chunk && self.total_rows == Some(0) && self.service_date.is_none() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "a final chunk with total_rows=0 requires service_date".to_string(),
+            ));
+        }
+        Ok(self.service_date)
     }
 }
 
@@ -897,15 +907,19 @@ async fn post_schedule_destination_departures(
     axum::extract::Query(params): axum::extract::Query<ScheduleChunkParams>,
     Json(rows): Json<Vec<ScheduleDestinationDeparturesRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = match params.mode()? {
-        ScheduleChunkMode::Legacy { first_chunk } => {
-            queries::upsert_schedule_destination_departures_chunk(&app.database, &rows, first_chunk)
-                .await
-        }
-        ScheduleChunkMode::Diff(part) => {
-            queries::upsert_schedule_destination_departures_publish_part(&app.database, &rows, part)
-                .await
-        }
+    let part = params.part()?;
+    let upserted = if rows.is_empty() {
+        let service_date = params.empty_publish_date()?;
+        queries::finish_schedule_destination_departures_publish_without_rows(
+            &app.database,
+            part,
+            service_date,
+        )
+        .await
+        .map(|_deleted| 0)
+    } else {
+        queries::upsert_schedule_destination_departures_publish_part(&app.database, &rows, part)
+            .await
     }
     .map_err(schedule_publish_error)?;
     Ok(Json(UpsertResponse { upserted }))
@@ -925,15 +939,18 @@ async fn post_schedule_calling_points_full(
     axum::extract::Query(params): axum::extract::Query<ScheduleChunkParams>,
     Json(rows): Json<Vec<ScheduleCallingPointsFullRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = match params.mode()? {
-        ScheduleChunkMode::Legacy { first_chunk } => {
-            queries::upsert_schedule_calling_points_full_chunk(&app.database, &rows, first_chunk)
-                .await
-        }
-        ScheduleChunkMode::Diff(part) => {
-            queries::upsert_schedule_calling_points_full_publish_part(&app.database, &rows, part)
-                .await
-        }
+    let part = params.part()?;
+    let upserted = if rows.is_empty() {
+        let service_date = params.empty_publish_date()?;
+        queries::finish_schedule_calling_points_full_publish_without_rows(
+            &app.database,
+            part,
+            service_date,
+        )
+        .await
+        .map(|_deleted| 0)
+    } else {
+        queries::upsert_schedule_calling_points_full_publish_part(&app.database, &rows, part).await
     }
     .map_err(schedule_publish_error)?;
     Ok(Json(UpsertResponse { upserted }))
@@ -2545,7 +2562,10 @@ mod db_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/schedule-destination-departures")
+                    .uri(
+                        "/schedule-destination-departures?publish_id=route-upsert\
+                         &last_chunk=true&total_rows=2",
+                    )
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_vec(&body).unwrap()))
                     .unwrap(),
@@ -3152,9 +3172,18 @@ mod db_tests {
             }
         };
 
-        // The previous publish (legacy protocol, as an older publisher sends it).
+        // F-LEGACY: the legacy (no publish_id) protocol is refused.
         assert_eq!(
             post("first_chunk=true", json!([calling_point("STALE")])).await,
+            StatusCode::BAD_REQUEST
+        );
+        // The previous publish.
+        assert_eq!(
+            post(
+                "first_chunk=true&publish_id=route-previous&last_chunk=true&total_rows=1",
+                json!([calling_point("STALE")])
+            )
+            .await,
             StatusCode::OK
         );
         assert_eq!(
@@ -3183,6 +3212,35 @@ mod db_tests {
         .expect("read back");
         assert_eq!(uids, vec!["CHUNK1".to_string(), "CHUNK2".to_string()]);
 
+        // PL-14: a publish that finds no rows for the date (no trains that
+        // day) now clears the previous publish's rows instead of leaving
+        // them stale. Without service_date it is refused.
+        assert_eq!(
+            post(
+                "first_chunk=true&publish_id=route-empty&last_chunk=true&total_rows=0",
+                json!([])
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(
+                "first_chunk=true&publish_id=route-empty&last_chunk=true&total_rows=0\
+                 &service_date=2099-07-20",
+                json!([])
+            )
+            .await,
+            StatusCode::OK
+        );
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schedule_calling_points_full WHERE service_date = $1::date",
+        )
+        .bind(date)
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(remaining, 0, "an empty publish clears its date");
+
         clear().await;
     }
 }
@@ -3198,24 +3256,43 @@ mod schedule_chunk_params_tests {
             .0
     }
 
-    /// An older `schedule-reference` sends only `first_chunk` (or nothing):
-    /// it must get exactly the legacy delete-then-insert contract.
+    /// F-LEGACY: a chunk without `publish_id` is a 400; the legacy
+    /// delete-then-insert path is gone.
     #[test]
-    fn no_publish_id_selects_the_legacy_protocol() {
-        assert!(matches!(
-            params("").mode(),
-            Ok(ScheduleChunkMode::Legacy { first_chunk: true })
-        ));
-        assert!(matches!(
-            params("first_chunk=false").mode(),
-            Ok(ScheduleChunkMode::Legacy { first_chunk: false })
-        ));
+    fn no_publish_id_is_a_bad_request() {
+        for query in ["", "first_chunk=false", "first_chunk=true"] {
+            let Err((status, _)) = params(query).part() else {
+                panic!("expected a rejection for {query:?}");
+            };
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+    }
+
+    /// PL-14: an empty final chunk with `total_rows=0` must name its date.
+    #[test]
+    fn an_empty_final_publish_needs_its_service_date() {
+        let Err((status, _)) =
+            params("publish_id=p1&last_chunk=true&total_rows=0").empty_publish_date()
+        else {
+            panic!("expected a rejection");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            params("publish_id=p1&last_chunk=true&total_rows=0&service_date=2026-12-25")
+                .empty_publish_date(),
+            Ok(Some(chrono::NaiveDate::from_ymd_opt(2026, 12, 25).unwrap()))
+        );
+        assert_eq!(
+            params("publish_id=p1&first_chunk=false").empty_publish_date(),
+            Ok(None),
+            "a non-final empty chunk is a no-op and needs no date"
+        );
     }
 
     #[test]
     fn a_publish_id_selects_the_diff_protocol_and_only_the_last_chunk_finalizes() {
         let middle = params("first_chunk=false&publish_id=p1");
-        let Ok(ScheduleChunkMode::Diff(part)) = middle.mode() else {
+        let Ok(part) = middle.part() else {
             panic!("expected the diff protocol");
         };
         assert_eq!(
@@ -3224,7 +3301,7 @@ mod schedule_chunk_params_tests {
         );
 
         let last = params("first_chunk=false&publish_id=p1&last_chunk=true&total_rows=120000");
-        let Ok(ScheduleChunkMode::Diff(part)) = last.mode() else {
+        let Ok(part) = last.part() else {
             panic!("expected the diff protocol");
         };
         assert_eq!(part.final_total_rows, Some(120_000));
@@ -3234,7 +3311,7 @@ mod schedule_chunk_params_tests {
     /// rejected rather than guessed at.
     #[test]
     fn a_last_chunk_without_total_rows_is_a_bad_request() {
-        let Err((status, _)) = params("publish_id=p1&last_chunk=true").mode() else {
+        let Err((status, _)) = params("publish_id=p1&last_chunk=true").part() else {
             panic!("expected a rejection");
         };
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -3246,7 +3323,7 @@ mod schedule_chunk_params_tests {
             "publish_id=".to_string(),
             format!("publish_id={}", "x".repeat(MAX_PUBLISH_ID_LEN + 1)),
         ] {
-            let Err((status, _)) = params(&query).mode() else {
+            let Err((status, _)) = params(&query).part() else {
                 panic!("expected a rejection for {query}");
             };
             assert_eq!(status, StatusCode::BAD_REQUEST);
