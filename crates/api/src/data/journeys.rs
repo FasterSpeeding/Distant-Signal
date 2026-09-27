@@ -1331,12 +1331,27 @@ pub struct JourneyListItem {
 /// this list's own cap should agree with"). Each journey is shown with its
 /// "current leg" -- the earliest leg that isn't already `completed`, or the
 /// journey's LAST leg (highest `leg_order`) if every leg is `completed`.
+///
+/// **Newest journeys first, then their legs (DB2-18).** The `recent` CTE
+/// picks the user's newest `MINE_LIST_LIMIT` journeys that have a leg (the
+/// old inner join already dropped leg-less ones), served by
+/// `journeys_user_id_created_at`; only their legs are ranked. It used to
+/// rank every leg the user owned, including up to ~548 days of
+/// template-materialised journeys, before the LIMIT. `id DESC` breaks
+/// `created_at` ties so the page is deterministic.
 pub async fn list_journeys_for_user(
     pool: &PgPool,
     user_id: &str,
 ) -> anyhow::Result<Vec<JourneyListItem>> {
     let rows = sqlx::query_as::<_, JourneyListItem>(
-        "WITH ranked_legs AS ( \
+        "WITH recent AS ( \
+             SELECT j.id, j.custom_name, j.created_at FROM journeys j \
+             WHERE j.user_id = $1 \
+               AND EXISTS (SELECT 1 FROM journey_legs l WHERE l.journey_id = j.id) \
+             ORDER BY j.created_at DESC, j.id DESC \
+             LIMIT $2 \
+         ), \
+         ranked_legs AS ( \
              SELECT jl.id, jl.journey_id, jl.leg_order, jl.origin_crs, jl.destination_crs, \
                     jl.service_date, jl.match_mode, jl.train_subscription_id, \
                     ts.resolution_status, cs.status, cs.delay_minutes, \
@@ -1349,19 +1364,17 @@ pub async fn list_journeys_for_user(
              FROM journey_legs jl \
              LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
              LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-             WHERE jl.journey_id IN (SELECT id FROM journeys WHERE user_id = $1) \
+             WHERE jl.journey_id IN (SELECT id FROM recent) \
          ) \
-         SELECT j.id, j.custom_name, j.created_at, \
+         SELECT r.id, r.custom_name, r.created_at, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
                 so.name AS origin_name, sd.name AS destination_name, rl.match_mode, \
                 rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes \
-         FROM journeys j \
-         JOIN ranked_legs rl ON rl.journey_id = j.id AND rl.rn = 1 \
+         FROM recent r \
+         JOIN ranked_legs rl ON rl.journey_id = r.id AND rl.rn = 1 \
          LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(rl.destination_crs)::bpchar \
-         WHERE j.user_id = $1 \
-         ORDER BY j.created_at DESC \
-         LIMIT $2",
+         ORDER BY r.created_at DESC, r.id DESC",
     )
     .bind(user_id)
     .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
@@ -2953,6 +2966,69 @@ mod db_tests {
             .expect("leg exists");
         assert_eq!(leg.train_subscription_id, Some(tracking_id));
         assert_eq!(leg.match_mode, "manual");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DB2-18: the list is the newest `MINE_LIST_LIMIT` journeys that have
+    /// a leg, newest first, with a stable order for equal `created_at`.
+    /// A newer leg-less journey neither appears nor takes a slot.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_journeys_for_user_returns_the_newest_journeys_with_legs -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_returns_the_newest_journeys_with_legs() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-18-LIST";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let limit = crate::data::train_tracking::MINE_LIST_LIMIT;
+
+        // limit + 5 journeys with one leg each, one minute apart, plus a
+        // pair sharing the newest timestamp.
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "INSERT INTO journeys (user_id, created_at) \
+             SELECT $1, TIMESTAMPTZ '2026-09-01 00:00Z' + LEAST(g, $2) * INTERVAL '1 minute' \
+             FROM generate_series(1, $2 + 1) g ORDER BY g RETURNING id",
+        )
+        .bind(user_id)
+        .bind((limit + 4) as i32)
+        .fetch_all(&pool)
+        .await
+        .expect("seed journeys");
+        sqlx::query(
+            "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             SELECT id, 1, 'WAT', 'RDG', DATE '2026-09-22', 'unmatched' FROM unnest($1::bigint[]) id",
+        )
+        .bind(&ids)
+        .execute(&pool)
+        .await
+        .expect("seed legs");
+        // Newest of all, but with no leg.
+        sqlx::query("INSERT INTO journeys (user_id, created_at) VALUES ($1, TIMESTAMPTZ '2026-12-01 00:00Z')")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed leg-less journey");
+
+        let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
+        assert_eq!(listed.len() as i64, limit);
+        let mut expected: Vec<(DateTime<Utc>, i64)> =
+            sqlx::query_as("SELECT created_at, id FROM journeys WHERE id = ANY($1)")
+                .bind(&ids)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        expected.sort_by(|a, b| b.cmp(a));
+        let expected: Vec<i64> = expected
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, id)| id)
+            .collect();
+        let got: Vec<i64> = listed.iter().map(|j| j.id).collect();
+        assert_eq!(
+            got, expected,
+            "newest first, id DESC on ties, leg-less journey skipped"
+        );
 
         cleanup_user(&pool, user_id).await;
     }
