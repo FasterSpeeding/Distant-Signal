@@ -57,23 +57,44 @@ set -eu
 # get out of sync on. SFTPGo creates home_dir itself if it doesn't already
 # exist (vfs/osfs.go's CheckRootPath), so nothing needs to pre-create it.
 HOME_DIR="/data/schedule-feed/${SCHEDULE_FEED_DESTINATION_PATH:-incoming}"
-LOADDATA_FILE="/tmp/schedule-sftp-loaddata.json"
+# INF-13: the loaddata file holds the push account's password, so only this
+# user may read it. The chart puts it on a memory-backed emptyDir
+# (SCHEDULE_SFTP_LOADDATA_DIR); local dev keeps /tmp.
+LOADDATA_FILE="${SCHEDULE_SFTP_LOADDATA_DIR:-/tmp}/schedule-sftp-loaddata.json"
+umask 077
 
-# NOTE: no JSON-escaping is done on the username/password below. Fine for
-# this file's actual values (an operator-chosen username and either the
-# Helm chart's own randAlphaNum-generated password or a hand-set local-dev
-# default -- none of which plausibly contain '"' or '\'), but a real gap if
-# an operator ever sets SCHEDULE_SFTP_PASSWORD to something containing
-# those characters; flagged here rather than silently assumed safe.
+# Every value below goes into a JSON string literal, escaped here: a '"' or
+# '\' in the password (or username) must not be able to break out of its
+# string and add or change fields. Control characters are rejected outright.
+# Keep in step with charts/distant-signal/templates/schedulefeed-configmap.yaml.
+reject_control_chars() {
+  case "$2" in
+    *[[:cntrl:]]*)
+      echo "sftp-entrypoint: $1 contains a control character (newline, tab, ...); refusing to provision the account" >&2
+      exit 1
+      ;;
+  esac
+}
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+reject_control_chars SCHEDULE_SFTP_USERNAME "$SCHEDULE_SFTP_USERNAME"
+reject_control_chars SCHEDULE_SFTP_PASSWORD "$SCHEDULE_SFTP_PASSWORD"
+reject_control_chars SCHEDULE_FEED_DESTINATION_PATH "$HOME_DIR"
+USERNAME_JSON="$(json_escape "$SCHEDULE_SFTP_USERNAME")"
+PASSWORD_JSON="$(json_escape "$SCHEDULE_SFTP_PASSWORD")"
+HOME_DIR_JSON="$(json_escape "$HOME_DIR")"
+
 cat > "$LOADDATA_FILE" <<EOF
 {
   "version": 17,
   "users": [
     {
       "status": 1,
-      "username": "${SCHEDULE_SFTP_USERNAME}",
-      "password": "${SCHEDULE_SFTP_PASSWORD}",
-      "home_dir": "${HOME_DIR}",
+      "username": "${USERNAME_JSON}",
+      "password": "${PASSWORD_JSON}",
+      "home_dir": "${HOME_DIR_JSON}",
       "permissions": {
         "/": ["*"]
       }
