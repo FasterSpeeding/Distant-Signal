@@ -46,10 +46,26 @@ export function __resetSiteOriginWarningForTests(): void {
   warnedMissingSiteUrl = false;
 }
 
-export async function getSiteOrigin(): Promise<string> {
+/** Just the operator-configured half of `getSiteOrigin()` below:
+ * `NEXT_PUBLIC_SITE_URL` with any trailing slash trimmed, or `undefined`
+ * when it isn't set -- never the request-`Host` fallback. For callers
+ * (`app/robots.ts`) that would rather omit an absolute URL entirely than
+ * advertise whatever `Host` the current request happened to carry.
+ *
+ * Read from `process.env` at call time. The frontend image build doesn't
+ * pass `NEXT_PUBLIC_SITE_URL`, so Next has nothing to inline here at build
+ * time and this server-side read picks up the chart's runtime value -- but
+ * only if the calling route actually renders per request (see
+ * `app/robots.ts`'s `dynamic = 'force-dynamic'`). */
+export function getConfiguredSiteOrigin(): string | undefined {
   const configured = process.env.NEXT_PUBLIC_SITE_URL;
+  return configured ? configured.replace(/\/+$/, '') : undefined;
+}
+
+export async function getSiteOrigin(): Promise<string> {
+  const configured = getConfiguredSiteOrigin();
   if (configured) {
-    return configured.replace(/\/+$/, '');
+    return configured;
   }
 
   // The review's own finding: this deployment's chart never actually sets
