@@ -1,5 +1,5 @@
 /** Operator-specific values for the legal pages (`/privacy`, `/terms`,
- * `/cookies`, `/contact`), and the flag that publishes them.
+ * `/cookies`, `/contact`, `/accessibility`), and the flag that publishes them.
  *
  * DRAFT -- NOT YET REVIEWED. The page text under `app/privacy`, `app/terms`,
  * `app/cookies` and `app/contact` was drafted from the 2026-09-27 UK legal
@@ -128,6 +128,7 @@ export const LEGAL_LINKS: readonly { href: string; label: string }[] = [
   { href: '/terms', label: 'Terms' },
   { href: '/cookies', label: 'Cookies' },
   { href: '/contact', label: 'Contact' },
+  { href: '/accessibility', label: 'Accessibility' },
 ];
 
 /** Metadata for a legal page. Unless the pages are really published

@@ -106,7 +106,7 @@ describe('OpenDataAttribution', () => {
 
   it('hides the legal page links while the legal pages are unpublished (the default)', () => {
     renderWithMantine(<OpenDataAttribution />);
-    for (const name of ['Privacy', 'Terms', 'Cookies', 'Contact']) {
+    for (const name of ['Privacy', 'Terms', 'Cookies', 'Contact', 'Accessibility']) {
       expect(screen.queryByRole('link', { name })).toBeNull();
     }
   });
@@ -131,6 +131,7 @@ describe('OpenDataAttribution', () => {
       ['Terms', '/terms'],
       ['Cookies', '/cookies'],
       ['Contact', '/contact'],
+      ['Accessibility', '/accessibility'],
     ]) {
       expect(screen.getByRole('link', { name })).toHaveAttribute('href', href);
     }

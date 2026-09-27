@@ -235,6 +235,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
         ['/terms', '/terms'],
         ['/cookies', '/cookies'],
         ['/contact', '/contact'],
+        ['/accessibility', '/accessibility'],
       ] as [string, string][])
     : []),
 ];

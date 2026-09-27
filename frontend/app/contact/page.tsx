@@ -58,7 +58,11 @@ export default function ContactPage() {
       <LegalSection title="Accessibility and everything else">
         <Text>
           If something on the site is hard to use, or you have any other question, email us and tell us what you
-          need.
+          need. See also our{' '}
+          <TextLink href="/accessibility" underline="always" inline>
+            accessibility statement
+          </TextLink>
+          .
         </Text>
       </LegalSection>
     </LegalPage>
