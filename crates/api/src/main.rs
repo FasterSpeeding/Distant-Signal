@@ -99,7 +99,6 @@ async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
     let app = AppState::init().await?;
-
     tokio::spawn(schedule_match_sweep_loop(app.clone()));
     tokio::spawn(reconciliation_sweep_loop(app.clone()));
     tokio::spawn(backlog_match_sweep_loop(app.clone()));
@@ -243,6 +242,17 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    // Report the admin group at startup (not secret): an empty value means
+    // the admin session-revocation endpoint refuses everyone.
+    if app.config.admin_group.trim().is_empty() {
+        tracing::info!("ADMIN_GROUP is empty: admin session revocation is disabled");
+    } else {
+        tracing::info!(
+            admin_group = %app.config.admin_group,
+            "admin session revocation enabled for this Authentik group"
+        );
+    }
 
     // MUST stay immediately before `sqlx::migrate!()`, never after.
     // `migrations/20260906140000_drop_legacy_columns.sql` IRREVERSIBLY drops

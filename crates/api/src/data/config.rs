@@ -110,6 +110,20 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value = "distant-signal-chatbot-users")]
     pub chatbot_access_group: String,
 
+    /// Authentik/SSO end-user group (read from the same `groups` OIDC claim
+    /// as `chatbot_access_group`) whose members may call the admin
+    /// session-revocation endpoint, `POST /public/admin/users/revoke-sessions`
+    /// (`routes::admin`). EMPTY BY DEFAULT, and empty means the feature is
+    /// off: nobody is an admin and that endpoint answers `403` to everyone.
+    ///
+    /// Like every group-gated check in this crate, membership is read from
+    /// `users.groups`, which is written only at login. Adding someone to this
+    /// group takes effect at their next login; removing them takes effect at
+    /// their next login, or immediately if another admin revokes their
+    /// sessions. See docs/session-revocation.md.
+    #[arg(long, env, default_value = "")]
+    pub admin_group: String,
+
     /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
     /// `crates/api` discovers every other endpoint (authorization, token,
     /// JWKS) from this single URL's `.well-known/openid-configuration`

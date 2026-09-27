@@ -50,7 +50,7 @@ impl Audience {
     /// audience(s)? Equality for the single-string shape, membership for
     /// the array shape -- both are "is this token valid for me" in RFC
     /// 7519 §4.1.3's own terms.
-    fn contains(&self, expected: &str) -> bool {
+    pub(crate) fn contains(&self, expected: &str) -> bool {
         match self {
             Audience::Single(aud) => aud == expected,
             Audience::Multiple(auds) => auds.iter().any(|aud| aud == expected),
@@ -88,6 +88,22 @@ pub struct ServiceClaims {
 struct JwtHeader {
     alg: openidconnect::core::CoreJwsSigningAlgorithm,
     kid: Option<String>,
+    /// RFC 7515 §4.1.9 explicit type. Not read by `verify` (client-credentials
+    /// access tokens are typed `JWT` or not at all); surfaced through
+    /// [`SignedJwt`] for the back-channel logout verifier, which checks it.
+    #[serde(default)]
+    typ: Option<String>,
+}
+
+/// A JWT whose signature has been verified against the JWKS, and nothing
+/// else: no claim has been checked yet. See
+/// [`ServiceTokenVerifier::verify_signed_jwt`].
+#[derive(Debug)]
+pub(crate) struct SignedJwt {
+    /// The header's `typ`, if any.
+    pub typ: Option<String>,
+    /// The decoded (base64url) payload bytes, still unparsed JSON.
+    pub payload: Vec<u8>,
 }
 
 /// Every failure mode collapses to one of these three -- `require_internal_oauth`
@@ -193,7 +209,7 @@ const GLOBAL_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 /// JWT/OIDC libraries default to (e.g. the `jsonwebtoken` crate's own
 /// `Validation::leeway` default) and is a small fraction of these tokens'
 /// actual lifetime.
-const CLOCK_SKEW_LEEWAY: Duration = Duration::from_secs(60);
+pub(crate) const CLOCK_SKEW_LEEWAY: Duration = Duration::from_secs(60);
 
 pub struct ServiceTokenVerifier {
     issuer_url: String,
@@ -351,10 +367,14 @@ impl ServiceTokenVerifier {
         cache.insert(kid.to_string(), Instant::now());
     }
 
-    /// Verifies `token`'s signature against the cached (or freshly
-    /// fetched) JWKS, then its `exp`/`iss`/`aud`, returning the parsed
-    /// claims only if every check passes.
-    pub async fn verify(&self, token: &str) -> Result<ServiceClaims, VerifyError> {
+    /// The signature half of [`verify`](Self::verify): splits `token`, looks
+    /// its `kid` up in the (cached, refetched-once) JWKS and checks the
+    /// signature with the header's `alg` (`openidconnect`'s `verify_signature`
+    /// refuses HMAC and `none` for an RSA key). Checks NO claim; each
+    /// caller checks its own. Shared with `auth::backchannel_logout`, which
+    /// verifies Authentik logout tokens against the human-login provider's
+    /// JWKS with a second instance of this type.
+    pub(crate) async fn verify_signed_jwt(&self, token: &str) -> Result<SignedJwt, VerifyError> {
         let mut parts = token.split('.');
         let (Some(header_b64), Some(payload_b64), Some(sig_b64), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
@@ -377,11 +397,22 @@ impl ServiceTokenVerifier {
         key.verify_signature(&header.alg, signing_input.as_bytes(), &signature)
             .map_err(|_| VerifyError::Invalid)?;
 
-        let payload_bytes = URL_SAFE_NO_PAD
+        let payload = URL_SAFE_NO_PAD
             .decode(payload_b64)
             .map_err(|_| VerifyError::Malformed)?;
+        Ok(SignedJwt {
+            typ: header.typ,
+            payload,
+        })
+    }
+
+    /// Verifies `token`'s signature against the cached (or freshly
+    /// fetched) JWKS, then its `exp`/`iss`/`aud`, returning the parsed
+    /// claims only if every check passes.
+    pub async fn verify(&self, token: &str) -> Result<ServiceClaims, VerifyError> {
+        let signed = self.verify_signed_jwt(token).await?;
         let claims: ServiceClaims =
-            serde_json::from_slice(&payload_bytes).map_err(|_| VerifyError::Malformed)?;
+            serde_json::from_slice(&signed.payload).map_err(|_| VerifyError::Malformed)?;
 
         if claims.iss != self.issuer_url {
             return Err(VerifyError::Invalid);
@@ -495,8 +526,14 @@ okZbiUUfaTzSWjonh81igWBCbs9l7+FaaiMCy3Hy5rA7g2eTdJoU7gxlabEnzdUj
     }
 
     pub(crate) fn sign_token(claims: &serde_json::Value) -> String {
+        sign_token_with_typ(claims, "JWT")
+    }
+
+    /// [`sign_token`] with a chosen header `typ` (back-channel logout tokens
+    /// are typed `logout+jwt`).
+    pub(crate) fn sign_token_with_typ(claims: &serde_json::Value, typ: &str) -> String {
         let key = signing_key();
-        let header = json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
+        let header = json!({"alg": "RS256", "kid": KID, "typ": typ});
         let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
         let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap());
         let signing_input = format!("{header_b64}.{payload_b64}");
