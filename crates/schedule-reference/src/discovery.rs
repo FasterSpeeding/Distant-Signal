@@ -153,7 +153,10 @@ mod tests {
         // ...and nothing at all when the only delivery is in progress.
         let only_in_progress = tempfile::tempdir().unwrap();
         write_unmarked(only_in_progress.path(), "20260903T090000Z");
-        assert_eq!(latest_complete_delivery(only_in_progress.path()).unwrap(), None);
+        assert_eq!(
+            latest_complete_delivery(only_in_progress.path()).unwrap(),
+            None
+        );
     }
 
     /// PL-6: the `.tmp-<dir_name>` scratch directory `schedule-ingest`
@@ -162,7 +165,10 @@ mod tests {
     #[test]
     fn the_extraction_scratch_directory_is_never_a_candidate() {
         let dir = tempfile::tempdir().unwrap();
-        let scratch = format!("{}20260903T090000Z", common::schedule_delivery::TEMP_DIR_PREFIX);
+        let scratch = format!(
+            "{}20260903T090000Z",
+            common::schedule_delivery::TEMP_DIR_PREFIX
+        );
         std::fs::create_dir_all(dir.path().join(&scratch)).unwrap();
         touch(dir.path(), &scratch, "RJTTF942MCA.txt");
         touch(dir.path(), &scratch, "RJTTF942MSN.txt");

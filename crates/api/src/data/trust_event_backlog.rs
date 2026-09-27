@@ -312,10 +312,11 @@ pub async fn ingest_shared_movement(
 ///
 /// Returns one `Result` per input event, same length and order as
 /// `events`. This is what lets `post_trust_event_backlog` keep its
-/// existing "one bad event doesn't kill the whole batch" contract: it
-/// iterates this `Vec` exactly the way it used to iterate the result of
-/// calling `ingest_shared_movement` once per event in a loop, logging and
-/// skipping any `Err` without aborting the rest.
+/// "one bad event doesn't kill the whole batch" contract: it classifies
+/// each `Err` with [`classify_anyhow_data_error`] (PL-7) -- a data error is
+/// reported as that row's rejection, anything else fails the request so
+/// the consumer retries. Errors fanned out from one batched step to several
+/// events are [`SharedMovementError`]s, which keep that classification.
 ///
 /// The one place collapsing these round trips changes that isolation
 /// story: the two batched *write* queries
@@ -2029,5 +2030,34 @@ mod classify_tests {
     fn non_database_errors_are_not_data_errors() {
         assert!(classify_data_error(&sqlx::Error::PoolTimedOut).is_none());
         assert!(classify_data_error(&sqlx::Error::Io(std::io::Error::other("reset"))).is_none());
+    }
+
+    /// The anyhow-level classifier the two ingest routes use: a pool
+    /// timeout under any amount of context is transient, a plain error with
+    /// no database cause is transient, and a fanned-out
+    /// [`SharedMovementError`] keeps the classification it was built with.
+    #[test]
+    fn anyhow_errors_are_classified_through_their_chain() {
+        let pool_timeout = anyhow::Error::from(sqlx::Error::PoolTimedOut).context("while writing");
+        assert!(classify_anyhow_data_error(&pool_timeout).is_none());
+        assert!(classify_anyhow_data_error(&anyhow::anyhow!("no database cause")).is_none());
+
+        let transient = anyhow::Error::from(SharedMovementError::new(
+            "find_or_create_train",
+            &pool_timeout,
+        ));
+        assert!(classify_anyhow_data_error(&transient).is_none());
+
+        let data = DataError {
+            sqlstate: "23514".to_string(),
+            reason: "check_violation",
+            constraint: None,
+            message: "bad".to_string(),
+        };
+        let fanned_out = anyhow::Error::from(SharedMovementError {
+            message: "mark_train_resolved failed".to_string(),
+            data_error: Some(data.clone()),
+        });
+        assert_eq!(classify_anyhow_data_error(&fanned_out), Some(data));
     }
 }

@@ -385,8 +385,10 @@ async fn post_trust_event_backlog(
     let accepted: Vec<usize> = (0..events.len())
         .filter(|index| !already_rejected.contains(index))
         .collect();
-    let accepted_events: Vec<common::TrustBacklogEventMessage> =
-        accepted.iter().map(|&index| events[index].clone()).collect();
+    let accepted_events: Vec<common::TrustBacklogEventMessage> = accepted
+        .iter()
+        .map(|&index| events[index].clone())
+        .collect();
     let shared_movement_results = crate::data::trust_event_backlog::ingest_shared_movements_batch(
         &app.database,
         &accepted_events,
@@ -2784,7 +2786,11 @@ mod db_tests {
         .unwrap();
         cleanup_train_events_fixture(&pool, user_id, &[uid]).await;
 
-        assert_eq!(status, StatusCode::OK, "a data error must not fail the batch");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a data error must not fail the batch"
+        );
         let parsed: common::TrustBacklogIngestResponse =
             serde_json::from_slice(&body).expect("response parses");
         assert_eq!(parsed.upserted, 2);
@@ -2796,7 +2802,10 @@ mod db_tests {
         );
         assert_eq!(parsed.rejected[0].sqlstate, "23514");
         assert_eq!(parsed.rejected[0].reason, "check_violation");
-        assert_eq!(trains_rows, 0, "the rejected event's trains row rolled back");
+        assert_eq!(
+            trains_rows, 0,
+            "the rejected event's trains row rolled back"
+        );
         assert_eq!(movement_rows, 0, "...and its movement row");
         assert_eq!(resolution_status, "pending", "...and its resolution flip");
         assert_eq!(trains_id, None);
@@ -2821,7 +2830,8 @@ mod db_tests {
             json!({
                 "tracked_train_id": subscription,
                 "resolved_train_uid": uid,
-                "resolved_train_id": "T88888",
+                // Distinct per event: (train_id, service_date) is unique.
+                "resolved_train_id": format!("T8888{}", &uid[uid.len() - 1..]),
                 "dedup_key": dedup_key,
                 "msg_type": "0003",
                 "raw_body": {},
@@ -2975,8 +2985,7 @@ mod db_tests {
         let (status, _) = post_json_to(router.clone(), "/trust-event-backlog", &body).await;
         blocker.rollback().await.unwrap();
 
-        let (retry_status, retry_body) =
-            post_json_to(router, "/trust-event-backlog", &body).await;
+        let (retry_status, retry_body) = post_json_to(router, "/trust-event-backlog", &body).await;
         let movements: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM train_movement_events WHERE trains_id = $1 AND dedup_key = 'test-pl7-locked'",
         )

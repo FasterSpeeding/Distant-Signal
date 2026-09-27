@@ -848,10 +848,17 @@ mod tests {
 
         assert_eq!(outcome, Cycle::Committed);
         assert_eq!(feed.committed_count, 1);
-        assert!(feed.rejected_batches.is_empty(), "not a whole-batch rejection");
+        assert!(
+            feed.rejected_batches.is_empty(),
+            "not a whole-batch rejection"
+        );
         assert_eq!(feed.dead_lettered.len(), 1);
         assert_eq!(feed.dead_lettered[0].reason, "rejected_by_api");
-        assert!(feed.dead_lettered[0].detail.starts_with("23514 check_violation"));
+        assert!(
+            feed.dead_lettered[0]
+                .detail
+                .starts_with("23514 check_violation")
+        );
         let payload: common::TrainMovementEventMessage =
             serde_json::from_str(&feed.dead_lettered[0].payload).expect("payload is the event");
         assert_eq!(payload.tracked_train_id, 1);

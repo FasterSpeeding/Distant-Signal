@@ -168,7 +168,12 @@ async fn poll_once(
         samples.iter().map(|sample| sample.crs.as_str()),
         now,
     );
-    record_cycle_metrics(ordered.len(), completed, samples.len(), rotation.stalest_age(&ordered, now));
+    record_cycle_metrics(
+        ordered.len(),
+        completed,
+        samples.len(),
+        rotation.stalest_age(&ordered, now),
+    );
 
     if samples.is_empty() {
         tracing::warn!("no station samples collected this cycle; nothing to post");
@@ -191,12 +196,18 @@ async fn poll_once(
 /// number to alert on if the rotation ever stops reaching part of the list.
 fn record_cycle_metrics(total: usize, completed: usize, sampled: usize, stalest: Duration) {
     metrics::gauge!(common::metrics::metric_name("ldbws_stations_total")).set(total as f64);
-    metrics::gauge!(common::metrics::metric_name("ldbws_stations_attempted_per_cycle"))
-        .set(completed as f64);
-    metrics::gauge!(common::metrics::metric_name("ldbws_stations_sampled_per_cycle"))
-        .set(sampled as f64);
-    metrics::gauge!(common::metrics::metric_name("ldbws_stalest_station_age_seconds"))
-        .set(stalest.as_secs_f64());
+    metrics::gauge!(common::metrics::metric_name(
+        "ldbws_stations_attempted_per_cycle"
+    ))
+    .set(completed as f64);
+    metrics::gauge!(common::metrics::metric_name(
+        "ldbws_stations_sampled_per_cycle"
+    ))
+    .set(sampled as f64);
+    metrics::gauge!(common::metrics::metric_name(
+        "ldbws_stalest_station_age_seconds"
+    ))
+    .set(stalest.as_secs_f64());
 }
 
 /// What one budgeted sampling pass produced.
@@ -778,6 +789,10 @@ mod tests {
         }
 
         assert_eq!(per_cycle, vec![2, 2, 2], "same per-cycle count every cycle");
-        assert_eq!(seen.len(), 5, "every station sampled within 3 cycles: {seen:?}");
+        assert_eq!(
+            seen.len(),
+            5,
+            "every station sampled within 3 cycles: {seen:?}"
+        );
     }
 }

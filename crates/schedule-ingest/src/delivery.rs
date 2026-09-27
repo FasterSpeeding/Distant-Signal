@@ -348,7 +348,10 @@ fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<
 ///   available for a delivery whose zip is gone.
 ///
 /// Returns the names adopted.
-pub fn adopt_legacy_deliveries(storage_dir: &Path, watch_dir: &Path) -> anyhow::Result<Vec<String>> {
+pub fn adopt_legacy_deliveries(
+    storage_dir: &Path,
+    watch_dir: &Path,
+) -> anyhow::Result<Vec<String>> {
     let read_dir = match std::fs::read_dir(storage_dir) {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -632,7 +635,10 @@ mod tests {
         files.sort();
 
         assert_eq!(how, Extraction::Extracted);
-        assert_eq!(names_in(storage.path()), vec!["20260903T172830Z".to_string()]);
+        assert_eq!(
+            names_in(storage.path()),
+            vec!["20260903T172830Z".to_string()]
+        );
         let final_dir = storage.path().join("20260903T172830Z");
         assert_eq!(
             names_in(&final_dir),
@@ -691,7 +697,10 @@ mod tests {
             "mca content"
         );
         assert!(final_dir.join(COMPLETE_MARKER).is_file());
-        assert_eq!(names_in(storage.path()), vec!["20260903T172830Z".to_string()]);
+        assert_eq!(
+            names_in(storage.path()),
+            vec!["20260903T172830Z".to_string()]
+        );
     }
 
     /// Compatibility: an unmarked directory whose files match the zip
@@ -719,13 +728,18 @@ mod tests {
         let watch = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let zip_path = fixture_zip(watch.path());
-        let scratch = storage.path().join(format!("{TEMP_DIR_PREFIX}20260903T172830Z"));
+        let scratch = storage
+            .path()
+            .join(format!("{TEMP_DIR_PREFIX}20260903T172830Z"));
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(scratch.join("RJTTF000ZZZ.txt"), b"leftover").unwrap();
 
         ensure_extracted(&zip_path, storage.path(), "20260903T172830Z").unwrap();
 
-        assert_eq!(names_in(storage.path()), vec!["20260903T172830Z".to_string()]);
+        assert_eq!(
+            names_in(storage.path()),
+            vec!["20260903T172830Z".to_string()]
+        );
         assert!(
             !storage
                 .path()
@@ -758,20 +772,39 @@ mod tests {
         write("20200102T000000Z", &[("RJTTF2MCA.txt", b"a")]);
         write(
             &current,
-            &[("RJTTF942MCA.txt", b"mca"), ("RJTTF942MSN.txt", b"msn content")],
+            &[
+                ("RJTTF942MCA.txt", b"mca"),
+                ("RJTTF942MSN.txt", b"msn content"),
+            ],
         );
         write(".tmp-20200103T000000Z", &[("RJTTF3MCA.txt", b"a")]);
 
         let adopted = adopt_legacy_deliveries(storage.path(), watch.path()).unwrap();
 
         assert_eq!(adopted, vec!["20200101T000000Z".to_string()]);
-        assert!(storage.path().join("20200101T000000Z").join(COMPLETE_MARKER).is_file());
-        assert!(!storage.path().join("20200102T000000Z").join(COMPLETE_MARKER).exists());
+        assert!(
+            storage
+                .path()
+                .join("20200101T000000Z")
+                .join(COMPLETE_MARKER)
+                .is_file()
+        );
+        assert!(
+            !storage
+                .path()
+                .join("20200102T000000Z")
+                .join(COMPLETE_MARKER)
+                .exists()
+        );
         assert!(!storage.path().join(&current).join(COMPLETE_MARKER).exists());
         assert!(!storage.path().join(".tmp-20200103T000000Z").exists());
 
         // And once the current zip's directory is complete, it is adopted.
-        std::fs::write(storage.path().join(&current).join("RJTTF942MCA.txt"), b"mca content").unwrap();
+        std::fs::write(
+            storage.path().join(&current).join("RJTTF942MCA.txt"),
+            b"mca content",
+        )
+        .unwrap();
         let adopted = adopt_legacy_deliveries(storage.path(), watch.path()).unwrap();
         assert_eq!(adopted, vec![current]);
     }

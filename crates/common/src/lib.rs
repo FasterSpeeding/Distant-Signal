@@ -1200,6 +1200,9 @@ pub struct TrustBacklogEventMessage {
 
 /// Response body of `POST /private/trust-event-backlog`, shared by `api`
 /// (which serializes it) and `trust-backlog-consumer` (which reads it).
+/// Since DB2-2 `POST /private/train-events` answers in the same shape too,
+/// read by `trust-consumer` (`index` is then a position in the posted
+/// `TrainMovementEventMessage` batch).
 ///
 /// `upserted` is the field the route has always returned. `rejected` was
 /// added later and lists the rows `api` refused because of a *data* error

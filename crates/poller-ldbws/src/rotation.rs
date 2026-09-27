@@ -49,7 +49,12 @@ impl Rotation {
 
     /// `stations` (sorted and deduplicated here, so the order does not
     /// depend on the caller) rotated to start at this cycle's offset.
-    pub fn order(&self, stations: &[String], unix_secs: u64, poll_interval_secs: u64) -> Vec<String> {
+    pub fn order(
+        &self,
+        stations: &[String],
+        unix_secs: u64,
+        poll_interval_secs: u64,
+    ) -> Vec<String> {
         let mut sorted = stations.to_vec();
         sorted.sort();
         sorted.dedup();
@@ -127,7 +132,12 @@ mod tests {
 
     /// Runs `cycles` cycles in which the budget allows exactly `capacity`
     /// stations each, returning the stations each cycle attempted.
-    fn simulate(all: &[String], capacity: usize, cycles: usize, unix_secs: u64) -> Vec<Vec<String>> {
+    fn simulate(
+        all: &[String],
+        capacity: usize,
+        cycles: usize,
+        unix_secs: u64,
+    ) -> Vec<Vec<String>> {
         let mut rotation = Rotation::new(Instant::now());
         let mut attempted = Vec::new();
         for cycle in 0..cycles {
@@ -238,7 +248,12 @@ mod tests {
         );
         let now = started + Duration::from_secs(100);
         assert_eq!(rotation.stalest_age(&all, now), Duration::from_secs(100));
-        rotation.finish_cycle(&all, 1, [all[2].as_str()], started + Duration::from_secs(90));
+        rotation.finish_cycle(
+            &all,
+            1,
+            [all[2].as_str()],
+            started + Duration::from_secs(90),
+        );
         assert_eq!(rotation.stalest_age(&all, now), Duration::from_secs(50));
         assert_eq!(rotation.stalest_age(&[], now), Duration::ZERO);
     }
