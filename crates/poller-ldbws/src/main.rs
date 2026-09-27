@@ -89,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
+    let progress = health_http::spawn_liveness(&config.health);
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
@@ -108,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
         poll_interval,
         config.metrics.metrics_enabled,
         config.metrics_port,
+        &progress,
         || {
             let platform_history = Rc::clone(&platform_history);
             let client = &client;
@@ -147,12 +149,13 @@ async fn poll_once(
         return Ok(());
     }
 
-    ingest::post_batch(
+    ingest::post_batch_retrying(
         client,
         &config.api_ingest_url,
         internal_oauth,
         &samples,
         "station samples",
+        common::poller_loop::post_retry_budget(Duration::from_secs(config.poll_interval_secs)),
     )
     .await
 }
@@ -459,6 +462,10 @@ mod tests {
             metrics_port: 9091,
             metrics: common::service_args::MetricsArgs {
                 metrics_enabled: false,
+            },
+            health: common::service_args::HealthArgs {
+                health_bind_url: "127.0.0.1:0".to_string(),
+                progress_stall_secs: 1800,
             },
         }
     }
