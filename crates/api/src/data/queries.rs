@@ -3545,6 +3545,7 @@ pub async fn get_full_coverage_line_stats(
                 skipped: row.try_get::<i32, _>("skipped")? as usize,
                 avg_delay_minutes: row.try_get("avg_delay_minutes")?,
             },
+            partial: false,
         })
     })
     .transpose()

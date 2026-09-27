@@ -58,6 +58,13 @@ pub struct Config {
     // Reload cadences
     #[arg(long, env, default_value_t = 300)]
     pub population_reload_secs: u64,
+    /// How long the FIRST population load may keep failing for some lines
+    /// while others load before consumption starts anyway, with the failing
+    /// lines' stats marked partial for that rail day. While every fetch
+    /// fails (`api` down) consumption never starts, however long that takes
+    /// -- see `population_reload::Reloader`.
+    #[arg(long, env, default_value_t = 600)]
+    pub population_initial_wait_secs: u64,
     #[arg(long, env, default_value_t = 3600)]
     pub stanox_crs_reload_secs: u64,
     #[arg(long, env, default_value_t = 60)]
@@ -251,6 +258,7 @@ pub(crate) mod tests {
                 internal_oauth_password: String::new(),
             },
             population_reload_secs: 300,
+            population_initial_wait_secs: 600,
             stanox_crs_reload_secs: 3600,
             stats_write_interval_secs: 60,
             shadow_lines: shadow_lines.to_string(),

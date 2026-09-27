@@ -1914,6 +1914,7 @@ mod db_tests {
                 skipped: 0,
                 avg_delay_minutes: 3.5,
             },
+            partial: false,
         }
     }
 
