@@ -74,7 +74,7 @@ use feed::kafka::KafkaMovementFeed;
 use movement_feed::ActiveFeed;
 use movement_feed::DeadLetterSink;
 use movement_feed::redis_stream::RedisStreamMovementFeed;
-use population_reload::{SharedLineIds, SharedPopulation};
+use population_reload::{SharedGeometry, SharedLineIds, SharedPopulation};
 use stats::current_rail_service_date;
 
 #[cfg(test)]
@@ -129,6 +129,8 @@ async fn main() -> anyhow::Result<()> {
     // population reload needs the line set.
     let mut lookups = Lookups::default();
     let line_ids: SharedLineIds = Arc::new(ArcSwap::from_pointee(Vec::new()));
+    // Stays empty while windowed stats are off: nothing is reduced.
+    let geometry: SharedGeometry = Arc::new(ArcSwap::from_pointee(Default::default()));
     let stanox_crs_reload_interval = Duration::from_secs(config.stanox_crs_reload_secs);
     load_stanox_crs_until_ok(
         &http,
@@ -136,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
         &internal_oauth,
         &mut lookups,
         &line_ids,
+        &geometry,
         stanox_crs_reload_interval,
         &progress,
     )
@@ -156,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         url: config.schedule_line_population_url.clone(),
         tokens: Arc::clone(&internal_oauth),
         line_ids: Arc::clone(&line_ids),
+        geometry: Arc::clone(&geometry),
         population: Arc::clone(&population),
         interval: population_reload_interval,
         min_retry: Duration::from_secs(1),
@@ -217,7 +221,15 @@ async fn main() -> anyhow::Result<()> {
         // against a stale or empty crosswalk), so the wait after a failure
         // is a short backoff, not the interval.
         if last_stanox_crs_reload.elapsed() >= stanox_crs_wait {
-            match reload_stanox_crs(&http, &config, &internal_oauth, &mut lookups, &line_ids).await
+            match reload_stanox_crs(
+                &http,
+                &config,
+                &internal_oauth,
+                &mut lookups,
+                &line_ids,
+                &geometry,
+            )
+            .await
             {
                 Ok(()) => stanox_crs_wait = stanox_crs_reload_interval,
                 Err(err) => {
@@ -445,6 +457,7 @@ async fn reload_stanox_crs(
     tokens: &common::oauth_client::OAuthTokenCache,
     lookups: &mut Lookups,
     line_ids: &SharedLineIds,
+    geometry: &SharedGeometry,
 ) -> anyhow::Result<()> {
     let records = match queries::fetch_stanox_crs(client, &config.stanox_crs_url, tokens).await {
         Ok(records) => records,
@@ -460,6 +473,14 @@ async fn reload_stanox_crs(
     lookups.stanox = stanox_tiploc::StanoxTable::from_records(&records);
     lookups.tiploc_index = population::build_tiploc_index(&config.lines, &records);
     line_ids.store(Arc::new(config.shadow_line_ids(&records)));
+    if config.windowed.enabled {
+        // A line whose geometry changes here is re-downloaded by the next
+        // population reload (its held population's hash no longer matches).
+        geometry.store(Arc::new(population::build_line_geometry(
+            &config.lines,
+            &records,
+        )));
+    }
     Ok(())
 }
 
@@ -471,13 +492,14 @@ async fn load_stanox_crs_until_ok(
     tokens: &common::oauth_client::OAuthTokenCache,
     lookups: &mut Lookups,
     line_ids: &SharedLineIds,
+    geometry: &SharedGeometry,
     interval: Duration,
     progress: &health_http::Progress,
 ) {
     let cap = failed_reload_retry_delay(interval).min(Duration::from_secs(30));
     let mut backoff = Duration::from_secs(1).min(cap);
     loop {
-        match reload_stanox_crs(client, config, tokens, lookups, line_ids).await {
+        match reload_stanox_crs(client, config, tokens, lookups, line_ids, geometry).await {
             Ok(()) => return,
             Err(err) => {
                 tracing::error!(error = ?err, retry_in_secs = backoff.as_secs(), "failed to load the stanox/crs table at startup; not consuming until it loads");
@@ -1431,6 +1453,7 @@ mod tests {
             url: format!("{}/private/schedule-line-population", server.uri()),
             tokens: Arc::new(tokens),
             line_ids: Arc::new(ArcSwap::from_pointee(vec!["waterloo-reading".to_string()])),
+            geometry: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             population: Arc::clone(&population),
             interval: Duration::from_secs(300),
             min_retry: Duration::from_millis(20),
@@ -1501,6 +1524,7 @@ mod tests {
             url: format!("{}/private/schedule-line-population", server.uri()),
             tokens: Arc::new(tokens),
             line_ids: Arc::new(ArcSwap::from_pointee(vec!["waterloo-reading".to_string()])),
+            geometry: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             population: Arc::clone(&population),
             interval: Duration::from_secs(300),
             min_retry: Duration::from_secs(1),
