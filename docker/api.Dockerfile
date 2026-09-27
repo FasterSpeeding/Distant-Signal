@@ -131,4 +131,12 @@ COPY --chown=api:api lines/ /app/lines/
 # stays in sync with the group ownership set via COPY --chown/groupadd.
 USER 1000:1000
 
+# `api` also re-executes ITSELF (`std::env::current_exe()`, i.e. this path)
+# as `api parse-ticket <pdf|pkpass>` for every ticket upload: the parse runs
+# in that short-lived, rlimited child so it can be killed on timeout (M13;
+# crates/api/src/data/ticket_subprocess.rs). No second binary, no temp
+# files (stdin/stdout only), no extra capability -- so nothing here or in
+# the chart's securityContext (readOnlyRootFilesystem, drop ALL,
+# RuntimeDefault seccomp) needs to change for it. Keep the binary at this
+# path and don't replace it in a running container.
 ENTRYPOINT ["/usr/local/bin/api"]
