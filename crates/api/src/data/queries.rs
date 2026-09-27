@@ -2102,8 +2102,13 @@ pub async fn upsert_schedule_destination_departures_chunk(
 ///
 /// `first_chunk` discards staged keys left by any OTHER publish of the same
 /// dates (an abandoned, failed-part-way publish, or a concurrent publisher
-/// that has now been superseded) and anything staged more than a day ago,
+/// that has now been superseded) and anything staged more than an hour ago,
 /// so the staging tables hold at most about one in-flight publish per date.
+/// (An hour, not the original day, since 2026-09-27: a publish takes minutes,
+/// and a cycle whose final chunks all fail -- as every date's did in that
+/// day's incident -- otherwise leaves every date's keys, ~1.8M rows, staged
+/// for a day. A publish still in flight after an hour losing its keys only
+/// fails its count check: it deletes nothing.)
 ///
 /// # Visibility
 ///
@@ -2149,13 +2154,71 @@ struct PublishKeysSql {
     /// `$2` = the publish's staged service dates.
     delete_missing: &'static str,
     drop_publish: &'static str,
+    /// This product's `pg_try_advisory_xact_lock` key, taken by every final
+    /// chunk so at most one `delete_missing` per product runs at a time. See
+    /// [`finish_publish_part`]. Must be unique across the codebase (no other
+    /// advisory locks exist as of 2026-09-27).
+    final_lock_key: i64,
+}
+
+/// `statement_timeout` for every statement of a final chunk's delete phase
+/// (the advisory lock, `summarize`, `analyze`, `delete_missing`,
+/// `drop_publish`), set with `SET LOCAL` so it ends with the transaction.
+///
+/// With the `*_publish_keys_probe` indexes and the ANALYZE, `delete_missing`
+/// takes seconds; on 2026-09-27 without them it ran 10-15+ minutes, kept
+/// going after the publisher gave up, and was piled up behind retries. 120s
+/// is far above healthy and far below that: a runaway is cancelled
+/// (SQLSTATE 57014), which aborts and rolls back this one chunk only --
+/// nothing is deleted, the date keeps its previous rows plus the upserts,
+/// exactly like any other failed final chunk -- and `api` answers 503.
+///
+/// `schedule-reference`'s final-chunk HTTP timeout
+/// (`FINAL_CHUNK_REQUEST_TIMEOUT`) is deliberately longer than this, so the
+/// publisher normally hears the 503 instead of timing out while the server
+/// is still working.
+const PUBLISH_DELETE_STATEMENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A final publish chunk was refused because another final chunk of the same
+/// product is still running its delete phase (it holds that product's
+/// advisory lock). Nothing was written: the chunk's transaction rolls back.
+/// `api` maps this to 409 Conflict; see [`finish_publish_part`].
+#[derive(Debug)]
+pub struct SchedulePublishBusy {
+    pub product: &'static str,
+}
+
+impl std::fmt::Display for SchedulePublishBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "another final chunk of a {} publish is still deleting; refusing to run a second \
+             delete concurrently",
+            self.product
+        )
+    }
+}
+
+impl std::error::Error for SchedulePublishBusy {}
+
+/// Whether `err` is Postgres cancelling a statement (SQLSTATE 57014,
+/// `query_canceled`) -- in the publish path, [`PUBLISH_DELETE_STATEMENT_TIMEOUT`]
+/// expiring.
+pub fn is_statement_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<sqlx::Error>()
+            .and_then(sqlx::Error::as_database_error)
+            .and_then(|db| db.code())
+            .is_some_and(|code| code == "57014")
+    })
 }
 
 const DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
     product: "schedule_destination_departures",
     discard_superseded: "DELETE FROM schedule_destination_departures_publish_keys \
          WHERE (service_date = ANY($2::date[]) AND publish_id <> $1) \
-            OR staged_at < now() - interval '1 day'",
+            OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
     analyze: "ANALYZE schedule_destination_departures_publish_keys",
@@ -2170,13 +2233,15 @@ const DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
                  AND k.train_uid = d.train_uid \
                  AND k.origin_crs = d.origin_crs)",
     drop_publish: "DELETE FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
+    // ASCII "sddpubfn" -- arbitrary, just distinct.
+    final_lock_key: 0x7364_6470_7562_666e,
 };
 
 const CALLING_POINTS_FULL_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
     product: "schedule_calling_points_full",
     discard_superseded: "DELETE FROM schedule_calling_points_full_publish_keys \
          WHERE (service_date = ANY($2::date[]) AND publish_id <> $1) \
-            OR staged_at < now() - interval '1 day'",
+            OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
     analyze: "ANALYZE schedule_calling_points_full_publish_keys",
@@ -2189,6 +2254,8 @@ const CALLING_POINTS_FULL_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
                  AND k.uid = c.uid \
                  AND k.seq = c.seq)",
     drop_publish: "DELETE FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
+    // ASCII "scppubfn" -- arbitrary, just distinct.
+    final_lock_key: 0x7363_7070_7562_666e,
 };
 
 /// The start-of-chunk half of [`SchedulePublishPart`]'s protocol: on the
@@ -2212,14 +2279,49 @@ async fn discard_superseded_publish_keys(
 /// The end-of-chunk half of [`SchedulePublishPart`]'s protocol: on the final
 /// chunk, verify the staged key count, delete the rows the publish did not
 /// carry, and drop the publish's staged keys. Returns rows deleted.
+///
+/// **One delete per product at a time (2026-09-27 incident).** The final
+/// chunk first takes the product's transaction-scoped advisory lock with
+/// `pg_try_advisory_xact_lock`; if another final chunk of the same product
+/// holds it, this chunk fails at once with [`SchedulePublishBusy`] (409) and
+/// rolls back, instead of queueing. Queueing (`pg_advisory_xact_lock`) was
+/// rejected: the client that sent a queued chunk has usually given up by the
+/// time the lock frees, so the queued chunk would then run a full, now
+/// pointless, delete of its own -- exactly the pile-up of the incident (8+
+/// concurrent deletes ~45s apart), merely serialised. Failing fast costs a
+/// retry nothing on the server, and the publisher does not retry a final
+/// chunk refused this way within the same cycle.
+///
+/// Every statement from here on runs under [`PUBLISH_DELETE_STATEMENT_TIMEOUT`]
+/// (passed in as `statement_timeout` so tests can shorten it).
 async fn finish_publish_part(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &PublishKeysSql,
     part: SchedulePublishPart<'_>,
+    statement_timeout: std::time::Duration,
 ) -> Result<u64> {
     let Some(expected) = part.final_total_rows else {
         return Ok(0);
     };
+
+    // `SET` cannot take a bind parameter; this is our own integer.
+    sqlx::query(&format!(
+        "SET LOCAL statement_timeout = {}",
+        statement_timeout.as_millis()
+    ))
+    .execute(&mut **tx)
+    .await?;
+
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(sql.final_lock_key)
+        .fetch_one(&mut **tx)
+        .await?;
+    if !locked {
+        return Err(SchedulePublishBusy {
+            product: sql.product,
+        }
+        .into());
+    }
 
     let (staged, dates): (i64, Vec<chrono::NaiveDate>) = sqlx::query_as(sql.summarize)
         .bind(part.publish_id)
@@ -2387,7 +2489,7 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     .execute(&mut *tx)
     .await?;
 
-    let deleted = finish_publish_part(&mut tx, sql, part).await?;
+    let deleted = finish_publish_part(&mut tx, sql, part, PUBLISH_DELETE_STATEMENT_TIMEOUT).await?;
 
     tx.commit().await?;
     if part.final_total_rows.is_some() {
@@ -2632,7 +2734,7 @@ pub async fn upsert_schedule_calling_points_full_publish_part(
     .execute(&mut *tx)
     .await?;
 
-    let deleted = finish_publish_part(&mut tx, sql, part).await?;
+    let deleted = finish_publish_part(&mut tx, sql, part, PUBLISH_DELETE_STATEMENT_TIMEOUT).await?;
 
     tx.commit().await?;
     if part.final_total_rows.is_some() {
@@ -11371,6 +11473,208 @@ mod schedule_publish_diff_tests {
         }
 
         clear_dates(&pool, &dates).await;
+    }
+
+    /// Stages `rows`' keys under `publish_id` directly, as the earlier chunks
+    /// of a publish would have, inside `tx`.
+    async fn stage_departure_keys(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        publish_id: &str,
+        rows: &[ScheduleDestinationDeparturesRow],
+    ) {
+        for row in rows {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures_publish_keys \
+                    (publish_id, service_date, destination_crs, scheduled, train_uid, origin_crs) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(publish_id)
+            .bind(row.service_date)
+            .bind(&row.destination_crs)
+            .bind(row.scheduled)
+            .bind(&row.train_uid)
+            .bind(&row.origin_crs)
+            .execute(&mut **tx)
+            .await
+            .expect("stage key");
+        }
+    }
+
+    /// **2026-09-27 incident regression.** While one final chunk of a
+    /// product is in its delete phase (holding the product's advisory lock,
+    /// transaction not yet committed), a second final chunk of the same
+    /// product is refused at once with `SchedulePublishBusy` and rolls back
+    /// entirely -- it neither runs its own delete concurrently nor queues to
+    /// run it later. Once the first commits, the second goes through.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_second_final_chunk_is_refused_while_the_first_is_deleting() {
+        let pool = test_pool().await;
+        let (date_a, date_b) = (fixture_date(20), fixture_date(21));
+        let dates = [date_a, date_b];
+        clear_dates(&pool, &dates).await;
+        let sql = &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL;
+
+        let rows_a = vec![departure(date_a, "A00001", time(8, 0), None)];
+        let rows_b = vec![departure(date_b, "B00001", time(9, 0), None)];
+
+        // Publish A's final chunk, stopped between its delete and COMMIT.
+        let mut tx_a = pool.begin().await.expect("begin A");
+        stage_departure_keys(&mut tx_a, "lock-test-a", &rows_a).await;
+        finish_publish_part(
+            &mut tx_a,
+            sql,
+            SchedulePublishPart {
+                publish_id: "lock-test-a",
+                first_chunk: true,
+                final_total_rows: Some(1),
+            },
+            PUBLISH_DELETE_STATEMENT_TIMEOUT,
+        )
+        .await
+        .expect("A's final chunk takes the lock and deletes");
+
+        let part_b = SchedulePublishPart {
+            publish_id: "lock-test-b",
+            first_chunk: true,
+            final_total_rows: Some(1),
+        };
+        let started = std::time::Instant::now();
+        let err = upsert_schedule_destination_departures_publish_part(&pool, &rows_b, part_b)
+            .await
+            .expect_err("B's final chunk must be refused while A holds the lock");
+        assert!(
+            err.downcast_ref::<SchedulePublishBusy>().is_some(),
+            "expected SchedulePublishBusy, got {err:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "B must fail fast, not queue behind A"
+        );
+        // B rolled back whole: no upserted rows, no staged keys left behind.
+        assert!(departure_tuples(&pool, date_b).await.is_empty());
+        assert_eq!(
+            staged_key_count(
+                &pool,
+                "schedule_destination_departures_publish_keys",
+                "lock-test-b"
+            )
+            .await,
+            0
+        );
+
+        tx_a.commit().await.expect("commit A");
+
+        upsert_schedule_destination_departures_publish_part(&pool, &rows_b, part_b)
+            .await
+            .expect("B goes through once A has committed");
+        assert_eq!(uids(&departure_tuples(&pool, date_b).await), ["B00001"]);
+
+        // A different product's lock is independent.
+        let mut tx_c = pool.begin().await.expect("begin C");
+        let other: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL.final_lock_key)
+            .fetch_one(&mut *tx_c)
+            .await
+            .expect("take departures lock");
+        assert!(other);
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &[calling_point(date_b, "B00001", 0, None)],
+            SchedulePublishPart {
+                publish_id: "lock-test-c",
+                first_chunk: true,
+                final_total_rows: Some(1),
+            },
+        )
+        .await
+        .expect("calling points are not blocked by the departures lock");
+        tx_c.rollback().await.expect("rollback C");
+
+        clear_dates(&pool, &dates).await;
+    }
+
+    /// A final chunk whose delete phase exceeds its statement timeout is
+    /// cancelled with SQLSTATE 57014 (`is_statement_timeout`, which `api`
+    /// maps to 503) and, once its transaction rolls back, leaves the target
+    /// rows exactly as they were and the advisory lock free.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn a_timed_out_final_chunk_rolls_back_and_deletes_nothing() {
+        let pool = test_pool().await;
+        let date = fixture_date(22);
+        clear_dates(&pool, &[date]).await;
+        let sql = &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL;
+
+        let rows = vec![
+            departure(date, "K00001", time(8, 0), None),
+            departure(date, "K00002", time(9, 0), None),
+        ];
+        upsert_schedule_destination_departures(&pool, &rows)
+            .await
+            .expect("seed the date");
+        let before = departure_tuples(&pool, date).await;
+        assert_eq!(before.len(), 2);
+
+        // Another session holds K00002's row lock, so the delete that would
+        // remove it (the publish below omits it) blocks until cancelled.
+        let mut blocker = pool.begin().await.expect("begin blocker");
+        sqlx::query(
+            "SELECT 1 FROM schedule_destination_departures \
+             WHERE service_date = $1 AND train_uid = 'K00002' FOR UPDATE",
+        )
+        .bind(date)
+        .execute(&mut *blocker)
+        .await
+        .expect("lock K00002");
+
+        let mut tx = pool.begin().await.expect("begin publish");
+        stage_departure_keys(&mut tx, "timeout-test", &rows[..1]).await;
+        let started = std::time::Instant::now();
+        let err = finish_publish_part(
+            &mut tx,
+            sql,
+            SchedulePublishPart {
+                publish_id: "timeout-test",
+                first_chunk: true,
+                final_total_rows: Some(1),
+            },
+            std::time::Duration::from_millis(500),
+        )
+        .await
+        .expect_err("the blocked delete must be cancelled by the statement timeout");
+        assert!(is_statement_timeout(&err), "expected 57014, got {err:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        tx.rollback().await.expect("rollback publish");
+        blocker.rollback().await.expect("rollback blocker");
+
+        // Untouched: same rows, same row versions, nothing staged.
+        assert_eq!(departure_tuples(&pool, date).await, before);
+        assert_eq!(
+            staged_key_count(
+                &pool,
+                "schedule_destination_departures_publish_keys",
+                "timeout-test"
+            )
+            .await,
+            0
+        );
+
+        // The lock went with the rolled-back transaction, and SET LOCAL did
+        // not leak onto the pooled connection: a normal publish succeeds.
+        upsert_schedule_destination_departures(&pool, &rows[..1])
+            .await
+            .expect("a later publish goes through");
+        assert_eq!(uids(&departure_tuples(&pool, date).await), ["K00001"]);
+        let timeout: String = sqlx::query_scalar("SHOW statement_timeout")
+            .fetch_one(&pool)
+            .await
+            .expect("show statement_timeout");
+        assert_eq!(timeout, "0");
+
+        clear_dates(&pool, &[date]).await;
     }
 }
 
