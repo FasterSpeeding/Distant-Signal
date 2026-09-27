@@ -107,6 +107,16 @@ Object keys:
 
 If a table has no rows in a batch, no object is written for it.
 
+**Upload verification.** After each PUT, a HEAD must report the same size
+as the body sent, and both the PUT's and the HEAD's ETag must equal the
+hex MD5 of the body. For a single-part PUT (every archive object is one),
+AWS S3 and the common S3-compatible servers (MinIO, Garage, SeaweedFS,
+Ceph RGW) use the body's MD5 as the ETag, so this catches a stored object
+that differs from what was sent even when the length matches. A bucket
+whose ETags are not content MD5s, such as AWS SSE-KMS or SSE-C encryption,
+fails verification on every upload, so under `retain` nothing is ever
+pruned. Use SSE-S3 or no server-side encryption for the archive bucket.
+
 **Failure behaviour** (`failurePolicy`):
 
 - `retain` (default): if an upload or its verification fails, the batch

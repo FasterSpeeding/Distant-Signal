@@ -330,12 +330,22 @@ impl Archiver {
         ]))
     }
 
-    /// PUTs `bytes` to `path`, then HEADs it and checks the size, so the
-    /// caller only deletes rows once the object is confirmed present in
-    /// full. A PUT overwrites any stale object at the same key.
+    /// PUTs `bytes` to `path`, then HEADs it and checks its size and ETag,
+    /// so the caller only deletes rows once the object is confirmed present
+    /// in full. A PUT overwrites any stale object at the same key.
+    ///
+    /// The ETag check (SVC-07): for a single-part PUT, S3 and the common
+    /// S3-compatible servers (MinIO, Garage, SeaweedFS, Ceph RGW) return the
+    /// hex MD5 of the stored body as the ETag, so both the PUT's and the
+    /// HEAD's ETag must equal the MD5 of the bytes sent. A size check alone
+    /// would pass a same-length corrupted body. A store whose ETag is not
+    /// the body's MD5 (AWS SSE-KMS or SSE-C encryption, for one) fails this
+    /// check on every upload; `docs/cold-archive.md` says so.
     async fn put_verified(&self, path: &Path, bytes: Vec<u8>) -> Result<()> {
         let len = bytes.len() as u64;
-        self.store
+        let md5 = md5_hex(&bytes);
+        let put = self
+            .store
             .put(path, PutPayload::from(bytes))
             .await
             .with_context(|| format!("uploading archive object {path}"))?;
@@ -349,8 +359,37 @@ impl Archiver {
             "archive object {path} has size {} after upload, expected {len}",
             meta.size
         );
+        for (which, etag) in [
+            ("PUT", put.e_tag.as_deref()),
+            ("HEAD", meta.e_tag.as_deref()),
+        ] {
+            let etag = etag.map(normalize_etag);
+            anyhow::ensure!(
+                etag.as_deref() == Some(md5.as_str()),
+                "archive object {path}: the {which} ETag {etag:?} is not the MD5 of the uploaded \
+                 body ({md5}); the object may be corrupt, or this store's ETags are not content \
+                 MD5s (e.g. SSE-KMS), which the cold archive cannot verify"
+            );
+        }
         Ok(())
     }
+}
+
+/// Lower-case hex MD5 of `bytes`, the form S3 uses in a single-part ETag.
+fn md5_hex(bytes: &[u8]) -> String {
+    use md5::{Digest, Md5};
+    Md5::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// An ETag as a bare lower-case value: no weak `W/` prefix, no quotes.
+fn normalize_etag(etag: &str) -> String {
+    etag.trim()
+        .trim_start_matches("W/")
+        .trim_matches('"')
+        .to_ascii_lowercase()
 }
 
 /// Accumulates JSON Lines into a zstd-compressed in-memory buffer, so only
@@ -885,7 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_verified_writes_and_overwrites() {
-        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let store: Arc<dyn ObjectStore> = Arc::new(FlakyStore::default());
         let a = archiver(store.clone(), FailurePolicy::Retain);
         let path = a.object_path("trains", NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), 1);
         a.put_verified(&path, b"first".to_vec()).await.unwrap();
@@ -922,6 +961,11 @@ mod tests {
         lock_free_during_put: std::sync::Mutex<Vec<bool>>,
         /// During the next PUT, change this `trains` row (once).
         mutate_on_put: std::sync::Mutex<Option<(PgPool, i64)>>,
+        /// ETag per object, as S3 reports it: the body's quoted hex MD5.
+        etags: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        /// Report an ETag that does not match the stored body on HEAD, as
+        /// if the stored object were corrupt.
+        corrupt_etag: std::sync::atomic::AtomicBool,
     }
 
     impl std::fmt::Display for FlakyStore {
@@ -968,7 +1012,15 @@ mod tests {
                     .await
                     .unwrap();
             }
-            self.inner.put_opts(location, payload, opts).await
+            let body: Vec<u8> = payload.iter().flat_map(|b| b.iter().copied()).collect();
+            let etag = format!("\"{}\"", md5_hex(&body));
+            let mut result = self.inner.put_opts(location, payload, opts).await?;
+            self.etags
+                .lock()
+                .unwrap()
+                .insert(location.to_string(), etag.clone());
+            result.e_tag = Some(etag);
+            Ok(result)
         }
 
         async fn put_multipart_opts(
@@ -987,7 +1039,17 @@ mod tests {
             if options.head && self.fail_head.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(injected());
             }
-            self.inner.get_opts(location, options).await
+            let mut result = self.inner.get_opts(location, options).await?;
+            result.meta.e_tag = if self.corrupt_etag.load(std::sync::atomic::Ordering::SeqCst) {
+                Some(format!("\"{}\"", md5_hex(b"something else")))
+            } else {
+                self.etags
+                    .lock()
+                    .unwrap()
+                    .get(&location.to_string())
+                    .cloned()
+            };
+            Ok(result)
         }
 
         fn delete_stream(
@@ -1112,7 +1174,7 @@ mod tests {
         let pool = pool().await;
         let date = NaiveDate::from_ymd_opt(2001, 2, 3).unwrap();
         let ids = seed(&pool, "TEST-ARCHIVE-OK-", date, 5).await;
-        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let store: Arc<dyn ObjectStore> = Arc::new(FlakyStore::default());
         let a = archiver(store.clone(), FailurePolicy::Retain);
 
         // Batch of 2 -> parts starting at ids[0], ids[2], ids[4].
@@ -1278,7 +1340,7 @@ mod tests {
         .await
         .unwrap();
 
-        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let store: Arc<dyn ObjectStore> = Arc::new(FlakyStore::default());
         let a = archiver(store.clone(), FailurePolicy::Retain);
         archive_and_prune_trains(&pool, &a, 30, 14, 1000)
             .await
@@ -1371,6 +1433,40 @@ mod tests {
         assert_eq!(
             rows[0]["origin_crs"], "CHG",
             "the archive holds the rows as they were deleted"
+        );
+    }
+
+    /// SVC-07: a stored object whose ETag is not the MD5 of what was sent
+    /// fails verification (a size-only check passed it), and a plain
+    /// in-memory store (counter ETags, not MD5s) fails too.
+    #[tokio::test]
+    async fn put_verified_checks_the_etag_is_the_body_md5() {
+        assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(normalize_etag("W/\"ABCDEF\""), "abcdef");
+
+        let flaky = Arc::new(FlakyStore::default());
+        let a = archiver(flaky.clone(), FailurePolicy::Retain);
+        let path = a.object_path("trains", NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), 1);
+        a.put_verified(&path, b"payload".to_vec())
+            .await
+            .expect("a matching MD5 ETag verifies");
+
+        flaky
+            .corrupt_etag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = a
+            .put_verified(&path, b"payload".to_vec())
+            .await
+            .expect_err("same size, different content must not verify");
+        assert!(err.to_string().contains("HEAD ETag"), "{err}");
+
+        let plain = archiver(Arc::new(InMemory::new()), FailurePolicy::Retain);
+        assert!(
+            plain
+                .put_verified(&path, b"payload".to_vec())
+                .await
+                .is_err(),
+            "an ETag that is not an MD5 cannot be verified"
         );
     }
 }
