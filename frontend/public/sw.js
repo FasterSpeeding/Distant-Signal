@@ -136,10 +136,12 @@ self.addEventListener('fetch', (event) => {
 // above, per this file's own header comment.
 
 self.addEventListener('push', (event) => {
-  if (!event.data) {
+  // FE-10: a missing or non-JSON payload is dropped, not thrown.
+  const payload = self.parsePushPayload(event.data);
+  if (!payload || typeof payload.title !== 'string') {
     return;
   }
-  const { title, body, url, tag } = event.data.json();
+  const { title, body, url, tag } = payload;
 
   event.waitUntil(
     (async () => {
@@ -159,5 +161,11 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  event.waitUntil(self.clients.openWindow(event.notification.data.url));
+  // FE-10: only ever open a page on this site, whatever the payload named.
+  const data = event.notification.data || {};
+  const target = self.sameOriginNotificationUrl(data.url, self.location.origin);
+  if (!target) {
+    return;
+  }
+  event.waitUntil(self.clients.openWindow(target));
 });
