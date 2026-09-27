@@ -516,6 +516,24 @@ impl AppState {
             connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10)),
         );
 
+        // INF-5: wait for Postgres (e.g. still in crash recovery after a
+        // node reboot) rather than exiting into CrashLoopBackOff. The
+        // listener isn't bound until after this and the migrations, so the
+        // startup/readiness probes stay failing meanwhile.
+        common::startup::retry_until_ready(
+            "Postgres",
+            common::startup::CONNECT_BACKOFF,
+            None,
+            || async {
+                use sqlx::Connection;
+                sqlx::PgConnection::connect_with(&connect_options)
+                    .await?
+                    .close()
+                    .await
+            },
+        )
+        .await;
+
         let db = PgPoolOptions::new()
             .max_connections(50)
             .connect_with(connect_options)
