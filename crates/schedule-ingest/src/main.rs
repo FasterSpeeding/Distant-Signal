@@ -23,10 +23,11 @@
 //! `last_ingested_mtime` and `known_stable`/`known_stray_files` -- the next
 //! cycle will find the same zip (still present in `watch_dir`, since this
 //! crate reads it in place and never deletes/moves it -- see `delivery.rs`)
-//! and re-extract + re-POST it. Extraction into the same timestamp-derived
-//! directory is idempotent, and the `api` insert is `ON CONFLICT (delivered_at)
-//! DO NOTHING`, so a restart costs one harmless redundant cycle, not a
-//! silently swallowed gap.
+//! and re-POST it. Since PL-13 it does NOT extract it again: the delivery
+//! directory already carries the completion marker (see
+//! `delivery::ensure_extracted`), whose file list is re-posted as is. The
+//! `api` insert is `ON CONFLICT (delivered_at) DO NOTHING`, so a restart
+//! costs one harmless redundant POST, not a silently swallowed gap.
 
 mod config;
 mod delivery;
@@ -115,6 +116,20 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
+
+    // PL-6: directories extracted before the completion marker existed are
+    // adopted (or left for re-extraction), and scratch directories from an
+    // interrupted extraction removed, before anything else touches the
+    // volume.
+    match delivery::adopt_legacy_deliveries(&config.storage_dir, &config.watch_dir) {
+        Ok(adopted) if !adopted.is_empty() => {
+            tracing::info!(adopted = ?adopted, "marked pre-existing complete delivery directories as complete");
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::error!(error = ?err, "failed to adopt pre-existing delivery directories; they stay invisible to schedule-reference until re-extracted");
+        }
+    }
 
     let mut tracker = StabilityTracker::new();
     let mut known_stable: HashSet<String> = HashSet::new();
@@ -294,12 +309,27 @@ async fn run_scan_cycle(
         DeliveryRelation::New => {}
     }
 
+    let delivered_at: DateTime<Utc> = DateTime::<Utc>::from(zip_mtime);
+    // PL-13: this delivery's POST already failed and is queued for retry at
+    // the top of every cycle -- a second, identical request is pointless.
+    if pending_post
+        .as_ref()
+        .is_some_and(|pending| pending.delivered_at == delivered_at)
+    {
+        tracing::info!(zip = %zip_filename, "zip delivery already extracted; its api POST is pending retry");
+        return Ok(());
+    }
+
     let dir_name = delivery::delivery_dir_name(zip_mtime);
-    let delivery_dir = config.storage_dir.join(&dir_name);
     let zip_path = config.watch_dir.join(&zip_filename);
 
-    let extracted = match delivery::extract_zip(&zip_path, &delivery_dir) {
-        Ok(extracted) => extracted,
+    // PL-6/PL-13: atomic (temp dir, fsync, marker, rename), and a no-op for
+    // a delivery that is already complete on disk.
+    let extracted = match delivery::ensure_extracted(&zip_path, &config.storage_dir, &dir_name) {
+        Ok((extracted, how)) => {
+            tracing::info!(zip = %zip_filename, dir = %dir_name, outcome = ?how, "delivery directory complete");
+            extracted
+        }
         Err(err) => {
             tracing::error!(error = ?err, zip = %zip_filename, "failed to extract a stable zip delivery; retrying next cycle");
             return Ok(());
@@ -311,7 +341,6 @@ async fn run_scan_cycle(
         .map(|(name, bytes)| ScheduleFeedFile { name, bytes })
         .collect();
 
-    let delivered_at: DateTime<Utc> = DateTime::<Utc>::from(zip_mtime);
     let request = ScheduleFeedIngestRequest {
         delivered_at,
         ingested_at: Utc::now(),
@@ -758,6 +787,82 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(delivery_dir.join("RJTTF942MSN.txt")).unwrap(),
             "msn content"
+        );
+    }
+
+    /// PL-13: while the api POST keeps failing, later cycles neither
+    /// extract the zip again nor send a second copy of the request -- the
+    /// queued retry is the only POST.
+    #[tokio::test]
+    async fn a_failing_post_does_not_re_extract_the_delivery_every_cycle() {
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let bytes = delivery::build_test_zip(&[
+            ("RJTTF942MCA.txt", b"mca content"),
+            ("RJTTF942MSN.txt", b"msn content"),
+        ]);
+        std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
+
+        let config = test_config(watch_dir.path(), storage_dir.path());
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let internal_oauth = test_oauth();
+        let mut tracker = StabilityTracker::new();
+        let mut known_stable = HashSet::new();
+        let mut known_stray_files = HashSet::new();
+        let mut last_ingested_mtime = None;
+        let mut pending_post = None;
+
+        let mut marker_stamp = None;
+        for cycle in 0..6 {
+            run_scan_cycle(
+                &client,
+                &config,
+                &internal_oauth,
+                &mut tracker,
+                &mut known_stable,
+                &mut known_stray_files,
+                &mut last_ingested_mtime,
+                &mut pending_post,
+                false,
+            )
+            .await
+            .unwrap();
+            let dirs: Vec<_> = std::fs::read_dir(storage_dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            if cycle == 1 {
+                // First extraction (stability_cycles = 2): mark the file so a
+                // re-extraction would be visible.
+                assert_eq!(dirs.len(), 1);
+                std::fs::write(dirs[0].join("RJTTF942MCA.txt"), b"sentinel").unwrap();
+                marker_stamp = Some(
+                    std::fs::metadata(dirs[0].join(common::schedule_delivery::COMPLETE_MARKER))
+                        .unwrap()
+                        .modified()
+                        .unwrap(),
+                );
+            }
+        }
+
+        assert!(pending_post.is_some(), "the POST is still queued for retry");
+        assert_eq!(last_ingested_mtime, None);
+        let dirs: Vec<_> = std::fs::read_dir(storage_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(dirs.len(), 1, "no scratch directories left behind");
+        assert_eq!(
+            std::fs::read_to_string(dirs[0].join("RJTTF942MCA.txt")).unwrap(),
+            "sentinel",
+            "the delivery was not extracted again"
+        );
+        assert_eq!(
+            std::fs::metadata(dirs[0].join(common::schedule_delivery::COMPLETE_MARKER))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            marker_stamp.unwrap()
         );
     }
 

@@ -19,6 +19,7 @@ pub mod oauth_client;
 pub mod outbound_endpoint_guard;
 pub mod poller_loop;
 pub mod rail_day;
+pub mod schedule_delivery;
 pub mod segments;
 pub mod service_args;
 pub mod text_hash;
