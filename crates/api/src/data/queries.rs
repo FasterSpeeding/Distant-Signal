@@ -2142,6 +2142,10 @@ struct PublishKeysSql {
     discard_superseded: &'static str,
     /// Returns `(staged row count, distinct staged service dates)`.
     summarize: &'static str,
+    /// Refreshes the staging table's planner statistics. Run (inside the
+    /// final chunk's transaction) right before `delete_missing`; takes no
+    /// parameters. See [`finish_publish_part`] for why.
+    analyze: &'static str,
     /// `$2` = the publish's staged service dates.
     delete_missing: &'static str,
     drop_publish: &'static str,
@@ -2154,6 +2158,7 @@ const DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
             OR staged_at < now() - interval '1 day'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
+    analyze: "ANALYZE schedule_destination_departures_publish_keys",
     delete_missing: "DELETE FROM schedule_destination_departures d \
          WHERE d.service_date = ANY($2::date[]) \
            AND NOT EXISTS ( \
@@ -2174,6 +2179,7 @@ const CALLING_POINTS_FULL_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
             OR staged_at < now() - interval '1 day'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
+    analyze: "ANALYZE schedule_calling_points_full_publish_keys",
     delete_missing: "DELETE FROM schedule_calling_points_full c \
          WHERE c.service_date = ANY($2::date[]) \
            AND NOT EXISTS ( \
@@ -2221,6 +2227,37 @@ async fn finish_publish_part(
         .await?;
 
     let deleted = if u64::try_from(staged).ok() == Some(expected) && !dates.is_empty() {
+        // Fresh statistics before the anti-join. Between publishes the
+        // staging table is emptied, so whatever statistics autoanalyze last
+        // left describe an OLDER publish: `publish_id = $1` is then a value
+        // missing from the MCV list and is estimated at ~0 rows, and the
+        // planner picks a nested-loop anti-join. Without an index that
+        // re-scanned every staged key once per target row -- in production
+        // (2026-09-27) 150k keys x ~1.66M rows, 6+ minutes at a full core.
+        // The `*_publish_keys_probe` indexes (migrations 20260926220000 /
+        // 20260926220100) bound the damage if a nested loop is still chosen;
+        // this makes the planner see the real row count and pick a
+        // hash/merge anti-join in the first place. ANALYZE also invalidates
+        // this connection's cached plan for `delete_missing`.
+        //
+        // Cost and locking: the staging table holds about one in-flight
+        // publish (~150k narrow rows), and ANALYZE samples at most 30k of
+        // them -- tens of milliseconds. It takes SHARE UPDATE EXCLUSIVE,
+        // held to COMMIT, which does NOT conflict with the ROW EXCLUSIVE
+        // lock that other publishes' chunk INSERTs / DELETEs take, so they
+        // proceed concurrently. It does conflict with itself, so two final
+        // chunks of the SAME product serialise (the second waits for the
+        // first's delete to commit); publishes are per-date and sequential
+        // from one publisher, so that is at worst a short wait. (Two
+        // concurrent finals for OVERLAPPING dates -- already the unsupported
+        // "one publish supersedes another" case -- could now deadlock on
+        // this lock plus target-row locks; Postgres detects that and aborts
+        // one chunk, which the publisher retries, rather than hanging.)
+        //
+        // ANALYZE samples this transaction's own uncommitted inserts as
+        // live rows, so the final chunk's keys are counted too.
+        sqlx::query(sql.analyze).execute(&mut **tx).await?;
+
         sqlx::query(sql.delete_missing)
             .bind(part.publish_id)
             .bind(&dates)
@@ -11063,6 +11100,277 @@ mod schedule_publish_diff_tests {
         assert_eq!(calling_points[0].2.as_deref(), Some("FIRST"));
 
         clear_dates(&pool, &[date]).await;
+    }
+
+    /// `(indexdef, indisvalid)` for `index` on `table`, if it exists.
+    async fn index_definition(pool: &PgPool, table: &str, index: &str) -> Option<(String, bool)> {
+        sqlx::query_as(
+            "SELECT pg_get_indexdef(i.indexrelid), i.indisvalid \
+             FROM pg_index i \
+             JOIN pg_class ic ON ic.oid = i.indexrelid \
+             JOIN pg_class tc ON tc.oid = i.indrelid \
+             WHERE tc.relname = $1 AND ic.relname = $2",
+        )
+        .bind(table)
+        .bind(index)
+        .fetch_optional(pool)
+        .await
+        .expect("read index definition")
+    }
+
+    /// Migrations 20260926220000 / 20260926220100 build the anti-join probe
+    /// indexes, valid, with `publish_id` leading and the `delete_missing`
+    /// equality columns after it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn the_publish_key_staging_tables_have_valid_probe_indexes() {
+        let pool = test_pool().await;
+        for (table, index, columns) in [
+            (
+                "schedule_destination_departures_publish_keys",
+                "schedule_destination_departures_publish_keys_probe",
+                "(publish_id, service_date, destination_crs, scheduled, train_uid, origin_crs)",
+            ),
+            (
+                "schedule_calling_points_full_publish_keys",
+                "schedule_calling_points_full_publish_keys_probe",
+                "(publish_id, service_date, uid, seq)",
+            ),
+        ] {
+            let (def, valid) = index_definition(&pool, table, index)
+                .await
+                .unwrap_or_else(|| panic!("{index} must exist on {table}"));
+            assert!(
+                valid,
+                "{index} must be valid (a failed CONCURRENTLY build is not)"
+            );
+            assert!(
+                def.ends_with(&format!("USING btree {columns}")),
+                "{index} has an unexpected definition: {def}"
+            );
+        }
+    }
+
+    /// `EXPLAIN` of `sql.delete_missing` for `publish_id` / `dates`, run in
+    /// `tx` so it sees that transaction's `SET LOCAL`s and ANALYZE.
+    async fn explain_delete_missing(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        sql: &PublishKeysSql,
+        publish_id: &str,
+        dates: &[chrono::NaiveDate],
+    ) -> String {
+        let lines: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {}", sql.delete_missing))
+            .bind(publish_id)
+            .bind(dates)
+            .fetch_all(&mut **tx)
+            .await
+            .expect("EXPLAIN delete_missing");
+        lines.join("\n")
+    }
+
+    /// Checks the production failure mode (2026-09-27: a nested-loop
+    /// anti-join that seq-scanned the staging table once per target row)
+    /// cannot recur for `sql`, given `publish_id`'s keys staged on `dates`:
+    ///
+    /// 1. After the `analyze` statement `finish_publish_part` now runs, the
+    ///    planner's chosen plan is not a nested loop over a seq-scanned
+    ///    staging table.
+    /// 2. Even if a nested loop IS chosen (forced here by disabling hash and
+    ///    merge joins), its inner side probes the new index rather than
+    ///    seq-scanning the staging table.
+    async fn assert_delete_missing_plan_is_safe(
+        pool: &PgPool,
+        sql: &PublishKeysSql,
+        keys_table: &str,
+        probe_index: &str,
+        publish_id: &str,
+        dates: &[chrono::NaiveDate],
+    ) {
+        let seq_scan_of_keys = format!("Seq Scan on {keys_table}");
+
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(sql.analyze)
+            .execute(&mut *tx)
+            .await
+            .expect("ANALYZE the staging table inside a transaction");
+        let plan = explain_delete_missing(&mut tx, sql, publish_id, dates).await;
+        assert!(
+            !(plan.contains("Nested Loop") && plan.contains(&seq_scan_of_keys)),
+            "after ANALYZE, {} must not be a nested loop over a seq-scanned staging table:\n{plan}",
+            sql.product
+        );
+
+        sqlx::query("SET LOCAL enable_hashjoin = off")
+            .execute(&mut *tx)
+            .await
+            .expect("disable hash joins");
+        sqlx::query("SET LOCAL enable_mergejoin = off")
+            .execute(&mut *tx)
+            .await
+            .expect("disable merge joins");
+        let forced = explain_delete_missing(&mut tx, sql, publish_id, dates).await;
+        assert!(
+            forced.contains("Nested Loop"),
+            "sanity: with hash and merge joins disabled the plan is a nested loop:\n{forced}"
+        );
+        assert!(
+            forced.contains(probe_index) && !forced.contains(&seq_scan_of_keys),
+            "a nested-loop {} anti-join must probe {probe_index}, not seq-scan the staging \
+             table:\n{forced}",
+            sql.product
+        );
+        tx.rollback().await.expect("rollback");
+    }
+
+    /// Regression test for the 2026-09-27 production CPU burn: stage a
+    /// realistic-shaped publish (with the staging table's statistics left
+    /// describing an OLDER publish id, as in production), then check the
+    /// final chunk's `delete_missing` plan for both products, and that the
+    /// final chunk itself -- which now ANALYZEs before deleting -- still
+    /// deletes exactly the rows the publish did not carry.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn the_final_chunk_delete_never_nested_loops_over_a_seq_scanned_staging_table() {
+        const ROWS: usize = 2_000;
+        let pool = test_pool().await;
+        let date = fixture_date(13);
+        let dates = [date];
+        clear_dates(&pool, &dates).await;
+
+        let departures: Vec<ScheduleDestinationDeparturesRow> = (0..ROWS)
+            .map(|i| departure(date, &format!("PLAN-{i:05}"), time(8, 0), None))
+            .collect();
+        let calling_points: Vec<ScheduleCallingPointsFullRow> = (0..ROWS)
+            .map(|i| calling_point(date, &format!("PLAN-{:05}", i / 10), (i % 10) as i16, None))
+            .collect();
+
+        // An older, complete publish: its rows are in the target tables, and
+        // the staging tables' statistics are left describing ITS publish id
+        // (then its keys are dropped), exactly the stale state production
+        // was in when the new publish's final chunk planned its delete.
+        upsert_schedule_destination_departures_publish_part(
+            &pool,
+            &departures,
+            SchedulePublishPart {
+                publish_id: "test-plan-old",
+                first_chunk: true,
+                final_total_rows: None,
+            },
+        )
+        .await
+        .expect("old publish, departures");
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &calling_points,
+            SchedulePublishPart {
+                publish_id: "test-plan-old",
+                first_chunk: true,
+                final_total_rows: None,
+            },
+        )
+        .await
+        .expect("old publish, calling points");
+        for sql in [
+            &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL,
+            &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL,
+        ] {
+            sqlx::query(sql.analyze)
+                .execute(&pool)
+                .await
+                .expect("analyze old staging");
+            sqlx::query(sql.drop_publish)
+                .bind("test-plan-old")
+                .execute(&pool)
+                .await
+                .expect("drop old staging");
+        }
+
+        // The new publish carries every row but the last; stage it without
+        // finalizing, then check the plan the final chunk would get.
+        let publish_id = "test-plan-new";
+        let new_part = SchedulePublishPart {
+            publish_id,
+            first_chunk: true,
+            final_total_rows: None,
+        };
+        upsert_schedule_destination_departures_publish_part(
+            &pool,
+            &departures[..ROWS - 1],
+            new_part,
+        )
+        .await
+        .expect("new publish, departures");
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &calling_points[..ROWS - 1],
+            new_part,
+        )
+        .await
+        .expect("new publish, calling points");
+
+        assert_delete_missing_plan_is_safe(
+            &pool,
+            &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL,
+            "schedule_destination_departures_publish_keys",
+            "schedule_destination_departures_publish_keys_probe",
+            publish_id,
+            &dates,
+        )
+        .await;
+        assert_delete_missing_plan_is_safe(
+            &pool,
+            &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL,
+            "schedule_calling_points_full_publish_keys",
+            "schedule_calling_points_full_publish_keys_probe",
+            publish_id,
+            &dates,
+        )
+        .await;
+
+        // Finalize through the real path (which ANALYZEs in its own
+        // transaction): the last row is re-sent by the final chunk, so every
+        // row survives and nothing is deleted, then a publish without it
+        // deletes exactly it.
+        let final_part = SchedulePublishPart {
+            publish_id,
+            first_chunk: false,
+            final_total_rows: Some(ROWS as u64),
+        };
+        upsert_schedule_destination_departures_publish_part(
+            &pool,
+            &departures[ROWS - 1..],
+            final_part,
+        )
+        .await
+        .expect("new publish, departures final chunk");
+        upsert_schedule_calling_points_full_publish_part(
+            &pool,
+            &calling_points[ROWS - 1..],
+            final_part,
+        )
+        .await
+        .expect("new publish, calling points final chunk");
+        assert_eq!(departure_tuples(&pool, date).await.len(), ROWS);
+        assert_eq!(calling_point_tuples(&pool, date).await.len(), ROWS);
+
+        upsert_schedule_destination_departures(&pool, &departures[..ROWS - 1])
+            .await
+            .expect("publish without the last departure");
+        upsert_schedule_calling_points_full(&pool, &calling_points[..ROWS - 1])
+            .await
+            .expect("publish without the last calling point");
+        assert_eq!(departure_tuples(&pool, date).await.len(), ROWS - 1);
+        assert_eq!(calling_point_tuples(&pool, date).await.len(), ROWS - 1);
+        for table in [
+            "schedule_destination_departures_publish_keys",
+            "schedule_calling_points_full_publish_keys",
+        ] {
+            assert_eq!(staged_key_count(&pool, table, publish_id).await, 0);
+        }
+
+        clear_dates(&pool, &dates).await;
     }
 }
 
