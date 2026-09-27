@@ -45,6 +45,19 @@ or testing a local change) without going through that pipeline — either set
 once, or point each `*.image.repository` you're replacing at your own
 `$REG/...` directly.
 
+The same workflow packages this chart and pushes it to
+`oci://ghcr.io/fasterspeeding/charts/distant-signal`, cosign-signed keylessly
+like the images (INF-12). Verify a pulled chart with:
+
+```bash
+cosign verify ghcr.io/fasterspeeding/charts/distant-signal@sha256:<digest> \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/FasterSpeeding/Distant-Signal/.github/workflows/containers.yml@refs/heads/main
+```
+
+In Flux, set `verify.provider: cosign` with a `matchOIDCIdentity` entry for
+that issuer and subject on the chart's OCIRepository/HelmRepository.
+
 | Dockerfile | Default image repository |
 |---|---|
 | `docker/api.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/api` |
