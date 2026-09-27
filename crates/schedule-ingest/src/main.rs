@@ -117,6 +117,8 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
+    // Registered at 0 so the alert's increase() sees the first rejection.
+    metrics::counter!(common::metrics::metric_name(ZIP_REJECTED_METRIC)).increment(0);
 
     // PL-6: directories extracted before the completion marker existed are
     // adopted (or left for re-extraction), and scratch directories from an
@@ -409,6 +411,10 @@ async fn run_scan_cycle(
 
     Ok(())
 }
+
+/// Counts zip deliveries quarantined by the PL-5 extraction caps; the
+/// chart's `DistantSignalScheduleFeedZipRejected` alert reads it.
+const ZIP_REJECTED_METRIC: &str = "schedule_feed_zip_rejected_total";
 
 /// POSTs one completed delivery record to `config.api_ingest_url`.
 ///

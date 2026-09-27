@@ -2837,9 +2837,12 @@ metrics:
     # DistantSignalScheduleReferenceNotSeeded: schedule-reference has not
     # read its last completed publish from api for `notSeededFor` since it
     # started, so it publishes nothing.
+    # DistantSignalScheduleFeedZipRejected: schedule-ingest quarantined an
+    # uploaded delivery zip within `zipRejectedWindow` (PL-5 caps).
     schedulePipeline:
       enabled: true
       notSeededFor: 30m
+      zipRejectedWindow: 6h
       severity: warning
 
 # ---------------------------------------------------------------------------
