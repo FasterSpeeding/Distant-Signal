@@ -866,6 +866,13 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
 /// `NULL`, that would re-open the `train_current_state.event_time IS NULL`
 /// branch for every subsequent call, permanently defeating the guard for
 /// this `trains_id` after just one no-timestamp event.
+///
+/// **No-op guard (DB2-3).** trust-consumer fans one movement out as one
+/// message per subscriber of the same train, so the same state arrived N
+/// times and was rewritten N times (plus `updated_at` and a dead tuple
+/// each). The `IS DISTINCT FROM` clause skips the write when nothing but
+/// `updated_at` would change; `updated_at` therefore records the last
+/// real change.
 pub async fn upsert_train_movement(
     pool: &PgPool,
     trains_id: i64,
@@ -926,9 +933,18 @@ pub async fn upsert_train_movement_on(
             eta_source               = EXCLUDED.eta_source, \
             event_time               = COALESCE(EXCLUDED.event_time, train_current_state.event_time), \
             updated_at               = NOW() \
-         WHERE EXCLUDED.event_time IS NULL \
+         WHERE (EXCLUDED.event_time IS NULL \
             OR EXCLUDED.event_time >= train_current_state.event_time \
-            OR train_current_state.event_time IS NULL",
+            OR train_current_state.event_time IS NULL) \
+           AND (train_current_state.status, train_current_state.last_reported_location, \
+                train_current_state.last_event_type, train_current_state.delay_minutes, \
+                train_current_state.next_calling_point, train_current_state.eta_next, \
+                train_current_state.eta_source, train_current_state.event_time) \
+               IS DISTINCT FROM \
+               (EXCLUDED.status, EXCLUDED.last_reported_location, \
+                EXCLUDED.last_event_type, EXCLUDED.delay_minutes, \
+                EXCLUDED.next_calling_point, EXCLUDED.eta_next, \
+                EXCLUDED.eta_source, COALESCE(EXCLUDED.event_time, train_current_state.event_time))",
     )
     .bind(trains_id)
     .bind(&event.status)
@@ -3908,6 +3924,94 @@ mod db_tests {
             "current-state upsert must still apply the second call's fresher values"
         );
         assert_eq!(last_reported_location, Some("CLJ".to_string()));
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// DB2-3: the same state delivered again (one message per subscriber
+    /// of a shared train) must not rewrite `train_current_state`; a real
+    /// change still must. `xmin` changes on every row version, so it shows
+    /// whether an UPDATE actually happened.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                an_identical_state_does_not_rewrite_current_state \
+                -- --ignored --test-threads=1`"]
+    async fn an_identical_state_does_not_rewrite_current_state() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "DB2-3-NOOP-UID", service_date)
+                .await
+                .expect("find_or_create_train");
+        let at: DateTime<Utc> = "2026-09-06T08:00:00Z".parse().unwrap();
+        let event = |dedup_key: &str, delay: i32| TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: dedup_key.to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("87212".to_string()),
+            loc_crs: Some("WAT".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: Some(at),
+            variation_status: None,
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("WAT".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(delay),
+            next_calling_point: None,
+            eta_next: None,
+            eta_source: None,
+        };
+        let xmin = |pool: PgPool| async move {
+            let (xmin,): (String,) =
+                sqlx::query_as("SELECT xmin::text FROM train_current_state WHERE trains_id = $1")
+                    .bind(trains_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read xmin");
+            xmin
+        };
+
+        upsert_train_movement(&pool, trains_id, &event("db2-3-a", 2))
+            .await
+            .unwrap();
+        let first = xmin(pool.clone()).await;
+        // Two more subscribers' copies of the same movement.
+        upsert_train_movement(&pool, trains_id, &event("db2-3-a", 2))
+            .await
+            .unwrap();
+        upsert_train_movement(&pool, trains_id, &event("db2-3-a", 2))
+            .await
+            .unwrap();
+        assert_eq!(
+            xmin(pool.clone()).await,
+            first,
+            "an identical state must not be rewritten"
+        );
+
+        // Same event_time, new state: still applies.
+        upsert_train_movement(&pool, trains_id, &event("db2-3-b", 4))
+            .await
+            .unwrap();
+        assert_ne!(
+            xmin(pool.clone()).await,
+            first,
+            "a real change must still be written"
+        );
+        let (delay,): (Option<i32>,) =
+            sqlx::query_as("SELECT delay_minutes FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(delay, Some(4));
 
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
