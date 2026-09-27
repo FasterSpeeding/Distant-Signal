@@ -54,8 +54,18 @@ describe('ChatPage', () => {
   });
 
   it('renders the ChatPanel for an allowed user', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
     vi.mocked(api.getChatbotAccess).mockResolvedValue('allowed');
     renderWithMantine(await ChatPage());
     expect(screen.getByPlaceholderText(/next train/)).toBeInTheDocument();
+  });
+
+  // FE-2: the MCP URL is read at request time on the server.
+  it('says chat is not configured, instead of mounting ChatPanel, when the MCP URL is unset', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', '');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue('allowed');
+    renderWithMantine(await ChatPage());
+    expect(screen.getByText(/not configured on this deployment/)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/next train/)).not.toBeInTheDocument();
   });
 });

@@ -51,6 +51,15 @@ type ChatError =
   | { kind: 'mcp-reconnect' }
   | { kind: 'tool-error'; message: string };
 
+interface ChatPanelProps {
+  /** The MCP server's public base URL (`railMcp.publicUrl`), read at
+   * request time by the `/chat` Server Component and passed down. FE-2: this
+   * used to be `process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL`, which Next
+   * inlines into the browser bundle at `next build` -- and the image is
+   * built without it, so the shipped bundle said `"undefined/mcp"`. */
+  mcpServerUrl: string;
+}
+
 /** The chat UI's own message list + input (embedded-chatbot-option-b-
  * client-side-tokens plan, Task 10). A Client Component -- it needs the
  * user's own localStorage-held Anthropic key and MCP tokens, and runs the
@@ -58,7 +67,7 @@ type ChatError =
  * relocated) directly in the browser now, not through a server-side
  * proxy -- there is no longer a server-side orchestrator to talk to
  * (Decision 1/3 of the client-side-tokens design doc). */
-export function ChatPanel() {
+export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -116,7 +125,7 @@ export function ChatPanel() {
       for await (const event of runChatTurn({
         anthropic,
         model: CHAT_MODEL,
-        mcpUrl: `${process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL}/mcp`,
+        mcpUrl: `${mcpServerUrl.replace(/\/+$/, '')}/mcp`,
         mcpAuthProvider: provider,
         conversationHistory: historyRef.current,
         userMessage: trimmed,
