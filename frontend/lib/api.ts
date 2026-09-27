@@ -91,8 +91,42 @@ function errorForResponse(url: string, response: Response): Error {
   return new Error(message);
 }
 
-async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+/** Upper bound on any one server-side call to `api` from this module
+ * (FE-1, 2026-09-27 review). Without it an unreachable `api` -- every node
+ * reboot, while it runs migrations -- left each SSR fetch waiting for
+ * undici's own 10 s connect timeout (and a half-open connection with no
+ * bound at all), so a page render hung far past any sensible response time.
+ * 8 s rather than something tighter because a few legitimate reads (the
+ * longer-range stats/history queries) take several seconds on a busy
+ * database; a timed-out call rejects like any other network error, so every
+ * caller's existing failure handling (`.catch` fallbacks,
+ * `withStaleFallback`, the `error.tsx` boundary) applies unchanged. */
+export const API_FETCH_TIMEOUT_MS = 8_000;
+
+/** Tighter bound for the session lookup: it gates nearly every page render
+ * (nav state), is a single indexed lookup on the api side, and
+ * `getSessionOrLoggedOut()` already degrades a failure to the logged-out
+ * view -- so waiting longer than this only delays the whole page. */
+export const SESSION_FETCH_TIMEOUT_MS = 3_000;
+
+/** `init` with an `AbortSignal.timeout(timeoutMs)` attached, combined (via
+ * `AbortSignal.any`) with any signal the caller already supplied, so a
+ * caller's own tighter bound -- `app/layout.tsx`'s `FRESHNESS_TIMEOUT_MS`
+ * -- still wins, and this bound applies either way. */
+function withTimeout(init: RequestInit | undefined, timeoutMs: number): RequestInit {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+  return { ...init, signal };
+}
+
+/** Every `fetch` in this module goes through here, so none of them is
+ * unbounded -- see `API_FETCH_TIMEOUT_MS`. */
+function apiFetch(url: string, init?: RequestInit, timeoutMs: number = API_FETCH_TIMEOUT_MS): Promise<Response> {
+  return fetch(url, withTimeout(init, timeoutMs));
+}
+
+async function fetchJson<T>(url: string, init: RequestInit, timeoutMs: number = API_FETCH_TIMEOUT_MS): Promise<T> {
+  const response = await apiFetch(url, init, timeoutMs);
   if (!response.ok) {
     throw errorForResponse(url, response);
   }
@@ -469,7 +503,7 @@ export async function getNetworkSixHourlyStats(
  * `fetchJson` uses. */
 export async function getPreferences(): Promise<Preferences> {
   const url = `${baseUrl()}/public/preferences`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -500,10 +534,14 @@ export async function getPreferences(): Promise<Preferences> {
  * what every "degrade rather than crash" caller in this app should call
  * instead of writing its own `.catch()` around this. */
 export async function getSession(): Promise<SessionInfo> {
-  return fetchJson<SessionInfo>(`${baseUrl()}/public/auth/session`, {
-    cache: 'no-store',
-    ...(await cookieForwardInit()),
-  });
+  return fetchJson<SessionInfo>(
+    `${baseUrl()}/public/auth/session`,
+    {
+      cache: 'no-store',
+      ...(await cookieForwardInit()),
+    },
+    SESSION_FETCH_TIMEOUT_MS,
+  );
 }
 
 /** The shape `getSession()` returns for a visitor with no session, and the
@@ -631,7 +669,7 @@ export async function getAllTocs(): Promise<Suggestion[]> {
  * prompt. */
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
   const url = `${baseUrl()}/public/lines/${encodeURIComponent(id)}`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -697,7 +735,7 @@ export async function getHistoryRetention(): Promise<HistoryRetention> {
 
 export async function getTrackedTrainById(id: number): Promise<TrackedTrainState> {
   const url = `${baseUrl()}/Train/${id}`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -727,7 +765,7 @@ export async function getPublicTrainByUidAndDate(
   date: string,
 ): Promise<PublicTrainState> {
   const url = `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`;
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await apiFetch(url, { cache: 'no-store' });
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<PublicTrainState>;
 }
@@ -742,7 +780,7 @@ export async function getPublicTrainByUidAndDate(
  * separate `getSession()` call the way `TicketPanel` does. */
 export async function getMyTrackedTrains(): Promise<TrackedTrainListItem[] | null> {
   const url = `${baseUrl()}/Train/mine`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -764,7 +802,7 @@ export async function getMyTrackedTrains(): Promise<TrackedTrainListItem[] | nul
  * states `app/train/by-id/[trackingId]/page.tsx` already does. */
 export async function getJourney(id: number): Promise<JourneyDetail> {
   const url = `${baseUrl()}/Journeys/${id}`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -780,7 +818,7 @@ export async function getJourney(id: number): Promise<JourneyDetail> {
  * `getGroupJoinPreview` already uses for its own token-not-found case. */
 export async function getJourneyByShareToken(token: string): Promise<JourneyDetail> {
   const url = `${baseUrl()}/Journeys/shared/${encodeURIComponent(token)}`;
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await apiFetch(url, { cache: 'no-store' });
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<JourneyDetail>;
 }
@@ -793,7 +831,7 @@ export async function getJourneyByShareToken(token: string): Promise<JourneyDeta
  * consume later without a backend change. */
 export async function getMyJourneys(): Promise<JourneyListItem[] | null> {
   const url = `${baseUrl()}/Journeys/mine`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -807,7 +845,7 @@ export async function getMyJourneys(): Promise<JourneyListItem[] | null> {
  * a second way). */
 export async function getMyJourneyTemplates(): Promise<JourneyTemplateListItem[] | null> {
   const url = `${baseUrl()}/JourneyTemplates/mine`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -824,7 +862,7 @@ export async function getMyJourneyTemplates(): Promise<JourneyTemplateListItem[]
  * page states `app/journeys/[id]/page.tsx` already does. */
 export async function getJourneyTemplate(id: number): Promise<JourneyTemplateDetail> {
   const url = `${baseUrl()}/JourneyTemplates/${id}`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -847,7 +885,7 @@ export async function getJourneyTemplate(id: number): Promise<JourneyTemplateDet
  * hand-written contract for it. */
 export async function getTicketsForTrackedTrain(trackingId: number): Promise<TrackedTrainTicket[] | null> {
   const url = `${baseUrl()}/Train/${trackingId}/tickets`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -874,7 +912,7 @@ export async function getDelayRepayEstimate(
   ticketId: number,
 ): Promise<DelayRepayEstimateResponse | null> {
   const url = `${baseUrl()}/Train/${trackingId}/tickets/${ticketId}/delay-repay`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -900,7 +938,7 @@ export async function getDelayRepayEstimate(
  * `getSession()` call the way `TicketPanel` does. */
 export async function getMyTickets(): Promise<TicketListItem[] | null> {
   const url = `${baseUrl()}/Train/tickets/mine`;
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
@@ -948,7 +986,7 @@ export async function getIncident(incidentId: string): Promise<IncidentDetail> {
  * paint on this fetch instead. */
 export async function getMyGroups(init?: Pick<RequestInit, 'signal'>): Promise<GroupSummary[] | null> {
   const url = `${baseUrl()}/public/groups`;
-  const response = await fetch(url, { cache: 'no-store', ...init, ...(await cookieForwardInit()) });
+  const response = await apiFetch(url, { cache: 'no-store', ...init, ...(await cookieForwardInit()) });
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<GroupSummary[]>;
@@ -987,7 +1025,7 @@ export async function getGroupTrains(id: string): Promise<GroupTrain[]> {
  * already answered by the time it's read. */
 export async function getSharedGroupTrains(): Promise<SharedGroupTrain[] | null> {
   const url = `${baseUrl()}/public/groups/shared-trains`;
-  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  const response = await apiFetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<SharedGroupTrain[]>;
@@ -1013,7 +1051,7 @@ export async function getGroupCustomLines(id: string): Promise<GroupCustomLine[]
  * ever mean "not logged in". */
 export async function getSharedGroupCustomLines(): Promise<SharedGroupCustomLine[] | null> {
   const url = `${baseUrl()}/public/groups/shared-custom-lines`;
-  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  const response = await apiFetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<SharedGroupCustomLine[]>;
@@ -1036,7 +1074,7 @@ export async function getGroupJourneys(id: string): Promise<GroupJourney[]> {
  * two: no id in the path, so a `401` can only ever mean "not logged in". */
 export async function getSharedGroupJourneys(): Promise<SharedGroupJourney[] | null> {
   const url = `${baseUrl()}/public/groups/shared-journeys`;
-  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  const response = await apiFetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<SharedGroupJourney[]>;

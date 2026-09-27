@@ -46,6 +46,8 @@ import {
   getNetworkDailyStats,
   ApiNotFoundError,
   ApiUnauthorizedError,
+  API_FETCH_TIMEOUT_MS,
+  SESSION_FETCH_TIMEOUT_MS,
 } from './api';
 
 // `getPreferences` (and every other cookie-forwarding helper in lib/api.ts)
@@ -530,6 +532,91 @@ describe('api client', () => {
   it('getSession rejects on a network failure (fetch itself throwing)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
     await expect(getSession()).rejects.toThrow('fetch failed');
+  });
+
+  // FE-1 (2026-09-27): no SSR call to `api` may wait unbounded. The fake
+  // fetch below never settles on its own -- it only rejects once its signal
+  // aborts, exactly like undici -- and `AbortSignal.timeout` is swapped for a
+  // manually-fired signal so the test controls "time" without real waits.
+  describe('request timeouts', () => {
+    function hangingFetch() {
+      return vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+          }),
+      );
+    }
+
+    function controllableTimeout() {
+      const requested: number[] = [];
+      const controllers: AbortController[] = [];
+      vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+        requested.push(ms);
+        const controller = new AbortController();
+        controllers.push(controller);
+        return controller.signal;
+      });
+      const fire = () => {
+        for (const c of controllers) c.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+      };
+      return { requested, fire };
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('fetchJson-backed calls reject once API_FETCH_TIMEOUT_MS elapses instead of hanging', async () => {
+      const { requested, fire } = controllableTimeout();
+      vi.stubGlobal('fetch', hangingFetch());
+
+      const pending = getAllLines();
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+      expect(requested).toEqual([API_FETCH_TIMEOUT_MS]);
+
+      fire();
+      await expect(pending).rejects.toMatchObject({ name: 'TimeoutError' });
+    });
+
+    it('getSession uses the tighter SESSION_FETCH_TIMEOUT_MS, and getSessionOrLoggedOut degrades on it', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { requested, fire } = controllableTimeout();
+      vi.stubGlobal('fetch', hangingFetch());
+
+      const pending = getSessionOrLoggedOut();
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+      expect(requested).toEqual([SESSION_FETCH_TIMEOUT_MS]);
+      expect(SESSION_FETCH_TIMEOUT_MS).toBeLessThan(API_FETCH_TIMEOUT_MS);
+
+      fire();
+      await expect(pending).resolves.toEqual(LOGGED_OUT_SESSION);
+    });
+
+    it("keeps a caller's own signal: aborting it still aborts the request", async () => {
+      controllableTimeout();
+      vi.stubGlobal('fetch', hangingFetch());
+      const caller = new AbortController();
+
+      const pending = getDataFreshness({ signal: caller.signal });
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+      caller.abort(new Error('caller gave up'));
+      await expect(pending).rejects.toThrow('caller gave up');
+    });
+
+    it('bounds the hand-rolled fetches too, not just fetchJson (getPreferences)', async () => {
+      const { requested } = controllableTimeout();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 })),
+      );
+      await getPreferences();
+      expect(requested).toEqual([API_FETCH_TIMEOUT_MS]);
+      expect(fetch).toHaveBeenCalledWith(
+        'http://test-api:8080/public/preferences',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
   });
 
   // The actual bug this plan fixes: every caller that used to write its own
