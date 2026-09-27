@@ -757,18 +757,24 @@ async fn process_incident(enricher: &Enricher, incident_id: &str) -> bool {
         )
     });
 
-    match queries::write_extraction(
-        pool,
-        incident_id,
-        &primary.category,
-        &periods,
-        model_version,
-        &text_hash,
-        &summary,
-        &description,
-    )
-    .await
-    {
+    // Retried locally (DB2-30): by now three LLM calls (up to 3 x 300 s)
+    // have succeeded, and giving up here would leave the entry pending for
+    // the reclaim loop to re-run all three, un-backed-off since
+    // `record_success` already ran above.
+    let write = retry_locally(WRITE_EXTRACTION_ATTEMPTS, WRITE_EXTRACTION_BACKOFF, || {
+        queries::write_extraction(
+            pool,
+            incident_id,
+            &primary.category,
+            &periods,
+            model_version,
+            &text_hash,
+            &summary,
+            &description,
+        )
+    })
+    .await;
+    match write {
         Ok(true) => {}
         Ok(false) => {
             // The incident's text moved between `fetch_incident_state`
@@ -796,7 +802,12 @@ async fn process_incident(enricher: &Enricher, incident_id: &str) -> bool {
             return true;
         }
         Err(err) => {
-            tracing::error!(error = ?err, incident_id, "failed to write extraction result");
+            tracing::error!(
+                error = ?err,
+                incident_id,
+                attempts = WRITE_EXTRACTION_ATTEMPTS,
+                "failed to write extraction result"
+            );
             return false;
         }
     }
@@ -814,6 +825,35 @@ async fn process_incident(enricher: &Enricher, incident_id: &str) -> bool {
         );
     }
     true
+}
+
+/// Attempts at the final `write_extraction` UPDATE (DB2-30).
+const WRITE_EXTRACTION_ATTEMPTS: u32 = 3;
+/// First retry delay; doubled for each later retry (0.5 s, then 1 s).
+const WRITE_EXTRACTION_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Runs `op` up to `attempts` times, sleeping `backoff`, then twice that,
+/// and so on between failures. Returns the first success or the last error.
+/// For a single idempotent DB write whose inputs were expensive to compute.
+async fn retry_locally<T, F, Fut>(attempts: u32, backoff: Duration, mut op: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut delay = backoff;
+    let mut attempt = 1;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) if attempt >= attempts.max(1) => return Err(err),
+            Err(err) => {
+                tracing::warn!(error = ?err, attempt, "write failed; retrying");
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2);
+                attempt += 1;
+            }
+        }
+    }
 }
 
 /// Periodically reclaims stream entries stuck in the pending-entries list
@@ -891,6 +931,35 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+
+    /// DB2-30: a transient write failure after the three LLM calls is
+    /// retried locally, and gives up only after the last attempt.
+    #[tokio::test]
+    async fn retry_locally_retries_a_failed_write_then_gives_up() {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let result = retry_locally(3, Duration::from_millis(1), || async {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n < 3 {
+                anyhow::bail!("transient failure {n}")
+            }
+            Ok(n)
+        })
+        .await;
+        assert_eq!(result.unwrap(), 3, "succeeds on the third attempt");
+
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let result: anyhow::Result<()> = retry_locally(3, Duration::from_millis(1), || async {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("still down")
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "exactly `attempts` tries, no more"
+        );
+    }
 
     /// Finding regression: `sweep_loop`/`reclaim_loop`'s own interval must
     /// be configured with `MissedTickBehavior::Delay`, not the
