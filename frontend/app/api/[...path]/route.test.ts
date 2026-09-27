@@ -496,36 +496,49 @@ describe('/api/[...path] proxy', () => {
     });
   });
 
-  // Finding L16 of the 2026-09-26 "Repeater Signal" review: this proxy
-  // forwarded no client-IP signal at all, so a future per-IP rate limit on
-  // the login route or a token lookup would have nothing to key on.
-  describe('X-Forwarded-For forwarding', () => {
-    it("forwards the incoming request's X-Forwarded-For header to the backend", async () => {
-      const req = makeRequest('/api/preferences', {
-        headers: { 'x-forwarded-for': '203.0.113.5' },
-      });
+  // FE-8: the client IP for the api's per-IP rate limits comes only from
+  // Cloudflare's CF-Connecting-IP; client-supplied X-Forwarded-For and
+  // X-Real-IP never reach the api.
+  describe('client IP forwarding (X-Real-IP)', () => {
+    async function outboundHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
+      const req = makeRequest('/api/preferences', { headers });
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
       const [, init] = vi.mocked(fetch).mock.calls[0];
-      const headers = (init as { headers: Record<string, string> }).headers;
-      expect(headers['X-Forwarded-For']).toBe('203.0.113.5');
+      return (init as { headers: Record<string, string> }).headers;
+    }
+
+    it('sets X-Real-IP from CF-Connecting-IP', async () => {
+      const headers = await outboundHeaders({ 'cf-connecting-ip': '203.0.113.5' });
+      expect(headers['X-Real-IP']).toBe('203.0.113.5');
     });
 
-    it('forwards a multi-hop X-Forwarded-For value unchanged', async () => {
-      const req = makeRequest('/api/preferences', {
-        headers: { 'x-forwarded-for': '203.0.113.5, 10.0.4.2' },
-      });
-      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
-      const headers = (init as { headers: Record<string, string> }).headers;
-      expect(headers['X-Forwarded-For']).toBe('203.0.113.5, 10.0.4.2');
+    it('accepts an IPv6 CF-Connecting-IP', async () => {
+      const headers = await outboundHeaders({ 'cf-connecting-ip': '2001:db8::1' });
+      expect(headers['X-Real-IP']).toBe('2001:db8::1');
     });
 
-    it('omits X-Forwarded-For from the outbound fetch when the incoming request carries none', async () => {
-      const req = makeRequest('/api/preferences');
-      await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
-      const headers = (init as { headers: Record<string, string> }).headers;
-      expect(headers['X-Forwarded-For']).toBeUndefined();
+    it('overwrites a spoofed client X-Real-IP with CF-Connecting-IP, and drops a spoofed X-Forwarded-For', async () => {
+      const headers = await outboundHeaders({
+        'cf-connecting-ip': '203.0.113.5',
+        'x-real-ip': '198.51.100.66',
+        'x-forwarded-for': '198.51.100.77, 10.0.4.2',
+      });
+      expect(headers['X-Real-IP']).toBe('203.0.113.5');
+      const names = Object.keys(headers).map((n) => n.toLowerCase());
+      expect(names.filter((n) => n === 'x-real-ip')).toHaveLength(1);
+      expect(names).not.toContain('x-forwarded-for');
+    });
+
+    it('sends neither header when there is no CF-Connecting-IP, even if the client supplied both', async () => {
+      const headers = await outboundHeaders({ 'x-real-ip': '198.51.100.66', 'x-forwarded-for': '198.51.100.77' });
+      const names = Object.keys(headers).map((n) => n.toLowerCase());
+      expect(names).not.toContain('x-real-ip');
+      expect(names).not.toContain('x-forwarded-for');
+    });
+
+    it('ignores a CF-Connecting-IP that is not a literal IP address', async () => {
+      const headers = await outboundHeaders({ 'cf-connecting-ip': 'not-an-ip' });
+      expect(headers['X-Real-IP']).toBeUndefined();
     });
   });
 
