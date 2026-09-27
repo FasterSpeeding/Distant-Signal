@@ -226,15 +226,23 @@ describe('TicketEntryForm', () => {
     ).toBeInTheDocument();
   });
 
+  function uploadErrorBody(status: number): string {
+    if (status === 422) return 'could not read this as a train .pkpass: not a zip file';
+    if (status === 415) return 'this file is a PDF, not a .pkpass; upload it as a PDF e-ticket instead';
+    return 'error';
+  }
+
   it.each([
     [400, "That doesn't look like a valid upload — try again or fill in the form manually"],
     [422, 'could not read this as a train .pkpass: not a zip file'],
     [504, 'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually'],
     [413, 'That file is too large (8 MB limit). Try filling in the details manually'],
+    [415, 'this file is a PDF, not a .pkpass; upload it as a PDF e-ticket instead'],
+    [503, 'Too many tickets are being read right now — try again in a moment, or fill in the details manually'],
     [500, "Couldn't read this file. Try filling in the details manually"],
   ])('pkpass upload: a %i response shows the mapped inline message', async (status, expectedSubstring) => {
     mockDefaultResponse(
-      new Response(status === 422 ? 'could not read this as a train .pkpass: not a zip file' : 'error', { status }),
+      new Response(uploadErrorBody(status), { status }),
     );
     openForm();
     fireEvent.click(screen.getByRole('tab', { name: '.pkpass' }));
@@ -252,10 +260,12 @@ describe('TicketEntryForm', () => {
     [422, 'could not read this as a train .pkpass: not a zip file'],
     [504, 'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually'],
     [413, 'That file is too large (8 MB limit). Try filling in the details manually'],
+    [415, 'this file is a PDF, not a .pkpass; upload it as a PDF e-ticket instead'],
+    [503, 'Too many tickets are being read right now — try again in a moment, or fill in the details manually'],
     [500, "Couldn't read this file. Try filling in the details manually"],
   ])('pkpass drop: a %i response shows the mapped inline message', async (status, expectedSubstring) => {
     mockDefaultResponse(
-      new Response(status === 422 ? 'could not read this as a train .pkpass: not a zip file' : 'error', { status }),
+      new Response(uploadErrorBody(status), { status }),
     );
     openForm();
     fireEvent.click(screen.getByRole('tab', { name: '.pkpass' }));
@@ -285,6 +295,18 @@ describe('TicketEntryForm', () => {
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith('/api/Train/1/tickets/pkpass', expect.objectContaining({ method: 'POST' }));
     });
+  });
+
+  it('pdf upload: a 413 names the 4 MB PDF limit, not the 8 MB .pkpass one', async () => {
+    mockDefaultResponse(new Response('this PDF is too large', { status: 413 }));
+    openForm();
+    fireEvent.click(screen.getByRole('tab', { name: 'PDF' }));
+    const file = new File(['fake'], 'ticket.pdf', { type: 'application/pdf' });
+    dropFiles(getPdfDropzoneRoot(), [file]);
+
+    expect(
+      await screen.findByText('That file is too large (4 MB limit). Try filling in the details manually'),
+    ).toBeInTheDocument();
   });
 
   it('pdf drop: posts to the pdf-specific upload route, not the pkpass one', async () => {

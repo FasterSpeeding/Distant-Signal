@@ -7,7 +7,7 @@
 //! touches ITSO data, in either format (see the design doc's Non-goals).
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// What a `.pkpass`/PDF parse could recover -- the same fillable fields as
 /// `common::TicketEntryRequest`, minus a user-chosen `source` (this is
@@ -17,7 +17,10 @@ use serde::Serialize;
 /// review-before-save form pre-filled from an upload; nothing here is ever
 /// written to `tracked_train_tickets` directly -- see this module's own
 /// doc comment.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// `Deserialize` exists only for `data::ticket_subprocess`, whose parent
+/// process reads this back from the parse child's JSON reply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PartialTicket {
     pub operator: Option<String>,
@@ -52,9 +55,35 @@ pub struct PartialTicket {
     /// the same ticket, a rebooked journey, ...), so nothing in this
     /// codebase ever treats this field as an exact scheduled-departure
     /// match target the way `TrackPinRequest::scheduled_departure` is.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_departure_date: Option<DateTime<Utc>>,
-    pub source: &'static str,
+    #[serde(deserialize_with = "deserialize_known_source")]
+    pub source: SourceTag,
+}
+
+/// `&'static str` under another name. serde's derive implicitly *borrows*
+/// any field spelled `&str` from the input, which for `'static` would demand
+/// `'de: 'static` and make `PartialTicket` undeserializable from an owned
+/// buffer; spelling it through an alias opts out of that, and
+/// `deserialize_known_source` supplies the real value.
+pub type SourceTag = &'static str;
+
+/// Every value `PartialTicket::source` is ever set to in this module.
+pub const KNOWN_SOURCES: &[&str] = &["pkpass-semantics", "pkpass-heuristic", "pdf-heuristic"];
+
+/// `source` is a `&'static str`, so it can only be deserialized by mapping
+/// the incoming string back onto one of [`KNOWN_SOURCES`]. Anything else is
+/// an error rather than a leaked allocation.
+fn deserialize_known_source<'de, D>(deserializer: D) -> Result<&'static str, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    KNOWN_SOURCES
+        .iter()
+        .copied()
+        .find(|known| *known == value)
+        .ok_or_else(|| serde::de::Error::custom(format!("unknown ticket source {value:?}")))
 }
 
 /// Pure: given `pass.json`'s already-parsed content, returns a
@@ -226,7 +255,7 @@ use std::io::Read;
 /// bounds every ZIP-entry read in this function against a zip-bomb-style
 /// small-file/huge-decompressed-content mismatch (see this plan's Global
 /// Constraints on file upload hygiene).
-const MAX_ENTRY_BYTES: u64 = 1_000_000; // 1 MiB
+pub(crate) const MAX_ENTRY_BYTES: u64 = 1_000_000; // 1 MiB
 
 /// Thin wrapper: unzips the `.pkpass` container, reads `pass.json`,
 /// deserializes it, and hands off to `parse_pass_json` (the actual logic,
@@ -740,10 +769,9 @@ mod parse_pdf_text_tests {
 /// **`catch_unwind` does NOT cover an allocation failure (Finding #1 of
 /// the 2026-09-25 review).** In Rust, a failed allocation `abort()`s the
 /// whole process -- it is not a panic, `catch_unwind` cannot intercept it,
-/// and neither can the `tokio::time::timeout` wrapped around this call by
-/// `routes::train::handle_pdf_upload` (that timeout only stops the caller
-/// from *awaiting* the spawned blocking task; the task itself, and the OS
-/// thread running it, keep executing to completion or crash regardless).
+/// and a wall-clock timeout around an in-process call can't either (it only
+/// stops the caller from awaiting; the thread keeps running). Hence the
+/// child process described below.
 /// `pdf_extract` fully inflates every `FlateDecode`/`LZWDecode` stream in
 /// the document into memory via `lopdf`, which places NO bound of its own
 /// on the decompressed size anywhere -- confirmed directly against
@@ -762,9 +790,10 @@ mod parse_pdf_text_tests {
 /// upload never reaches `lopdf`'s unbounded path at all. See that
 /// function's own doc comment for exactly what it does and does not
 /// protect against -- it is a real, meaningful mitigation, not a complete
-/// one; complete protection would require running the actual parse in a
-/// separate, resource-limited process, which is a larger follow-up than
-/// this pass's scope.
+/// one. The complete protection is that, since M13 (2026-09-27), this
+/// function only ever runs inside the `api parse-ticket` child process
+/// (`data::ticket_subprocess`), under `RLIMIT_AS`, so an allocation failure
+/// here aborts that child, not the server.
 pub fn parse_pdf(bytes: &[u8]) -> anyhow::Result<PartialTicket> {
     anyhow::ensure!(
         bytes.starts_with(b"%PDF-"),
@@ -794,7 +823,7 @@ pub fn parse_pdf(bytes: &[u8]) -> anyhow::Result<PartialTicket> {
 /// approaches this size; a smaller input also caps how many
 /// `stream`/`endstream` spans `reject_pdf_compression_bombs` below has to
 /// scan for a given upload.
-const MAX_PDF_UPLOAD_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_PDF_UPLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 /// Cumulative decompressed-bytes budget for `reject_pdf_compression_bombs`'s
 /// bounded pre-scan. Comfortably above any legitimate ticket PDF's actual
@@ -862,14 +891,11 @@ const MAX_TOTAL_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 ///   realistic, single-stage bomb shape this finding describes); a bomb
 ///   engineered to stay small through its first stage and only explode on
 ///   a LATER chained stage would evade this specific guard.
-/// - **Not process isolation.** This is an in-process heuristic sitting in
-///   front of `lopdf`, not a sandbox around it. `lopdf` itself is
-///   unmodified and just as unbounded as before for anything this
-///   pre-scan doesn't happen to catch. The genuinely complete fix -- running
-///   the actual `pdf_extract` parse in a separate, resource-limited OS
-///   process so an allocation failure there can't take down the API -- is
-///   a larger change than this pass's scope and is named here as the real
-///   follow-up, not silently deferred.
+/// - **Not process isolation by itself.** This is a heuristic sitting in
+///   front of `lopdf`, not a sandbox around it; `lopdf` is just as
+///   unbounded as before for anything this pre-scan misses. The isolation
+///   is the resource-limited `api parse-ticket` child process this runs in
+///   (M13, `data::ticket_subprocess`), which bounds what a miss can cost.
 fn reject_pdf_compression_bombs(bytes: &[u8]) -> anyhow::Result<()> {
     let mut total_inflated: usize = 0;
     let mut pos: usize = 0;

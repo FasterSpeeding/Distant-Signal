@@ -94,8 +94,19 @@ fn unmatched_route_endpoint_label(_exact_path: &str) -> String {
     "/{unmatched}".to_string()
 }
 
+fn main() -> anyhow::Result<()> {
+    // `api parse-ticket <pdf|pkpass>`: the ticket-parse child process
+    // (M13; see `data::ticket_subprocess`). Checked before anything else so
+    // the child never starts a tokio runtime, reads `.env`, or parses the
+    // server's own arguments.
+    if let Some(code) = data::ticket_subprocess::maybe_run_child() {
+        std::process::exit(code);
+    }
+    server_main()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn server_main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
     let app = AppState::init().await?;

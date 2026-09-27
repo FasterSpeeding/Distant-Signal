@@ -23,6 +23,8 @@ pub mod schedule_matching;
 pub mod station_skip;
 pub mod station_stats;
 pub mod ticket_extraction;
+pub mod ticket_precheck;
+pub mod ticket_subprocess;
 pub mod train_resolve;
 pub mod train_tracking;
 pub mod trains;
