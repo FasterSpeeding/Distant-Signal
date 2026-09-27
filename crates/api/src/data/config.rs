@@ -18,6 +18,12 @@ pub struct ServiceArguments {
     pub database_url: String,
     #[arg(long, env)]
     pub redis_url: String,
+
+    /// Redis AUTH password (chart `redis.auth`, from a Secret). Unset or
+    /// empty: no AUTH, `redis_url` is used as-is. Applied to `redis_url` by
+    /// `common::redis_auth::redis_url_with_password`, never logged.
+    #[arg(long, env, hide_env_values = true)]
+    pub redis_password: Option<common::secret::Secret>,
     /// OIDC issuer base URL for the internal-service OAuth2 provider
     /// (Authentik) -- JWKS endpoint is learned via standard OIDC
     /// discovery against this URL, same mechanism as `sso_issuer_url`
