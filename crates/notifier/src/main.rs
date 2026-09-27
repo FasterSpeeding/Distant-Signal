@@ -361,7 +361,19 @@ async fn notify_train_candidates(
             new_rank = candidate.new_rank,
             "train notification candidate"
         );
-        let (status, delay_minutes) = current_train_state(pool, candidate.trains_id).await?;
+        // The state row can vanish between the candidate poll and here (the
+        // aggregator's trains prune cascades to it). That is a data
+        // condition, not a failed cycle: skip this candidate instead of
+        // aborting the cycle before its cursor advance (DB2-27).
+        let Some((status, delay_minutes)) = current_train_state(pool, candidate.trains_id).await?
+        else {
+            tracing::warn!(
+                trains_id = candidate.trains_id,
+                tracked_train_id = candidate.tracked_train_id,
+                "train_current_state row disappeared before the notification was built; skipping"
+            );
+            continue;
+        };
         let journey_context =
             queries::journey_leg_for_train_subscription(pool, candidate.tracked_train_id).await?;
         let payload = build_train_notification_payload(
@@ -807,17 +819,19 @@ fn london_to_utc(naive: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
     }
 }
 
+/// `None` when the train has no current-state row (any more).
 async fn current_train_state(
     pool: &PgPool,
     trains_id: i64,
-) -> anyhow::Result<(String, Option<i32>)> {
+) -> anyhow::Result<Option<(String, Option<i32>)>> {
     use sqlx::Row;
     let row =
         sqlx::query("SELECT status, delay_minutes FROM train_current_state WHERE trains_id = $1")
             .bind(trains_id)
-            .fetch_one(pool)
+            .fetch_optional(pool)
             .await?;
-    Ok((row.try_get("status")?, row.try_get("delay_minutes")?))
+    row.map(|row| Ok((row.try_get("status")?, row.try_get("delay_minutes")?)))
+        .transpose()
 }
 
 /// Test-only drivers for the DB-gated cycle tests: run one cycle against a
@@ -1001,6 +1015,32 @@ mod db_tests {
             .connect(&database_url)
             .await
             .expect("connect to postgres")
+    }
+
+    /// DB2-27: a candidate whose `train_current_state` row has vanished is
+    /// skipped; it used to abort the whole cycle (and its cursor advance)
+    /// with RowNotFound.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p notifier \
+                a_vanished_train_state_skips_the_candidate_instead_of_failing -- --ignored \
+                --test-threads=1`"]
+    async fn a_vanished_train_state_skips_the_candidate_instead_of_failing() {
+        let pool = connect().await;
+        let queue = test_queue(&pool);
+        let candidates = [queries::TrainCandidate {
+            tracked_train_id: -2_700_027,
+            // No trains row (so no state row) has a negative id.
+            trains_id: -2_700_027,
+            user_id: "TEST-DB227-USER".to_string(),
+            new_rank: 2,
+            previous_rank: 0,
+        }];
+        notify_train_candidates(&pool, &queue, &candidates, Utc::now())
+            .await
+            .expect("a missing state row must not fail the cycle");
+        assert_eq!(queue.depth() + queue.in_flight(), 0, "nothing is sent");
+        let report = queue.shutdown(Duration::from_secs(5)).await;
+        assert!(report.drained);
     }
 
     async fn seed_user(pool: &PgPool, user_id: &str) {
