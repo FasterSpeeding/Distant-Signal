@@ -207,36 +207,30 @@ where
 /// though that can't happen in practice since every journey is created
 /// with a leg).
 ///
-/// **Race, stated rather than hidden**: under READ COMMITTED, two
-/// simultaneous calls for the SAME journey can both read the same
-/// `MAX(leg_order)` and both attempt to insert the same value -- the
-/// schema's own `UNIQUE (journey_id, leg_order)` constraint rejects the
-/// second with a constraint-violation error, surfaced as a plain
-/// `anyhow::Error` (mapped to the route's existing 500 path). This closes
-/// the ordinary repeat-click case (the frontend disables its submit
-/// button while a request is in flight, Task 7), not a true concurrent
-/// double-submit from two different tabs -- same accepted-limitation
-/// posture as `train_tracking::create_subscription_for_train`'s own doc
-/// comment.
-///
 /// **Leg cap (2026-09-26 review, L10).** Also refuses once the journey
 /// already has [`MAX_LEGS_PER_JOURNEY`] legs -- checked HERE, after the
 /// ownership check, rather than as a route-level pre-count, so a caller
 /// probing someone else's journey id still only ever sees the 404 path,
-/// never a "full" answer that would confirm the journey exists. Same
-/// count-then-insert race posture as `routes::lines`'s custom-line cap: a
-/// concurrent double-submit can land one over, which is fine for a cap
-/// whose job is bounding an order of magnitude.
+/// never a "full" answer that would confirm the journey exists. The cap
+/// is exact now that the count runs under the journey row lock.
+///
+/// **Runs under the journey row's lock (DB2-17).** Takes the journey row
+/// `FOR UPDATE` on the caller's transaction, the same lock `delete_leg`
+/// takes, so two concurrent adds to one journey serialise: the second
+/// reads the first's leg, gets the next `leg_order` and sees the true
+/// count. Before, both computed the same `leg_order` on the pool, and the
+/// loser hit `UNIQUE (journey_id, leg_order)` as a 500 (and the cap could
+/// be overshot). Callers must insert the leg on the same transaction.
 async fn owned_next_leg_order(
-    pool: &PgPool,
+    tx: &mut sqlx::PgConnection,
     journey_id: i64,
     user_id: &str,
 ) -> anyhow::Result<AddLegOutcome<i32>> {
     let owned: Option<(i64,)> =
-        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2")
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2 FOR UPDATE")
             .bind(journey_id)
             .bind(user_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await?;
     if owned.is_none() {
         return Ok(AddLegOutcome::NotFound);
@@ -245,7 +239,7 @@ async fn owned_next_leg_order(
         "SELECT COUNT(*), COALESCE(MAX(leg_order), 0) + 1 FROM journey_legs WHERE journey_id = $1",
     )
     .bind(journey_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
     if leg_count >= MAX_LEGS_PER_JOURNEY {
         return Ok(AddLegOutcome::AtCap);
@@ -495,7 +489,8 @@ pub async fn add_known_train_leg_to_journey(
     origin_crs_override: Option<&str>,
     destination_crs_override: Option<&str>,
 ) -> anyhow::Result<AddLegOutcome<(i64, i64)>> {
-    let next_leg_order = match owned_next_leg_order(pool, journey_id, user_id).await? {
+    let mut tx = pool.begin().await?;
+    let next_leg_order = match owned_next_leg_order(&mut tx, journey_id, user_id).await? {
         AddLegOutcome::Added(next) => next,
         AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
         AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
@@ -517,8 +512,8 @@ pub async fn add_known_train_leg_to_journey(
     // the subscription INSERT back too, instead of leaving it stranded.
     // `create_subscription_for_train` is safe to run again on a retry
     // either way -- it's idempotent per `(user_id, trains_id)` (its own
-    // doc comment).
-    let mut tx = pool.begin().await?;
+    // doc comment). The transaction now starts before
+    // `owned_next_leg_order`, which locks the journey row (DB2-17).
     let tracking_id =
         crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
             .await?;
@@ -818,13 +813,14 @@ pub async fn add_window_leg_to_journey(
     depart_window: TimeWindow,
     arrive_window: TimeWindow,
 ) -> anyhow::Result<AddLegOutcome<i64>> {
-    let next_leg_order = match owned_next_leg_order(pool, journey_id, user_id).await? {
+    let mut tx = pool.begin().await?;
+    let next_leg_order = match owned_next_leg_order(&mut tx, journey_id, user_id).await? {
         AddLegOutcome::Added(next) => next,
         AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
         AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
     };
     let leg_id = insert_leg(
-        pool,
+        &mut *tx,
         journey_id,
         next_leg_order,
         Some(origin_crs),
@@ -839,6 +835,7 @@ pub async fn add_window_leg_to_journey(
         true,
     )
     .await?;
+    tx.commit().await?;
     Ok(AddLegOutcome::Added(leg_id))
 }
 
@@ -1334,12 +1331,27 @@ pub struct JourneyListItem {
 /// this list's own cap should agree with"). Each journey is shown with its
 /// "current leg" -- the earliest leg that isn't already `completed`, or the
 /// journey's LAST leg (highest `leg_order`) if every leg is `completed`.
+///
+/// **Newest journeys first, then their legs (DB2-18).** The `recent` CTE
+/// picks the user's newest `MINE_LIST_LIMIT` journeys that have a leg (the
+/// old inner join already dropped leg-less ones), served by
+/// `journeys_user_id_created_at`; only their legs are ranked. It used to
+/// rank every leg the user owned, including up to ~548 days of
+/// template-materialised journeys, before the LIMIT. `id DESC` breaks
+/// `created_at` ties so the page is deterministic.
 pub async fn list_journeys_for_user(
     pool: &PgPool,
     user_id: &str,
 ) -> anyhow::Result<Vec<JourneyListItem>> {
     let rows = sqlx::query_as::<_, JourneyListItem>(
-        "WITH ranked_legs AS ( \
+        "WITH recent AS ( \
+             SELECT j.id, j.custom_name, j.created_at FROM journeys j \
+             WHERE j.user_id = $1 \
+               AND EXISTS (SELECT 1 FROM journey_legs l WHERE l.journey_id = j.id) \
+             ORDER BY j.created_at DESC, j.id DESC \
+             LIMIT $2 \
+         ), \
+         ranked_legs AS ( \
              SELECT jl.id, jl.journey_id, jl.leg_order, jl.origin_crs, jl.destination_crs, \
                     jl.service_date, jl.match_mode, jl.train_subscription_id, \
                     ts.resolution_status, cs.status, cs.delay_minutes, \
@@ -1352,19 +1364,17 @@ pub async fn list_journeys_for_user(
              FROM journey_legs jl \
              LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
              LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-             WHERE jl.journey_id IN (SELECT id FROM journeys WHERE user_id = $1) \
+             WHERE jl.journey_id IN (SELECT id FROM recent) \
          ) \
-         SELECT j.id, j.custom_name, j.created_at, \
+         SELECT r.id, r.custom_name, r.created_at, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
                 so.name AS origin_name, sd.name AS destination_name, rl.match_mode, \
                 rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes \
-         FROM journeys j \
-         JOIN ranked_legs rl ON rl.journey_id = j.id AND rl.rn = 1 \
+         FROM recent r \
+         JOIN ranked_legs rl ON rl.journey_id = r.id AND rl.rn = 1 \
          LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(rl.destination_crs)::bpchar \
-         WHERE j.user_id = $1 \
-         ORDER BY j.created_at DESC \
-         LIMIT $2",
+         ORDER BY r.created_at DESC, r.id DESC",
     )
     .bind(user_id)
     .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
@@ -2956,6 +2966,178 @@ mod db_tests {
             .expect("leg exists");
         assert_eq!(leg.train_subscription_id, Some(tracking_id));
         assert_eq!(leg.match_mode, "manual");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DB2-39: `journey_owner` returns the owning user, and `None` for an
+    /// id with no journey.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                journey_owner_returns_the_owner_or_none -- --ignored --test-threads=1`"]
+    async fn journey_owner_returns_the_owner_or_none() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-39-JOURNEY-OWNER";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let (journey_id, _) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow::default(),
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create journey");
+
+        assert_eq!(
+            journey_owner(&pool, journey_id).await.unwrap(),
+            Some(user_id.to_string())
+        );
+        let (unused,): (i64,) = sqlx::query_as("SELECT COALESCE(MAX(id), 0) + 1000 FROM journeys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(journey_owner(&pool, unused).await.unwrap(), None);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DB2-18: the list is the newest `MINE_LIST_LIMIT` journeys that have
+    /// a leg, newest first, with a stable order for equal `created_at`.
+    /// A newer leg-less journey neither appears nor takes a slot.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_journeys_for_user_returns_the_newest_journeys_with_legs -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_returns_the_newest_journeys_with_legs() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-18-LIST";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let limit = crate::data::train_tracking::MINE_LIST_LIMIT;
+
+        // limit + 5 journeys with one leg each, one minute apart, plus a
+        // pair sharing the newest timestamp.
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "INSERT INTO journeys (user_id, created_at) \
+             SELECT $1, TIMESTAMPTZ '2026-09-01 00:00Z' + LEAST(g, $2) * INTERVAL '1 minute' \
+             FROM generate_series(1, $2 + 1) g ORDER BY g RETURNING id",
+        )
+        .bind(user_id)
+        .bind((limit + 4) as i32)
+        .fetch_all(&pool)
+        .await
+        .expect("seed journeys");
+        sqlx::query(
+            "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             SELECT id, 1, 'WAT', 'RDG', DATE '2026-09-22', 'unmatched' FROM unnest($1::bigint[]) id",
+        )
+        .bind(&ids)
+        .execute(&pool)
+        .await
+        .expect("seed legs");
+        // Newest of all, but with no leg.
+        sqlx::query("INSERT INTO journeys (user_id, created_at) VALUES ($1, TIMESTAMPTZ '2026-12-01 00:00Z')")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed leg-less journey");
+
+        let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
+        assert_eq!(listed.len() as i64, limit);
+        let mut expected: Vec<(DateTime<Utc>, i64)> =
+            sqlx::query_as("SELECT created_at, id FROM journeys WHERE id = ANY($1)")
+                .bind(&ids)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        expected.sort_by(|a, b| b.cmp(a));
+        let expected: Vec<i64> = expected
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, id)| id)
+            .collect();
+        let got: Vec<i64> = listed.iter().map(|j| j.id).collect();
+        assert_eq!(
+            got, expected,
+            "newest first, id DESC on ties, leg-less journey skipped"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DB2-17: concurrent adds to one journey serialise on the journey row
+    /// lock. Every call succeeds with its own `leg_order` (no 500 from the
+    /// unique constraint), and the leg cap is exact under a burst.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                concurrent_add_leg_calls_serialise_on_the_journey_row -- --ignored --test-threads=1`"]
+    async fn concurrent_add_leg_calls_serialise_on_the_journey_row() {
+        let pool = connect().await;
+        let user_id = "TEST-DB2-17-CONCURRENT-ADD";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+        let (journey_id, _) = create_journey_with_window_leg(
+            &pool,
+            user_id,
+            None,
+            "WAT",
+            "RDG",
+            service_date,
+            common::TimeWindow::default(),
+            common::TimeWindow::default(),
+        )
+        .await
+        .expect("create journey");
+
+        // 1 existing leg + 25 concurrent adds against a cap of 20.
+        let mut calls = tokio::task::JoinSet::new();
+        for _ in 0..25 {
+            let pool = pool.clone();
+            calls.spawn(async move {
+                add_window_leg_to_journey(
+                    &pool,
+                    journey_id,
+                    user_id,
+                    "RDG",
+                    "OXF",
+                    service_date,
+                    common::TimeWindow::default(),
+                    common::TimeWindow::default(),
+                )
+                .await
+            });
+        }
+        let mut added = 0;
+        let mut at_cap = 0;
+        while let Some(result) = calls.join_next().await {
+            match result
+                .unwrap()
+                .expect("no add may fail with a constraint violation")
+            {
+                AddLegOutcome::Added(_) => added += 1,
+                AddLegOutcome::AtCap => at_cap += 1,
+                AddLegOutcome::NotFound => panic!("the journey is the caller's"),
+            }
+        }
+        assert_eq!(added, MAX_LEGS_PER_JOURNEY - 1);
+        assert_eq!(at_cap, 25 - (MAX_LEGS_PER_JOURNEY - 1));
+
+        let orders: Vec<i32> = sqlx::query_scalar(
+            "SELECT leg_order FROM journey_legs WHERE journey_id = $1 ORDER BY leg_order",
+        )
+        .bind(journey_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            orders,
+            (1..=MAX_LEGS_PER_JOURNEY as i32).collect::<Vec<_>>()
+        );
 
         cleanup_user(&pool, user_id).await;
     }

@@ -341,11 +341,14 @@ pub async fn create_template(
 /// convention as every other ownership check in this codebase.
 /// `Ok(None)` for "no such template, or not this caller's" (route maps to
 /// 404, never 403).
-pub async fn get_owned_template(
-    pool: &PgPool,
+pub async fn get_owned_template<'c, E>(
+    executor: E,
     template_id: i64,
     user_id: &str,
-) -> anyhow::Result<Option<JourneyTemplateRow>> {
+) -> anyhow::Result<Option<JourneyTemplateRow>>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     let row = sqlx::query_as::<_, JourneyTemplateRow>(
         "SELECT id, user_id, custom_name, days_of_week, active, starts_on, ends_on, \
                 default_match_mode, auto_commit_rule, created_at, updated_at \
@@ -353,7 +356,7 @@ pub async fn get_owned_template(
     )
     .bind(template_id)
     .bind(user_id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
@@ -363,10 +366,13 @@ pub async fn get_owned_template(
 /// as `journeys::list_legs_for_journey`'s own doc comment: every real
 /// caller (the detail route, `materialize_template` below) already
 /// confirmed ownership one call earlier via [`get_owned_template`].
-pub async fn list_template_legs(
-    pool: &PgPool,
+pub async fn list_template_legs<'c, E>(
+    executor: E,
     template_id: i64,
-) -> anyhow::Result<Vec<JourneyTemplateLegWithNamesRow>> {
+) -> anyhow::Result<Vec<JourneyTemplateLegWithNamesRow>>
+where
+    E: sqlx::PgExecutor<'c>,
+{
     let rows = sqlx::query_as::<_, JourneyTemplateLegWithNamesRow>(
         "SELECT jtl.id, jtl.template_id, jtl.leg_order, jtl.origin_crs, so.name AS origin_name, \
                 jtl.destination_crs, sd.name AS destination_name, \
@@ -377,7 +383,7 @@ pub async fn list_template_legs(
          WHERE jtl.template_id = $1 ORDER BY jtl.leg_order",
     )
     .bind(template_id)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await?;
     Ok(rows)
 }
@@ -590,7 +596,10 @@ pub async fn materialize_template(
         return Ok(None);
     }
 
-    let Some(template) = get_owned_template(pool, template_id, user_id).await? else {
+    // Both reads run on `tx` (DB2-15): on the pool they borrowed two more
+    // connections while this one sat holding the row lock, and read outside
+    // the lock's transaction.
+    let Some(template) = get_owned_template(&mut *tx, template_id, user_id).await? else {
         // Unreachable in practice given the lock just taken above (the row
         // cannot have vanished between that lock and this plain read on
         // the same still-open transaction's guarantee), but kept as a
@@ -598,7 +607,7 @@ pub async fn materialize_template(
         tx.rollback().await?;
         return Ok(None);
     };
-    let legs = list_template_legs(pool, template_id).await?;
+    let legs = list_template_legs(&mut *tx, template_id).await?;
     // Invariant from create_template/replace_template: a stored template
     // always has >=1 leg. Defensive rather than an unwrap/panic if that's
     // ever violated by a hand-edited row -- report "nothing to
@@ -1127,6 +1136,43 @@ mod db_tests {
 
         cleanup_user(&pool, owner_id).await;
         cleanup_user(&pool, other_id).await;
+    }
+
+    /// DB2-15: `materialize_template` must do all its reads on its own
+    /// transaction. With a one-connection pool, a read on the pool while
+    /// the transaction holds the only connection can never be served and
+    /// times out; before the fix this test failed with a pool timeout.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                materialize_template_needs_only_its_own_connection -- --ignored --test-threads=1`"]
+    async fn materialize_template_needs_only_its_own_connection() {
+        let pool = connect().await;
+        let user_id = "TEST-TEMPLATE-ONE-CONN";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let template_id = create_template(&pool, user_id, None, &[fixture_leg("WAT", "RDG")])
+            .await
+            .expect("create template");
+
+        let database_url = std::env::var("DATABASE_URL").unwrap();
+        let one_conn = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&database_url)
+            .await
+            .expect("connect one-connection pool");
+        let materialized = materialize_template(
+            &one_conn,
+            template_id,
+            user_id,
+            "2026-09-22".parse().unwrap(),
+        )
+        .await
+        .expect("materialize on a one-connection pool")
+        .expect("template exists");
+        assert_eq!(materialized.leg_ids.len(), 1);
+        one_conn.close().await;
+        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]

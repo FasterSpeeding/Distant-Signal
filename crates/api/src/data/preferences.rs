@@ -6,21 +6,23 @@ use anyhow::Result;
 use sqlx::{PgPool, Row};
 
 pub async fn list_pinned_line_ids(pool: &PgPool, user_id: &str) -> Result<Vec<String>> {
-    let rows =
-        sqlx::query("SELECT line_id FROM pinned_lines WHERE user_id = $1 ORDER BY pinned_at")
-            .bind(user_id)
-            .fetch_all(pool)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT line_id FROM pinned_lines WHERE user_id = $1 ORDER BY pinned_at, line_id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
     rows.into_iter()
         .map(|row| Ok(row.try_get("line_id")?))
         .collect()
 }
 
 pub async fn list_pinned_station_crs(pool: &PgPool, user_id: &str) -> Result<Vec<String>> {
-    let rows = sqlx::query("SELECT crs FROM pinned_stations WHERE user_id = $1 ORDER BY pinned_at")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
+    let rows =
+        sqlx::query("SELECT crs FROM pinned_stations WHERE user_id = $1 ORDER BY pinned_at, crs")
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
     rows.into_iter()
         .map(|row| Ok(row.try_get("crs")?))
         .collect()
@@ -28,7 +30,7 @@ pub async fn list_pinned_station_crs(pool: &PgPool, user_id: &str) -> Result<Vec
 
 pub async fn list_pinned_operator_codes(pool: &PgPool, user_id: &str) -> Result<Vec<String>> {
     let rows = sqlx::query(
-        "SELECT operator_code FROM pinned_operators WHERE user_id = $1 ORDER BY pinned_at",
+        "SELECT operator_code FROM pinned_operators WHERE user_id = $1 ORDER BY pinned_at, operator_code",
     )
     .bind(user_id)
     .fetch_all(pool)
@@ -77,6 +79,37 @@ fn dedupe_preserving_order(items: &[String]) -> Vec<&String> {
         .collect()
 }
 
+/// One `INSERT ... SELECT FROM unnest(..) WITH ORDINALITY` for a whole
+/// pinned set (DB2-16). It used to be one INSERT per item, all stamped with
+/// the transaction-constant `NOW()`, so every row of a PUT had the same
+/// `pinned_at` and the `ORDER BY pinned_at` reads came back in heap order.
+/// Each row's `pinned_at` is now `NOW()` plus its position in microseconds,
+/// so the caller's order survives without a schema change. `table` and
+/// `column` are compile-time literals from this module, never input.
+async fn insert_pinned_in_order(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    table: &'static str,
+    column: &'static str,
+    user_id: &str,
+    items: &[&String],
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let items: Vec<&str> = items.iter().map(|item| item.as_str()).collect();
+    let sql = format!(
+        "INSERT INTO {table} (user_id, {column}, pinned_at) \
+         SELECT $1, item, NOW() + ord * INTERVAL '1 microsecond' \
+         FROM unnest($2::text[]) WITH ORDINALITY AS t(item, ord)"
+    );
+    sqlx::query(&sql)
+        .bind(user_id)
+        .bind(&items)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Replaces `user_id`'s entire pinned-lines set with `ids`, in one
 /// transaction (delete-all then insert-all) so a PUT is atomic — concurrent
 /// readers never see a partially-updated list. Scoped to `user_id` now, not
@@ -93,15 +126,7 @@ pub async fn replace_pinned_lines(pool: &PgPool, user_id: &str, ids: &[String]) 
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    for id in ids {
-        sqlx::query(
-            "INSERT INTO pinned_lines (user_id, line_id, pinned_at) VALUES ($1, $2, NOW())",
-        )
-        .bind(user_id)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    }
+    insert_pinned_in_order(&mut tx, "pinned_lines", "line_id", user_id, &ids).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -120,13 +145,7 @@ pub async fn replace_pinned_stations(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    for crs in crs_codes {
-        sqlx::query("INSERT INTO pinned_stations (user_id, crs, pinned_at) VALUES ($1, $2, NOW())")
-            .bind(user_id)
-            .bind(crs)
-            .execute(&mut *tx)
-            .await?;
-    }
+    insert_pinned_in_order(&mut tx, "pinned_stations", "crs", user_id, &crs_codes).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -146,15 +165,14 @@ pub async fn replace_pinned_operators(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    for code in codes {
-        sqlx::query(
-            "INSERT INTO pinned_operators (user_id, operator_code, pinned_at) VALUES ($1, $2, NOW())",
-        )
-        .bind(user_id)
-        .bind(code)
-        .execute(&mut *tx)
-        .await?;
-    }
+    insert_pinned_in_order(
+        &mut tx,
+        "pinned_operators",
+        "operator_code",
+        user_id,
+        &codes,
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -248,6 +266,90 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture user");
+    }
+
+    /// DB2-16: a PUT's order is stored, not left to heap order. Each row
+    /// gets a distinct `pinned_at` in input order, and every list reads
+    /// back exactly as written, including a reversed and a shuffled set.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                replace_pinned_sets_store_the_callers_order -- --ignored`"]
+    async fn replace_pinned_sets_store_the_callers_order() {
+        let pool = connect().await;
+        let user_id = "TEST-PINNED-ORDER-USER";
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, 'order@example.com', 'Test Rider') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let lines = owned(&[
+            "zzz-test-line",
+            "aaa-test-line",
+            "mmm-test-line",
+            "bbb-test-line",
+        ]);
+        let stations = owned(&["ZZZ", "AAA", "MMM", "BBB"]);
+        let operators = owned(&["ZZ", "AA", "MM", "BB"]);
+        replace_pinned_lines(&pool, user_id, &lines)
+            .await
+            .expect("pin lines");
+        replace_pinned_stations(&pool, user_id, &stations)
+            .await
+            .expect("pin stations");
+        replace_pinned_operators(&pool, user_id, &operators)
+            .await
+            .expect("pin operators");
+
+        assert_eq!(list_pinned_line_ids(&pool, user_id).await.unwrap(), lines);
+        assert_eq!(
+            list_pinned_station_crs(&pool, user_id).await.unwrap(),
+            stations
+        );
+        assert_eq!(
+            list_pinned_operator_codes(&pool, user_id).await.unwrap(),
+            operators
+        );
+
+        let stamps: Vec<(String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "SELECT operator_code, pinned_at FROM pinned_operators WHERE user_id = $1 \
+             ORDER BY pinned_at",
+        )
+        .bind(user_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(
+            stamps.windows(2).all(|w| w[0].1 < w[1].1),
+            "every row of one PUT must have its own pinned_at: {stamps:?}"
+        );
+
+        // Reversing the set is honoured too.
+        let reversed: Vec<String> = operators.iter().rev().cloned().collect();
+        replace_pinned_operators(&pool, user_id, &reversed)
+            .await
+            .unwrap();
+        assert_eq!(
+            list_pinned_operator_codes(&pool, user_id).await.unwrap(),
+            reversed
+        );
+
+        for sql in [
+            "DELETE FROM pinned_lines WHERE user_id = $1",
+            "DELETE FROM pinned_stations WHERE user_id = $1",
+            "DELETE FROM pinned_operators WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql)
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .expect("cleanup");
+        }
     }
 
     /// The real-failure-shape regression for the review finding: before

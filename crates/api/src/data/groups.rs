@@ -1216,6 +1216,13 @@ impl From<GroupJourneyRow> for GroupJourney {
     }
 }
 
+/// Row cap on each group content list (DB2-19): a group's trains,
+/// journeys and custom lines, and the caller's shared custom lines. Members
+/// are capped at 100, but what each member can share was not, so these
+/// lists were unbounded. Each list keeps its newest rows past the cap; the
+/// per-group lists still return them oldest-first. Far above real use.
+pub const MAX_GROUP_LIST_ITEMS: i64 = 500;
+
 /// Every train shared into `group_id`, oldest-shared first. No permission
 /// check here -- the route's own `get_member_role` call gates "is the
 /// caller even a member." See `GroupTrain`'s own doc comment for the
@@ -1237,12 +1244,15 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
          LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
          WHERE gt.group_id = $1 \
-         ORDER BY gt.added_at",
+         ORDER BY gt.added_at DESC, gt.train_subscription_id DESC \
+         LIMIT $2",
     )
     .bind(group_id)
+    .bind(MAX_GROUP_LIST_ITEMS)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(GroupTrain::from).collect())
+    // Newest `MAX_GROUP_LIST_ITEMS` fetched, returned oldest-first as before.
+    Ok(rows.into_iter().rev().map(GroupTrain::from).collect())
 }
 
 /// Every journey shared into `group_id`, oldest-shared first. No
@@ -1291,12 +1301,14 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
          LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
          WHERE gj.group_id = $1 \
-         ORDER BY gj.added_at",
+         ORDER BY gj.added_at DESC, gj.journey_id DESC \
+         LIMIT $2",
     )
     .bind(group_id)
+    .bind(MAX_GROUP_LIST_ITEMS)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(GroupJourney::from).collect())
+    Ok(rows.into_iter().rev().map(GroupJourney::from).collect())
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1793,12 +1805,14 @@ pub async fn list_group_custom_lines(
          JOIN custom_lines cl ON cl.id = g.line_id \
          JOIN users u ON u.id = g.granted_by \
          WHERE g.group_id = $1 \
-         ORDER BY g.granted_at, g.line_id",
+         ORDER BY g.granted_at DESC, g.line_id DESC \
+         LIMIT $2",
     )
     .bind(group_id)
+    .bind(MAX_GROUP_LIST_ITEMS)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(GroupCustomLine::from).collect())
+    Ok(rows.into_iter().rev().map(GroupCustomLine::from).collect())
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1896,9 +1910,11 @@ pub async fn list_shared_custom_lines_for_user(
          JOIN custom_lines cl ON cl.id = gr.line_id \
          JOIN users u ON u.id = gr.granted_by \
          WHERE me.user_id = $1 AND cl.user_id <> $1 \
-         ORDER BY gr.granted_at DESC, gr.line_id DESC",
+         ORDER BY gr.granted_at DESC, gr.line_id DESC \
+         LIMIT $2",
     )
     .bind(user_id)
+    .bind(MAX_GROUP_LIST_ITEMS)
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(SharedCustomLine::from).collect())
@@ -3389,6 +3405,65 @@ mod db_tests {
             ],
         )
         .await;
+    }
+
+    /// DB2-19: a group's train list is capped at `MAX_GROUP_LIST_ITEMS`,
+    /// keeping the newest rows and still returning them oldest-first.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_group_trains_is_capped_to_the_newest_rows -- --ignored --test-threads=1`"]
+    async fn list_group_trains_is_capped_to_the_newest_rows() {
+        let pool = connect().await;
+        let owner = "TEST-DB2-19-LIST-CAP";
+        cleanup(&pool, &[owner]).await;
+        seed_user(&pool, owner).await;
+        let group_id = create_group(&pool, "DB2-19 cap", owner)
+            .await
+            .expect("create group");
+        let n = MAX_GROUP_LIST_ITEMS + 3;
+        let subs: Vec<i64> = sqlx::query_scalar(
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             SELECT $1, DATE '2026-09-22', 'WAT', TIMESTAMPTZ '2026-09-22 08:00Z' \
+             FROM generate_series(1, $2) RETURNING id",
+        )
+        .bind(owner)
+        .bind(n as i32)
+        .fetch_all(&pool)
+        .await
+        .expect("seed subscriptions");
+        let mut subs = subs;
+        subs.sort_unstable();
+        sqlx::query(
+            "INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at) \
+             SELECT $1, sub, $2, TIMESTAMPTZ '2026-09-01 00:00Z' + ord * INTERVAL '1 second' \
+             FROM unnest($3::bigint[]) WITH ORDINALITY AS t(sub, ord)",
+        )
+        .bind(&group_id)
+        .bind(owner)
+        .bind(&subs)
+        .execute(&pool)
+        .await
+        .expect("share subscriptions");
+
+        let listed: Vec<i64> = list_group_trains(&pool, &group_id)
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|t| t.train_subscription_id)
+            .collect();
+        assert_eq!(listed, subs[3..].to_vec(), "newest rows, oldest-first");
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+            .bind(owner)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &[owner]).await;
     }
 
     #[tokio::test]

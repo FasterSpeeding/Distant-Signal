@@ -479,12 +479,25 @@ fn build_delay_repay_response(
     }
 }
 
+/// 400 once the user has [`train_tracking::MAX_FUTURE_PINS_PER_USER`]
+/// upcoming subscriptions (API-6).
+pub(crate) async fn enforce_pin_cap(app: &App, user_id: &str) -> Result<(), (StatusCode, String)> {
+    let upcoming = train_tracking::count_future_subscriptions_for_user(&app.database, user_id)
+        .await
+        .map_err(internal_error("count tracked trains"))?;
+    if upcoming >= train_tracking::MAX_FUTURE_PINS_PER_USER {
+        return Err((StatusCode::BAD_REQUEST, train_tracking::pin_cap_message()));
+    }
+    Ok(())
+}
+
 async fn post_track(
     State(app): State<App>,
     user: AuthenticatedUser,
     Json(pin): Json<TrackPinRequest>,
 ) -> Result<Json<TrackPinResponse>, (StatusCode, String)> {
     train_tracking::validate_pin(&pin, Utc::now()).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    enforce_pin_cap(&app, &user.id).await?;
 
     let tracking_id = train_tracking::create_pin(&app.database, &pin, &user.id)
         .await
@@ -814,7 +827,10 @@ async fn get_by_uid_and_date(
         && current.origin_crs.is_none()
         && !SCHEDULE_MATCH_FAILURE_CACHE.recently_failed(&train_uid, date)
     {
-        if !enrich_public_train_schedule(&app, &train_uid, date).await {
+        if enrich_public_train_schedule(&app, &train_uid, date)
+            .await
+            .should_negative_cache()
+        {
             SCHEDULE_MATCH_FAILURE_CACHE.record_failure(&train_uid, date);
         }
         state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
@@ -863,6 +879,25 @@ async fn post_track_by_uid(
     // targets -- an unattributable row that silently never receives an
     // event.
     let train_uid = train_uid.trim().to_ascii_uppercase();
+    // API-6: the same future window as a pin (nothing later is published),
+    // and the same per-user cap unless this is a repeat track of a train
+    // the user already has.
+    if date > super::london_today() + chrono::Duration::days(train_tracking::PIN_MAX_DAYS_AHEAD) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "That train is too far ahead — trains can be tracked up to {} days before they run.",
+                train_tracking::PIN_MAX_DAYS_AHEAD
+            ),
+        ));
+    }
+    let already_tracked =
+        train_tracking::user_tracks_train_uid(&app.database, &user.id, &train_uid, date)
+            .await
+            .map_err(internal_error("check existing subscription"))?;
+    if !already_tracked {
+        enforce_pin_cap(&app, &user.id).await?;
+    }
     let trains_id = crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
         .await
         .map_err(internal_error("find or create train"))?;
@@ -1038,28 +1073,27 @@ pub(crate) async fn enrich_shared_train(
 /// against whatever is already there -- safe to call for an
 /// already-matched row (fast no-op) or in a race with the tracked-train
 /// paths above (never clobbers, per that function's own doc comment).
-/// Returns `true` only when this attempt actually schedule-matched the
-/// row -- the caller (`get_by_uid_and_date`) uses that to decide whether to
-/// record a negative-cache entry via `SCHEDULE_MATCH_FAILURE_CACHE`. Every
-/// non-match outcome (no CIF origin found, an unresolvable local time, an
-/// attempted-but-unmatched schedule, or an outright lookup error) returns
-/// `false` -- from the caller's point of view all of those are equally "did
-/// not get a schedule this time," and equally expensive to blindly retry on
-/// every read.
-async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDate) -> bool {
+/// Returns a [`PublicEnrichment`]; the caller (`get_by_uid_and_date`)
+/// records a negative-cache entry via `SCHEDULE_MATCH_FAILURE_CACHE` only
+/// for [`PublicEnrichment::NoMatch`].
+async fn enrich_public_train_schedule(
+    app: &App,
+    train_uid: &str,
+    date: NaiveDate,
+) -> PublicEnrichment {
     let origin =
         match crate::data::reconciliation::true_origin_departure(&app.database, train_uid, date)
             .await
         {
             Ok(Some(origin)) => origin,
-            Ok(None) => return false,
+            Ok(None) => return PublicEnrichment::NoMatch,
             Err(err) => {
                 tracing::warn!(
                     error = ?err,
                     train_uid,
                     "true-origin-departure lookup failed for public schedule enrichment"
                 );
-                return false;
+                return PublicEnrichment::Failed;
             }
         };
     let (origin_crs, scheduled) = origin;
@@ -1071,7 +1105,7 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
             "scheduled departure did not resolve to a real London local time; skipping public \
              schedule enrichment"
         );
-        return false;
+        return PublicEnrichment::NoMatch;
     };
 
     match schedule_matching::attempt_schedule_match_for_shared_train(
@@ -1090,7 +1124,7 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
                 origin_crs,
                 "schedule-matched a previously-untracked shared train row from a public read"
             );
-            true
+            PublicEnrichment::Matched
         }
         Ok(false) => {
             tracing::debug!(
@@ -1098,7 +1132,7 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
                 origin_crs,
                 "no schedule match for this untracked train's true origin departure"
             );
-            false
+            PublicEnrichment::NoMatch
         }
         Err(err) => {
             tracing::warn!(
@@ -1106,8 +1140,29 @@ async fn enrich_public_train_schedule(app: &App, train_uid: &str, date: NaiveDat
                 train_uid,
                 "public schedule enrichment failed for an untracked shared train row"
             );
-            false
+            PublicEnrichment::Failed
         }
+    }
+}
+
+/// Outcome of [`enrich_public_train_schedule`] (DB2-11). It used to be a
+/// bool, so a transient DB error was negative-cached for
+/// `SCHEDULE_MATCH_FAILURE_TTL` (15 min) exactly like a genuine miss, and
+/// the train page showed no schedule for that long after a blip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicEnrichment {
+    /// This attempt schedule-matched the row.
+    Matched,
+    /// A real answer: no CIF origin, an unresolvable local time, or no
+    /// matching schedule. Worth negative-caching.
+    NoMatch,
+    /// A lookup or match query failed (logged). Retried on the next read.
+    Failed,
+}
+
+impl PublicEnrichment {
+    fn should_negative_cache(self) -> bool {
+        self == Self::NoMatch
     }
 }
 
@@ -1294,48 +1349,87 @@ pub(crate) fn apply_darwin_eta(
 /// `blend_darwin_eta` already has for its own overlay.
 pub(crate) async fn attach_journey_stops(
     app: &App,
-    mut state: train_tracking::TrackedTrainState,
+    state: train_tracking::TrackedTrainState,
 ) -> train_tracking::TrackedTrainState {
-    let (Some(trains_id), Some(train_uid)) = (state.trains_id, state.train_uid.clone()) else {
-        return state;
+    attach_journey_stops_batch(app, vec![state])
+        .await
+        .pop()
+        .expect("one state in, one state out")
+}
+
+/// [`attach_journey_stops`] for several states with one batched stop build
+/// (`journey::build_journey_stops_batch`, DB2-14), returned in the same
+/// order. Same best-effort posture: a failure degrades the affected
+/// states to `journey_stops: None`, never the request.
+pub(crate) async fn attach_journey_stops_batch(
+    app: &App,
+    mut states: Vec<train_tracking::TrackedTrainState>,
+) -> Vec<train_tracking::TrackedTrainState> {
+    // Only a state with both `trains_id` and `train_uid` gets stops (§1 of
+    // the design doc); a `pending`/`unresolved` one is returned unchanged.
+    let buildable: Vec<usize> = states
+        .iter()
+        .enumerate()
+        .filter(|(_, state)| state.trains_id.is_some() && state.train_uid.is_some())
+        .map(|(index, _)| index)
+        .collect();
+    if buildable.is_empty() {
+        return states;
+    }
+    let results = {
+        let requests: Vec<crate::data::journey::JourneyStopsRequest<'_>> = buildable
+            .iter()
+            .map(|&index| {
+                let state = &states[index];
+                crate::data::journey::JourneyStopsRequest {
+                    trains_id: state.trains_id.expect("filtered above"),
+                    train_uid: state.train_uid.as_deref().expect("filtered above"),
+                    service_date: state.service_date,
+                    calling_points_json: state.schedule_calling_points.as_ref(),
+                    current_delay_minutes: state.delay_minutes,
+                    skipped_stations: &state.schedule_skipped_stations,
+                    platform: state.schedule_platform.as_deref(),
+                    planned_platform: state.schedule_planned_platform.as_deref(),
+                }
+            })
+            .collect();
+        crate::data::journey::build_journey_stops_batch(&app.database, &requests).await
     };
-    match crate::data::journey::build_journey_stops(
-        &app.database,
-        trains_id,
-        &train_uid,
-        state.service_date,
-        state.schedule_calling_points.as_ref(),
-        state.delay_minutes,
-        &state.schedule_skipped_stations,
-        state.schedule_platform.as_deref(),
-        state.schedule_planned_platform.as_deref(),
-    )
-    .await
-    {
-        Ok(stops) => {
-            // `may_have_arrived` is computed from the SAME `stops` this
-            // just built (it reads the final stop's `estimated_arrival`,
-            // which `build_journey_stops` only just populated), not
-            // recomputed later against whatever `state.journey_stops` ends
-            // up holding -- so it's derived before the move below.
-            state.may_have_arrived = stops
-                .as_deref()
-                .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
-            // Sequence-anchored confirmed arrival -- see
-            // `journey::apply_confirmed_arrival`'s own doc comment for why
-            // the stored status alone can leave a long-finished train
-            // reading `'en_route'` forever.
-            state.status = crate::data::journey::apply_confirmed_arrival(
-                state.status.take(),
-                stops.as_deref(),
-            );
-            state.journey_stops = stops;
-        }
+    let results = match results {
+        Ok(results) => results,
         Err(err) => {
-            tracing::warn!(error = ?err, trains_id, "could not build journey stops");
+            tracing::warn!(error = ?err, "could not build journey stops");
+            return states;
+        }
+    };
+    for (index, stops) in buildable.into_iter().zip(results) {
+        let state = &mut states[index];
+        match stops {
+            Ok(stops) => {
+                // `may_have_arrived` is computed from the SAME `stops` this
+                // just built (it reads the final stop's `estimated_arrival`,
+                // which `build_journey_stops` only just populated), not
+                // recomputed later against whatever `state.journey_stops` ends
+                // up holding -- so it's derived before the move below.
+                state.may_have_arrived = stops
+                    .as_deref()
+                    .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
+                // Sequence-anchored confirmed arrival -- see
+                // `journey::apply_confirmed_arrival`'s own doc comment for why
+                // the stored status alone can leave a long-finished train
+                // reading `'en_route'` forever.
+                state.status = crate::data::journey::apply_confirmed_arrival(
+                    state.status.take(),
+                    stops.as_deref(),
+                );
+                state.journey_stops = stops;
+            }
+            Err(err) => {
+                tracing::warn!(error = ?err, trains_id = state.trains_id, "could not build journey stops");
+            }
         }
     }
-    state
+    states
 }
 
 /// Public-route sibling of `attach_journey_stops`, for `PublicTrainState`.
@@ -4658,6 +4752,137 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-LEGACY-VALIDATION-STILL-ENFORCED").await;
+    }
+
+    /// DB2-11: only a genuine miss is negative-cached. A train with no CIF
+    /// schedule is `NoMatch`; the same lookup on a pool that can't reach
+    /// the database is `Failed`, which the caller does not cache.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                public_enrichment_distinguishes_a_miss_from_a_failure -- --ignored --test-threads=1`"]
+    async fn public_enrichment_distinguishes_a_miss_from_a_failure() {
+        let pool = connect().await;
+        let date: chrono::NaiveDate = "2026-09-22".parse().unwrap();
+        let app = test_app(pool.clone());
+        let outcome = super::enrich_public_train_schedule(&app, "DB2NOSCHED", date).await;
+        assert_eq!(outcome, super::PublicEnrichment::NoMatch);
+        assert!(outcome.should_negative_cache());
+
+        let closed = connect().await;
+        closed.close().await;
+        let outcome =
+            super::enrich_public_train_schedule(&test_app(closed), "DB2NOSCHED", date).await;
+        assert_eq!(outcome, super::PublicEnrichment::Failed);
+        assert!(
+            !outcome.should_negative_cache(),
+            "a DB error must not be cached as a miss"
+        );
+        assert!(!super::PublicEnrichment::Matched.should_negative_cache());
+    }
+
+    /// API-6: the per-user cap on upcoming subscriptions, on both ways to
+    /// track a train, and the future window on the by-uid route. A repeat
+    /// track of a train the user already has still succeeds at the cap.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                track_routes_enforce_the_upcoming_pin_cap_and_future_window \
+                -- --ignored --test-threads=1`"]
+    async fn track_routes_enforce_the_upcoming_pin_cap_and_future_window() {
+        let pool = connect().await;
+        let user_id = "TEST-API6-PIN-CAP";
+        cleanup_user(&pool, user_id).await;
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+        let today = super::super::london_today();
+
+        // One already-tracked shared train, plus enough plain pins to reach
+        // the cap.
+        let tracked_uid = "API6CAP";
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Train/by-uid/{tracked_uid}/{today}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        sqlx::query(
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             SELECT $1, $2, 'WAT', NOW() + INTERVAL '1 hour' FROM generate_series(1, $3)",
+        )
+        .bind(user_id)
+        .bind(today)
+        .bind((crate::data::train_tracking::MAX_FUTURE_PINS_PER_USER - 1) as i32)
+        .execute(&pool)
+        .await
+        .expect("seed pins up to the cap");
+
+        let departure = chrono::Utc::now() + chrono::Duration::hours(1);
+        let (status, body) = post_json(
+            router.clone(),
+            "/Train/track".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "service_date": departure.with_timezone(&chrono_tz::Europe::London).date_naive(),
+                "origin_crs": "WAT",
+                "scheduled_departure": departure.to_rfc3339(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(
+            body.as_str().is_some_and(|b| b.contains("maximum")),
+            "{body:?}"
+        );
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Train/by-uid/API6NEW/{today}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a new train at the cap: {body:?}"
+        );
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Train/by-uid/{tracked_uid}/{today}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a repeat track at the cap: {body:?}"
+        );
+
+        let far =
+            today + chrono::Duration::days(crate::data::train_tracking::PIN_MAX_DAYS_AHEAD + 1);
+        let (status, body) = post_json(
+            router,
+            format!("/Train/by-uid/API6FAR/{far}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "beyond the timetable: {body:?}"
+        );
+        let (far_rows,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid IN ('API6NEW', 'API6FAR')")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(far_rows, 0, "a rejected track must not mint a trains row");
+
+        cleanup_user(&pool, user_id).await;
     }
 
     // --- Fix 2 (review finding C2): NULL pin columns on the two read paths ---

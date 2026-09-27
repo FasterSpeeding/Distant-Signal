@@ -641,6 +641,7 @@ async fn post_journey(
             };
             train_tracking::validate_pin(&pin, Utc::now())
                 .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            crate::routes::train::enforce_pin_cap(&app, &user.id).await?;
 
             let (journey_id, leg_id, tracking_id) = journeys::create_journey_with_pin_leg(
                 &app.database,
@@ -1300,10 +1301,10 @@ async fn build_journey_detail_response(
     // Everything a leg needs from the database beyond its own row is read
     // in batches for the whole journey up front: every tracked state in one
     // query, every leg train's true origin in one, and every departure board
-    // the ETA blend and skip check read in one. Only `attach_journey_stops`
-    // (the per-train stop list) still runs per leg. This used to be ~8-10
-    // sequential queries per leg, up to 20 legs, on a route a share link
-    // exposes without a session (DB review part 2, DB2-14).
+    // the ETA blend and skip check read in one, and every leg's stop list
+    // in one batched build (`attach_journey_stops_batch`). This used to be
+    // ~8-10 sequential queries per leg, up to 20 legs, on a route a share
+    // link exposes without a session (DB review part 2, DB2-14).
     let tracking_ids: Vec<i64> = leg_rows
         .iter()
         .filter_map(|leg| leg.train_subscription_id)
@@ -1356,22 +1357,35 @@ async fn build_journey_detail_response(
             .await
             .unwrap_or_default();
 
+    // Every leg's ETA overlay, then every leg's stop list in one batched
+    // build. Cloned, not removed: two legs could in principle name one
+    // subscription, and each must still render it.
+    let (stop_leg_indexes, blended): (Vec<usize>, Vec<_>) = leg_rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, leg)| {
+            let state = leg
+                .train_subscription_id
+                .and_then(|id| states.get(&id).cloned())?;
+            let origin_board = crate::routes::train::darwin_blend_origin_crs(&state)
+                .and_then(|crs| boards.get(&crate::data::queries::normalize_code(crs)));
+            Some((
+                index,
+                crate::routes::train::apply_darwin_eta(state, origin_board),
+            ))
+        })
+        .unzip();
+    let mut leg_states: Vec<Option<train_tracking::TrackedTrainState>> =
+        (0..leg_rows.len()).map(|_| None).collect();
+    for (index, state) in stop_leg_indexes
+        .into_iter()
+        .zip(crate::routes::train::attach_journey_stops_batch(app, blended).await)
+    {
+        leg_states[index] = Some(state);
+    }
+
     let mut legs = Vec::with_capacity(leg_rows.len());
-    for leg in leg_rows {
-        // Cloned, not removed: two legs could in principle name one
-        // subscription, and each must still render it.
-        let tracked_train_state = match leg
-            .train_subscription_id
-            .and_then(|id| states.get(&id).cloned())
-        {
-            Some(state) => {
-                let origin_board = crate::routes::train::darwin_blend_origin_crs(&state)
-                    .and_then(|crs| boards.get(&crate::data::queries::normalize_code(crs)));
-                let state = crate::routes::train::apply_darwin_eta(state, origin_board);
-                Some(crate::routes::train::attach_journey_stops(app, state).await)
-            }
-            None => None,
-        };
+    for (leg, tracked_train_state) in leg_rows.into_iter().zip(leg_states) {
         // Low finding #5 (2026-09-25 review): `TrackedTrainState` is reused
         // verbatim here for BOTH the owner's own read and every non-owner
         // read this function serves -- a fellow group member
