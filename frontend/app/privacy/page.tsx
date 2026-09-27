@@ -103,7 +103,7 @@ const DATA_CATEGORIES: readonly DataCategory[] = [
   },
   {
     title: 'Your location',
-    what: 'If you use "near me", your browser sends your location so we can find the nearest stations.',
+    what: 'If you use "near me", your browser sends your approximate location (rounded to about 100 metres) so we can find the nearest stations.',
     why: 'To find stations near you.',
     basis: CONTRACT,
     retention: 'Not stored. It can appear briefly in our server logs (see below).',

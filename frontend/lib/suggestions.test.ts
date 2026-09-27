@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { searchNearbyStations, getStationNames } from './suggestions';
+import { searchNearbyStations, getStationNames, roundCoordinate } from './suggestions';
 
 describe('searchNearbyStations', () => {
   afterEach(() => {
@@ -17,7 +17,7 @@ describe('searchNearbyStations', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('/api/stations/nearby?lat=51.3191&lon=-0.561');
+    expect(url).toBe('/api/stations/nearby?lat=51.319&lon=-0.561');
     expect(init).toEqual({ signal: undefined });
     expect(result).toEqual([{ code: 'WOK', name: 'Woking', distanceKm: 0.4 }]);
   });
@@ -101,5 +101,26 @@ describe('getStationNames', () => {
     const names = await getStationNames(['EUS', 'MKC']);
 
     expect(names).toEqual(new Map([['EUS', 'London Euston']]));
+  });
+});
+
+// LEG-7: no precise location leaves the browser.
+describe('roundCoordinate', () => {
+  it.each([
+    [51.319149, 51.319],
+    [-0.5615, -0.561],
+    [-0.56151, -0.562],
+    [0.0004, 0],
+    [-0.0004, 0],
+  ])('%f -> %f', (input, expected) => {
+    expect(roundCoordinate(input)).toBe(expected);
+  });
+
+  it('sends only three decimal places', async () => {
+    const fetchMock = vi.fn(async (_input: string) => new Response('[]', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await searchNearbyStations(51.3191234, -0.5612345);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/stations/nearby?lat=51.319&lon=-0.561');
+    vi.unstubAllGlobals();
   });
 });
