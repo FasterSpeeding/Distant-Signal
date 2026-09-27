@@ -199,8 +199,8 @@ async fn main() -> anyhow::Result<()> {
                 &http,
                 &config,
                 &internal_oauth,
-                &line_ids.load(),
-                &population.load(),
+                &line_ids.load_full(),
+                &population.load_full(),
                 &day,
                 &defaults,
             )
@@ -256,9 +256,11 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // 2. consume + correlate, against whatever population snapshot is
-        // current -- never waiting on a reload.
+        // current -- never waiting on a reload. `load_full` (an owned
+        // `Arc`), not `load`: the snapshot is held across `next_batch`'s
+        // blocking read, and `ArcSwap` guards are meant to be short-lived.
         let cycle_start = std::time::Instant::now();
-        consume_once(&mut feed, &mut day, &lookups, &population.load()).await;
+        consume_once(&mut feed, &mut day, &lookups, &population.load_full()).await;
         metrics::histogram!(common::metrics::metric_name(
             "full_coverage_consumer_cycle_duration_seconds"
         ))
@@ -270,8 +272,8 @@ async fn main() -> anyhow::Result<()> {
                 &http,
                 &config,
                 &internal_oauth,
-                &line_ids.load(),
-                &population.load(),
+                &line_ids.load_full(),
+                &population.load_full(),
                 &day,
                 &defaults,
             )
