@@ -133,38 +133,279 @@ fn migration_files() -> Vec<PathBuf> {
     files
 }
 
-/// `--` comments stripped and whitespace collapsed, so the multi-line
-/// `CREATE INDEX x\n    ON tbl (...)` form this codebase uses throughout
-/// matches the same pattern as the single-line form.
+/// Comments (`--` and `/* */`) stripped and whitespace collapsed, so the
+/// multi-line `CREATE INDEX x\n    ON tbl (...)` form this codebase uses
+/// throughout matches the same pattern as the single-line form, and a
+/// commented-out statement never counts. String literals, quoted identifiers
+/// and dollar-quoted bodies are kept verbatim (a `--` inside one is not a
+/// comment).
 fn normalized_sql(raw: &str) -> String {
-    let comment = Regex::new(r"--[^\n]*").unwrap();
     let ws = Regex::new(r"\s+").unwrap();
-    ws.replace_all(&comment.replace_all(raw, " "), " ")
-        .to_string()
+    ws.replace_all(&lex(raw).text, " ").trim().to_string()
+}
+
+/// The result of one pass over a migration file.
+struct Lexed {
+    /// The file with comments replaced by a space.
+    text: String,
+    /// Top-level statements (split on `;` outside quotes, dollar quotes and
+    /// comments), comments removed, trimmed, empty ones dropped.
+    statements: Vec<String>,
+}
+
+/// A small SQL lexer: just enough to tell comments, `'strings'`,
+/// `"identifiers"` and `$tag$ bodies $tag$` apart from code, so comment
+/// stripping and statement splitting are not fooled by a `;` or `--` inside
+/// a `DO $$ ... $$` block or a string.
+fn lex(raw: &str) -> Lexed {
+    let bytes = raw.as_bytes();
+    let mut text = String::with_capacity(raw.len());
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+    let push = |text: &mut String, current: &mut String, s: &str| {
+        text.push_str(s);
+        current.push_str(s);
+    };
+    while i < bytes.len() {
+        let rest = &raw[i..];
+        if rest.starts_with("--") {
+            let end = rest.find('\n').map_or(raw.len(), |n| i + n);
+            push(&mut text, &mut current, " ");
+            i = end;
+        } else if rest.starts_with("/*") {
+            // Postgres block comments nest.
+            let mut depth = 0usize;
+            let mut j = i;
+            while j < bytes.len() {
+                if raw[j..].starts_with("/*") {
+                    depth += 1;
+                    j += 2;
+                } else if raw[j..].starts_with("*/") {
+                    depth -= 1;
+                    j += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            push(&mut text, &mut current, " ");
+            i = j;
+        } else if bytes[i] == b'\'' || bytes[i] == b'"' {
+            let quote = bytes[i];
+            let mut j = i + 1;
+            while j < bytes.len() {
+                if bytes[j] == quote {
+                    if bytes.get(j + 1) == Some(&quote) {
+                        j += 2;
+                        continue;
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            let end = (j + 1).min(raw.len());
+            push(&mut text, &mut current, &raw[i..end]);
+            i = end;
+        } else if let Some(tag) = Regex::new(r"^\$[A-Za-z_]*\$")
+            .unwrap()
+            .find(rest)
+            .map(|m| m.as_str().to_string())
+        {
+            let body_start = i + tag.len();
+            let end = raw[body_start..]
+                .find(&tag)
+                .map_or(raw.len(), |n| body_start + n + tag.len());
+            push(&mut text, &mut current, &raw[i..end]);
+            i = end;
+        } else if bytes[i] == b';' {
+            text.push(';');
+            let statement = current.trim().to_string();
+            if !statement.is_empty() {
+                statements.push(statement);
+            }
+            current.clear();
+            i += 1;
+        } else {
+            let ch = rest.chars().next().unwrap();
+            let mut buf = [0u8; 4];
+            push(&mut text, &mut current, ch.encode_utf8(&mut buf));
+            i += ch.len_utf8();
+        }
+    }
+    let statement = current.trim().to_string();
+    if !statement.is_empty() {
+        statements.push(statement);
+    }
+    Lexed { text, statements }
+}
+
+/// An identifier, optionally schema-qualified, bare or double-quoted.
+const IDENT: &str =
+    r#"(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*))?"#;
+
+/// Lower-cased, unquoted, schema-stripped: `public."Foo"` -> `foo`, so a
+/// table is recognised however the file spells it.
+fn canonical_ident(ident: &str) -> String {
+    let last = ident.rsplit('.').next().unwrap_or(ident);
+    last.trim_matches('"').replace("\"\"", "\"").to_lowercase()
+}
+
+/// Tables `sql` itself creates. Anything done to such a table in the same
+/// file is harmless: it is empty and no other session can see it yet.
+fn created_tables(sql: &str) -> BTreeSet<String> {
+    Regex::new(&format!(
+        r"(?i)\bCREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({IDENT})"
+    ))
+    .unwrap()
+    .captures_iter(sql)
+    .map(|caps| canonical_ident(&caps[1]))
+    .collect()
 }
 
 /// Every non-concurrent index in `sql` whose table is NOT also created by the
 /// same file, as `(index_name, table_name)`. An index created alongside its own
 /// brand-new table is harmless: the table is empty and no other session can
 /// see it yet, so the lock has nothing to block.
+///
+/// Also catches an unnamed index (`CREATE INDEX ON t (...)`, reported as
+/// `<unnamed>`), quoted and schema-qualified names, `ON ONLY`, and the
+/// index a `PRIMARY KEY` / `UNIQUE` / `EXCLUDE` constraint added by
+/// `ALTER TABLE` builds under that statement's ACCESS EXCLUSIVE lock (unless
+/// it adopts an existing index with `USING INDEX`).
 fn blocking_index_builds(sql: &str) -> Vec<(String, String)> {
-    let created_tables: BTreeSet<String> = Regex::new(
-        r"(?i)\bCREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
-    )
-    .unwrap()
-    .captures_iter(sql)
-    .map(|caps| caps[1].to_lowercase())
-    .collect();
-
-    Regex::new(
-        r"(?i)\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+ON\s+([A-Za-z_][A-Za-z0-9_]*)",
-    )
+    let created = created_tables(sql);
+    let mut found: Vec<(String, String)> = Regex::new(&format!(
+        r"(?i)\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:({IDENT})\s+)??ON\s+(?:ONLY\s+)?({IDENT})"
+    ))
     .unwrap()
     .captures_iter(sql)
     .filter(|caps| caps.get(1).is_none())
-    .filter(|caps| !created_tables.contains(&caps[3].to_lowercase()))
-    .map(|caps| (caps[2].to_string(), caps[3].to_string()))
-    .collect()
+    .filter(|caps| !created.contains(&canonical_ident(&caps[3])))
+    .map(|caps| {
+        let name = caps
+            .get(2)
+            .map_or_else(|| "<unnamed>".to_string(), |m| m.as_str().to_string());
+        (name, caps[3].to_string())
+    })
+    .collect();
+
+    let constraint_index = Regex::new(&format!(
+        r"(?i)^ADD\s+(?:CONSTRAINT\s+({IDENT})\s+)?(PRIMARY\s+KEY|UNIQUE|EXCLUDE)\b"
+    ))
+    .unwrap();
+    let using_index = Regex::new(r"(?i)\bUSING\s+INDEX\s+[A-Za-z_\x22]").unwrap();
+    for (table, action) in alter_table_actions(sql) {
+        if created.contains(&canonical_ident(&table)) {
+            continue;
+        }
+        if let Some(caps) = constraint_index.captures(&action)
+            && !using_index.is_match(&action)
+        {
+            let name = caps.get(1).map_or_else(
+                || format!("<unnamed {}>", caps[2].to_uppercase()),
+                |m| m.as_str().to_string(),
+            );
+            found.push((name, table));
+        }
+    }
+    found
+}
+
+/// Every `ALTER TABLE` action in `sql`, as `(table, action)`, with the
+/// action list split on top-level commas: `ALTER TABLE t ADD a int, ALTER b
+/// SET NOT NULL` gives two entries.
+fn alter_table_actions(sql: &str) -> Vec<(String, String)> {
+    let alter = Regex::new(&format!(
+        r"(?is)^ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?({IDENT})\s*\*?\s+(.*)$"
+    ))
+    .unwrap();
+    let mut out = Vec::new();
+    for statement in lex(sql).statements {
+        let statement = Regex::new(r"\s+")
+            .unwrap()
+            .replace_all(&statement, " ")
+            .to_string();
+        let Some(caps) = alter.captures(&statement) else {
+            continue;
+        };
+        let table = caps[1].to_string();
+        let mut depth = 0i32;
+        let mut action = String::new();
+        for ch in caps[2].chars() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push((table.clone(), action.trim().to_string()));
+                    action.clear();
+                    continue;
+                }
+                _ => {}
+            }
+            action.push(ch);
+        }
+        if !action.trim().is_empty() {
+            out.push((table.clone(), action.trim().to_string()));
+        }
+    }
+    out
+}
+
+/// A table-wide scan or rewrite that an `ALTER TABLE` runs while holding
+/// ACCESS EXCLUSIVE on a table that already has rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TableLockHazard {
+    /// `ALTER COLUMN ... SET NOT NULL` scans the whole table (unless a valid
+    /// `CHECK (col IS NOT NULL)` exists; add one `NOT VALID`, `VALIDATE` it,
+    /// then `SET NOT NULL`).
+    SetNotNull,
+    /// `ADD [CONSTRAINT] FOREIGN KEY` / `CHECK` without `NOT VALID` checks
+    /// every row under the lock; add it `NOT VALID` and `VALIDATE
+    /// CONSTRAINT` in a later migration (a much weaker lock).
+    ValidatingConstraint,
+    /// `ALTER COLUMN ... [SET DATA] TYPE` usually rewrites the table and
+    /// every index on it.
+    AlterType,
+}
+
+fn table_lock_hazards(sql: &str) -> Vec<(TableLockHazard, String)> {
+    let created = created_tables(sql);
+    let set_not_null = Regex::new(&format!(
+        r"(?i)^ALTER\s+(?:COLUMN\s+)?{IDENT}\s+SET\s+NOT\s+NULL\b"
+    ))
+    .unwrap();
+    let validating = Regex::new(&format!(
+        r"(?i)^ADD\s+(?:CONSTRAINT\s+{IDENT}\s+)?(?:FOREIGN\s+KEY|CHECK)\b"
+    ))
+    .unwrap();
+    let not_valid = Regex::new(r"(?i)\bNOT\s+VALID\s*$").unwrap();
+    let alter_type = Regex::new(&format!(
+        r"(?i)^ALTER\s+(?:COLUMN\s+)?{IDENT}\s+(?:SET\s+DATA\s+)?TYPE\b"
+    ))
+    .unwrap();
+
+    let mut out = Vec::new();
+    for (table, action) in alter_table_actions(sql) {
+        if created.contains(&canonical_ident(&table)) {
+            continue;
+        }
+        let hazard = if set_not_null.is_match(&action) {
+            Some(TableLockHazard::SetNotNull)
+        } else if validating.is_match(&action) && !not_valid.is_match(&action) {
+            Some(TableLockHazard::ValidatingConstraint)
+        } else if alter_type.is_match(&action) {
+            Some(TableLockHazard::AlterType)
+        } else {
+            None
+        };
+        if let Some(hazard) = hazard {
+            out.push((hazard, format!("ALTER TABLE {table} {action}")));
+        }
+    }
+    out
 }
 
 fn file_name(path: &Path) -> String {
@@ -272,4 +513,22 @@ fn the_grandfathered_list_has_no_stale_entries() {
         "keep GRANDFATHERED in version order so it reads as a timeline and duplicate entries are \
          obvious"
     );
+}
+
+#[test]
+fn zz_debug_list() {
+    for path in migration_files() {
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let n = normalized_sql(&raw);
+        let name = file_name(&path);
+        for x in blocking_index_builds(&n) {
+            println!("IDX {name} {x:?}");
+        }
+        for x in table_lock_hazards(&n) {
+            println!("HAZ {name} {x:?}");
+        }
+        if raw.starts_with("-- no-transaction") {
+            println!("NOTX {name} {}", lex(&raw).statements.len());
+        }
+    }
 }
