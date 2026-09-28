@@ -1,25 +1,22 @@
-# Prettier is adopted file by file: everything is ignored except the files
-# un-ignored below, so `prettier --check .` (npm run format:check) covers
-# exactly those. To widen it, add a `!path` line. If the whole frontend is
-# ever adopted, keep the minified test/fixtures/**/*.json ignored.
-*
-!*/
+# Prettier covers the whole frontend (`npm run format:check`, run in CI).
+# Prettier 3 also skips anything matched by .gitignore; the build/output
+# dirs are repeated here so this file stands on its own.
 
-# Service worker (plain JS served from public/) and its test.
-!/public/sw.js
-!/public/sw-cache-rules.js
-!/public/sw-cache-rules.test.js
-!/types/service-worker.d.ts
+# Dependencies and build/test output.
+node_modules/
+.next/
+out/
+build/
+coverage/
+playwright-report/
+test-results/
+e2e-report/
+*.tsbuildinfo
 
-# Node-run scripts and JS configs.
-!/scripts/*.mjs
-!/e2e/screenshots/*.mjs
-!/eslint.config.mjs
-!/next.config.mjs
-!/next.config.test.js
-!/postcss.config.cjs
+# Generated files.
+next-env.d.ts
+package-lock.json
 
-# The configs that check them.
-!/tsconfig.scripts.json
-!/tsconfig.sw.json
-!/.prettierrc.json
+# Minified accessibility fixtures (captured axe/page output): formatting
+# them would expand ~32 files by ~16.7k lines of pure whitespace churn.
+test/fixtures/**/*.json
