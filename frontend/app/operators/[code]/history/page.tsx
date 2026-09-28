@@ -80,6 +80,7 @@ export default async function OperatorHistoryPage({
   const { code } = await params;
   const query = await searchParams;
 
+  // eslint-disable-next-line react-hooks/purity -- server component: one timestamp per request, passed down so SSR and hydration agree
   const now = Date.now();
   const [name, lineCount, ceilings] = await Promise.all([
     resolveOperatorName(code),

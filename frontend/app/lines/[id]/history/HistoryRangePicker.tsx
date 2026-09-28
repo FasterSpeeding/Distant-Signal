@@ -77,6 +77,7 @@ export function HistoryRangePicker({
   // submit the old range. Resyncing here keeps `value` a live mirror of the
   // URL-resolved range rather than a one-time snapshot of it.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resyncs the picker from the URL-resolved range (see above)
     setValue([toCalendarDay(from), toCalendarDay(to)]);
   }, [from, to]);
 
@@ -86,6 +87,7 @@ export function HistoryRangePicker({
   // for some unrelated reason -- `preset` hasn't actually changed yet in
   // that case, so the dependency array never fires.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resyncs the selection when the URL's preset changes (see above)
     setSelection(preset ?? 'custom');
   }, [preset]);
 

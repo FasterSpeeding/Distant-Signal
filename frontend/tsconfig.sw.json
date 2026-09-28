@@ -1,0 +1,28 @@
+{
+  // Type-checks the classic service-worker scripts served from public/.
+  // They stay plain JavaScript: the browser loads them as they are, and
+  // scripts/stamp-sw-version.mjs rewrites sw.js in place at build. Types
+  // live in JSDoc and types/service-worker.d.ts. The rules' Vitest suite
+  // is checked here too because it imports sw-cache-rules.js, whose `self`
+  // only type-checks against this program's WebWorker lib.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"],
+    "types": [],
+    // Only for resolving the test's `vitest` import; the worker scripts
+    // themselves have no imports (importScripts() is a plain global call).
+    "module": "preserve",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "files": ["types/service-worker.d.ts", "public/sw-cache-rules.js", "public/sw.js", "public/sw-cache-rules.test.js"]
+}

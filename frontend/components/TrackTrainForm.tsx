@@ -533,6 +533,7 @@ export function TrackTrainForm({
   // Decision 3.
   useEffect(() => {
     if (!originValid) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the picker when its input stops being valid, before any fetch
       setPicker(null);
       setPickerLoading(false);
       return;

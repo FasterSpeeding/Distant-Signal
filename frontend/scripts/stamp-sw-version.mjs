@@ -34,7 +34,7 @@ const swSource = readFileSync(swPath, 'utf8');
 if (!swSource.includes(PLACEHOLDER)) {
   throw new Error(
     `stamp-sw-version: ${swPath} does not contain the ${PLACEHOLDER} placeholder -- ` +
-      "either it was already stamped by a previous run of this script against the same " +
+      'either it was already stamped by a previous run of this script against the same ' +
       "checkout (see this file's own top comment), or sw.js's CACHE_NAME constant was " +
       'edited without preserving the placeholder.',
   );

@@ -115,6 +115,7 @@ export function ConnectivityMonitor({
   const [lastGoodAt, setLastGoodAt] = useState<string | null>(backendReachable ? observedAt : null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- counts one observation per server render, i.e. per observedAt (see below)
     setFailures((current) => (backendReachable ? 0 : current + 1));
     if (backendReachable) {
       setLastGoodAt(observedAt);
@@ -124,6 +125,7 @@ export function ConnectivityMonitor({
     // `setFailures` updater) only to decide whether to also record
     // `lastGoodAt`; it does not need the previous-state indirection
     // `failures` does, since it doesn't depend on any prior local state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on observedAt alone (see the comment above)
   }, [observedAt]);
 
   const backendDown = failures >= CONSECUTIVE_FAILURES_TO_TRIP;

@@ -1,0 +1,34 @@
+{
+  // Type-checks the Node-run JavaScript that tsconfig.json skips
+  // (allowJs: false): the build and screenshot scripts, the ESLint, Next and
+  // PostCSS configs, and next.config.mjs's own test. The service worker has
+  // its own program, tsconfig.sw.json, because it needs the WebWorker lib
+  // rather than @types/node.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "files": [
+    "scripts/stamp-sw-version.mjs",
+    "e2e/screenshots/take-screenshots.mjs",
+    "e2e/screenshots/_interactive-shots.mjs",
+    "eslint.config.mjs",
+    "next.config.mjs",
+    "next.config.test.js",
+    "postcss.config.cjs"
+  ]
+}

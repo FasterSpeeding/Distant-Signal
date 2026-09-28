@@ -123,6 +123,7 @@ export function PrideToggle() {
 
   useEffect(() => {
     if (!mounted) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reads localStorage only after mount, so the server and first client render agree
     setMode(parseStoredMode(localStorage.getItem(STORAGE_KEY)));
   }, [mounted]);
 

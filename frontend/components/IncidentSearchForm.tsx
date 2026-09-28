@@ -357,6 +357,7 @@ export function IncidentSearchForm({
    * rather than a wrong one, and not a bug to fix in this pass. */
   useEffect(() => {
     const query = searchParamsFor().toString();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount-only restore of the URL's search (see above)
     if (query) void runSearch(query);
     // Intentionally empty: this is a mount-only effect, not one that
     // tracks the filter state it reads -- see the comment above.

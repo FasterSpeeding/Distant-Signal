@@ -74,6 +74,7 @@ export function NotificationsToggle() {
 
   useEffect(() => {
     const isSupported = 'serviceWorker' in navigator && 'PushManager' in window;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- feature detection needs navigator/window, which exist only after mount
     setSupported(isSupported);
     setChecked(true);
     if (!isSupported) return;

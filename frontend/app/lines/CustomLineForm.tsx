@@ -62,6 +62,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
   // is gone.
   const [nameByCode, setNameByCode] = useState<Record<string, string>>({});
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- accumulates names from each new suggestion list, a cache no render can derive
     setNameByCode((prev) => {
       const next = { ...prev };
       for (const s of [...operatorSuggestions, ...stationSuggestions, ...destinationSuggestions]) {

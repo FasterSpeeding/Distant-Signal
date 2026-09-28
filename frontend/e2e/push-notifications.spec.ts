@@ -23,8 +23,9 @@ import type { Page, Worker } from '@playwright/test';
 // `PushEvent` have no ambient types here even though they're real at
 // runtime inside `worker.evaluate()` (a real ServiceWorkerGlobalScope).
 // Each evaluate callback below routes through one local `sw = self as
-// any` for that reason, rather than fighting the ambient `Window` typing
-// self otherwise gets from the `dom` lib.
+// unknown as SwScope` for that reason, rather than fighting the ambient
+// `Window` typing self otherwise gets from the `dom` lib. `SwScope` types
+// only the members these tests touch (and replace).
 //
 // `notificationclick`'s real event type (`NotificationEvent`) can't be
 // constructed in a ServiceWorkerGlobalScope with a real `Notification`
@@ -34,6 +35,19 @@ import type { Page, Worker } from '@playwright/test';
 // property shaped like the real thing. That's a synthetic double for the
 // notification object specifically, not for sw.js's own listener code,
 // which still runs for real.
+
+type SwScope = {
+  registration: { showNotification: (title: string, options?: unknown) => Promise<void> };
+  clients: {
+    matchAll: () => Promise<unknown[]>;
+    openWindow: (url: string) => Promise<unknown>;
+  };
+  PushEvent: new (type: string, init: { data?: string }) => Event & {
+    waitUntil: (p: Promise<unknown>) => unknown;
+  };
+  location: Location;
+  dispatchEvent: (event: Event) => boolean;
+};
 
 async function getServiceWorker(page: Page): Promise<Worker> {
   const context = page.context();
@@ -51,7 +65,7 @@ test.describe('push notification handlers (sw.js)', () => {
     const worker = await getServiceWorker(page);
 
     const calls = await worker.evaluate(async () => {
-      const sw = self as any; // eslint: see file header comment
+      const sw = self as unknown as SwScope; // see the file header comment
       const calls: unknown[] = [];
       sw.registration.showNotification = (...args: unknown[]) => {
         calls.push(args);
@@ -78,7 +92,7 @@ test.describe('push notification handlers (sw.js)', () => {
     const worker = await getServiceWorker(page);
 
     const calls = await worker.evaluate(async () => {
-      const sw = self as any;
+      const sw = self as unknown as SwScope;
       const calls: { title: string; options: unknown }[] = [];
       sw.registration.showNotification = (title: string, options: unknown) => {
         calls.push({ title, options });
@@ -109,7 +123,7 @@ test.describe('push notification handlers (sw.js)', () => {
     const worker = await getServiceWorker(page);
 
     const calls = await worker.evaluate(async () => {
-      const sw = self as any;
+      const sw = self as unknown as SwScope;
       const calls: unknown[] = [];
       sw.registration.showNotification = (...args: unknown[]) => {
         calls.push(args);
@@ -138,7 +152,7 @@ test.describe('push notification handlers (sw.js)', () => {
     const worker = await getServiceWorker(page);
 
     const result = await worker.evaluate(async () => {
-      const sw = self as any;
+      const sw = self as unknown as SwScope;
       let openedUrl: string | undefined;
       sw.clients.openWindow = async (url: string) => {
         openedUrl = url;
@@ -152,7 +166,10 @@ test.describe('push notification handlers (sw.js)', () => {
         },
         data: { url: '/lines/victoria' },
       };
-      const event: any = new Event('notificationclick');
+      const event = new Event('notificationclick') as Event & {
+        notification?: typeof fakeNotification;
+        waitUntil?: (p: Promise<unknown>) => unknown;
+      };
       event.notification = fakeNotification;
       let waited: Promise<unknown> | undefined;
       event.waitUntil = (p: Promise<unknown>) => {
@@ -161,7 +178,7 @@ test.describe('push notification handlers (sw.js)', () => {
       };
       sw.dispatchEvent(event);
       await waited;
-      return { closed: fakeNotification.closed, openedUrl, origin: sw.location.origin as string };
+      return { closed: fakeNotification.closed, openedUrl, origin: sw.location.origin };
     });
 
     // FE-10: the handler resolves the payload URL against the site origin and

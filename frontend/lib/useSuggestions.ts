@@ -19,6 +19,7 @@ export function useSuggestions(
 
   useEffect(() => {
     if (!query.trim()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the suggestions for an empty query instead of fetching
       setSuggestions([]);
       setLoading(false);
       return;

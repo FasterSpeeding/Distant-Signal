@@ -38,6 +38,7 @@ let observe: (next: Observation) => void = () => {};
 
 function Harness({ first }: { first: Observation }) {
   const [observation, setObservation] = useState(first);
+  // eslint-disable-next-line react-hooks/globals -- test harness hands the component's setter to the it() blocks (see above)
   observe = setObservation;
   return (
     <ConnectivityMonitor

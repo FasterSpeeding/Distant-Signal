@@ -45,7 +45,9 @@ function parsePushPayload(data) {
   if (!data) return null;
   try {
     const parsed = data.json();
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? /** @type {Record<string, unknown>} */ (parsed)
+      : null;
   } catch {
     return null;
   }
@@ -76,6 +78,7 @@ if (typeof self !== 'undefined') {
   self.parsePushPayload = parsePushPayload;
   self.sameOriginNotificationUrl = sameOriginNotificationUrl;
 }
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- TypeScript assumes CommonJS `module.exports` always exists; kept as a runtime guard
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { isCacheable, parsePushPayload, sameOriginNotificationUrl };
 }

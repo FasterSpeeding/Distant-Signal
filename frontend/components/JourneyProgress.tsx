@@ -491,6 +491,7 @@ export function JourneyProgress({
             } as React.CSSProperties
           }
         >
+          {/* eslint-disable-next-line react-hooks/refs -- nodeRefSetter reads a ref only to reuse cached callback refs (see nodeRefSetters) */}
           {stops.map((stop, index) => (
             <JourneyProgressNode
               key={`${stop.crs ?? 'unknown'}-${index}`}

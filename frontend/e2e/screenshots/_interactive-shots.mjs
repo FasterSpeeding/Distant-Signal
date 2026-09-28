@@ -37,15 +37,37 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../../../');
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:3000';
-const SESSION_COOKIE =
-  process.env.E2E_SESSION_COOKIE ?? 'preview-demo-session-token-for-demo-user';
+const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE ?? 'preview-demo-session-token-for-demo-user';
 const OUT_DIR = process.env.SCREENSHOTS_OUT_DIR
   ? path.resolve(process.env.SCREENSHOTS_OUT_DIR)
   : path.join(__dirname, 'output');
 const MANIFEST_PATH = path.join(OUT_DIR, 'manifest.ndjson');
 
+/** @typedef {import('@playwright/test').Page} Page */
+/** @typedef {import('./take-screenshots.mjs').Browsers} Browsers */
+/** @typedef {import('./take-screenshots.mjs').ManifestEntry} ManifestEntry */
+/**
+ * One step of a shot's `actions` (see "Config shape" above).
+ * @typedef {{ type: 'click', text?: string, exact?: boolean, selector?: string }
+ *   | { type: 'fill', selector: string, value: string }
+ *   | { type: 'wait', ms?: number }} Action
+ */
+/**
+ * take-screenshots.mjs's shot, plus this script's extras. The config file is
+ * unvalidated JSON; unlike take-screenshots.mjs this script does not
+ * re-check it.
+ * @typedef {import('./take-screenshots.mjs').Shot & {
+ *   actions?: Action[],
+ *   waitAfterMs?: number,
+ * }} InteractiveShot
+ */
+
 const BROWSER_LAUNCHERS = { chromium, firefox };
 
+/**
+ * @param {string} hostname
+ * @param {string} value
+ */
 function sessionCookie(hostname, value) {
   return {
     name: 'distant_signal_session',
@@ -54,34 +76,53 @@ function sessionCookie(hostname, value) {
     path: '/',
     httpOnly: true,
     secure: false,
-    sameSite: 'Lax',
+    sameSite: /** @type {const} */ ('Lax'),
   };
 }
 
+/**
+ * @param {Page} page
+ * @param {Action} action
+ */
 async function applyAction(page, action) {
-  if (action.type === 'click') {
-    if (action.text) {
-      await page.getByText(action.text, { exact: action.exact ?? true }).first().click();
-    } else if (action.selector) {
-      await page.locator(action.selector).first().click();
-    }
-  } else if (action.type === 'fill') {
-    await page.locator(action.selector).first().fill(action.value);
-  } else if (action.type === 'wait') {
-    await page.waitForTimeout(action.ms ?? 500);
-  } else {
-    throw new Error(`Unknown action type: ${action.type}`);
+  switch (action.type) {
+    case 'click':
+      if (action.text) {
+        await page
+          .getByText(action.text, { exact: action.exact ?? true })
+          .first()
+          .click();
+      } else if (action.selector) {
+        await page.locator(action.selector).first().click();
+      }
+      break;
+    case 'fill':
+      await page.locator(action.selector).first().fill(action.value);
+      break;
+    case 'wait':
+      await page.waitForTimeout(action.ms ?? 500);
+      break;
+    default:
+      // Unreachable for a well-formed config; the JSON can still name any type.
+      throw new Error(`Unknown action type: ${String(/** @type {{ type: unknown }} */ (action).type)}`);
   }
 }
 
+/** @param {ManifestEntry} entry */
 async function appendManifestEntry(entry) {
   await appendFile(MANIFEST_PATH, JSON.stringify(entry) + '\n', 'utf8');
 }
 
+/**
+ * @param {Browsers} browsers
+ * @param {InteractiveShot} shot
+ * @returns {Promise<ManifestEntry & { filePath: string }>}
+ */
 async function takeShot(browsers, shot) {
   const targetUrl = new URL(shot.url, BASE_URL).toString();
   const hostname = new URL(BASE_URL).hostname;
   const launcher = browsers[shot.browser];
+  if (!launcher) throw new Error(`no ${shot.browser} browser was launched`);
 
   const context = await launcher.newContext({
     viewport: { width: shot.viewport.width, height: shot.viewport.height },
@@ -127,11 +168,14 @@ async function main() {
   }
   const resolved = path.resolve(configPath);
   if (!existsSync(resolved)) throw new Error(`Config file not found: ${resolved}`);
-  const shots = JSON.parse(await readFile(resolved, 'utf8'));
+  /** @type {unknown} */
+  const parsed = JSON.parse(await readFile(resolved, 'utf8'));
+  const shots = /** @type {InteractiveShot[]} */ (parsed);
 
   await mkdir(OUT_DIR, { recursive: true });
 
   const neededBrowsers = new Set(shots.map((s) => s.browser));
+  /** @type {Browsers} */
   const browsers = {};
   for (const name of neededBrowsers) browsers[name] = await BROWSER_LAUNCHERS[name].launch();
 
@@ -170,7 +214,7 @@ async function main() {
   if (failed > 0) process.exit(1);
 }
 
-main().catch((err) => {
+main().catch((/** @type {unknown} */ err) => {
   console.error(err instanceof Error ? err.stack : err);
   process.exit(1);
 });
