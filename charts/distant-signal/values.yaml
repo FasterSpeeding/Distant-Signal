@@ -1375,8 +1375,9 @@ archive:
   # -- What to do when an upload fails. `retain` (default): keep the rows,
   # roll the batch back and retry next retention cycle -- the table grows
   # past its window while storage is unreachable
-  # (aggregator_archive_upload_failures_total counts these). `delete`:
-  # delete the rows anyway, unarchived, as if archiving were disabled.
+  # (distant_signal_aggregator_archive_upload_failures_total counts these).
+  # `delete`: delete the rows anyway, unarchived, as if archiving were
+  # disabled.
   failurePolicy: retain
   s3:
     # -- S3 endpoint URL, e.g. https://thoth.<tailnet>.ts.net. Empty means
