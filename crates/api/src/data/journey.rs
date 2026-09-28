@@ -304,6 +304,13 @@ pub struct JourneyStop {
     /// How many minutes late this stop is expected to be; `Some` only when
     /// `live_status` is `Late`.
     pub late_minutes: Option<i32>,
+    /// This train's row on the stop's current LDBWS departure board
+    /// (Darwin's `delayReason`/`cancelReason`/`isCancelled`/`etd`), or
+    /// `None` when there is no unique fresh match. Set by
+    /// `stop_board::apply_station_sample_board`; see that module's doc for
+    /// the matching rules and when it is null. Serialized as `null`, never
+    /// omitted.
+    pub board: Option<crate::data::stop_board::StopBoard>,
 }
 
 impl JourneyStop {
@@ -357,6 +364,7 @@ impl JourneyStop {
             booked_platform: cp.platform.clone(),
             live_status: None,
             late_minutes: None,
+            board: None,
         }
     }
 }
@@ -625,8 +633,10 @@ pub struct JourneyStopsRequest<'a> {
 /// served unauthenticated through share links) used to build each leg's
 /// stops separately, about four queries per leg. This does one TIPLOC->CRS
 /// lookup, one station-name lookup, one movement-event read and one
-/// station-sample read for all the legs together, so a 20-leg journey is
-/// four round trips instead of about 80. The only per-train query left is
+/// station-sample read for all the legs together (plus, when any board
+/// was found, one read of the trains' RSID/operator for the per-stop board
+/// overlay, `stop_board`), so a 20-leg journey is four or five round trips
+/// instead of about 80. The only per-train query left is
 /// the `schedule_calling_points_full` fallback, for a train whose shared
 /// row has no `calling_points` yet.
 ///
@@ -718,10 +728,44 @@ pub async fn build_journey_stops_batch(
     trains_ids.dedup();
     let events = movement_events_for_trains(pool, &trains_ids).await?;
 
-    // Every calling point's own CURRENT departure board (one batched
-    // query), for `apply_station_sample_platforms` -- see its own doc
-    // comment.
-    let samples = queries::latest_station_samples_for_crs_batch(pool, &stop_crs).await?;
+    // Every calling point's own CURRENT departure board, plus any board
+    // covering a departing stop's TIPLOC (a sub-CRS stop such as PADTLL ->
+    // PDX), in one query. The platform overlay reads boards by the stop's
+    // own CRS only, exactly as before; the per-stop board overlay reads
+    // both (`stop_board`).
+    let mut departing_tiplocs: Vec<String> = built
+        .iter()
+        .flatten()
+        .flatten()
+        .flatten()
+        .filter(|stop| stop.scheduled_departure.is_some())
+        .filter_map(|stop| stop.tiploc.clone())
+        .collect();
+    departing_tiplocs.sort();
+    departing_tiplocs.dedup();
+    let board_rows =
+        queries::station_samples_for_crs_or_tiplocs(pool, &stop_crs, &departing_tiplocs).await?;
+    let samples: HashMap<String, common::StationSample> = board_rows
+        .iter()
+        .map(|row| (row.sample.crs.trim().to_uppercase(), row.sample.clone()))
+        .collect();
+    let board_index = crate::data::stop_board::BoardIndex::new(&board_rows);
+    // The train's own RSID and operator, only when there is a board to
+    // match against.
+    let board_keys = if board_index.is_empty() {
+        HashMap::new()
+    } else {
+        let mut trains: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .zip(&built)
+            .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+            .map(|(request, _)| (request.train_uid.to_string(), request.service_date))
+            .collect();
+        trains.sort();
+        trains.dedup();
+        crate::data::stop_board::board_keys_for_trains(pool, &trains).await?
+    };
+    let now = Utc::now();
 
     for (request, stops) in requests.iter().zip(built.iter_mut()) {
         let Ok(Some(stops)) = stops else {
@@ -740,6 +784,14 @@ pub async fn build_journey_stops_batch(
         // Deliberately after `apply_origin_platform`: a live board row is
         // fresher than the origin's pin-time snapshot, so it wins.
         apply_station_sample_platforms(stops, &samples);
+        crate::data::stop_board::apply_station_sample_board(
+            stops,
+            &board_index,
+            board_keys
+                .get(&(request.train_uid.to_string(), request.service_date))
+                .unwrap_or(&crate::data::stop_board::TrainBoardKeys::default()),
+            now,
+        );
         apply_delay_estimates(stops, request.current_delay_minutes);
     }
 
@@ -1593,6 +1645,46 @@ pub fn apply_confirmed_arrival(
     }
 }
 
+/// Fixtures shared with sibling modules' unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A stop at `crs`/`tiploc` with an optional booked departure
+    /// (RFC 3339) and nothing else known.
+    pub(crate) fn stop(
+        crs: &str,
+        tiploc: &str,
+        kind: schedule_query::CallingPointKind,
+        departs: Option<&str>,
+    ) -> JourneyStop {
+        JourneyStop {
+            crs: Some(crs.to_string()),
+            name: None,
+            tiploc: Some(tiploc.to_string()),
+            kind: Some(kind),
+            scheduled_arrival: None,
+            scheduled_departure: departs.map(|at| at.parse().unwrap()),
+            actual_arrival: None,
+            actual_departure: None,
+            estimated_arrival: None,
+            estimated_departure: None,
+            last_event_type: None,
+            variation_status: None,
+            delay_minutes: None,
+            stop_status: StopStatus::Unknown,
+            skip_source: None,
+            platform: None,
+            planned_platform: None,
+            platform_changed: false,
+            booked_platform: None,
+            live_status: None,
+            late_minutes: None,
+            board: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1620,6 +1712,7 @@ mod tests {
             booked_platform: None,
             live_status: None,
             late_minutes: None,
+            board: None,
         }
     }
 
