@@ -10,6 +10,7 @@ ARG CARGO_PROFILE=release
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS builder
 ARG CARGO_PROFILE
 
+# hadolint ignore=DL3008 # apt versions unpinned on purpose; see .hadolint.yaml
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake libssl-dev pkg-config libsasl2-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -31,6 +32,7 @@ FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2
 # `curl` (compose HEALTHCHECK probe of GET /healthz), libssl3, libsasl2-2 --
 # see docker/trust-consumer.Dockerfile's own runtime-stage comment for the
 # full rationale, unchanged here.
+# hadolint ignore=DL3008 # apt versions unpinned on purpose; see .hadolint.yaml
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libssl3 libsasl2-2 \
     && rm -rf /var/lib/apt/lists/* \

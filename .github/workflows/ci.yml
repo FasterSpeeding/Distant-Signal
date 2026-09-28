@@ -573,12 +573,17 @@ jobs:
   #   - the workflow run: blocks: actionlint with SHELLCHECK_OPTS
   #     '--enable=all --severity=style'. The `actionlint` job above uses
   #     Piped's reviewdog wrapper, which runs shellcheck with its default
-  #     checks only.
+  #     checks only;
+  #   - every tracked Dockerfile: hadolint, every rule, failing down to
+  #     style level, trusted registry docker.io only (.hadolint.yaml);
+  #   - the inline shell in docker-compose*.yml (CMD-SHELL healthchecks,
+  #     `sh -c` commands): shellcheck, as for *.sh, via
+  #     scripts/lint-compose-shell.py.
   # Every tool is pinned in pyproject.toml's `lint` dependency group (pip's
   # download cache is keyed on that file); scripts/lint-scripts.sh runs the
   # same checks locally.
   scripts-lint:
-    name: scripts lint (shellcheck, shfmt, ruff, mypy, actionlint)
+    name: scripts lint (shellcheck, shfmt, ruff, mypy, actionlint, hadolint)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository

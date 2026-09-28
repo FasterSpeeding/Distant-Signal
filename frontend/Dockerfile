@@ -194,7 +194,11 @@ RUN mkdir -p /app/.next && chown -R node:node /app
 # own frontend/node_modules out of the build context.
 COPY --from=builder-base --chown=node:node /app ./
 
-USER node
+# Numeric like runtime-prod's (hadolint DL3066), though nothing admits this
+# dev-only stage into Kubernetes: 1000:1000 is the `node` user/group above,
+# and the runtime still resolves HOME=/home/node from /etc/passwd, so this
+# runs exactly as `USER node` did (checked: same `id`, HOME and env).
+USER 1000:1000
 
 EXPOSE 3000
 ENTRYPOINT ["npm", "run", "dev"]

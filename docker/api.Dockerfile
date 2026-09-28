@@ -96,6 +96,7 @@ FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2
 # bundle even though it otherwise only carries the one binary. `curl` is
 # added on top of the poller Dockerfiles' pattern solely so docker-compose's
 # HEALTHCHECK can probe `GET /public/health` from inside the container.
+# hadolint ignore=DL3008 # apt versions unpinned on purpose; see .hadolint.yaml
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
