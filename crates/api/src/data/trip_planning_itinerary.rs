@@ -97,6 +97,12 @@ pub enum PlannedLeg {
         departure_min: u32,
         #[serde(skip)]
         arrival_min: u32,
+        /// The live overlay's view of this leg (`data::trip_plan_live`):
+        /// absent unless the overlay was applied (so `live=false` is the
+        /// pre-overlay shape exactly), then `null` (nothing known, or
+        /// outside the live window) or a [`crate::data::trip_plan_live::LegLive`].
+        #[serde(skip_serializing_if = "Option::is_none")]
+        live: Option<Option<Box<crate::data::trip_plan_live::LegLive>>>,
     },
     #[serde(rename_all = "camelCase")]
     Transfer {
@@ -126,6 +132,10 @@ pub struct PlannedItinerary {
     pub arrival_min: u32,
     #[serde(skip)]
     pub arrival_tiploc: Option<String>,
+    /// Live overlay only (absent otherwise): no cancelled leg and no change
+    /// that live times make impossible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_feasible: Option<bool>,
 }
 
 impl PlannedItinerary {
@@ -148,6 +158,7 @@ impl PlannedItinerary {
             exceeds_recommended_changes,
             departure_min,
             arrival_min,
+            live_feasible: None,
             arrival_tiploc: legs.last().map(|leg| match leg {
                 JourneyLeg::Train(train) => train.to_tiploc.clone(),
                 JourneyLeg::Transfer(transfer) => transfer.to_tiploc.clone(),
@@ -220,6 +231,7 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 to_tiploc: train.to_tiploc.clone(),
                 departure_min: train.departure_min,
                 arrival_min: train.arrival_min,
+                live: None,
             }
         }
         JourneyLeg::Transfer(transfer) => PlannedLeg::Transfer {
@@ -279,6 +291,7 @@ pub fn plan_segment(
         clock_minutes(departure_after),
         results,
         max_changes,
+        None,
     )
 }
 
@@ -333,19 +346,23 @@ pub fn plan_segment_from_min(
     departure_min: u32,
     results: &str,
     max_changes: u32,
+    overlay: Option<&trip_planner::ConnectionOverlay>,
 ) -> Result<(Vec<PlannedItinerary>, bool), String> {
     let (from_tiplocs, to_tiplocs) =
         resolve_segment_tiplocs(interchange, origin_crs, destination_crs)?;
 
     if results == "fastest" {
-        let Some(journey) = trip_planner::scan_connections(trip_planner::ScanOptions {
-            connections,
-            interchange,
-            from_tiplocs: &from_tiplocs,
-            to_tiplocs: &to_tiplocs,
-            departure_min,
-            date,
-        }) else {
+        let Some(journey) = trip_planner::scan_connections_with_overlay(
+            trip_planner::ScanOptions {
+                connections,
+                interchange,
+                from_tiplocs: &from_tiplocs,
+                to_tiplocs: &to_tiplocs,
+                departure_min,
+                date,
+            },
+            overlay,
+        ) else {
             return Ok((Vec::new(), false));
         };
         let change_count = train_leg_count(&journey.legs).saturating_sub(1);
@@ -365,15 +382,18 @@ pub fn plan_segment_from_min(
     }
 
     if results == "options" {
-        let all: Vec<RaptorJourney> = trip_planner::raptor_search(trip_planner::RaptorOptions {
-            connections,
-            interchange,
-            from_tiplocs: &from_tiplocs,
-            to_tiplocs: &to_tiplocs,
-            departure_min,
-            date,
-            max_rounds: max_rounds(max_changes),
-        });
+        let all: Vec<RaptorJourney> = trip_planner::raptor_search_with_overlay(
+            trip_planner::RaptorOptions {
+                connections,
+                interchange,
+                from_tiplocs: &from_tiplocs,
+                to_tiplocs: &to_tiplocs,
+                departure_min,
+                date,
+                max_rounds: max_rounds(max_changes),
+            },
+            overlay,
+        );
         let within_cap: Vec<&RaptorJourney> =
             all.iter().filter(|j| j.changes <= max_changes).collect();
         // Judgment Call 2: did the headroom round (`max_rounds`, one past
@@ -410,7 +430,7 @@ pub fn plan_segment_from_min(
 /// One resolved leg of a multi-waypoint plan -- `origin`/`destination` name
 /// which CRS pair this segment was for, so a caller can report exactly
 /// which segment failed (this plan's own Review Focus).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SegmentResult {
     pub origin_crs: String,
     pub destination_crs: String,
@@ -497,6 +517,35 @@ pub fn plan_via_waypoints(
     results: &str,
     max_changes: u32,
 ) -> Result<Vec<SegmentResult>, String> {
+    plan_via_waypoints_with_overlay(
+        connections,
+        interchange,
+        date,
+        origin_crs,
+        waypoints,
+        destination_crs,
+        departure_after,
+        results,
+        max_changes,
+        None,
+    )
+}
+
+/// [`plan_via_waypoints`] over the day graph with `overlay`'s trains
+/// replaced (the `/Trips/plan` live overlay, `data::trip_plan_live`).
+#[allow(clippy::too_many_arguments)]
+pub fn plan_via_waypoints_with_overlay(
+    connections: &[schedule_query::Connection],
+    interchange: &InterchangeData,
+    date: NaiveDate,
+    origin_crs: &str,
+    waypoints: &[String],
+    destination_crs: &str,
+    departure_after: NaiveTime,
+    results: &str,
+    max_changes: u32,
+    overlay: Option<&trip_planner::ConnectionOverlay>,
+) -> Result<Vec<SegmentResult>, String> {
     let mut stops: Vec<&str> = vec![origin_crs];
     stops.extend(waypoints.iter().map(String::as_str));
     stops.push(destination_crs);
@@ -529,6 +578,7 @@ pub fn plan_via_waypoints(
             depart_after_min,
             results,
             max_changes,
+            overlay,
         )
         .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
         segments.push(SegmentResult {

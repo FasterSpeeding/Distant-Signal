@@ -251,6 +251,7 @@ mod tests {
             to_tiploc: String::new(),
             departure_min: 0,
             arrival_min: 0,
+            live: None,
         }
     }
 
@@ -282,6 +283,7 @@ mod tests {
                 departure_min: 0,
                 arrival_min: 0,
                 arrival_tiploc: None,
+                live_feasible: None,
             }],
             capped_by_max_changes: false,
             depart_after_min: None,

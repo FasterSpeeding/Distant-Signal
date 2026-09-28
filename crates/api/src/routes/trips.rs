@@ -8,7 +8,7 @@
 //! `reference::nearest_stations`'s own public/read-only posture, not
 //! `routes::journeys`'s authenticated-write one.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use axum::Json;
 use axum::extract::{Query, State};
@@ -17,7 +17,7 @@ use chrono::{NaiveDate, NaiveTime};
 use serde::Deserialize;
 
 use crate::app::App;
-use crate::data::{trip_planning, trip_planning_itinerary};
+use crate::data::{trip_plan_live, trip_planning, trip_planning_itinerary};
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
 /// review, High 4b). `plan_via_waypoints` solves one INDEPENDENT pathfinding
@@ -121,14 +121,30 @@ struct TripPlanParams {
     /// query-rejection text.
     #[serde(default)]
     max_changes: Option<String>,
+    /// `?live=true|false` (default `true`): apply the live overlay
+    /// (`data::trip_plan_live`). `false` returns exactly the timetable-only
+    /// response. Validated by [`parse_live`].
+    #[serde(default)]
+    live: Option<String>,
 }
+
+/// The live overlay's configuration, read once from the environment.
+static LIVE_CONFIG: LazyLock<trip_plan_live::LiveConfig> =
+    LazyLock::new(trip_plan_live::LiveConfig::from_env);
 
 fn default_results() -> String {
     "fastest".to_string()
 }
 
 /// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&departAfter=]
-/// [&results=fastest|options][&maxChanges=0..4]`.
+/// [&results=fastest|options][&maxChanges=0..4][&live=true|false]`.
+///
+/// - `live` (default `true`): for today's or yesterday's service date, TRUST
+///   and Darwin facts are applied and the plan re-run while they change it
+///   (at most `TRIP_PLAN_LIVE_MAX_REPLANS` extra times): cancelled trains and
+///   calls are withdrawn, known delays shift times, and legs carry `live`.
+///   See docs/superpowers/specs/2026-09-28-trips-plan-live-overlay-design.md.
+///   `live=false` is exactly the timetable-only response.
 ///
 /// - `results=fastest` (default): one earliest-arrival itinerary per segment
 ///   (CSA). In this mode `maxChanges` is NOT a hard limit: the fastest
@@ -188,6 +204,12 @@ fn default_results() -> String {
 ///    once per date per schedule publish (or per cache max-age), not once per
 ///    request, and only one build runs at a time. A request for a cached date
 ///    costs one marker read, the searches and the leg-details read.
+/// 6. (Live overlay, 2026-09-28) at most `TRIP_PLAN_LIVE_MAX_REPLANS` (3)
+///    extra planning passes, each only when newly read live data changed the
+///    overlay, and at most `TRIP_PLAN_LIVE_MAX_TRAINS` (60) trains read, in
+///    batches of a few queries per pass. All passes run under the same
+///    permit. The searches now start at their own departure time rather than
+///    at 00:00, which more than pays for a re-plan on a daytime query.
 async fn get_trip_plan(
     State(app): State<App>,
     Query(params): Query<TripPlanParams>,
@@ -201,6 +223,7 @@ async fn get_trip_plan(
 
     let waypoints = parse_waypoints(params.waypoints.as_deref())?;
     let max_changes = parse_max_changes(params.max_changes.as_deref())?;
+    let live_requested = parse_live(params.live.as_deref())?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -263,42 +286,79 @@ async fn get_trip_plan(
     .increment(1);
 
     // The per-leg searches, on the blocking pool. The graph is shared, not
-    // copied: an `Arc` into the cache.
-    let origin = params.origin.trim().to_ascii_uppercase();
-    let destination = params.destination.trim().to_ascii_uppercase();
-    let depart_after = params.depart_after.unwrap_or(NaiveTime::MIN);
-    let results = params.results.clone();
-    let segments = tokio::task::spawn_blocking(move || {
-        // Held until the search itself finishes, not until this handler's
-        // future does -- see bound 3 in this fn's doc comment.
-        let _permit = permit;
-        trip_planning_itinerary::plan_via_waypoints(
-            &graph.connections,
-            &graph.interchange,
-            date,
-            &origin,
-            &waypoints,
-            &destination,
-            depart_after,
-            &results,
-            max_changes,
+    // copied: an `Arc` into the cache. The permit is shared with every
+    // blocking search (the live overlay may run several) and released only
+    // when the last of them finishes -- see bound 3 in this fn's doc comment.
+    let permit = Arc::new(permit);
+    let request = Arc::new(PlanRequest {
+        date,
+        origin: params.origin.trim().to_ascii_uppercase(),
+        destination: params.destination.trim().to_ascii_uppercase(),
+        waypoints,
+        depart_after: params.depart_after.unwrap_or(NaiveTime::MIN),
+        results: params.results.clone(),
+        max_changes,
+    });
+    let mut segments = run_plan(graph.clone(), request.clone(), None, permit.clone())
+        .await?
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    let live_summary = if live_requested {
+        let config = &*LIVE_CONFIG;
+        let today = crate::routes::london_today();
+        let outcome = if !config.enabled {
+            Err("disabled")
+        } else if date != today && Some(date) != today.pred_opt() {
+            Err("outsideLiveWindow")
+        } else {
+            let now = crate::routes::london_now().with_timezone(&chrono::Utc);
+            match plan_live(&app, &graph, &request, &permit, &segments, config, now).await {
+                Ok((live_segments, summary)) => {
+                    segments = live_segments;
+                    Ok(summary)
+                }
+                Err(err) => {
+                    tracing::warn!(error = ?err, "trip plan live overlay failed; serving the timetable plan");
+                    Err("unavailable")
+                }
+            }
+        };
+        let label = match &outcome {
+            Ok(_) => "applied",
+            Err("disabled") => "disabled",
+            Err("outsideLiveWindow") => "outside_window",
+            Err(_) => "unavailable",
+        };
+        metrics::counter!(
+            common::metrics::metric_name("api_trip_plan_live_requests_total"),
+            "outcome" => label
         )
-    })
-    .await
-    .map_err(|join_err| {
-        tracing::error!(error = ?join_err, "trip planning task panicked or was cancelled");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to plan trip".to_string(),
+        .increment(1);
+        Some(match outcome {
+            Ok(summary) => serde_json::json!({
+                "applied": true,
+                "reason": null,
+                "replans": summary.replans,
+                "trainsRead": summary.trains_read,
+                "adjustedTrains": summary.adjusted_trains,
+            }),
+            Err(reason) => serde_json::json!({ "applied": false, "reason": reason }),
+        })
+    } else {
+        metrics::counter!(
+            common::metrics::metric_name("api_trip_plan_live_requests_total"),
+            "outcome" => "not_requested"
         )
-    })?
-    .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
-    let mut segments = segments;
+        .increment(1);
+        None
+    };
+    drop(permit);
+
     crate::data::trip_leg_details::attach_leg_details(&app.database, date, &mut segments)
         .await
         .map_err(internal_error("attach trip leg details"))?;
 
-    Ok(Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "results": params.results,
         "maxChanges": max_changes,
         "segments": segments.iter().map(|segment| serde_json::json!({
@@ -312,7 +372,199 @@ async fn get_trip_plan(
             // the previous segment found nothing to chain from.
             "departAfter": segment.depart_after_min.map(segment_clock),
         })).collect::<Vec<_>>(),
-    })))
+    });
+    if let Some(summary) = live_summary {
+        body["live"] = summary;
+    }
+    Ok(Json(body))
+}
+
+/// One request's planning inputs, shared with every blocking search.
+struct PlanRequest {
+    date: NaiveDate,
+    origin: String,
+    destination: String,
+    waypoints: Vec<String>,
+    depart_after: NaiveTime,
+    results: String,
+    max_changes: u32,
+}
+
+type PlanPermit = Arc<tokio::sync::SemaphorePermit<'static>>;
+
+/// One planning pass on the blocking pool, holding a clone of the permit.
+/// The outer `Err` is a 500 (the task panicked); the inner one a planning
+/// validation message.
+async fn run_plan(
+    graph: Arc<trip_planning::PlanningGraph>,
+    request: Arc<PlanRequest>,
+    overlay: Option<Arc<trip_planner::ConnectionOverlay>>,
+    permit: PlanPermit,
+) -> Result<Result<Vec<trip_planning_itinerary::SegmentResult>, String>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || {
+        // Held until the search itself finishes, not until this handler's
+        // future does -- see bound 3 in `get_trip_plan`'s doc comment.
+        let _permit = permit;
+        trip_planning_itinerary::plan_via_waypoints_with_overlay(
+            &graph.connections,
+            &graph.interchange,
+            request.date,
+            &request.origin,
+            &request.waypoints,
+            &request.destination,
+            request.depart_after,
+            &request.results,
+            request.max_changes,
+            overlay.as_deref(),
+        )
+    })
+    .await
+    .map_err(|join_err| {
+        tracing::error!(error = ?join_err, "trip planning task panicked or was cancelled");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to plan trip".to_string(),
+        )
+    })
+}
+
+/// What the live overlay did, for the response's top-level `live`.
+#[derive(Debug, Default)]
+struct LiveSummary {
+    replans: u32,
+    trains_read: usize,
+    adjusted_trains: usize,
+}
+
+/// The live overlay's bounded re-planning loop (design doc §4.4): read the
+/// live profile of every train in the current plan (inside the live window)
+/// not yet read, rebuild the overlay, and plan again while that changes the
+/// overlay -- at most `config.max_replans` times. Trains read after the last
+/// allowed re-plan are still annotated. Any read error aborts the overlay;
+/// the caller then serves the timetable plan.
+async fn plan_live(
+    app: &App,
+    graph: &Arc<trip_planning::PlanningGraph>,
+    request: &Arc<PlanRequest>,
+    permit: &PlanPermit,
+    timetable: &[trip_planning_itinerary::SegmentResult],
+    config: &trip_plan_live::LiveConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<(Vec<trip_planning_itinerary::SegmentResult>, LiveSummary)> {
+    use std::collections::{HashMap, HashSet};
+
+    let date = request.date;
+    let mut segments: Vec<trip_planning_itinerary::SegmentResult> = Vec::new();
+    let mut first_pass = Some(timetable);
+    let mut lives: HashMap<String, trip_plan_live::TrainLive> = HashMap::new();
+    let mut read: HashSet<String> = HashSet::new();
+    let mut chains: HashMap<String, Vec<schedule_query::Connection>> = HashMap::new();
+    let mut overlay = Arc::new(trip_planner::ConnectionOverlay::default());
+    let mut withdrawn = 0usize;
+    let mut replans = 0u32;
+
+    // Trains booked to leave the origin in the hour before `departAfter`:
+    // one running late may now be catchable.
+    let depart_min = {
+        use chrono::Timelike;
+        request.depart_after.num_seconds_from_midnight() / 60
+    };
+    let mut seed = if trip_plan_live::within_horizon(date, depart_min, now, config) {
+        let origin_tiplocs = graph
+            .interchange
+            .crs_to_tiplocs
+            .get(&request.origin)
+            .cloned()
+            .unwrap_or_default();
+        trip_plan_live::origin_lookback_uids(&graph.connections, &origin_tiplocs, depart_min)
+    } else {
+        Vec::new()
+    };
+
+    loop {
+        let current: &[trip_planning_itinerary::SegmentResult] = match first_pass {
+            Some(timetable) => timetable,
+            None => &segments,
+        };
+        let mut wanted = trip_plan_live::uids_in_window(current, date, now, config);
+        wanted.append(&mut seed);
+        wanted.sort();
+        wanted.dedup();
+        wanted.retain(|uid| !read.contains(uid));
+        wanted.truncate(config.max_trains.saturating_sub(read.len()));
+        if wanted.is_empty() {
+            break;
+        }
+        let fetched =
+            trip_plan_live::fetch_train_lives(&app.database, date, &wanted, config, now).await?;
+        read.extend(wanted);
+        let new_uids: HashSet<String> = fetched.keys().cloned().collect();
+        let graph_for_chains = graph.clone();
+        let new_chains = tokio::task::spawn_blocking(move || {
+            trip_plan_live::chains_for(&graph_for_chains.connections, &new_uids)
+        })
+        .await?;
+        chains.extend(new_chains);
+        lives.extend(fetched);
+        if replans >= config.max_replans {
+            break;
+        }
+        let (next, next_withdrawn) = trip_plan_live::build_overlay(&chains, &lives);
+        if next.replaced_uids() == overlay.replaced_uids()
+            && next.replacements() == overlay.replacements()
+        {
+            break;
+        }
+        overlay = Arc::new(next);
+        withdrawn = next_withdrawn;
+        segments = run_plan(
+            graph.clone(),
+            request.clone(),
+            Some(overlay.clone()),
+            permit.clone(),
+        )
+        .await
+        .map_err(|(_, msg)| anyhow::anyhow!(msg))?
+        .map_err(|msg| anyhow::anyhow!(msg))?;
+        first_pass = None;
+        replans += 1;
+    }
+    if first_pass.is_some() {
+        segments = timetable.to_vec();
+    }
+
+    trip_plan_live::annotate(
+        &mut segments,
+        &trip_plan_live::LiveContext {
+            date,
+            now,
+            config,
+            interchange: &graph.interchange,
+            chains: &chains,
+            lives: &lives,
+            overlaid: overlay.replaced_uids(),
+        },
+    );
+    metrics::counter!(common::metrics::metric_name(
+        "api_trip_plan_live_replans_total"
+    ))
+    .increment(u64::from(replans));
+    metrics::counter!(common::metrics::metric_name(
+        "api_trip_plan_live_trains_read_total"
+    ))
+    .increment(read.len() as u64);
+    metrics::counter!(common::metrics::metric_name(
+        "api_trip_plan_live_adjusted_connections_total"
+    ))
+    .increment(withdrawn as u64);
+    Ok((
+        segments,
+        LiveSummary {
+            replans,
+            trains_read: read.len(),
+            adjusted_trains: overlay.replaced_uids().len(),
+        },
+    ))
 }
 
 /// Splits, trims, uppercases and CAPS the `?waypoints=` list. Factored out of
@@ -378,6 +630,19 @@ fn segment_clock(minutes: u32) -> serde_json::Value {
     let time = NaiveTime::from_num_seconds_from_midnight_opt((minutes % 1440) * 60, 0)
         .expect("minutes modulo 1440 is a valid clock time");
     serde_json::json!({ "time": time, "dayOffset": minutes / 1440 })
+}
+
+/// Validates `?live=`: absent or empty means `true`; otherwise `true` or
+/// `false` (any case). Anything else is a 400, before any database read.
+fn parse_live(raw: Option<&str>) -> Result<bool, (StatusCode, String)> {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "" | "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            format!("live must be 'true' or 'false', not '{other}'"),
+        )),
+    }
 }
 
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
@@ -1298,6 +1563,410 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    // ---------------------------------------------------------------------
+    // Live overlay (2026-09-28). Every test pins "now" to 09:30 BST on
+    // 2026-10-05 and seeds synthetic stations/trains for that date.
+    // ---------------------------------------------------------------------
+
+    fn live_date() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 5).unwrap()
+    }
+
+    fn live_now() -> chrono::DateTime<chrono::Utc> {
+        "2026-10-05T08:30:00Z".parse().unwrap()
+    }
+
+    /// `(seq, tiploc, kind, arrival, departure)`.
+    type SeedCall<'a> = (i32, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
+
+    /// `(uid, [(seq, tiploc, kind, arrival, departure)])` into
+    /// `schedule_calling_points_full` for [`live_date`].
+    async fn seed_schedule(pool: &PgPool, uid: &str, calls: &[SeedCall<'_>]) {
+        for (seq, tiploc, kind, arrival, departure) in calls {
+            sqlx::query(
+                "INSERT INTO schedule_calling_points_full \
+                 (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+                 VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, 0) ON CONFLICT DO NOTHING",
+            )
+            .bind(live_date())
+            .bind(uid)
+            .bind(seq)
+            .bind(tiploc)
+            .bind(kind)
+            .bind(arrival)
+            .bind(departure)
+            .execute(pool)
+            .await
+            .expect("seed calling point");
+        }
+    }
+
+    async fn seed_stations(pool: &PgPool, prefix: &str, stations: &[(&str, &str)]) {
+        for (crs, tiploc) in stations {
+            sqlx::query(
+                "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+                 VALUES ($1, $2, $3, $2, 1) ON CONFLICT (stanox) DO NOTHING",
+            )
+            .bind(format!("{prefix}-{crs}"))
+            .bind(crs)
+            .bind(tiploc)
+            .execute(pool)
+            .await
+            .expect("seed stanox_crs");
+        }
+    }
+
+    /// A `trains` row plus its TRUST state; returns `trains.id`.
+    async fn seed_trust_state(
+        pool: &PgPool,
+        uid: &str,
+        status: &str,
+        delay_minutes: Option<i32>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> i64 {
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) \
+             ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
+             RETURNING id",
+        )
+        .bind(uid)
+        .bind(live_date())
+        .fetch_one(pool)
+        .await
+        .expect("seed trains");
+        sqlx::query(
+            "INSERT INTO train_current_state (trains_id, status, delay_minutes, updated_at) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(delay_minutes)
+        .bind(updated_at)
+        .execute(pool)
+        .await
+        .expect("seed train_current_state");
+        id
+    }
+
+    async fn cleanup_live(pool: &PgPool, uids: &[&str], stanox_prefix: &str) {
+        for uid in uids {
+            sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+                .bind(uid)
+                .execute(pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")
+                .bind(uid)
+                .execute(pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE $1")
+            .bind(format!("{stanox_prefix}-%"))
+            .execute(pool)
+            .await
+            .ok();
+    }
+
+    fn train_uids(body: &Value, segment: usize) -> Vec<String> {
+        body["segments"][segment]["itineraries"][0]["legs"]
+            .as_array()
+            .expect("legs")
+            .iter()
+            .filter_map(|leg| leg["trainUid"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// A train TRUST says is cancelled is withdrawn and the plan re-run onto
+    /// the next one; `live=false` still offers the cancelled one, with no
+    /// live keys at all (the pre-overlay shape).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn live_a_cancelled_train_is_replaced_and_live_false_is_timetable_only() {
+        let pool = connect().await;
+        let uids = ["TLVCANF", "TLVCANS"];
+        cleanup_live(&pool, &uids, "TLVCAN").await;
+        seed_stations(&pool, "TLVCAN", &[("ZQA", "TLVCA"), ("ZQB", "TLVCB")]).await;
+        seed_schedule(
+            &pool,
+            "TLVCANF",
+            &[
+                (0, "TLVCA", "origin", None, Some("10:00:00")),
+                (1, "TLVCB", "terminate", Some("10:30:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TLVCANS",
+            &[
+                (0, "TLVCA", "origin", None, Some("10:05:00")),
+                (1, "TLVCB", "terminate", Some("10:45:00"), None),
+            ],
+        )
+        .await;
+        let trains_id = seed_trust_state(&pool, "TLVCANF", "cancelled", None, live_now()).await;
+        sqlx::query(
+            "INSERT INTO train_reasons (trains_id, msg_type, reason_code, canx_type) \
+             VALUES ($1, '0002', 'TG', 'AT ORIGIN')",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_reasons");
+
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+        let uri = |live: &str| {
+            format!(
+                "/Trips/plan?origin=ZQA&destination=ZQB&date={}&departAfter=09:45{live}",
+                live_date()
+            )
+        };
+        let (status, timetable) =
+            get(test_router(test_app(pool.clone())), uri("&live=false")).await;
+        assert_eq!(status, StatusCode::OK, "{timetable:?}");
+        assert_eq!(train_uids(&timetable, 0), ["TLVCANF"]);
+        assert!(timetable.get("live").is_none(), "{timetable:?}");
+        let leg = &timetable["segments"][0]["itineraries"][0]["legs"][0];
+        assert!(leg.get("live").is_none(), "{leg:?}");
+        assert!(
+            timetable["segments"][0]["itineraries"][0]
+                .get("liveFeasible")
+                .is_none()
+        );
+
+        let (status, live) = get(test_router(test_app(pool.clone())), uri("")).await;
+        assert_eq!(status, StatusCode::OK, "{live:?}");
+        assert_eq!(live["live"]["applied"], true, "{live:?}");
+        assert_eq!(live["live"]["replans"], 1, "{live:?}");
+        assert_eq!(live["live"]["adjustedTrains"], 1, "{live:?}");
+        assert_eq!(train_uids(&live, 0), ["TLVCANS"], "{live:?}");
+        let itinerary = &live["segments"][0]["itineraries"][0];
+        assert_eq!(itinerary["liveFeasible"], true);
+        // The replacement has no live record: an explicit null.
+        let leg = itinerary["legs"][0].as_object().unwrap();
+        assert!(leg.contains_key("live") && leg["live"].is_null(), "{leg:?}");
+        assert_eq!(leg["scheduledDeparture"], "10:05:00");
+
+        cleanup_live(&pool, &uids, "TLVCAN").await;
+    }
+
+    /// A feeder running 15 late misses its timetabled connection: the plan is
+    /// re-run onto the next onward train, the late leg reports its delay and
+    /// keeps its timetable times, and a TRUST state older than the staleness
+    /// bound is ignored (the timetable connection stands).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn live_a_delay_that_breaks_an_interchange_replans_unless_it_is_stale() {
+        let pool = connect().await;
+        let uids = ["TLVDLY1", "TLVDLY2", "TLVDLY3"];
+        cleanup_live(&pool, &uids, "TLVDLY").await;
+        seed_stations(
+            &pool,
+            "TLVDLY",
+            &[("ZQC", "TLVDA"), ("ZQD", "TLVDB"), ("ZQE", "TLVDC")],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TLVDLY1",
+            &[
+                (0, "TLVDA", "origin", None, Some("10:00:00")),
+                (1, "TLVDB", "terminate", Some("10:30:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TLVDLY2",
+            &[
+                (0, "TLVDB", "origin", None, Some("10:40:00")),
+                (1, "TLVDC", "terminate", Some("11:00:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TLVDLY3",
+            &[
+                (0, "TLVDB", "origin", None, Some("11:00:00")),
+                (1, "TLVDC", "terminate", Some("11:20:00"), None),
+            ],
+        )
+        .await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+        let uri = format!(
+            "/Trips/plan?origin=ZQC&destination=ZQE&date={}&departAfter=09:45",
+            live_date()
+        );
+
+        // Stale: last updated two hours ago -> ignored.
+        seed_trust_state(
+            &pool,
+            "TLVDLY1",
+            "en_route",
+            Some(15),
+            live_now() - chrono::Duration::hours(2),
+        )
+        .await;
+        let (status, stale) = get(test_router(test_app(pool.clone())), uri.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{stale:?}");
+        assert_eq!(train_uids(&stale, 0), ["TLVDLY1", "TLVDLY2"], "{stale:?}");
+        assert_eq!(stale["live"]["replans"], 0, "{stale:?}");
+
+        // Fresh: the 15-minute delay lands at 10:45, inside the 5-minute
+        // change onto the 10:40 -> re-planned onto the 11:00.
+        sqlx::query(
+            "UPDATE train_current_state SET updated_at = $1 \
+             WHERE trains_id = (SELECT id FROM trains WHERE train_uid = 'TLVDLY1')",
+        )
+        .bind(live_now())
+        .execute(&pool)
+        .await
+        .expect("freshen");
+        let (status, fresh) = get(test_router(test_app(pool.clone())), uri).await;
+        assert_eq!(status, StatusCode::OK, "{fresh:?}");
+        assert_eq!(fresh["live"]["replans"], 1, "{fresh:?}");
+        assert_eq!(train_uids(&fresh, 0), ["TLVDLY1", "TLVDLY3"], "{fresh:?}");
+        let itinerary = &fresh["segments"][0]["itineraries"][0];
+        let late = &itinerary["legs"][0];
+        assert_eq!(late["scheduledDeparture"], "10:00:00", "{late:?}");
+        assert_eq!(late["scheduledArrival"], "10:30:00", "{late:?}");
+        assert_eq!(late["live"]["status"], "Late", "{late:?}");
+        assert_eq!(late["live"]["delayMinutes"], 15, "{late:?}");
+        assert_eq!(late["live"]["arrivalDelayMinutes"], 15, "{late:?}");
+        assert_eq!(late["live"]["cancelled"], false);
+        assert!(late["live"]["interchangeFeasible"].is_null());
+        assert!(itinerary["legs"][1]["live"].is_null());
+        assert_eq!(itinerary["liveFeasible"], true);
+        // 10:15 live departure to 11:20 arrival.
+        assert_eq!(itinerary["totalDurationMinutes"], 65, "{itinerary:?}");
+
+        cleanup_live(&pool, &uids, "TLVDLY").await;
+    }
+
+    /// An EN ROUTE cancellation at an intermediate call (located through
+    /// `train_reasons.loc_stanox` -> `stanox_crs`) cuts the train there:
+    /// a trip to the call after it moves to another train, while a trip to
+    /// the cut call itself still uses it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn live_an_en_route_cancellation_terminates_the_train_short() {
+        let pool = connect().await;
+        let uids = ["TLVENR1", "TLVENR2"];
+        cleanup_live(&pool, &uids, "TLVENR").await;
+        seed_stations(
+            &pool,
+            "TLVENR",
+            &[("ZQF", "TLVEA"), ("ZQG", "TLVEB"), ("ZQH", "TLVEC")],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TLVENR1",
+            &[
+                (0, "TLVEA", "origin", None, Some("10:00:00")),
+                (
+                    1,
+                    "TLVEB",
+                    "intermediate",
+                    Some("10:20:00"),
+                    Some("10:21:00"),
+                ),
+                (2, "TLVEC", "terminate", Some("10:40:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TLVENR2",
+            &[
+                (0, "TLVEA", "origin", None, Some("10:30:00")),
+                (1, "TLVEC", "terminate", Some("11:10:00"), None),
+            ],
+        )
+        .await;
+        let trains_id = seed_trust_state(&pool, "TLVENR1", "en_route", None, live_now()).await;
+        sqlx::query(
+            "INSERT INTO train_reasons (trains_id, msg_type, reason_code, canx_type, loc_stanox) \
+             VALUES ($1, '0002', 'TG', 'EN ROUTE', 'TLVENR-ZQG')",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_reasons");
+
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+        let plan = |destination: &str| {
+            format!(
+                "/Trips/plan?origin=ZQF&destination={destination}&date={}&departAfter=09:45",
+                live_date()
+            )
+        };
+        let (status, beyond) = get(test_router(test_app(pool.clone())), plan("ZQH")).await;
+        assert_eq!(status, StatusCode::OK, "{beyond:?}");
+        assert_eq!(train_uids(&beyond, 0), ["TLVENR2"], "{beyond:?}");
+
+        let (status, to_cut) = get(test_router(test_app(pool.clone())), plan("ZQG")).await;
+        assert_eq!(status, StatusCode::OK, "{to_cut:?}");
+        assert_eq!(train_uids(&to_cut, 0), ["TLVENR1"], "{to_cut:?}");
+        let leg = &to_cut["segments"][0]["itineraries"][0]["legs"][0];
+        assert_eq!(leg["live"]["cancelled"], false, "{leg:?}");
+
+        cleanup_live(&pool, &uids, "TLVENR").await;
+    }
+
+    /// Live data is only applied for today's (or yesterday's) service date.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn live_is_not_applied_outside_the_live_window() {
+        let pool = connect().await;
+        let uids = ["TLVWIN1"];
+        cleanup_live(&pool, &uids, "TLVWIN").await;
+        seed_stations(&pool, "TLVWIN", &[("ZQJ", "TLVWA"), ("ZQK", "TLVWB")]).await;
+        seed_schedule(
+            &pool,
+            "TLVWIN1",
+            &[
+                (0, "TLVWA", "origin", None, Some("10:00:00")),
+                (1, "TLVWB", "terminate", Some("10:30:00"), None),
+            ],
+        )
+        .await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now() + chrono::Duration::days(3));
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            format!(
+                "/Trips/plan?origin=ZQJ&destination=ZQK&date={}",
+                live_date()
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(body["live"]["applied"], false);
+        assert_eq!(body["live"]["reason"], "outsideLiveWindow");
+        assert!(
+            body["segments"][0]["itineraries"][0]["legs"][0]
+                .get("live")
+                .is_none()
+        );
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            format!(
+                "/Trips/plan?origin=ZQJ&destination=ZQK&date={}&live=maybe",
+                live_date()
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+
+        cleanup_live(&pool, &uids, "TLVWIN").await;
     }
 
     /// `/Trips/plan` train legs carry the CIF booked platform at the
