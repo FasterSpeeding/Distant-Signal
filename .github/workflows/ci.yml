@@ -571,6 +571,14 @@ jobs:
       - name: helm lint (default values)
         run: helm lint charts/distant-signal
 
+      # Every values.yaml key needs a row in the chart README's "Values
+      # reference" tables, and every row must name a real key.
+      # `scripts/chart-values-doc.py table <section>` drafts missing rows.
+      - name: chart values reference is complete
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
+          python3 scripts/chart-values-doc.py check
+
       - name: helm lint (values-example.yaml)
         run: helm lint charts/distant-signal -f charts/distant-signal/values-example.yaml
 
