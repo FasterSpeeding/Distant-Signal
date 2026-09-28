@@ -463,6 +463,12 @@ struct TiplocRow {
     desc: String,
 }
 
+// The inference rule below is a deliberate, user-accepted trade-off
+// (precision over recall), with its known costs recorded in
+// reference-data/line-catalogue-validation.md, section "Decision
+// (2026-09-28): conservative CORPUS inference". Read that before loosening
+// it or editing the word lists above.
+
 /// Turns a CORPUS extract into `crs-tiploc.csv` rows.
 ///
 /// CORPUS fills `3ALPHA` only on a station's primary TIPLOC, so each

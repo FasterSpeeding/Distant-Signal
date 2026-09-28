@@ -290,9 +290,14 @@ export const DATA_SOURCES: readonly DataSource[] = [
     // No committed file comes from this site any more (station codes are
     // from CORPUS above, operator codes from the Knowledgebase TOC list),
     // but the line-catalogue validator's optional `--live` check still
-    // reads its CRS pages. Nothing from it is shown on the site. See LEG-24
-    // for the open permission question; drop this entry if `--live` stops
-    // using it.
+    // reads its CRS pages (the scrape in
+    // crates/line-catalogue-validator/src/reference.rs, `fetch_live`).
+    // Nothing from it is shown on the site. See LEG-24 for the open
+    // permission question. Remove this credit when that scrape is removed:
+    // the validator's
+    // `railwaycodes_credit_exists_exactly_while_the_live_tier_scrapes_it`
+    // test fails while one exists without the other (it looks for
+    // `id: 'railwaycodes'` here, so keep that id).
     id: 'railwaycodes',
     title: 'railwaycodes.org.uk',
     use: 'Occasionally used during development to cross-check station codes in our line catalogue. Not shown on this site.',

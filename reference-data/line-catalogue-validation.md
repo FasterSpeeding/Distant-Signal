@@ -228,6 +228,46 @@ Before 2026-09-27 this file was scraped from
 `https://www.railwaycodes.org.uk/operators/toccodes.shtm` (rows whose date
 range read `to date`).
 
+## Decision (2026-09-28): conservative CORPUS inference
+
+The user accepted the conservative inference rule for `crs-tiploc.csv`:
+a CRS-less TIPLOC takes a station's CRS only if it shares the station's
+STANOX and its CORPUS description either names the station followed only by
+platform-ish words, or consists only of platform words and also shares the
+station's NLC location (rules and measurements in "Regenerating this
+snapshot" below). It was preferred over the NLC-group / STANOX-group
+alternatives because those gave station codes to signals, junctions,
+sidings and freight terminals (4,613 inferences for NLC-then-STANOX, 132
+for "NLC and STANOX agree", still mostly junctions and signals), and a
+wrong `(crs, tiploc)` pair silently vouches for a wrong catalogue entry,
+whereas a missing one only produces a non-blocking warning.
+
+Accepted costs:
+
+- **Fewer inferences than expected**: 46, against roughly 150 genuine
+  multi-TIPLOC stations estimated beforehand.
+- **Known misses**: a platform TIPLOC with its own STANOX is never
+  inferred, e.g. `WATR` "WATERLOO SUBURBAN" and `OXTEDBY` "OXTED BAY". If a
+  line ever uses one, the validator gives a non-blocking tiploc-pairing
+  warning.
+- **Debatable inclusions**: `AVIGVIL` "AVIGNON VILLE" (under Avignon),
+  `DINGMLC` "DINGWALL MIDDLE" (a level crossing whose description doesn't
+  say so), `MINFFR` (the Ffestiniog Railway's Minffordd, under the Network
+  Rail station).
+- **Codes dropped with the railwaycodes.org.uk snapshot**: 927 pairs and
+  432 CRS codes (pseudo, Olympic, superseded Crossrail and closed-station
+  codes, see above). No line uses them today, but a future line using a
+  pseudo or closed code now fails validation (an unknown CRS is a hard
+  error).
+- **Dependence on CORPUS wording**: the rule relies on how CORPUS words
+  `NLCDESC` and on the word lists in
+  `crates/line-catalogue-validator/src/regenerate.rs`. They may need
+  maintenance when CORPUS changes; read the regeneration report's inferred
+  pairs and "left out by name" list on every regeneration.
+- **Point-in-time snapshot**: the file reflects the extract downloaded on
+  2026-09-28 and goes stale until it is regenerated. That stays manual until
+  the planned SFTP CORPUS ingest lands.
+
 ## The live tier (`--live`)
 
 The weekly `--live` run (`.github/workflows/validate-line-catalogue.yml`,
@@ -258,6 +298,15 @@ without a new credential:
   `tiploc`) would work as a source, but production's API has no public
   ingress today (it is reachable only on the tailnet), and its data comes
   from the CIF feed, whose licence review (LEG-22) is still open.
+
+**This scrape is the only reason `/attribution` credits
+railwaycodes.org.uk** (the `railwaycodes` entry in
+`frontend/components/OpenDataAttribution.tsx`); no committed file comes
+from the site any more. Remove the credit when this scrape is removed (and
+the other way round). The validator's unit test
+`railwaycodes_credit_exists_exactly_while_the_live_tier_scrapes_it`
+(`crates/line-catalogue-validator/src/reference.rs`) fails while one exists
+without the other.
 
 ## Known limitations (documented, not silently papered over)
 
