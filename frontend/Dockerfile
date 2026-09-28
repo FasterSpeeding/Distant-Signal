@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # Multi-stage build for the `frontend` service.
 #
 # Build from the repo root so relative paths work the same way as every
@@ -194,7 +194,11 @@ RUN mkdir -p /app/.next && chown -R node:node /app
 # own frontend/node_modules out of the build context.
 COPY --from=builder-base --chown=node:node /app ./
 
-USER node
+# Numeric like runtime-prod's (hadolint DL3066), though nothing admits this
+# dev-only stage into Kubernetes: 1000:1000 is the `node` user/group above,
+# and the runtime still resolves HOME=/home/node from /etc/passwd, so this
+# runs exactly as `USER node` did (checked: same `id`, HOME and env).
+USER 1000:1000
 
 EXPOSE 3000
 ENTRYPOINT ["npm", "run", "dev"]
