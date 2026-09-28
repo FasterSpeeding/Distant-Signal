@@ -188,8 +188,7 @@ pub fn pin_cap_message() -> String {
     )
 }
 
-/// `user_id` is the authenticated caller's id (the OIDC `sub`, per
-/// `docs/superpowers/plans/2026-08-28-user-accounts-sso.md`'s Task 1) --
+/// `user_id` is the authenticated caller's id (the OIDC `sub`) --
 /// resolved by the route handler's `AuthenticatedUser` extractor
 /// (`crates/api/src/routes/train.rs::post_track`, below), never taken from
 /// the request body itself.
@@ -2332,8 +2331,8 @@ mod tests {
 /// before creating a ticket against it (there's no existing ticket row yet
 /// to filter by, unlike the read paths below). A mismatch or missing
 /// tracked train both map to the same `404` at the route layer -- never
-/// `403` -- matching `docs/superpowers/plans/2026-08-28-user-accounts-sso.md`'s
-/// existing "exists but not yours" convention.
+/// `403` -- the api-wide convention that "exists but not yours" looks
+/// exactly like "does not exist", so ids cannot be probed.
 pub async fn tracked_train_owner(
     pool: &PgPool,
     tracking_id: i64,

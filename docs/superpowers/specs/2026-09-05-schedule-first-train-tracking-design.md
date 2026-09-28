@@ -1,5 +1,13 @@
 # Design: Schedule-First Resolution for Tracked-Train Pins
 
+> **Status (2026-09-28): implemented.** Built by
+> [the 2026-09-05 plan](../plans/2026-09-05-schedule-first-train-tracking-plan.md):
+> `crates/api/src/data/schedule_matching.rs` (`attempt_schedule_match`, the
+> pending-pin sweep) and the `schedule_matched` resolution status
+> (`crates/api/migrations/20260905150000_schedule_matched_resolution.sql`).
+> The status line below is the original one from when this was written; see
+> [the specs index](../README.md) for how to read these documents.
+
 **Status: design proposal, not approved. Spec stage only — no implementation
 plan, no code in this pass.**
 

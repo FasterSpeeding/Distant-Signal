@@ -155,8 +155,7 @@ fn escape_ilike_pattern(raw: &str) -> String {
 /// using the standard Haversine great-circle formula evaluated directly in
 /// SQL -- no PostGIS/geo extension is installed anywhere in this codebase,
 /// and at ~2,500 UK stations a full-table scan with `ORDER BY distance
-/// LIMIT n` is well within budget without a bounding box or spatial index
-/// (see docs/superpowers/specs/2026-09-21-near-me-station-lookup-design.md).
+/// LIMIT n` is well within budget without a bounding box or spatial index.
 ///
 /// Stations with a `NULL` `latitude` or `longitude` (not every RDM/NRE
 /// reference row carries coordinates) are excluded via the `WHERE` clause

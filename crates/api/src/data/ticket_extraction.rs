@@ -1,10 +1,9 @@
 //! Best-effort, review-before-save auto-fill for ticket entry: reads
 //! openly-documented file formats a user already has (Apple Wallet
 //! `.pkpass`, PDF e-tickets) and returns a `PartialTicket` preview -- this
-//! module and every function in it NEVER writes to the database (see
-//! docs/superpowers/plans/2026-08-29-journey-ticket-tracking.md's Global
-//! Constraints on review-before-save; plan since pruned, see history,
-//! commit `ec42cf95`) and NEVER decodes a barcode or
+//! module and every function in it NEVER writes to the database (the user
+//! reviews the preview and saves it through the normal ticket-entry route)
+//! and NEVER decodes a barcode or
 //! touches ITSO data, in either format (see the design doc's Non-goals).
 
 use chrono::{DateTime, Utc};
