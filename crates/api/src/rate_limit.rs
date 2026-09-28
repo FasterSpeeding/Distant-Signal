@@ -545,7 +545,7 @@ impl RateLimiter {
         &self,
         class: LimitClass,
         headers: &HeaderMap,
-    ) -> Result<Option<Caller>, Response> {
+    ) -> Result<Option<Caller>, Box<Response>> {
         let Some(auth) = &self.service_callers else {
             return Ok(None);
         };
@@ -570,7 +570,7 @@ impl RateLimiter {
                     "reason" => reason
                 )
                 .increment(1);
-                Err(match verified {
+                Err(Box::new(match verified {
                     Ok(claims) => {
                         tracing::warn!(
                             sub = %claims.sub,
@@ -593,7 +593,7 @@ impl RateLimiter {
                         );
                         response
                     }
-                })
+                }))
             }
         }
     }
@@ -663,7 +663,7 @@ pub async fn enforce(
         return next.run(request).await;
     };
     let client = match limiter.service_caller(class, request.headers()).await {
-        Err(rejection) => return rejection,
+        Err(rejection) => return *rejection,
         Ok(Some(caller)) => ClientKey::Service(caller),
         Ok(None) => {
             let peer = request

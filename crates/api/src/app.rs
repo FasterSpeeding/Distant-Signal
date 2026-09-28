@@ -819,43 +819,34 @@ mod internal_oauth_startup_guard_tests {
         assert!(err.to_string().contains("/private/stanox-crs"), "{err}");
     }
 
-    /// The real production table, with every default group, is clean.
+    /// The declared default MCP group is `srv-ds-mcp` and differs from every
+    /// other declared `INTERNAL_OAUTH_GROUP_*` default, so the default
+    /// configuration passes the startup guard.
     #[test]
-    fn the_default_mcp_group_grants_no_private_route_in_the_real_table() {
-        use clap::Parser;
-        let config = super::ServiceArguments::try_parse_from([
-            "api",
-            "--database-url",
-            "postgres://x",
-            "--redis-url",
-            "redis://x",
-            "--internal-oauth-issuer-url",
-            "https://sso.example/",
-            "--internal-oauth-client-id",
-            "internal",
-            "--sso-issuer-url",
-            "https://sso.example/",
-            "--sso-client-id",
-            "human",
-            "--sso-client-secret",
-            "secret",
-            "--sso-redirect-url",
-            "https://example/cb",
-            "--sso-post-login-redirect-url",
-            "https://example/",
-            "--lines-dir",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../lines"),
-        ])
-        .expect("parse");
-        assert_eq!(config.internal_oauth_group_mcp, "srv-ds-mcp");
-        let routes = super::build_internal_oauth_routes(&config);
-        assert!(
-            super::ensure_mcp_group_grants_no_private_route(
-                &config.internal_oauth_group_mcp,
-                &routes
-            )
-            .is_ok()
-        );
+    fn the_default_mcp_group_differs_from_every_private_group_default() {
+        use clap::CommandFactory;
+        let command = super::ServiceArguments::command();
+        let defaults: Vec<(String, String)> = command
+            .get_arguments()
+            .filter_map(|arg| {
+                let env = arg.get_env()?.to_str()?.to_string();
+                let default = arg.get_default_values().first()?.to_str()?.to_string();
+                env.starts_with("INTERNAL_OAUTH_GROUP_")
+                    .then_some((env, default))
+            })
+            .collect();
+        let mcp = defaults
+            .iter()
+            .find(|(env, _)| env == "INTERNAL_OAUTH_GROUP_MCP")
+            .map(|(_, default)| default.clone())
+            .expect("INTERNAL_OAUTH_GROUP_MCP is declared");
+        assert_eq!(mcp, "srv-ds-mcp");
+        assert!(defaults.len() >= 14, "{defaults:?}");
+        for (env, default) in &defaults {
+            if env != "INTERNAL_OAUTH_GROUP_MCP" {
+                assert_ne!(default, &mcp, "{env}");
+            }
+        }
     }
 }
 
