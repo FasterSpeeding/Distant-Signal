@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Default for [`Config::cif_file_pattern`]: any zip (the delivery is
-/// `timetable_full.zip` today, but the repo owner asked for detection by
-/// shape, not by that exact name -- see `delivery.rs`).
-pub const DEFAULT_CIF_FILE_PATTERN: &str = "*.zip";
+/// Default for [`Config::cif_file_pattern`]: exactly the name DTD delivers
+/// the full CIF timetable under. Locked to that name by the repo owner
+/// (2026-09-28), since the same SFTP account now also receives other feeds;
+/// any other file is a logged stray, never published as the timetable.
+pub const DEFAULT_CIF_FILE_PATTERN: &str = "timetable_full.zip";
 
 /// Default for [`Config::cif_exclude_pattern`]: everything named like a
 /// Network Rail CORPUS extract, whatever its extension. The same SFTP
@@ -134,7 +135,9 @@ pub struct Config {
     /// beyond this exists today -- a future "also copy elsewhere for
     /// long-term retention" need should be a separate, purposefully-called
     /// copy step, not a change to this simple keep-N-most-recent behavior.
-    #[arg(long, env, default_value_t = 2)]
+    /// 3 per the repo owner (2026-09-28): three of each resource, counted
+    /// separately from CORPUS's own `corpus_retention_keep`.
+    #[arg(long, env, default_value_t = 3)]
     pub retention_keep_deliveries: u32,
 
     /// PL-5: the most uncompressed bytes one delivery zip may declare

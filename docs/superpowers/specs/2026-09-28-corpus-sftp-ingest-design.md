@@ -48,7 +48,7 @@ The sources are `charts/distant-signal/templates/schedulefeed-*.yaml`,
     (5) scans.
   - `ingest` extracts the newest stable zip atomically (temp dir, fsync,
     completion marker, rename) into `/data/schedule-feed/<YYYYMMDDTHHMMSSZ>/`
-    and keeps `retentionKeepDeliveries` (2) extracted deliveries.
+    and keeps `retentionKeepDeliveries` (3; separate from CORPUS's own 3) extracted deliveries.
   - `ingest` then POSTs `{delivered_at, ingested_at, files}` to api
     `POST /private/schedule-feed-ingests`, using its own internal OAuth
     credential (Authentik client-credentials, group `svc-schedule-ingest`).
@@ -69,8 +69,9 @@ file pushed as a zip would have been extracted and published as the
 timetable. This is fixed first, as a standalone commit:
 
 - A file is a CIF candidate only if it matches `CIF_FILE_PATTERN` (default
-  `*.zip`, unchanged) and does not match `CIF_EXCLUDE_PATTERN` (default
-  `CORPUSExtract*`, whatever the extension).
+  `timetable_full.zip`, DTD's exact delivery name; see decision 4) and does
+  not match `CIF_EXCLUDE_PATTERN` (default `CORPUSExtract*`, whatever the
+  extension).
 - Patterns are comma-separated, case-insensitive `*` globs
   (`crates/schedule-ingest/src/pattern.rs`).
 - Every other file keeps the existing one-time "stray file" warning.
@@ -232,7 +233,9 @@ at 3 processed and 3 rejected.
    only the flag is on, every cycle logs a 403 error.
 3. **Ignoring the SMART file.** The provider's `CORPUSExtract.csv.gz` is SMART
    berth data, and is deliberately ignored.
-4. **The CIF pattern default.** It stays `*.zip`, minus `CORPUSExtract*`,
-   because the owner earlier asked that CIF detection not depend on the exact
-   `timetable_full.zip` name. Setting `CIF_FILE_PATTERN=timetable_full.zip`
-   would pin it to that name.
+4. **The CIF pattern default.** Decided 2026-09-28: locked to the exact
+   `timetable_full.zip` name (the only name DTD has delivered under; 34 of 34
+   ingests in prod's last 72 h). `CORPUSExtract*` stays excluded as a second
+   guard. A renamed delivery would now be logged as a stray and hit the
+   existing "no .zip delivery by the final check time" error, rather than
+   being picked up silently.

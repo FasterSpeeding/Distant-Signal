@@ -632,7 +632,11 @@ mod tests {
     #[test]
     fn find_zip_candidates_sorts_the_most_recently_modified_last() {
         let snap = snapshot(&[("old.zip", 100, 1), ("new.zip", 200, 1)]);
-        let candidates = find_zip_candidates(&snap, &Routing::defaults());
+        let routing = Routing {
+            cif: crate::pattern::FilePattern::parse("*.zip").unwrap(),
+            ..Routing::defaults()
+        };
+        let candidates = find_zip_candidates(&snap, &routing);
         assert_eq!(
             candidates.last().map(|(name, _)| name.as_str()),
             Some("new.zip")
