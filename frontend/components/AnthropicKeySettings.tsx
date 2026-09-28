@@ -28,6 +28,7 @@ export function AnthropicKeySettings() {
 
   useEffect(() => {
     if (!mounted) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reads localStorage only after mount, so the server and first client render agree
     setHasKey(getAnthropicApiKey() !== null);
   }, [mounted]);
 

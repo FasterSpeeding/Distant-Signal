@@ -36,6 +36,7 @@ export default async function NetworkHistoryPage({
   searchParams: Promise<{ from?: string; to?: string; range?: string; granularity?: string }>;
 }) {
   const query = await searchParams;
+  // eslint-disable-next-line react-hooks/purity -- server component: one timestamp per request, passed down so SSR and hydration agree
   const now = Date.now();
   const ceilings = await resolveRetention();
   const range = resolveRange(query, now);

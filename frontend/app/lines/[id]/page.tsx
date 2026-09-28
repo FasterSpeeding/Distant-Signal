@@ -418,6 +418,7 @@ export default async function LineDetailPage({
   // Stamped server-side so IssueList's buckets don't depend on a
   // `Date.now()` that differs between the SSR pass and hydration. Fresh on
   // every request (this route is dynamic) and re-stamped by AutoRefresh.
+  // eslint-disable-next-line react-hooks/purity -- server component: one timestamp per request, passed down so SSR and hydration agree
   const now = Date.now();
 
   // A fixed rolling 24-hour window, not a URL-driven preset -- this embed

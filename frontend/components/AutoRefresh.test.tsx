@@ -28,6 +28,7 @@ let rerenderParent: () => void = () => {};
 
 function Harness() {
   const [, setTick] = useState(0);
+  // eslint-disable-next-line react-hooks/globals -- test harness hands a re-render trigger to the it() blocks (see above)
   rerenderParent = () => setTick((t) => t + 1);
   return <AutoRefresh />;
 }

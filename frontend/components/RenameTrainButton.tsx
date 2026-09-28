@@ -71,6 +71,7 @@ export const RenameTrainButton = forwardRef<
     open();
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- handleOpen reads only customName; open and the setters are stable
   useImperativeHandle(ref, () => ({ open: handleOpen }), [customName]);
 
   async function submit(nextCustomName: string | null) {

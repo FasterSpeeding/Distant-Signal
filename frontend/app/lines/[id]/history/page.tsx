@@ -101,6 +101,7 @@ export default async function LineHistoryPage({
     notFound();
   }
 
+  // eslint-disable-next-line react-hooks/purity -- server component: one timestamp per request, passed down so SSR and hydration agree
   const now = Date.now();
   const [name, retention] = await Promise.all([
     resolveLineName(id),

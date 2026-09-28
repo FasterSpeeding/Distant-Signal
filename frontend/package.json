@@ -9,7 +9,7 @@
     "dev": "next dev",
     "build": "next build && node scripts/stamp-sw-version.mjs",
     "start": "next start",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json && tsc -p tsconfig.sw.json",
     "test": "vitest run",
     "test:watch": "vitest",

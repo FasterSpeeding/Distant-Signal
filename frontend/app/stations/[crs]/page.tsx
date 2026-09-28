@@ -222,6 +222,7 @@ export default async function StationDisruptionPage({
   // their buckets don't depend on a `Date.now()` that differs between the
   // SSR pass and hydration. Fresh on every request (this route is dynamic)
   // and re-stamped by AutoRefresh.
+  // eslint-disable-next-line react-hooks/purity -- server component: one timestamp per request, passed down so SSR and hydration agree
   const now = Date.now();
 
   const items = dedupeStationIssues(reports);

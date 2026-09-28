@@ -37,6 +37,7 @@ export function AutoRefresh() {
   // the effect keys on `visibility` alone, which is the only input that
   // should actually start or stop the timer.
   const latest = useRef({ router, interval });
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern, read only inside the effect (see above)
   latest.current = { router, interval };
 
   // Mount is not a transition. The immediate refresh below is for a

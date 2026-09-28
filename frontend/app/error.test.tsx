@@ -30,6 +30,7 @@ let setDisconnected: (value: boolean) => void = () => {};
 
 function Harness({ initial }: { initial: boolean }) {
   const [disconnected, setValue] = useState(initial);
+  // eslint-disable-next-line react-hooks/globals -- test harness hands the component's setter to the it() blocks (see above)
   setDisconnected = setValue;
   return (
     <ConnectivityContext.Provider value={{ disconnected }}>

@@ -162,6 +162,7 @@ export function TimeFilterInput({
   // callback itself would re-run this on every render -- retracting, and
   // then immediately contradicting, a `true` the field is still reporting.
   const reportIncomplete = useRef(onIncompleteChange);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern, read only in the unmount cleanup (see above)
   reportIncomplete.current = onIncompleteChange;
   useEffect(
     () => () => {

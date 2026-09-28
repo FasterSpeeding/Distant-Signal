@@ -430,6 +430,7 @@ export function TrainSearchForm({
   // gotten to -- a correct, if smaller, restoration rather than a wrong one,
   // and not a bug to fix in this pass.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount-only restore of the URL's search (see above)
     if (CRS_PATTERN.test(initialStation.trim())) void runSearch();
     // Intentionally empty: this is a mount-only effect, not one that tracks
     // the filter state it reads -- see the comment above.

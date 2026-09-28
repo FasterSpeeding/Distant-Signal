@@ -171,6 +171,7 @@ export function JourneyLegCandidates({
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- shows the loading state for the fetch this effect starts
     setResults('loading');
     needsLoginState.reset();
     const params = new URLSearchParams();
