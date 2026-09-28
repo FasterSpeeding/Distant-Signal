@@ -1184,12 +1184,35 @@ impl From<StanoxCrsRow> for common::StanoxCrsRecord {
 /// `trust-consumer`'s periodic reload consumes directly (Task 5), unlike
 /// every `last_*_fetch` query in this file, which only returns a
 /// timestamp.
+///
+/// With the CORPUS fallback on (`crate::data::corpus_crosswalk`, off by
+/// default) this also lists `corpus_stanox_crs` rows for STANOXes neither
+/// `stanox_crs` nor `tiploc_crs` knows (`source_sequence` 0, no change
+/// time); a STANOX `tiploc_crs` knows but `stanox_crs` left out was
+/// excluded on purpose and stays out.
 pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecord>> {
-    let rows = sqlx::query_as::<_, StanoxCrsRow>(
-        "SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes FROM stanox_crs ORDER BY stanox",
-    )
-    .fetch_all(pool)
-    .await?;
+    list_stanox_crs_with(pool, crate::data::corpus_crosswalk::fallback_enabled()).await
+}
+
+/// [`list_stanox_crs`] with the CORPUS fallback given explicitly.
+pub async fn list_stanox_crs_with(
+    pool: &PgPool,
+    corpus_fallback: bool,
+) -> Result<Vec<common::StanoxCrsRecord>> {
+    let sql = if corpus_fallback {
+        "SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes FROM ( \
+             SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes FROM stanox_crs \
+             UNION ALL \
+             SELECT c.stanox, c.crs, c.tiploc, c.station_name, 0, NULL::integer FROM corpus_stanox_crs c \
+             WHERE NOT EXISTS (SELECT 1 FROM stanox_crs s WHERE s.stanox = c.stanox) \
+               AND NOT EXISTS (SELECT 1 FROM tiploc_crs t WHERE t.stanox = c.stanox) \
+         ) merged ORDER BY stanox"
+    } else {
+        "SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes FROM stanox_crs ORDER BY stanox"
+    };
+    let rows = sqlx::query_as::<_, StanoxCrsRow>(sql)
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
@@ -1239,11 +1262,40 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
 /// comment). The return type stays `Vec<common::StanoxCrsRecord>`: this is
 /// a generic "which rows cover this CRS" lookup, and `StanoxCrsRecord`'s
 /// shape already has every field a `tiploc_crs` row also has.
+///
+/// With the CORPUS fallback on (`crate::data::corpus_crosswalk`, off by
+/// default) this also returns `corpus_tiploc_crs` TIPLOCs with this CRS
+/// (and a STANOX) that neither timetable table has under ANY CRS, so a
+/// TIPLOC the timetable maps elsewhere is never pulled in here.
 pub async fn list_stanox_crs_for_crs(
     pool: &PgPool,
     crs: &str,
 ) -> Result<Vec<common::StanoxCrsRecord>> {
-    let rows = sqlx::query_as::<_, StanoxCrsRow>(
+    list_stanox_crs_for_crs_with(pool, crs, crate::data::corpus_crosswalk::fallback_enabled()).await
+}
+
+/// [`list_stanox_crs_for_crs`] with the CORPUS fallback given explicitly.
+pub async fn list_stanox_crs_for_crs_with(
+    pool: &PgPool,
+    crs: &str,
+    corpus_fallback: bool,
+) -> Result<Vec<common::StanoxCrsRecord>> {
+    let sql = if corpus_fallback {
+        "SELECT DISTINCT ON (tiploc) tiploc, crs, station_name, stanox, source_sequence, change_time_minutes \
+         FROM ( \
+             SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 1 AS priority \
+             FROM tiploc_crs WHERE UPPER(crs) = $1 \
+             UNION ALL \
+             SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 2 AS priority \
+             FROM stanox_crs WHERE crs = $1 \
+             UNION ALL \
+             SELECT c.tiploc, c.crs, c.station_name, c.stanox, 0, NULL::integer, 3 AS priority \
+             FROM corpus_tiploc_crs c WHERE c.crs = $1 AND c.stanox IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM tiploc_crs t WHERE t.tiploc = c.tiploc) \
+               AND NOT EXISTS (SELECT 1 FROM stanox_crs s WHERE s.tiploc = c.tiploc) \
+         ) merged \
+         ORDER BY tiploc, priority"
+    } else {
         "SELECT DISTINCT ON (tiploc) tiploc, crs, station_name, stanox, source_sequence, change_time_minutes \
          FROM ( \
              SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 1 AS priority \
@@ -1252,11 +1304,12 @@ pub async fn list_stanox_crs_for_crs(
              SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, 2 AS priority \
              FROM stanox_crs WHERE crs = $1 \
          ) merged \
-         ORDER BY tiploc, priority",
-    )
-    .bind(normalize_code(crs))
-    .fetch_all(pool)
-    .await?;
+         ORDER BY tiploc, priority"
+    };
+    let rows = sqlx::query_as::<_, StanoxCrsRow>(sql)
+        .bind(normalize_code(crs))
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
@@ -1371,12 +1424,35 @@ impl From<TiplocCrsRow> for common::TiplocCrsRecord {
 /// reviewable response shape -- mirrors `list_stanox_crs`'s own shape.
 /// Task 3's `trip_planning.rs` reads this to build its TIPLOC->CRS
 /// resolution alongside `stanox_crs`.
+///
+/// With the CORPUS fallback on (`crate::data::corpus_crosswalk`, off by
+/// default) this also lists `corpus_tiploc_crs` TIPLOCs (with a STANOX)
+/// that neither `tiploc_crs` nor `stanox_crs` has (`source_sequence` 0, no
+/// change time).
 pub async fn list_tiploc_crs(pool: &PgPool) -> Result<Vec<common::TiplocCrsRecord>> {
-    let rows = sqlx::query_as::<_, TiplocCrsRow>(
-        "SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes FROM tiploc_crs ORDER BY tiploc",
-    )
-    .fetch_all(pool)
-    .await?;
+    list_tiploc_crs_with(pool, crate::data::corpus_crosswalk::fallback_enabled()).await
+}
+
+/// [`list_tiploc_crs`] with the CORPUS fallback given explicitly.
+pub async fn list_tiploc_crs_with(
+    pool: &PgPool,
+    corpus_fallback: bool,
+) -> Result<Vec<common::TiplocCrsRecord>> {
+    let sql = if corpus_fallback {
+        "SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes FROM ( \
+             SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes FROM tiploc_crs \
+             UNION ALL \
+             SELECT c.tiploc, c.crs, c.station_name, c.stanox, 0, NULL::integer FROM corpus_tiploc_crs c \
+             WHERE c.stanox IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM tiploc_crs t WHERE t.tiploc = c.tiploc) \
+               AND NOT EXISTS (SELECT 1 FROM stanox_crs s WHERE s.tiploc = c.tiploc) \
+         ) merged ORDER BY tiploc"
+    } else {
+        "SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes FROM tiploc_crs ORDER BY tiploc"
+    };
+    let rows = sqlx::query_as::<_, TiplocCrsRow>(sql)
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
@@ -1655,19 +1731,48 @@ impl From<FixedLinkRow> for common::FixedLinkRecord {
 /// real, bookable station -- exactly the failure mode `is_bookable_crs`'s
 /// own doc comment cites real production evidence for (`XVR`/`XHN`/`XOZ`/
 /// `XOD`/`XOE`/`XWI`).
+///
+/// With the CORPUS fallback on (`crate::data::corpus_crosswalk`, off by
+/// default) `corpus_tiploc_crs` is a third source at priority 3, so it only
+/// answers for a TIPLOC neither timetable table has.
 pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as(
+    crs_for_tiploc_with(
+        pool,
+        tiploc,
+        crate::data::corpus_crosswalk::fallback_enabled(),
+    )
+    .await
+}
+
+/// [`crs_for_tiploc`] with the CORPUS fallback given explicitly.
+pub async fn crs_for_tiploc_with(
+    pool: &PgPool,
+    tiploc: &str,
+    corpus_fallback: bool,
+) -> Result<Option<String>> {
+    let sql = if corpus_fallback {
+        "SELECT UPPER(crs) FROM ( \
+             SELECT crs, 1 AS priority FROM tiploc_crs WHERE tiploc = $1 \
+             UNION ALL \
+             SELECT crs, 2 AS priority FROM stanox_crs WHERE tiploc = $1 \
+             UNION ALL \
+             SELECT crs, 3 AS priority FROM corpus_tiploc_crs WHERE tiploc = $1 \
+         ) merged \
+         ORDER BY priority \
+         LIMIT 1"
+    } else {
         "SELECT UPPER(crs) FROM ( \
              SELECT crs, 1 AS priority FROM tiploc_crs WHERE tiploc = $1 \
              UNION ALL \
              SELECT crs, 2 AS priority FROM stanox_crs WHERE tiploc = $1 \
          ) merged \
          ORDER BY priority \
-         LIMIT 1",
-    )
-    .bind(normalize_code(tiploc))
-    .fetch_optional(pool)
-    .await?;
+         LIMIT 1"
+    };
+    let row: Option<(String,)> = sqlx::query_as(sql)
+        .bind(normalize_code(tiploc))
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|(crs,)| crs))
 }
 
@@ -1691,25 +1796,49 @@ pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String
 /// `DISTINCT ON (tiploc)` with `ORDER BY tiploc, priority` picks the `tiploc_crs` row (priority 1) first per TIPLOC
 /// before `.collect()` builds the map, so the result no longer depends on
 /// unspecified `UNION` row order.
+///
+/// With the CORPUS fallback on, `corpus_tiploc_crs` is a third source at
+/// priority 3, exactly as in [`crs_for_tiploc`].
 pub async fn crs_for_tiplocs_batch(
     pool: &PgPool,
     tiplocs: &[String],
+) -> Result<HashMap<String, String>> {
+    crs_for_tiplocs_batch_with(
+        pool,
+        tiplocs,
+        crate::data::corpus_crosswalk::fallback_enabled(),
+    )
+    .await
+}
+
+/// [`crs_for_tiplocs_batch`] with the CORPUS fallback given explicitly.
+pub async fn crs_for_tiplocs_batch_with(
+    pool: &PgPool,
+    tiplocs: &[String],
+    corpus_fallback: bool,
 ) -> Result<HashMap<String, String>> {
     if tiplocs.is_empty() {
         return Ok(HashMap::new());
     }
     let upper: Vec<String> = tiplocs.iter().map(|t| normalize_code(t)).collect();
-    let rows: Vec<(String, String)> = sqlx::query_as(
+    let sql = if corpus_fallback {
+        "SELECT DISTINCT ON (tiploc) tiploc, UPPER(crs) FROM ( \
+             SELECT tiploc, crs, 1 AS priority FROM tiploc_crs WHERE tiploc = ANY($1) \
+             UNION ALL \
+             SELECT tiploc, crs, 2 AS priority FROM stanox_crs WHERE tiploc = ANY($1) \
+             UNION ALL \
+             SELECT tiploc, crs, 3 AS priority FROM corpus_tiploc_crs WHERE tiploc = ANY($1) \
+         ) merged \
+         ORDER BY tiploc, priority"
+    } else {
         "SELECT DISTINCT ON (tiploc) tiploc, UPPER(crs) FROM ( \
              SELECT tiploc, crs, 1 AS priority FROM tiploc_crs WHERE tiploc = ANY($1) \
              UNION ALL \
              SELECT tiploc, crs, 2 AS priority FROM stanox_crs WHERE tiploc = ANY($1) \
          ) merged \
-         ORDER BY tiploc, priority",
-    )
-    .bind(&upper)
-    .fetch_all(pool)
-    .await?;
+         ORDER BY tiploc, priority"
+    };
+    let rows: Vec<(String, String)> = sqlx::query_as(sql).bind(&upper).fetch_all(pool).await?;
     Ok(rows.into_iter().collect())
 }
 

@@ -214,6 +214,9 @@ spec:
               value: {{ .Values.api.internalOauth.groups.nirStations | quote }}
             - name: INTERNAL_OAUTH_GROUP_CORPUS
               value: {{ .Values.api.internalOauth.groups.corpus | quote }}
+            # Off by default -- see api.corpusFallback in values.yaml.
+            - name: CORPUS_FALLBACK_ENABLED
+              value: {{ .Values.api.corpusFallback.enabled | toString | quote }}
             # Authentik/SSO end-user group that grants embedded-chatbot
             # access -- see api.chatbotAccessGroup's own comment in
             # values.yaml. NOT one of the INTERNAL_OAUTH_GROUP_* machine
