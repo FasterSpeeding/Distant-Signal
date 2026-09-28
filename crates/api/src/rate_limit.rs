@@ -29,7 +29,44 @@
 //!
 //! `/private/*` (internal OAuth ingest) is never limited. A limited request
 //! gets `429 Too Many Requests` with `Retry-After`, and is counted in
-//! `distant_signal_api_rate_limited_total{class}`.
+//! `distant_signal_api_rate_limited_total{class,caller}`.
+//!
+//! ## Trusted service callers (the MCP)
+//!
+//! The Distant-Signal-MCP calls these public routes in-cluster, directly
+//! (not through the frontend), so it has no `X-Real-IP` and would otherwise
+//! share one small per-peer bucket for all of its users. It is recognised by
+//! the same internal OAuth machinery `/private/*` uses: an Authentik
+//! client-credentials JWT, verified against the cached JWKS by the api's one
+//! shared [`ServiceTokenVerifier`](crate::auth::internal_oauth::ServiceTokenVerifier),
+//! whose `groups` claim contains `INTERNAL_OAUTH_GROUP_MCP`. Such a request
+//! is NOT exempt: it is charged to a separate, finite budget
+//! (`API_RATE_LIMIT_MCP_*`, 5x the public defaults), keyed on the caller
+//! identity (`svc:mcp`, one bucket for the whole service, never per IP), so
+//! a runaway loop or a leaked credential is still bounded.
+//!
+//! The rules ([`ServiceCallerAuth`], [`bearer_decision`]):
+//!
+//! - no `Authorization: Bearer` header: anonymous, per IP, exactly as above
+//!   (the frontend proxy never forwards an `Authorization` header, so the
+//!   browser path never pays for token verification);
+//! - a bearer that verifies AND carries the MCP group: the MCP budget;
+//! - a bearer that fails verification (malformed, expired, bad signature,
+//!   wrong issuer or audience): `401`, never a silent fall-back to the
+//!   anonymous bucket. It is rejected before any handler runs, so there is
+//!   nothing to bypass, and a misconfigured MCP fails loudly instead of
+//!   being quietly squeezed into the in-cluster peer's tiny bucket;
+//! - a bearer that verifies but lacks the MCP group (another service's
+//!   credential): `403`, same reasoning; logged with its `sub`;
+//! - login routes ignore the bearer entirely (the MCP has no business
+//!   logging in; they keep the anonymous per-IP limit);
+//! - `INTERNAL_OAUTH_GROUP_MCP` empty: the feature is inert and any bearer
+//!   is ignored (anonymous, per IP, as before this existed).
+//!
+//! The bearer is read only here. End-user auth on public routes is the
+//! `distant_signal_session` cookie (`crate::auth::AuthenticatedUser`), which
+//! never looks at `Authorization`, so the two cannot collide: an MCP request
+//! is still anonymous as far as every handler is concerned.
 //!
 //! The algorithm is GCRA (a token bucket kept as one timestamp per key):
 //! `per_minute` sustained, `burst` at once. State is per pod, in memory.
@@ -39,11 +76,16 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use std::future::Future;
+use std::pin::Pin;
+
 use anyhow::{Context, Result, ensure};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+
+use crate::auth::internal_oauth::{ServiceClaims, VerifyError};
 
 /// The header the frontend proxy sets to the real client address.
 pub const REAL_IP_HEADER: &str = "x-real-ip";
@@ -64,6 +106,50 @@ impl LimitClass {
             LimitClass::TripPlan => "trip_plan",
             LimitClass::TrainByUid => "train_by_uid",
             LimitClass::PublicWrite => "public_write",
+        }
+    }
+}
+
+/// Who a limited request is charged to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Caller {
+    /// Anonymous (or a signed-in end user): keyed per client IP.
+    Public,
+    /// The Distant-Signal-MCP, proven by an internal OAuth token: one
+    /// bucket for the whole service.
+    Mcp,
+}
+
+impl Caller {
+    pub fn label(self) -> &'static str {
+        match self {
+            Caller::Public => "public",
+            Caller::Mcp => "mcp",
+        }
+    }
+}
+
+/// A limiter bucket key: a client IP, or a service identity (`svc:mcp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientKey {
+    Ip(IpAddr),
+    Service(Caller),
+}
+
+impl ClientKey {
+    fn caller(self) -> Caller {
+        match self {
+            ClientKey::Ip(_) => Caller::Public,
+            ClientKey::Service(caller) => caller,
+        }
+    }
+}
+
+impl std::fmt::Display for ClientKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClientKey::Ip(ip) => write!(f, "{ip}"),
+            ClientKey::Service(caller) => write!(f, "svc:{}", caller.label()),
         }
     }
 }
@@ -133,6 +219,41 @@ pub struct RateLimitSettings {
     pub public_write_per_minute: u32,
     #[arg(long, env = "API_RATE_LIMIT_PUBLIC_WRITE_BURST", default_value_t = 60)]
     pub public_write_burst: u32,
+
+    /// The MCP's own budget (one bucket for the whole service, see the
+    /// module doc). Login has none: the bearer is ignored there.
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_MCP_TRIP_PLAN_PER_MINUTE",
+        default_value_t = 100
+    )]
+    pub mcp_trip_plan_per_minute: u32,
+    #[arg(long, env = "API_RATE_LIMIT_MCP_TRIP_PLAN_BURST", default_value_t = 30)]
+    pub mcp_trip_plan_burst: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_MCP_TRAIN_BY_UID_PER_MINUTE",
+        default_value_t = 600
+    )]
+    pub mcp_train_by_uid_per_minute: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_MCP_TRAIN_BY_UID_BURST",
+        default_value_t = 200
+    )]
+    pub mcp_train_by_uid_burst: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_MCP_PUBLIC_WRITE_PER_MINUTE",
+        default_value_t = 600
+    )]
+    pub mcp_public_write_per_minute: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_MCP_PUBLIC_WRITE_BURST",
+        default_value_t = 200
+    )]
+    pub mcp_public_write_burst: u32,
 }
 
 impl Default for RateLimitSettings {
@@ -150,6 +271,12 @@ impl Default for RateLimitSettings {
             train_by_uid_burst: 60,
             public_write_per_minute: 120,
             public_write_burst: 60,
+            mcp_trip_plan_per_minute: 100,
+            mcp_trip_plan_burst: 30,
+            mcp_train_by_uid_per_minute: 600,
+            mcp_train_by_uid_burst: 200,
+            mcp_public_write_per_minute: 600,
+            mcp_public_write_burst: 200,
         }
     }
 }
@@ -185,15 +312,59 @@ impl RateLimitSettings {
                 class.label()
             );
         }
+        for (class, (per_minute, burst)) in [
+            (
+                LimitClass::TripPlan,
+                (self.mcp_trip_plan_per_minute, self.mcp_trip_plan_burst),
+            ),
+            (
+                LimitClass::TrainByUid,
+                (
+                    self.mcp_train_by_uid_per_minute,
+                    self.mcp_train_by_uid_burst,
+                ),
+            ),
+            (
+                LimitClass::PublicWrite,
+                (
+                    self.mcp_public_write_per_minute,
+                    self.mcp_public_write_burst,
+                ),
+            ),
+        ] {
+            ensure!(
+                per_minute > 0 && burst > 0,
+                "the MCP {} rate limit needs a per-minute rate and a burst of at least 1 \
+                 (it is a finite budget, never an exemption)",
+                class.label()
+            );
+        }
         Ok(())
     }
 
-    fn quota(&self, class: LimitClass) -> Quota {
-        let (per_minute, burst) = match class {
-            LimitClass::Login => (self.login_per_minute, self.login_burst),
-            LimitClass::TripPlan => (self.trip_plan_per_minute, self.trip_plan_burst),
-            LimitClass::TrainByUid => (self.train_by_uid_per_minute, self.train_by_uid_burst),
-            LimitClass::PublicWrite => (self.public_write_per_minute, self.public_write_burst),
+    fn quota(&self, class: LimitClass, caller: Caller) -> Quota {
+        let (per_minute, burst) = match (caller, class) {
+            (_, LimitClass::Login) => (self.login_per_minute, self.login_burst),
+            (Caller::Public, LimitClass::TripPlan) => {
+                (self.trip_plan_per_minute, self.trip_plan_burst)
+            }
+            (Caller::Public, LimitClass::TrainByUid) => {
+                (self.train_by_uid_per_minute, self.train_by_uid_burst)
+            }
+            (Caller::Public, LimitClass::PublicWrite) => {
+                (self.public_write_per_minute, self.public_write_burst)
+            }
+            (Caller::Mcp, LimitClass::TripPlan) => {
+                (self.mcp_trip_plan_per_minute, self.mcp_trip_plan_burst)
+            }
+            (Caller::Mcp, LimitClass::TrainByUid) => (
+                self.mcp_train_by_uid_per_minute,
+                self.mcp_train_by_uid_burst,
+            ),
+            (Caller::Mcp, LimitClass::PublicWrite) => (
+                self.mcp_public_write_per_minute,
+                self.mcp_public_write_burst,
+            ),
         };
         Quota::new(per_minute, burst)
     }
@@ -224,9 +395,81 @@ const MAX_TRACKED_KEYS: usize = 100_000;
 /// Prune fully recovered keys every this many checks.
 const PRUNE_EVERY: u64 = 4096;
 
+/// Verifies an internal OAuth bearer token. Implemented by
+/// [`AppState`](crate::app::AppState) (delegating to its one shared
+/// `internal_oauth_verifier`, so this path and `/private/*` share a single
+/// JWKS cache, negative-`kid` cache and refetch cooldown) and by
+/// `ServiceTokenVerifier` itself (tests).
+pub trait ServiceTokenCheck: Send + Sync + 'static {
+    fn verify_service_token<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ServiceClaims, VerifyError>> + Send + 'a>>;
+}
+
+impl ServiceTokenCheck for crate::auth::internal_oauth::ServiceTokenVerifier {
+    fn verify_service_token<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ServiceClaims, VerifyError>> + Send + 'a>> {
+        Box::pin(self.verify(token))
+    }
+}
+
+impl ServiceTokenCheck for crate::app::AppState {
+    fn verify_service_token<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ServiceClaims, VerifyError>> + Send + 'a>> {
+        Box::pin(self.internal_oauth_verifier.verify(token))
+    }
+}
+
+/// How the limiter recognises the MCP: see the module doc.
+pub struct ServiceCallerAuth {
+    verifier: Arc<dyn ServiceTokenCheck>,
+    mcp_group: String,
+}
+
+impl ServiceCallerAuth {
+    /// `None` when `mcp_group` is blank: the feature is then inert.
+    pub fn new(verifier: Arc<dyn ServiceTokenCheck>, mcp_group: &str) -> Option<Self> {
+        let mcp_group = mcp_group.trim();
+        (!mcp_group.is_empty()).then(|| Self {
+            verifier,
+            mcp_group: mcp_group.to_string(),
+        })
+    }
+}
+
+/// What a verified-or-not bearer token earns on a limited route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BearerDecision {
+    /// Charge the MCP's own budget.
+    Mcp,
+    /// Refuse with this status; never fall back to the anonymous bucket.
+    Reject(StatusCode),
+}
+
+/// The pure half of the bearer check: `verified` is the verifier's result.
+/// Only a token that verifies AND lists `mcp_group` earns the MCP budget.
+pub fn bearer_decision(
+    verified: &Result<ServiceClaims, VerifyError>,
+    mcp_group: &str,
+) -> BearerDecision {
+    match verified {
+        Err(_) => BearerDecision::Reject(StatusCode::UNAUTHORIZED),
+        Ok(claims) if !mcp_group.is_empty() && claims.groups.iter().any(|g| g == mcp_group) => {
+            BearerDecision::Mcp
+        }
+        Ok(_) => BearerDecision::Reject(StatusCode::FORBIDDEN),
+    }
+}
+
 /// The limiter: one GCRA timestamp per (class, client key).
 pub struct RateLimiter {
     settings: RateLimitSettings,
+    service_callers: Option<ServiceCallerAuth>,
     state: Mutex<LimiterState>,
     warned_about_peer_fallback: std::sync::atomic::AtomicBool,
 }
@@ -234,7 +477,7 @@ pub struct RateLimiter {
 #[derive(Default)]
 struct LimiterState {
     /// Theoretical arrival time per key: the bucket is empty until then.
-    tat: HashMap<(LimitClass, IpAddr), Instant>,
+    tat: HashMap<(LimitClass, ClientKey), Instant>,
     checks: u64,
 }
 
@@ -246,9 +489,20 @@ pub enum KeySource {
 }
 
 impl RateLimiter {
+    /// A limiter with no trusted service callers: every bearer is ignored.
     pub fn new(settings: RateLimitSettings) -> Arc<Self> {
+        Self::with_service_callers(settings, None)
+    }
+
+    /// A limiter that recognises the MCP (see the module doc); `None` is
+    /// the same as [`RateLimiter::new`].
+    pub fn with_service_callers(
+        settings: RateLimitSettings,
+        service_callers: Option<ServiceCallerAuth>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             settings,
+            service_callers,
             state: Mutex::new(LimiterState::default()),
             warned_about_peer_fallback: std::sync::atomic::AtomicBool::new(false),
         })
@@ -256,8 +510,8 @@ impl RateLimiter {
 
     /// `Ok` if a request by `client` in `class` is allowed at `now` (and
     /// records it), else `Err(retry_after)`.
-    fn check_at(&self, class: LimitClass, client: IpAddr, now: Instant) -> Result<(), Duration> {
-        let quota = self.settings.quota(class);
+    fn check_at(&self, class: LimitClass, client: ClientKey, now: Instant) -> Result<(), Duration> {
+        let quota = self.settings.quota(class, client.caller());
         let mut state = self.state.lock().expect("rate limiter lock poisoned");
         state.checks += 1;
         if state.checks.is_multiple_of(PRUNE_EVERY) || state.tat.len() >= MAX_TRACKED_KEYS {
@@ -283,6 +537,65 @@ impl RateLimiter {
         }
         state.tat.insert(key, new_tat);
         Ok(())
+    }
+
+    /// Who a limited request is charged to, or the rejection for a bad
+    /// bearer. `Ok(None)`: anonymous, key it per IP. See the module doc.
+    async fn service_caller(
+        &self,
+        class: LimitClass,
+        headers: &HeaderMap,
+    ) -> Result<Option<Caller>, Box<Response>> {
+        let Some(auth) = &self.service_callers else {
+            return Ok(None);
+        };
+        if class == LimitClass::Login {
+            return Ok(None);
+        }
+        let Some(token) = crate::auth::bearer_token(headers) else {
+            return Ok(None);
+        };
+        let verified = auth.verifier.verify_service_token(&token).await;
+        match bearer_decision(&verified, &auth.mcp_group) {
+            BearerDecision::Mcp => Ok(Some(Caller::Mcp)),
+            BearerDecision::Reject(status) => {
+                let reason = if status == StatusCode::UNAUTHORIZED {
+                    "invalid_token"
+                } else {
+                    "wrong_group"
+                };
+                metrics::counter!(
+                    common::metrics::metric_name("api_rate_limit_service_auth_rejected_total"),
+                    "class" => class.label(),
+                    "reason" => reason
+                )
+                .increment(1);
+                Err(Box::new(match verified {
+                    Ok(claims) => {
+                        tracing::warn!(
+                            sub = %claims.sub,
+                            class = class.label(),
+                            "valid internal oauth token without the MCP group on a public \
+                             rate-limited route; rejected 403"
+                        );
+                        (
+                            StatusCode::FORBIDDEN,
+                            "this service credential is not allowed on public routes",
+                        )
+                            .into_response()
+                    }
+                    Err(_) => {
+                        let mut response =
+                            (StatusCode::UNAUTHORIZED, "invalid bearer token").into_response();
+                        response.headers_mut().insert(
+                            header::WWW_AUTHENTICATE,
+                            HeaderValue::from_static("Bearer error=\"invalid_token\""),
+                        );
+                        response
+                    }
+                }))
+            }
+        }
     }
 
     /// The key for a request: see the module doc.
@@ -349,25 +662,37 @@ pub async fn enforce(
     let Some(class) = classify(request.method(), request.uri().path()) else {
         return next.run(request).await;
     };
-    let peer = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| *addr);
-    let Some((client, source)) = limiter.client_key(request.headers(), peer) else {
-        // No header and no peer: only in tests that bypass the listener.
-        return next.run(request).await;
+    let client = match limiter.service_caller(class, request.headers()).await {
+        Err(rejection) => return *rejection,
+        Ok(Some(caller)) => ClientKey::Service(caller),
+        Ok(None) => {
+            let peer = request
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| *addr);
+            let Some((client, source)) = limiter.client_key(request.headers(), peer) else {
+                // No header and no peer: only in tests that bypass the listener.
+                return next.run(request).await;
+            };
+            if source == KeySource::Peer && limiter.settings.trust_x_real_ip {
+                limiter.note_peer_fallback(class);
+            }
+            ClientKey::Ip(client)
+        }
     };
-    if source == KeySource::Peer && limiter.settings.trust_x_real_ip {
-        limiter.note_peer_fallback(class);
-    }
     match limiter.check_at(class, client, Instant::now()) {
         Ok(()) => next.run(request).await,
         Err(retry_after) => {
+            let caller = client.caller();
             metrics::counter!(
                 common::metrics::metric_name("api_rate_limited_total"),
-                "class" => class.label()
+                "class" => class.label(),
+                "caller" => caller.label()
             )
             .increment(1);
+            if caller != Caller::Public {
+                tracing::debug!(%client, class = class.label(), "service caller rate limited");
+            }
             too_many_requests(retry_after)
         }
     }
@@ -404,11 +729,21 @@ mod tests {
             train_by_uid_burst: 2,
             public_write_per_minute: 60,
             public_write_burst: 2,
+            mcp_trip_plan_per_minute: 60,
+            mcp_trip_plan_burst: 5,
+            mcp_train_by_uid_per_minute: 60,
+            mcp_train_by_uid_burst: 5,
+            mcp_public_write_per_minute: 60,
+            mcp_public_write_burst: 5,
             ..RateLimitSettings::default()
         }
     }
 
     fn router(settings: RateLimitSettings) -> axum::Router {
+        router_with(RateLimiter::new(settings))
+    }
+
+    fn router_with(limiter: Arc<RateLimiter>) -> axum::Router {
         let public = axum::Router::new()
             .route("/auth/login", get(|| async { "login" }))
             .route("/auth/callback", get(|| async { "callback" }))
@@ -422,10 +757,7 @@ mod tests {
             .route("/Train/by-uid/{uid}/{date}", get(|| async { "train" }))
             .nest("/public", public)
             .nest("/private", private)
-            .layer(axum::middleware::from_fn_with_state(
-                RateLimiter::new(settings),
-                enforce,
-            ))
+            .layer(axum::middleware::from_fn_with_state(limiter, enforce))
     }
 
     async fn call(
@@ -645,7 +977,7 @@ mod tests {
             trip_plan_burst: 1,
             ..settings()
         });
-        let client: IpAddr = "203.0.113.5".parse().unwrap();
+        let client = ClientKey::Ip("203.0.113.5".parse().unwrap());
         let start = Instant::now();
         assert!(
             limiter
@@ -703,6 +1035,286 @@ mod tests {
             classify(&Method::GET, "/Line/Mode/national-rail/Status"),
             None
         );
+    }
+
+    #[test]
+    fn mcp_budget_defaults_are_five_times_public() {
+        let d = RateLimitSettings::default();
+        assert_eq!(
+            (d.mcp_trip_plan_per_minute, d.mcp_trip_plan_burst),
+            (100, 30)
+        );
+        assert_eq!(
+            (d.mcp_train_by_uid_per_minute, d.mcp_train_by_uid_burst),
+            (600, 200)
+        );
+        assert_eq!(
+            (d.mcp_public_write_per_minute, d.mcp_public_write_burst),
+            (600, 200)
+        );
+        assert_eq!(d.mcp_trip_plan_per_minute, 5 * d.trip_plan_per_minute);
+        assert_eq!(d.mcp_train_by_uid_per_minute, 5 * d.train_by_uid_per_minute);
+        assert_eq!(d.mcp_public_write_per_minute, 5 * d.public_write_per_minute);
+    }
+
+    #[test]
+    fn a_zero_mcp_rate_is_rejected() {
+        let settings = RateLimitSettings {
+            mcp_trip_plan_burst: 0,
+            ..RateLimitSettings::default()
+        };
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn service_keys_display_as_svc_colon_caller() {
+        assert_eq!(ClientKey::Service(Caller::Mcp).to_string(), "svc:mcp");
+        assert_eq!(ClientKey::Service(Caller::Mcp).caller(), Caller::Mcp);
+        let ip = ClientKey::Ip("203.0.113.5".parse().unwrap());
+        assert_eq!(ip.caller(), Caller::Public);
+    }
+
+    fn claims(groups: &[&str]) -> ServiceClaims {
+        ServiceClaims {
+            sub: "srv-ds-mcp".to_string(),
+            iss: "https://sso.example/".to_string(),
+            aud: crate::auth::internal_oauth::Audience::Single("internal".to_string()),
+            exp: i64::MAX,
+            nbf: None,
+            iat: None,
+            groups: groups.iter().map(|g| g.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn bearer_decision_grants_the_mcp_budget_only_to_a_valid_token_in_the_group() {
+        assert_eq!(
+            bearer_decision(&Ok(claims(&["other", "srv-ds-mcp"])), "srv-ds-mcp"),
+            BearerDecision::Mcp
+        );
+        // A valid token for another service (wrong group): refused, not
+        // anonymous and certainly not the MCP budget.
+        assert_eq!(
+            bearer_decision(&Ok(claims(&["svc-poller-tfl"])), "srv-ds-mcp"),
+            BearerDecision::Reject(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(
+            bearer_decision(&Ok(claims(&[])), "srv-ds-mcp"),
+            BearerDecision::Reject(StatusCode::FORBIDDEN)
+        );
+        // An empty configured group never matches (defence in depth; the
+        // limiter is inert then anyway).
+        assert_eq!(
+            bearer_decision(&Ok(claims(&[""])), ""),
+            BearerDecision::Reject(StatusCode::FORBIDDEN)
+        );
+        for err in [
+            VerifyError::Malformed,
+            VerifyError::UnknownKey,
+            VerifyError::Invalid,
+        ] {
+            assert_eq!(
+                bearer_decision(&Err(err), "srv-ds-mcp"),
+                BearerDecision::Reject(StatusCode::UNAUTHORIZED)
+            );
+        }
+    }
+
+    /// Never consulted: proves the inert and no-bearer paths don't verify.
+    struct PanickingVerifier;
+
+    impl ServiceTokenCheck for PanickingVerifier {
+        fn verify_service_token<'a>(
+            &'a self,
+            _token: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<ServiceClaims, VerifyError>> + Send + 'a>> {
+            panic!("the verifier must not be called on this path")
+        }
+    }
+
+    #[test]
+    fn an_empty_mcp_group_makes_the_feature_inert() {
+        assert!(ServiceCallerAuth::new(Arc::new(PanickingVerifier), "").is_none());
+        assert!(ServiceCallerAuth::new(Arc::new(PanickingVerifier), "  ").is_none());
+        assert!(ServiceCallerAuth::new(Arc::new(PanickingVerifier), "srv-ds-mcp").is_some());
+    }
+
+    /// No bearer: the anonymous path never touches the verifier.
+    #[tokio::test]
+    async fn without_a_bearer_the_verifier_is_never_called() {
+        let router = router_with(RateLimiter::with_service_callers(
+            settings(),
+            ServiceCallerAuth::new(Arc::new(PanickingVerifier), "srv-ds-mcp"),
+        ));
+        for _ in 0..2 {
+            let response = call(&router, "GET", "/Trips/plan", Some("203.0.113.5"), FRONTEND).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let response = call(&router, "GET", "/Trips/plan", Some("203.0.113.5"), FRONTEND).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    // --- Integration-style: a real ServiceTokenVerifier against a mock
+    // Authentik JWKS (the same test_support the /private suite uses). ---
+
+    use crate::auth::internal_oauth::test_support::{mock_authentik, sign_token, valid_claims};
+
+    /// The MCP pod calling in-cluster: no X-Real-IP, its own pod IP as peer.
+    const MCP_POD: &str = "10.42.7.3:51000";
+
+    async fn call_with_bearer(
+        router: &axum::Router,
+        method: &str,
+        uri: &str,
+        bearer: Option<&str>,
+        peer: &str,
+    ) -> Response {
+        let mut request = axum::http::Request::builder().method(method).uri(uri);
+        if let Some(token) = bearer {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let mut request = request.body(Body::empty()).unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+        router.clone().oneshot(request).await.unwrap()
+    }
+
+    fn token(issuer: &str, groups: &[&str]) -> String {
+        let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
+        sign_token(&valid_claims(issuer, |c| {
+            c["sub"] = serde_json::json!("srv-ds-mcp");
+            c["groups"] = serde_json::json!(groups);
+        }))
+    }
+
+    async fn mcp_router() -> (wiremock::MockServer, axum::Router) {
+        let (server, verifier) = mock_authentik().await;
+        let router = router_with(RateLimiter::with_service_callers(
+            settings(),
+            ServiceCallerAuth::new(Arc::new(verifier), "srv-ds-mcp"),
+        ));
+        (server, router)
+    }
+
+    /// A valid MCP token gets the MCP budget (burst 5 here, vs 2 public),
+    /// keyed on the identity: changing the peer doesn't reset it, and it
+    /// doesn't touch the anonymous bucket of the same peer.
+    #[tokio::test]
+    async fn a_valid_mcp_token_gets_its_own_finite_budget_keyed_on_identity() {
+        let (server, router) = mcp_router().await;
+        let mcp = token(&server.uri(), &["srv-ds-mcp"]);
+        for n in 0..5 {
+            let peer = if n % 2 == 0 {
+                MCP_POD
+            } else {
+                "10.42.7.4:51000"
+            };
+            let response = call_with_bearer(&router, "GET", "/Trips/plan", Some(&mcp), peer).await;
+            assert_eq!(response.status(), StatusCode::OK, "request {n}");
+        }
+        let limited =
+            call_with_bearer(&router, "GET", "/Trips/plan", Some(&mcp), "10.42.9.9:1").await;
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(limited.headers().contains_key(header::RETRY_AFTER));
+
+        // The same pod without a bearer is anonymous, with its own bucket.
+        let anonymous = call_with_bearer(&router, "GET", "/Trips/plan", None, MCP_POD).await;
+        assert_eq!(anonymous.status(), StatusCode::OK);
+
+        // Other classes have their own MCP buckets.
+        let train = call_with_bearer(
+            &router,
+            "GET",
+            "/Train/by-uid/C12345/2026-09-28",
+            Some(&mcp),
+            MCP_POD,
+        )
+        .await;
+        assert_eq!(train.status(), StatusCode::OK);
+    }
+
+    /// Another service's valid token (wrong group) is refused 403, and
+    /// never charged to, or granted, any budget.
+    #[tokio::test]
+    async fn a_valid_token_without_the_mcp_group_is_forbidden() {
+        let (server, router) = mcp_router().await;
+        let tfl = token(&server.uri(), &["svc-poller-tfl"]);
+        for _ in 0..4 {
+            let response =
+                call_with_bearer(&router, "GET", "/Trips/plan", Some(&tfl), MCP_POD).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    /// Expired, garbage and wrong-audience bearers are 401 with
+    /// `WWW-Authenticate`, never a silent fall-back to the anonymous bucket.
+    #[tokio::test]
+    async fn an_invalid_bearer_is_unauthorized_not_anonymous() {
+        let (server, router) = mcp_router().await;
+        let expired = sign_token(&valid_claims(&server.uri(), |c| {
+            c["groups"] = serde_json::json!(["srv-ds-mcp"]);
+            c["exp"] =
+                serde_json::json!((chrono::Utc::now() - chrono::Duration::hours(1)).timestamp());
+        }));
+        let wrong_audience = sign_token(&valid_claims(&server.uri(), |c| {
+            c["groups"] = serde_json::json!(["srv-ds-mcp"]);
+            c["aud"] = serde_json::json!("someone-else");
+        }));
+        for bad in [expired.as_str(), wrong_audience.as_str(), "not-a-jwt"] {
+            for _ in 0..3 {
+                let response =
+                    call_with_bearer(&router, "POST", "/public/lines", Some(bad), MCP_POD).await;
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{bad}");
+                assert_eq!(
+                    response.headers()[header::WWW_AUTHENTICATE],
+                    "Bearer error=\"invalid_token\""
+                );
+            }
+        }
+    }
+
+    /// Login ignores the bearer entirely: anonymous per-IP limit.
+    #[tokio::test]
+    async fn login_ignores_the_bearer() {
+        let (server, router) = mcp_router().await;
+        let mcp = token(&server.uri(), &["srv-ds-mcp"]);
+        for _ in 0..2 {
+            let response =
+                call_with_bearer(&router, "GET", "/public/auth/login", Some(&mcp), MCP_POD).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let limited =
+            call_with_bearer(&router, "GET", "/public/auth/login", Some("junk"), MCP_POD).await;
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// Unlimited routes (public reads, /private) never look at the bearer.
+    #[tokio::test]
+    async fn unlimited_routes_ignore_the_bearer() {
+        let (_server, router) = mcp_router().await;
+        for uri in ["/public/lines"] {
+            let response = call_with_bearer(&router, "GET", uri, Some("junk"), MCP_POD).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let response =
+            call_with_bearer(&router, "POST", "/private/ingest", Some("junk"), MCP_POD).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// With the feature off, even a valid MCP token is just anonymous.
+    #[tokio::test]
+    async fn when_inert_a_valid_mcp_token_is_anonymous() {
+        let (server, _verifier) = mock_authentik().await;
+        let router = router(settings());
+        let mcp = token(&server.uri(), &["srv-ds-mcp"]);
+        for _ in 0..2 {
+            let response =
+                call_with_bearer(&router, "GET", "/Trips/plan", Some(&mcp), MCP_POD).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let limited = call_with_bearer(&router, "GET", "/Trips/plan", Some(&mcp), MCP_POD).await;
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[test]

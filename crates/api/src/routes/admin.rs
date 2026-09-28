@@ -216,6 +216,7 @@ mod session_revocation_db_tests {
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
             internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
+            internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             admin_group: admin_group.to_string(),
             sso_issuer_url: issuer.to_string(),

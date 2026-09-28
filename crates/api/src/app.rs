@@ -475,6 +475,32 @@ fn ensure_sso_and_internal_oauth_clients_differ(
     Ok(())
 }
 
+/// Startup guard: the MCP group (`internal_oauth_group_mcp`, which only buys
+/// a separate public rate-limit budget, see `crate::rate_limit`) must not be
+/// the same name as any group that grants a `/private/*` route. If it were,
+/// the one Authentik group handed to the MCP's service account would also
+/// open an ingest route, and conversely an ingest poller's token would earn
+/// the MCP budget. Empty (feature off) always passes.
+pub(crate) fn ensure_mcp_group_grants_no_private_route(
+    mcp_group: &str,
+    routes: &[(&'static str, axum::http::Method, Vec<String>)],
+) -> Result<()> {
+    let mcp_group = mcp_group.trim();
+    if mcp_group.is_empty() {
+        return Ok(());
+    }
+    if let Some((path, method, _)) = routes
+        .iter()
+        .find(|(_, _, groups)| groups.iter().any(|group| group.trim() == mcp_group))
+    {
+        anyhow::bail!(
+            "internal_oauth_group_mcp (INTERNAL_OAUTH_GROUP_MCP) is \"{mcp_group}\", which also \
+             grants {method} /private{path}; give the MCP's service account its own group"
+        );
+    }
+    Ok(())
+}
+
 /// Hand-rolled rather than `#[derive(Debug)]`. Two independent reasons:
 ///
 /// 1. `OidcClient` holds a `reqwest::Client` and a
@@ -719,13 +745,17 @@ impl AppState {
             );
         }
 
+        let internal_oauth_routes = build_internal_oauth_routes(&config);
+        ensure_mcp_group_grants_no_private_route(
+            &config.internal_oauth_group_mcp,
+            &internal_oauth_routes,
+        )?;
+
         let internal_oauth_verifier = crate::auth::internal_oauth::ServiceTokenVerifier::new(
             config.internal_oauth_issuer_url.clone(),
             config.internal_oauth_client_id.clone(),
         )
         .context("failed to construct internal-oauth verifier")?;
-
-        let internal_oauth_routes = build_internal_oauth_routes(&config);
 
         let schedule_crs_line_index =
             crate::data::schedule_matching::crs_to_line_ids(&config.lines);
@@ -766,6 +796,65 @@ mod internal_oauth_startup_guard_tests {
             .expect_err("identical client ids must be rejected at startup");
         assert!(err.to_string().contains("sso_client_id"));
         assert!(err.to_string().contains("internal_oauth_client_id"));
+    }
+
+    fn routes() -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
+        vec![
+            (
+                "/tfl-line-status",
+                axum::http::Method::POST,
+                vec!["svc-poller-tfl".to_string()],
+            ),
+            (
+                "/stanox-crs",
+                axum::http::Method::GET,
+                vec!["svc-trust-consumer".to_string(), "svc-other".to_string()],
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_distinct_or_empty_mcp_group_passes() {
+        assert!(super::ensure_mcp_group_grants_no_private_route("srv-ds-mcp", &routes()).is_ok());
+        assert!(super::ensure_mcp_group_grants_no_private_route("", &routes()).is_ok());
+        assert!(super::ensure_mcp_group_grants_no_private_route("  ", &routes()).is_ok());
+    }
+
+    #[test]
+    fn an_mcp_group_that_also_grants_a_private_route_fails_loudly() {
+        let err = super::ensure_mcp_group_grants_no_private_route("svc-other", &routes())
+            .expect_err("a shared group must be rejected at startup");
+        assert!(err.to_string().contains("/private/stanox-crs"), "{err}");
+    }
+
+    /// The declared default MCP group is `srv-ds-mcp` and differs from every
+    /// other declared `INTERNAL_OAUTH_GROUP_*` default, so the default
+    /// configuration passes the startup guard.
+    #[test]
+    fn the_default_mcp_group_differs_from_every_private_group_default() {
+        use clap::CommandFactory;
+        let command = super::ServiceArguments::command();
+        let defaults: Vec<(String, String)> = command
+            .get_arguments()
+            .filter_map(|arg| {
+                let env = arg.get_env()?.to_str()?.to_string();
+                let default = arg.get_default_values().first()?.to_str()?.to_string();
+                env.starts_with("INTERNAL_OAUTH_GROUP_")
+                    .then_some((env, default))
+            })
+            .collect();
+        let mcp = defaults
+            .iter()
+            .find(|(env, _)| env == "INTERNAL_OAUTH_GROUP_MCP")
+            .map(|(_, default)| default.clone())
+            .expect("INTERNAL_OAUTH_GROUP_MCP is declared");
+        assert_eq!(mcp, "srv-ds-mcp");
+        assert!(defaults.len() >= 14, "{defaults:?}");
+        for (env, default) in &defaults {
+            if env != "INTERNAL_OAUTH_GROUP_MCP" {
+                assert_ne!(default, &mcp, "{env}");
+            }
+        }
     }
 }
 

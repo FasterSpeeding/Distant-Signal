@@ -110,6 +110,17 @@ pub struct ServiceArguments {
     /// when CORPUS ingest is enabled.
     #[arg(long, env, default_value = "svc-corpus-ingest")]
     pub internal_oauth_group_corpus: String,
+    /// Authentik group of the Distant-Signal-MCP's service account (a
+    /// separate service in its own namespace that calls the PUBLIC routes
+    /// in-cluster). Unlike the groups above it gates no `/private/*` route:
+    /// a verified token carrying it only moves that caller's rate-limited
+    /// public requests onto their own finite budget (`API_RATE_LIMIT_MCP_*`,
+    /// keyed `svc:mcp`) instead of the per-IP one. See `crate::rate_limit`'s
+    /// module doc. Empty turns the feature off: every bearer on a public
+    /// route is then ignored, as before this existed. Must not equal any
+    /// `/private/*` group (checked at startup).
+    #[arg(long, env, default_value = "srv-ds-mcp")]
+    pub internal_oauth_group_mcp: String,
     /// Authentik/SSO group (via the `groups` OIDC claim, already decoded
     /// into `AuthenticatedUser.groups` on every login -- see
     /// `crates/api/src/auth/oidc.rs` and `data::users::upsert_user`) that

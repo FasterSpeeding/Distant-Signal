@@ -245,7 +245,23 @@ async fn server_main() -> anyhow::Result<()> {
     let edge_settings = api::edge::EdgeSettings::from_env()?;
     let rate_limit_settings = api::rate_limit::RateLimitSettings::from_env()?;
     tracing::info!(?rate_limit_settings, "api rate limits");
-    let rate_limiter = api::rate_limit::RateLimiter::new(rate_limit_settings);
+    // The MCP is recognised by an internal OAuth bearer verified with the
+    // same `AppState::internal_oauth_verifier` (and so the same JWKS cache)
+    // as /private/*; an empty INTERNAL_OAUTH_GROUP_MCP leaves this inert.
+    let service_callers = api::rate_limit::ServiceCallerAuth::new(
+        app.clone() as std::sync::Arc<dyn api::rate_limit::ServiceTokenCheck>,
+        &app.config.internal_oauth_group_mcp,
+    );
+    if service_callers.is_some() {
+        tracing::info!(
+            mcp_group = %app.config.internal_oauth_group_mcp,
+            "MCP service caller recognised on public rate-limited routes (own budget, key svc:mcp)"
+        );
+    } else {
+        tracing::info!("INTERNAL_OAUTH_GROUP_MCP is empty: no MCP service-caller budget");
+    }
+    let rate_limiter =
+        api::rate_limit::RateLimiter::with_service_callers(rate_limit_settings, service_callers);
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
