@@ -131,6 +131,8 @@ mod tests {
             // ("platform not known") rather than a fabricated value.
             platform: None,
             planned_platform: None,
+            rsid: None,
+            calling_points: Vec::new(),
         }
     }
 

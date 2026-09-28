@@ -207,6 +207,8 @@ mod tests {
             skipped_stations: skipped_stations.into_iter().map(str::to_string).collect(),
             platform: None,
             planned_platform: None,
+            rsid: None,
+            calling_points: Vec::new(),
         }
     }
 

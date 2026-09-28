@@ -181,6 +181,24 @@ pub(crate) fn station_departure_json(
         "platform": d.platform,
         "plannedPlatform": d.planned_platform,
         "platformChanged": platform_changed,
+        "rsid": d.rsid,
+        "callingPoints": d.calling_points.iter().map(board_calling_point_json).collect::<Vec<_>>(),
+    })
+}
+
+/// One `callingPoints` entry of [`station_departure_json`]: the compact
+/// stored `common::BoardCallingPoint` re-expanded to explicit camelCase
+/// keys, every absent value a present `null` (same "never omitted" rule as
+/// the row itself). `st`/`et`/`at` are LDBWS's own strings, verbatim:
+/// `"HH:MM"` London local time, or a status word for `et`.
+fn board_calling_point_json(cp: &common::BoardCallingPoint) -> Value {
+    json!({
+        "crs": cp.crs,
+        "locationName": cp.location_name,
+        "st": cp.st,
+        "et": cp.et,
+        "at": cp.at,
+        "isCancelled": cp.is_cancelled,
     })
 }
 
@@ -851,6 +869,25 @@ mod tests {
             skipped_stations: vec!["ZQT".to_string()],
             platform: Some("6".to_string()),
             planned_platform: Some("6".to_string()),
+            rsid: Some("SW123400".to_string()),
+            calling_points: vec![
+                common::BoardCallingPoint {
+                    crs: "WIM".to_string(),
+                    location_name: Some("Wimbledon".to_string()),
+                    st: Some("14:48".to_string()),
+                    et: Some("14:55".to_string()),
+                    at: None,
+                    is_cancelled: false,
+                },
+                common::BoardCallingPoint {
+                    crs: "ZQT".to_string(),
+                    location_name: None,
+                    st: Some("14:52".to_string()),
+                    et: None,
+                    at: None,
+                    is_cancelled: true,
+                },
+            ],
         };
         let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(
@@ -870,6 +907,11 @@ mod tests {
                 "platform": "6",
                 "plannedPlatform": "6",
                 "platformChanged": false,
+                "rsid": "SW123400",
+                "callingPoints": [
+                    {"crs": "WIM", "locationName": "Wimbledon", "st": "14:48", "et": "14:55", "at": null, "isCancelled": false},
+                    {"crs": "ZQT", "locationName": null, "st": "14:52", "et": null, "at": null, "isCancelled": true},
+                ],
             })
         );
         // No stray snake_case field survives alongside the camelCase one.
@@ -903,6 +945,8 @@ mod tests {
             skipped_stations: vec![],
             platform: None,
             planned_platform: None,
+            rsid: None,
+            calling_points: Vec::new(),
         };
         let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(json["cancelReason"], "fleet issue");
@@ -913,6 +957,9 @@ mod tests {
         assert!(json.get("delayReason").is_some(), "key must be present");
         assert!(json["delayReason"].is_null());
         assert_eq!(json["skippedStations"], serde_json::json!([]));
+        assert!(json.get("rsid").is_some(), "key must be present");
+        assert!(json["rsid"].is_null());
+        assert_eq!(json["callingPoints"], serde_json::json!([]));
         // No platform known at all: both values are a present `null`, and
         // "changed" is `false` -- there is nothing to compare, so nothing
         // is asserted to have changed, matching `JourneyStop.platformChanged`'s
@@ -944,6 +991,8 @@ mod tests {
             skipped_stations: vec![],
             platform: Some("9".to_string()),
             planned_platform: Some("6".to_string()),
+            rsid: None,
+            calling_points: Vec::new(),
         };
         let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(json["platform"], "9");
@@ -971,6 +1020,8 @@ mod tests {
             skipped_stations: vec![],
             platform: Some("6".to_string()),
             planned_platform: None,
+            rsid: None,
+            calling_points: Vec::new(),
         };
         let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(json["platform"], "6");
@@ -1019,6 +1070,8 @@ mod tests {
             skipped_stations: vec![],
             platform: None,
             planned_platform: None,
+            rsid: None,
+            calling_points: Vec::new(),
         };
         // Lower-case `destination_crs` on the departure, upper-case key in
         // the lookup map -- `station_names_for_crs_batch` always upper-cases
@@ -1046,6 +1099,8 @@ mod tests {
             skipped_stations: vec![],
             platform: None,
             planned_platform: None,
+            rsid: None,
+            calling_points: Vec::new(),
         };
         let json = station_departure_json(&departure, &HashMap::new());
         assert!(json["destinationName"].is_null());

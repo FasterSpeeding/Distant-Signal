@@ -2885,6 +2885,8 @@ mod tests {
             skipped_stations: Vec::new(),
             platform: platform.map(str::to_string),
             planned_platform: planned.map(str::to_string),
+            rsid: None,
+            calling_points: Vec::new(),
         }
     }
 
