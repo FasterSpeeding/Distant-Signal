@@ -4,8 +4,8 @@
 //! crate root). They were hoisted into a real library target so that the
 //! OTHER binaries in this crate can reuse exactly the same, unit-tested code
 //! path the server itself does, rather than each carrying its own
-//! independently-drifting copy of the same SQL. Two of them exist today,
-//! both operational one-offs:
+//! independently-drifting copy of the same SQL. Three of them exist today,
+//! all operational one-offs:
 //!
 //! - `src/bin/backfill_trains.rs` -- required before the
 //!   shared-train-identity contract migration
@@ -15,6 +15,10 @@
 //!   for rows ingested before that column existed, without which the
 //!   incident archive's Line filter cannot find them (see
 //!   `docs/incident-affected-lines-backfill.md`).
+//! - `src/bin/compare_full_coverage.rs` -- read-only report comparing
+//!   `full-coverage-consumer`'s TRUST-vs-schedule output with the
+//!   LDBWS-sample-derived output (and, with `--windows`, the windowed
+//!   full-coverage stats) for one or all lines.
 //!
 //! Nothing else moved: every module below is byte-for-byte the module it
 //! was, `main.rs` still owns the server's own wiring (router, CORS,

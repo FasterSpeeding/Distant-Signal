@@ -1,5 +1,13 @@
 # Individual Train Tracking — Design Sketch
 
+> **Status (2026-09-28):** implemented. `crates/trust-consumer` ships, but
+> it no longer holds its own RDM Kafka connection by default: since the
+> movement-relay cutover ("Deploy B"), `crates/movement-relay` is the single
+> Kafka client and fans events out into the `movement-events` Redis Stream,
+> which `trust-consumer` reads (`--movement-feed-backend` defaults to
+> `redis-stream`; `kafka` remains as a legacy option). See
+> `2026-09-04-movement-relay-design.md`.
+
 **Status: sketch/proposal only, not an approved design.** Written to the
 same rigor as the existing specs in this directory (e.g.
 `docs/superpowers/specs/2026-08-20-incident-nlp-extraction-design.md` and

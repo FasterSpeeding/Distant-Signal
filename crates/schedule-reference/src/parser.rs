@@ -2,9 +2,11 @@
 //! policy. No I/O here -- `main.rs`'s `read_prefixed_lines` (Task 4) is the
 //! only thing that touches the filesystem; everything in this module takes
 //! and returns plain in-memory data, matching this repo's "keep parsing
-//! logic pure and testable separately from I/O" convention (see
-//! `crates/schedule-ingest/src/manifest.rs::parse`'s own shape of taking
-//! `&str` rather than a path).
+//! logic pure and testable separately from I/O" convention (the same
+//! convention `crates/schedule-ingest/src/delivery.rs`'s pure helpers, e.g.
+//! `is_zip_filename`/`classify_delivery`, follow; the `manifest.rs::parse`
+//! this comment originally pointed at was removed when schedule-ingest was
+//! rewritten around the single-zip push delivery).
 //!
 //! See
 //! docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md

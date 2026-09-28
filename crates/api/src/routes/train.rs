@@ -1,6 +1,7 @@
 //! `/Train/...`: individual train tracking. Pin *creation* requires an
 //! authenticated session (`AuthenticatedUser`, from
-//! docs/superpowers/plans/2026-08-28-user-accounts-sso.md's Task 6) --
+//! docs/superpowers/plans/2026-08-28-user-accounts-sso.md's Task 6; plan
+//! since pruned, see history, commit `ec42cf95`) --
 //! every tracked train has a real owner from birth, per that plan's
 //! coordination fix to this one. State *reads*: `get_by_tracking_id` stays
 //! ownership-gated (see the 2026-08-31 private-custom-lines-and-tracked-trains

@@ -1,7 +1,7 @@
 # Distant Signal: Design Document
 
 A personal UK rail companion: line-status aggregation, individual train
-tracking, accounts, and (soon) ticket/Delay-Repay support.
+tracking, accounts, and ticket/Delay-Repay support.
 
 This document captures the design, the decisions behind it, and the open
 questions, in enough detail that an implementer (human or LLM) can extend
@@ -39,14 +39,17 @@ This project fills that gap.
 - Classifying each incident's scope (exclusive segment, shared trunk,
   operator-wide, etc.) and producing per-line statuses accordingly.
 - Emitting TfL-shaped JSON.
-- Train-level live tracking, implemented via TRUST movement events consumed
-  from Kafka (`crates/trust-consumer`), not deferred TD/TRUST territory.
+- Train-level live tracking, implemented via TRUST movement events that
+  `crates/movement-relay` relays from RDM's Kafka feed into a Redis Stream
+  for `crates/trust-consumer` to read, not deferred TD/TRUST territory.
 - Authentication — OIDC SSO is implemented (`crates/api/src/auth/oidc.rs`).
 
 **Out of scope for v1.**
 - Predicting future disruption (we report current state).
 - Engineering-works calendars beyond what Knowledgebase already exposes.
-- Rate limiting, multi-tenant isolation (deployment-time concerns).
+- Multi-tenant isolation (a deployment-time concern). Per-client-IP rate
+  limiting of the expensive public routes did land in the api
+  (`crates/api/src/rate_limit.rs`).
 
 ---
 
@@ -56,60 +59,90 @@ This project fills that gap.
 |---|---|---|
 | **Darwin Knowledgebase Incidents** | Human-curated disruption messages with operator and station tags | Primary signal for `reason` text and severity. Highest data quality. |
 | **OpenLDBWS** (or the new REST equivalent) | Live departure boards per station, including delay minutes, cancellations, and reason text | Sampling-based inference when no incident covers a line. Secondary signal. |
-| **CIF SCHEDULE feed** (optional, post-v1) | Static + short-term timetable | Resolving service groups for line attribution. Not required for v1. |
-| **TRUST movement events** | Per-train movement and cancellation events, consumed live from Kafka | Implemented and load-bearing: the primary source for individual train tracking (`crates/trust-consumer` + `enricher`). |
+| **CIF SCHEDULE feed** | Static + short-term timetable, pushed to us over SFTP | Implemented (`crates/schedule-ingest` + `crates/schedule-reference`): schedule matching for tracked trains, station timetables, the full-coverage population, and trip planning. Line attribution still comes from the hand-curated catalogue, not CIF service groups (see §9). |
+| **TRUST movement events** | Per-train movement and cancellation events, published by RDM on Kafka | Implemented and load-bearing: `crates/movement-relay` is the only Kafka client and relays every event into the `movement-events` Redis Stream, read by `crates/trust-consumer` (individual train tracking), `crates/full-coverage-consumer` (whole-line delay stats) and `crates/trust-backlog-consumer` (a short backlog for late-tracked trains). |
+| **RDM Stations and TOC reference feeds** | Station and operator reference data | Station/operator catalogues (`poller-stations`, `poller-tocs`). |
+| **TfL Unified API** | TfL's own line status | Shown as-is for TfL lines (`poller-tfl`, `dataQuality: tfl`). |
+| **Island of Ireland feeds** | Iarnród Éireann GTFS and realtime XML; OpenDataNI's NIR station lists | Irish station/line catalogue and departure samples (`poller-irish-rail-gtfs`, `poller-irish-rail-live`, `poller-nir-stations`). |
 
 The wider Network Rail/Darwin ecosystem (TD signal positions, RTPPM
 performance, VSTP short-term schedule changes) is not used. They're
 available if needed but aren't on the path to v1.
 
-Both required sources are accessible via the **Rail Data Marketplace**
-(raildata.org.uk) — single sign-up, free tier sufficient for development
-and small production loads.
+Knowledgebase and LDBWS, the two original sources, are accessible via the
+**Rail Data Marketplace** (raildata.org.uk) — single sign-up, free tier
+sufficient for development and small production loads — as are the
+reference feeds and the TRUST Train Movements feed.
 
 ---
 
 ## 4. Architecture
 
 The system is a Rust workspace of small services around a shared Postgres
-database, plus a Kafka-based streaming pipeline for train-level tracking.
+database, plus a streaming pipeline (Kafka in, Redis Streams inside the
+cluster) for train-level tracking. Only `api`, `aggregator`, `enricher` and
+`notifier` talk to Postgres directly; every other service writes through
+the api's internal-OAuth-protected `/private/*` ingest endpoints.
 
-- A set of `poller-*` crates (`poller-incidents`, `poller-ldbws`,
-  `poller-stations`, `poller-tfl`, `poller-tocs`) each pull one upstream
-  source on a schedule and write into Postgres.
-- The `aggregator` crate periodically loads incidents, samples, and line
-  definitions, runs the matcher, applies scope/threshold rules, and writes
-  `line_status`. It signals the `enricher` via a Redis queue when there's
-  new work for it to pick up.
-- `trust-consumer` is a long-running Kafka consumer for Network Rail's
-  TRUST movement-event feed. It's the first persistent stream-consumer
-  service in the stack (alongside `enricher`), and is what makes
-  individual train tracking possible.
-- `enricher` derives higher-level state (train positions, per-line status
-  detail) from what the pollers and `trust-consumer` produce, triggered via
-  the Redis queue the aggregator writes to.
-- `api` is a Rust/axum HTTP service — the read (and auth) layer, serving
-  both the TfL-shaped line-status endpoints and the newer accounts/
-  train-tracking endpoints, backed by Postgres.
-- `frontend/` is a Next.js web client against the `api` service.
+- The `poller-*` crates (`poller-incidents`, `poller-ldbws`,
+  `poller-stations`, `poller-tocs`, `poller-tfl`, and the island-of-Ireland
+  `poller-irish-rail-gtfs`, `poller-irish-rail-live`, `poller-nir-stations`)
+  each pull one upstream source on a schedule and POST it to the api.
+- `api` is a Rust/axum HTTP service — the ingest, read and auth layer. It
+  serves the TfL-shaped line-status endpoints and the accounts, train
+  tracking, journeys, groups and trip-planning endpoints, backed by
+  Postgres. When an ingested incident's text changes it adds an entry to
+  the `incident-text-changed` Redis Stream.
+- The `aggregator` crate periodically loads incidents and samples from
+  Postgres and the line catalogue from `lines/`, runs the matcher, applies
+  scope/threshold rules, and writes `line_status`/`line_status_history`.
+- `enricher` reads `incident-text-changed`, sends the incident text to an
+  OpenAI-compatible LLM, and stores the extracted resolution status,
+  category and per-period schedule facts, which the aggregator then applies
+  to severity (`apply_extraction`).
+- `movement-relay` is the only Kafka client: it reads RDM's TRUST Train
+  Movements feed and relays every event into the `movement-events` Redis
+  Stream. Three consumer groups read that stream: `trust-consumer`
+  (movements for user-tracked trains), `full-coverage-consumer` (every
+  scheduled train on full-coverage-enabled lines, for delay stats) and
+  `trust-backlog-consumer` (a short backlog so a train tracked late can
+  catch up).
+- `schedule-ingest` watches the directory the CIF SCHEDULE feed is pushed
+  into over SFTP and forwards each new delivery to the api;
+  `schedule-reference`, in the same Pod, reads the extracted delivery and
+  publishes derived tables to the api (STANOX/TIPLOC → CRS mappings, fixed
+  links, per-line schedule populations, destination departures and calling
+  points).
+- `notifier` polls `line_status_history` and train movement events and
+  sends Web Push notifications for users' pinned lines and tracked trains.
+- `frontend/` is a Next.js web client. Browsers only ever talk to it; its
+  `/api/*` route proxies to the `api` service. In production, public
+  traffic arrives through a Cloudflare tunnel (Cloudflare tunnel →
+  cloudflared → frontend → api); there is no ingress controller.
 - The whole stack is deployable via the Helm chart at
   `charts/distant-signal/`.
 
 ```
- poller-incidents  poller-ldbws  poller-stations  poller-tfl  poller-tocs
-        │               │              │              │           │
-        └───────────────┴──────────────┴──────────────┴───────────┘
-                                    │
-                                    ▼
-                              Postgres  ◀──────────────┐
-                                    │                  │
-                                    ▼                  │
-                              aggregator ──(Redis queue)──▶ enricher
-                                                               ▲
-  TRUST/Kafka feed ──▶ trust-consumer ─────────────────────────┘
-                                    │
-                                    ▼
-                            api (axum) ──▶ frontend (Next.js)
+  pollers (8)          schedule-ingest,        RDM Kafka (TRUST)
+      │                schedule-reference             │
+      │                      │                        ▼
+      │                      │                 movement-relay
+      │                      │                        │
+      │                      │                        ▼
+      │                      │          Redis Stream `movement-events`
+      │                      │                        │
+      │                      │                        ▼
+      │                      │        trust-consumer, full-coverage-consumer,
+      │                      │        trust-backlog-consumer
+      │                      │                        │
+      └──────────────────────┴───── POST /private/* ──┘
+                                      │
+                                      ▼
+   browser ──▶ frontend ──▶ api (axum) ──▶ Postgres ◀──▶ aggregator, notifier,
+              (Next.js)        │                           enricher
+                               │                              ▲
+                               └── Redis Stream ──────────────┘
+                                   `incident-text-changed`
 ```
 
 **Why separate pollers from the aggregator.** Pollers are I/O-bound and
@@ -120,16 +153,20 @@ the aggregator trivial (it's a function from inputs to outputs).
 **Why Postgres.** No special needs — boring relational storage with JSON
 columns for the variable bits (incident metadata, sample departures).
 
-**Why Redis.** Used as a lightweight trigger queue between the aggregator
-and `enricher`, not as a database — pub/sub-style signalling for
-push-driven enrichment rather than the enricher polling Postgres.
+**Why Redis.** Used for streams, not as a database: the
+`incident-text-changed` stream gives push-driven enrichment (the api
+signals `enricher` rather than the enricher polling Postgres; an hourly
+sweep is only the backstop for a missed event), and the
+`movement-events` stream lets one Kafka connection feed three independent
+TRUST consumer groups.
 
-**Why Kafka for TRUST.** Unlike Knowledgebase incidents and LDBWS
-departure boards, TRUST movement events are a genuine high-volume stream
-that benefits from an always-on consumer rather than periodic polling.
-`trust-consumer` is a long-running service by design — the operational
-cost of a 24/7 stream consumer was worth it once individual train
-tracking became a real feature, not just a hypothetical.
+**Why Kafka for TRUST.** Kafka is how RDM publishes it. Unlike
+Knowledgebase incidents and LDBWS departure boards, TRUST movement events
+are a genuine high-volume stream that benefits from an always-on consumer
+rather than periodic polling. `movement-relay` and the three consumers are
+long-running services by design — the operational cost of a 24/7 stream
+consumer was worth it once individual train tracking became a real
+feature, not just a hypothetical.
 
 ---
 
@@ -142,12 +179,16 @@ line, under `lines/`. Each line has:
 
 - A stable `id` (used in URLs — never change).
 - A `name` (display text — change freely).
+- A `mode` and `category` (grouping for display).
 - An ordered list of `stations` from one end to the other.
 - A list of `operators` (ATOC codes) that run services on it.
 - Optional `match_keywords` and `excluded_keywords` for incident matching.
 - Optional `severity_overrides` for per-line threshold tuning.
+- Optional `sample_stations` (the stations LDBWS samples for this line).
 - Optional `destination_crs_filter` / `headcode_prefixes` for LDBWS
   service-pattern filtering.
+- Optional `full_coverage_enabled`, opting the line into TRUST-vs-schedule
+  full-coverage stats (see `lines/SCHEMA.md`).
 
 ### 5.2 Segments — the central modelling decision
 
@@ -197,12 +238,17 @@ When the matcher considers an incident against a line, it produces one of:
 | `KEYWORD_ONLY` | Line named in incident text, no station hits | Capped at Severe Delays (severity 6). |
 | `OPERATOR_ONLY` | Only operator overlap | Capped at Minor Delays (severity 9). |
 
-The matcher applies one further rule: **if any precise match exists for an
-incident, drop all `OPERATOR_ONLY` matches**. This is what stops a
-single-station incident on the Alton branch from also flagging South West
-Main and Portsmouth Direct just because they share the SW operator code.
-This rule was added in response to a test failure during development; do
-not remove it.
+The caps are measured with `common::severity_rank`, not the raw severity
+number (see 5.4).
+
+The matcher applies one further rule: **drop an `OPERATOR_ONLY` match
+when another line sharing one of its operator codes got a more precise
+match for the same incident**. This is what stops a single-station
+incident on the Alton branch from also flagging South West Main and
+Portsmouth Direct just because they share the SW operator code. The rule
+is scoped per operator: a precise hit for one operator must not remove a
+different operator's operator-only matches. It was added in response to a
+test failure during development; do not remove it.
 
 ### 5.4 Severity scale
 
@@ -221,12 +267,20 @@ We use TfL's `statusSeverity` scale verbatim, with two extensions:
 # NR-specific extensions, outside TfL's range to avoid clashes
 20  Recovering   (post-incident catch-up)
 21  Diverted     (services running but on alternative route)
+
+# TfL codes 16-20, renumbered because 20/21 were already taken
+22  Service Closed (TfL 20)   25  No Issues   (TfL 18)
+23  Not Running    (TfL 16)   26  Information (TfL 19)
+24  Issues Reported (TfL 17)
 ```
 
-**Lower numbers are more disruptive.** This trips people up — `min` is
-the worst, `max` is the mildest. The `_demote_for_scope` function and the
-`worst_severity` property both depend on this convention; if you change it
-you must change both.
+**The numbers are not ordered by severity.** TfL's codes are not
+monotonic (Good Service = 10 sits between Minor Delays = 9 and
+Part Closed = 11; Diverted = 21 is severe), so never compare two
+severities by their number. `common::severity_rank` maps each one to a
+rank (higher is worse) that mirrors `frontend/lib/severity.ts`;
+`demote_for_scope`, `apply_extraction` and `LineStatusReport::worst_severity`
+all go through it.
 
 ### 5.5 Data quality
 
@@ -235,7 +289,9 @@ Every emitted status carries a `dataQuality` field:
 - `knowledgebase` — derived from a curated NRE incident message
 - `planned` — derived from a Knowledgebase planned-work entry
 - `ldbws-inferred` — derived from sampling departure boards
-- `trust-inferred` — reserved for post-v1 TRUST-feed inference
+- `trust-inferred` — derived from full-coverage TRUST-vs-schedule stats,
+  for lines with full coverage enabled
+- `tfl` — TfL's own published line status
 
 Clients should be able to filter or weight by quality. Surfacing this is
 a deliberate departure from TfL's model, which doesn't expose it.
@@ -254,9 +310,11 @@ def aggregate(lines, incidents, samples, registry):
             status = status_from_incident(match, incident)
             reports[match.line.id].statuses.append(status)
 
-    # Layer 2: inference for lines with no incidents
+    # Layer 2: samples. Inference for lines with no incidents; for lines
+    # with incidents, live samples may escalate (never demote) severity
     for line in lines:
         if reports[line.id].statuses:
+            escalate_from_sample_stats(reports[line.id], line, samples)
             continue
         inferred = infer_from_samples(line, samples)
         reports[line.id].statuses.append(inferred or good_service())
@@ -264,28 +322,39 @@ def aggregate(lines, incidents, samples, registry):
     return reports
 ```
 
+(A sketch of `aggregation::aggregate`. Incidents first pass `is_active`,
+and `main.rs` then runs `merge_full_coverage` over the result for
+full-coverage-enabled lines.)
+
 ### 6.1 Incident → severity
 
 The severity classifier is a sequence of keyword/hint checks against the
 incident's combined summary + description text, in priority order:
 
 ```
-"suspended" / "no service"      → SUSPENDED (2)
-"rail replacement" / "bus"      → BUS_SERVICE (8)
-"lines blocked"                 → PART_SUSPENDED (3)
-"severe delays" / "major"       → SEVERE_DELAYS (6)
-severity_hint == "major"        → SEVERE_DELAYS (6)
-"diverted"                      → DIVERTED (21)
-"minor delays" / hint == "minor"→ MINOR_DELAYS (9)
-otherwise                       → MINOR_DELAYS (9)
-is_planned                      → PLANNED_CLOSURE (4) (overrides above)
+is_planned                              → PLANNED_CLOSURE (4) (checked first)
+"suspended" / "no service"              → SUSPENDED (2)
+"rail replacement" / "replacement bus"  → BUS_SERVICE (8)
+"lines blocked"                         → PART_SUSPENDED (3)
+"cancel" (any inflection)               → PART_SUSPENDED (3)
+"severe delays" / "major disruption"    → SEVERE_DELAYS (6)
+"diverted"                              → DIVERTED (21)
+otherwise                               → MINOR_DELAYS (9)
 ```
 
-After classification, `_demote_for_scope` may cap the result for weaker
-match scopes (see 5.3).
+(`severity_from_incident` in `crates/aggregator/src/aggregation.rs`. The
+RDM feed has no `severity_hint`, so the prototype's hint branches are
+gone.)
 
-This is intentionally simple. A more sophisticated approach (NLP, learned
-classifiers) could improve precision but is out of scope for v1.
+After classification, `apply_extraction` adjusts the result using the
+enricher's LLM extraction for the incident (demoting resolved or
+out-of-window periods, and escalating on a high-confidence apparent
+severity), and then `demote_for_scope` may cap it for weaker match scopes
+(see 5.3).
+
+The keyword ladder is intentionally simple; the LLM extraction is the
+more sophisticated layer on top, and a missing or low-confidence
+extraction leaves the keyword result unchanged.
 
 ### 6.2 Inference from LDBWS samples
 
@@ -296,8 +365,8 @@ For each line with no incident-derived status, the aggregator:
    `destination_crs_filter` and `headcode_prefixes`.
 3. Requires at least `min_sample_size` (default 3) services to make any
    non-Good determination — small samples are noisy.
-4. Computes cancellation rate and delay rate (above
-   `delay_threshold_minutes`).
+4. Computes cancellation rate, delay rate (above
+   `delay_threshold_minutes`) and skipped-stop rate.
 5. Classifies against thresholds:
 
 ```
@@ -307,6 +376,10 @@ delay_rate  ≥ severe_delays_pct (50%)   → SEVERE_DELAYS (6)
 delay_rate  ≥ minor_delays_pct (25%)    → MINOR_DELAYS (9)
 otherwise                                → GOOD_SERVICE (10)
 ```
+
+The skipped-stop rate is checked the same way against
+`severe_delays_skip_pct` (50%) and `minor_delays_skip_pct` (25%), and the
+more severe of the delay and skip results wins.
 
 Thresholds are per-line overridable. Commuter lines should use tighter
 thresholds than long-distance routes; a 5-minute delay on an 8-minute-
@@ -318,8 +391,9 @@ one.
 - It doesn't try to identify *which* segment of a line is affected.
   Inference produces a line-wide status only. Segment-precision requires
   incident data.
-- It doesn't override an incident-derived status. If an incident is
-  active, its status wins regardless of what samples show.
+- It doesn't replace an incident-derived status. If an incident is
+  active, its status stays; live samples can only escalate its severity
+  (`escalate_from_sample_stats`), never demote it.
 - It doesn't compute trends (improving/worsening). Add a separate
   `Recovering` heuristic in v2 if useful.
 
@@ -334,19 +408,28 @@ distant-signal/
 ├── lines/                     curatorial asset; well-reviewed, hand-edited
 │   ├── SCHEMA.md
 │   └── *.toml                 one file per line
-├── crates/                    Rust workspace
-│   ├── common/                 shared types, config, metrics helpers
+├── crates/                    Rust workspace (25 crates; see root Cargo.toml)
+│   ├── common/                 shared types, matcher, segments, config helpers
 │   ├── api/                    axum HTTP service (read API, auth, ingest)
 │   ├── aggregator/             the core status decision logic
-│   ├── enricher/               derives train/line detail from raw events
-│   ├── trust-consumer/         long-running Kafka consumer for TRUST
-│   ├── poller-incidents/       Knowledgebase incidents poller
-│   ├── poller-ldbws/           LDBWS departure-board sampler
-│   ├── poller-stations/        station reference-data poller
-│   ├── poller-tfl/             TfL reference/status poller
-│   └── poller-tocs/            TOC (operator) reference-data poller
+│   ├── enricher/               LLM extraction from incident text
+│   ├── notifier/               Web Push notifications
+│   ├── poller-*/               eight pollers (RDM, TfL, island of Ireland)
+│   ├── movement-relay/         RDM TRUST Kafka → `movement-events` stream
+│   ├── trust-consumer/         movements for user-tracked trains
+│   ├── full-coverage-consumer/ TRUST-vs-schedule stats for whole lines
+│   ├── trust-backlog-consumer/ short TRUST backlog for late tracking
+│   ├── schedule-ingest/        CIF SCHEDULE delivery watcher
+│   ├── schedule-reference/     reference tables derived from the CIF delivery
+│   ├── schedule-query/         CIF parsing / STP resolution library
+│   ├── trip-planner/           CSA and RAPTOR journey search
+│   ├── trust-schema/           TRUST message parsing library
+│   ├── movement-feed/          shared movement-feed trait + Redis Stream client
+│   ├── health-http/            shared /healthz endpoint
+│   └── line-catalogue-validator/ checks lines/*.toml against reference data
 ├── frontend/                  Next.js web client
 ├── charts/distant-signal/     Helm chart for deploying the full stack
+├── reference-data/            checked-in reference tables (e.g. stanox-crs.csv)
 └── docker-compose.yml         local dev environment
 ```
 
@@ -366,7 +449,8 @@ HTTP read API are all implemented (`crates/poller-incidents`,
 `crates/poller-ldbws`, `crates/aggregator`, `crates/api` — see §4). See
 §10 for what's actually still open.
 
-**Stage 2 — broaden the line catalogue.**
+**Stage 2 — broaden the line catalogue.** Largely done: `lines/` now
+holds 243 line definitions. The steps still apply to each new line.
 1. Add the busiest 15-20 lines first. Major main lines (ECML, GWML,
    Midland Main Line) and busy commuter routes (Brighton Main Line,
    Chiltern, Northern City Line).
@@ -377,10 +461,15 @@ HTTP read API are all implemented (`crates/poller-incidents`,
 
 **Stage 3 — improve quality.**
 1. Better severity classifier (move from regex to a small trained model
-   or LLM-based classifier, with the regex as fallback).
-2. TRUST-feed integration for higher-fidelity inference.
-3. Trend detection (`Recovering` severity).
-4. History endpoints (`/Line/{id}/Status/{from}/to/{to}`).
+   or LLM-based classifier, with the regex as fallback). Done: the
+   `enricher`'s LLM extraction, with the keyword ladder as fallback (§6.1).
+2. TRUST-feed integration for higher-fidelity inference. Done:
+   `full-coverage-consumer` and the `trust-inferred` data quality (§5.5).
+3. Trend detection (`Recovering` severity). Partly done: an incident the
+   enricher reads as "residual delays only" is floored at `Recovering`;
+   sample-based trend detection is still open.
+4. History endpoints (`/Line/{id}/Status/{from}/to/{to}`). Done, along
+   with the `/Line/{id}/Stats/...` rollups.
 
 ---
 
@@ -419,8 +508,8 @@ Knowledgebase will produce a precise message that doesn't go through this
 cap.
 
 **The "drop operator-only matches when any precise match exists" rule.**
-Caught by `test_aggregator_isolates_exclusive_incident` during
-development. Without it, an Alton-only incident also lights up SWML and
+Caught by `aggregator_isolates_exclusive_incident`
+(`crates/aggregator/src/aggregation.rs`) during development. Without it, an Alton-only incident also lights up SWML and
 Portsmouth Direct as operator-only matches. This is structural: when any
 line has precise evidence, the operator-only matches are noise from the
 same incident, not separate evidence.
@@ -430,7 +519,8 @@ misimplement; documented prominently because of this.
 
 **No streaming feeds for v1.** Polling is good enough for the time
 granularity this product reports at (30-60s). Streaming infrastructure is
-a meaningful operational burden.
+a meaningful operational burden. (Line status is still polled. Train
+tracking later took on the TRUST stream; see §4.)
 
 **Per-line threshold overrides instead of a global config.** A 5-minute
 delay isn't equally significant on every line. Tuning is curatorial work
@@ -456,10 +546,9 @@ that lives next to the line definition. Defaults exist for the common case.
   service that splits at Haslemere with portions to different
   destinations) aren't modelled directly — define each branch as a
   separate line with a shared trunk segment.
-- **Line catalogue is still growing.** ~20 lines defined today (WCML,
-  Thameslink, SWR, Northern, Elizabeth line, Cross Country, and their
-  branches); production coverage of all major TOCs/regional networks
-  needs ~50-100 lines.
+- **Line catalogue is still growing.** 243 line definitions today,
+  covering the major TOCs and regional networks; new routes still need
+  hand-authoring.
 - **Severity for engineering works.** Currently mapped to PLANNED_CLOSURE
   regardless of actual impact. A planned partial closure should map to
   PART_CLOSURE; needs a richer mapping.
@@ -502,7 +591,8 @@ one exclusive-segment test case.
 ## 12. Conventions
 
 - Rust workspace, one crate per concern (`common`, `aggregator`, `api`,
-  `enricher`, `trust-consumer`, one `poller-*` crate per feed — see §7).
+  `enricher`, the TRUST and schedule services, one `poller-*` crate per
+  feed — see §7).
 - Domain types are plain structs deriving `serde::{Serialize, Deserialize}`
   in `crates/common` (e.g. `LineDefinition`), not separate wire-format
   wrapper types.
@@ -514,8 +604,10 @@ one exclusive-segment test case.
   answer to "which lines does this incident affect".
 - `lines/*.toml` is the source of truth for the line catalogue, loaded via
   `LineDefinition::from_dir`. Don't hardcode line data in Rust.
-- Tests live inline as `mod tests` next to the code they cover (see §11),
-  not in a separate top-level test tree.
+- Tests live inline as `mod tests` next to the code they cover (see §11).
+  The exceptions are crate-level integration tests under a crate's own
+  `tests/` (e.g. `crates/api/tests/` for migration checks), not a
+  separate top-level test tree.
 - Comments explain *why*, not *what*. The "junction belongs to the
   shared trunk" rule and the "drop operator-only when precise match
   exists" rule are both commented in the code because they're

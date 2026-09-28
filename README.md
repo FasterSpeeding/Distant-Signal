@@ -11,18 +11,28 @@ real differentiator.
 
 ## Layout
 
-- `crates/` — a ten-crate Rust workspace: `common`, `api`, `aggregator`,
-  `enricher`, `trust-consumer`, and five `poller-*` crates.
+- `crates/` — a 25-crate Rust workspace (see the root `Cargo.toml`):
+  - services: `api`, `aggregator`, `enricher`, `notifier`;
+  - eight `poller-*` crates: `poller-incidents`, `poller-stations`,
+    `poller-tocs`, `poller-ldbws`, `poller-tfl`, `poller-irish-rail-gtfs`,
+    `poller-irish-rail-live`, `poller-nir-stations`;
+  - the TRUST train-movements pipeline: `movement-relay`, `trust-consumer`,
+    `full-coverage-consumer`, `trust-backlog-consumer`;
+  - the CIF schedule feed: `schedule-ingest`, `schedule-reference`;
+  - libraries: `common`, `trust-schema`, `movement-feed`, `health-http`,
+    `schedule-query`, `trip-planner`;
+  - the `line-catalogue-validator` CLI.
 - `frontend/` — the Next.js web frontend.
 - `charts/distant-signal/` — the Helm chart for deploying the whole stack.
-- `lines/` — the curated TOML line-definition catalogue (unchanged from
-  this project's original design).
+- `lines/` — the curated TOML line-definition catalogue, one file per line
+  (format in `lines/SCHEMA.md`).
 
 See `DESIGN.md` for the full architecture.
 
 ## Running it
 
-For local development, see `docker-compose.yml`. For a real deployment, see
+For local development, see `docker-compose.yml` (its header explains the
+`local.env` / `dev.env` modes). For a real deployment, see
 `charts/distant-signal/README.md` for the Helm chart.
 
 ## How segments work
@@ -42,7 +52,8 @@ The matcher classifies every incident-to-line match by scope:
 - `KEYWORD_ONLY` — line is named in the incident text but no station hits.
   Capped at Severe Delays.
 - `OPERATOR_ONLY` — only operator overlap. Capped at Minor Delays, and
-  suppressed entirely if a more precise match exists for the same incident.
+  suppressed entirely if another line sharing one of its operator codes got
+  a more precise match for the same incident.
 
 The last point matters: it's what stops an incident on the Alton branch
 from also flagging South West Main and Portsmouth Direct just because all
@@ -68,8 +79,11 @@ For a TOC like SWR with multiple routes:
 ## Severity scale
 
 We use TfL's 0-14 scale verbatim where it applies, then add two NR-specific
-values (Recovering = 20, Diverted = 21) outside the TfL range to avoid
-clashes if TfL adds new codes.
+values (Recovering = 20, Diverted = 21) outside that range. TfL's own
+codes 16-20 (Not Running, Issues Reported, No Issues, Information, Service
+Closed) arrived later and are stored as 22-26, because 20 and 21 were
+already taken (see `common::Severity`). The numbers are not ordered by how
+bad a status is; compare through `common::severity_rank`.
 
 ## Design notes
 

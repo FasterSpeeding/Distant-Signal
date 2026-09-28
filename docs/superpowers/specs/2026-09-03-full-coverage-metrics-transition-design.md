@@ -1,5 +1,11 @@
 # Design: Transitioning Sample-Hedged Metrics to Full-Coverage Metrics, Once Option B Ships
 
+> **Status (2026-09-28):** Option B has since shipped
+> (`crates/full-coverage-consumer`). `aggregator`'s
+> `merge_full_coverage_stats` now fills `full_coverage_stats` /
+> `full_coverage_availability` and can set `DataQuality::TrustInferred`;
+> the chart enables it for every line (`fullCoverageEnabledDefault: true`).
+
 **Status: design proposal, not approved.** Written to the same rigor as
 `docs/superpowers/specs/2026-09-01-line-status-sample-coverage-design.md`
 (the direct predecessor this document builds on top of — see Corrections
