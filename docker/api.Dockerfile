@@ -18,7 +18,8 @@
 # resolves to the same rustc 1.88 requirement by way of the icu_* chain
 # above (api additionally hits it via `home`).
 #
-# This image carries THREE binaries: `api` (the ENTRYPOINT),
+# This image carries FOUR binaries: `api` (the ENTRYPOINT), `corpus_compare`
+# (a read-only CORPUS report, see crates/api/src/bin/corpus_compare.rs),
 # `backfill_trains`, the one-off, idempotent shared-train-identity backfill
 # that MUST be run before this image is first started against a database
 # with pre-existing `tracked_trains` data, and `backfill_incident_lines`,
@@ -79,13 +80,14 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=cargo-target-1.88,target=/app/target,sharing=locked \
     if [ "$CARGO_PROFILE" = "release" ]; then \
-      cargo build --release --bin api --bin backfill_trains --bin backfill_incident_lines; \
+      cargo build --release --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare; \
     else \
-      cargo build --bin api --bin backfill_trains --bin backfill_incident_lines; \
+      cargo build --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare; \
     fi \
     && cp /app/target/${CARGO_PROFILE}/api /usr/local/bin/api \
     && cp /app/target/${CARGO_PROFILE}/backfill_trains /usr/local/bin/backfill_trains \
-    && cp /app/target/${CARGO_PROFILE}/backfill_incident_lines /usr/local/bin/backfill_incident_lines
+    && cp /app/target/${CARGO_PROFILE}/backfill_incident_lines /usr/local/bin/backfill_incident_lines \
+    && cp /app/target/${CARGO_PROFILE}/corpus_compare /usr/local/bin/corpus_compare
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
@@ -119,6 +121,10 @@ COPY --from=builder /usr/local/bin/backfill_trains /usr/local/bin/backfill_train
 # it needs no arguments here either:
 #   kubectl run ... --image=<this image> --command -- /usr/local/bin/backfill_incident_lines
 COPY --from=builder /usr/local/bin/backfill_incident_lines /usr/local/bin/backfill_incident_lines
+# Read-only CORPUS-vs-timetable crosswalk report (api::data::corpus_comparison),
+# run in the api pod with its own DATABASE_URL:
+#   kubectl exec deploy/<api deployment> -c api -- corpus_compare [--full]
+COPY --from=builder /usr/local/bin/corpus_compare /usr/local/bin/corpus_compare
 COPY --chown=api:api lines/ /app/lines/
 
 # Numeric USER, not the `api` name useradd created above: Kubernetes'
