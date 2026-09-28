@@ -1,5 +1,8 @@
 # Design: windowed full-coverage stats (recent window + day-to-date)
 
+> **Status (2026-09-28):** branch `wt-fc-windowed-impl` has been merged into
+> `main` (merge commit `9872c278`); every switch is still off by default.
+
 **Status: implemented (branch `wt-fc-windowed-impl`), every switch off by
 default. The "Decisions (2026-09-27)" section below overrides the rest of
 this document where they differ; "Implementation notes" at the end records

@@ -1,5 +1,14 @@
 # Design: Option B's Live Consumer, in Shadow Mode
 
+> **Status (2026-09-28):** implemented as `crates/full-coverage-consumer`,
+> and no longer shadow-only. `lines/tfw-conwy-valley.toml` sets
+> `full_coverage_enabled = true`, and the chart sets
+> `api.fullCoverageEnabledDefault` and `aggregator.fullCoverageEnabledDefault`
+> to `true`, so full-coverage stats feed every line's severity/`DataQuality`
+> (`trust-inferred`) via `aggregator`'s `merge_full_coverage`. The consumer
+> reads the `movement-events` Redis Stream by default, not Kafka (see
+> `2026-09-04-movement-relay-design.md`).
+
 **Status: design proposal, not approved. Spec stage only — no implementation
 plan, no code in this pass.** Gated by an explicit repo-owner override of
 `docs/superpowers/specs/2026-09-03-option-b-consumer-scoping.md`'s "stays
