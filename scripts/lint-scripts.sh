@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the same checks as CI's `scripts-lint` job over the repo's shell and
-# Python scripts, the workflow run: blocks, the Dockerfiles (hadolint) and
-# the inline shell in the docker-compose files.
+# Python scripts, the workflow run: blocks, the Dockerfiles (hadolint) and,
+# via scripts/lint-containers.py, the Dockerfile RUN bodies, the inline
+# shell in the docker-compose files and the image digest pins.
 #
 # Needs the tools pinned in pyproject.toml's `lint` dependency group on PATH,
 # e.g. (pip >= 25.1, for --group):
@@ -41,6 +42,6 @@ run mypy
 # workflow run: blocks; SHELLCHECK_OPTS does.
 run env SHELLCHECK_OPTS='--enable=all --severity=style' actionlint
 run hadolint --config .hadolint.yaml "${dockerfiles[@]}"
-run scripts/lint-compose-shell.py
+run scripts/lint-containers.py
 
 exit "${status}"

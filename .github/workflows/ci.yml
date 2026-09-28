@@ -576,9 +576,12 @@ jobs:
   #     checks only;
   #   - every tracked Dockerfile: hadolint, every rule, failing down to
   #     style level, trusted registry docker.io only (.hadolint.yaml);
-  #   - the inline shell in docker-compose*.yml (CMD-SHELL healthchecks,
-  #     `sh -c` commands): shellcheck, as for *.sh, via
-  #     scripts/lint-compose-shell.py.
+  #   - scripts/lint-containers.py: shellcheck, as for *.sh, over every
+  #     Dockerfile RUN body (hadolint's embedded shellcheck runs default
+  #     checks only) and the docker-compose*.yml inline shell (CMD-SHELL
+  #     healthchecks, `sh -c` commands); and every image a Dockerfile or
+  #     compose file pulls (`# syntax=`, FROM, COPY --from, `image:`) must
+  #     be pinned by @sha256 digest.
   # Every tool is pinned in pyproject.toml's `lint` dependency group (pip's
   # download cache is keyed on that file); scripts/lint-scripts.sh runs the
   # same checks locally.

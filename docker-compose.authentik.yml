@@ -56,7 +56,7 @@
 
 services:
   authentik-postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     restart: unless-stopped
     environment:
       POSTGRES_USER: authentik
@@ -73,7 +73,7 @@ services:
       start_period: 5s
 
   authentik-server:
-    image: ghcr.io/goauthentik/server:2026.8.0
+    image: ghcr.io/goauthentik/server:2026.8.0@sha256:7421753cfea67e89a6d295a1f0173ccea3866b33768c88dad90453b151cdcfd5
     command: server
     restart: unless-stopped
     depends_on:
@@ -135,7 +135,7 @@ services:
       start_period: 30s
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:2026.8.0
+    image: ghcr.io/goauthentik/server:2026.8.0@sha256:7421753cfea67e89a6d295a1f0173ccea3866b33768c88dad90453b151cdcfd5
     command: worker
     restart: unless-stopped
     depends_on:

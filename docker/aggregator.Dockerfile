@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # Multi-stage build for the `aggregator` service.
 #
 # Builder pin: matches `api` at rust:1.88-bookworm (this crate pulls in
@@ -43,12 +43,12 @@ COPY . .
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=cargo-target-1.88,target=/app/target,sharing=locked \
-    if [ "$CARGO_PROFILE" = "release" ]; then \
+    if [ "${CARGO_PROFILE}" = "release" ]; then \
       cargo build --release --bin aggregator; \
     else \
       cargo build --bin aggregator; \
     fi \
-    && cp /app/target/${CARGO_PROFILE}/aggregator /usr/local/bin/aggregator
+    && cp "/app/target/${CARGO_PROFILE}/aggregator" /usr/local/bin/aggregator
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 

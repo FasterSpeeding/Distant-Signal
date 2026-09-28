@@ -16,7 +16,7 @@
 # byte-identical hadolint/hadolint v2.15.1 release binary, checked against
 # that release's checksums.sha256). PyYAML is the one dependency of
 # scripts/chart-values-doc.py (the scripts-lint job also runs its `check`)
-# and scripts/lint-compose-shell.py; types-PyYAML lets mypy check them.
+# and scripts/lint-containers.py; types-PyYAML lets mypy check them.
 lint = [
     "actionlint-py==1.7.12.25",
     "hadolint-py==2.15.1.2",

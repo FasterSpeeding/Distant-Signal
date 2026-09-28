@@ -98,7 +98,29 @@
   //                   (tool config only); the manager needs none and
   //                   extracts its [dependency-groups] `lint` group (PEP
   //                   735): ruff, mypy, and shellcheck-py / shfmt-py /
-  //                   actionlint-py, which carry the shellcheck, shfmt and
-  //                   actionlint binaries the scripts-lint job runs. Each is
-  //                   an exact `==` pin, so Renovate bumps the pin.
+  //                   actionlint-py / hadolint-py, which carry the
+  //                   shellcheck, shfmt, actionlint and hadolint binaries
+  //                   the scripts-lint job runs. Each is an exact `==` pin,
+  //                   so Renovate bumps the pin.
+  //   docker-compose - default pattern
+  //                   `/(^|/)(?:docker-)?compose[^/]*\.ya?ml$/` matches
+  //                   docker-compose.yml and docker-compose.authentik.yml.
+  //                   Every `image:` there is `tag@sha256:digest`
+  //                   (scripts/lint-containers.py enforces it), so the tag
+  //                   and digest are bumped together, like the Dockerfiles'.
+  //                   Confirmed with `renovate --platform=local
+  //                   --dry-run=extract` (44.115.13): postgres, redis,
+  //                   busybox, drakkan/sftpgo, postgres (alpine) and
+  //                   goauthentik/server all extract with their digests,
+  //                   and so does every Dockerfile's `# syntax=` pin.
+  "packageRules": [
+    {
+      // docker-compose.yml's rail-mcp `${RAIL_MCP_IMAGE:-...}` default is
+      // a deliberately invalid placeholder (see the comment there), not a
+      // real image: there is nothing to look up.
+      "matchManagers": ["docker-compose"],
+      "matchDepNames": ["ghcr.io/CHANGE-ME/distant-signal-mcp"],
+      "enabled": false,
+    },
+  ],
 }

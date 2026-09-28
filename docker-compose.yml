@@ -66,7 +66,7 @@
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -82,7 +82,7 @@ services:
       start_period: 5s
 
   redis:
-    image: redis:7
+    image: redis:7@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -623,7 +623,7 @@ services:
   # every container in a Pod (the Helm chart needs no equivalent extra
   # step, since fsGroup already covers `ingest` there too).
   schedule-feed-volume-permissions:
-    image: busybox:latest
+    image: busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
     command: ["sh", "-c", "chown -R 1000:1000 /data/schedule-feed && chmod -R g+rwX /data/schedule-feed"]
     volumes:
       - schedule_feed_data:/data/schedule-feed
@@ -637,7 +637,7 @@ services:
     # the chart's equivalent empty-tag default resolved to this chart's
     # own 0.1.0 appVersion, a tag drakkan/sftpgo never published, which is
     # what forced pinning a real version rather than deferring it further.
-    image: drakkan/sftpgo:v2.7.5
+    image: drakkan/sftpgo:v2.7.5@sha256:9011fe608d336d3daf6ed6224b16fd40443aab8f3335e0b20853d6a539c58738
     restart: unless-stopped
     depends_on:
       schedule-feed-volume-permissions:
@@ -866,7 +866,10 @@ services:
     # Unlike schedule-sftp below, there's no real published tag to pin
     # in its place: CHANGE-ME is a placeholder repo, not an upstream
     # image this repo can look up and verify (see the chart's own
-    # railMcp.image.tag comment for the equivalent note).
+    # railMcp.image.tag comment for the equivalent note). So the default has
+    # no digest to pin (scripts/lint-containers.py opt-out below); set
+    # RAIL_MCP_IMAGE to a `repo:tag@sha256:<digest>` reference.
+    # lint-containers: unpinned-image # placeholder default, see above
     image: ${RAIL_MCP_IMAGE:-ghcr.io/CHANGE-ME/distant-signal-mcp:latest}
     restart: unless-stopped
     depends_on:
