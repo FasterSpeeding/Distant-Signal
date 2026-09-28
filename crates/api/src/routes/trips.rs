@@ -306,6 +306,11 @@ async fn get_trip_plan(
             "destinationCrs": segment.destination_crs,
             "itineraries": segment.itineraries,
             "cappedByMaxChanges": segment.capped_by_max_changes,
+            // Additive (2026-09-28): when this segment was searched from --
+            // `departAfter` for the first, the previous segment's arrival
+            // plus the waypoint's change time for later ones; `null` when
+            // the previous segment found nothing to chain from.
+            "departAfter": segment.depart_after_min.map(segment_clock),
         })).collect::<Vec<_>>(),
     })))
 }
@@ -365,6 +370,14 @@ fn parse_max_changes(raw: Option<&str>) -> Result<u32, (StatusCode, String)> {
             ),
         )),
     }
+}
+
+/// `{"time": "HH:MM:SS", "dayOffset": n}` for a minutes-from-service-day-
+/// midnight value (which may pass 1440).
+fn segment_clock(minutes: u32) -> serde_json::Value {
+    let time = NaiveTime::from_num_seconds_from_midnight_opt((minutes % 1440) * 60, 0)
+        .expect("minutes modulo 1440 is a valid clock time");
+    serde_json::json!({ "time": time, "dayOffset": minutes / 1440 })
 }
 
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
@@ -1213,6 +1226,75 @@ mod db_tests {
                 .ok();
         }
         sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANMX-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// End-to-end regression test for the waypoint-chaining bug: the
+    /// second segment must search from the first segment's 08:50 arrival
+    /// plus the waypoint's (default, 5-minute) change time, so the 05:00
+    /// `TESTPLANCHE` -- which used to be offered, since later segments
+    /// searched from 00:00 -- is out and the 09:00 `TESTPLANCHO` is in.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn a_later_waypoint_segment_searches_from_the_previous_arrival() {
+        let pool = connect().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 26).unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TESTPLANCH1', 0, 'TESTCHA', 'origin', NULL, '08:00:00', 0), \
+                    ($1, 'TESTPLANCH1', 1, 'TESTCHB', 'terminate', '08:50:00', NULL, 0), \
+                    ($1, 'TESTPLANCHE', 0, 'TESTCHB', 'origin', NULL, '05:00:00', 0), \
+                    ($1, 'TESTPLANCHE', 1, 'TESTCHC', 'terminate', '06:00:00', NULL, 0), \
+                    ($1, 'TESTPLANCHO', 0, 'TESTCHB', 'origin', NULL, '09:00:00', 0), \
+                    ($1, 'TESTPLANCHO', 1, 'TESTCHC', 'terminate', '10:00:00', NULL, 0) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPLANCH-ZXA', 'ZXA', 'TESTCHA', 'TEST CHAIN A', 1), \
+                    ('TESTPLANCH-ZXB', 'ZXB', 'TESTCHB', 'TEST CHAIN B', 1), \
+                    ('TESTPLANCH-ZXC', 'ZXC', 'TESTCHC', 'TEST CHAIN C', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            format!("/Trips/plan?origin=ZXA&waypoints=ZXB&destination=ZXC&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let segments = body["segments"].as_array().expect("segments array");
+        assert_eq!(segments.len(), 2, "{body:?}");
+        assert_eq!(
+            segments[0]["itineraries"][0]["legs"][0]["trainUid"],
+            "TESTPLANCH1"
+        );
+        assert_eq!(
+            segments[1]["itineraries"][0]["legs"][0]["trainUid"], "TESTPLANCHO",
+            "the onward train must leave after the first leg arrives: {body:?}"
+        );
+        assert_eq!(segments[1]["departAfter"]["time"], "08:55:00", "{body:?}");
+        assert_eq!(segments[1]["departAfter"]["dayOffset"], 0, "{body:?}");
+
+        for uid in ["TESTPLANCH1", "TESTPLANCHE", "TESTPLANCHO"] {
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLANCH-%'")
             .execute(&pool)
             .await
             .ok();
