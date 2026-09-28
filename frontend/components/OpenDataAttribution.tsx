@@ -270,16 +270,36 @@ export const DATA_SOURCES: readonly DataSource[] = [
     licence: <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>,
   },
   {
-    // Used only at development time, by `crates/line-catalogue-validator`,
-    // to cross-check the line catalogue's station and operator codes. None
-    // of it is shown on the site. See LEG-24 for the open permission
-    // question; drop this entry if the vendored CSVs are replaced.
-    id: 'railwaycodes',
-    title: 'railwaycodes.org.uk',
-    use: 'Used during development to cross-check station and operator codes in our line catalogue. Not shown on this site.',
+    // Used only at development time: `reference-data/crs-tiploc.csv`, which
+    // `crates/line-catalogue-validator` checks the line catalogue's station
+    // codes against, is generated from the Rail Data Marketplace "NWR
+    // CORPUS" extract. None of it is shown on the site. The statement is
+    // OGL v3's default, as for the delay attribution glossary.
+    id: 'network-rail-corpus',
+    title: 'Network Rail (CORPUS location codes)',
+    use: 'Used during development to check the station codes (CRS and TIPLOC) in our line catalogue. Not shown on this site.',
     statement: (
       <>
-        Reference codes checked against <ExternalLink href="https://www.railwaycodes.org.uk">railwaycodes.org.uk</ExternalLink>.
+        Contains information of Network Rail Infrastructure Limited licensed under the{' '}
+        <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>.
+      </>
+    ),
+    licence: <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>,
+  },
+  {
+    // No committed file comes from this site any more (station codes are
+    // from CORPUS above, operator codes from the Knowledgebase TOC list),
+    // but the line-catalogue validator's optional `--live` check still
+    // reads its CRS pages. Nothing from it is shown on the site. See LEG-24
+    // for the open permission question; drop this entry if `--live` stops
+    // using it.
+    id: 'railwaycodes',
+    title: 'railwaycodes.org.uk',
+    use: 'Occasionally used during development to cross-check station codes in our line catalogue. Not shown on this site.',
+    statement: (
+      <>
+        Station codes cross-checked against{' '}
+        <ExternalLink href="https://www.railwaycodes.org.uk">railwaycodes.org.uk</ExternalLink>.
       </>
     ),
     licence: 'All rights reserved by its owner.',
