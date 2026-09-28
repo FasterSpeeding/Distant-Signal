@@ -137,9 +137,9 @@ jobs:
             ] | length
           ' osv-results.json)
 
-          echo "total_count=$total" >> "$GITHUB_OUTPUT"
-          echo "high_or_critical_count=$high_or_critical" >> "$GITHUB_OUTPUT"
-          echo "Found $high_or_critical HIGH/CRITICAL (CVSS >= 7.0) finding(s) out of $total total advisory group(s)."
+          echo "total_count=${total}" >> "${GITHUB_OUTPUT}"
+          echo "high_or_critical_count=${high_or_critical}" >> "${GITHUB_OUTPUT}"
+          echo "Found ${high_or_critical} HIGH/CRITICAL (CVSS >= 7.0) finding(s) out of ${total} total advisory group(s)."
 
       - name: Upload scan results
         if: always()
@@ -153,8 +153,8 @@ jobs:
         if: github.event_name != 'schedule'
         run: |
           count="${{ steps.scan.outputs.high_or_critical_count }}"
-          if [ "$count" -gt 0 ]; then
-            echo "::error::$count HIGH/CRITICAL (CVSS >= 7.0) dependency vulnerability finding(s) -- see the osv-scanner-results artifact for full detail."
+          if [[ "${count}" -gt 0 ]]; then
+            echo "::error::${count} HIGH/CRITICAL (CVSS >= 7.0) dependency vulnerability finding(s) -- see the osv-scanner-results artifact for full detail."
             exit 1
           fi
           echo "No HIGH/CRITICAL findings."
