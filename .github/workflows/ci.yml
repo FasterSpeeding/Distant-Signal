@@ -552,6 +552,38 @@ jobs:
           fi
           bash scripts/check-migration-order.sh "${base}"
 
+  # Lint, format-check and type-check the repo's scripts, strict by default:
+  #   - every tracked *.sh: shellcheck with every optional check at style
+  #     severity (.shellcheckrc) and shfmt (style from .editorconfig);
+  #   - scripts/*.py: ruff check (select ALL), ruff format --check and mypy
+  #     --strict (pyproject.toml);
+  #   - the workflow run: blocks: actionlint with SHELLCHECK_OPTS
+  #     '--enable=all --severity=style'. The `actionlint` job above uses
+  #     Piped's reviewdog wrapper, which runs shellcheck with its default
+  #     checks only.
+  # Every tool is pinned in pyproject.toml's `lint` dependency group (pip's
+  # download cache is keyed on that file); scripts/lint-scripts.sh runs the
+  # same checks locally.
+  scripts-lint:
+    name: scripts lint (shellcheck, shfmt, ruff, mypy, actionlint)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the pinned lint tools
+        run: python -m pip install --group lint
+
+      - name: Lint scripts
+        run: scripts/lint-scripts.sh
+
   # Custom: no reusable Piped/Piped-actions workflow covers Helm at all.
   # `helm lint` + `helm template` against both the chart's own defaults and
   # values-example.yaml (which turns on the optional pollers/devAuthentik
