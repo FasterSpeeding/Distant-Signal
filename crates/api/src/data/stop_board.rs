@@ -308,30 +308,24 @@ pub fn apply_station_sample_board(
     let last_reported = stops
         .iter()
         .rposition(|stop| stop.actual_arrival.is_some() || stop.actual_departure.is_some());
-    for index in 0..stops.len() {
-        let has_left = stops[index].actual_departure.is_some()
-            || last_reported.is_some_and(|last| index < last);
-        let board = match_stop(
-            &stops[index],
-            has_left,
-            boards,
-            keys,
-            terminus_crs.as_deref(),
-            now,
-        )
-        .map(|(row, polled_at)| StopBoard {
-            delay_reason: row.delay_reason.clone(),
-            cancel_reason: row.cancel_reason.clone(),
-            is_cancelled: row.is_cancelled,
-            delay_minutes: if row.is_cancelled {
-                None
-            } else {
-                board_delay_minutes(&row.scheduled, &row.estimated)
+    for (index, stop) in stops.iter_mut().enumerate() {
+        let has_left =
+            stop.actual_departure.is_some() || last_reported.is_some_and(|last| index < last);
+        let board = match_stop(stop, has_left, boards, keys, terminus_crs.as_deref(), now).map(
+            |(row, polled_at)| StopBoard {
+                delay_reason: row.delay_reason.clone(),
+                cancel_reason: row.cancel_reason.clone(),
+                is_cancelled: row.is_cancelled,
+                delay_minutes: if row.is_cancelled {
+                    None
+                } else {
+                    board_delay_minutes(&row.scheduled, &row.estimated)
+                },
+                estimated: row.estimated.clone(),
+                observed_at: polled_at,
             },
-            estimated: row.estimated.clone(),
-            observed_at: polled_at,
-        });
-        stops[index].board = board;
+        );
+        stop.board = board;
     }
 }
 

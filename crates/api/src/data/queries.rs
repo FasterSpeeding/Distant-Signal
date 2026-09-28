@@ -12292,7 +12292,7 @@ mod db_review_guard_and_normalisation_tests {
                 row("opaque=="),
             ],
         };
-        upsert_station_samples(&pool, &[sample.clone()])
+        upsert_station_samples(&pool, std::slice::from_ref(&sample))
             .await
             .unwrap();
         let stored: Vec<String> =
@@ -12308,7 +12308,7 @@ mod db_review_guard_and_normalisation_tests {
             .execute(&pool)
             .await
             .unwrap();
-        upsert_station_samples(&pool, &[sample.clone()])
+        upsert_station_samples(&pool, std::slice::from_ref(&sample))
             .await
             .unwrap();
         let stored: Option<Vec<String>> =
