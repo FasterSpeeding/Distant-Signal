@@ -261,7 +261,8 @@ Accepted costs:
   error).
 - **Dependence on CORPUS wording**: the rule relies on how CORPUS words
   `NLCDESC` and on the word lists in
-  `crates/line-catalogue-validator/src/regenerate.rs`. They may need
+  `crates/common/src/corpus_inference.rs` (moved there from the validator's
+  `regenerate.rs` on 2026-09-28 so `api` applies the identical rule). They may need
   maintenance when CORPUS changes; read the regeneration report's inferred
   pairs and "left out by name" list on every regeneration.
 - **Point-in-time snapshot**: the file reflects the extract downloaded on
