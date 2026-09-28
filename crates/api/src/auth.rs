@@ -135,7 +135,7 @@ fn path_matches_route(path: &str, prefix: &str) -> bool {
     }
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
     let value = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()
@@ -934,6 +934,7 @@ mod route_scoping_tests {
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
+            internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),

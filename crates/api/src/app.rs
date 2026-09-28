@@ -467,6 +467,32 @@ fn ensure_sso_and_internal_oauth_clients_differ(
     Ok(())
 }
 
+/// Startup guard: the MCP group (`internal_oauth_group_mcp`, which only buys
+/// a separate public rate-limit budget, see `crate::rate_limit`) must not be
+/// the same name as any group that grants a `/private/*` route. If it were,
+/// the one Authentik group handed to the MCP's service account would also
+/// open an ingest route, and conversely an ingest poller's token would earn
+/// the MCP budget. Empty (feature off) always passes.
+pub(crate) fn ensure_mcp_group_grants_no_private_route(
+    mcp_group: &str,
+    routes: &[(&'static str, axum::http::Method, Vec<String>)],
+) -> Result<()> {
+    let mcp_group = mcp_group.trim();
+    if mcp_group.is_empty() {
+        return Ok(());
+    }
+    if let Some((path, method, _)) = routes
+        .iter()
+        .find(|(_, _, groups)| groups.iter().any(|group| group.trim() == mcp_group))
+    {
+        anyhow::bail!(
+            "internal_oauth_group_mcp (INTERNAL_OAUTH_GROUP_MCP) is \"{mcp_group}\", which also \
+             grants {method} /private{path}; give the MCP's service account its own group"
+        );
+    }
+    Ok(())
+}
+
 /// Hand-rolled rather than `#[derive(Debug)]`. Two independent reasons:
 ///
 /// 1. `OidcClient` holds a `reqwest::Client` and a
@@ -711,13 +737,17 @@ impl AppState {
             );
         }
 
+        let internal_oauth_routes = build_internal_oauth_routes(&config);
+        ensure_mcp_group_grants_no_private_route(
+            &config.internal_oauth_group_mcp,
+            &internal_oauth_routes,
+        )?;
+
         let internal_oauth_verifier = crate::auth::internal_oauth::ServiceTokenVerifier::new(
             config.internal_oauth_issuer_url.clone(),
             config.internal_oauth_client_id.clone(),
         )
         .context("failed to construct internal-oauth verifier")?;
-
-        let internal_oauth_routes = build_internal_oauth_routes(&config);
 
         let schedule_crs_line_index =
             crate::data::schedule_matching::crs_to_line_ids(&config.lines);
@@ -758,6 +788,74 @@ mod internal_oauth_startup_guard_tests {
             .expect_err("identical client ids must be rejected at startup");
         assert!(err.to_string().contains("sso_client_id"));
         assert!(err.to_string().contains("internal_oauth_client_id"));
+    }
+
+    fn routes() -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
+        vec![
+            (
+                "/tfl-line-status",
+                axum::http::Method::POST,
+                vec!["svc-poller-tfl".to_string()],
+            ),
+            (
+                "/stanox-crs",
+                axum::http::Method::GET,
+                vec!["svc-trust-consumer".to_string(), "svc-other".to_string()],
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_distinct_or_empty_mcp_group_passes() {
+        assert!(super::ensure_mcp_group_grants_no_private_route("srv-ds-mcp", &routes()).is_ok());
+        assert!(super::ensure_mcp_group_grants_no_private_route("", &routes()).is_ok());
+        assert!(super::ensure_mcp_group_grants_no_private_route("  ", &routes()).is_ok());
+    }
+
+    #[test]
+    fn an_mcp_group_that_also_grants_a_private_route_fails_loudly() {
+        let err = super::ensure_mcp_group_grants_no_private_route("svc-other", &routes())
+            .expect_err("a shared group must be rejected at startup");
+        assert!(err.to_string().contains("/private/stanox-crs"), "{err}");
+    }
+
+    /// The real production table, with every default group, is clean.
+    #[test]
+    fn the_default_mcp_group_grants_no_private_route_in_the_real_table() {
+        use clap::Parser;
+        let config = super::ServiceArguments::try_parse_from([
+            "api",
+            "--database-url",
+            "postgres://x",
+            "--redis-url",
+            "redis://x",
+            "--internal-oauth-issuer-url",
+            "https://sso.example/",
+            "--internal-oauth-client-id",
+            "internal",
+            "--sso-issuer-url",
+            "https://sso.example/",
+            "--sso-client-id",
+            "human",
+            "--sso-client-secret",
+            "secret",
+            "--sso-redirect-url",
+            "https://example/cb",
+            "--sso-post-login-redirect-url",
+            "https://example/",
+            "--lines-dir",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../lines"),
+        ])
+        .expect("parse");
+        assert_eq!(config.internal_oauth_group_mcp, "srv-ds-mcp");
+        let routes = super::build_internal_oauth_routes(&config);
+        assert!(
+            super::ensure_mcp_group_grants_no_private_route(
+                &config.internal_oauth_group_mcp,
+                &routes
+            )
+            .is_ok()
+        );
     }
 }
 
