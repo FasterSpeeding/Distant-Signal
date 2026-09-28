@@ -107,8 +107,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../../../');
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:3000';
-const SESSION_COOKIE =
-  process.env.E2E_SESSION_COOKIE ?? 'preview-demo-session-token-for-demo-user';
+const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE ?? 'preview-demo-session-token-for-demo-user';
 const OUT_DIR = process.env.SCREENSHOTS_OUT_DIR
   ? path.resolve(process.env.SCREENSHOTS_OUT_DIR)
   : path.join(__dirname, 'output');
@@ -215,11 +214,7 @@ function validateShot(value, index) {
   if (!shot.name || typeof shot.name !== 'string') problems.push('missing `name`');
   else if (!kebabCheck(shot.name)) problems.push(`\`name\` "${shot.name}" is not kebab-case`);
   if (!shot.url || typeof shot.url !== 'string') problems.push('missing `url`');
-  if (
-    !shot.viewport ||
-    typeof shot.viewport.width !== 'number' ||
-    typeof shot.viewport.height !== 'number'
-  ) {
+  if (!shot.viewport || typeof shot.viewport.width !== 'number' || typeof shot.viewport.height !== 'number') {
     problems.push('missing/invalid `viewport` ({width, height})');
   }
   if (typeof shot.browser !== 'string' || !Object.hasOwn(BROWSER_LAUNCHERS, shot.browser)) {
@@ -319,9 +314,7 @@ async function takeShot(browsers, shot) {
 async function main() {
   const configPath = process.argv[2];
   if (!configPath) {
-    console.error(
-      'Usage: node e2e/screenshots/take-screenshots.mjs <shots-config.json>'
-    );
+    console.error('Usage: node e2e/screenshots/take-screenshots.mjs <shots-config.json>');
     process.exit(1);
   }
 

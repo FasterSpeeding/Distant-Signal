@@ -37,8 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../../../');
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:3000';
-const SESSION_COOKIE =
-  process.env.E2E_SESSION_COOKIE ?? 'preview-demo-session-token-for-demo-user';
+const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE ?? 'preview-demo-session-token-for-demo-user';
 const OUT_DIR = process.env.SCREENSHOTS_OUT_DIR
   ? path.resolve(process.env.SCREENSHOTS_OUT_DIR)
   : path.join(__dirname, 'output');
@@ -89,7 +88,10 @@ async function applyAction(page, action) {
   switch (action.type) {
     case 'click':
       if (action.text) {
-        await page.getByText(action.text, { exact: action.exact ?? true }).first().click();
+        await page
+          .getByText(action.text, { exact: action.exact ?? true })
+          .first()
+          .click();
       } else if (action.selector) {
         await page.locator(action.selector).first().click();
       }

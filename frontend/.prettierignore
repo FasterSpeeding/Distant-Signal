@@ -1,0 +1,25 @@
+# Prettier is adopted file by file: everything is ignored except the files
+# un-ignored below, so `prettier --check .` (npm run format:check) covers
+# exactly those. To widen it, add a `!path` line. If the whole frontend is
+# ever adopted, keep the minified test/fixtures/**/*.json ignored.
+*
+!*/
+
+# Service worker (plain JS served from public/) and its test.
+!/public/sw.js
+!/public/sw-cache-rules.js
+!/public/sw-cache-rules.test.js
+!/types/service-worker.d.ts
+
+# Node-run scripts and JS configs.
+!/scripts/*.mjs
+!/e2e/screenshots/*.mjs
+!/eslint.config.mjs
+!/next.config.mjs
+!/next.config.test.js
+!/postcss.config.cjs
+
+# The configs that check them.
+!/tsconfig.scripts.json
+!/tsconfig.sw.json
+!/.prettierrc.json

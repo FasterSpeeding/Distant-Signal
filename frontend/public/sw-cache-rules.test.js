@@ -34,7 +34,10 @@ describe('isCacheable', () => {
 // FE-10
 describe('parsePushPayload', () => {
   it('returns the parsed object for a JSON payload', () => {
-    expect(parsePushPayload({ json: () => ({ title: 't', url: '/lines/x' }) })).toEqual({ title: 't', url: '/lines/x' });
+    expect(parsePushPayload({ json: () => ({ title: 't', url: '/lines/x' }) })).toEqual({
+      title: 't',
+      url: '/lines/x',
+    });
   });
 
   it('returns null, not a throw, for a non-JSON payload', () => {
