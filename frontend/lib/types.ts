@@ -608,9 +608,10 @@ export interface JourneyStop {
   // LDBWS's live departure board only ever reports a station's OWN
   // platform for a service departing FROM it, so this is known only for a
   // departing stop whose station is sampled by `poller-ldbws` and whose
-  // board currently lists this service (or the origin's pin-time snapshot)
-  // -- see `crates/api/src/data/journey.rs`'s `apply_origin_platform` and
-  // `apply_station_sample_platforms`. A terminating stop is always `null`.
+  // fresh board has exactly one row that is this service, the same match
+  // as `board` (or the origin's pin-time snapshot) -- see
+  // `crates/api/src/data/journey.rs`'s `apply_origin_platform` and
+  // `crates/api/src/data/stop_board.rs`. A terminating stop is always `null`.
   // `null` here means exactly "not known", never a fabricated value.
   platform: string | null;
   // The EARLIEST Darwin platform observed for this stop -- Darwin has no

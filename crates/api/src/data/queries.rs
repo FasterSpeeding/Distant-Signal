@@ -4451,8 +4451,8 @@ pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<St
 /// by the [`normalize_code`]d CRS (the same key normalization as
 /// [`station_names_for_crs_batch`]). A CRS with no row is simply absent
 /// from the map. One query regardless of how many calling points a train
-/// has -- backs `journey::apply_station_sample_platforms`, which needs every
-/// calling point's own departure board at once.
+/// has -- backs `routes::journeys`' per-leg Darwin ETA blend and skip
+/// flags. (Journey stops use [`station_samples_for_crs_or_tiplocs`].)
 pub async fn latest_station_samples_for_crs_batch(
     pool: &PgPool,
     crs_codes: &[String],
