@@ -212,6 +212,20 @@ pollerNirStations:
   internalOauthUsername: svc-poller-nir-stations
   internalOauthPassword: replace-me-poller-nir-stations-app-password
 
+# RDM Train Movements (Kafka). movement-relay is on by default and is the
+# only Kafka client; with movementRelay.kafka.* left empty it uses these
+# values and this credential. REQUIRED unless movementRelay.enabled=false.
+trustConsumer:
+  kafka:
+    brokers: kafka.example.com:9092
+    topic: TRAIN_MVT_ALL_TOC
+    # The RDM-issued group id. RDM issues one per account, and
+    # movement-relay holds it.
+    consumerGroup: SC-replace-me-rdm-consumer-group
+    saslMechanism: PLAIN
+    saslUsername: replace-me-rdm-kafka-username
+    saslPassword: replace-me-rdm-kafka-password
+
 metrics:
   podMonitor:
     # Exercises the PodMonitor template's enabled=true render path in CI

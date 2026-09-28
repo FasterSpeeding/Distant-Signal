@@ -4,17 +4,16 @@ Deploys the whole National Rail status stack into a single namespace: a
 bundled single-replica **PostgreSQL** StatefulSet, a bundled single-replica
 **Redis** (persistent by default — see "Using an external Redis" below),
 the **api**, the **aggregator**, the **enricher**, the **notifier**, the
-**frontend** and the three movement-stream consumers (**trust-consumer**,
-**full-coverage-consumer**, **trust-backlog-consumer**), plus these
-optional, off-by-default workloads:
+**frontend**, the three movement-stream consumers (**trust-consumer**,
+**full-coverage-consumer**, **trust-backlog-consumer**) and
+**movement-relay** (`movementRelay`), the one Kafka client for RDM's Train
+Movements feed, which fills the `movement-events` Redis stream the three
+consumers read. It also has these optional, off-by-default workloads:
 
 - five **pollers** under `pollers.*` — four Rail Data Marketplace pollers
   (incidents, stations, tocs, ldbws) plus a TfL Unified API poller (tfl);
 - three island-of-Ireland pollers (`pollerIrishRailGtfs`,
   `pollerIrishRailLive`, `pollerNirStations`);
-- **movement-relay** (`movementRelay`), the one Kafka client for RDM's
-  Train Movements feed, which fills the `movement-events` Redis stream the
-  three consumers read (they sit idle without it);
 - the **schedulefeed** pod (`scheduleFeed`): an SFTP server for the pushed
   CIF timetable delivery, with `schedule-ingest` and `schedule-reference`
   containers alongside it.
@@ -159,20 +158,26 @@ helm install distant-signal ./charts/distant-signal -n distant-signal --create-n
   --set api.sso.clientId=distant-signal \
   --set api.sso.clientSecret=your-oidc-client-secret \
   --set api.sso.redirectUrl=https://status.example.com/api/auth/callback \
-  --set api.sso.postLoginRedirectUrl=https://status.example.com/
+  --set api.sso.postLoginRedirectUrl=https://status.example.com/ \
+  --set trustConsumer.kafka.brokers=kafka.example.com:9092 \
+  --set trustConsumer.kafka.topic=TRAIN_MVT_ALL_TOC \
+  --set trustConsumer.kafka.consumerGroup=SC-your-rdm-group-id \
+  --set trustConsumer.kafka.saslMechanism=PLAIN \
+  --set trustConsumer.kafka.saslUsername=your-rdm-kafka-username \
+  --set trustConsumer.kafka.saslPassword=your-rdm-kafka-password
 ```
 
 An install brings up **postgres + redis + api + aggregator + enricher +
 notifier + frontend + trust-consumer + full-coverage-consumer +
-trust-backlog-consumer**, with **every poller, movement-relay and the
+trust-backlog-consumer + movement-relay**, with **every poller and the
 schedulefeed pod off**. See "Enabling the pollers" below for why the
-pollers are off. The three consumers read the `movement-events` Redis
-stream, which stays empty until `movementRelay.enabled` is set.
+pollers are off.
 
-`enricher.llm.baseUrl`, `enricher.llm.model` and the five `api.sso.*`
-values above are the chart's **required** values; everything else has a
-working default. Leaving any of them empty **aborts the render** with an
-explicit message rather than deploying a pod that cannot work:
+`enricher.llm.baseUrl`, `enricher.llm.model`, the five `api.sso.*` values
+and the RDM Train Movements Kafka connection above are the chart's
+**required** values; everything else has a working default. Leaving any of
+them empty **aborts the render** with an explicit message rather than
+deploying a pod that cannot work:
 
 - The enricher has no `enabled` toggle, and `baseUrl`/`model` become plain
   (non-optional) env vars on its binary, so an empty value would deploy a
@@ -182,6 +187,19 @@ explicit message rather than deploying a pod that cannot work:
   `crates/api/src/data/config.rs`, so an api container missing any of them
   exits immediately with "the following required arguments were not
   provided" and `CrashLoopBackOff`s. See "Single sign-on (OIDC)" below.
+- movement-relay is on by default because the three consumers read only
+  the stream it writes. Each `movementRelay.kafka.*` value that is left
+  empty falls back to the matching `trustConsumer.kafka.*` value (brokers,
+  topic, consumer group, SASL mechanism), and without a credential of its
+  own it reads trust-consumer's SASL credential, so the one
+  `trustConsumer.kafka.*` block above configures it. The render fails if
+  neither block has brokers, topic, consumer group and SASL mechanism. For
+  an install that does not ingest TRUST train movements, set
+  `movementRelay.enabled=false` instead; the three consumers then run on
+  an empty stream. The render also fails if `trustConsumer.movementFeed`
+  or `fullCoverageConsumer.movementFeed` is `kafka` and that consumer
+  shares movement-relay's consumer group, since two members of one group
+  split its partitions.
 
 The enricher is a strictly additive signal: its extractions only adjust
 the severity an incident already gives a line (a high-confidence
