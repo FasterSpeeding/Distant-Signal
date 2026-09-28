@@ -372,12 +372,13 @@ databasePool:
 # ---------------------------------------------------------------------------
 # Rail Data Marketplace pollers
 # ---------------------------------------------------------------------------
-# ALL FIVE ARE DISABLED BY DEFAULT. As documented in local.env.example, no
-# confirmed RDM endpoint exists for any of the four RDM feeds -- every RDM
-# base URL in the repository today is a deliberately non-functional
-# `*.example.invalid` placeholder. A default install therefore works
-# immediately, instead of four pods logging connection failures. `tfl` (not
-# an RDM feed) has a real default baseUrl but is off by default too.
+# ALL FIVE ARE DISABLED BY DEFAULT. The four RDM feeds are real and
+# production runs all four, but each base URL and API key comes from the
+# operator's own Rail Data Marketplace subscription (the repository owner
+# accepted the RDM terms for the current and planned use on 2026-09-27), so
+# the chart ships no default `baseUrl` for them. A default install therefore
+# works immediately, instead of four pods that cannot authenticate. `tfl`
+# (not an RDM feed) has a real default baseUrl but is off by default too.
 #
 # Enabling a poller without setting its `baseUrl` aborts rendering with an
 # explicit message rather than deploying a pod that cannot work.

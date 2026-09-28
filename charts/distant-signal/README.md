@@ -819,13 +819,14 @@ redis get no egress policy.
 (`/private/sample-stations`), which is a second api endpoint separate from
 its ingest path.
 
-**All five are disabled by default.** For the four RDM pollers, as
-documented in `local.env.example`, no confirmed Rail Data Marketplace
-endpoint exists for any of the four feeds — every RDM base URL in the
-repository today is a deliberately non-functional `*.example.invalid`
-placeholder, so `pollers.<name>.baseUrl` defaults to `""`. A default install
-therefore works immediately instead of running four pods that log
-connection failures. `tfl` has a working default `baseUrl`
+**All five are disabled by default.** The four RDM feeds are real, and
+production runs all four, but each base URL and API key comes from the
+operator's own Rail Data Marketplace subscription (the repository owner
+accepted the RDM terms for the current and planned use on 2026-09-27). The
+chart therefore ships no RDM base URL: `pollers.<name>.baseUrl` defaults to
+`""`, and `local.env.example` uses non-resolving `*.example.invalid`
+placeholders. A default install works immediately instead of running four
+pods that cannot authenticate. `tfl` has a working default `baseUrl`
 (`https://api.tfl.gov.uk`) but is still off by default; it reads its
 subscription key from `TFL_APP_KEY` rather than `RDM_API_KEY`.
 

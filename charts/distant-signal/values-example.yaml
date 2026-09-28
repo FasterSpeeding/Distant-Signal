@@ -2,10 +2,10 @@
 #
 #   helm template distant-signal ./charts/distant-signal -f charts/distant-signal/values-example.yaml
 #
-# Every RDM base URL below is still a placeholder host -- as of this chart's
-# writing no confirmed Rail Data Marketplace endpoint exists for any of the
-# four feeds (see .env.example in the repository root). Replace them, and the
-# API keys, with real values before installing this for real.
+# Every RDM base URL below is a placeholder host. Replace them, and the API
+# keys, with the real product URLs and keys from your Rail Data Marketplace
+# subscription before installing this for real (production runs all four RDM
+# pollers; see local.env.example in the repository root).
 
 imagePullSecrets:
   - name: registry-creds
