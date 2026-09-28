@@ -14,9 +14,9 @@
 //! (0-indexed, half-open, e.g. `63 65` to try the sibling's own hypothesis).
 //!
 //! A byte range is a good candidate when the printed distribution looks
-//! like the sibling project's own independently-measured real shape
-//! (`docs/superpowers/specs/2026-07-22-train-mcp-phase2b-journey-planner-design.md:74`):
-//! mostly single-digit values, a clear mode around 5, and a small number
+//! like the real shape the sibling train-mcp project measured
+//! independently (its phase-2b journey-planner design, not in this
+//! repository): mostly single-digit values, a clear mode around 5, and a small number
 //! (order of ten, not hundreds) of 98/99 outliers. A range producing
 //! double-digit values across most stations, or a huge spread, is wrong.
 use std::collections::BTreeMap;

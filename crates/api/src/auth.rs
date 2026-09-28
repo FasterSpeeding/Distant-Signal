@@ -457,9 +457,9 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
 /// own `groups` (the already-decoded OIDC `groups` claim, upserted onto
 /// `users.groups` on every login -- see `data::users::upsert_user`) contain
 /// the configured `ServiceArguments::chatbot_access_group`? This is the
-/// DS-hosted embedded chatbot's access gate, embedded-chatbot-dual-mode-
-/// design's Decision 5. See
-/// `docs/superpowers/plans/2026-09-02-embedded-chatbot-option-b.md` Task 2.
+/// DS-hosted embedded chatbot's access gate (embedded-chatbot-dual-mode
+/// design, Decision 5; see
+/// `docs/superpowers/specs/2026-09-02-embedded-chatbot-option-b-client-side-tokens-design.md`).
 ///
 /// Formerly backed by a per-user `chatbot_allowed_users` DB allowlist
 /// (`data::users::is_chatbot_allowed`, an extra async DB round trip); now a

@@ -39,9 +39,8 @@ pub struct AppState {
     /// dimension) previously let EITHER caller's token authorize BOTH
     /// methods on this route -- trust-consumer's read-only token could
     /// `POST` (corrupt the reference table), and schedule-reference's
-    /// write token could `GET` -- see
-    /// docs/superpowers/plans/2026-09-02-internal-service-oauth2.md's
-    /// security review. Every other route in this table happens to have
+    /// write token could `GET` (found in the internal-service OAuth2
+    /// security review). Every other route in this table happens to have
     /// exactly one caller today, so its entry (or entries, for a caller
     /// that legitimately uses both `GET` and `POST` on the same path)
     /// carries only that caller's group regardless -- see
