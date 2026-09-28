@@ -14,11 +14,7 @@ export const revalidate = 0;
  * which does) -- every field and control here is owner-only by
  * construction, since `GET /JourneyTemplates/{id}` itself 404s for
  * anyone but the owner. */
-export default async function JourneyTemplateDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function JourneyTemplateDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!/^\d+$/.test(id)) {
     notFound();

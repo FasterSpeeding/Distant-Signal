@@ -83,11 +83,9 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
   });
 
-  it('renders the station\'s disruptions normally', async () => {
+  it("renders the station's disruptions normally", async () => {
     await renderPage();
-    expect(
-      screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'East Coast Main Line' })).toBeInTheDocument();
   });
 
@@ -100,9 +98,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     vi.mocked(api.getStopPointDisruption).mockRejectedValue(new Error('connect ECONNREFUSED'));
 
     await renderPage();
-    expect(
-      screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'East Coast Main Line' })).toBeInTheDocument();
   });
 
@@ -116,9 +112,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     vi.mocked(api.getPreferences).mockRejectedValue(new Error('500'));
 
     await renderPage();
-    expect(
-      screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 })).toBeInTheDocument();
   });
 
   it('renders the collapsed Scheduled departures section', async () => {
@@ -160,9 +154,7 @@ describe('StationDisruptionPage -- line-coverage distinction', () => {
     await renderPage('RAY');
 
     expect(screen.getByText('No disruptions affecting this station.')).toBeInTheDocument();
-    expect(
-      screen.queryByText("This station isn't covered by our line-status tracking yet."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("This station isn't covered by our line-status tracking yet.")).not.toBeInTheDocument();
   });
 
   it('still throws (and is not swallowed as "no coverage") for a non-404 failure with nothing cached', async () => {
@@ -296,9 +288,7 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
 
     await renderPage();
 
-    expect(
-      screen.getByText("We don't have station reference data for this station yet."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("We don't have station reference data for this station yet.")).toBeInTheDocument();
     expect(
       screen.queryByText('No accessibility or facilities details have been published for this station.'),
     ).not.toBeInTheDocument();
@@ -312,9 +302,7 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     expect(
       screen.getByText('No accessibility or facilities details have been published for this station.'),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("We don't have station reference data for this station yet."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("We don't have station reference data for this station yet.")).not.toBeInTheDocument();
   });
 
   it('renders grouped headings and at least one rendered value for a populated response, end to end through the real component tree', async () => {
@@ -334,12 +322,8 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     // section's h2 -> its now-promoted h3 group titles, with no level
     // skipped in between.
     expect(screen.getByRole('heading', { level: 1, name: 'London Kings Cross (KGX)' })).toBeInTheDocument();
-    expect(
-      screen.getByRole('heading', { level: 2, name: 'Accessibility & facilities' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('heading', { level: 3, name: 'Step-free access & assistance' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Accessibility & facilities' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: 'Step-free access & assistance' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 3, name: 'Getting here' })).toBeInTheDocument();
   });
 
@@ -421,17 +405,13 @@ describe('generateMetadata', () => {
   it('describes a station with zero line coverage', async () => {
     vi.mocked(api.getStopPointDisruption).mockRejectedValue(new ApiNotFoundError('no line coverage'));
     const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
-    expect(metadata.description).toBe(
-      'London Kings Cross (KGX): not currently covered by our line-status tracking.',
-    );
+    expect(metadata.description).toBe('London Kings Cross (KGX): not currently covered by our line-status tracking.');
   });
 
   it('calls notFound() for an unknown station, matching the page component', async () => {
     vi.mocked(api.getStationName).mockResolvedValue(null);
     notFoundMock.mockClear();
-    await expect(generateMetadata({ params: Promise.resolve({ crs: 'ZZZ' }) })).rejects.toThrow(
-      'NEXT_NOT_FOUND',
-    );
+    await expect(generateMetadata({ params: Promise.resolve({ crs: 'ZZZ' }) })).rejects.toThrow('NEXT_NOT_FOUND');
     expect(notFoundMock).toHaveBeenCalled();
   });
 });

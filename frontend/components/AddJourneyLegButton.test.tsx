@@ -25,7 +25,7 @@ describe('AddJourneyLegButton', () => {
     vi.useRealTimers();
   });
 
-  it('defaults the service date to London\'s today, not the host zone\'s (FE-4)', async () => {
+  it("defaults the service date to London's today, not the host zone's (FE-4)", async () => {
     // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));

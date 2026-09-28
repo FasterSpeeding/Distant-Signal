@@ -92,7 +92,11 @@ describe('legalPageMetadata', () => {
 // LEG-28 / DQ7: the privacy notice follows the api's retention settings.
 describe('retentionPolicy', () => {
   it('defaults to the chart defaults (inactive-account deletion off)', () => {
-    expect(retentionPolicy({})).toEqual({ pastTravelDays: 548, stalePushSubscriptionDays: 365, inactiveAccountDays: 0 });
+    expect(retentionPolicy({})).toEqual({
+      pastTravelDays: 548,
+      stalePushSubscriptionDays: 365,
+      inactiveAccountDays: 0,
+    });
   });
 
   it('reads the values the chart copies from the api', () => {

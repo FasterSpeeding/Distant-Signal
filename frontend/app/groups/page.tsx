@@ -108,8 +108,8 @@ export default async function GroupsPage() {
               being invited -- which the page previously never mentioned at
               all. */}
           <Text>
-            You&apos;re not in any groups yet. Create one to share journeys and custom lines with other people —
-            or ask a group member to send you their invite link if you&apos;re joining an existing one.
+            You&apos;re not in any groups yet. Create one to share journeys and custom lines with other people — or ask
+            a group member to send you their invite link if you&apos;re joining an existing one.
           </Text>
           <Link href="/groups/new" style={{ textDecoration: 'none' }}>
             <Button>Create a group</Button>
@@ -143,11 +143,7 @@ function GroupRow({ group }: { group: GroupSummary }) {
   // precedent (`@tabler/icons-react` isn't a project dependency -- see
   // `components/InfoIcon.tsx`'s doc comment for the same check).
   return (
-    <Link
-      href={`/groups/${group.id}`}
-      style={{ textDecoration: 'none', color: 'inherit' }}
-      data-group-card-link
-    >
+    <Link href={`/groups/${group.id}`} style={{ textDecoration: 'none', color: 'inherit' }} data-group-card-link>
       <Card withBorder data-group-card>
         <Group justify="space-between" wrap="nowrap">
           <Text fw={500}>{group.name}</Text>

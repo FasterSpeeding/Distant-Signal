@@ -158,10 +158,7 @@ export function IssueList({
   const severityLabelId = useId();
   const sourceLabelId = useId();
   const statuses = useMemo(() => items.map((item) => item.status), [items]);
-  const linesByStatus = useMemo(
-    () => new Map(items.map((item) => [item.status, item.lines ?? []])),
-    [items],
-  );
+  const linesByStatus = useMemo(() => new Map(items.map((item) => [item.status, item.lines ?? []])), [items]);
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
   // Review §2.14: only offer a Source chip for a source actually present in
   // THIS loaded report, rather than every source `DATA_QUALITY_LABELS`
@@ -189,10 +186,7 @@ export function IssueList({
   // constraint `LastUpdated` and `ThemeToggle` document — while still
   // letting the buckets depend on real dates. `AutoRefresh`'s 30s
   // `router.refresh()` re-stamps it, so it does not go stale.
-  const buckets = useMemo(
-    () => new Map(statuses.map((status) => [status, bucketFor(status, now)])),
-    [statuses, now],
-  );
+  const buckets = useMemo(() => new Map(statuses.map((status) => [status, bucketFor(status, now)])), [statuses, now]);
 
   // Landing tab, decided once on mount (lazy initialiser) rather than
   // derived on every render. "Active" is the right place to open on a line
@@ -312,12 +306,7 @@ export function IssueList({
         <ChipGroup multiple value={sourceFilter} onChange={setSourceFilter}>
           <Group gap="xs" role="group" aria-labelledby={sourceLabelId}>
             {sourceOptions.map(([value, label]) => (
-              <Chip
-                key={value}
-                value={value}
-                size="xs"
-                variant={sourceFilter.includes(value) ? 'filled' : 'outline'}
-              >
+              <Chip key={value} value={value} size="xs" variant={sourceFilter.includes(value) ? 'filled' : 'outline'}>
                 {label}
               </Chip>
             ))}
@@ -334,12 +323,7 @@ export function IssueList({
       <Stack gap="xs">
         {showFilterDisclosure ? (
           <Stack gap={4}>
-            <Button
-              variant="subtle"
-              size="compact-xs"
-              onClick={toggleFilters}
-              aria-expanded={filtersOpened}
-            >
+            <Button variant="subtle" size="compact-xs" onClick={toggleFilters} aria-expanded={filtersOpened}>
               {filtersOpened
                 ? 'Hide filters'
                 : filterSelectionCount > 0
@@ -505,7 +489,11 @@ export function IssueList({
               <Stack gap="xs">
                 {(linesByStatus.get(status) ?? []).length > 1 && (
                   <Text size="sm" c="dimmed">
-                    Affects: {linesByStatus.get(status)!.map((line) => line.name).join(', ')}
+                    Affects:{' '}
+                    {linesByStatus
+                      .get(status)!
+                      .map((line) => line.name)
+                      .join(', ')}
                   </Text>
                 )}
                 <Text size="sm" c="dimmed">

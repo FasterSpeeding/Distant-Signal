@@ -31,7 +31,9 @@ describe('ScheduleRow', () => {
   // "Name (CODE)" convention.
   it('renders a resolved destination name alongside its code', () => {
     renderWithMantine(
-      <ScheduleRow row={row({ scheduled: '14:40', destinationCrs: 'BSK', destinationName: 'Basingstoke', operator: 'SW' })} />,
+      <ScheduleRow
+        row={row({ scheduled: '14:40', destinationCrs: 'BSK', destinationName: 'Basingstoke', operator: 'SW' })}
+      />,
     );
     expect(screen.getByText('14:40 · Basingstoke (BSK) · SW')).toBeInTheDocument();
   });

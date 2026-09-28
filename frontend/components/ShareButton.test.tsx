@@ -67,9 +67,7 @@ describe('ShareButton', () => {
     fireEvent.click(screen.getByLabelText('Share this page'));
 
     await waitFor(() => {
-      expect(shareMock).toHaveBeenCalledWith(
-        expect.objectContaining({ url: window.location.href }),
-      );
+      expect(shareMock).toHaveBeenCalledWith(expect.objectContaining({ url: window.location.href }));
     });
   });
 

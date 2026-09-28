@@ -9,14 +9,7 @@
  * Kept as one constant rather than a per-page literal because both list
  * pages need the same set, and a page that quietly omits a mode looks
  * exactly like a mode with no disruptions. */
-export const DISPLAYED_MODES = [
-  'national-rail',
-  'tube',
-  'dlr',
-  'overground',
-  'elizabeth-line',
-  'tram',
-] as const;
+export const DISPLAYED_MODES = ['national-rail', 'tube', 'dlr', 'overground', 'elizabeth-line', 'tram'] as const;
 
 /** The value to interpolate into `/Line/Mode/{modes}/Status`. TfL's own API
  * takes a comma-separated list here and this one mimics it, so all six

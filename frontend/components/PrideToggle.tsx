@@ -7,15 +7,7 @@ import { useEffect, useState } from 'react';
 const STORAGE_KEY = 'pride-mode';
 
 type PrideMode =
-  | 'off'
-  | 'rainbow'
-  | 'trans'
-  | 'nonbinary'
-  | 'bisexual'
-  | 'pansexual'
-  | 'asexual'
-  | 'sapphic'
-  | 'lesbian';
+  'off' | 'rainbow' | 'trans' | 'nonbinary' | 'bisexual' | 'pansexual' | 'asexual' | 'sapphic' | 'lesbian';
 
 /** Cycle order: rainbow (the umbrella flag) and trans first, since those
  * two already existed; then non-binary right after trans -- both are
@@ -46,13 +38,11 @@ const SWATCH_GRADIENTS: Record<PrideMode, string> = {
   rainbow: 'linear-gradient(to right, #e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303)',
   trans: 'linear-gradient(to right, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa)',
   nonbinary: 'linear-gradient(to right, #fcf434, #ffffff, #9c59d1, #2c2c2c, #fcf434)',
-  bisexual:
-    'linear-gradient(to right, #d60270 0%, #d60270 40%, #9b4f96 40%, #9b4f96 60%, #0038a8 60%, #0038a8 100%)',
+  bisexual: 'linear-gradient(to right, #d60270 0%, #d60270 40%, #9b4f96 40%, #9b4f96 60%, #0038a8 60%, #0038a8 100%)',
   pansexual: 'linear-gradient(to right, #ff218c, #ffd800, #21b1ff, #ff218c)',
   asexual: 'linear-gradient(to right, #000000, #a3a3a3, #ffffff, #800080, #000000)',
   sapphic: 'linear-gradient(to right, #fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8, #fd8ba8)',
-  lesbian:
-    'linear-gradient(to right, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00)',
+  lesbian: 'linear-gradient(to right, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00)',
 };
 
 const SPARKLES: Record<Exclude<PrideMode, 'off'>, [string, string, string]> = {
@@ -138,11 +128,13 @@ export function PrideToggle() {
     <span style={{ position: 'relative', display: 'inline-flex' }}>
       <ActionIcon
         variant="outline"
-        onClick={() => setMode((prev) => {
-          const next = NEXT_MODE[prev];
-          localStorage.setItem(STORAGE_KEY, next);
-          return next;
-        })}
+        onClick={() =>
+          setMode((prev) => {
+            const next = NEXT_MODE[prev];
+            localStorage.setItem(STORAGE_KEY, next);
+            return next;
+          })
+        }
         aria-pressed={displayedMode !== 'off'}
         aria-label={`Pride mode: ${displayedMode}. Click to toggle.`}
       >

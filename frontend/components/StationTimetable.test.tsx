@@ -27,9 +27,7 @@ const PAGE_ONE = [
   { uid: 'C10002', scheduled: '10:05', stationCrs: 'RDG', originCrs: 'WAT', destinationCrs: 'EXD' },
 ];
 
-const PAGE_TWO = [
-  { uid: 'C10003', scheduled: '11:40', stationCrs: 'RDG', originCrs: 'PAD', destinationCrs: 'BRI' },
-];
+const PAGE_TWO = [{ uid: 'C10003', scheduled: '11:40', stationCrs: 'RDG', originCrs: 'PAD', destinationCrs: 'BRI' }];
 
 function expand() {
   return screen.getByRole('button', { name: 'Scheduled departures' });
@@ -79,7 +77,10 @@ describe('StationTimetable', () => {
     // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
@@ -97,7 +98,9 @@ describe('StationTimetable', () => {
       vi.fn(() =>
         Promise.resolve(
           new Response(
-            searchBody([{ uid: 'C99999', scheduled: '09:00', stationCrs: 'RDG', originCrs: null, destinationCrs: 'BRI' }]),
+            searchBody([
+              { uid: 'C99999', scheduled: '09:00', stationCrs: 'RDG', originCrs: null, destinationCrs: 'BRI' },
+            ]),
             { status: 200 },
           ),
         ),
@@ -111,7 +114,10 @@ describe('StationTimetable', () => {
   });
 
   it('shows the "no matches today" copy for a 200 with an empty results array', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody([]), { status: 200 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody([]), { status: 200 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
@@ -120,41 +126,47 @@ describe('StationTimetable', () => {
   });
 
   it('shows the "not available yet" copy on a 404, distinct from the empty-results copy', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('not found', { status: 404 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('not found', { status: 404 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
 
-    expect(
-      await screen.findByText("Today's scheduled timetable data isn't available yet."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Today's scheduled timetable data isn't available yet.")).toBeInTheDocument();
     expect(screen.queryByText('No scheduled departures found for the rest of today.')).not.toBeInTheDocument();
   });
 
   it('shows an error alert on a non-2xx, non-404 response', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('boom', { status: 500 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('boom', { status: 500 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
 
-    expect(
-      await screen.findByText("Couldn't load the scheduled departures right now."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load the scheduled departures right now.")).toBeInTheDocument();
   });
 
   it('shows an error alert when fetch itself throws', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('network down'))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error('network down'))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
 
-    expect(
-      await screen.findByText("Couldn't load the scheduled departures right now."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load the scheduled departures right now.")).toBeInTheDocument();
   });
 
   it('shows Load more when nextCursor is non-null, and none when it is null', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE, null), { status: 200 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE, null), { status: 200 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
     fireEvent.click(expand());
     await screen.findByText('08:22 · PAD → RDG → BRI');
@@ -179,9 +191,7 @@ describe('StationTimetable', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
-    expect(
-      await screen.findByText("You've reached the end — no more scheduled departures today."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
   });
 
   it('does not claim the end of results when a "Load more" page fails -- it reports the failure and keeps the retry', async () => {
@@ -268,13 +278,14 @@ describe('StationTimetable', () => {
     fireEvent.click(expand()); // re-expand
 
     await screen.findByText('08:22 · PAD → RDG → BRI');
-    await waitFor(() =>
-      expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument());
   });
 
   it('shows neither Load more nor the end-of-results line when the first page came back empty', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody([]), { status: 200 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody([]), { status: 200 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
@@ -370,7 +381,10 @@ describe('StationTimetable', () => {
   });
 
   it('shows a disclaimer above the rows once expanded with results', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
@@ -381,7 +395,10 @@ describe('StationTimetable', () => {
   });
 
   it('offers a link to the full /trains search, prefilled with this station, regardless of expand state', () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     expect(screen.getByRole('link', { name: /Search a different day or filter/ })).toHaveAttribute(
@@ -391,7 +408,10 @@ describe('StationTimetable', () => {
   });
 
   it('notes that trains terminating at this station will not appear, and that no headcode/operator is shown', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))),
+    );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     // This copy lives inside the AccordionPanel alongside the disclaimer

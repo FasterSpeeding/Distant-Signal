@@ -22,12 +22,7 @@ import { NationalRailCredit } from '@/components/NationalRailCredit';
 import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
-import type {
-  LineStatusReport,
-  Preferences,
-  StationAccessibilityData,
-  StationOperatorSampleStats,
-} from '@/lib/types';
+import type { LineStatusReport, Preferences, StationAccessibilityData, StationOperatorSampleStats } from '@/lib/types';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -36,10 +31,7 @@ import type {
  * button. An unknown code must 404; a lookup that merely failed must still
  * keep falling back to the bare CRS, since the disruption data is what
  * this page is actually for. */
-type StationLookup =
-  | { outcome: 'found'; name: string }
-  | { outcome: 'unknown' }
-  | { outcome: 'unavailable' };
+type StationLookup = { outcome: 'found'; name: string } | { outcome: 'unknown' } | { outcome: 'unavailable' };
 
 /** Every CRS code is exactly three letters, so a malformed one is answered
  * without troubling the API at all. */
@@ -94,8 +86,7 @@ async function fetchStationDisruptions(crs: string): Promise<StationDisruptions>
  * `fetchStationDisruptions`'s own 404-vs-other-failure split. See
  * docs/superpowers/specs/2026-09-03-per-station-stats-design.md Decision 9. */
 type StationSampleStatsResult =
-  | { coverage: 'not-sampled' }
-  | { coverage: 'sampled'; operatorStats: StationOperatorSampleStats[] };
+  { coverage: 'not-sampled' } | { coverage: 'sampled'; operatorStats: StationOperatorSampleStats[] };
 
 async function fetchStationSampleStats(crs: string): Promise<StationSampleStatsResult> {
   try {
@@ -125,9 +116,7 @@ async function fetchStationSampleStats(crs: string): Promise<StationSampleStatsR
  * distinct copy is what the spec asks for regardless -- don't "simplify" it
  * away on the grounds that it looks unreachable. */
 type StationAccessibilityResult =
-  | { coverage: 'unavailable' }
-  | { coverage: 'empty' }
-  | { coverage: 'present'; data: StationAccessibilityData };
+  { coverage: 'unavailable' } | { coverage: 'empty' } | { coverage: 'present'; data: StationAccessibilityData };
 
 async function fetchStationAccessibility(crs: string): Promise<StationAccessibilityResult> {
   try {
@@ -146,11 +135,7 @@ async function fetchStationAccessibility(crs: string): Promise<StationAccessibil
  * this render, same reasoning as the equivalent, more detailed comment on
  * `app/train/[uid]/[date]/page.tsx`'s `generateMetadata`. Mirrors the page
  * component's own `notFound()`-for-an-unknown-CRS handling. */
-export async function generateMetadata({
-  params,
-}: {
-  params: Promise<{ crs: string }>;
-}): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ crs: string }> }): Promise<Metadata> {
   const { crs } = await params;
 
   const lookup = await lookupStation(crs);
@@ -168,13 +153,10 @@ export async function generateMetadata({
   } else if (reports.length === 0) {
     description = `${heading}: no disruptions currently affecting this station.`;
   } else {
-    const worst = reports.reduce(
-      (acc, report) => {
-        const candidate = worstStatus(report);
-        return severityRank(candidate.statusSeverity) > severityRank(acc.statusSeverity) ? candidate : acc;
-      },
-      worstStatus(reports[0]),
-    );
+    const worst = reports.reduce((acc, report) => {
+      const candidate = worstStatus(report);
+      return severityRank(candidate.statusSeverity) > severityRank(acc.statusSeverity) ? candidate : acc;
+    }, worstStatus(reports[0]));
     description = `${heading}: ${severityLabel(worst.statusSeverity)} reported.`;
   }
 
@@ -186,11 +168,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function StationDisruptionPage({
-  params,
-}: {
-  params: Promise<{ crs: string }>;
-}) {
+export default async function StationDisruptionPage({ params }: { params: Promise<{ crs: string }> }) {
   const { crs } = await params;
 
   // Deliberately awaited before the disruption fetch rather than in

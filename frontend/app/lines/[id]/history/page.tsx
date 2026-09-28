@@ -103,10 +103,7 @@ export default async function LineHistoryPage({
 
   // eslint-disable-next-line react-hooks/purity -- server component: one timestamp per request, passed down so SSR and hydration agree
   const now = Date.now();
-  const [name, retention] = await Promise.all([
-    resolveLineName(id),
-    resolveRetention(),
-  ]);
+  const [name, retention] = await Promise.all([resolveLineName(id), resolveRetention()]);
   const range = resolveRange(query, now);
   const shortfallDays = retentionShortfallDays(range, retention.historyRetentionDays, now);
 
@@ -119,7 +116,9 @@ export default async function LineHistoryPage({
   const granularity = resolveGranularity(query, rangeWidthMs, ceilings);
   const granularityShortfall = granularityShortfallDays(range, granularity, ceilings, now);
   const retentionDaysForGranularity =
-    granularity === 'day' ? retention.dailyStatsRetentionDays : Math.floor(retention.halfHourlyStatsRetentionHours / 24);
+    granularity === 'day'
+      ? retention.dailyStatsRetentionDays
+      : Math.floor(retention.halfHourlyStatsRetentionHours / 24);
 
   return (
     <Stack p="lg" gap="md">
@@ -164,10 +163,9 @@ export default async function LineHistoryPage({
             {shortfallDays !== null && (
               <Alert color="yellow" variant="light" title="Some of this range isn't available">
                 This server only keeps {retention.historyRetentionDays}{' '}
-                {retention.historyRetentionDays === 1 ? 'day' : 'days'} of line
-                history. The oldest {shortfallDays} {shortfallDays === 1 ? 'day' : 'days'} of the range you
-                picked has already been removed — if this range looks empty or short, that may be why,
-                not because nothing happened.
+                {retention.historyRetentionDays === 1 ? 'day' : 'days'} of line history. The oldest {shortfallDays}{' '}
+                {shortfallDays === 1 ? 'day' : 'days'} of the range you picked has already been removed — if this range
+                looks empty or short, that may be why, not because nothing happened.
               </Alert>
             )}
             {/* The results are always rendered now, so without a Suspense
@@ -232,9 +230,8 @@ export default async function LineHistoryPage({
               <Alert color="yellow" variant="light" title="Some of this range isn't available at this granularity">
                 This server only keeps {retentionDaysForGranularity}{' '}
                 {retentionDaysForGranularity === 1 ? 'day' : 'days'} of data at this granularity. The oldest{' '}
-                {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of the range you picked has
-                already been removed — if this range looks empty or short, that may be why, not because nothing
-                happened.
+                {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of the range you picked has already
+                been removed — if this range looks empty or short, that may be why, not because nothing happened.
               </Alert>
             )}
             <Suspense
@@ -399,9 +396,7 @@ export async function HistoryResults({
               </div>
               <div className="issueRow__meta">
                 <Text size="xs" c="dimmed">
-                  {span.from === span.to
-                    ? formatTime(span.from)
-                    : `${formatTime(span.from)}–${formatTime(span.to)}`}
+                  {span.from === span.to ? formatTime(span.from) : `${formatTime(span.from)}–${formatTime(span.to)}`}
                 </Text>
               </div>
             </div>

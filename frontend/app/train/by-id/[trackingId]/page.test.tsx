@@ -101,9 +101,7 @@ describe('TrackedTrainByIdPage error handling', () => {
     // Task 3.6.10: never the raw internal `trackingId` as a "train name"
     // pre-auth -- this route can't disclose anything more than "someone
     // tracks a train here" before the visitor logs in as its owner.
-    expect(
-      screen.getByRole('heading', { name: "Someone's tracked train — log in to see it" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Someone's tracked train — log in to see it" })).toBeInTheDocument();
     expect(screen.queryByText(/Tracking Train 42/)).not.toBeInTheDocument();
   });
 
@@ -159,10 +157,7 @@ describe('TrackedTrainByIdPage success path', () => {
     );
     await renderPage('42');
     const link = screen.getByRole('link', { name: /View on Real Time Trains/ });
-    expect(link).toHaveAttribute(
-      'href',
-      'https://www.realtimetrains.co.uk/service/gb-nr:W12345/2026-08-31/detailed',
-    );
+    expect(link).toHaveAttribute('href', 'https://www.realtimetrains.co.uk/service/gb-nr:W12345/2026-08-31/detailed');
   });
 
   // Mirrors RealTimeTrainsLink's own null-trainUid gating -- a pending pin

@@ -450,9 +450,7 @@ describe('EditJourneyTemplateForm', () => {
       fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
       renderWithMantine(
-        <EditJourneyTemplateForm
-          template={template({ defaultMatchMode: 'auto', autoCommitRule: 'nearest_to_now' })}
-        />,
+        <EditJourneyTemplateForm template={template({ defaultMatchMode: 'auto', autoCommitRule: 'nearest_to_now' })} />,
       );
       fireEvent.click(screen.getByRole('radio', { name: "Remind me, don't guess" }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));

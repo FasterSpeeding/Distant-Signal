@@ -42,7 +42,10 @@ type SwScope = {
     matchAll: () => Promise<unknown[]>;
     openWindow: (url: string) => Promise<unknown>;
   };
-  PushEvent: new (type: string, init: { data?: string }) => Event & {
+  PushEvent: new (
+    type: string,
+    init: { data?: string },
+  ) => Event & {
     waitUntil: (p: Promise<unknown>) => unknown;
   };
   location: Location;
@@ -113,7 +116,10 @@ test.describe('push notification handlers (sw.js)', () => {
     });
 
     expect(calls).toEqual([
-      { title: 'Bakerloo line', options: { body: 'Severe delays', tag: 'line-bakerloo', data: { url: '/lines/bakerloo' } } },
+      {
+        title: 'Bakerloo line',
+        options: { body: 'Severe delays', tag: 'line-bakerloo', data: { url: '/lines/bakerloo' } },
+      },
     ]);
   });
 

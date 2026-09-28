@@ -93,7 +93,7 @@ describe('link colour', () => {
     expect(contrast(GRAPE_6, WHITE)).toBeLessThan(AA_BODY_TEXT);
   });
 
-  it('clears AA for body text -- and, via lib/theme.ts\'s variantColorResolver, for filled surfaces -- in the light scheme', () => {
+  it("clears AA for body text -- and, via lib/theme.ts's variantColorResolver, for filled surfaces -- in the light scheme", () => {
     expect(contrast(GRAPE_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
   });
 
@@ -172,12 +172,9 @@ describe('filled-surface contrast under autoContrast', () => {
     return luminance(bg) > threshold ? '#000000' : '#ffffff';
   }
 
-  it.each(PALETTE)(
-    '%s-%i clears AA for body text with the autoContrast-chosen label colour',
-    (name, shade, hex) => {
-      expect(contrast(hex, autoContrastText(hex, theme.luminanceThreshold!))).toBeGreaterThanOrEqual(AA_BODY_TEXT);
-    },
-  );
+  it.each(PALETTE)('%s-%i clears AA for body text with the autoContrast-chosen label colour', (name, shade, hex) => {
+    expect(contrast(hex, autoContrastText(hex, theme.luminanceThreshold!))).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+  });
 
   it('keeps the threshold inside the window where BOTH branches clear AA', () => {
     // The real guarantee: any threshold in [0.1750, 0.1833] is AA-correct
@@ -241,9 +238,7 @@ describe('dimmed body text contrast', () => {
   // at the same failing 3.32:1 until axe caught it against the
   // banner-visible state (e2e/connectivity-banner.spec.ts).
   it('also lifts a titled Notification description off gray 6 in the light scheme', () => {
-    const rule = css.match(
-      /\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/,
-    );
+    const rule = css.match(/\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/);
     expect(rule![0]).toContain('color: var(--mantine-color-gray-7)');
   });
 
@@ -297,7 +292,7 @@ describe('dimmed body text contrast', () => {
 describe('non-filled variants and placeholders', () => {
   const lightRule = () => schemeBlock('light');
 
-  it('confirms the light scheme\'s default outline shades actually failed AA on white', () => {
+  it("confirms the light scheme's default outline shades actually failed AA on white", () => {
     expect(contrast(GRAY_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.32:1
     expect(contrast(RED_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.28:1
     expect(contrast(GRAPE_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.02:1
@@ -359,9 +354,7 @@ describe('non-filled variants and placeholders', () => {
     // Red is the near-miss: 4.51:1, passing, so it keeps `red-9` rather
     // than gaining a fifth bespoke hex for 0.15. If a palette re-cut ever
     // pushes it under, this fails here rather than going unnoticed.
-    expect(contrast(LIGHT_VARIANT.red.shade9, LIGHT_VARIANT.red.surface)).toBeGreaterThanOrEqual(
-      AA_BODY_TEXT,
-    );
+    expect(contrast(LIGHT_VARIANT.red.shade9, LIGHT_VARIANT.red.surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
     expect(lightRule()).not.toContain('--mantine-color-red-light-color');
   });
 
@@ -505,7 +498,7 @@ describe('background theming', () => {
     expect(rule![0]).toMatch(/color-mix\(in srgb, var\(--mantine-color-grape-6\) \d%/);
   });
 
-  it("overrides the wash under rainbow pride mode with the same seven hexes the flag bars use, still at low opacity", () => {
+  it('overrides the wash under rainbow pride mode with the same seven hexes the flag bars use, still at low opacity', () => {
     const barRule = css.match(/body\[data-pride='rainbow'\]::before\s*\{[^}]*background:[^;]*;/);
     const washRule = css.match(/body\[data-pride='rainbow'\]\s*\{\s*background-image:[^}]*\}/);
     expect(barRule).not.toBeNull();
@@ -519,7 +512,7 @@ describe('background theming', () => {
     expect(washRule![0]).toMatch(/\d%, transparent\)/);
   });
 
-  it("overrides the wash under trans pride mode with the same hexes the flag bars use, still at low opacity", () => {
+  it('overrides the wash under trans pride mode with the same hexes the flag bars use, still at low opacity', () => {
     const barRule = css.match(/body\[data-pride='trans'\]::before\s*\{[^}]*background:[^;]*;/);
     const washRule = css.match(/body\[data-pride='trans'\]\s*\{\s*background-image:[^}]*\}/);
     expect(barRule).not.toBeNull();
@@ -539,7 +532,7 @@ describe('background theming', () => {
   // exact same assertion shape repeated per mode rather than six
   // hand-written copies.
   it.each(['nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'])(
-    "overrides the wash under %s pride mode with the same hexes the flag bar uses, still at low opacity",
+    'overrides the wash under %s pride mode with the same hexes the flag bar uses, still at low opacity',
     (mode) => {
       const barRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]::before\\s*\\{[^}]*background:[^;]*;`));
       const washRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]\\s*\\{\\s*background-image:[^}]*\\}`));
@@ -589,9 +582,7 @@ describe('collapsed issue row layout', () => {
   });
 
   it('stacks the row into two lines below the sm breakpoint', () => {
-    const query = css.match(
-      /@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/,
-    );
+    const query = css.match(/@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/);
     expect(query).not.toBeNull();
     expect(query![0]).toContain('.issueRow {');
     expect(query![0]).toContain('flex-direction: column');

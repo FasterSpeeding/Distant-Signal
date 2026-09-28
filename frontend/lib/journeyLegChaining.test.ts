@@ -96,10 +96,7 @@ describe('journeyCanAddLeg', () => {
   });
 
   it('checks the LAST leg, not an earlier one, in a multi-leg journey', () => {
-    const j = journey([
-      leg({ id: 1, trackedTrainState: trackedState() }),
-      leg({ id: 2, trackedTrainState: null }),
-    ]);
+    const j = journey([leg({ id: 1, trackedTrainState: trackedState() }), leg({ id: 2, trackedTrainState: null })]);
     expect(journeyCanAddLeg(j)).toBe(false);
   });
 });

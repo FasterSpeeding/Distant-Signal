@@ -97,7 +97,10 @@ describe('StationSearchForm', () => {
     // (`lib/autocompleteNoMatch.ts`) works around the missing prop by
     // swapping in a single inert `role="option"` placeholder whenever the
     // real suggestions list is empty.
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
 
@@ -217,10 +220,7 @@ describe('StationSearchForm', () => {
     // the "unavailable" case one test below relies on -- every other test
     // here has to install it itself.
     function stubGeolocation(
-      getCurrentPosition: (
-        success: (position: unknown) => void,
-        error: (err: { code: number }) => void,
-      ) => void,
+      getCurrentPosition: (success: (position: unknown) => void, error: (err: { code: number }) => void) => void,
     ) {
       Object.defineProperty(globalThis.navigator, 'geolocation', {
         value: { getCurrentPosition },
@@ -279,7 +279,9 @@ describe('StationSearchForm', () => {
       });
       vi.stubGlobal(
         'fetch',
-        vi.fn(async () => new Response(JSON.stringify([{ code: 'WOK', name: 'Woking', distanceKm: 0.4 }]), { status: 200 })),
+        vi.fn(
+          async () => new Response(JSON.stringify([{ code: 'WOK', name: 'Woking', distanceKm: 0.4 }]), { status: 200 }),
+        ),
       );
       renderWithProvider();
 

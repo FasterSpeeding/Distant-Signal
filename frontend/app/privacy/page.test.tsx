@@ -3,7 +3,11 @@ import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import PrivacyPage from './page';
 
-vi.mock('next/navigation', () => ({ notFound: () => { throw new Error('NEXT_NOT_FOUND'); } }));
+vi.mock('next/navigation', () => ({
+  notFound: () => {
+    throw new Error('NEXT_NOT_FOUND');
+  },
+}));
 
 function retentionText(title: string): string {
   const heading = screen.getByRole('heading', { name: title });

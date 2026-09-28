@@ -26,7 +26,9 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
       listTools: vi.fn().mockResolvedValue({
         tools: [{ name: 'resolve_station', description: 'resolve a station', inputSchema: { type: 'object' } }],
       }),
-      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'York' }], structuredContent: { kind: 'station' } }),
+      callTool: vi
+        .fn()
+        .mockResolvedValue({ content: [{ type: 'text', text: 'York' }], structuredContent: { kind: 'station' } }),
       close: vi.fn(),
     };
   }),
@@ -74,7 +76,9 @@ describe('runChatTurn', () => {
   });
 
   it('ignores non-text_delta stream events', async () => {
-    const anthropic = fakeAnthropic([{ type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{}' } }]);
+    const anthropic = fakeAnthropic([
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{}' } },
+    ]);
     const events = [];
     for await (const event of runChatTurn({
       anthropic,
@@ -97,7 +101,14 @@ describe('isAutoRunTool', () => {
   });
 
   it('auto-runs the known read-only distant-signal-mcp tools, which send no annotations', () => {
-    for (const name of ['get_departures', 'get_arrivals', 'get_service_detail', 'resolve_station', 'plan_journey', 'search_trains']) {
+    for (const name of [
+      'get_departures',
+      'get_arrivals',
+      'get_service_detail',
+      'resolve_station',
+      'plan_journey',
+      'search_trains',
+    ]) {
       expect(isAutoRunTool({ name })).toBe(true);
     }
   });
@@ -121,7 +132,12 @@ describe('buildRunnableTools', () => {
   it('runs a read-only tool without asking, and wraps its output as untrusted', async () => {
     const mcp = client();
     const confirm = vi.fn();
-    const [tool] = buildRunnableTools([{ name: 'get_departures', inputSchema: schema }], mcp as never, () => {}, confirm);
+    const [tool] = buildRunnableTools(
+      [{ name: 'get_departures', inputSchema: schema }],
+      mcp as never,
+      () => {},
+      confirm,
+    );
     const out = await tool.run({ crs: 'YRK' } as never);
     expect(confirm).not.toHaveBeenCalled();
     expect(mcp.callTool).toHaveBeenCalledWith({ name: 'get_departures', arguments: { crs: 'YRK' } });

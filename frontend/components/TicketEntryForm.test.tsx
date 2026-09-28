@@ -184,10 +184,7 @@ describe('TicketEntryForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
 
     await waitFor(() => {
-      expect(fetch).toHaveBeenCalledWith(
-        '/api/Train/1/tickets',
-        expect.objectContaining({ method: 'POST' }),
-      );
+      expect(fetch).toHaveBeenCalledWith('/api/Train/1/tickets', expect.objectContaining({ method: 'POST' }));
     });
     const [, init] = findFetchCall('/api/Train/1/tickets');
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ operator: 'LNER', source: 'manual' });
@@ -241,9 +238,7 @@ describe('TicketEntryForm', () => {
     [503, 'Too many tickets are being read right now — try again in a moment, or fill in the details manually'],
     [500, "Couldn't read this file. Try filling in the details manually"],
   ])('pkpass upload: a %i response shows the mapped inline message', async (status, expectedSubstring) => {
-    mockDefaultResponse(
-      new Response(uploadErrorBody(status), { status }),
-    );
+    mockDefaultResponse(new Response(uploadErrorBody(status), { status }));
     openForm();
     fireEvent.click(screen.getByRole('tab', { name: '.pkpass' }));
     const file = new File(['fake'], 'ticket.pkpass', { type: 'application/octet-stream' });
@@ -264,9 +259,7 @@ describe('TicketEntryForm', () => {
     [503, 'Too many tickets are being read right now — try again in a moment, or fill in the details manually'],
     [500, "Couldn't read this file. Try filling in the details manually"],
   ])('pkpass drop: a %i response shows the mapped inline message', async (status, expectedSubstring) => {
-    mockDefaultResponse(
-      new Response(uploadErrorBody(status), { status }),
-    );
+    mockDefaultResponse(new Response(uploadErrorBody(status), { status }));
     openForm();
     fireEvent.click(screen.getByRole('tab', { name: '.pkpass' }));
     const file = new File(['fake'], 'ticket.pkpass', { type: 'application/octet-stream' });
@@ -279,7 +272,13 @@ describe('TicketEntryForm', () => {
   it('pkpass drop: on a 200, pre-fills manual fields and switches to the manual tab', async () => {
     mockDefaultResponse(
       new Response(
-        JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: 'KGX', destinationCrs: null, source: 'pkpass-heuristic' }),
+        JSON.stringify({
+          operator: 'LNER',
+          ticketType: null,
+          originCrs: 'KGX',
+          destinationCrs: null,
+          source: 'pkpass-heuristic',
+        }),
         { status: 200 },
       ),
     );
@@ -312,7 +311,13 @@ describe('TicketEntryForm', () => {
   it('pdf drop: posts to the pdf-specific upload route, not the pkpass one', async () => {
     mockDefaultResponse(
       new Response(
-        JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, source: 'pdf-heuristic' }),
+        JSON.stringify({
+          operator: 'LNER',
+          ticketType: null,
+          originCrs: null,
+          destinationCrs: null,
+          source: 'pdf-heuristic',
+        }),
         { status: 200 },
       ),
     );
@@ -335,7 +340,13 @@ describe('TicketEntryForm', () => {
     it('dropping a .pkpass file routes to the pkpass upload route, pre-fills, and lands on the manual tab', async () => {
       mockDefaultResponse(
         new Response(
-          JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: 'KGX', destinationCrs: null, source: 'pkpass-heuristic' }),
+          JSON.stringify({
+            operator: 'LNER',
+            ticketType: null,
+            originCrs: 'KGX',
+            destinationCrs: null,
+            source: 'pkpass-heuristic',
+          }),
           { status: 200 },
         ),
       );
@@ -358,7 +369,13 @@ describe('TicketEntryForm', () => {
     it('dropping a PDF file routes to the pdf upload route, pre-fills, and lands on the manual tab', async () => {
       mockDefaultResponse(
         new Response(
-          JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, source: 'pdf-heuristic' }),
+          JSON.stringify({
+            operator: 'LNER',
+            ticketType: null,
+            originCrs: null,
+            destinationCrs: null,
+            source: 'pdf-heuristic',
+          }),
           { status: 200 },
         ),
       );
@@ -390,7 +407,9 @@ describe('TicketEntryForm', () => {
       await waitFor(() => {
         expect(screen.getByRole('tab', { name: '.pkpass', selected: true })).toBeInTheDocument();
       });
-      expect(await screen.findByText("Couldn't read this file. Try filling in the details manually")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Couldn't read this file. Try filling in the details manually"),
+      ).toBeInTheDocument();
     });
   });
 
@@ -441,7 +460,13 @@ describe('TicketEntryForm', () => {
   it('editing an auto-filled field does not reset source back to manual', async () => {
     mockDefaultResponse(
       new Response(
-        JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: 'Kings Cross', destinationCrs: null, source: 'pkpass-heuristic' }),
+        JSON.stringify({
+          operator: 'LNER',
+          ticketType: null,
+          originCrs: 'Kings Cross',
+          destinationCrs: null,
+          source: 'pkpass-heuristic',
+        }),
         { status: 200 },
       ),
     );
@@ -470,7 +495,13 @@ describe('TicketEntryForm', () => {
   it('pdf upload: posts to the pdf-specific upload route, not the pkpass one', async () => {
     mockDefaultResponse(
       new Response(
-        JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, source: 'pdf-heuristic' }),
+        JSON.stringify({
+          operator: 'LNER',
+          ticketType: null,
+          originCrs: null,
+          destinationCrs: null,
+          source: 'pdf-heuristic',
+        }),
         { status: 200 },
       ),
     );
@@ -515,7 +546,13 @@ describe('TicketEntryForm', () => {
     it('pkpass upload: POSTs to the flat /api/Train/tickets/pkpass route', async () => {
       mockDefaultResponse(
         new Response(
-          JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: 'KGX', destinationCrs: null, source: 'pkpass-semantics' }),
+          JSON.stringify({
+            operator: 'LNER',
+            ticketType: null,
+            originCrs: 'KGX',
+            destinationCrs: null,
+            source: 'pkpass-semantics',
+          }),
           { status: 200 },
         ),
       );
@@ -532,7 +569,9 @@ describe('TicketEntryForm', () => {
     it('on a successful save, shows the "find or track the train" next step instead of just closing', async () => {
       mockDefaultResponse(new Response(JSON.stringify({ ticketId: 5 }), { status: 200 }));
       openStandaloneForm();
-      fireEvent.change(screen.getByRole('combobox', { name: 'Origin station (optional)' }), { target: { value: 'kgx' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Origin station (optional)' }), {
+        target: { value: 'kgx' },
+      });
       fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
 
       const link = await screen.findByRole('link', { name: 'Find or track the train this ticket is for' });

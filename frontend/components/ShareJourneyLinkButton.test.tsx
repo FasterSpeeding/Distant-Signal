@@ -46,11 +46,7 @@ describe('ShareJourneyLinkButton', () => {
 
   it('renders "Manage shared link" when a link exists, and the modal shows the built URL, Regenerate, and Revoke', async () => {
     renderWithMantine(
-      <ShareJourneyLinkButton
-        journeyId={167}
-        shareLink={{ token: 'tok123', expiresAt: null }}
-        origin={ORIGIN}
-      />,
+      <ShareJourneyLinkButton journeyId={167} shareLink={{ token: 'tok123', expiresAt: null }} origin={ORIGIN} />,
     );
     expect(screen.getByRole('button', { name: 'Manage shared link' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Get shareable link' })).not.toBeInTheDocument();
@@ -65,25 +61,15 @@ describe('ShareJourneyLinkButton', () => {
 
   it('states that the link works until it expires or is revoked', async () => {
     renderWithMantine(
-      <ShareJourneyLinkButton
-        journeyId={167}
-        shareLink={{ token: 'tok123', expiresAt: null }}
-        origin={ORIGIN}
-      />,
+      <ShareJourneyLinkButton journeyId={167} shareLink={{ token: 'tok123', expiresAt: null }} origin={ORIGIN} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
-    expect(
-      await screen.findByText(
-        /until it expires or you\s+revoke it\./,
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/until it expires or you\s+revoke it\./)).toBeInTheDocument();
   });
 
   it('Create link POSTs and refreshes', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ token: 'new', expiresAt: null }), { status: 200 }),
-    );
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ token: 'new', expiresAt: null }), { status: 200 }));
 
     renderWithMantine(<ShareJourneyLinkButton journeyId={167} shareLink={null} origin={ORIGIN} />);
     fireEvent.click(screen.getByRole('button', { name: 'Get shareable link' }));
@@ -142,16 +128,10 @@ describe('ShareJourneyLinkButton', () => {
 
   it('Regenerate POSTs and refreshes', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ token: 'new', expiresAt: null }), { status: 200 }),
-    );
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ token: 'new', expiresAt: null }), { status: 200 }));
 
     renderWithMantine(
-      <ShareJourneyLinkButton
-        journeyId={167}
-        shareLink={{ token: 'tok123', expiresAt: null }}
-        origin={ORIGIN}
-      />,
+      <ShareJourneyLinkButton journeyId={167} shareLink={{ token: 'tok123', expiresAt: null }} origin={ORIGIN} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Regenerate' }));
@@ -173,11 +153,7 @@ describe('ShareJourneyLinkButton', () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
     renderWithMantine(
-      <ShareJourneyLinkButton
-        journeyId={167}
-        shareLink={{ token: 'tok123', expiresAt: null }}
-        origin={ORIGIN}
-      />,
+      <ShareJourneyLinkButton journeyId={167} shareLink={{ token: 'tok123', expiresAt: null }} origin={ORIGIN} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
@@ -202,9 +178,7 @@ describe('ShareJourneyLinkButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Get shareable link' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Create link' }));
 
-    expect(
-      await screen.findByRole('link', { name: "Log in to manage this journey's share link" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: "Log in to manage this journey's share link" })).toBeInTheDocument();
     expect(screen.queryByText('Could not create a share link.')).not.toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
@@ -214,18 +188,12 @@ describe('ShareJourneyLinkButton', () => {
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
     renderWithMantine(
-      <ShareJourneyLinkButton
-        journeyId={167}
-        shareLink={{ token: 'tok123', expiresAt: null }}
-        origin={ORIGIN}
-      />,
+      <ShareJourneyLinkButton journeyId={167} shareLink={{ token: 'tok123', expiresAt: null }} origin={ORIGIN} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
 
-    expect(
-      await screen.findByRole('link', { name: "Log in to manage this journey's share link" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: "Log in to manage this journey's share link" })).toBeInTheDocument();
     expect(screen.queryByText('Could not revoke the share link.')).not.toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
@@ -239,8 +207,6 @@ describe('ShareJourneyLinkButton', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Create link' }));
 
     expect(await screen.findByText('Could not create a share link.')).toBeInTheDocument();
-    expect(
-      screen.queryByRole('link', { name: "Log in to manage this journey's share link" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: "Log in to manage this journey's share link" })).not.toBeInTheDocument();
   });
 });

@@ -155,10 +155,7 @@ describe('fetchTripPlan', () => {
 
   it('returns the parsed response on success', async () => {
     const body = { results: 'fastest', segments: [] };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) } as Response)
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) } as Response));
     const result = await fetchTripPlan({
       originCrs: 'EUS',
       destinationCrs: 'MKC',
@@ -172,22 +169,38 @@ describe('fetchTripPlan', () => {
   it('throws TripPlanError with the backend message and status on failure', async () => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue({ ok: false, status: 404, text: () => Promise.resolve('no schedule data published') } as Response)
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve('no schedule data published'),
+      } as Response),
     );
     await expect(
-      fetchTripPlan({ originCrs: 'EUS', destinationCrs: 'MKC', waypointCrs: [], date: '2099-01-01', results: 'fastest' })
+      fetchTripPlan({
+        originCrs: 'EUS',
+        destinationCrs: 'MKC',
+        waypointCrs: [],
+        date: '2099-01-01',
+        results: 'fastest',
+      }),
     ).rejects.toMatchObject(new TripPlanError('no schedule data published', 404));
   });
 
   it('still surfaces the backend message verbatim on a 400 (bad CRS/results value)', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve('unknown CRS code') } as Response)
+      vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve('unknown CRS code') } as Response),
     );
     await expect(
-      fetchTripPlan({ originCrs: 'ZZZ', destinationCrs: 'MKC', waypointCrs: [], date: '2026-09-23', results: 'fastest' })
+      fetchTripPlan({
+        originCrs: 'ZZZ',
+        destinationCrs: 'MKC',
+        waypointCrs: [],
+        date: '2026-09-23',
+        results: 'fastest',
+      }),
     ).rejects.toMatchObject(new TripPlanError('unknown CRS code', 400));
   });
 
@@ -202,9 +215,11 @@ describe('fetchTripPlan', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('<html>Internal Server Error</html>') } as Response)
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('<html>Internal Server Error</html>'),
+      } as Response),
     );
     const promise = fetchTripPlan({
       originCrs: 'EUS',

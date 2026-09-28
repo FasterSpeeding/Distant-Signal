@@ -58,9 +58,7 @@ describe('DeleteGroupButton', () => {
 
   it("shows the backend's own error message on a non-401 failure", async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(
-      new Response("you don't have permission to do that in this group", { status: 403 }),
-    );
+    fetchMock.mockResolvedValue(new Response("you don't have permission to do that in this group", { status: 403 }));
 
     renderWithMantine(<DeleteGroupButton groupId="grp-1" name="Family" />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete group' }));

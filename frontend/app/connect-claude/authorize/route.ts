@@ -114,7 +114,13 @@ function escapeHtml(value: string): string {
  * HTML, for the same reason). A Route Handler can't render a React Server
  * Component tree directly, which is the other reason this stays plain HTML
  * rather than JSX. */
-function renderConsentScreen({ mcpRequestId, clientName }: { mcpRequestId: string; clientName?: string }): NextResponse {
+function renderConsentScreen({
+  mcpRequestId,
+  clientName,
+}: {
+  mcpRequestId: string;
+  clientName?: string;
+}): NextResponse {
   const title = clientName ? escapeHtml(clientName) : 'An application';
   const html = `<!doctype html>
 <html lang="en">
@@ -174,14 +180,14 @@ export async function GET(req: NextRequest) {
     if (pendingRes.ok) {
       clientName = ((await pendingRes.json()) as { clientName?: string }).clientName;
     } else if (pendingRes.status === 404) {
-      return new NextResponse('This authorization request has expired. Please try connecting again from Claude.', { status: 410 });
+      return new NextResponse('This authorization request has expired. Please try connecting again from Claude.', {
+        status: 410,
+      });
     } else {
       // FE-12: any other non-OK answer (a 401 from a mis-set
       // RAILMCP_INTERNAL_COMPLETE_TOKEN, a 500) means approving would only
       // fail after the round trip, so stop here and log the real cause.
-      console.error(
-        `connect-claude/authorize: pending-authorization lookup failed with HTTP ${pendingRes.status}`,
-      );
+      console.error(`connect-claude/authorize: pending-authorization lookup failed with HTTP ${pendingRes.status}`);
       return new NextResponse('Could not start the connection. Please try again later.', { status: 502 });
     }
   } catch (err) {

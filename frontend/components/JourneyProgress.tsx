@@ -95,11 +95,7 @@ interface JourneyProgressProps {
  * confirmed yet) is a legitimate, common return value, not an error case. */
 function lastReachedIndex(stops: JourneyStop[]): number {
   for (let i = stops.length - 1; i >= 0; i--) {
-    if (
-      stops[i].actualArrival !== null ||
-      stops[i].actualDeparture !== null ||
-      stops[i].lastEventType === 'PASS'
-    ) {
+    if (stops[i].actualArrival !== null || stops[i].actualDeparture !== null || stops[i].lastEventType === 'PASS') {
       return i;
     }
   }
@@ -365,8 +361,7 @@ export function JourneyProgress({
   // "couldn't be matched to a timetabled stop" caption below actually
   // describes.
   const confirmedIndex = lastReachedIndex(stops);
-  const reportedIndex =
-    confirmedIndex === -1 ? reportedLocationIndex(stops, lastReportedLocation, endpointNames) : -1;
+  const reportedIndex = confirmedIndex === -1 ? reportedLocationIndex(stops, lastReportedLocation, endpointNames) : -1;
   const markerFromReportedLocation = confirmedIndex === -1 && reportedIndex !== -1;
   const lastIndex = markerFromReportedLocation ? reportedIndex : confirmedIndex;
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -628,7 +623,11 @@ function JourneyProgressNode({
             itself renders nothing for a `null` platform, so a Terminate
             endpoint (which never has one yet) simply shows no badge, no
             layout gap reserved for it. */}
-        <PlatformBadge platform={stop.platform} plannedPlatform={stop.plannedPlatform} platformChanged={stop.platformChanged} />
+        <PlatformBadge
+          platform={stop.platform}
+          plannedPlatform={stop.plannedPlatform}
+          platformChanged={stop.platformChanged}
+        />
       </Box>
     );
   }

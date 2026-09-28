@@ -49,7 +49,7 @@ describe('ChatPanel', () => {
   // Review §3.1.6: the grape-theme spec reserves blue for `planned`
   // severity (lib/severity.ts's GROUP_COLOR), so the user bubble's
   // highlight moved off Mantine's default blue.
-  it('gives the user\'s own message bubble a grape background, not blue', () => {
+  it("gives the user's own message bubble a grape background, not blue", () => {
     seedMcpTokens();
     setAnthropicApiKey('sk-ant-test');
     renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
@@ -234,7 +234,7 @@ describe('ChatPanel', () => {
     expect(CHAT_AI_NOTE).toMatch(/may be inaccurate/);
   });
 
-  it('labels each assistant reply, and not the user\'s own messages, as AI-generated', async () => {
+  it("labels each assistant reply, and not the user's own messages, as AI-generated", async () => {
     setAnthropicApiKey('sk-ant-test');
     seedMcpTokens();
     mockRunChatTurn.mockReturnValue(
@@ -272,7 +272,7 @@ describe('ChatPanel', () => {
   });
 
   // FE-11: each turn's streamed text lands on its own assistant message.
-  it('routes a second turn\'s streamed text to the second assistant message, leaving the first intact', async () => {
+  it("routes a second turn's streamed text to the second assistant message, leaving the first intact", async () => {
     setAnthropicApiKey('sk-ant-test');
     seedMcpTokens();
     mockRunChatTurn

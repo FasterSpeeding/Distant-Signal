@@ -30,8 +30,8 @@ export default function AccessibilityPage() {
   return (
     <LegalPage draft={mode === 'preview'} title="Accessibility statement">
       <Text>
-        Distant Signal is run by {LEGAL_CONFIG.OPERATOR_NAME}. We want everyone to be able to use it, including
-        people who use a screen reader, a keyboard only, magnification or high-contrast settings.
+        Distant Signal is run by {LEGAL_CONFIG.OPERATOR_NAME}. We want everyone to be able to use it, including people
+        who use a screen reader, a keyboard only, magnification or high-contrast settings.
       </Text>
 
       <LegalSection title="Our target">
@@ -44,8 +44,8 @@ export default function AccessibilityPage() {
       <LegalSection title="How we test">
         <List size="sm" spacing={4}>
           <ListItem>
-            Every change is checked by an automated accessibility scan (axe) of the site&apos;s pages, in both light
-            and dark colour schemes, before it is released.
+            Every change is checked by an automated accessibility scan (axe) of the site&apos;s pages, in both light and
+            dark colour schemes, before it is released.
           </ListItem>
           <ListItem>Our colour palette is checked automatically against the WCAG AA contrast ratios.</ListItem>
           <ListItem>Keyboard use of drop-down lists, menus and dialogs is covered by automated tests.</ListItem>
@@ -59,24 +59,24 @@ export default function AccessibilityPage() {
       <LegalSection title="Known limitations">
         <List size="sm" spacing={4}>
           <ListItem>
-            Open drop-down lists and the account menu are placed outside the page&apos;s main landmark regions. You
-            can still reach and use them with a keyboard or screen reader from the control that opens them.
+            Open drop-down lists and the account menu are placed outside the page&apos;s main landmark regions. You can
+            still reach and use them with a keyboard or screen reader from the control that opens them.
           </ListItem>
           <ListItem>
-            The delay and punctuality charts on line history pages don&apos;t yet have a text or table
-            equivalent. Email us and we will send you the figures.
+            The delay and punctuality charts on line history pages don&apos;t yet have a text or table equivalent. Email
+            us and we will send you the figures.
           </ListItem>
           <ListItem>
-            Information from rail operators and National Rail (such as incident descriptions) is shown as they
-            wrote it, and may not always be in plain English.
+            Information from rail operators and National Rail (such as incident descriptions) is shown as they wrote it,
+            and may not always be in plain English.
           </ListItem>
         </List>
       </LegalSection>
 
       <LegalSection title="Tell us about a problem">
         <Text>
-          If something is hard to use, or you need information in a different format, email <ContactEmail />. Tell
-          us the page and what went wrong, and we will reply within 10 working days. You can also use the{' '}
+          If something is hard to use, or you need information in a different format, email <ContactEmail />. Tell us
+          the page and what went wrong, and we will reply within 10 working days. You can also use the{' '}
           <TextLink href="/contact" underline="always" inline>
             contact page
           </TextLink>

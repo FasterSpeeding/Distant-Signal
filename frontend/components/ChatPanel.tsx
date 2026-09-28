@@ -197,11 +197,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
         </Stack>
       </ScrollArea>
       {pendingTool && (
-        <ToolConfirmation
-          toolName={pendingTool.toolName}
-          args={pendingTool.args}
-          onAnswer={answerToolCall}
-        />
+        <ToolConfirmation toolName={pendingTool.toolName} args={pendingTool.args} onAnswer={answerToolCall} />
       )}
       {/* LEG-16: always visible, so it is read before the first answer. */}
       <Text size="xs" c="dimmed" data-ai-note>
@@ -328,8 +324,8 @@ function ChatErrorAlert({ error }: { error: ChatError }) {
     case 'mcp-reconnect':
       return (
         <Alert color="red" variant="light">
-          Your connection to the rail data service has expired or was not found -- reconnect from the Chat page to
-          keep chatting.
+          Your connection to the rail data service has expired or was not found -- reconnect from the Chat page to keep
+          chatting.
         </Alert>
       );
     case 'tool-error':
@@ -347,9 +343,7 @@ function applyChatEvent(
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
 ) {
   if (event.type === 'text-delta') {
-    setMessages((prev) =>
-      prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + event.text } : m)),
-    );
+    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + event.text } : m)));
     return;
   }
   if (event.type === 'tool-result') {

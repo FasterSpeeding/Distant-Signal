@@ -25,15 +25,7 @@ import { LoginLink } from './LoginLink';
  *
  * The member keeps their membership and everything they've shared into the
  * group -- the confirm copy says so, so this doesn't read as a removal. */
-export function DemoteMemberButton({
-  groupId,
-  userId,
-  name,
-}: {
-  groupId: string;
-  userId: string;
-  name: string;
-}) {
+export function DemoteMemberButton({ groupId, userId, name }: { groupId: string; userId: string; name: string }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
   const [demoting, setDemoting] = useState(false);
@@ -71,8 +63,8 @@ export function DemoteMemberButton({
       </Button>
       <Modal opened={opened} onClose={close} title={`Demote ${name} to member?`}>
         <Text>
-          They&apos;ll stay in the group and keep everything they&apos;ve shared into it, but they&apos;ll no
-          longer be able to manage the invite link, rename the group, or remove other members.
+          They&apos;ll stay in the group and keep everything they&apos;ve shared into it, but they&apos;ll no longer be
+          able to manage the invite link, rename the group, or remove other members.
         </Text>
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && <LoginLink underline="always">Log in to demote this member</LoginLink>}

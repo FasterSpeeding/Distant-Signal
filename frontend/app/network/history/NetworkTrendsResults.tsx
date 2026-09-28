@@ -7,7 +7,12 @@ import {
 } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
 import type { TrendGranularity } from '@/lib/history';
-import { HONESTY_COPY, HONESTY_COPY_DETAILS, SPARSE_FLOOR, toChartPoints } from '@/app/lines/[id]/history/TrendsResults';
+import {
+  HONESTY_COPY,
+  HONESTY_COPY_DETAILS,
+  SPARSE_FLOOR,
+  toChartPoints,
+} from '@/app/lines/[id]/history/TrendsResults';
 import { TrendsCharts } from '@/app/lines/[id]/history/TrendsCharts';
 import type { ChartPoint } from '@/app/lines/[id]/history/chartPoint';
 

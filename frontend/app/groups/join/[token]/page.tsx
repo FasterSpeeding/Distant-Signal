@@ -1,7 +1,13 @@
 import { Alert, Button, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { getGroup, getGroupJoinPreview, getSessionOrLoggedOut, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
+import {
+  getGroup,
+  getGroupJoinPreview,
+  getSessionOrLoggedOut,
+  ApiNotFoundError,
+  ApiUnauthorizedError,
+} from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 
@@ -45,11 +51,7 @@ function isValidInviteToken(token: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(token);
 }
 
-export async function generateMetadata({
-  params,
-}: {
-  params: Promise<{ token: string }>;
-}): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ token: string }> }): Promise<Metadata> {
   const { token } = await params;
 
   if (!isValidInviteToken(token)) {
@@ -181,16 +183,14 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
     <Stack p="lg" gap="md">
       <Title order={1}>Join {preview.groupName}?</Title>
       <Text>
-        {preview.memberCount} member{preview.memberCount === 1 ? '' : 's'} already in this group. Joining lets
-        everyone in {preview.groupName} see any tracked train you choose to share into it — your other tracked
-        trains and tickets stay private.
+        {preview.memberCount} member{preview.memberCount === 1 ? '' : 's'} already in this group. Joining lets everyone
+        in {preview.groupName} see any tracked train you choose to share into it — your other tracked trains and tickets
+        stay private.
       </Text>
       {session.authenticated ? (
         <JoinGroupButton token={token} groupId={preview.groupId} />
       ) : (
-        <LoginButton title="Log in — needs a Distant Signal account">
-          Log in to join {preview.groupName}
-        </LoginButton>
+        <LoginButton title="Log in — needs a Distant Signal account">Log in to join {preview.groupName}</LoginButton>
       )}
     </Stack>
   );

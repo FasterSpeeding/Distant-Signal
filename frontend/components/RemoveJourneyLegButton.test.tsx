@@ -45,7 +45,7 @@ describe('RemoveJourneyLegButton', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('DELETEs the leg and redirects to /track/mine when it was the journey\'s only leg', async () => {
+  it("DELETEs the leg and redirects to /track/mine when it was the journey's only leg", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
@@ -95,11 +95,7 @@ describe('RemoveJourneyLegButton', () => {
   it('warns that the whole journey goes too when this is the only leg', async () => {
     renderWithMantine(<RemoveJourneyLegButton journeyId={168} legId={2} isOnlyLeg={true} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove leg' }));
-    await waitFor(() =>
-      expect(
-        screen.getByText(/removing it deletes the whole journey/),
-      ).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/removing it deletes the whole journey/)).toBeInTheDocument());
   });
 
   it('does not warn about the whole journey when a sibling leg remains', async () => {

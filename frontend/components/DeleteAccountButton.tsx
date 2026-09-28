@@ -86,16 +86,13 @@ export function DeleteAccountButton() {
             member); a group with no other members is deleted.
           </Text>
           <Text size="sm">
-            Our database backups are encrypted and kept for 7 days, so your data is gone from them within 7 days
-            too.
+            Our database backups are encrypted and kept for 7 days, so your data is gone from them within 7 days too.
           </Text>
           <Text size="sm">
-            You sign in through a separate single sign-on account (or Discord), which this does not delete. Close
-            that account there if you want it gone too.
+            You sign in through a separate single sign-on account (or Discord), which this does not delete. Close that
+            account there if you want it gone too.
           </Text>
-          <Text size="sm">
-            You may want to download your data first. This can&apos;t be undone.
-          </Text>
+          <Text size="sm">You may want to download your data first. This can&apos;t be undone.</Text>
           <TextInput
             label={`Type "${DELETE_ACCOUNT_CONFIRMATION}" to confirm`}
             value={typed}

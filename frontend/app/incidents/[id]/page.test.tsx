@@ -93,16 +93,21 @@ describe('IncidentDetailPage', () => {
   });
 
   // Review §2.9: "fetched" is the poller's own word, not a passenger's.
-  it('labels the fetch timestamp in reader-facing terms, not the poller\'s own word', async () => {
+  it("labels the fetch timestamp in reader-facing terms, not the poller's own word", async () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
-    expect(screen.getByText(`Last updated from National Rail: ${formatDateTime('2026-08-31T10:15:00Z')}`)).toBeInTheDocument();
+    expect(
+      screen.getByText(`Last updated from National Rail: ${formatDateTime('2026-08-31T10:15:00Z')}`),
+    ).toBeInTheDocument();
   });
 
   it('renders a link to each currently-affected line', async () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
-    expect(screen.getByRole('link', { name: 'South Western Main Line' })).toHaveAttribute('href', '/lines/south-western');
+    expect(screen.getByRole('link', { name: 'South Western Main Line' })).toHaveAttribute(
+      'href',
+      '/lines/south-western',
+    );
   });
 
   it('renders the "not currently reported anywhere" empty state', async () => {
@@ -222,9 +227,7 @@ describe('IncidentDetailPage', () => {
     // fallback contract `stationLabel` uses everywhere else in this app --
     // rather than just a hover-only `title` tooltip.
     it('labels an affected-station badge with its resolved name and code', async () => {
-      vi.mocked(api.getStationName).mockImplementation(async (crs) =>
-        crs === 'WOK' ? 'Woking' : null,
-      );
+      vi.mocked(api.getStationName).mockImplementation(async (crs) => (crs === 'WOK' ? 'Woking' : null));
       vi.mocked(api.getIncident).mockResolvedValue(detail({ affectedStations: ['WOK', 'WAT'] }));
       renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
       expect(screen.getByText('Woking (WOK)')).toBeInTheDocument();

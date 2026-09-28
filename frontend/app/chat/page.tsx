@@ -39,12 +39,8 @@ export default async function ChatPage() {
             branch needs it -- the `forbidden` branch below already has
             real server-rendered content of its own, and the success
             branch is real content too. */}
-        <LoginLink underline="always">
-          Sign in to ask about live departures, disruptions and journeys
-        </LoginLink>
-        <AutoOpenLoginPrompt>
-          Sign in to ask about live departures, disruptions and journeys.
-        </AutoOpenLoginPrompt>
+        <LoginLink underline="always">Sign in to ask about live departures, disruptions and journeys</LoginLink>
+        <AutoOpenLoginPrompt>Sign in to ask about live departures, disruptions and journeys.</AutoOpenLoginPrompt>
       </Stack>
     );
   }
@@ -61,8 +57,8 @@ export default async function ChatPage() {
             works for every logged-in user regardless of this allowlist, so
             it's a real next step, not a placeholder link. */}
         <Text>
-          This embedded chat is only available to a limited allowlist right now. You can still ask
-          Claude about live departures, disruptions and journeys today by{' '}
+          This embedded chat is only available to a limited allowlist right now. You can still ask Claude about live
+          departures, disruptions and journeys today by{' '}
           <TextLink href="/connect-claude" underline="always" inline>
             connecting Claude to Distant Signal
           </TextLink>{' '}

@@ -118,11 +118,7 @@ function journeyStatusPhrase(legs: JourneyLegDetail[]): string {
  * one being set. `JourneyDetail` carries no owner name/id at all to leak
  * in the first place (`journey_readable_by`'s own read-only, ownership-
  * blind contract). */
-export async function generateMetadata({
-  params,
-}: {
-  params: Promise<{ token: string }>;
-}): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ token: string }> }): Promise<Metadata> {
   const { token } = await params;
 
   if (!isValidShareToken(token)) {
@@ -177,7 +173,9 @@ export default async function SharedJourneyPage({ params }: { params: Promise<{ 
       return (
         <Stack p="lg" gap="md">
           <Title order={1}>Link not found</Title>
-          <Alert color="red">This share link is invalid or has been revoked. Ask whoever shared it for a new one.</Alert>
+          <Alert color="red">
+            This share link is invalid or has been revoked. Ask whoever shared it for a new one.
+          </Alert>
         </Stack>
       );
     }

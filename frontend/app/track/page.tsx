@@ -65,17 +65,8 @@ export default async function TrackPage({
     arriveBefore?: string | string[];
   }>;
 }) {
-  const {
-    origin,
-    ticketId,
-    mode,
-    destination,
-    serviceDate,
-    departAfter,
-    departBefore,
-    arriveAfter,
-    arriveBefore,
-  } = await searchParams;
+  const { origin, ticketId, mode, destination, serviceDate, departAfter, departBefore, arriveAfter, arriveBefore } =
+    await searchParams;
   // Next.js supplies a `string[]` for a repeated query param (e.g.
   // `?origin=a&origin=b`) -- fall back to the first value rather than
   // letting `.toUpperCase()` throw on an array.
@@ -134,8 +125,7 @@ export default async function TrackPage({
   // still hold the raw garbage, so an unvalidated value here could reach
   // `TrackTrainForm`'s state (and from there, submit) in a shape no normal
   // user interacting with the form could ever produce by hand.
-  const validTimeParam = (v: string | undefined): string | undefined =>
-    v && /^\d{2}:\d{2}$/.test(v) ? v : undefined;
+  const validTimeParam = (v: string | undefined): string | undefined => (v && /^\d{2}:\d{2}$/.test(v) ? v : undefined);
 
   return (
     <Stack p="lg" gap="md">
@@ -162,8 +152,8 @@ export default async function TrackPage({
           client form regardless, so there is no static-rendering property
           to preserve the way `/lines/new`'s own comment protects. */}
       <Text size="sm" c="dimmed">
-        Tracking a train needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
-        aren&apos;t already signed in.
+        Tracking a train needs a Distant Signal account — you&apos;ll be sent to log in when you save if you aren&apos;t
+        already signed in.
       </Text>
       <TrackTrainForm
         initialOrigin={originParam?.toUpperCase()}

@@ -25,8 +25,20 @@ import {
 import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
-import { worstStatus, severityRank, severityGroup, SEVERITY_GROUP_LABELS, SEVERITY_GROUPS_BY_RANK, type SeverityGroup } from '@/lib/severity';
-import { cancelledPercent, formatSampleSummary, representativeStatus, sampleUnavailableReason } from '@/lib/sampleStats';
+import {
+  worstStatus,
+  severityRank,
+  severityGroup,
+  SEVERITY_GROUP_LABELS,
+  SEVERITY_GROUPS_BY_RANK,
+  type SeverityGroup,
+} from '@/lib/severity';
+import {
+  cancelledPercent,
+  formatSampleSummary,
+  representativeStatus,
+  sampleUnavailableReason,
+} from '@/lib/sampleStats';
 import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
@@ -396,12 +408,7 @@ export function AllLinesTable({
                 All statuses
               </Chip>
               {SEVERITY_GROUPS_BY_RANK.map((group) => (
-                <Chip
-                  key={group}
-                  value={group}
-                  size="sm"
-                  variant={statusGroupFilter === group ? 'filled' : 'outline'}
-                >
+                <Chip key={group} value={group} size="sm" variant={statusGroupFilter === group ? 'filled' : 'outline'}>
                   {SEVERITY_GROUP_LABELS[group]}
                 </Chip>
               ))}
@@ -418,7 +425,11 @@ export function AllLinesTable({
             <Text id={countryLabelId} size="xs" fw={600} c="dimmed">
               {countryChipLabel(selectedCountries.length)}
             </Text>
-            <ChipGroup multiple value={selectedCountries} onChange={(value) => setSelectedCountries(value as Country[])}>
+            <ChipGroup
+              multiple
+              value={selectedCountries}
+              onChange={(value) => setSelectedCountries(value as Country[])}
+            >
               <Group gap="xs" role="group" aria-labelledby={countryLabelId}>
                 {countryOptions.map((country) => (
                   <Chip
@@ -493,40 +504,40 @@ export function AllLinesTable({
               Client Component (see the Server Component variant this was
               extracted from for why the flat exports matter there). */}
           <TableThead>
-          <TableTr>
-            {/* `UnstyledButton` inside the `<th>` rather than `onClick` on
+            <TableTr>
+              {/* `UnstyledButton` inside the `<th>` rather than `onClick` on
                 the `<th>` itself: a bare cell with a click handler is not
                 focusable and cannot be triggered from the keyboard, which
                 made the whole sorting feature mouse-only. */}
-            {/* Task 3.4.7: `white-space: nowrap` so "Avg Delay ↕" (the
+              {/* Task 3.4.7: `white-space: nowrap` so "Avg Delay ↕" (the
                 longest of the four labels) can't wrap its own sort glyph
                 onto a second line, orphaning it away from the label it
                 belongs to. */}
-            <TableTh aria-sort={ariaSort('name', sort)} style={{ whiteSpace: 'nowrap' }}>
-              <UnstyledButton onClick={() => toggleSort('name')} style={{ fontWeight: 'inherit' }}>
-                Name
-                <SortGlyph field="name" sort={sort} />
-              </UnstyledButton>
-            </TableTh>
-            <TableTh aria-sort={ariaSort('status', sort)} style={{ whiteSpace: 'nowrap' }}>
-              <UnstyledButton onClick={() => toggleSort('status')} style={{ fontWeight: 'inherit' }}>
-                Status
-                <SortGlyph field="status" sort={sort} />
-              </UnstyledButton>
-            </TableTh>
-            <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
-              <UnstyledButton onClick={() => toggleSort('avgDelay')} style={{ fontWeight: 'inherit' }}>
-                Avg Delay
-                <SortGlyph field="avgDelay" sort={sort} />
-              </UnstyledButton>
-            </TableTh>
-            <TableTh aria-sort={ariaSort('cancelled', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
-              <UnstyledButton onClick={() => toggleSort('cancelled')} style={{ fontWeight: 'inherit' }}>
-                Cancelled
-                <SortGlyph field="cancelled" sort={sort} />
-              </UnstyledButton>
-            </TableTh>
-            {/* No `visibleFrom="sm"`, unlike the two numeric columns beside it.
+              <TableTh aria-sort={ariaSort('name', sort)} style={{ whiteSpace: 'nowrap' }}>
+                <UnstyledButton onClick={() => toggleSort('name')} style={{ fontWeight: 'inherit' }}>
+                  Name
+                  <SortGlyph field="name" sort={sort} />
+                </UnstyledButton>
+              </TableTh>
+              <TableTh aria-sort={ariaSort('status', sort)} style={{ whiteSpace: 'nowrap' }}>
+                <UnstyledButton onClick={() => toggleSort('status')} style={{ fontWeight: 'inherit' }}>
+                  Status
+                  <SortGlyph field="status" sort={sort} />
+                </UnstyledButton>
+              </TableTh>
+              <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
+                <UnstyledButton onClick={() => toggleSort('avgDelay')} style={{ fontWeight: 'inherit' }}>
+                  Avg Delay
+                  <SortGlyph field="avgDelay" sort={sort} />
+                </UnstyledButton>
+              </TableTh>
+              <TableTh aria-sort={ariaSort('cancelled', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
+                <UnstyledButton onClick={() => toggleSort('cancelled')} style={{ fontWeight: 'inherit' }}>
+                  Cancelled
+                  <SortGlyph field="cancelled" sort={sort} />
+                </UnstyledButton>
+              </TableTh>
+              {/* No `visibleFrom="sm"`, unlike the two numeric columns beside it.
                 Those are hidden on mobile only because they are re-surfaced in the
                 `hiddenFrom="sm"` sub-line under the line name (:225) -- Pin got the
                 hiding half of that pattern without the re-surfacing half in
@@ -537,97 +548,97 @@ export function AllLinesTable({
                 the application, and a pinned row was visually identical to an
                 unpinned one. See
                 docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F4. */}
-            <TableTh>Pin</TableTh>
-          </TableTr>
-        </TableThead>
-        <TableTbody>
-          {sortedRows.map(({ line, worst, stats, cancelledPct, representative }) => (
-            <TableTr key={line.id}>
-              <TableTd>
-                {/* Task 3.4.8: at narrow widths a wrapped two-line name read
+              <TableTh>Pin</TableTh>
+            </TableTr>
+          </TableThead>
+          <TableTbody>
+            {sortedRows.map(({ line, worst, stats, cancelledPct, representative }) => (
+              <TableTr key={line.id}>
+                <TableTd>
+                  {/* Task 3.4.8: at narrow widths a wrapped two-line name read
                     as two separate stacked list items rather than one
                     wrapped link, at Mantine `Text`'s default (looser)
                     line-height. */}
-                <TextLink href={`/lines/${line.id}`} lh={1.3}>
-                  {line.name}
-                </TextLink>
-                {/* At 390px five columns cannot all fit, and the one that
+                  <TextLink href={`/lines/${line.id}`} lh={1.3}>
+                    {line.name}
+                  </TextLink>
+                  {/* At 390px five columns cannot all fit, and the one that
                     was losing was Status — the page's whole point — while
                     two numeric columns kept their width. Below `sm` the
                     numbers move here instead of disappearing; `visibleFrom`/
                     `hiddenFrom` are Mantine's `display: none` classes,
                     emitted by MantineProvider on server and client alike,
                     so this is SSR-safe (unlike `useMediaQuery`). */}
-                <Text size="xs" c="dimmed" hiddenFrom="sm">
-                  {formatSampleSummary(representative)}
-                </Text>
-              </TableTd>
-              <TableTd>
-                {worst ? (
-                  <StatusBadge severity={worst.statusSeverity} />
-                ) : (
-                  // Task 3.4.1: previously rendered nothing at all -- ~120
-                  // of ~125 rows had no `line_status` row yet (see `rows`
-                  // above), so the Status column was blank for almost every
-                  // line, with no way to tell "good service" from "no data"
-                  // from "not computed yet". Grey/outline, not one of
-                  // StatusBadge's severity colours (a stated Non-goal is
-                  // leaving `severity.ts`'s hue map untouched) -- this is
-                  // the absence of a status, not one more severity.
-                  // `data-status-badge` opts out of Mantine Badge's default
-                  // ellipsis truncation, the same fix `/lines/[id]`'s own
-                  // "No status yet" badge and `StatusBadge` itself already
-                  // rely on (see app/globals.css's `[data-status-badge]`
-                  // rule) -- otherwise "NO DATA" clips to "N…" in this same
-                  // table at narrow widths.
-                  <Tooltip label={noStatusReason(representative)}>
-                    <Badge color="gray" variant="outline" data-status-badge>
-                      NO DATA
-                    </Badge>
-                  </Tooltip>
-                )}
-              </TableTd>
-              <TableTd visibleFrom="sm">
-                {stats ? (
-                  <Text size="sm">{stats.avgDelayMinutes.toFixed(1)} min</Text>
-                ) : representative ? (
-                  <Tooltip label={sampleUnavailableReason(representative)}>
+                  <Text size="xs" c="dimmed" hiddenFrom="sm">
+                    {formatSampleSummary(representative)}
+                  </Text>
+                </TableTd>
+                <TableTd>
+                  {worst ? (
+                    <StatusBadge severity={worst.statusSeverity} />
+                  ) : (
+                    // Task 3.4.1: previously rendered nothing at all -- ~120
+                    // of ~125 rows had no `line_status` row yet (see `rows`
+                    // above), so the Status column was blank for almost every
+                    // line, with no way to tell "good service" from "no data"
+                    // from "not computed yet". Grey/outline, not one of
+                    // StatusBadge's severity colours (a stated Non-goal is
+                    // leaving `severity.ts`'s hue map untouched) -- this is
+                    // the absence of a status, not one more severity.
+                    // `data-status-badge` opts out of Mantine Badge's default
+                    // ellipsis truncation, the same fix `/lines/[id]`'s own
+                    // "No status yet" badge and `StatusBadge` itself already
+                    // rely on (see app/globals.css's `[data-status-badge]`
+                    // rule) -- otherwise "NO DATA" clips to "N…" in this same
+                    // table at narrow widths.
+                    <Tooltip label={noStatusReason(representative)}>
+                      <Badge color="gray" variant="outline" data-status-badge>
+                        NO DATA
+                      </Badge>
+                    </Tooltip>
+                  )}
+                </TableTd>
+                <TableTd visibleFrom="sm">
+                  {stats ? (
+                    <Text size="sm">{stats.avgDelayMinutes.toFixed(1)} min</Text>
+                  ) : representative ? (
+                    <Tooltip label={sampleUnavailableReason(representative)}>
+                      <Text size="sm" c="dimmed">
+                        —
+                      </Text>
+                    </Tooltip>
+                  ) : (
                     <Text size="sm" c="dimmed">
                       —
                     </Text>
-                  </Tooltip>
-                ) : (
-                  <Text size="sm" c="dimmed">
-                    —
-                  </Text>
-                )}
-              </TableTd>
-              <TableTd visibleFrom="sm">
-                {cancelledPct !== null ? (
-                  <Text size="sm">{cancelledPct}%</Text>
-                ) : representative ? (
-                  <Tooltip label={sampleUnavailableReason(representative)}>
+                  )}
+                </TableTd>
+                <TableTd visibleFrom="sm">
+                  {cancelledPct !== null ? (
+                    <Text size="sm">{cancelledPct}%</Text>
+                  ) : representative ? (
+                    <Tooltip label={sampleUnavailableReason(representative)}>
+                      <Text size="sm" c="dimmed">
+                        —
+                      </Text>
+                    </Tooltip>
+                  ) : (
                     <Text size="sm" c="dimmed">
                       —
                     </Text>
-                  </Tooltip>
-                ) : (
-                  <Text size="sm" c="dimmed">
-                    —
-                  </Text>
-                )}
-              </TableTd>
-              <TableTd>
-                <PinToggle
-                  kind="line"
-                  id={line.id}
-                  initiallyPinned={pinnedSet.has(line.id)}
-                  needsAccountHint={viewerIsAnonymous}
-                />
-              </TableTd>
-            </TableTr>
-          ))}
-        </TableTbody>
+                  )}
+                </TableTd>
+                <TableTd>
+                  <PinToggle
+                    kind="line"
+                    id={line.id}
+                    initiallyPinned={pinnedSet.has(line.id)}
+                    needsAccountHint={viewerIsAnonymous}
+                  />
+                </TableTd>
+              </TableTr>
+            ))}
+          </TableTbody>
         </Table>
       </TableScrollContainer>
     </Stack>

@@ -40,12 +40,22 @@ describe('legEndpointName', () => {
   });
 
   it('falls back to the pin name when the pin CRS matches and no stop resolved a name', () => {
-    const pin = { pinOriginCrs: 'KGX', pinOriginName: 'London Kings Cross', pinDestinationCrs: null, pinDestinationName: null };
+    const pin = {
+      pinOriginCrs: 'KGX',
+      pinOriginName: 'London Kings Cross',
+      pinDestinationCrs: null,
+      pinDestinationName: null,
+    };
     expect(legEndpointName('KGX', null, pin, 'origin')).toBe('London Kings Cross');
   });
 
   it('does not use the pin name when the pin CRS is for the other end', () => {
-    const pin = { pinOriginCrs: 'KGX', pinOriginName: 'London Kings Cross', pinDestinationCrs: null, pinDestinationName: null };
+    const pin = {
+      pinOriginCrs: 'KGX',
+      pinOriginName: 'London Kings Cross',
+      pinDestinationCrs: null,
+      pinDestinationName: null,
+    };
     expect(legEndpointName('YRK', null, pin, 'origin')).toBeNull();
   });
 
@@ -98,7 +108,9 @@ describe('legDestinationArrivalLabel', () => {
   });
 
   it('hedges with "est." when only an estimate is known', () => {
-    const stops = [stop({ crs: 'YRK', estimatedArrival: '2026-09-22T18:30:00Z', scheduledArrival: '2026-09-22T18:00:00Z' })];
+    const stops = [
+      stop({ crs: 'YRK', estimatedArrival: '2026-09-22T18:30:00Z', scheduledArrival: '2026-09-22T18:00:00Z' }),
+    ];
     expect(legDestinationArrivalLabel('YRK', stops)).toBe('arrive est. 19:30');
   });
 

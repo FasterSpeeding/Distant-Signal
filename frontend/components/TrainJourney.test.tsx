@@ -106,9 +106,7 @@ describe('TrainJourney', () => {
     );
     expect(screen.getByText(/Train C88888 to CRE/)).toBeInTheDocument();
 
-    renderWithMantine(
-      <TrainJourney state={baseState({ resolutionStatus: 'schedule_matched', trainUid: 'C88888' })} />,
-    );
+    renderWithMantine(<TrainJourney state={baseState({ resolutionStatus: 'schedule_matched', trainUid: 'C88888' })} />);
     expect(screen.getAllByText(/Train C88888/).length).toBeGreaterThan(0);
   });
 
@@ -583,9 +581,7 @@ describe('TrainJourney', () => {
   });
 
   it('renders no JourneyProgress for pending, even if journeyStops were somehow non-null', () => {
-    renderWithMantine(
-      <TrainJourney state={baseState({ resolutionStatus: 'pending', journeyStops: null })} />,
-    );
+    renderWithMantine(<TrainJourney state={baseState({ resolutionStatus: 'pending', journeyStops: null })} />);
     expect(screen.queryByRole('img', { name: /Journey progress/ })).not.toBeInTheDocument();
   });
 
@@ -722,7 +718,12 @@ describe('TrainJourney journeyStops filtering (genuine calling points only)', ()
           trainUid: 'L81634',
           status: 'en_route',
           journeyStops: [
-            journeyStop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin', scheduledDeparture: '2026-09-24T08:00:00Z' }),
+            journeyStop({
+              crs: 'WAT',
+              name: 'London Waterloo',
+              kind: 'Origin',
+              scheduledDeparture: '2026-09-24T08:00:00Z',
+            }),
             // HCRTJN -- a genuine, unbooked junction pass. Must render no row.
             journeyStop({ crs: null, name: null, tiploc: 'HCRTJN', kind: 'Intermediate' }),
             // A real booked stop whose TIPLOC/CRS join failed -- still a real

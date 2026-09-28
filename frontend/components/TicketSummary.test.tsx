@@ -140,7 +140,7 @@ describe('TicketSummary', () => {
     expect(screen.getByText('From Wallet pass')).toBeInTheDocument();
   });
 
-  it('renders the added-on date in the viewer\'s own timezone, not London', () => {
+  it("renders the added-on date in the viewer's own timezone, not London", () => {
     // "Added" is the app's one viewer-relative timestamp (TicketSummary.tsx's
     // comment at the swap site), so post-mount it renders in whatever zone
     // this test process is in -- expected via `formatLocalDateTime` rather

@@ -37,10 +37,9 @@ function mockFetchByUrl(
 ) {
   const {
     track = () =>
-      new Response(
-        JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+        status: 200,
+      }),
     attach = () => new Response(JSON.stringify({ ticketId: 7, trackedTrainId: 42 }), { status: 200 }),
   } = options;
   return vi.fn((input: RequestInfo | URL) => {
@@ -93,9 +92,7 @@ describe('TrackThisTrainButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
     await waitFor(() => expect(pushMock).toHaveBeenCalled());
-    const attachCalls = fetchMock.mock.calls.filter((args: unknown[]) =>
-      String(args[0]).includes('/attach'),
-    );
+    const attachCalls = fetchMock.mock.calls.filter((args: unknown[]) => String(args[0]).includes('/attach'));
     expect(attachCalls).toHaveLength(0);
   });
 
@@ -184,10 +181,9 @@ describe('TrackThisTrainButton', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Tracking…' })).toBeDisabled());
 
     resolveTrack(
-      new Response(
-        JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+        status: 200,
+      }),
     );
     await waitFor(() => expect(pushMock).toHaveBeenCalled());
   });
@@ -207,9 +203,7 @@ describe('TrackThisTrainButton', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
       expect((await screen.findAllByLabelText('Track into')).length).toBeGreaterThan(0);
-      const trackCalls = fetchMock.mock.calls.filter((args: unknown[]) =>
-        /\/api\/Journeys$/.test(String(args[0])),
-      );
+      const trackCalls = fetchMock.mock.calls.filter((args: unknown[]) => /\/api\/Journeys$/.test(String(args[0])));
       expect(trackCalls).toHaveLength(0);
       expect(pushMock).not.toHaveBeenCalled();
     });
@@ -224,10 +218,7 @@ describe('TrackThisTrainButton', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith(
-          '/api/Journeys',
-          expect.objectContaining({ method: 'POST' }),
-        );
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
       });
       await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
       expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/groups/'), expect.anything());
@@ -238,10 +229,9 @@ describe('TrackThisTrainButton', () => {
         const url = String(input);
         if (/\/api\/Journeys$/.test(url)) {
           return Promise.resolve(
-            new Response(
-              JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-              { status: 200 },
-            ),
+            new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+              status: 200,
+            }),
           );
         }
         if (/\/api\/groups\/grp-1\/trains$/.test(url)) return Promise.resolve(new Response(null, { status: 204 }));
@@ -257,10 +247,7 @@ describe('TrackThisTrainButton', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith(
-          '/api/Journeys',
-          expect.objectContaining({ method: 'POST' }),
-        );
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
       });
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
@@ -282,10 +269,9 @@ describe('TrackThisTrainButton', () => {
         const url = String(input);
         if (/\/api\/Journeys$/.test(url)) {
           return Promise.resolve(
-            new Response(
-              JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-              { status: 200 },
-            ),
+            new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+              status: 200,
+            }),
           );
         }
         if (/\/groups\/grp-1\/trains$/.test(url)) return Promise.reject(new Error('network blip'));

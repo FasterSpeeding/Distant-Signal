@@ -77,7 +77,7 @@ describe('/api/[...path] proxy', () => {
   // a browser does, so without forwarding them explicitly, every single
   // proxied request looked origin-less to api regardless of what the
   // browser actually sent, and every real logout was rejected.
-  it('forwards the browser\'s Origin and Referer headers through to the backend', async () => {
+  it("forwards the browser's Origin and Referer headers through to the backend", async () => {
     const req = makeRequest('/api/auth/logout', {
       method: 'POST',
       headers: {
@@ -257,7 +257,7 @@ describe('/api/[...path] proxy', () => {
   // `app/connect-claude/authorize/route.ts` already carries for its own
   // single state-changing POST, applied here at the shared-proxy level.
   describe('Origin check on mutating methods', () => {
-    it('403s a POST whose Origin does not match this app\'s real public origin', async () => {
+    it("403s a POST whose Origin does not match this app's real public origin", async () => {
       const req = makeRequest('/api/preferences', {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: 'https://evil.example.com' },
@@ -342,7 +342,7 @@ describe('/api/[...path] proxy', () => {
       expect(fetch).not.toHaveBeenCalled();
     });
 
-    it('accepts a POST whose Origin matches this app\'s real public origin', async () => {
+    it("accepts a POST whose Origin matches this app's real public origin", async () => {
       const req = makeRequest('/api/preferences', {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: 'http://localhost:3000' },
@@ -387,7 +387,7 @@ describe('/api/[...path] proxy', () => {
     // app's bare bound host under plain `next start`) -- a mutating
     // request whose Origin matches the REAL origin must be accepted even
     // though it does not match `req.nextUrl.origin`.
-    it("accepts a POST whose real public origin (Host header) differs from req.nextUrl.origin", async () => {
+    it('accepts a POST whose real public origin (Host header) differs from req.nextUrl.origin', async () => {
       incomingHeaders.set('host', 'ds.cursed.solutions');
       incomingHeaders.set('x-forwarded-proto', 'https');
       const req = makeRequest('/api/preferences', {
@@ -604,9 +604,11 @@ describe('/api/[...path] proxy', () => {
           controller.enqueue(chunk);
         },
       });
-      const req = makeRequest('/api/Train/track', { method: 'POST', body: stream, duplex: 'half' } as ConstructorParameters<
-        typeof NextRequest
-      >[1]);
+      const req = makeRequest('/api/Train/track', {
+        method: 'POST',
+        body: stream,
+        duplex: 'half',
+      } as ConstructorParameters<typeof NextRequest>[1]);
       const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
       expect(res.status).toBe(413);
       expect(fetch).not.toHaveBeenCalled();

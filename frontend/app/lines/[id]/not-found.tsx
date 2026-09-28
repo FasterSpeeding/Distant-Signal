@@ -27,7 +27,9 @@ export default async function LineNotFound() {
     <Stack p="lg" gap="md">
       {/* order={1}, size="h2": see app/error.tsx's fuller comment on this
           same pattern -- page-level h1, rendered size unchanged. */}
-      <Title order={1} size="h2">Line not found</Title>
+      <Title order={1} size="h2">
+        Line not found
+      </Title>
       <Text c="dimmed">No line matches that ID.</Text>
       {/* The page previously had no link anywhere on it — a genuine dead
           end reachable from a stale bookmark or a deleted custom line. */}

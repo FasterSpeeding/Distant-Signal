@@ -168,7 +168,11 @@ export function NotificationsToggle() {
   // Tier-2-anonymous, most-visited page.
   return (
     <>
-      <Button onClick={enable} disabled={!checked || !supported || busy || enabled} variant={enabled ? 'light' : 'filled'}>
+      <Button
+        onClick={enable}
+        disabled={!checked || !supported || busy || enabled}
+        variant={enabled ? 'light' : 'filled'}
+      >
         {enabled ? 'Notifications enabled' : 'Enable notifications'}
       </Button>
       {error && <Text c="var(--ds-color-error-text)">{error}</Text>}

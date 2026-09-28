@@ -113,8 +113,8 @@ export async function HalfHourlyCoverageTrendsResults({ id, from, to }: { id: st
           not a per-bucket counting rule -- so there is nothing here for a
           granularity change to reword. See design doc Decision 3. */}
       <Text size="sm" c="dimmed">
-        Rates shown cover every scheduled service on this line, cross-referenced against real train-movement data —
-        not a sample of live departures at a handful of stations.
+        Rates shown cover every scheduled service on this line, cross-referenced against real train-movement data — not
+        a sample of live departures at a handful of stations.
       </Text>
       {/* order={3}: this sits under /lines/[id]'s h1 line name -> h2
           "Recent trends (last 24 hours)" -> HalfHourlyTrendsResults' own

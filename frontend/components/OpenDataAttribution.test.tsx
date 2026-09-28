@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 describe('OpenDataAttribution', () => {
-  it('carries TfL\'s required attribution verbatim', () => {
+  it("carries TfL's required attribution verbatim", () => {
     // Not decoration: TfL's modified OGL v2.0 requires this exact phrase
     // wherever its open data is presented. Reworded, it stops being
     // attribution.
@@ -77,7 +77,7 @@ describe('OpenDataAttribution', () => {
   // to `sm` (14px), the size the chrome's other text-link-styled controls
   // (AuthStatus's "Log in") converge on -- its two plain-text sibling lines
   // stay at `xs`, since they carry no link of their own.
-  it("renders the NationalRail attribution line (the one with a link) at sm, not the xs plain-text lines use", () => {
+  it('renders the NationalRail attribution line (the one with a link) at sm, not the xs plain-text lines use', () => {
     renderWithMantine(<OpenDataAttribution />);
     const link = screen.getByText('powered by NationalRail');
     expect(link.parentElement).toHaveStyle({ '--text-fz': 'var(--mantine-font-size-sm)' });
@@ -98,7 +98,10 @@ describe('OpenDataAttribution', () => {
   it('links to the /attribution page from a labelled footer nav', () => {
     renderWithMantine(<OpenDataAttribution />);
     const nav = screen.getByRole('navigation', { name: 'Site information' });
-    expect(within(nav).getByRole('link', { name: 'Data sources and licences' })).toHaveAttribute('href', '/attribution');
+    expect(within(nav).getByRole('link', { name: 'Data sources and licences' })).toHaveAttribute(
+      'href',
+      '/attribution',
+    );
   });
 
   it('hides the legal page links while the legal pages are unpublished (the default)', () => {
@@ -154,7 +157,9 @@ describe('OpenDataAttributionDetails (/attribution)', () => {
   it('carries the TfL and National Rail wording verbatim', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     expect(statementOf('tfl')).toHaveTextContent(/^Powered by TfL Open Data$/);
-    expect(statementOf('national-rail')).toHaveTextContent(/^powered by NationalRail \(Train Information Services Ltd\)$/);
+    expect(statementOf('national-rail')).toHaveTextContent(
+      /^powered by NationalRail \(Train Information Services Ltd\)$/,
+    );
   });
 
   it('carries the prescribed NRIL statement, linked to the licence', () => {

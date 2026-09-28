@@ -213,11 +213,7 @@ export async function generateMetadata({
  * `getPublicTrainByUidAndDate` itself. The branch that used to be here (a
  * "log in to view this tracked train" prompt) was dead code after that
  * change. */
-export default async function TrackedTrainByUidPage({
-  params,
-}: {
-  params: Promise<{ uid: string; date: string }>;
-}) {
+export default async function TrackedTrainByUidPage({ params }: { params: Promise<{ uid: string; date: string }> }) {
   const { uid, date } = await params;
 
   // Validated before the fetch fires, per the same "malformed URL segment
@@ -275,8 +271,7 @@ export default async function TrackedTrainByUidPage({
   // below covers "not logged in", "logged in, nothing matches", and "the
   // check itself failed" identically; all three fall through to the plain
   // public render below.
-  const match =
-    myTrackedTrains?.find((item) => item.trainUid === uid && item.serviceDate === date) ?? null;
+  const match = myTrackedTrains?.find((item) => item.trainUid === uid && item.serviceDate === date) ?? null;
 
   // `toJourneyState(train)` alone always has `customName: null` (see its
   // own doc comment) -- overlay the visitor's own custom name from `match`

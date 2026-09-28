@@ -53,12 +53,9 @@ describe('CreateJourneyLegFromTicketButton', () => {
 
   it('omits query params the proposal did not know, rather than sending empty values', async () => {
     vi.mocked(fetch).mockResolvedValue(
-      new Response(
-        JSON.stringify(
-          proposal({ serviceDate: null, departAfter: null, departBefore: null }),
-        ),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify(proposal({ serviceDate: null, departAfter: null, departBefore: null })), {
+        status: 200,
+      }),
     );
     renderWithMantine(<CreateJourneyLegFromTicketButton ticketId={7} />);
 

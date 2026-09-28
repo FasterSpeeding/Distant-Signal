@@ -102,7 +102,10 @@ async function mockMcpHandshake(page: Page) {
 }
 
 test.describe('/chat, mocked network', () => {
-  test.skip(!SESSION_COOKIE, 'set E2E_SESSION_COOKIE to a raw distant_signal_session value for a chatbot-allowlisted user');
+  test.skip(
+    !SESSION_COOKIE,
+    'set E2E_SESSION_COOKIE to a raw distant_signal_session value for a chatbot-allowlisted user',
+  );
   test.use({ storageState: SESSION_COOKIE ? sessionState(SESSION_COOKIE) : undefined });
 
   test.beforeEach(async ({ page }) => {
@@ -179,7 +182,11 @@ test.describe('/chat, mocked network', () => {
     // handshake + empty tool list, exactly like the happy-path test above;
     // only the Anthropic response should fail in this one.
     await page.route('**/v1/messages*', (route) =>
-      route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { message: 'invalid x-api-key' } }) }),
+      route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { message: 'invalid x-api-key' } }),
+      }),
     );
 
     await page.goto('/chat');

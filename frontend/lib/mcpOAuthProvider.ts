@@ -85,7 +85,9 @@ export class BrowserMcpOAuthProvider implements OAuthClientProvider {
   codeVerifier(): string {
     const verifier = localStorage.getItem(CODE_VERIFIER_KEY);
     if (!verifier) {
-      throw new Error('No PKCE code verifier found in localStorage -- the authorization flow was not started from this browser');
+      throw new Error(
+        'No PKCE code verifier found in localStorage -- the authorization flow was not started from this browser',
+      );
     }
     return verifier;
   }

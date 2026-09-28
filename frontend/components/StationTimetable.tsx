@@ -1,16 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import {
-  Accordion,
-  AccordionControl,
-  AccordionItem,
-  AccordionPanel,
-  Alert,
-  Group,
-  Stack,
-  Text,
-} from '@mantine/core';
+import { Accordion, AccordionControl, AccordionItem, AccordionPanel, Alert, Group, Stack, Text } from '@mantine/core';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
@@ -48,10 +39,7 @@ interface TrainSearchResponse {
  * feed's coverage must not read the same as "nothing's running right
  * now") and must not be collapsed into one copy. */
 type Results =
-  | { rows: TrainSearchRow[]; nextCursor: string | null; loadMoreFailed: boolean }
-  | 'unpublished'
-  | 'error'
-  | null;
+  { rows: TrainSearchRow[]; nextCursor: string | null; loadMoreFailed: boolean } | 'unpublished' | 'error' | null;
 
 /** Today's London date, computed once per render for every row's
  * live-status link -- there is no date picker on this stripped-down view
@@ -203,7 +191,7 @@ export function StationTimetable({ crs }: { crs: string }) {
     }
     if (results === 'error') {
       return (
-        <Alert color="red" title="Couldn&apos;t load">
+        <Alert color="red" title="Couldn't load">
           Couldn&apos;t load the scheduled departures right now.
         </Alert>
       );
@@ -263,12 +251,12 @@ export function StationTimetable({ crs }: { crs: string }) {
             <AccordionPanel>
               <Stack gap="xs">
                 <Text size="sm" c="dimmed">
-                  These are from the scheduled timetable, not live running information, and may be up to 30
-                  minutes out of date. Open a train to see its live status.
+                  These are from the scheduled timetable, not live running information, and may be up to 30 minutes out
+                  of date. Open a train to see its live status.
                 </Text>
                 <Text size="sm" c="dimmed">
-                  This list shows only departures from this station -- trains that terminate here won&apos;t
-                  be listed, and neither headcode nor operator is available for scheduled-timetable rows.
+                  This list shows only departures from this station -- trains that terminate here won&apos;t be listed,
+                  and neither headcode nor operator is available for scheduled-timetable rows.
                 </Text>
                 {resultsContent()}
               </Stack>

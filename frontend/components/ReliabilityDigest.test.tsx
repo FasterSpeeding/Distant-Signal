@@ -73,7 +73,9 @@ describe('ReliabilityDigest', () => {
   });
 
   it('with eligible data: shows an on-time percentage and eligible count', () => {
-    renderWithMantine(<ReliabilityDigest trains={[train({ serviceDate: '2026-09-01', delayMinutes: 0 })]} tickets={[]} />);
+    renderWithMantine(
+      <ReliabilityDigest trains={[train({ serviceDate: '2026-09-01', delayMinutes: 0 })]} tickets={[]} />,
+    );
     expect(screen.getByText(/100%/)).toBeInTheDocument();
   });
 
@@ -144,7 +146,7 @@ describe('ReliabilityDigest', () => {
     expect(screen.queryByText(/£/)).not.toBeInTheDocument();
   });
 
-  it('renders a space between the eligible-count interpolation and the following word (review §4.4: explicit {\' \'} guard against dropped whitespace)', () => {
+  it("renders a space between the eligible-count interpolation and the following word (review §4.4: explicit {' '} guard against dropped whitespace)", () => {
     renderWithMantine(<ReliabilityDigest trains={[train({ serviceDate: '2026-09-01' })]} tickets={[ticket()]} />);
     expect(screen.getByText(/1 may have qualified for a partial/)).toBeInTheDocument();
     expect(screen.queryByText(/1may have/)).not.toBeInTheDocument();

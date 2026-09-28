@@ -35,7 +35,10 @@ describe('searchNearbyStations', () => {
   });
 
   it('throws on a non-2xx response, so a real failure is never mistaken for "nothing found"', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad request', { status: 400 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('bad request', { status: 400 })),
+    );
 
     await expect(searchNearbyStations(0, 0)).rejects.toThrow('400');
   });
@@ -62,7 +65,12 @@ describe('getStationNames', () => {
 
     const names = await getStationNames(['EUS', 'MKC']);
 
-    expect(names).toEqual(new Map([['EUS', 'London Euston'], ['MKC', 'Milton Keynes Central']]));
+    expect(names).toEqual(
+      new Map([
+        ['EUS', 'London Euston'],
+        ['MKC', 'Milton Keynes Central'],
+      ]),
+    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -80,7 +88,9 @@ describe('getStationNames', () => {
   it('omits a code with no exact-match row (substring search returned other stations only)', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify([{ code: 'EUSTON SQUARE', name: 'Not a real CRS' }]), { status: 200 })),
+      vi.fn(
+        async () => new Response(JSON.stringify([{ code: 'EUSTON SQUARE', name: 'Not a real CRS' }]), { status: 200 }),
+      ),
     );
 
     const names = await getStationNames(['ZZZ']);

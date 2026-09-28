@@ -18,7 +18,8 @@ import type { LineStatus } from '@/lib/types';
  * carries either today, so this is forward-looking scaffolding, not a
  * behavior change. */
 export function RepresentativeInfo({ statuses }: { statuses: LineStatus[] }) {
-  const withStats = statuses.find((status) => status.fullCoverageStats) ?? statuses.find((status) => status.sampleStats);
+  const withStats =
+    statuses.find((status) => status.fullCoverageStats) ?? statuses.find((status) => status.sampleStats);
   const stats = withStats?.fullCoverageStats ?? withStats?.sampleStats;
   if (!stats) return null;
 

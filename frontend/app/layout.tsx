@@ -234,27 +234,24 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           {/* LEG-1: lets client-side login controls show "by logging in you
               agree" only once the terms and privacy notice are published. */}
           <LoginConsentProvider published={legalPagesPublished()}>
-          <GroupSummariesProvider groups={groups}>
-            {/* Wraps the whole shell rather than only <Container
+            <GroupSummariesProvider groups={groups}>
+              {/* Wraps the whole shell rather than only <Container
                 component="main">: the banner's fixed positioning is then not
                 constrained by the content container, and app/error.tsx --
                 which renders inside <Container component="main"> below --
                 ends up a descendant, which is what lets it read the context
                 and auto-recover. */}
-            <ConnectivityMonitor
-              backendReachable={backendReachable}
-              observedAt={new Date().toISOString()}
-            >
-              <AutoRefresh />
-              <ColorSchemeMeta />
-              {/* RootLayout is a Server Component and re-executes on every
+              <ConnectivityMonitor backendReachable={backendReachable} observedAt={new Date().toISOString()}>
+                <AutoRefresh />
+                <ColorSchemeMeta />
+                {/* RootLayout is a Server Component and re-executes on every
                   navigation and every AutoRefresh-triggered router.refresh() --
                   a fresh ISO timestamp here is what lets
                   ServiceWorkerRegister record "last successful load" purely
                   from receiving a new prop value; see that component's own
                   doc comment. */}
-              <ServiceWorkerRegister loadedAt={new Date().toISOString()} />
-              {/* The fallback is the WHOLE bar rendered logged-out, not a
+                <ServiceWorkerRegister loadedAt={new Date().toISOString()} />
+                {/* The fallback is the WHOLE bar rendered logged-out, not a
                   placeholder: the brand, the burger and every primary link
                   are identical either way, so a visitor sees a complete,
                   usable nav from the first byte and only the account
@@ -266,10 +263,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   It also means the anonymous rendering is not a special
                   case that only real anonymous visitors exercise -- every
                   page load renders it, so it cannot quietly rot. */}
-              <Suspense fallback={<AppNavBar session={LOGGED_OUT_SESSION} freshness={freshness} />}>
-                <NavBarWithSession freshness={freshness} />
-              </Suspense>
-              {/* `component="main"`: Mantine's Container renders a plain
+                <Suspense fallback={<AppNavBar session={LOGGED_OUT_SESSION} freshness={freshness} />}>
+                  <NavBarWithSession freshness={freshness} />
+                </Suspense>
+                {/* `component="main"`: Mantine's Container renders a plain
                   <div> by default, which left every page's actual content
                   outside any landmark -- axe's `landmark-one-main` fired on
                   every route tested, and `region` fired once per unlandmarked
@@ -316,12 +313,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   `max-width: 1140px` then clamps exactly like the nav's,
                   with `margin-inline: auto` centering the clamped box --
                   matching the nav Container's box on every route. */}
-              <Container id="main-content" component="main" size="lg" px={0} w="100%" style={{ flex: 1 }}>
-                {children}
-              </Container>
-              <OpenDataAttribution />
-            </ConnectivityMonitor>
-          </GroupSummariesProvider>
+                <Container id="main-content" component="main" size="lg" px={0} w="100%" style={{ flex: 1 }}>
+                  {children}
+                </Container>
+                <OpenDataAttribution />
+              </ConnectivityMonitor>
+            </GroupSummariesProvider>
           </LoginConsentProvider>
         </AppMantineProvider>
       </body>

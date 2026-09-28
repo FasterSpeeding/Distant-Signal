@@ -56,14 +56,8 @@ async function expectMainMatchesNavWidth(page: Page) {
   // Same box, not just same width: a Container that stretched but lost its
   // `margin-inline: auto` centering would still fail here, since its left
   // edge (`x`) would no longer line up with the nav's.
-  expect(mainBox.width, 'main width should equal the nav Container width').toBeCloseTo(
-    navBox.width,
-    0
-  );
-  expect(mainBox.x, 'main left edge should equal the nav Container left edge').toBeCloseTo(
-    navBox.x,
-    0
-  );
+  expect(mainBox.width, 'main width should equal the nav Container width').toBeCloseTo(navBox.width, 0);
+  expect(mainBox.x, 'main left edge should equal the nav Container left edge').toBeCloseTo(navBox.x, 0);
 }
 
 test.describe('<main> width matches the nav Container (desktop 1440x900)', () => {
@@ -77,14 +71,17 @@ test.describe('<main> width matches the nav Container (desktop 1440x900)', () =>
   test('/train/[uid]/[date]', async ({ page }) => {
     test.skip(
       !TRAIN_UID || !TRAIN_DATE,
-      'set E2E_TRAIN_UID and E2E_TRAIN_DATE (YYYY-MM-DD) to a schedule that is live right now'
+      'set E2E_TRAIN_UID and E2E_TRAIN_DATE (YYYY-MM-DD) to a schedule that is live right now',
     );
     await page.goto(`/train/${TRAIN_UID}/${TRAIN_DATE}`);
     await expectMainMatchesNavWidth(page);
   });
 
   test('/groups/[id]', async ({ page }) => {
-    test.skip(!GROUP_ID, 'set E2E_GROUP_ID to a group id (the page renders a content column either way -- logged in or not)');
+    test.skip(
+      !GROUP_ID,
+      'set E2E_GROUP_ID to a group id (the page renders a content column either way -- logged in or not)',
+    );
     await page.goto(`/groups/${GROUP_ID}`);
     await expectMainMatchesNavWidth(page);
   });

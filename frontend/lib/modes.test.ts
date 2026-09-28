@@ -11,14 +11,7 @@ import {
 
 describe('DISPLAYED_MODES', () => {
   it('covers National Rail and the five TfL modes this app ingests', () => {
-    expect(DISPLAYED_MODES).toEqual([
-      'national-rail',
-      'tube',
-      'dlr',
-      'overground',
-      'elizabeth-line',
-      'tram',
-    ]);
+    expect(DISPLAYED_MODES).toEqual(['national-rail', 'tube', 'dlr', 'overground', 'elizabeth-line', 'tram']);
   });
 
   it('renders as the comma-separated path segment the API expects', () => {

@@ -133,9 +133,7 @@ describe('groupHistoryByDay', () => {
       ]),
     ]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].reason).toBe(
-      'N of M sampled services delayed, N of M sampled services skipping a scheduled stop.',
-    );
+    expect(spans[0].reason).toBe('N of M sampled services delayed, N of M sampled services skipping a scheduled stop.');
   });
 
   it('starts a new span when the reason genuinely changes', () => {
@@ -147,17 +145,19 @@ describe('groupHistoryByDay', () => {
   });
 
   it('groups "no active status" recomputes into their own span', () => {
-    const spans = spansFor([
-      entry('2026-08-19T18:00:00Z', []),
-      entry('2026-08-19T18:10:00Z', []),
-    ]);
+    const spans = spansFor([entry('2026-08-19T18:00:00Z', []), entry('2026-08-19T18:10:00Z', [])]);
     expect(spans).toHaveLength(1);
     expect(spans[0].samples).toBe(2);
   });
 
   it('reports the worst severity in the span, by true rank', () => {
     // 4 (Planned Closure) is numerically lower but less severe than 6.
-    const spans = spansFor([entry('2026-08-19T18:00:00Z', [[4, 'A'], [6, 'B']])]);
+    const spans = spansFor([
+      entry('2026-08-19T18:00:00Z', [
+        [4, 'A'],
+        [6, 'B'],
+      ]),
+    ]);
     const worst = spans.find((s) => s.reason === 'B');
     expect(worst?.severity).toBe(6);
   });
@@ -191,10 +191,7 @@ describe('resolveRange', () => {
   });
 
   it('honours an explicit custom range and reports no preset', () => {
-    const range = resolveRange(
-      { from: '2026-08-01T00:00:00Z', to: '2026-08-05T00:00:00Z' },
-      NOW,
-    );
+    const range = resolveRange({ from: '2026-08-01T00:00:00Z', to: '2026-08-05T00:00:00Z' }, NOW);
     expect(range.preset).toBeNull();
     // Re-serialized from the parsed instant, not echoed back verbatim (see
     // the traversal test below for why) -- so the canonical `.000Z` form,
@@ -285,7 +282,10 @@ describe('retentionShortfallDays', () => {
   });
 
   it('reports zero-shortfall (null) right at the retention boundary', () => {
-    const range = resolveRange({ from: new Date(NOW - 7 * 86400000).toISOString(), to: new Date(NOW).toISOString() }, NOW);
+    const range = resolveRange(
+      { from: new Date(NOW - 7 * 86400000).toISOString(), to: new Date(NOW).toISOString() },
+      NOW,
+    );
     expect(retentionShortfallDays(range, 7, NOW)).toBeNull();
   });
 

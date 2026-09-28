@@ -26,11 +26,9 @@ describe('NewGroupPage', () => {
   // submitting -- CreateGroupForm immediately rotates the new group's
   // first invite link and navigates to its detail page, but none of that
   // was visible to someone filling in the form.
-  it("explains that an invite link follows group creation", () => {
+  it('explains that an invite link follows group creation', () => {
     renderWithMantine(<NewGroupPage />);
-    expect(
-      screen.getByText("You'll get an invite link to share as soon as it's created."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("You'll get an invite link to share as soon as it's created.")).toBeInTheDocument();
   });
 
   // Review §3.2.8, deliberately on top of Task 1.1's root-cause `<main>`

@@ -62,8 +62,7 @@ export default async function ConnectClaudePage() {
       <Stack p="lg" gap="md">
         <Title order={1}>Connect Claude to Distant Signal</Title>
         <Text>
-          Log in to Distant Signal first, then come back here to connect your own Claude.ai or Claude Desktop
-          account.
+          Log in to Distant Signal first, then come back here to connect your own Claude.ai or Claude Desktop account.
         </Text>
         {/* Review §2.16: a filled `Button`, not the underlined text link
             this used to be -- the anonymous visitor's one action on this
@@ -79,10 +78,9 @@ export default async function ConnectClaudePage() {
     <Stack p="lg" gap="md">
       <Title order={1}>Connect Claude to Distant Signal</Title>
       <Text>
-        Distant Signal exposes an MCP server so you can ask Claude directly about UK train departures, arrivals,
-        and delay-aware journey planning — inside Claude&apos;s own app, using your own Claude account. This does
-        not use any of Distant Signal&apos;s own conversation features; Claude handles the whole conversation
-        itself.
+        Distant Signal exposes an MCP server so you can ask Claude directly about UK train departures, arrivals, and
+        delay-aware journey planning — inside Claude&apos;s own app, using your own Claude account. This does not use
+        any of Distant Signal&apos;s own conversation features; Claude handles the whole conversation itself.
       </Text>
       {/* `grape` + `IconInfoCircle`-equivalent, not Mantine's default blue
           -- review §3.1.6: the grape-theme spec reserves blue for `planned`
@@ -93,8 +91,8 @@ export default async function ConnectClaudePage() {
           -- `@tabler/icons-react` isn't a project dependency), the same
           one `ChatPanel.tsx`'s own blue-background fix below reaches for. */}
       <Alert color="grape" variant="light" icon={<InfoIcon />}>
-        Connecting requires a Pro, Max, Team, or Enterprise Claude plan for full support (a free Claude.ai account
-        gets one custom connector).
+        Connecting requires a Pro, Max, Team, or Enterprise Claude plan for full support (a free Claude.ai account gets
+        one custom connector).
       </Alert>
       {/* Flat `ListItem` named export, not the `List.Item` dot-notation
           compound API -- this page is a Server Component and `List` carries
@@ -141,14 +139,14 @@ export default async function ConnectClaudePage() {
           </Group>
         </ListItem>
         <ListItem>
-          Approve access when prompted — you&apos;ll be sent to Distant Signal&apos;s own login if you
-          aren&apos;t already signed in here, then asked to confirm the connection.
+          Approve access when prompted — you&apos;ll be sent to Distant Signal&apos;s own login if you aren&apos;t
+          already signed in here, then asked to confirm the connection.
         </ListItem>
       </List>
       <Text size="sm" c="dimmed">
-        Conversations happen entirely inside Claude&apos;s own interface, billed to your own Claude plan —
-        Distant Signal never sees the conversation itself, only the specific train/line/journey lookups Claude
-        asks it to run on your behalf.
+        Conversations happen entirely inside Claude&apos;s own interface, billed to your own Claude plan — Distant
+        Signal never sees the conversation itself, only the specific train/line/journey lookups Claude asks it to run on
+        your behalf.
       </Text>
     </Stack>
   );

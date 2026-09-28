@@ -135,9 +135,9 @@ function StatusMessage({
         </Group>
         {pinSummary}
         <Text size="sm" c="dimmed">
-          This train hasn&apos;t been matched to a live service yet — that&apos;s normal if it hasn&apos;t
-          started running. Network Rail typically doesn&apos;t report a service until shortly before it
-          departs. This page updates automatically.
+          This train hasn&apos;t been matched to a live service yet — that&apos;s normal if it hasn&apos;t started
+          running. Network Rail typically doesn&apos;t report a service until shortly before it departs. This page
+          updates automatically.
         </Text>
       </Stack>
     );
@@ -174,8 +174,8 @@ function StatusMessage({
         </Text>
         {pinSummary}
         <Text size="sm" c="dimmed">
-          Network Rail never reported a matching service for this pin. This won&apos;t resolve on its own
-          — try tracking the train again if it was a genuine mistake.
+          Network Rail never reported a matching service for this pin. This won&apos;t resolve on its own — try tracking
+          the train again if it was a genuine mistake.
         </Text>
       </Stack>
     );
@@ -279,8 +279,8 @@ function StatusMessage({
         // re-measurement risked replacing an already-good pairing with a
         // guessed one.
         <Alert color="yellow" title="May have arrived" variant="light">
-          This journey may have arrived at its destination, but this is an inference, not a confirmed
-          status from Network Rail.
+          This journey may have arrived at its destination, but this is an inference, not a confirmed status from
+          Network Rail.
         </Alert>
       )}
     </Stack>

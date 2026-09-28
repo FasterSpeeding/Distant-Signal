@@ -4,8 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: 'Distant Signal',
     short_name: 'Distant Signal',
-    description:
-      'A personal UK rail companion: live line status, train tracking, and ticket/Delay-Repay support.',
+    description: 'A personal UK rail companion: live line status, train tracking, and ticket/Delay-Repay support.',
     start_url: '/',
     display: 'standalone',
     background_color: '#ffffff',

@@ -88,7 +88,7 @@ describe('SaveAsTemplateButton', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('shows the server\'s own error message text on a non-401 failure', async () => {
+  it("shows the server's own error message text on a non-401 failure", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('Something went wrong', { status: 500 }));
 

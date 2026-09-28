@@ -7,9 +7,7 @@ const END_MESSAGE = "You've reached the end — no more results.";
 
 describe('LoadMoreControl', () => {
   it('renders the button, and no end-of-results copy, while there is another page', () => {
-    renderWithMantine(
-      <LoadMoreControl hasMore loading={false} onLoadMore={() => {}} endMessage={END_MESSAGE} />,
-    );
+    renderWithMantine(<LoadMoreControl hasMore loading={false} onLoadMore={() => {}} endMessage={END_MESSAGE} />);
 
     expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     expect(screen.queryByText(END_MESSAGE)).not.toBeInTheDocument();
@@ -25,9 +23,7 @@ describe('LoadMoreControl', () => {
   });
 
   it('keeps the live region mounted, and silent, while there are more pages', () => {
-    renderWithMantine(
-      <LoadMoreControl hasMore loading={false} onLoadMore={() => {}} endMessage={END_MESSAGE} />,
-    );
+    renderWithMantine(<LoadMoreControl hasMore loading={false} onLoadMore={() => {}} endMessage={END_MESSAGE} />);
 
     // Present from the start -- a region inserted into the DOM together with
     // its text is announced inconsistently, so the end message has to land in
@@ -45,9 +41,7 @@ describe('LoadMoreControl', () => {
 
   it('calls onLoadMore when the button is pressed', () => {
     const onLoadMore = vi.fn();
-    renderWithMantine(
-      <LoadMoreControl hasMore loading={false} onLoadMore={onLoadMore} endMessage={END_MESSAGE} />,
-    );
+    renderWithMantine(<LoadMoreControl hasMore loading={false} onLoadMore={onLoadMore} endMessage={END_MESSAGE} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
@@ -71,9 +65,7 @@ describe('LoadMoreControl', () => {
   });
 
   it('hides the previous failure, and disables the button, while the retry is in flight', () => {
-    renderWithMantine(
-      <LoadMoreControl hasMore loading failed onLoadMore={() => {}} endMessage={END_MESSAGE} />,
-    );
+    renderWithMantine(<LoadMoreControl hasMore loading failed onLoadMore={() => {}} endMessage={END_MESSAGE} />);
 
     expect(screen.getByRole('status')).toBeEmptyDOMElement();
     expect(screen.getByRole('button', { name: 'Load more' })).toBeDisabled();

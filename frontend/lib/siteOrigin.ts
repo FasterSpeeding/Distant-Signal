@@ -81,7 +81,7 @@ export async function getSiteOrigin(): Promise<string> {
     console.warn(
       'getSiteOrigin(): NEXT_PUBLIC_SITE_URL is not set -- falling back to the request Host header for ' +
         'share/invite links and same-origin checks. Set NEXT_PUBLIC_SITE_URL in production so these do not ' +
-        "depend on a reverse proxy forwarding Host correctly.",
+        'depend on a reverse proxy forwarding Host correctly.',
     );
   }
 

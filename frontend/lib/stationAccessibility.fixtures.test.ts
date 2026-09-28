@@ -26,9 +26,7 @@ import type { StationAccessibilityData } from './types';
 const ALL_KEYS = ACCESSIBILITY_CATEGORIES.flatMap((category) => category.keys);
 
 function nodesFor(data: StationAccessibilityData): AccessibilityNode[] {
-  return ALL_KEYS.filter((key) => hasRenderableValue(data[key])).map((key) =>
-    renderAccessibilityValue(data[key]),
-  );
+  return ALL_KEYS.filter((key) => hasRenderableValue(data[key])).map((key) => renderAccessibilityValue(data[key]));
 }
 
 /** Every node in a rendered tree, the root included. */
@@ -84,9 +82,37 @@ function everyValueAt(path: string): { crs: string; value: unknown }[] {
 describe('the 31-station fixture set', () => {
   it('is the sample the design surveyed', () => {
     expect(ACCESSIBILITY_FIXTURE_CRS).toEqual([
-      'ABD', 'BAL', 'BHM', 'BRI', 'BSK', 'BTN', 'CAR', 'CBG', 'CDF', 'DNO', 'EDB', 'EUS',
-      'EXD', 'GLQ', 'HUL', 'INV', 'IPS', 'KGX', 'LDS', 'LLE', 'MAN', 'NRW', 'PMH', 'PNZ',
-      'SHF', 'SKG', 'SOU', 'STP', 'TWY', 'WVH', 'YRK',
+      'ABD',
+      'BAL',
+      'BHM',
+      'BRI',
+      'BSK',
+      'BTN',
+      'CAR',
+      'CBG',
+      'CDF',
+      'DNO',
+      'EDB',
+      'EUS',
+      'EXD',
+      'GLQ',
+      'HUL',
+      'INV',
+      'IPS',
+      'KGX',
+      'LDS',
+      'LLE',
+      'MAN',
+      'NRW',
+      'PMH',
+      'PNZ',
+      'SHF',
+      'SKG',
+      'SOU',
+      'STP',
+      'TWY',
+      'WVH',
+      'YRK',
     ]);
   });
 
@@ -96,7 +122,10 @@ describe('the 31-station fixture set', () => {
       expect(keys.length, crs).toBeGreaterThanOrEqual(11);
       // `dropOffPickUp` is absent at 6/31 (§1.3) -- the only root-level
       // variation in the whole sample.
-      expect(keys.filter((key) => !(ALL_KEYS as string[]).includes(key)), crs).toEqual([]);
+      expect(
+        keys.filter((key) => !(ALL_KEYS as string[]).includes(key)),
+        crs,
+      ).toEqual([]);
     }
   });
 
@@ -139,9 +168,7 @@ describe('the raw fallback', () => {
     for (const { crs, data } of loadAllAccessibilityFixtures()) {
       for (const key of ALL_KEYS) {
         if (!hasRenderableValue(data[key])) continue;
-        const raws = walk(renderAccessibilityValue(data[key])).filter(
-          (node) => node.kind === 'raw',
-        );
+        const raws = walk(renderAccessibilityValue(data[key])).filter((node) => node.kind === 'raw');
         if (raws.length > 0) offenders.push(`${crs}.${key}`);
       }
     }
@@ -175,10 +202,7 @@ describe('the depth bound, measured from the fixtures', () => {
   function deepest(value: unknown, depth: number): number {
     if (typeof value !== 'object' || value === null) return depth - 1;
     const children = Array.isArray(value) ? value : Object.values(value);
-    return children.reduce<number>(
-      (worst, child) => Math.max(worst, deepest(child, depth + 1)),
-      depth,
-    );
+    return children.reduce<number>((worst, child) => Math.max(worst, deepest(child, depth + 1)), depth);
   }
 
   it('leaves exactly one level of margin over the deepest real chain', () => {
@@ -336,9 +360,7 @@ describe('real payloads land on the pattern the survey says they do', () => {
 
 describe('Pattern B, over every real entry', () => {
   it('never emits an unrecognised day token or an untrimmed time', () => {
-    const allowed = new Set([
-      'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Public Holidays',
-    ]);
+    const allowed = new Set(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Public Holidays']);
     let entries = 0;
     for (const { crs, data } of loadAllAccessibilityFixtures()) {
       for (const node of allNodes(data)) {
@@ -359,12 +381,10 @@ describe('Pattern B, over every real entry', () => {
     expect(entries).toBe(304);
   });
 
-  it('finds LLE\'s self-contradicting 24-hour entries and shows both facts', () => {
+  it("finds LLE's self-contradicting 24-hour entries and shows both facts", () => {
     const lle = loadAccessibilityFixture('LLE');
     const conflicting = allNodes(lle).flatMap((node) =>
-      node.kind === 'openingTimes'
-        ? node.entries.filter((entry) => entry.hours.includes('source also lists'))
-        : [],
+      node.kind === 'openingTimes' ? node.entries.filter((entry) => entry.hours.includes('source also lists')) : [],
     );
     expect(conflicting).toHaveLength(2);
     expect(conflicting[0].hours).toBe('24 hours (source also lists 06:10–12:40)');
@@ -385,7 +405,7 @@ describe('sanitization, over every real string', () => {
     }
   });
 
-  it('keeps the feed\'s links, including the 45 plain-http ones', () => {
+  it("keeps the feed's links, including the 45 plain-http ones", () => {
     let https = 0;
     let http = 0;
     let mailto = 0;
@@ -402,11 +422,9 @@ describe('sanitization, over every real string', () => {
     expect(mailto).toBeGreaterThan(0);
   });
 
-  it('demotes MAN\'s three note-level h2s rather than dropping their emphasis', () => {
+  it("demotes MAN's three note-level h2s rather than dropping their emphasis", () => {
     const man = loadAccessibilityFixture('MAN');
-    const demoted = allNodes(man).filter(
-      (node) => node.kind === 'richText' && node.html.includes('<p><strong>'),
-    );
+    const demoted = allNodes(man).filter((node) => node.kind === 'richText' && node.html.includes('<p><strong>'));
     expect(demoted.length).toBeGreaterThan(0);
   });
 });
@@ -470,7 +488,7 @@ describe('dedupeAcrossSection does not drop distinctly-labelled boolean facts (r
     return facts;
   }
 
-  it('keeps every distinctly-labelled boolean fact a group\'s fixture data carries, across all 31 stations', () => {
+  it("keeps every distinctly-labelled boolean fact a group's fixture data carries, across all 31 stations", () => {
     const offenders: string[] = [];
     for (const { crs, data } of loadAllAccessibilityFixtures()) {
       for (const category of ACCESSIBILITY_CATEGORIES) {

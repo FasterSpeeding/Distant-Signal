@@ -94,9 +94,7 @@ function noOptionsFound(label: string) {
  * kept on failure -- it is still a valid cursor, so the retry the footer
  * offers is a real one. */
 type Results =
-  | { rows: IncidentSummary[]; nextCursor: string | null; query: string; loadMoreFailed: boolean }
-  | 'error'
-  | null;
+  { rows: IncidentSummary[]; nextCursor: string | null; query: string; loadMoreFailed: boolean } | 'error' | null;
 
 /** `/incidents`'s one interactive component: filter form plus a
  * cursor-paginated, "Load more"-driven results list over
@@ -178,9 +176,7 @@ export function IncidentSearchForm({
   const [toDate, setToDate] = useState<string | null>(
     initialPeriod === 'all' ? null : initialTo ? londonCalendarDay(initialTo) : null,
   );
-  const [preset, setPreset] = useState<DatePreset | null>(
-    initialPeriod === 'all' ? 'all' : initialFrom ? null : '30d',
-  );
+  const [preset, setPreset] = useState<DatePreset | null>(initialPeriod === 'all' ? 'all' : initialFrom ? null : '30d');
   const [plannedFilter, setPlannedFilter] = useState<'all' | 'planned' | 'realtime'>(
     initialPlanned === 'true' ? 'planned' : initialPlanned === 'false' ? 'realtime' : 'all',
   );
@@ -520,9 +516,7 @@ export function IncidentSearchForm({
                 </Text>
               </Group>
               <Group gap="xs">
-                <Badge color={row.isPlanned ? 'blue' : 'orange'}>
-                  {row.isPlanned ? 'Planned Work' : 'Real-Time'}
-                </Badge>
+                <Badge color={row.isPlanned ? 'blue' : 'orange'}>{row.isPlanned ? 'Planned Work' : 'Real-Time'}</Badge>
                 <Badge color={row.isCleared ? 'gray' : 'green'}>{row.isCleared ? 'Cleared' : 'Active'}</Badge>
                 {row.operators.map((code) => (
                   <Badge key={code} variant="outline" color="grape">
@@ -530,12 +524,12 @@ export function IncidentSearchForm({
                   </Badge>
                 ))}
                 {/* `?? []` is not defensive padding for its own sake: during
-                  * a rolling deploy this bundle can be served against an api
-                  * that predates `affectedLines`, and an unguarded `.map`
-                  * would take the whole results list down rather than just
-                  * omit the badges. Capped at MAX_LINE_BADGES because an
-                  * operator-wide incident on a large TOC genuinely matches a
-                  * dozen-plus catalogue lines. */}
+                 * a rolling deploy this bundle can be served against an api
+                 * that predates `affectedLines`, and an unguarded `.map`
+                 * would take the whole results list down rather than just
+                 * omit the badges. Capped at MAX_LINE_BADGES because an
+                 * operator-wide incident on a large TOC genuinely matches a
+                 * dozen-plus catalogue lines. */}
                 {(row.affectedLines ?? []).slice(0, MAX_LINE_BADGES).map((id) => (
                   <Badge key={id} variant="outline" color="blue" title="Affected line">
                     {lineNamesById.get(id) ?? id}

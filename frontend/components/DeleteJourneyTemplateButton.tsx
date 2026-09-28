@@ -58,23 +58,16 @@ export function DeleteJourneyTemplateButton({ templateId }: { templateId: number
       </Button>
       <Modal opened={opened} onClose={close} title="Delete this template?">
         <Text>
-          This cannot be undone. Any journeys you&apos;ve already run from this template are
-          NOT deleted — only the reusable template itself.
+          This cannot be undone. Any journeys you&apos;ve already run from this template are NOT deleted — only the
+          reusable template itself.
         </Text>
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && (
-          <LoginLink underline="always">Log in to delete this template</LoginLink>
-        )}
+        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to delete this template</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={deleting}>
             Cancel
           </Button>
-          <Button
-            color="red"
-            onClick={handleDelete}
-            loading={deleting}
-            aria-label="Confirm delete template"
-          >
+          <Button color="red" onClick={handleDelete} loading={deleting} aria-label="Confirm delete template">
             Delete template
           </Button>
         </Group>

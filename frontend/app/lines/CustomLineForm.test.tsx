@@ -100,7 +100,10 @@ describe('CustomLineForm', () => {
     // (`lib/autocompleteNoMatch.ts`) works around the missing prop by
     // swapping in a single inert `role="option"` placeholder whenever the
     // real suggestions list is empty.
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
 

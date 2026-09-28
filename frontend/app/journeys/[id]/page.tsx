@@ -24,11 +24,7 @@ export const revalidate = 0;
  * for an anonymous share-link viewer; only the "Back to my trains &
  * journeys" link below stays specific to this page, since that anonymous
  * viewer has no "my trains" to go back to. */
-export default async function JourneyDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function JourneyDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!/^\d+$/.test(id)) {
     notFound();

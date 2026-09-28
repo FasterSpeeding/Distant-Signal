@@ -40,7 +40,7 @@ describe('TextLink', () => {
     expect(link).toHaveAttribute('data-prefetch', 'false');
   });
 
-  it('leaves prefetch as next/link\'s own default (undefined) when not specified', () => {
+  it("leaves prefetch as next/link's own default (undefined) when not specified", () => {
     renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
     expect(screen.getByRole('link', { name: 'All Lines' })).toHaveAttribute('data-prefetch', 'undefined');
   });
@@ -113,7 +113,7 @@ describe('TextLink', () => {
 
   // Review §2.16 "auth controls are inconsistently sized": `size` is new,
   // and left undefined by default so it changes no existing call site.
-  it('leaves the font size at Text\'s own default when no size is given', () => {
+  it("leaves the font size at Text's own default when no size is given", () => {
     renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
     expect(screen.getByText('All Lines')).not.toHaveStyle({ '--text-fz': 'var(--mantine-font-size-sm)' });
   });

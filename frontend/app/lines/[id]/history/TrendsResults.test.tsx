@@ -30,7 +30,11 @@ const lineChartMock = vi.fn((props: MockLineChartProps) => (
 vi.mock('@mantine/charts', () => ({
   LineChart: (props: MockLineChartProps) => lineChartMock(props),
   BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
-    <div data-testid="bar-chart" data-series={props.series.map((s) => s.name).join(',')} data-points={JSON.stringify(props.data)} />
+    <div
+      data-testid="bar-chart"
+      data-series={props.series.map((s) => s.name).join(',')}
+      data-points={JSON.stringify(props.data)}
+    />
   ),
 }));
 
@@ -138,20 +142,23 @@ describe('TrendsResults', () => {
     ['halfHour', 'getLineHalfHourlyStats', halfHourlyRow, 10, 'per half hour'] as const,
     ['hour', 'getLineHourlyStats', hourlyRow, 20, 'per hour'] as const,
     ['sixHour', 'getLineSixHourlyStats', sixHourlyRow, 120, 'per six-hour period'] as const,
-  ])('dispatches to the right fetch, floor, and honesty copy for the %s granularity', async (granularity, fnName, rowFactory, floor, copyFragment) => {
-    const mockFn = vi.mocked(api[fnName as keyof typeof api]) as unknown as ReturnType<typeof vi.fn>;
-    mockFn.mockResolvedValue([rowFactory({ sampleCycles: floor })]);
-    renderWithMantine(
-      await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
-    );
-    expect(mockFn).toHaveBeenCalledWith('wcml', '2026-08-31T00:00:00Z', '2026-09-01T00:00:00Z');
-    expect(screen.getByText(new RegExp(`Each train is counted once ${copyFragment}`))).toBeInTheDocument();
+  ])(
+    'dispatches to the right fetch, floor, and honesty copy for the %s granularity',
+    async (granularity, fnName, rowFactory, floor, copyFragment) => {
+      const mockFn = vi.mocked(api[fnName as keyof typeof api]) as unknown as ReturnType<typeof vi.fn>;
+      mockFn.mockResolvedValue([rowFactory({ sampleCycles: floor })]);
+      renderWithMantine(
+        await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
+      );
+      expect(mockFn).toHaveBeenCalledWith('wcml', '2026-08-31T00:00:00Z', '2026-09-01T00:00:00Z');
+      expect(screen.getByText(new RegExp(`Each train is counted once ${copyFragment}`))).toBeInTheDocument();
 
-    const charts = screen.getAllByTestId('line-chart');
-    const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
-    const points = JSON.parse(rateChart!.dataset.points as string);
-    expect(points[0].delayRate).not.toBeNull(); // exactly at the floor -- not sparse
-  });
+      const charts = screen.getAllByTestId('line-chart');
+      const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
+      const points = JSON.parse(rateChart!.dataset.points as string);
+      expect(points[0].delayRate).not.toBeNull(); // exactly at the floor -- not sparse
+    },
+  );
 
   it.each([
     ['halfHour', 'getLineHalfHourlyStats', halfHourlyRow, 10] as const,

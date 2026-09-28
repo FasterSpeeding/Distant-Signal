@@ -106,12 +106,8 @@ export default async function MyTrackedTrainsPage() {
             pre-hydration visitor sees this sentence even though it can
             never run the client-only AutoOpenLoginPrompt modal below,
             which stays as progressive enhancement on top of it. */}
-        <LoginLink underline="always">
-          Log in to see the trains and tickets you&apos;re tracking
-        </LoginLink>
-        <AutoOpenLoginPrompt>
-          Log in to see the trains and tickets you&apos;re tracking.
-        </AutoOpenLoginPrompt>
+        <LoginLink underline="always">Log in to see the trains and tickets you&apos;re tracking</LoginLink>
+        <AutoOpenLoginPrompt>Log in to see the trains and tickets you&apos;re tracking.</AutoOpenLoginPrompt>
       </Stack>
     );
   }
@@ -162,9 +158,7 @@ export default async function MyTrackedTrainsPage() {
   // endpoint, which belongs with the wider I22 vocabulary work rather
   // than here.
   const journeyTrainIds = new Set(
-    journeyRows
-      .map((journey) => journey.trainSubscriptionId)
-      .filter((id): id is number => id !== null),
+    journeyRows.map((journey) => journey.trainSubscriptionId).filter((id): id is number => id !== null),
   );
   const standaloneTrains = trains.filter((train) => !journeyTrainIds.has(train.id));
 
@@ -194,8 +188,8 @@ export default async function MyTrackedTrainsPage() {
       </TextLink>
       {nothingToShow ? (
         <Text c="dimmed">
-          You haven&apos;t tracked any trains or added any tickets yet.{' '}
-          <Link href="/track">Track a train</Link> to get started.
+          You haven&apos;t tracked any trains or added any tickets yet. <Link href="/track">Track a train</Link> to get
+          started.
         </Text>
       ) : (
         <>
@@ -277,12 +271,7 @@ export default async function MyTrackedTrainsPage() {
  * behaviour the primitive encodes (review P2) -- the same reason
  * `ScheduleRow` is built on it. */
 function JourneyListRow({ journey }: { journey: JourneyListItem }) {
-  const route = routeLabel(
-    journey.originCrs,
-    journey.originName,
-    journey.destinationCrs,
-    journey.destinationName,
-  );
+  const route = routeLabel(journey.originCrs, journey.originName, journey.destinationCrs, journey.destinationName);
   const when = formatDate(journey.serviceDate);
   const title = journey.customName ?? `${route}, ${when}`;
 
@@ -325,12 +314,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
       ? `/train/${train.trainUid}/${train.serviceDate}`
       : `/train/by-id/${train.id}`;
 
-  const route = routeLabel(
-    train.pinOriginCrs,
-    train.pinOriginName,
-    train.pinDestinationCrs,
-    train.pinDestinationName,
-  );
+  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
   const displayName = trackedTrainDisplayName(train);
   // `pinScheduledDeparture` is `null` for an NR-primary subscription whose
   // train has no schedule data yet -- degrade to a date-only label rather
@@ -397,11 +381,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
           }
         />
         {tickets.length > 0 && (
-          <Stack
-            gap="md"
-            pl="md"
-            style={{ borderLeft: '2px solid var(--mantine-color-default-border)' }}
-          >
+          <Stack gap="md" pl="md" style={{ borderLeft: '2px solid var(--mantine-color-default-border)' }}>
             {tickets.map((ticket) => (
               <Stack key={ticket.id} gap={4}>
                 <TicketSummary ticket={ticket} />
@@ -572,4 +552,3 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
     </Card>
   );
 }
-

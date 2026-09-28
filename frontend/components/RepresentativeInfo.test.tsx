@@ -80,17 +80,13 @@ describe('RepresentativeInfo', () => {
       sampleStats: { total: 20, delayed: 5, cancelled: 0, skipped: 0, avgDelayMinutes: 4 },
     });
     const { unmount } = renderWithMantine(<RepresentativeInfo statuses={[sampleOnly]} />);
-    expect(
-      screen.queryByText(/Based on real train-movement data for every scheduled service/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Based on real train-movement data for every scheduled service/)).not.toBeInTheDocument();
     unmount();
 
     const withCoverage = baseStatus({
       fullCoverageStats: { total: 500, delayed: 10, cancelled: 1, skipped: 0, avgDelayMinutes: 2.0 },
     });
     renderWithMantine(<RepresentativeInfo statuses={[withCoverage]} />);
-    expect(
-      screen.getByText(/Based on real train-movement data for every scheduled service/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Based on real train-movement data for every scheduled service/)).toBeInTheDocument();
   });
 });

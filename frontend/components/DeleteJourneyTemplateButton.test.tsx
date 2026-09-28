@@ -78,9 +78,7 @@ describe('DeleteJourneyTemplateButton', () => {
     renderWithMantine(<DeleteJourneyTemplateButton templateId={167} />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete template' }));
     await waitFor(() =>
-      expect(
-        screen.getByText(/Any journeys you've already run from this template are/),
-      ).toBeInTheDocument(),
+      expect(screen.getByText(/Any journeys you've already run from this template are/)).toBeInTheDocument(),
     );
   });
 });

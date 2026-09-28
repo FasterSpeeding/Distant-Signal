@@ -115,11 +115,7 @@ function ExternalLink({ href, children }: { href: string; children: ReactNode })
 export function OpenDataAttribution() {
   const legalLinks = legalPagesVisible() ? LEGAL_LINKS : [];
   return (
-    <Box
-      component="footer"
-      p="md"
-      style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}
-    >
+    <Box component="footer" p="md" style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
       <Text size="xs" c="dimmed">
         Powered by TfL Open Data
       </Text>
@@ -221,8 +217,8 @@ export const DATA_SOURCES: readonly DataSource[] = [
     statement: 'Powered by TfL Open Data',
     licence: (
       <>
-        <ExternalLink href={TFL_TERMS_URL}>TfL transport data service terms</ExternalLink> (based on the Open
-        Government Licence v2.0).
+        <ExternalLink href={TFL_TERMS_URL}>TfL transport data service terms</ExternalLink> (based on the Open Government
+        Licence v2.0).
       </>
     ),
   },
@@ -232,7 +228,8 @@ export const DATA_SOURCES: readonly DataSource[] = [
     use: 'Scheduled Irish Rail services.',
     statement: (
       <>
-        Irish Rail timetable data © <ExternalLink href="https://www.nationaltransport.ie">National Transport Authority</ExternalLink>, licensed
+        Irish Rail timetable data ©{' '}
+        <ExternalLink href="https://www.nationaltransport.ie">National Transport Authority</ExternalLink>, licensed
         under <ExternalLink href={CC_BY_4_URL}>CC BY 4.0</ExternalLink>. The GTFS data is provided &quot;as is&quot;,
         without warranty of any kind.
       </>
@@ -250,8 +247,8 @@ export const DATA_SOURCES: readonly DataSource[] = [
     use: 'Live Irish Rail running information.',
     statement: (
       <>
-        Live Irish Rail data from <ExternalLink href="https://api.irishrail.ie/realtime/">Iarnród Éireann</ExternalLink>,
-        provided &quot;as is&quot;.
+        Live Irish Rail data from <ExternalLink href="https://api.irishrail.ie/realtime/">Iarnród Éireann</ExternalLink>
+        , provided &quot;as is&quot;.
       </>
     ),
     licence: 'No published licence; provided by Iarnród Éireann "as is".',
@@ -340,8 +337,8 @@ export function OpenDataAttributionDetails() {
         <List size="sm">
           <ListItem>No data provider&apos;s logo or brand is used.</ListItem>
           <ListItem>
-            Data is provided &quot;as is&quot; and may be late, incomplete or wrong. Check with the train operator before
-            travelling.
+            Data is provided &quot;as is&quot; and may be late, incomplete or wrong. Check with the train operator
+            before travelling.
           </ListItem>
         </List>
       </Stack>

@@ -193,9 +193,15 @@ describe('PlanTripFlow', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23', originCrs: 'EUS', destinationCrs: 'MKC' },
+          leg: {
+            mode: 'knownTrain',
+            trainUid: 'C11052',
+            serviceDate: '2026-09-23',
+            originCrs: 'EUS',
+            destinationCrs: 'MKC',
+          },
         }),
-      })
+      }),
     );
   });
 
@@ -271,14 +277,18 @@ describe('PlanTripFlow', () => {
         body: JSON.stringify({
           leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23' },
         }),
-      })
+      }),
     );
   });
 
   it('shows a plain-text error and does not offer the button when the plan request fails', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({ ok: false, status: 404, text: () => Promise.resolve('no schedule data published') } as Response)
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve('no schedule data published'),
+      } as Response),
     );
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
@@ -294,7 +304,10 @@ describe('PlanTripFlow', () => {
       results: 'fastest',
       segments: [{ originCrs: 'EUS', destinationCrs: 'ZZZ', itineraries: [], cappedByMaxChanges: false }],
     };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(noRoutePlan) } as Response));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(noRoutePlan) } as Response),
+    );
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'ZZZ' } });
@@ -393,9 +406,15 @@ describe('PlanTripFlow', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23', originCrs: 'EUS', destinationCrs: 'MKC' },
+          leg: {
+            mode: 'knownTrain',
+            trainUid: 'C11052',
+            serviceDate: '2026-09-23',
+            originCrs: 'EUS',
+            destinationCrs: 'MKC',
+          },
         }),
-      })
+      }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
@@ -409,7 +428,7 @@ describe('PlanTripFlow', () => {
           originCrs: 'MKC',
           destinationCrs: 'EDB',
         }),
-      })
+      }),
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -478,9 +497,15 @@ describe('PlanTripFlow', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          leg: { mode: 'knownTrain', trainUid: 'X12345', serviceDate: '2026-09-23', originCrs: 'CRE', destinationCrs: 'PRE' },
+          leg: {
+            mode: 'knownTrain',
+            trainUid: 'X12345',
+            serviceDate: '2026-09-23',
+            originCrs: 'CRE',
+            destinationCrs: 'PRE',
+          },
         }),
-      })
+      }),
     );
   });
 
@@ -567,7 +592,7 @@ describe('PlanTripFlow', () => {
     fireEvent.click(screen.getByText('Track this journey'));
 
     await screen.findByText(
-      'Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.'
+      'Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.',
     );
     // C1 (final-review fix): `onCreated` must NOT fire yet -- calling it
     // here, before the visitor has had a chance to actually read the
@@ -575,7 +600,11 @@ describe('PlanTripFlow', () => {
     // fixes (see `PlanTripFlow.tsx`'s own doc comment). The message and
     // the hand-off button must coexist on screen first.
     expect(onCreated).not.toHaveBeenCalled();
-    expect(screen.getByText('Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Track this journey')).not.toBeInTheDocument();
 
     // Only once the visitor clicks through does the already-created
@@ -600,7 +629,9 @@ describe('PlanTripFlow', () => {
     // `handleTrackJourney` that a fixed-link-only itinerary would if it
     // could ever be selected.
     const noSegmentsPlan: TripPlanResponse = { results: 'fastest', segments: [] };
-    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noSegmentsPlan) } as Response);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noSegmentsPlan) } as Response);
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
@@ -623,7 +654,10 @@ describe('PlanTripFlow', () => {
       results: 'fastest',
       segments: [{ ...singleSegmentPlan.segments[0], cappedByMaxChanges: true }],
     };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(cappedPlan) } as Response));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(cappedPlan) } as Response),
+    );
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
@@ -726,7 +760,7 @@ describe('PlanTripFlow', () => {
 
   it('shows a loading label on the search button while a plan search is pending, then clears it', async () => {
     let resolveFetch: (value: Response) => void = () => {};
-    const pending = new Promise<Response>(resolve => {
+    const pending = new Promise<Response>((resolve) => {
       resolveFetch = resolve;
     });
     const fetchMock = vi.fn().mockReturnValueOnce(pending);
@@ -771,10 +805,10 @@ describe('PlanTripFlow', () => {
 
     let resolveFirst: (value: Response) => void = () => {};
     let resolveSecond: (value: Response) => void = () => {};
-    const firstResponse = new Promise<Response>(resolve => {
+    const firstResponse = new Promise<Response>((resolve) => {
       resolveFirst = resolve;
     });
-    const secondResponse = new Promise<Response>(resolve => {
+    const secondResponse = new Promise<Response>((resolve) => {
       resolveSecond = resolve;
     });
 
@@ -808,7 +842,7 @@ describe('PlanTripFlow', () => {
     // the CORRECT outcome is that nothing further changes).
     await act(async () => {
       resolveFirst({ ok: true, json: () => Promise.resolve(firstPlan) } as Response);
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(screen.queryByText('AAA → BBB')).not.toBeInTheDocument();
     expect(screen.getByText('CCC → DDD')).toBeInTheDocument();
@@ -825,7 +859,7 @@ describe('PlanTripFlow', () => {
     // in-flight request resolves, then assert only one fetch actually went
     // out.
     let resolveFetch: (value: Response) => void = () => {};
-    const pending = new Promise<Response>(resolve => {
+    const pending = new Promise<Response>((resolve) => {
       resolveFetch = resolve;
     });
     const fetchMock = vi.fn().mockReturnValueOnce(pending);

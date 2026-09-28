@@ -49,7 +49,7 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
     date: query.date,
     results: query.results,
   });
-  const waypoints = query.waypointCrs.map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+  const waypoints = query.waypointCrs.map((c) => c.trim().toUpperCase()).filter((c) => c.length > 0);
   if (waypoints.length > 0) {
     params.set('waypoints', waypoints.join(','));
   }
@@ -62,7 +62,7 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
 export class TripPlanError extends Error {
   constructor(
     message: string,
-    public status: number
+    public status: number,
   ) {
     super(message);
   }

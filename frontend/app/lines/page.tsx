@@ -100,9 +100,7 @@ export default async function AllLinesPage({
     getPreferences().catch(() => NO_PREFERENCES),
     // Deliberately the same cache key as app/page.tsx: it is the same
     // request, so the two pages should share one entry.
-    withStaleFallback(`lineStatusForMode:${DISPLAYED_MODES_PARAM}`, () =>
-      getLineStatusForMode(DISPLAYED_MODES_PARAM),
-    ),
+    withStaleFallback(`lineStatusForMode:${DISPLAYED_MODES_PARAM}`, () => getLineStatusForMode(DISPLAYED_MODES_PARAM)),
     // Hour-cached reference data used only to label rows; an empty list
     // degrades the table's operator column rather than the whole page.
     getAllTocs().catch(() => []),

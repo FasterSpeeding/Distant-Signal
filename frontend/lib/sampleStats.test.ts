@@ -86,7 +86,10 @@ describe('sampleUnavailableReason', () => {
   });
 
   it('returns the TfL copy when dataQuality is tfl, regardless of sampleAvailability', () => {
-    const tflStatus = status({ dataQuality: 'tfl', sampleAvailability: { state: 'below-threshold', observed: 0, required: 1 } });
+    const tflStatus = status({
+      dataQuality: 'tfl',
+      sampleAvailability: { state: 'below-threshold', observed: 0, required: 1 },
+    });
     expect(sampleUnavailableReason(tflStatus)).toBe("Not measured by this app — status is TfL's own.");
   });
 
@@ -194,9 +197,7 @@ describe('formatSampleSummary', () => {
   });
 
   it('renders real numbers from fullCoverageStats alone, with no sampleStats present', () => {
-    expect(formatSampleSummary(status({ fullCoverageStats: coverageStats }))).toBe(
-      'Avg delay 3.1 min · 1% cancelled',
-    );
+    expect(formatSampleSummary(status({ fullCoverageStats: coverageStats }))).toBe('Avg delay 3.1 min · 1% cancelled');
   });
 });
 
@@ -228,8 +229,6 @@ describe('pendingCoverageNote', () => {
   });
 
   it('returns null for available -- that case gets coverageProvenanceNote instead, not this', () => {
-    expect(
-      pendingCoverageNote(status({ fullCoverageAvailability: { state: 'available' } })),
-    ).toBeNull();
+    expect(pendingCoverageNote(status({ fullCoverageAvailability: { state: 'available' } }))).toBeNull();
   });
 });

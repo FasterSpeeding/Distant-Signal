@@ -92,7 +92,7 @@ describe('/connect-claude', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://mcp.example.com'));
   });
 
-  it('renders the plan-requirement Alert in grape, not Mantine\'s default blue (blue is reserved for planned-severity)', async () => {
+  it("renders the plan-requirement Alert in grape, not Mantine's default blue (blue is reserved for planned-severity)", async () => {
     vi.mocked(api.getSession).mockResolvedValue(loggedIn());
     renderWithMantine(await ConnectClaudePage());
     // Mantine encodes an Alert's color as CSS custom properties on its

@@ -35,12 +35,7 @@ export function trackedTrainDisplayName(train: {
 }): string {
   if (train.customName) return train.customName;
 
-  const route = routeLabel(
-    train.pinOriginCrs,
-    train.pinOriginName,
-    train.pinDestinationCrs,
-    train.pinDestinationName,
-  );
+  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
   const when = train.pinScheduledDeparture
     ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
     : formatDate(train.serviceDate);

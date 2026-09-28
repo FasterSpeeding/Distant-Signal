@@ -29,10 +29,10 @@ describe('buildNetworkStatusOverview', () => {
   it('buckets each line by its worst status, into the five real SeverityGroup values', () => {
     const reports = [
       report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 10 })] }), // good
-      report({ id: 'b', name: 'B', lineStatuses: [status({ statusSeverity: 9 })] }),  // mild
-      report({ id: 'c', name: 'C', lineStatuses: [status({ statusSeverity: 2 })] }),  // severe
-      report({ id: 'd', name: 'D', lineStatuses: [status({ statusSeverity: 4 })] }),  // planned
-      report({ id: 'e', name: 'E', lineStatuses: [status({ statusSeverity: 0 })] }),  // informational
+      report({ id: 'b', name: 'B', lineStatuses: [status({ statusSeverity: 9 })] }), // mild
+      report({ id: 'c', name: 'C', lineStatuses: [status({ statusSeverity: 2 })] }), // severe
+      report({ id: 'd', name: 'D', lineStatuses: [status({ statusSeverity: 4 })] }), // planned
+      report({ id: 'e', name: 'E', lineStatuses: [status({ statusSeverity: 0 })] }), // informational
     ];
     const overview = buildNetworkStatusOverview(reports);
     expect(overview.counts).toEqual({ good: 1, mild: 1, severe: 1, planned: 1, informational: 1 });
@@ -42,7 +42,12 @@ describe('buildNetworkStatusOverview', () => {
   it('excludes MERGED_TFL_LINE_IDS so a merged line is never counted twice', () => {
     const reports = [
       report({ id: 'tfl-elizabeth', name: 'Elizabeth line (TfL)', lineStatuses: [status({ statusSeverity: 23 })] }),
-      report({ id: 'elizabeth-line', name: 'Elizabeth line', modeName: 'elizabeth-line', lineStatuses: [status({ statusSeverity: 10 })] }),
+      report({
+        id: 'elizabeth-line',
+        name: 'Elizabeth line',
+        modeName: 'elizabeth-line',
+        lineStatuses: [status({ statusSeverity: 10 })],
+      }),
     ];
     const overview = buildNetworkStatusOverview(reports);
     expect(overview.totalLines).toBe(1);
@@ -53,8 +58,8 @@ describe('buildNetworkStatusOverview', () => {
   it('sorts worstFirst by severity rank descending, then alphabetically, and excludes good-service lines', () => {
     const reports = [
       report({ id: 'wcml', name: 'West Coast Main Line', lineStatuses: [status({ statusSeverity: 9 })] }), // mild
-      report({ id: 'gwr', name: 'Great Western Railway', lineStatuses: [status({ statusSeverity: 2 })] }),  // severe
-      report({ id: 'ecml', name: 'East Coast Main Line', lineStatuses: [status({ statusSeverity: 2 })] }),  // severe
+      report({ id: 'gwr', name: 'Great Western Railway', lineStatuses: [status({ statusSeverity: 2 })] }), // severe
+      report({ id: 'ecml', name: 'East Coast Main Line', lineStatuses: [status({ statusSeverity: 2 })] }), // severe
       report({ id: 'good', name: 'Good Line', lineStatuses: [status({ statusSeverity: 10 })] }),
     ];
     const overview = buildNetworkStatusOverview(reports);

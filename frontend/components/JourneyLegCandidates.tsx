@@ -78,10 +78,7 @@ interface CandidatesResponse {
  * discard them automatically rather than needing a separate `useState` each
  * that could survive a state transition it doesn't belong to. */
 type Results =
-  | { rows: CandidateRow[]; nextCursor: string | null; loadMoreFailed: boolean }
-  | 'loading'
-  | 'error'
-  | null;
+  { rows: CandidateRow[]; nextCursor: string | null; loadMoreFailed: boolean } | 'loading' | 'error' | null;
 
 /** Narrows `Results` to the "has rows" branch -- see `TrainSearchForm.tsx`'s
  * identical helper. `handleLoadMore`'s early-return guard plus each of its
@@ -222,9 +219,7 @@ export function JourneyLegCandidates({
     try {
       const params = new URLSearchParams({ after: results.nextCursor });
       if (committedOperator) params.set('operator', committedOperator);
-      const response = await fetch(
-        `/api/Journeys/${journeyId}/legs/${legId}/candidates?${params.toString()}`,
-      );
+      const response = await fetch(`/api/Journeys/${journeyId}/legs/${legId}/candidates?${params.toString()}`);
       if (!response.ok) {
         // Same 401-specific handling as the initial fetch above -- a
         // session that lapsed between page 1 and "Load more" gets the login
@@ -326,8 +321,8 @@ export function JourneyLegCandidates({
             simply not stating a total at all. */}
         <Text size="sm" c="dimmed">
           {results.rows.length} train{results.rows.length === 1 ? '' : 's'}{' '}
-          {results.rows.length === 1 ? 'matches' : 'match'} your search — pick the one you&apos;ll be on. You can
-          change it later.
+          {results.rows.length === 1 ? 'matches' : 'match'} your search — pick the one you&apos;ll be on. You can change
+          it later.
         </Text>
         {pickError && <Alert color="red">{pickError}</Alert>}
         {results.rows.map((row) => (
@@ -432,7 +427,11 @@ function CandidateRowView({
   return (
     <StatusRow
       align="flex-start"
-      title={<Text size="sm" fw={500}>{times}</Text>}
+      title={
+        <Text size="sm" fw={500}>
+          {times}
+        </Text>
+      }
       subtitle={
         // The train's own identity and full route, dimmed and second --
         // useful context ("it's the Edinburgh train"), but no longer the
@@ -447,7 +446,11 @@ function CandidateRowView({
       }
       trailing={
         <Group gap="sm" wrap="nowrap">
-          <TextLink href={`/train/${encodeURIComponent(row.uid)}/${serviceDate}`} size="sm" ariaLabel={`View live status for the ${times}`}>
+          <TextLink
+            href={`/train/${encodeURIComponent(row.uid)}/${serviceDate}`}
+            size="sm"
+            ariaLabel={`View live status for the ${times}`}
+          >
             View live status
           </TextLink>
           <Button

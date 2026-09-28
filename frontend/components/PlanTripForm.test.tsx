@@ -77,7 +77,7 @@ describe('PlanTripForm', () => {
     fireEvent.change(screen.getAllByPlaceholderText('Station name or CRS code')[2], { target: { value: 'YRK' } });
     fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ originCrs: 'EUS', destinationCrs: 'EDB', waypointCrs: ['YRK'], results: 'fastest' })
+      expect.objectContaining({ originCrs: 'EUS', destinationCrs: 'EDB', waypointCrs: ['YRK'], results: 'fastest' }),
     );
   });
 
@@ -99,7 +99,7 @@ describe('PlanTripForm', () => {
 
     it('pre-fills the Depart after field with the current local time on mount', () => {
       renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
-      expect(screen.getByLabelText('Depart after (optional)')).toHaveValue('15:32') // London BST wall clock (FE-4);
+      expect(screen.getByLabelText('Depart after (optional)')).toHaveValue('15:32'); // London BST wall clock (FE-4);
     });
 
     it('submits the current time as departAfter when the visitor never touches the field', () => {
@@ -108,9 +108,7 @@ describe('PlanTripForm', () => {
       fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
       fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
       fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({ departAfter: '15:32' })
-      );
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ departAfter: '15:32' }));
     });
 
     it('defaults date and time to London wall clock, not the host zone (FE-4)', () => {

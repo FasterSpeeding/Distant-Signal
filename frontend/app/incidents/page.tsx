@@ -60,8 +60,7 @@ export default async function IncidentsPage({
     priority_max?: string | string[];
   }>;
 }) {
-  const { operator, line, from, to, period, planned, cleared, priority_min, priority_max } =
-    await searchParams;
+  const { operator, line, from, to, period, planned, cleared, priority_min, priority_max } = await searchParams;
   const operatorParam = Array.isArray(operator) ? operator[0] : operator;
   const lineParam = Array.isArray(line) ? line[0] : line;
   const fromParam = Array.isArray(from) ? from[0] : from;
@@ -78,9 +77,8 @@ export default async function IncidentsPage({
     <Stack p="lg" gap="md">
       <Title order={1}>Incident Archive</Title>
       <Text c="dimmed">
-        Search National Rail incident messages across the whole network, independent of which line you
-        were looking at. Defaults to the last 30 days — use &quot;All time&quot; to see everything this
-        app has ever ingested.
+        Search National Rail incident messages across the whole network, independent of which line you were looking at.
+        Defaults to the last 30 days — use &quot;All time&quot; to see everything this app has ever ingested.
       </Text>
       <IncidentSearchForm
         lines={lines}

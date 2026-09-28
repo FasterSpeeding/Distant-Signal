@@ -61,9 +61,7 @@ describe('GroupsPage', () => {
   });
 
   it('lists each group with its name, member count, and role badge', async () => {
-    vi.mocked(getMyGroups).mockResolvedValue([
-      { id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 },
-    ]);
+    vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 }]);
     renderWithMantine(await GroupsPage());
     expect(screen.getByText('Family')).toBeInTheDocument();
     expect(screen.getByText('3 members')).toBeInTheDocument();
@@ -71,9 +69,7 @@ describe('GroupsPage', () => {
   });
 
   it('singularizes the member count for exactly one member', async () => {
-    vi.mocked(getMyGroups).mockResolvedValue([
-      { id: 'grp-1', name: 'Solo', role: 'owner', memberCount: 1 },
-    ]);
+    vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Solo', role: 'owner', memberCount: 1 }]);
     renderWithMantine(await GroupsPage());
     expect(screen.getByText('1 member')).toBeInTheDocument();
   });
@@ -82,9 +78,7 @@ describe('GroupsPage', () => {
   // `textDecoration: 'none'; color: 'inherit'` and no other signal that it
   // was clickable besides the cursor.
   it('signals that each group card is clickable with a hover/focus hook and a trailing chevron', async () => {
-    vi.mocked(getMyGroups).mockResolvedValue([
-      { id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 },
-    ]);
+    vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 }]);
     renderWithMantine(await GroupsPage());
     const link = screen.getByRole('link', { name: /Family/ });
     expect(link).toHaveAttribute('data-group-card-link', 'true');

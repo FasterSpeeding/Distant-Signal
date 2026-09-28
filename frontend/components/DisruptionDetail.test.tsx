@@ -37,9 +37,7 @@ describe('DisruptionDetail', () => {
   });
 
   it('renders nothing extra when affectedRoutes is empty', () => {
-    renderWithMantine(
-      <DisruptionDetail disruption={{ ...sample, affectedRoutes: [] }} />,
-    );
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, affectedRoutes: [] }} />);
     expect(screen.queryByText(/→/)).not.toBeInTheDocument();
   });
 
@@ -83,24 +81,18 @@ describe('DisruptionDetail', () => {
   // the link href rather than interpolated raw -- otherwise it could
   // resolve to an unrelated route.
   it('percent-encodes a path-like incident id in the link href', () => {
-    renderWithMantine(
-      <DisruptionDetail disruption={{ ...sample, source: 'knowledgebase-incident-123/456' }} />,
-    );
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: 'knowledgebase-incident-123/456' }} />);
     const link = screen.getByRole('link', { name: 'View full incident details' });
     expect(link).toHaveAttribute('href', '/incidents/123%2F456');
   });
 
   it('renders the badge with the correct label for a rail-replacement-bus impact type', () => {
-    renderWithMantine(
-      <DisruptionDetail disruption={{ ...sample, impactType: 'rail_replacement_bus' }} />,
-    );
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: 'rail_replacement_bus' }} />);
     expect(screen.getByText('Rail Replacement Bus')).toBeInTheDocument();
   });
 
   it('renders the badge with the correct label for a no-scheduled-service impact type', () => {
-    renderWithMantine(
-      <DisruptionDetail disruption={{ ...sample, impactType: 'no_scheduled_service' }} />,
-    );
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: 'no_scheduled_service' }} />);
     expect(screen.getByText('No Scheduled Service')).toBeInTheDocument();
   });
 
@@ -117,9 +109,7 @@ describe('DisruptionDetail', () => {
   });
 
   it('renders no badge for an unrecognized impactType value, not the raw string', () => {
-    renderWithMantine(
-      <DisruptionDetail disruption={{ ...sample, impactType: 'some_future_taxonomy_value' }} />,
-    );
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: 'some_future_taxonomy_value' }} />);
     expect(screen.queryByText('some_future_taxonomy_value')).not.toBeInTheDocument();
   });
 

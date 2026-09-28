@@ -55,9 +55,7 @@ describe('routeLabel', () => {
   });
 
   it('still renders a known destination when the origin CRS is null', () => {
-    expect(routeLabel(null, null, 'EDB', 'Edinburgh Waverley')).toBe(
-      'Unknown station → Edinburgh Waverley (EDB)',
-    );
+    expect(routeLabel(null, null, 'EDB', 'Edinburgh Waverley')).toBe('Unknown station → Edinburgh Waverley (EDB)');
   });
 });
 

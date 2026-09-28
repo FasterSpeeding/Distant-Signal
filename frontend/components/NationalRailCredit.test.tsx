@@ -7,7 +7,9 @@ describe('NationalRailCredit (LEG-23)', () => {
   it('carries both Schedule 1 strings verbatim, matching the footer line', () => {
     const { container } = renderWithMantine(<NationalRailCredit />);
     const credit = container.querySelector('[data-nre-credit]');
-    expect(credit).toHaveTextContent(/^Live departure data powered by NationalRail \(Train Information Services Ltd\)$/);
+    expect(credit).toHaveTextContent(
+      /^Live departure data powered by NationalRail \(Train Information Services Ltd\)$/,
+    );
   });
 
   it('links only "powered by NationalRail", in a new tab without an opener', () => {

@@ -75,11 +75,7 @@ export async function getStationNames(codes: string[], signal?: AbortSignal): Pr
  * LEG-7: the position is rounded to 3 decimal places (about 110 m of
  * latitude) before it leaves the browser -- plenty to rank the nearest
  * stations, without sending (or logging) a precise location. */
-export async function searchNearbyStations(
-  lat: number,
-  lon: number,
-  signal?: AbortSignal,
-): Promise<NearbyStation[]> {
+export async function searchNearbyStations(lat: number, lon: number, signal?: AbortSignal): Promise<NearbyStation[]> {
   const params = new URLSearchParams({ lat: String(roundCoordinate(lat)), lon: String(roundCoordinate(lon)) });
   const response = await fetch(`/api/stations/nearby?${params.toString()}`, { signal });
   if (!response.ok) {

@@ -19,7 +19,7 @@ describe('StatusBadge', () => {
     expect(screen.getByText('Unknown')).toBeInTheDocument();
   });
 
-  it('marks the badge so it can be opted out of Mantine\'s label truncation', () => {
+  it("marks the badge so it can be opted out of Mantine's label truncation", () => {
     const { container } = renderWithMantine(<StatusBadge severity={10} />);
     expect(container.querySelector('[data-status-badge]')).not.toBeNull();
   });

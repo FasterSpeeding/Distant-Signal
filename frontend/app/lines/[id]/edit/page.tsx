@@ -3,11 +3,7 @@ import { Center, Stack, Title } from '@mantine/core';
 import { ApiNotFoundError, getCustomLine } from '@/lib/api';
 import { CustomLineForm } from '../../CustomLineForm';
 
-export default async function EditCustomLinePage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function EditCustomLinePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
   let line;

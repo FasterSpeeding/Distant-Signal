@@ -3,7 +3,20 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Alert, Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
+import {
+  Alert,
+  Autocomplete,
+  TextInput,
+  TagsInput,
+  Button,
+  Stack,
+  Group,
+  Badge,
+  CloseButton,
+  Text,
+  Collapse,
+  Pill,
+} from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
@@ -227,7 +240,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
               key={crs}
               title={nameByCode[crs]}
               rightSection={
-              /* `aria-label` is not optional here: Mantine's `CloseButton`
+                /* `aria-label` is not optional here: Mantine's `CloseButton`
                  renders a bare `<button>` around an SVG with no text and no
                  name of its own, so axe's `button-name` fires (critical) --
                  once per station chip, which on a prefilled
@@ -238,12 +251,12 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
                  over the bare CRS for the same reason the `title` above
                  uses it, and falls back to the code before the station
                  lookup resolves. */
-              <CloseButton
-                size="xs"
-                c="white"
-                aria-label={`Remove ${nameByCode[crs] ?? crs}`}
-                onClick={() => removeStation(crs)}
-              />
+                <CloseButton
+                  size="xs"
+                  c="white"
+                  aria-label={`Remove ${nameByCode[crs] ?? crs}`}
+                  onClick={() => removeStation(crs)}
+                />
               }
             >
               {index + 1} {crs}
@@ -286,7 +299,12 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       </Button>
       <Collapse expanded={advancedOpen}>
         <Stack gap="sm">
-          <TagsInput label="Headcode prefixes" placeholder="e.g. 1P" value={headcodePrefixes} onChange={setHeadcodePrefixes} />
+          <TagsInput
+            label="Headcode prefixes"
+            placeholder="e.g. 1P"
+            value={headcodePrefixes}
+            onChange={setHeadcodePrefixes}
+          />
           <TagsInput
             label="Destination CRS filter"
             placeholder="e.g. AON"

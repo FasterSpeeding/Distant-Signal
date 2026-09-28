@@ -180,7 +180,12 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([
       ticket({ id: 1, trackedTrainId: 1, operator: 'LNER' }),
-      ticket({ id: 2, trackedTrainId: 1, operator: 'CrossCountry', claimUrl: 'https://delayrepay.crosscountrytrains.co.uk/' }),
+      ticket({
+        id: 2,
+        trackedTrainId: 1,
+        operator: 'CrossCountry',
+        claimUrl: 'https://delayrepay.crosscountrytrains.co.uk/',
+      }),
     ]);
     renderWithMantine(await MyTrackedTrainsPage());
     expect(screen.getAllByRole('link', { name: /See how to claim from the operator/ })).toHaveLength(2);
@@ -222,7 +227,9 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   // Part A/B: a standalone ticket (trackedTrainId: null) not yet attached
   // to anything.
   it('a standalone (unattached) ticket: renders in its own section with an attach action and a track-a-new-train link', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 1, pinOriginCrs: 'WAT', pinDestinationCrs: 'WOK' })]);
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      train({ id: 1, pinOriginCrs: 'WAT', pinDestinationCrs: 'WOK' }),
+    ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([
       ticket({
         id: 5,
@@ -394,10 +401,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
     expect(screen.getByRole('link', { name: 'Track a new train' })).toHaveAttribute('href', '/track');
-    expect(screen.getByRole('link', { name: 'Add a ticket' })).toHaveAttribute(
-      'href',
-      '/track/mine/add-ticket',
-    );
+    expect(screen.getByRole('link', { name: 'Add a ticket' })).toHaveAttribute('href', '/track/mine/add-ticket');
   });
 
   it('renders "Manage your journey templates" link even when nothingToShow is true (empty state)', async () => {
@@ -466,10 +470,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute(
-        'href',
-        '/train/S99999/2026-08-31',
-      );
+      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
     });
 
     it('a shared train with a uid but a not-yet-resolved status is still linked', async () => {
@@ -486,10 +487,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute(
-        'href',
-        '/train/S99999/2026-08-31',
-      );
+      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
     });
 
     it('a shared train with no uid is not linked at all — the by-id route is owner-scoped', async () => {
@@ -660,9 +658,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       // their own name if they set one).
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
-      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-        sharedTrain({ customName: 'School run' }),
-      ]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ customName: 'School run' })]);
 
       renderWithMantine(await MyTrackedTrainsPage());
 
@@ -680,9 +676,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      const rendered = [...document.querySelectorAll('.mantine-Card-root')].map(
-        (card) => card.textContent ?? '',
-      );
+      const rendered = [...document.querySelectorAll('.mantine-Card-root')].map((card) => card.textContent ?? '');
       const ownIndex = rendered.findIndex((text) => text.includes('WAT → WOK'));
       const firstSharedIndex = rendered.findIndex((text) => text.includes('Shared first'));
       const secondSharedIndex = rendered.findIndex((text) => text.includes('Shared second'));
@@ -772,9 +766,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(
-        screen.getByText(/London Kings Cross \(KGX\) → Edinburgh \(EDB\)/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/London Kings Cross \(KGX\) → Edinburgh \(EDB\)/)).toBeInTheDocument();
       // `formatDate`, not the raw ISO `serviceDate` the wire carries.
       expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
     });
@@ -809,9 +801,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     it('still lists tracked trains that belong to no journey', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 7 })]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
-      vi.mocked(api.getMyJourneys).mockResolvedValue([
-        journey({ matchMode: 'auto', trainSubscriptionId: 295 }),
-      ]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([journey({ matchMode: 'auto', trainSubscriptionId: 295 })]);
 
       renderWithMantine(await MyTrackedTrainsPage());
 

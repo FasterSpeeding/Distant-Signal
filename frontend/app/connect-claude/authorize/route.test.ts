@@ -116,7 +116,10 @@ describe('GET /connect-claude/authorize', () => {
   });
 
   it('renders a consent screen with a generic label when the client registered no client_name', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })),
+    );
     const req = makeRequest('/connect-claude/authorize?mcp_request_id=req1', {
       cookie: 'distant_signal_session=raw-token-value',
     });
@@ -127,7 +130,10 @@ describe('GET /connect-claude/authorize', () => {
   });
 
   it('returns 410 when the pending authorization has expired', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 404 })),
+    );
     const req = makeRequest('/connect-claude/authorize?mcp_request_id=req1', {
       cookie: 'distant_signal_session=raw-token-value',
     });
@@ -139,7 +145,10 @@ describe('GET /connect-claude/authorize', () => {
   // something to paper over with a consent screen that can only fail.
   it.each([401, 500])('502s, without a consent screen, when the lookup returns %i, and logs it', async (status) => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status })),
+    );
     const req = makeRequest('/connect-claude/authorize?mcp_request_id=req1', {
       cookie: 'distant_signal_session=raw-token-value',
     });
@@ -243,7 +252,9 @@ describe('POST /connect-claude/authorize', () => {
   it('accepts a same-origin POST that carries Referer but no Origin', async () => {
     const fetchSpy = vi
       .fn()
-      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }));
+      .mockResolvedValue(
+        new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }),
+      );
     vi.stubGlobal('fetch', fetchSpy);
 
     const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {
@@ -272,7 +283,9 @@ describe('POST /connect-claude/authorize', () => {
     incomingHeaders.set('x-forwarded-proto', 'https');
     const fetchSpy = vi
       .fn()
-      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }));
+      .mockResolvedValue(
+        new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }),
+      );
     vi.stubGlobal('fetch', fetchSpy);
 
     const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {
@@ -314,7 +327,9 @@ describe('POST /connect-claude/authorize', () => {
   it('on approval, forwards the RAW session cookie value to /internal/complete-authorization and redirects to the returned URL', async () => {
     const fetchSpy = vi
       .fn()
-      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }));
+      .mockResolvedValue(
+        new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }),
+      );
     vi.stubGlobal('fetch', fetchSpy);
 
     const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value');
@@ -331,9 +346,11 @@ describe('POST /connect-claude/authorize', () => {
   });
 
   it('on denial, calls deny-authorization instead of complete-authorization, and never sends the session cookie value', async () => {
-    const fetchSpy = vi
-      .fn()
-      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?error=access_denied&state=xyz' }), { status: 200 }));
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?error=access_denied&state=xyz' }), {
+        status: 200,
+      }),
+    );
     vi.stubGlobal('fetch', fetchSpy);
 
     const req = postRequest('req2', 'deny', 'distant_signal_session=raw-token-value');

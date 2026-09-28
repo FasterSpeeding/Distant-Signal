@@ -147,12 +147,14 @@ describe('JourneyDetailPage', () => {
   it('defaults the <h1> to the route when there is no custom name', async () => {
     vi.mocked(api.getJourney).mockResolvedValue(baseJourney());
     await renderPage();
-    expect(screen.getByRole('heading', { level: 1, name: /London Kings Cross \(KGX\) → York \(YRK\)/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: /London Kings Cross \(KGX\) → York \(YRK\)/ }),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Tracked journey')).not.toBeInTheDocument();
   });
 
   it('still honours a real custom name when one is set', async () => {
-    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ customName: 'Trip to Grandma\'s' }));
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ customName: "Trip to Grandma's" }));
     await renderPage();
     expect(screen.getByRole('heading', { level: 1, name: "Trip to Grandma's" })).toBeInTheDocument();
   });
@@ -208,7 +210,7 @@ describe('JourneyDetailPage', () => {
     // train picked" (leg 2, unmatched outranks delayed) and fully hide
     // leg 1's real 22-minute delay. The per-leg summary line must
     // surface both facts.
-    it('surfaces every leg\'s own status in one summary line, not just the worst one', async () => {
+    it("surfaces every leg's own status in one summary line, not just the worst one", async () => {
       vi.mocked(api.getJourney).mockResolvedValue(twoLegJourney());
       await renderPage();
       expect(screen.getByText('Leg 1 22m late · Leg 2 needs a train picked')).toBeInTheDocument();
@@ -287,7 +289,10 @@ describe('JourneyDetailPage title (M18)', () => {
   });
 
   it('defaults the <h1> to the route/date when there is no custom name, using resolved names when available', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     vi.mocked(api.getJourney).mockResolvedValue(
       openSuiteJourney({ legs: [openLeg({ originName: 'London Kings Cross', destinationName: 'Edinburgh' })] }),
     );
@@ -302,7 +307,10 @@ describe('JourneyDetailPage title (M18)', () => {
   });
 
   it('falls back to bare CRS codes in the title when no station name resolved', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     vi.mocked(api.getJourney).mockResolvedValue(openSuiteJourney());
 
     renderWithMantine(await JourneyDetailPage({ params: Promise.resolve({ id: '1' }) }));
@@ -312,7 +320,10 @@ describe('JourneyDetailPage title (M18)', () => {
   });
 
   it('still prefers a real customName over the computed default', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     vi.mocked(api.getJourney).mockResolvedValue(openSuiteJourney({ customName: 'My commute' }));
 
     renderWithMantine(await JourneyDetailPage({ params: Promise.resolve({ id: '1' }) }));
@@ -321,8 +332,11 @@ describe('JourneyDetailPage title (M18)', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'My commute' })).toBeInTheDocument();
   });
 
-  it('spans a multi-leg journey from the first leg\'s origin to the last leg\'s destination', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+  it("spans a multi-leg journey from the first leg's origin to the last leg's destination", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     vi.mocked(api.getJourney).mockResolvedValue(
       openSuiteJourney({
         legs: [
@@ -345,7 +359,10 @@ describe('JourneyDetailPage "Add a leg" gating (M16)', () => {
   });
 
   it('hides "Add a leg" while the current (last) leg still needs a train picked', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     vi.mocked(api.getJourney).mockResolvedValue(openSuiteJourney());
 
     renderWithMantine(await JourneyDetailPage({ params: Promise.resolve({ id: '1' }) }));

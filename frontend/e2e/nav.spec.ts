@@ -103,9 +103,7 @@ async function barRowCount(page: Page): Promise<number> {
  * that achieves it by overflowing its container would pass the two
  * assertions above and still be broken. */
 async function hasHorizontalOverflow(page: Page): Promise<boolean> {
-  return page.evaluate(
-    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
-  );
+  return page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
 }
 
 test.describe('desktop nav bar (1440x900)', () => {
@@ -145,23 +143,23 @@ test.describe('desktop nav bar (1440x900)', () => {
     // bar next to it was 61px and one row.
     test('renders on a single row, at the same height as the logged-out bar', async ({ page }) => {
       await page.goto('/lines');
-      await expect(page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ })).toBeVisible();
+      await expect(
+        page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ }),
+      ).toBeVisible();
       expect(await barRowCount(page)).toBe(1);
       expect(await navHeight(page)).toBe(61);
       expect(await hasHorizontalOverflow(page)).toBe(false);
     });
 
-    test('keeps My Trains & Tickets, Groups and Log out reachable from the account menu', async ({
-      page,
-    }) => {
+    test('keeps My Trains & Tickets, Groups and Log out reachable from the account menu', async ({ page }) => {
       await page.goto('/lines');
-      await page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ }).click();
+      await page
+        .locator('nav[aria-label="Main"]')
+        .getByRole('button', { name: /^Account menu for/ })
+        .click();
 
       const menu = page.getByRole('menu');
-      await expect(menu.getByRole('menuitem', { name: 'My Trains & Tickets' })).toHaveAttribute(
-        'href',
-        '/track/mine',
-      );
+      await expect(menu.getByRole('menuitem', { name: 'My Trains & Tickets' })).toHaveAttribute('href', '/track/mine');
       await expect(menu.getByRole('menuitem', { name: 'Groups' })).toHaveAttribute('href', '/groups');
       // `exact`: Playwright name-matching is a case-insensitive substring match
       // by default, and "Log out other sessions" also contains "Log out".
@@ -219,9 +217,7 @@ test.describe('phone nav bar (390x844)', () => {
     }
   });
 
-  test('closes the drawer on navigating, rather than leaving it over the new page', async ({
-    page,
-  }) => {
+  test('closes the drawer on navigating, rather than leaving it over the new page', async ({ page }) => {
     await page.goto('/lines');
     const drawer = await openNavDrawer(page);
     await drawer.getByRole('link', { name: 'Stations' }).click();
@@ -231,9 +227,7 @@ test.describe('phone nav bar (390x844)', () => {
   });
 });
 
-test('the drawer closes itself if the window grows past the breakpoint while it is open', async ({
-  page,
-}) => {
+test('the drawer closes itself if the window grows past the breakpoint while it is open', async ({ page }) => {
   // Hiding the burger does not close an already-open drawer, so without
   // the media-query effect in AppNavDrawer this leaves a modal overlay
   // over the page with no visible control that opened it.

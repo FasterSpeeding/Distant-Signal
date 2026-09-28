@@ -14,7 +14,10 @@ vi.mock('next/navigation', () => ({
 // StationSearchForm's useSuggestions hook fires a real fetch on mount for
 // any non-empty query; it starts empty here, but an inert 200 keeps this
 // file independent of network behaviour either way.
-vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async () => new Response('[]', { status: 200 })),
+);
 
 describe('StationSearchPage', () => {
   it('renders the heading and the search form', () => {

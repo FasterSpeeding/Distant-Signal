@@ -34,7 +34,7 @@ describe('RunTemplateNowButton', () => {
     expect(await screen.findByLabelText('Service date')).toHaveValue(today);
   });
 
-  it('defaults to London\'s today, not the host zone\'s (FE-4)', async () => {
+  it("defaults to London's today, not the host zone's (FE-4)", async () => {
     // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
@@ -45,9 +45,7 @@ describe('RunTemplateNowButton', () => {
 
   it('submits {serviceDate} to the materialize endpoint', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ journeyId: 42, legIds: [1] }), { status: 200 }),
-    );
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ journeyId: 42, legIds: [1] }), { status: 200 }));
 
     renderWithMantine(<RunTemplateNowButton templateId={167} />);
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
@@ -66,9 +64,7 @@ describe('RunTemplateNowButton', () => {
 
   it('navigates to /journeys/{journeyId} using the response journeyId on success', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ journeyId: 42, legIds: [1, 2] }), { status: 200 }),
-    );
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ journeyId: 42, legIds: [1, 2] }), { status: 200 }));
 
     renderWithMantine(<RunTemplateNowButton templateId={167} />);
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));

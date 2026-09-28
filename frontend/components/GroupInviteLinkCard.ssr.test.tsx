@@ -66,9 +66,7 @@ describe('GroupInviteLinkCard (server render)', () => {
   });
 
   it('server-renders the no-link case without touching window', () => {
-    expect(() =>
-      serverRender(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />),
-    ).not.toThrow();
+    expect(() => serverRender(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />)).not.toThrow();
   });
 
   it('emits the full absolute URL in the server HTML -- no relative-path / client-fill-in step to wait for', () => {

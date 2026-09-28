@@ -123,9 +123,7 @@ describe('JourneyLegCandidates', () => {
       'fetch',
       vi.fn(() => pending),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(screen.getByText('Searching for candidate trains…')).toBeInTheDocument();
 
@@ -157,18 +155,14 @@ describe('JourneyLegCandidates', () => {
           ),
       }),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(await screen.findByText('Train C11052 · BRI → London Paddington')).toBeInTheDocument();
   });
 
-  it('leads each row with the traveller\'s own leg times, not the train\'s route', async () => {
+  it("leads each row with the traveller's own leg times, not the train's route", async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08')).toBeInTheDocument();
     expect(screen.getByText('dep. BTH 11:02 → arr. SWI 11:38')).toBeInTheDocument();
@@ -181,9 +175,7 @@ describe('JourneyLegCandidates', () => {
   // the per-row leg-times rewrite above (both land on this component).
   it('names the match count and says the pick can still be changed', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(
       await screen.findByText("2 trains match your search — pick the one you'll be on. You can change it later."),
@@ -200,9 +192,7 @@ describe('JourneyLegCandidates', () => {
           }),
       }),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(
       await screen.findByText("1 train matches your search — pick the one you'll be on. You can change it later."),
@@ -211,9 +201,7 @@ describe('JourneyLegCandidates', () => {
 
   it('gives every "Track this train" button its own accessible name', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     // The pre-fix state: two buttons, both named exactly "Track this
     // train", indistinguishable in a screen reader's control list.
@@ -231,9 +219,7 @@ describe('JourneyLegCandidates', () => {
 
   it('offers a per-row "View live status" link, as the /trains result row does', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const link = await screen.findByRole('link', {
       name: 'View live status for the dep. BTH 10:32 → arr. SWI 11:08',
@@ -260,9 +246,7 @@ describe('JourneyLegCandidates', () => {
           ),
       }),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(await screen.findByText('dep. BTH 10:32')).toBeInTheDocument();
     // Never the train's terminus arrival standing in for the leg's own.
@@ -291,21 +275,15 @@ describe('JourneyLegCandidates', () => {
           ),
       }),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(
-      await screen.findByText('dep. BTH 23:40 → arr. SWI 02:15 (next day)'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('dep. BTH 23:40 → arr. SWI 02:15 (next day)')).toBeInTheDocument();
   });
 
   it('POSTs the picked train and calls onPicked on success', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const buttons = await screen.findAllByRole('button', { name: /^Track this train/ });
     fireEvent.click(buttons[0]);
@@ -324,13 +302,8 @@ describe('JourneyLegCandidates', () => {
   });
 
   it('shows a pick error and does not call onPicked when the train POST fails', async () => {
-    vi.stubGlobal(
-      'fetch',
-      mockFetchByUrl({ train: () => new Response('boom', { status: 500 }) }),
-    );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    vi.stubGlobal('fetch', mockFetchByUrl({ train: () => new Response('boom', { status: 500 }) }));
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const buttons = await screen.findAllByRole('button', { name: /^Track this train/ });
     fireEvent.click(buttons[0]);
@@ -342,11 +315,11 @@ describe('JourneyLegCandidates', () => {
   it('renders the "Search manually" fallback link when there are no candidates', async () => {
     vi.stubGlobal(
       'fetch',
-      mockFetchByUrl({ candidates: () => new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }) }),
+      mockFetchByUrl({
+        candidates: () => new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }),
+      }),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const link = await screen.findByRole('link', { name: 'Search manually' });
     expect(link).toHaveAttribute('href', '/track');
@@ -358,14 +331,10 @@ describe('JourneyLegCandidates', () => {
       'fetch',
       vi.fn(() => Promise.reject(new Error('network blip'))),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(await screen.findByText('Search failed')).toBeInTheDocument();
-    expect(
-      screen.getByText("Couldn't load candidate trains right now. Try again."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Couldn't load candidate trains right now. Try again.")).toBeInTheDocument();
   });
 
   it('renders an error Alert when the candidates response is not ok', async () => {
@@ -373,9 +342,7 @@ describe('JourneyLegCandidates', () => {
       'fetch',
       vi.fn(() => Promise.resolve(new Response('boom', { status: 500 }))),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(await screen.findByText('Search failed')).toBeInTheDocument();
   });
@@ -389,20 +356,15 @@ describe('JourneyLegCandidates', () => {
       'fetch',
       vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(await screen.findByText('Search failed')).toBeInTheDocument();
-    expect(
-      screen.getByText('Your session has expired. Log in again to see candidate trains.'),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Couldn't load candidate trains right now. Try again."),
-    ).not.toBeInTheDocument();
-    expect(
-      await screen.findByRole('link', { name: 'Log in' }),
-    ).toHaveAttribute('href', '/api/auth/login?return_to=%2Fjourneys%2F1');
+    expect(screen.getByText('Your session has expired. Log in again to see candidate trains.')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load candidate trains right now. Try again.")).not.toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2Fjourneys%2F1',
+    );
   });
 
   it('a non-401 failure still shows the generic retry message with no login prompt', async () => {
@@ -410,13 +372,9 @@ describe('JourneyLegCandidates', () => {
       'fetch',
       vi.fn(() => Promise.resolve(new Response('boom', { status: 500 }))),
     );
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(
-      await screen.findByText("Couldn't load candidate trains right now. Try again."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load candidate trains right now. Try again.")).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Log in' })).not.toBeInTheDocument();
   });
 
@@ -433,16 +391,15 @@ describe('JourneyLegCandidates', () => {
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(
-      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const loadMore = await screen.findByRole('button', { name: /load more/i });
     fireEvent.click(loadMore);
 
-    expect(
-      await screen.findByRole('link', { name: 'Log in' }),
-    ).toHaveAttribute('href', '/api/auth/login?return_to=%2Fjourneys%2F1');
+    expect(await screen.findByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2Fjourneys%2F1',
+    );
   });
 
   // Task 6, journey-leg-operator-filter plan: the backend now filters
@@ -454,9 +411,7 @@ describe('JourneyLegCandidates', () => {
   describe('operator filter', () => {
     it('renders the operator on a row that has one and omits it on a row that does not', async () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
-      renderWithMantine(
-        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-      );
+      renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
       // Row 1 (`operator: null`) keeps its pre-existing exact subtitle --
       // no operator suffix appended.
@@ -481,9 +436,7 @@ describe('JourneyLegCandidates', () => {
         });
         // A fast typist mustn't fire one request per keystroke -- nothing
         // has re-fetched yet, immediately after the keystroke.
-        expect(
-          fetchMock.mock.calls.some((call) => String(call[0]).includes('/candidates')),
-        ).toBe(false);
+        expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/candidates'))).toBe(false);
 
         // Settles both this component's own `committedOperator` debounce
         // AND `useSuggestions`' independent 250ms debounce together (same
@@ -529,10 +482,9 @@ describe('JourneyLegCandidates', () => {
         }
         if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates(\?.*)?$/.test(url)) {
           return Promise.resolve(
-            new Response(
-              JSON.stringify({ results: [CANDIDATES_FIXTURE.results[0]], nextCursor: 'CURSOR1' }),
-              { status: 200 },
-            ),
+            new Response(JSON.stringify({ results: [CANDIDATES_FIXTURE.results[0]], nextCursor: 'CURSOR1' }), {
+              status: 200,
+            }),
           );
         }
         if (url.startsWith('/api/tocs?')) {
@@ -629,14 +581,10 @@ describe('JourneyLegCandidates', () => {
           return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
         }
         if (url.includes('operator=GW')) {
-          return Promise.resolve(
-            new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }),
-          );
+          return Promise.resolve(new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 }));
         }
         if (/\/api\/Journeys\/\d+\/legs\/\d+\/candidates(\?.*)?$/.test(url)) {
-          return Promise.resolve(
-            new Response(JSON.stringify(CANDIDATES_FIXTURE), { status: 200 }),
-          );
+          return Promise.resolve(new Response(JSON.stringify(CANDIDATES_FIXTURE), { status: 200 }));
         }
         if (url.startsWith('/api/tocs?')) {
           return Promise.resolve(new Response(JSON.stringify(TEST_TOCS), { status: 200 }));
@@ -657,9 +605,7 @@ describe('JourneyLegCandidates', () => {
           await vi.advanceTimersByTimeAsync(250);
         });
 
-        expect(
-          await screen.findByText(/No scheduled trains from operator GW match this window\./),
-        ).toBeInTheDocument();
+        expect(await screen.findByText(/No scheduled trains from operator GW match this window\./)).toBeInTheDocument();
         expect(screen.queryByText(/^No scheduled trains match this window\./)).not.toBeInTheDocument();
         const link = screen.getByRole('link', { name: 'Search manually' });
         expect(link).toHaveAttribute('href', '/track');
@@ -708,9 +654,7 @@ describe('JourneyLegCandidates', () => {
 
     it('does not offer Load more when the response has no nextCursor', async () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
-      renderWithMantine(
-        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-      );
+      renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
       await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08');
       expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
@@ -718,9 +662,7 @@ describe('JourneyLegCandidates', () => {
 
     it('offers Load more when the first page carries a nextCursor', async () => {
       vi.stubGlobal('fetch', candidatesFetchMock());
-      renderWithMantine(
-        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-      );
+      renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
       expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
     });
@@ -728,9 +670,7 @@ describe('JourneyLegCandidates', () => {
     it('appends the second page to the first rather than replacing it, sending after=', async () => {
       const fetchMock = candidatesFetchMock();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(
-        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-      );
+      renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
       await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08');
       fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
@@ -750,9 +690,7 @@ describe('JourneyLegCandidates', () => {
       ]);
 
       // The control disappears once nextCursor comes back null.
-      await waitFor(() =>
-        expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument());
       expect(
         screen.getByText("You've reached the end — no more candidate trains match this window."),
       ).toBeInTheDocument();
@@ -760,9 +698,7 @@ describe('JourneyLegCandidates', () => {
 
     it('updates the match count to include appended rows', async () => {
       vi.stubGlobal('fetch', candidatesFetchMock());
-      renderWithMantine(
-        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-      );
+      renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
       await screen.findByText(/1 train matches your search/);
       fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
@@ -771,13 +707,8 @@ describe('JourneyLegCandidates', () => {
     });
 
     it('reports a failed Load more and keeps the cursor for a retry, without losing page 1', async () => {
-      vi.stubGlobal(
-        'fetch',
-        candidatesFetchMock({ page2: () => new Response('boom', { status: 500 }) }),
-      );
-      renderWithMantine(
-        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-      );
+      vi.stubGlobal('fetch', candidatesFetchMock({ page2: () => new Response('boom', { status: 500 }) }));
+      renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
       fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
@@ -793,9 +724,7 @@ describe('JourneyLegCandidates', () => {
       });
       const fetchMock = candidatesFetchMock({ page2: () => pageTwo });
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(
-        <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
-      );
+      renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
       const button = await screen.findByRole('button', { name: 'Load more' });
       fireEvent.click(button);

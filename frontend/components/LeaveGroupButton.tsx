@@ -82,13 +82,13 @@ export function LeaveGroupButton({
       <Modal opened={opened} onClose={close} title="Leave this group?">
         {willDeleteGroup ? (
           <Text>
-            You&apos;re the only member of this group, so leaving will delete it for good -- every shared
-            train and the invite link will be gone.
+            You&apos;re the only member of this group, so leaving will delete it for good -- every shared train and the
+            invite link will be gone.
           </Text>
         ) : (
           <Text>
-            You&apos;ll lose access to every train shared in this group, and any trains you&apos;ve shared into it
-            will be removed for everyone else too.
+            You&apos;ll lose access to every train shared in this group, and any trains you&apos;ve shared into it will
+            be removed for everyone else too.
             {nextOwnerLabel && ` ${nextOwnerLabel} will become the new owner.`}
           </Text>
         )}

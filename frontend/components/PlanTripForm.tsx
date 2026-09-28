@@ -145,15 +145,15 @@ export function PlanTripForm({
   );
 
   function addWaypoint() {
-    setWaypoints(current => [...current, '']);
+    setWaypoints((current) => [...current, '']);
   }
 
   function updateWaypoint(index: number, value: string) {
-    setWaypoints(current => current.map((existing, i) => (i === index ? value : existing)));
+    setWaypoints((current) => current.map((existing, i) => (i === index ? value : existing)));
   }
 
   function removeWaypoint(index: number) {
-    setWaypoints(current => current.filter((_, i) => i !== index));
+    setWaypoints((current) => current.filter((_, i) => i !== index));
   }
 
   function handleSubmit() {
@@ -209,9 +209,15 @@ export function PlanTripForm({
             label={index === 0 ? 'Via (optional, in order)' : undefined}
             placeholder="Station name or CRS code"
             value={waypoint}
-            onChange={event => updateWaypoint(index, event.currentTarget.value)}
+            onChange={(event) => updateWaypoint(index, event.currentTarget.value)}
           />
-          <ActionIcon color="red" variant="subtle" mt={index === 0 ? 24 : 0} onClick={() => removeWaypoint(index)} aria-label="Remove this waypoint">
+          <ActionIcon
+            color="red"
+            variant="subtle"
+            mt={index === 0 ? 24 : 0}
+            onClick={() => removeWaypoint(index)}
+            aria-label="Remove this waypoint"
+          >
             <XIcon />
           </ActionIcon>
         </Group>
@@ -220,7 +226,11 @@ export function PlanTripForm({
         Add a waypoint
       </Button>
       <DateInput label="Date" value={date} onChange={setDate} minDate={new Date()} />
-      <TimeInput label="Depart after (optional)" value={departAfter} onChange={event => setDepartAfter(event.currentTarget.value)} />
+      <TimeInput
+        label="Depart after (optional)"
+        value={departAfter}
+        onChange={(event) => setDepartAfter(event.currentTarget.value)}
+      />
       {/* I3: mirrors `TrackTrainForm.tsx`'s own `modeLabelId` +
           `aria-labelledby` fix for its mode toggle (2026-09-22 UX review) --
           without a visible `Text` label wired as the name, a screen reader
@@ -231,7 +241,7 @@ export function PlanTripForm({
       <SegmentedControl
         aria-labelledby={resultsLabelId}
         value={results}
-        onChange={value => setResults(value as 'fastest' | 'options')}
+        onChange={(value) => setResults(value as 'fastest' | 'options')}
         data={[
           { label: 'Fastest', value: 'fastest' },
           { label: 'Compare options', value: 'options' },

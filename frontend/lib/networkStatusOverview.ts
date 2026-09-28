@@ -99,7 +99,10 @@ export function buildNetworkStatusOverview(reports: LineStatusReport[]): Network
   const lastUpdated =
     real.length === 0
       ? null
-      : real.reduce((latest, r) => (new Date(r.computedAt) > new Date(latest) ? r.computedAt : latest), real[0].computedAt);
+      : real.reduce(
+          (latest, r) => (new Date(r.computedAt) > new Date(latest) ? r.computedAt : latest),
+          real[0].computedAt,
+        );
 
   return { counts, totalLines: real.length, worstFirst, byMode, byCountry, lastUpdated };
 }

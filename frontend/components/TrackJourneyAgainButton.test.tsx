@@ -46,9 +46,7 @@ describe('TrackJourneyAgainButton', () => {
 
   it('navigates to a window-mode /track URL for a leg with window bounds', () => {
     renderWithMantine(
-      <TrackJourneyAgainButton
-        journey={journey([leg({ departAfter: '08:00:00', matchMode: 'unmatched' })])}
-      />,
+      <TrackJourneyAgainButton journey={journey([leg({ departAfter: '08:00:00', matchMode: 'unmatched' })])} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Track this journey again' }));
     expect(pushMock).toHaveBeenCalledWith('/track?mode=window&origin=KGX&destination=YRK&departAfter=08%3A00');
@@ -60,11 +58,7 @@ describe('TrackJourneyAgainButton', () => {
   });
 
   it('renders nothing when there is no origin to reproduce', () => {
-    renderWithMantine(
-      <TrackJourneyAgainButton
-        journey={journey([leg({ originCrs: null, destinationCrs: null })])}
-      />,
-    );
+    renderWithMantine(<TrackJourneyAgainButton journey={journey([leg({ originCrs: null, destinationCrs: null })])} />);
     expect(screen.queryByRole('button', { name: 'Track this journey again' })).not.toBeInTheDocument();
   });
 });

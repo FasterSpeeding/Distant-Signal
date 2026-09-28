@@ -79,7 +79,11 @@ describe('NetworkStatusPage', () => {
       // upper-cased text via CSS, but the DOM text content itself is
       // whatever `severityLabel` returns, so filter on the tile's known
       // exact label set instead).
-      .filter((el) => ['Good Service', 'Informational', 'Planned', 'Minor Disruption', 'Severe Disruption'].includes(el.textContent ?? ''));
+      .filter((el) =>
+        ['Good Service', 'Informational', 'Planned', 'Minor Disruption', 'Severe Disruption'].includes(
+          el.textContent ?? '',
+        ),
+      );
     expect(labels[0]).toHaveTextContent('Severe Disruption');
     expect(labels[labels.length - 1]).toHaveTextContent('Good Service');
   });
@@ -145,7 +149,12 @@ describe('NetworkStatusPage', () => {
 
   it('shows a last-updated line under the subtitle when there is real data (regression: 2026-09-22 UX review §2.5, "right now" with no timestamp)', async () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
-      report({ id: 'a', name: 'A', computedAt: '2026-09-22T09:05:00Z', lineStatuses: [status({ statusSeverity: 10 })] }),
+      report({
+        id: 'a',
+        name: 'A',
+        computedAt: '2026-09-22T09:05:00Z',
+        lineStatuses: [status({ statusSeverity: 10 })],
+      }),
     ]);
     renderWithMantine(await NetworkStatusPage());
     expect(screen.getByText(/^Updated/)).toBeInTheDocument();

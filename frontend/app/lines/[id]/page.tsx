@@ -3,14 +3,7 @@ import { notFound } from 'next/navigation';
 import { Badge, Stack, Title, Text, Group, Button, Paper } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import {
-  ApiNotFoundError,
-  getLineStatus,
-  getCustomLine,
-  getLineDefinition,
-  getAllLines,
-  getAllTocs,
-} from '@/lib/api';
+import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines, getAllTocs } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { categoryLabel, operatorLabel, tocNameLookup } from '@/lib/displayLabels';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -23,13 +16,7 @@ import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityLabel } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
 import { londonDayKey } from '@/lib/dateFormat';
-import type {
-  CustomLineDetail,
-  LineDefinitionSummary,
-  LineGroupRef,
-  LineStatusReport,
-  LineSummary,
-} from '@/lib/types';
+import type { CustomLineDetail, LineDefinitionSummary, LineGroupRef, LineStatusReport, LineSummary } from '@/lib/types';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 import { LineTrainsResults } from './LineTrainsResults';
@@ -110,9 +97,7 @@ export const revalidate = 0;
  * served from the stale cache if there's a fresh-enough entry) and
  * anything it rethrows keeps propagating to `app/error.tsx`, exactly as
  * before -- an outage must not be rendered as "no status computed yet". */
-type LineStatusResult =
-  | { coverage: 'not-computed' }
-  | { coverage: 'present'; report: LineStatusReport };
+type LineStatusResult = { coverage: 'not-computed' } | { coverage: 'present'; report: LineStatusReport };
 
 async function fetchLineStatusResult(id: string): Promise<LineStatusResult> {
   let reports;
@@ -203,11 +188,7 @@ const NO_STATUS_BODY =
  * telling "no status yet" apart from "no such line" at all, and both are
  * indexed single-row/whole-list reads, but it is worth knowing about if
  * this route ever needs rate limiting. */
-export async function generateMetadata({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
 
   // Same id-shape check the page component below runs -- see its own doc
@@ -269,11 +250,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function LineDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function LineDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
   // A real line id is always a lowercase slug: a catalogue line's id comes
@@ -466,7 +443,9 @@ export default async function LineDetailPage({
                   `next build`'s Server/Client boundary check (see
                   LineStatusCard's fix). */}
               <Link href={`/lines/${id}/edit`} style={{ textDecoration: 'none' }}>
-                <Button variant="outline" size="xs">Edit</Button>
+                <Button variant="outline" size="xs">
+                  Edit
+                </Button>
               </Link>
               <DeleteLineButton id={id} />
             </>
@@ -546,18 +525,20 @@ export default async function LineDetailPage({
       ) : (
         <Text c="dimmed">{NO_STATUS_BODY}</Text>
       )}
-      {statusResult.coverage === 'present' && statusResult.report.tflStatus && statusResult.report.tflStatus.length > 0 && (
-        <Stack gap="xs">
-          {/* This line has an NR counterpart merged into it (Elizabeth line
+      {statusResult.coverage === 'present' &&
+        statusResult.report.tflStatus &&
+        statusResult.report.tflStatus.length > 0 && (
+          <Stack gap="xs">
+            {/* This line has an NR counterpart merged into it (Elizabeth line
               today -- see docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md
               Area 1) and this is TfL's own, separately-sourced view of the
               same railway. Kept visually distinct from the primary IssueList
               above rather than merged into one list, since only the primary
               side has real sampleStats and merging would blur that. */}
-          <Text fw={500}>TfL also reports:</Text>
-          <IssueList items={statusResult.report.tflStatus.map((status) => ({ status }))} now={now} />
-        </Stack>
-      )}
+            <Text fw={500}>TfL also reports:</Text>
+            <IssueList items={statusResult.report.tflStatus.map((status) => ({ status }))} now={now} />
+          </Stack>
+        )}
       {/* Skipped entirely (no heading, no fetch) for a TfL line or a custom
           line -- both guarantee a 404 from `getLineTrains` (see
           `isTflLine`/`showTrainsPanel` above), so there is nothing honest

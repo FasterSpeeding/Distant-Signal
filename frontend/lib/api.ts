@@ -231,9 +231,12 @@ export async function getStopPointDisruption(crs: string): Promise<LineStatusRep
  * all) via `errorForResponse`, same as every other `fetchJson` caller --
  * `fetchStationSampleStats` in `app/stations/[crs]/page.tsx` catches it. */
 export async function getStationSampleStats(crs: string): Promise<StationOperatorSampleStats[]> {
-  return fetchJson<StationOperatorSampleStats[]>(`${baseUrl()}/public/stations/${encodeURIComponent(crs)}/sample-stats`, {
-    cache: 'no-store',
-  });
+  return fetchJson<StationOperatorSampleStats[]>(
+    `${baseUrl()}/public/stations/${encodeURIComponent(crs)}/sample-stats`,
+    {
+      cache: 'no-store',
+    },
+  );
 }
 
 /** `GET /public/stations/{crs}/accessibility` -- filtered RDM station
@@ -270,11 +273,7 @@ export async function getStationName(crs: string): Promise<string | null> {
   return match ? match.name : null;
 }
 
-export async function getLineStatusHistory(
-  id: string,
-  from: string,
-  to: string,
-): Promise<LineStatusHistoryEntry[]> {
+export async function getLineStatusHistory(id: string, from: string, to: string): Promise<LineStatusHistoryEntry[]> {
   const url = `${baseUrl()}/Line/${encodeURIComponent(id)}/Status/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`;
   return fetchJson<LineStatusHistoryEntry[]>(url, {
     cache: 'no-store',
@@ -290,11 +289,7 @@ export async function getLineStatusHistory(
  * `custom-` line id on the caller's session, so without the forward the
  * owner of a private line would see an empty chart on their own line's
  * history page. */
-export async function getLineDailyStats(
-  id: string,
-  from: string,
-  to: string,
-): Promise<LineDailyStats[]> {
+export async function getLineDailyStats(id: string, from: string, to: string): Promise<LineDailyStats[]> {
   return fetchJson<LineDailyStats[]>(
     `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
@@ -314,11 +309,7 @@ export async function getLineDailyStats(
  * `getLineHourlyStats` calling `/Stats/Hourly/...`; renamed alongside the
  * backend route when the bucket size was halved -- see git history for
  * the hourly-era version. */
-export async function getLineHalfHourlyStats(
-  id: string,
-  from: string,
-  to: string,
-): Promise<LineHalfHourlyStats[]> {
+export async function getLineHalfHourlyStats(id: string, from: string, to: string): Promise<LineHalfHourlyStats[]> {
   return fetchJson<LineHalfHourlyStats[]>(
     `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/HalfHourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
@@ -330,11 +321,7 @@ export async function getLineHalfHourlyStats(
  * docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md).
  * Same RFC3339-instant/public/no-store/cookie-forwarding shape as
  * `getLineHalfHourlyStats`. */
-export async function getLineHourlyStats(
-  id: string,
-  from: string,
-  to: string,
-): Promise<LineHourlyStats[]> {
+export async function getLineHourlyStats(id: string, from: string, to: string): Promise<LineHourlyStats[]> {
   return fetchJson<LineHourlyStats[]>(
     `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/Hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
@@ -343,11 +330,7 @@ export async function getLineHourlyStats(
 
 /** `GET /Line/{id}/Stats/SixHourly/{from}/to/{to}` -- the 6-hour sub-daily
  * rollup route, sibling of `getLineHourlyStats`. */
-export async function getLineSixHourlyStats(
-  id: string,
-  from: string,
-  to: string,
-): Promise<LineSixHourlyStats[]> {
+export async function getLineSixHourlyStats(id: string, from: string, to: string): Promise<LineSixHourlyStats[]> {
   return fetchJson<LineSixHourlyStats[]>(
     `${baseUrl()}/Line/${encodeURIComponent(id)}/Stats/SixHourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store', ...(await cookieForwardInit()) },
@@ -393,11 +376,7 @@ export async function getLineHalfHourlyCoverageStats(
  * own precedent for a genuinely public endpoint, unlike the per-line
  * `getLineDailyStats` family (which forwards cookies because a `custom-`
  * id might be in play; this route's line-id set never includes one). */
-export async function getOperatorDailyStats(
-  code: string,
-  from: string,
-  to: string,
-): Promise<OperatorDailyStats[]> {
+export async function getOperatorDailyStats(code: string, from: string, to: string): Promise<OperatorDailyStats[]> {
   return fetchJson<OperatorDailyStats[]>(
     `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
@@ -418,11 +397,7 @@ export async function getOperatorHalfHourlyStats(
 }
 
 /** 1-hour sub-daily sibling, mirrors `getLineHourlyStats`. */
-export async function getOperatorHourlyStats(
-  code: string,
-  from: string,
-  to: string,
-): Promise<OperatorHourlyStats[]> {
+export async function getOperatorHourlyStats(code: string, from: string, to: string): Promise<OperatorHourlyStats[]> {
   return fetchJson<OperatorHourlyStats[]>(
     `${baseUrl()}/public/operators/${encodeURIComponent(code)}/stats/hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
@@ -445,15 +420,15 @@ export async function getOperatorSixHourlyStats(
  * (catalogue National Rail lines only -- see this plan's Judgment Call 5
  * for why TfL lines never contribute) daily Trends rollup. */
 export async function getNetworkDailyStats(from: string, to: string): Promise<NetworkDailyStats[]> {
-  return fetchJson<NetworkDailyStats[]>(`${baseUrl()}/public/network/stats/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`, {
-    cache: 'no-store',
-  });
+  return fetchJson<NetworkDailyStats[]>(
+    `${baseUrl()}/public/network/stats/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
+    {
+      cache: 'no-store',
+    },
+  );
 }
 
-export async function getNetworkHalfHourlyStats(
-  from: string,
-  to: string,
-): Promise<NetworkHalfHourlyStats[]> {
+export async function getNetworkHalfHourlyStats(from: string, to: string): Promise<NetworkHalfHourlyStats[]> {
   return fetchJson<NetworkHalfHourlyStats[]>(
     `${baseUrl()}/public/network/stats/half-hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
@@ -461,15 +436,15 @@ export async function getNetworkHalfHourlyStats(
 }
 
 export async function getNetworkHourlyStats(from: string, to: string): Promise<NetworkHourlyStats[]> {
-  return fetchJson<NetworkHourlyStats[]>(`${baseUrl()}/public/network/stats/hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`, {
-    cache: 'no-store',
-  });
+  return fetchJson<NetworkHourlyStats[]>(
+    `${baseUrl()}/public/network/stats/hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
+    {
+      cache: 'no-store',
+    },
+  );
 }
 
-export async function getNetworkSixHourlyStats(
-  from: string,
-  to: string,
-): Promise<NetworkSixHourlyStats[]> {
+export async function getNetworkSixHourlyStats(from: string, to: string): Promise<NetworkSixHourlyStats[]> {
   return fetchJson<NetworkSixHourlyStats[]>(
     `${baseUrl()}/public/network/stats/six-hourly/${encodeURIComponent(from)}/to/${encodeURIComponent(to)}`,
     { cache: 'no-store' },
@@ -760,10 +735,7 @@ export async function getTrackedTrainById(id: number): Promise<TrackedTrainState
  * A 404 (no known train for that uid/date) still surfaces as
  * `ApiNotFoundError` via `errorForResponse`; a 401 is not a reachable
  * outcome for this route at all. */
-export async function getPublicTrainByUidAndDate(
-  uid: string,
-  date: string,
-): Promise<PublicTrainState> {
+export async function getPublicTrainByUidAndDate(uid: string, date: string): Promise<PublicTrainState> {
   const url = `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`;
   const response = await apiFetch(url, { cache: 'no-store' });
   if (!response.ok) throw errorForResponse(url, response);

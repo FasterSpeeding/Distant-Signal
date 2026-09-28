@@ -35,10 +35,7 @@ function mockFetchByUrl(
     scheduleDepartures?: () => Response;
   } = {},
 ) {
-  const {
-    departures = () => new Response(JSON.stringify([]), { status: 200 }),
-    scheduleDepartures,
-  } = options;
+  const { departures = () => new Response(JSON.stringify([]), { status: 200 }), scheduleDepartures } = options;
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (/\/api\/stations\/[A-Za-z]{3}\/schedule-departures$/.test(url)) {
@@ -54,10 +51,9 @@ function mockFetchByUrl(
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
     }
     return Promise.resolve(
-      new Response(
-        JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+        status: 200,
+      }),
     );
   });
 }
@@ -199,9 +195,7 @@ describe('TrackTrainForm', () => {
   });
 
   it('leaves scheduled departure and window date at their own today/now defaults regardless of the new props', () => {
-    renderWithMantine(
-      <TrackTrainForm initialOrigin="WAT" initialDestination="RDG" initialDepartAfter="08:00" />,
-    );
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" initialDestination="RDG" initialDepartAfter="08:00" />);
     // Judgment Call 4: no initialServiceDate/initialScheduledDeparture prop
     // exists at all -- "again" never carries the old date/time forward.
     const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
@@ -221,7 +215,9 @@ describe('TrackTrainForm', () => {
     expect(button).not.toBeDisabled();
     fireEvent.click(button);
     expect(
-      screen.getByText('Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.'),
+      screen.getByText(
+        'Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.',
+      ),
     ).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
   });
@@ -411,10 +407,7 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     expect(await screen.findByText('Log in to track this train.')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
-      'href',
-      '/api/auth/login?return_to=%2Ftrack',
-    );
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack');
     // Unlike PinToggle's toggle-and-forget click, the form's own input
     // must survive a 401 -- Decision 4's explicit "preserve typed values"
     // call.
@@ -504,10 +497,9 @@ describe('TrackTrainForm', () => {
       }
       if (url === '/api/Journeys') {
         return Promise.resolve(
-          new Response(
-            JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-            { status: 200 },
-          ),
+          new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+            status: 200,
+          }),
         );
       }
       return Promise.resolve(new Response(JSON.stringify({ ticketId: 99, trackedTrainId: 42 }), { status: 200 }));
@@ -541,10 +533,9 @@ describe('TrackTrainForm', () => {
       }
       if (url === '/api/Journeys') {
         return Promise.resolve(
-          new Response(
-            JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-            { status: 200 },
-          ),
+          new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+            status: 200,
+          }),
         );
       }
       return Promise.resolve(new Response('ticket is already attached to a tracked train', { status: 409 }));
@@ -579,7 +570,7 @@ describe('TrackTrainForm', () => {
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/attach'), expect.anything());
   });
 
-  it('derives service_date from the picker\'s local wall-clock date, not the UTC date', async () => {
+  it("derives service_date from the picker's local wall-clock date, not the UTC date", async () => {
     // A local time just after midnight, near a UTC day boundary (e.g.
     // during BST, UTC+1): the naive `new Date(...).toISOString().slice(0,
     // 10)` approach would roll this back to '2026-08-28', the WRONG
@@ -621,7 +612,7 @@ describe('TrackTrainForm', () => {
       }
     });
 
-    it('sends a picked 10:00 as 10:00 London time (09:00Z in BST), not 10:00 in the browser\'s own UTC+2 zone', async () => {
+    it("sends a picked 10:00 as 10:00 London time (09:00Z in BST), not 10:00 in the browser's own UTC+2 zone", async () => {
       process.env.TZ = 'Etc/GMT-2'; // POSIX sign convention: this is UTC+2
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
@@ -693,10 +684,9 @@ describe('TrackTrainForm', () => {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
       }
       return Promise.resolve(
-        new Response(
-          JSON.stringify({ journeyId: 199, legId: 1, trackingId: 99, resolutionStatus: 'pending' }),
-          { status: 200 },
-        ),
+        new Response(JSON.stringify({ journeyId: 199, legId: 1, trackingId: 99, resolutionStatus: 'pending' }), {
+          status: 200,
+        }),
       );
     });
 
@@ -918,9 +908,7 @@ describe('TrackTrainForm', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
 
-      expect(
-        screen.getByText('Enter a valid origin and destination station before searching.'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('Enter a valid origin and destination station before searching.')).toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
     });
 
@@ -1021,7 +1009,10 @@ describe('TrackTrainForm', () => {
     });
 
     it('on a 401 in window mode, shows the login prompt and preserves the typed window fields', async () => {
-      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))),
+      );
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
       switchToWindowMode();
       fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
@@ -1039,7 +1030,10 @@ describe('TrackTrainForm', () => {
     });
 
     it('the login-modal copy still says "track this train" in pick mode', async () => {
-      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))),
+      );
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
@@ -1254,7 +1248,7 @@ describe('TrackTrainForm', () => {
       expect(picker.value).toBe(`${today} 10:40:00`);
     });
 
-    it('renders the picked row\'s platform badge alongside its status badge', async () => {
+    it("renders the picked row's platform badge alongside its status badge", async () => {
       const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);
 
@@ -1309,7 +1303,9 @@ describe('TrackTrainForm', () => {
           skippedStations: ['CLJ', 'WOK'],
         },
       ];
-      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(rowsWithSkips), { status: 200 }) });
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response(JSON.stringify(rowsWithSkips), { status: 200 }),
+      });
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -1366,7 +1362,9 @@ describe('TrackTrainForm', () => {
 
       it('a normal same-day pick close to "now" stays on today\'s date', async () => {
         vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
-        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('10:15')), { status: 200 }) });
+        const fetchMock = mockFetchByUrl({
+          departures: () => new Response(JSON.stringify(ldbwsRow('10:15')), { status: 200 }),
+        });
         vi.stubGlobal('fetch', fetchMock);
 
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -1380,7 +1378,9 @@ describe('TrackTrainForm', () => {
 
       it('the concrete failure case -- now 23:50, scheduled 00:07 -- resolves to tomorrow, not today', async () => {
         vi.setSystemTime(new Date('2026-09-05T22:50:00.000Z'));
-        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('00:07')), { status: 200 }) });
+        const fetchMock = mockFetchByUrl({
+          departures: () => new Response(JSON.stringify(ldbwsRow('00:07')), { status: 200 }),
+        });
         vi.stubGlobal('fetch', fetchMock);
 
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -1413,7 +1413,9 @@ describe('TrackTrainForm', () => {
       // an arbitrary/off-by-one one.
       it('a same-day combination just inside the threshold (3h59m before "now") is NOT corrected', async () => {
         vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
-        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('06:01')), { status: 200 }) });
+        const fetchMock = mockFetchByUrl({
+          departures: () => new Response(JSON.stringify(ldbwsRow('06:01')), { status: 200 }),
+        });
         vi.stubGlobal('fetch', fetchMock);
 
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -1437,7 +1439,9 @@ describe('TrackTrainForm', () => {
 
       it('a same-day combination just outside the threshold (4h01m before "now") IS corrected to tomorrow', async () => {
         vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
-        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('05:59')), { status: 200 }) });
+        const fetchMock = mockFetchByUrl({
+          departures: () => new Response(JSON.stringify(ldbwsRow('05:59')), { status: 200 }),
+        });
         vi.stubGlobal('fetch', fetchMock);
 
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -1573,9 +1577,13 @@ describe('TrackTrainForm', () => {
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
       await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      expect(screen.queryByText('No departure information is available for this station — enter the details below.')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('No departure information is available for this station — enter the details below.'),
+      ).not.toBeInTheDocument();
       expect(screen.queryByText(/Showing the scheduled timetable/)).not.toBeInTheDocument();
-      expect(screen.queryByText('No live departures currently on the board for this station right now.')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('No live departures currently on the board for this station right now.'),
+      ).not.toBeInTheDocument();
     });
 
     it('clicking a CIF row with a real destinationCrs fills destination and scheduled departure, leaving operator untouched', async () => {
@@ -2045,9 +2053,7 @@ describe('TrackTrainForm', () => {
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(last);
 
-        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
-          `${today} 10:55:00`,
-        );
+        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(`${today} 10:55:00`);
       });
 
       it('LDBWS: that same row is still selectable by keyboard (Enter on the focused row)', async () => {
@@ -2067,9 +2073,7 @@ describe('TrackTrainForm', () => {
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.keyDown(last, { key: 'Enter' });
 
-        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
-          `${today} 10:55:00`,
-        );
+        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(`${today} 10:55:00`);
       });
 
       it('CIF: the last row is in the same in-flow list, under no clipping ancestor, and still selectable', async () => {
@@ -2092,9 +2096,7 @@ describe('TrackTrainForm', () => {
 
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(last);
-        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
-          `${today} 10:55:00`,
-        );
+        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(`${today} 10:55:00`);
       });
     });
   });
@@ -2142,10 +2144,9 @@ describe('TrackTrainForm', () => {
         }
         if (url === '/api/Journeys') {
           return Promise.resolve(
-            new Response(
-              JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-              { status: 200 },
-            ),
+            new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+              status: 200,
+            }),
           );
         }
         if (url === '/api/groups/grp-1/trains') return Promise.resolve(new Response(null, { status: 204 }));
@@ -2185,10 +2186,9 @@ describe('TrackTrainForm', () => {
         }
         if (url === '/api/Journeys') {
           return Promise.resolve(
-            new Response(
-              JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-              { status: 200 },
-            ),
+            new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+              status: 200,
+            }),
           );
         }
         if (url === '/api/groups/grp-1/trains') return Promise.reject(new Error('network blip'));
@@ -2223,9 +2223,7 @@ describe('TrackTrainForm', () => {
   // the ONLY discovery path for window mode.
   it('names the pick-mode / window-mode radiogroup', () => {
     renderWithMantine(<TrackTrainForm />);
-    expect(
-      screen.getByRole('radiogroup', { name: 'How do you want to find the train?' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', { name: 'How do you want to find the train?' })).toBeInTheDocument();
     expect(screen.getByText('How do you want to find the train?')).toBeInTheDocument();
   });
 });

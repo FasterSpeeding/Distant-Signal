@@ -34,7 +34,7 @@ describe('AddCustomLineToGroupButton', () => {
     vi.unstubAllGlobals();
   });
 
-  it('offers only the caller\'s own custom lines, never catalogue or TfL ones', async () => {
+  it("offers only the caller's own custom lines, never catalogue or TfL ones", async () => {
     // `/public/lines` is already caller-scoped for custom entries, so
     // "source === custom" is exactly "lines I own". A catalogue or TfL id
     // offered here would only ever 404 server-side (grant_custom_line
@@ -59,9 +59,7 @@ describe('AddCustomLineToGroupButton', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(linesResponse());
 
-    renderWithMantine(
-      <AddCustomLineToGroupButton groupId="grp-1" excludeLineIds={['custom-weekend']} />,
-    );
+    renderWithMantine(<AddCustomLineToGroupButton groupId="grp-1" excludeLineIds={['custom-weekend']} />);
     fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
 
     const [select] = await screen.findAllByLabelText('Custom line');
@@ -98,7 +96,7 @@ describe('AddCustomLineToGroupButton', () => {
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
   });
 
-  it('surfaces the backend\'s own refusal message rather than swallowing it', async () => {
+  it("surfaces the backend's own refusal message rather than swallowing it", async () => {
     // The server-side ownership check is the real boundary; if it refuses
     // (404 "custom line not found"), the user must see why rather than a
     // silently-closed modal.
