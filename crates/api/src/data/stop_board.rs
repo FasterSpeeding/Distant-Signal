@@ -56,12 +56,17 @@
 //! on the stop's own CRS board that could hand a stop another train's
 //! platform). Only the rules below differ from `board`:
 //!
-//! - A matched row changes the platform fields only when it carries a
-//!   platform and is not cancelled; otherwise the stop keeps what it had
-//!   (`null`, or the origin's pin-time snapshot from
-//!   `journey::apply_origin_platform`). The old overlay never took a
-//!   platform from a cancelled row either, and a cancelled service's
-//!   platform is not somewhere to go and wait; `board.isCancelled` says why.
+//! - A matched row with a platform replaces the stop's platform fields
+//!   wholesale, including the origin's pin-time snapshot from
+//!   `journey::apply_origin_platform` (the row is this train's own row at
+//!   this stop, so it is never another train's cancellation overwriting a
+//!   good platform). A row with no platform leaves them as they were.
+//! - `platformStatus` is `cancelled` when the matched row is cancelled
+//!   (user decision 2026-09-28: show the platform, marked, rather than
+//!   hide it -- the old overlay skipped cancelled rows), and also when a
+//!   cancelled row has no platform but the stop kept the origin snapshot:
+//!   that snapshot is the platform of the very call Darwin now lists as
+//!   cancelled. Otherwise `active`; `null` exactly when `platform` is.
 //! - "The train has left" does not suppress the platform: which platform it
 //!   left from is still true, unlike a delay estimate. In practice the row
 //!   drops off the board within one poll (60-90 s) of departure anyway.
@@ -82,7 +87,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::data::journey::JourneyStop;
+use crate::data::journey::{JourneyStop, PlatformStatus};
 use crate::data::queries::BoardSampleRow;
 use crate::data::train_resolve::{RSID_WINDOW_MINUTES, TIMETABLE_WINDOW_MINUTES};
 
@@ -355,14 +360,20 @@ pub fn apply_station_sample_board(
     }
 }
 
-/// The platform half of the overlay: a matched, not-cancelled row with a
-/// platform replaces the stop's platform fields wholesale; anything else
-/// leaves them as they were. See the module doc.
+/// The platform half of the overlay: a matched row with a platform
+/// replaces the stop's platform fields wholesale, marked cancelled when the
+/// row is; a row without one leaves them as they were, except that a
+/// cancelled row marks a kept platform cancelled. See the module doc.
 fn apply_board_platform(stop: &mut JourneyStop, row: &common::StationDeparture) {
-    if row.is_cancelled {
-        return;
-    }
+    let status = if row.is_cancelled {
+        PlatformStatus::Cancelled
+    } else {
+        PlatformStatus::Active
+    };
     let Some(platform) = row.platform.clone() else {
+        if row.is_cancelled && stop.platform.is_some() {
+            stop.platform_status = Some(status);
+        }
         return;
     };
     stop.planned_platform = row.planned_platform.clone();
@@ -373,6 +384,7 @@ fn apply_board_platform(stop: &mut JourneyStop, row: &common::StationDeparture) 
         .as_deref()
         .is_some_and(|planned| planned != platform);
     stop.platform = Some(platform);
+    stop.platform_status = Some(status);
 }
 
 /// [`TrainBoardKeys`] for every `(train_uid, service_date)`, from
@@ -421,6 +433,7 @@ pub async fn board_keys_for_trains(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::journey::PlatformStatus::{Active, Cancelled};
     use crate::data::journey::test_support::stop;
     use schedule_query::CallingPointKind::{Intermediate, Origin, Terminate};
 
@@ -860,7 +873,14 @@ mod tests {
         row
     }
 
-    fn platforms(stops: &[JourneyStop]) -> Vec<(Option<&str>, Option<&str>, bool)> {
+    type Platform<'a> = (
+        Option<&'a str>,
+        Option<&'a str>,
+        bool,
+        Option<PlatformStatus>,
+    );
+
+    fn platforms(stops: &[JourneyStop]) -> Vec<Platform<'_>> {
         stops
             .iter()
             .map(|stop| {
@@ -868,17 +888,25 @@ mod tests {
                     stop.platform.as_deref(),
                     stop.planned_platform.as_deref(),
                     stop.platform_changed,
+                    stop.platform_status,
                 )
             })
             .collect()
+    }
+
+    /// The origin's pin-time snapshot, as `journey::apply_origin_platform`
+    /// leaves it.
+    fn snapshot(stop: &mut JourneyStop, platform: &str, planned: Option<&str>) {
+        stop.platform = Some(platform.to_string());
+        stop.planned_platform = planned.map(str::to_string);
+        stop.platform_status = Some(PlatformStatus::Active);
     }
 
     #[test]
     fn each_departing_stop_takes_its_own_rows_platform_and_the_terminus_stays_unknown() {
         let mut stops = journey();
         // Pin-time origin snapshot; the fresher board row replaces it.
-        stops[0].platform = Some("6".to_string());
-        stops[0].planned_platform = Some("6".to_string());
+        snapshot(&mut stops[0], "6", Some("6"));
         let rows = [
             sample_board(
                 "WAT",
@@ -918,9 +946,9 @@ mod tests {
         assert_eq!(
             platforms(&stops),
             vec![
-                (Some("9"), Some("6"), true),
-                (Some("10"), None, false),
-                (None, None, false),
+                (Some("9"), Some("6"), true, Some(Active)),
+                (Some("10"), None, false, Some(Active)),
+                (None, None, false, None),
             ]
         );
     }
@@ -959,7 +987,10 @@ mod tests {
             vec![foreign.clone(), ours],
         )];
         apply(&mut stops, &rows, &keys(Some("SW123400")));
-        assert_eq!(platforms(&stops)[0], (Some("9"), Some("9"), false));
+        assert_eq!(
+            platforms(&stops)[0],
+            (Some("9"), Some("9"), false, Some(Active))
+        );
 
         // Our row is not on the board (yet): nothing, not the other train's.
         let mut stops = journey();
@@ -970,13 +1001,13 @@ mod tests {
             vec![foreign],
         )];
         apply(&mut stops, &rows, &keys(Some("SW123400")));
-        assert_eq!(platforms(&stops)[0], (None, None, false));
+        assert_eq!(platforms(&stops)[0], (None, None, false, None));
     }
 
     #[test]
     fn an_rsid_mismatch_supplies_no_platform_and_keeps_the_origin_snapshot() {
         let mut stops = journey();
-        stops[0].platform = Some("6".to_string());
+        snapshot(&mut stops[0], "6", None);
         let rows = [sample_board(
             "WAT",
             "2026-09-28T15:58:00Z",
@@ -994,7 +1025,7 @@ mod tests {
             )],
         )];
         apply(&mut stops, &rows, &keys(Some("SW123400")));
-        assert_eq!(platforms(&stops)[0], (Some("6"), None, false));
+        assert_eq!(platforms(&stops)[0], (Some("6"), None, false, Some(Active)));
         assert_eq!(stops[0].board, None);
     }
 
@@ -1019,7 +1050,7 @@ mod tests {
             ],
         )];
         apply(&mut stops, &rows, &keys(None));
-        assert_eq!(platforms(&stops)[0], (None, None, false));
+        assert_eq!(platforms(&stops)[0], (None, None, false, None));
     }
 
     #[test]
@@ -1063,32 +1094,115 @@ mod tests {
             operator: Some("XR".to_string()),
         };
         apply(&mut stops, &rows, &keys);
-        assert_eq!(platforms(&stops)[0], (Some("B"), Some("A"), true));
+        assert_eq!(
+            platforms(&stops)[0],
+            (Some("B"), Some("A"), true, Some(Active))
+        );
+    }
+
+    fn wat_row(cancelled: bool, platform: Option<&str>) -> common::StationDeparture {
+        let mut ours = row(
+            "9100001WATRLMN_",
+            "17:00",
+            if cancelled { "Cancelled" } else { "On time" },
+            "WOK",
+            Some("SW123400"),
+        );
+        ours.is_cancelled = cancelled;
+        ours.platform = platform.map(str::to_string);
+        ours.planned_platform = Some("6".to_string());
+        ours
     }
 
     #[test]
-    fn a_cancelled_or_platformless_row_leaves_the_origin_snapshot_alone() {
-        for cancelled in [true, false] {
-            let mut stops = journey();
-            stops[0].platform = Some("6".to_string());
-            stops[0].planned_platform = Some("6".to_string());
-            let mut ours = row(
-                "9100001WATRLMN_",
-                "17:00",
-                "On time",
-                "WOK",
-                Some("SW123400"),
-            );
-            if cancelled {
-                ours.is_cancelled = true;
-                ours.estimated = "Cancelled".to_string();
-                ours.platform = Some("2".to_string());
-            }
-            let rows = [sample_board("WAT", "2026-09-28T15:58:00Z", &[], vec![ours])];
-            apply(&mut stops, &rows, &keys(Some("SW123400")));
-            assert_eq!(platforms(&stops)[0], (Some("6"), Some("6"), false));
-            assert!(stops[0].board.is_some(), "the row still matched");
-        }
+    fn a_cancelled_row_supplies_its_platform_marked_cancelled_over_the_snapshot() {
+        let mut stops = journey();
+        snapshot(&mut stops[0], "6", Some("6"));
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![wat_row(true, Some("2"))],
+        )];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(
+            platforms(&stops)[0],
+            (Some("2"), Some("6"), true, Some(Cancelled))
+        );
+        assert!(stops[0].board.as_ref().unwrap().is_cancelled);
+
+        // Serialized for clients.
+        let json = serde_json::to_value(&stops[0]).unwrap();
+        assert_eq!(json["platform"], "2");
+        assert_eq!(json["platformStatus"], "cancelled");
+        let json = serde_json::to_value(&stops[2]).unwrap();
+        assert!(json["platformStatus"].is_null(), "no platform, no status");
+    }
+
+    #[test]
+    fn a_cancelled_row_with_no_platform_marks_the_kept_snapshot_cancelled() {
+        let mut stops = journey();
+        snapshot(&mut stops[0], "6", Some("6"));
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![wat_row(true, None)],
+        )];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(
+            platforms(&stops)[0],
+            (Some("6"), Some("6"), false, Some(Cancelled))
+        );
+
+        // Nothing known and nothing on the row: still nothing.
+        let mut stops = journey();
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(platforms(&stops)[0], (None, None, false, None));
+    }
+
+    #[test]
+    fn a_platformless_row_leaves_the_origin_snapshot_alone() {
+        let mut stops = journey();
+        snapshot(&mut stops[0], "6", Some("6"));
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![wat_row(false, None)],
+        )];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(
+            platforms(&stops)[0],
+            (Some("6"), Some("6"), false, Some(Active))
+        );
+        assert!(stops[0].board.is_some(), "the row still matched");
+    }
+
+    #[test]
+    fn another_trains_cancellation_never_touches_the_platform() {
+        let mut stops = journey();
+        snapshot(&mut stops[0], "6", Some("6"));
+        let mut foreign = row(
+            "9100002WATRLMN_",
+            "17:00",
+            "Cancelled",
+            "WOK",
+            Some("SW999900"),
+        );
+        foreign.is_cancelled = true;
+        foreign.platform = Some("1".to_string());
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![foreign],
+        )];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(
+            platforms(&stops)[0],
+            (Some("6"), Some("6"), false, Some(Active))
+        );
     }
 
     #[test]
@@ -1123,7 +1237,7 @@ mod tests {
             &board("2026-09-28T15:49:59Z"),
             &keys(Some("SW123400")),
         );
-        assert_eq!(platforms(&stops)[0], (None, None, false));
+        assert_eq!(platforms(&stops)[0], (None, None, false, None));
     }
 
     #[test]
