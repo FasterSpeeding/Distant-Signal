@@ -3,14 +3,28 @@
 Deploys the whole National Rail status stack into a single namespace: a
 bundled single-replica **PostgreSQL** StatefulSet, a bundled single-replica
 **Redis** (persistent by default — see "Using an external Redis" below),
-the **api**, the **aggregator**, the **enricher**, the **frontend**, and five optional
-**pollers** — four Rail Data Marketplace pollers (incidents, stations, tocs, ldbws)
-plus a TfL Unified API poller (tfl). The chart has no subchart
+the **api**, the **aggregator**, the **enricher**, the **notifier**, the
+**frontend** and the three movement-stream consumers (**trust-consumer**,
+**full-coverage-consumer**, **trust-backlog-consumer**), plus these
+optional, off-by-default workloads:
+
+- five **pollers** under `pollers.*` — four Rail Data Marketplace pollers
+  (incidents, stations, tocs, ldbws) plus a TfL Unified API poller (tfl);
+- three island-of-Ireland pollers (`pollerIrishRailGtfs`,
+  `pollerIrishRailLive`, `pollerNirStations`);
+- **movement-relay** (`movementRelay`), the one Kafka client for RDM's
+  Train Movements feed, which fills the `movement-events` Redis stream the
+  three consumers read (they sit idle without it);
+- the **schedulefeed** pod (`scheduleFeed`): an SFTP server for the pushed
+  CIF timetable delivery, with `schedule-ingest` and `schedule-reference`
+  containers alongside it.
+
+The chart has no subchart
 dependencies and no `dependencies:` block, so `helm dependency update` is
 never needed and it installs in an air-gapped cluster given the images. It
 mirrors the topology, environment contract and cadences that the
-repository's `docker-compose.yml` and `.env.example` already establish, so
-the two deployment paths do not drift.
+repository's `docker-compose.yml` and `local.env.example`/`dev.env.example`
+already establish, so the two deployment paths do not drift.
 
 This chart does **not** deploy the derived MCP service ("distant-signal-mcp",
 a fork of train-mcp) — see the `railMcp` section under "Values reference"
@@ -68,8 +82,14 @@ that issuer and subject on the chart's OCIRepository/HelmRepository.
 | `docker/poller-stations.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/poller-stations` |
 | `docker/poller-tocs.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/poller-tocs` |
 | `docker/poller-ldbws.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/poller-ldbws` |
-| `docker/trust-consumer.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/trust-consumer` |
 | `docker/poller-tfl.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/poller-tfl` |
+| `docker/poller-irish-rail-gtfs.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/poller-irish-rail-gtfs` |
+| `docker/poller-irish-rail-live.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/poller-irish-rail-live` |
+| `docker/poller-nir-stations.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/poller-nir-stations` |
+| `docker/trust-consumer.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/trust-consumer` |
+| `docker/full-coverage-consumer.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/full-coverage-consumer` |
+| `docker/trust-backlog-consumer.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/trust-backlog-consumer` |
+| `docker/movement-relay.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/movement-relay` |
 | `docker/schedule-ingest.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/schedule-ingest` |
 | `docker/schedule-reference.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/schedule-reference` |
 | `frontend/Dockerfile` (target `runtime-prod`) | `ghcr.io/fasterspeeding/distant-signal/frontend` |
@@ -77,20 +97,26 @@ that issuer and subject on the chart's OCIRepository/HelmRepository.
 ```bash
 REG=registry.example.com/distant-signal
 TAG=0.1.0
-docker build -f docker/api.Dockerfile                 -t $REG/api:$TAG .
-docker build -f docker/aggregator.Dockerfile          -t $REG/aggregator:$TAG .
-docker build -f docker/enricher.Dockerfile            -t $REG/enricher:$TAG .
-docker build -f docker/notifier.Dockerfile            -t $REG/notifier:$TAG .
-docker build -f docker/poller-incidents.Dockerfile    -t $REG/poller-incidents:$TAG .
-docker build -f docker/poller-stations.Dockerfile     -t $REG/poller-stations:$TAG .
-docker build -f docker/poller-tocs.Dockerfile         -t $REG/poller-tocs:$TAG .
-docker build -f docker/poller-ldbws.Dockerfile        -t $REG/poller-ldbws:$TAG .
-docker build -f docker/trust-consumer.Dockerfile      -t $REG/trust-consumer:$TAG .
-docker build -f docker/poller-tfl.Dockerfile          -t $REG/poller-tfl:$TAG .
-docker build -f docker/schedule-ingest.Dockerfile     -t $REG/schedule-ingest:$TAG .
-docker build -f docker/schedule-reference.Dockerfile  -t $REG/schedule-reference:$TAG .
+docker build -f docker/api.Dockerfile                     -t $REG/api:$TAG .
+docker build -f docker/aggregator.Dockerfile              -t $REG/aggregator:$TAG .
+docker build -f docker/enricher.Dockerfile                -t $REG/enricher:$TAG .
+docker build -f docker/notifier.Dockerfile                -t $REG/notifier:$TAG .
+docker build -f docker/poller-incidents.Dockerfile        -t $REG/poller-incidents:$TAG .
+docker build -f docker/poller-stations.Dockerfile         -t $REG/poller-stations:$TAG .
+docker build -f docker/poller-tocs.Dockerfile             -t $REG/poller-tocs:$TAG .
+docker build -f docker/poller-ldbws.Dockerfile            -t $REG/poller-ldbws:$TAG .
+docker build -f docker/poller-tfl.Dockerfile              -t $REG/poller-tfl:$TAG .
+docker build -f docker/poller-irish-rail-gtfs.Dockerfile  -t $REG/poller-irish-rail-gtfs:$TAG .
+docker build -f docker/poller-irish-rail-live.Dockerfile  -t $REG/poller-irish-rail-live:$TAG .
+docker build -f docker/poller-nir-stations.Dockerfile     -t $REG/poller-nir-stations:$TAG .
+docker build -f docker/trust-consumer.Dockerfile          -t $REG/trust-consumer:$TAG .
+docker build -f docker/full-coverage-consumer.Dockerfile  -t $REG/full-coverage-consumer:$TAG .
+docker build -f docker/trust-backlog-consumer.Dockerfile  -t $REG/trust-backlog-consumer:$TAG .
+docker build -f docker/movement-relay.Dockerfile          -t $REG/movement-relay:$TAG .
+docker build -f docker/schedule-ingest.Dockerfile         -t $REG/schedule-ingest:$TAG .
+docker build -f docker/schedule-reference.Dockerfile      -t $REG/schedule-reference:$TAG .
 docker build -f frontend/Dockerfile --target runtime-prod -t $REG/frontend:$TAG .
-for i in api aggregator enricher notifier poller-incidents poller-stations poller-tocs poller-ldbws trust-consumer poller-tfl schedule-ingest schedule-reference frontend; do
+for i in api aggregator enricher notifier poller-incidents poller-stations poller-tocs poller-ldbws poller-tfl poller-irish-rail-gtfs poller-irish-rail-live poller-nir-stations trust-consumer full-coverage-consumer trust-backlog-consumer movement-relay schedule-ingest schedule-reference frontend; do
   docker push $REG/$i:$TAG
 done
 ```
@@ -118,10 +144,10 @@ it by hand (`--set api.image.digest=sha256:...`) only if you're building
 and pushing your own images per the table above and want the same
 guarantee for them. `postgresql`, `redis`, `devAuthentik` and
 `scheduleFeed.sftp` (all externally-sourced, not built by this repo) have
-no `digest` field and cannot be pinned by digest through this chart's
-values today -- `distant-signal.image` always appends `:<tag>` for them,
-so there is no clean value shape for a caller to force an `@sha256:...`
-reference onto one of these instead.
+no `digest` field. They are digest-pinned through the tag instead: their
+default `tag` values carry the digest (e.g. `7.4.11@sha256:...`), which
+`distant-signal.image` appends after `:`, giving `<repository>:<tag>@<digest>`.
+Override one the same way, with a `<tag>@sha256:...` string.
 
 ## Install
 
@@ -137,8 +163,11 @@ helm install distant-signal ./charts/distant-signal -n distant-signal --create-n
 ```
 
 An install brings up **postgres + redis + api + aggregator + enricher +
-frontend**, with **all five pollers off**. See "Enabling the pollers" below
-for why.
+notifier + frontend + trust-consumer + full-coverage-consumer +
+trust-backlog-consumer**, with **every poller, movement-relay and the
+schedulefeed pod off**. See "Enabling the pollers" below for why the
+pollers are off. The three consumers read the `movement-events` Redis
+stream, which stays empty until `movementRelay.enabled` is set.
 
 `enricher.llm.baseUrl`, `enricher.llm.model` and the five `api.sso.*`
 values above are the chart's **required** values; everything else has a
@@ -154,8 +183,11 @@ explicit message rather than deploying a pod that cannot work:
   exits immediately with "the following required arguments were not
   provided" and `CrashLoopBackOff`s. See "Single sign-on (OIDC)" below.
 
-The enricher is a strictly additive signal: it only ever *demotes* a
-severity a line already has, and never suppresses one. A missing, failed or
+The enricher is a strictly additive signal: its extractions only adjust
+the severity an incident already gives a line (a high-confidence
+`apparent_severity` can raise it; a resolved/residual status, a schedule
+window that excludes now or an elapsed period can lower it), and never
+suppress a status. A missing, failed or
 low-confidence extraction is a no-op, so a broken LLM endpoint degrades the
 enricher's own output and nothing else — the status pages keep working.
 
@@ -444,7 +476,8 @@ solved:**
 - None of the above has been smoke-tested by this chart's own authors
   against a real kind/minikube/k3d cluster as of this writing — see
   `docs/superpowers/plans/2026-08-29-dev-oidc-server.md`'s Task 13 for
-  what was and wasn't actually verified.
+  what was and wasn't actually verified (that plan was pruned from the tree
+  in commit `b7f71a8a`; read it from git history).
 
 See `docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md` for the
 full design, including why `AUTHENTIK_BOOTSTRAP_*` is deliberately never
