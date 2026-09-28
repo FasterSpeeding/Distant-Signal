@@ -1,5 +1,13 @@
 # Design: `movement-relay` — a Single Real Kafka Client, Fanned Out via Redis Streams
 
+> **Status (2026-09-28):** implemented as `crates/movement-relay`.
+> `trust-consumer`, `full-coverage-consumer` and `trust-backlog-consumer`
+> all read the `movement-events` Redis Stream by default (chart
+> `trustConsumer.movementFeed` / `fullCoverageConsumer.movementFeed`:
+> `redis-stream`). Note that the chart's `movementRelay.enabled` still
+> defaults to `false`, so an install must enable and configure it
+> (`movementRelay.kafka.*`) for those consumers to receive any events.
+
 **Status: design proposal, not approved. Spec stage only — no implementation
 plan, no code in this pass.**
 

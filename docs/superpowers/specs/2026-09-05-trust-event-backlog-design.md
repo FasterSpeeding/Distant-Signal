@@ -1,5 +1,9 @@
 # Design: A Windowed TRUST-Event Backlog for Late-Tracking Pins
 
+> **Status (2026-09-28):** implemented as `crates/trust-backlog-consumer`
+> (a third consumer group on the `movement-events` Redis Stream) writing
+> through `api`'s `/private/trust-event-backlog` endpoint.
+
 **Status: design proposal, not approved. Spec stage only — no implementation
 plan, no code, no migration in this pass.**
 
