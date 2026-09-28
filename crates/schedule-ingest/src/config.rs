@@ -2,6 +2,18 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+/// Default for [`Config::cif_file_pattern`]: any zip (the delivery is
+/// `timetable_full.zip` today, but the repo owner asked for detection by
+/// shape, not by that exact name -- see `delivery.rs`).
+pub const DEFAULT_CIF_FILE_PATTERN: &str = "*.zip";
+
+/// Default for [`Config::cif_exclude_pattern`]: everything named like a
+/// Network Rail CORPUS extract, whatever its extension. The same SFTP
+/// account now also receives `CORPUSExtract.json.gz` (CORPUS) and
+/// `CORPUSExtract.csv.gz` (SMART berth data), and a zip of either must
+/// never become the timetable.
+pub const DEFAULT_CIF_EXCLUDE_PATTERN: &str = "CORPUSExtract*";
+
 /// CLI/env configuration for the `schedule-ingest` service.
 ///
 /// Unlike the now-superseded pull design's equivalent `Config`, this crate
@@ -15,6 +27,17 @@ pub struct Config {
     /// via `std::fs::read_dir` — see `src/scan.rs`.
     #[arg(long, env, default_value = "/data/schedule-feed/incoming")]
     pub watch_dir: PathBuf,
+
+    /// Comma-separated, case-insensitive `*` globs naming CIF SCHEDULE
+    /// deliveries in `watch_dir` (see `pattern.rs`).
+    #[arg(long, env, default_value = DEFAULT_CIF_FILE_PATTERN)]
+    pub cif_file_pattern: String,
+
+    /// Globs (same syntax) that are never CIF candidates even when they
+    /// match `cif_file_pattern`. Guards the CIF pipeline against the other
+    /// files the same SFTP account receives.
+    #[arg(long, env, default_value = DEFAULT_CIF_EXCLUDE_PATTERN)]
+    pub cif_exclude_pattern: String,
 
     /// Root of the shared PVC. Each verified-stable delivery is extracted
     /// into `storage_dir/<timestamp>/` (a compact sortable UTC rendering of
