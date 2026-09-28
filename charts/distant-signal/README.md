@@ -524,8 +524,9 @@ durability profiles:
   this one costs nothing but promptness — the enricher's hourly sweep
   re-finds anything a dropped event would have triggered.
 - `movement-events`: the **sole transport** between movement-relay (this
-  chart's one real Kafka client) and its two downstream consumer groups,
-  trust-consumer and full-coverage-consumer. There is no replay source
+  chart's one real Kafka client) and its three downstream consumer groups,
+  trust-consumer, full-coverage-consumer and trust-backlog-consumer. There
+  is no replay source
   behind it — losing this one loses data outright, not just promptness.
 
 Because of the second stream, the bundled Redis runs with persistence
@@ -693,7 +694,12 @@ startup sequence, partial days, and the metrics to alert on
 
 ## Ingress
 
-One `Ingress` object with up to two **separate hostnames**, both optional and
+Off by default (`ingress.enabled: false`). The production deployment does not
+use it at all: it runs no ingress controller, and public traffic arrives
+through a Cloudflare tunnel (Cloudflare -> cloudflared -> the frontend
+Service), with the frontend proxying `/api/*` to the in-cluster api Service.
+
+When enabled, one `Ingress` object with up to two **separate hostnames**, both optional and
 independently toggleable:
 
 | Value | Backend | Path |
@@ -726,7 +732,7 @@ annotation but is issuer-agnostic.
 > than on a separate `metrics.port` — unauthenticated, internet-readable
 > whenever `metrics.enabled` was also true (a Signal Box Audit Low
 > finding). api now serves `/metrics` on its own internal-only listener,
-> same as the other seven binaries, so enabling `ingress.api.enabled` no
+> same as every other workload, so enabling `ingress.api.enabled` no
 > longer exposes it at all.
 
 Enabling either host without setting its hostname aborts the render.
@@ -789,16 +795,26 @@ redis get no egress policy.
 | `stations` | `RDM_STATIONS_BASE_URL` | `/private/stations` | 86400 |
 | `tocs` | `RDM_TOCS_BASE_URL` | `/private/tocs` | 86400 |
 | `ldbws` | `LDBWS_BASE_URL` | `/private/station-samples` | 60 |
+| `tfl` | `TFL_BASE_URL` | `/private/tfl-line-status` | 300 |
 
 `ldbws` additionally sets `NUM_ROWS` and `API_SAMPLE_STATIONS_URL`
 (`/private/sample-stations`), which is a second api endpoint separate from
 its ingest path.
 
-**All four are disabled by default** because, as documented in
-`.env.example`, no confirmed Rail Data Marketplace endpoint exists for any
-of the four feeds — every base URL in the repository today is a deliberately
-non-functional `*.example.invalid` placeholder. A default install therefore
-works immediately instead of running four pods that log connection failures.
+**All five are disabled by default.** For the four RDM pollers, as
+documented in `local.env.example`, no confirmed Rail Data Marketplace
+endpoint exists for any of the four feeds — every RDM base URL in the
+repository today is a deliberately non-functional `*.example.invalid`
+placeholder, so `pollers.<name>.baseUrl` defaults to `""`. A default install
+therefore works immediately instead of running four pods that log
+connection failures. `tfl` has a working default `baseUrl`
+(`https://api.tfl.gov.uk`) but is still off by default; it reads its
+subscription key from `TFL_APP_KEY` rather than `RDM_API_KEY`.
+
+The three island-of-Ireland pollers (`pollerIrishRailGtfs`,
+`pollerIrishRailLive`, `pollerNirStations`) are separate top-level values,
+also off by default, with working public default URLs; see their comments
+in `values.yaml`.
 
 Enabling a poller without setting its `baseUrl` **aborts the render** with an
 explicit message, rather than deploying a pod that cannot work.
@@ -852,7 +868,7 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.auth.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.auth.existingSecretPasswordKey` | `postgres-password` | Key within `postgresql.auth.existingSecret`. |
 | `postgresql.image.repository` | `postgres` | PostgreSQL image repository. |
-| `postgresql.image.tag` | `"16"` | Pinned to the major the compose stack uses. |
+| `postgresql.image.tag` | `16.15-trixie@sha256:…` | Postgres 16, the major the compose stack uses, digest-pinned in the tag. |
 | `postgresql.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `postgresql.service.port` | `5432` | Port the headless Service and the container listen on. |
 | `postgresql.persistence.enabled` | `true` | Attach a PVC. When false an emptyDir is used and data is lost on reschedule. |
@@ -984,7 +1000,7 @@ Used only when `postgresql.enabled` is `false`.
 
 | Key | Default | Description |
 |---|---|---|
-| `api.image.repository` | `distant-signal/api` | api image repository. |
+| `api.image.repository` | `ghcr.io/fasterspeeding/distant-signal/api` | api image repository. |
 | `api.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `api.image.digest` | `""` | Exact content digest (`sha256:...`). When set, takes priority over `tag`/appVersion -- see "Pinning by content digest instead of tag" above. CI populates this automatically for images it builds and pushes. |
 | `api.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
@@ -1010,6 +1026,11 @@ Used only when `postgresql.enabled` is `false`.
 | `api.internalOauth.groups.trustConsumer` | `svc-trust-consumer` | Required Authentik group for trust-consumer (also accepted on `GET /private/stanox-crs`). Not secret. |
 | `api.internalOauth.groups.scheduleIngest` | `svc-schedule-ingest` | Required Authentik group for schedule-ingest. Not secret. |
 | `api.internalOauth.groups.scheduleReference` | `svc-schedule-reference` | Required Authentik group for schedule-reference (also accepted on `POST /private/stanox-crs`). Not secret. |
+| `api.internalOauth.groups.fullCoverage` | `svc-full-coverage-consumer` | Required Authentik group for full-coverage-consumer. Not secret. |
+| `api.internalOauth.groups.trustBacklog` | `svc-trust-backlog-consumer` | Required Authentik group for trust-backlog-consumer. Not secret. |
+| `api.internalOauth.groups.irishRailGtfs` | `svc-poller-irish-rail-gtfs` | Required Authentik group for the Irish Rail GTFS poller. Not secret. |
+| `api.internalOauth.groups.irishRailLive` | `svc-poller-irish-rail-live` | Required Authentik group for the Irish Rail realtime poller. Not secret. |
+| `api.internalOauth.groups.nirStations` | `svc-poller-nir-stations` | Required Authentik group for the NIR stations poller. Not secret. |
 | `api.probes.path` | `/public/health` | Path all three probes and the `helm test` pod hit. |
 | `api.probes.startup.periodSeconds` | `2` | Startup probe period. |
 | `api.probes.startup.failureThreshold` | `450` | Startup probe failures allowed (450 x 2s = 900s for in-process migrations, matching the Postgres startupProbe's 15 minutes). |
@@ -1038,18 +1059,18 @@ default; nothing here is rendered unless `devAuthentik.enabled` is `true`.
 | `devAuthentik.enabled` | `false` | Deploy a throwaway local Authentik instance for exercising this app's own login flow. An install pointing `api.sso.*` at a real external IdP is unaffected either way. |
 | `devAuthentik.hostname` | `authentik.localhost` | The one hostname both the developer's browser and the api Pod must resolve identically. Resolves to loopback with no `/etc/hosts` entry needed in modern browsers (RFC 6761). |
 | `devAuthentik.image.repository` | `ghcr.io/goauthentik/server` | Authentik server image repository. |
-| `devAuthentik.image.tag` | `2026.8.0` | Pinned; Authentik's ~3-month release cadence and 2-version support window mean this needs periodic bumping, not automated by this chart. |
+| `devAuthentik.image.tag` | `2026.8.0@sha256:…` | Pinned (digest in the tag); Authentik's ~3-month release cadence and 2-version support window mean this needs periodic bumping, not automated by this chart. |
 | `devAuthentik.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `devAuthentik.secretKey` | `""` | `AUTHENTIK_SECRET_KEY`. Chart-generated (lookup-then-`randAlphaNum`) when empty, same pattern as `postgres-password`, so it survives `helm upgrade`. No `existingSecret` override — throwaway dev IdP only. |
 | `devAuthentik.service.port` | `30900` | ClusterIP-facing port. Must equal `service.nodePort` — the render aborts if they differ. |
 | `devAuthentik.service.nodePort` | `30900` | NodePort. Must equal `service.port`; default sits inside Kubernetes' default 30000-32767 NodePort range. |
 | `devAuthentik.hostAliasIP` | `""` | Explicit override for the IP the api Deployment's `hostAliases` entry points `devAuthentik.hostname` at. Empty uses `lookup` against the live Service's ClusterIP at render time — unresolvable on a from-scratch `helm install` (see the "Two manual steps" note above and NOTES.txt). |
-| `devAuthentik.postgresql.image` | `postgres:16-alpine` | Image for Authentik's own dedicated Postgres — independent of, and not a second database on, this chart's bundled `postgresql`. |
+| `devAuthentik.postgresql.image` | `postgres:16.15-alpine@sha256:…` | Image for Authentik's own dedicated Postgres — independent of, and not a second database on, this chart's bundled `postgresql`. |
 | `devAuthentik.postgresql.persistence.enabled` | `true` | Attach a PVC for Authentik's Postgres. |
 | `devAuthentik.postgresql.persistence.size` | `1Gi` | Requested volume size. |
 | `devAuthentik.postgresql.persistence.storageClass` | `""` | StorageClass name. Empty means the cluster default. |
-| `devAuthentik.postgresql.resources` | `{}` | Authentik Postgres container resource requests/limits. |
-| `devAuthentik.resources` | `{}` | Authentik server container resource requests/limits. |
+| `devAuthentik.postgresql.resources` | requests `50m`/`128Mi`, limit `512Mi` | Authentik Postgres container resource requests/limits. |
+| `devAuthentik.resources` | requests `100m`/`256Mi`, limit `1Gi` | Authentik server container resource requests/limits. |
 | `devAuthentik.nodeSelector` | `{}` | Pod node selector. |
 | `devAuthentik.tolerations` | `[]` | Pod tolerations. |
 | `devAuthentik.affinity` | `{}` | Pod affinity rules. |
@@ -1061,7 +1082,7 @@ write loop, pinned to `replicas: 1` with `strategy: Recreate`.
 
 | Key | Default | Description |
 |---|---|---|
-| `aggregator.image.repository` | `distant-signal/aggregator` | aggregator image repository. |
+| `aggregator.image.repository` | `ghcr.io/fasterspeeding/distant-signal/aggregator` | aggregator image repository. |
 | `aggregator.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `aggregator.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `aggregator.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
@@ -1069,7 +1090,7 @@ write loop, pinned to `replicas: 1` with `strategy: Recreate`.
 | `aggregator.historyRetentionDays` | `7` | How long `line_status_history` rows are kept. |
 | `aggregator.logLevel` | `info` | `RUST_LOG` value. |
 | `aggregator.extraEnv` | `[]` | Extra env vars appended to the container. |
-| `aggregator.resources` | `{}` | Container resource requests/limits. |
+| `aggregator.resources` | requests `100m`/`256Mi`, limit `384Mi` | Container resource requests/limits. |
 | `aggregator.nodeSelector` | `{}` | Pod node selector. |
 | `aggregator.tolerations` | `[]` | Pod tolerations. |
 | `aggregator.affinity` | `{}` | Pod affinity rules. |
@@ -1092,9 +1113,9 @@ used for and why persistence defaults on.
 | `redis.auth.existingSecret` | `""` | Secret holding the password. Empty: the chart generates `redis-password` in its own Secret (bundled Redis only; an external Redis requires this). |
 | `redis.auth.existingSecretKey` | `redis-password` | Key within `redis.auth.existingSecret`. |
 | `redis.image.repository` | `redis` | Redis image repository (upstream image; this repo builds no Redis image). |
-| `redis.image.tag` | `"7"` | Pinned to the major the compose stack uses. |
+| `redis.image.tag` | `7.4.11@sha256:…` | Redis 7.4, digest-pinned in the tag. |
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
-| `redis.service.port` | `6379` | Service and container port; also sets the `REDIS_URL` the api and enricher get. |
+| `redis.service.port` | `6379` | Service and container port; also sets the `REDIS_URL` every Redis client (api, enricher, the three consumers, movement-relay) gets. |
 | `redis.persistence.enabled` | `true` | Attach a PVC and run redis with `--appendonly yes`. When false an emptyDir is used and data is lost on reschedule. |
 | `redis.persistence.size` | `4Gi` | Requested volume size. The AOF can reach 1-2 GB at the default `maxmemory` (see Sizing above). An existing PVC on a non-expandable StorageClass keeps its size; read the [Upgrade](#upgrade) note before upgrading from a 1Gi install. |
 | `redis.persistence.storageClass` | `""` | StorageClass name. Empty means the cluster default. |
@@ -1116,14 +1137,14 @@ There is intentionally no `replicaCount` and no `enabled` toggle: the
 enricher is a singleton consumer of one Redis consumer group plus one sweep
 loop, and it renders unconditionally.
 
-`enricher.llm.baseUrl` and `enricher.llm.model` are the chart's **only two
-required values** — leaving either empty aborts the render, because both
+`enricher.llm.baseUrl` and `enricher.llm.model` are **required** (alongside
+the five `api.sso.*` values) — leaving either empty aborts the render, because both
 become non-optional env vars on the binary and an empty value would deploy a
 pod that fails every request forever.
 
 | Key | Default | Description |
 |---|---|---|
-| `enricher.image.repository` | `distant-signal/enricher` | enricher image repository. |
+| `enricher.image.repository` | `ghcr.io/fasterspeeding/distant-signal/enricher` | enricher image repository. |
 | `enricher.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `enricher.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `enricher.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
@@ -1138,10 +1159,12 @@ pod that fails every request forever.
 | `enricher.reclaimMinIdleSecs` | `1000` | How long a pending entry must sit unacked before it's eligible for reclaim, i.e. the retry delay for a failed extraction. Entries whose incident is still being processed are skipped, so this is not a correctness bound; keeping it above `3 * llmRequestTimeoutSecs` avoids needless claim-and-skip passes. |
 | `enricher.logLevel` | `info` | `RUST_LOG` value. |
 | `enricher.extraEnv` | `[]` | Extra env vars appended to the container. The off-by-default enricher settings below are set here. |
-| `enricher.resources` | `{}` | Container resource requests/limits. |
+| `enricher.resources` | requests `50m`/`128Mi`, limit `256Mi` | Container resource requests/limits. |
 | `enricher.nodeSelector` | `{}` | Pod node selector. |
 | `enricher.tolerations` | `[]` | Pod tolerations. |
 | `enricher.affinity` | `{}` | Pod affinity rules. |
+| `enricher.podAnnotations` | `{}` | Pod annotations. |
+| `enricher.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 
 The enricher has off-by-default settings with no dedicated value. Set them
 through `enricher.extraEnv`; with none set, it sends exactly the same
@@ -1171,21 +1194,19 @@ enricher:
     - { name: LLM_GATEWAY_RETRIES, value: "2" }
     - { name: CARRY_FORWARD_SEMANTIC_NOOPS, value: "true" }
 ```
-| `enricher.podAnnotations` | `{}` | Pod annotations. |
-| `enricher.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 
 ### frontend
 
 | Key | Default | Description |
 |---|---|---|
-| `frontend.image.repository` | `distant-signal/frontend` | frontend image repository. |
+| `frontend.image.repository` | `ghcr.io/fasterspeeding/distant-signal/frontend` | frontend image repository. |
 | `frontend.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `frontend.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `frontend.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `frontend.replicaCount` | `1` | Safe to raise, with one documented caveat. frontend/lib/liveDataCache.ts keeps a process-local stale-data cache so a backend outage shows the last-known line status instead of an error page (docs/superpowers/specs/2026-09-02-frontend-disconnect-reconnect-ux-design.md). That cache is per-pod: with more than one replica, during an outage one visitor may get stale-but-useful content from a warm pod while another gets the auto-retrying error page from a cold one. Each pod stays internally consistent and no stale data crosses users (entries are session-scoped), so this is a degraded-experience caveat, not a correctness one -- deliberately documented rather than blocked, unlike postgresql.replicaCount above. |
 | `frontend.service.type` | `ClusterIP` | Service type. |
 | `frontend.service.port` | `3000` | Service and container port. |
-| `frontend.probes.path` | `/` | Probe path. Next.js ships no dedicated health route. |
+| `frontend.probes.path` | `/healthz` | Probe path: the dependency-free `frontend/app/healthz/route.ts`, which never calls the api (probing `/` restarted the frontend whenever the api was down). |
 | `frontend.probes.readiness.periodSeconds` | `10` | Readiness probe period. |
 | `frontend.probes.readiness.failureThreshold` | `3` | Readiness probe failures allowed. |
 | `frontend.probes.readiness.timeoutSeconds` | `3` | Readiness probe timeout. |
@@ -1195,7 +1216,7 @@ enricher:
 | `frontend.apiBaseUrl` | `""` | Override `API_BASE_URL`. Empty uses the in-cluster api Service. |
 | `frontend.legalPagesPublished` | `false` | Publish the DRAFT legal pages (`/privacy`, `/terms`, `/cookies`, `/contact`) and their footer links. Off by default: the text needs the operator's and a lawyer's review, and the operator values in `frontend/lib/legal.ts` must be filled in first. Even when `true`, the pages stay 404 while any placeholder is left in that file. `/attribution` is always public. |
 | `frontend.extraEnv` | `[]` | Extra env vars appended to the container. |
-| `frontend.resources` | `{}` | Container resource requests/limits. |
+| `frontend.resources` | requests `100m`/`256Mi`, limit `768Mi` | Container resource requests/limits. |
 | `frontend.nodeSelector` | `{}` | Pod node selector. |
 | `frontend.tolerations` | `[]` | Pod tolerations. |
 | `frontend.affinity` | `{}` | Pod affinity rules. |
@@ -1230,20 +1251,23 @@ these env vars at all.
 ### pollers
 
 Keys below exist under each of `pollers.incidents`, `pollers.stations`,
-`pollers.tocs` and `pollers.ldbws`; the last five rows are ldbws-only.
+`pollers.tocs`, `pollers.ldbws` and `pollers.tfl`; the tfl-only and
+ldbws-only rows are marked. The three island-of-Ireland pollers are
+separate top-level values (`pollerIrishRailGtfs`, `pollerIrishRailLive`,
+`pollerNirStations`), documented in `values.yaml`.
 
 | Key | Default | Description |
 |---|---|---|
-| `pollers.<name>.enabled` | `false` | Deploy this poller. All four are off by default. |
-| `pollers.<name>.image.repository` | `distant-signal/poller-<name>` | Poller image repository. |
+| `pollers.<name>.enabled` | `false` | Deploy this poller. All five are off by default. |
+| `pollers.<name>.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-<name>` | Poller image repository. |
 | `pollers.<name>.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `pollers.<name>.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `pollers.<name>.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
-| `pollers.<name>.baseUrl` | `""` | Upstream feed base URL. Required when enabled; empty aborts the render. |
+| `pollers.<name>.baseUrl` | `""` (tfl: `https://api.tfl.gov.uk`) | Upstream feed base URL. Required when enabled; empty aborts the render. |
 | `pollers.<name>.baseUrlEnvVar` | per-poller | Env var the binary reads the base URL from. Do not change. |
 | `pollers.<name>.ingestPath` | per-poller | Path on the api Service this poller POSTs results to. |
-| `pollers.<name>.pollIntervalSecs` | 300 / 86400 / 86400 / 60 | Poll cadence. |
-| `pollers.<name>.apiKey` | `""` | RDM API key. Rendered into the chart Secret when `existingSecret` is empty. |
+| `pollers.<name>.pollIntervalSecs` | 300 / 86400 / 86400 / 60 / 300 | Poll cadence (incidents / stations / tocs / ldbws / tfl). |
+| `pollers.<name>.apiKey` | `""` | RDM API key (tfl: TfL subscription key). Rendered into the chart Secret when `existingSecret` is empty. |
 | `pollers.<name>.existingSecret` | `""` | Read the API key AND the internal-oauth username/password below from this pre-existing Secret instead. |
 | `pollers.<name>.existingSecretApiKeyKey` | `rdm-<name>-api-key` | Key within `pollers.<name>.existingSecret`. |
 | `pollers.<name>.internalOauthUsername` | `""` | This poller's own Authentik service-account username. Never auto-generated. |
@@ -1251,13 +1275,16 @@ Keys below exist under each of `pollers.incidents`, `pollers.stations`,
 | `pollers.<name>.existingSecretInternalOauthUsernameKey` | `internal-oauth-username-poller-<name>` | Key within `pollers.<name>.existingSecret`. |
 | `pollers.<name>.existingSecretInternalOauthPasswordKey` | `internal-oauth-password-poller-<name>` | Key within `pollers.<name>.existingSecret`. |
 | `pollers.<name>.logLevel` | `info` | `RUST_LOG` value. |
-| `pollers.<name>.extraEnv` | `[]` | Extra env vars appended to the container. |
-| `pollers.<name>.resources` | `{}` | Container resource requests/limits. |
+| `pollers.<name>.extraEnv` | `[]` (tfl: `TFL_MODES`) | Extra env vars appended to the container. |
+| `pollers.<name>.resources` | requests `25m`/`64Mi`-`128Mi`, limit `128Mi`-`192Mi` | Container resource requests/limits. |
 | `pollers.<name>.nodeSelector` | `{}` | Pod node selector. |
 | `pollers.<name>.tolerations` | `[]` | Pod tolerations. |
 | `pollers.<name>.affinity` | `{}` | Pod affinity rules. |
 | `pollers.<name>.podAnnotations` | `{}` | Pod annotations. |
 | `pollers.<name>.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+| `pollers.tfl.apiKeyEnvVar` | `TFL_APP_KEY` | tfl only: env var the key is passed in (the RDM pollers default to `RDM_API_KEY`). Do not change. |
+| `pollers.tfl.dlrPilotEnabled` | `false` | tfl only: DLR arrivals-diffing pilot (`DLR_PILOT_ENABLED`). |
+| `pollers.tfl.dlrPilotStopPointId` | `940GZZDLPOP` | tfl only: the DLR pilot's stop point (`DLR_PILOT_STOP_POINT_ID`). |
 | `pollers.ldbws.sampleStationsPath` | `/private/sample-stations` | ldbws only: second api endpoint listing which stations to sample. |
 | `pollers.ldbws.numRows` | `10` | ldbws only: LDBWS `numRows` query parameter. |
 | `pollers.ldbws.hourlyRequestBudget` | `0` | ldbws only (LEG-18): max LDBWS requests per rolling hour, spread evenly over cycles; skipped stations count in `ldbws_budget_skipped_polls_total`. `0` = no budget, env not rendered. |
@@ -1285,8 +1312,11 @@ not merely an un-scraped one — it renders `METRICS_ENABLED=false` into every
 workload, and each binary then never starts its `/metrics` listener at all
 (api keeps its own public HTTP listener, but drops the request-metrics
 middleware and never starts the internal `/metrics` listener below). Every
-workload, api included, serves `/metrics` on `metrics.port` — a listener
-separate from its own public/service port. Until 2026-09-25 api was the
+Rust workload, api included, serves `/metrics` on a listener separate from its
+own public/service port: `metrics.port` for most, and a component-specific
+port for the three consumers, movement-relay, the island-of-Ireland pollers
+and schedulefeed's reference container (`<component>.metricsPort`,
+`scheduleFeed.reference.metricsPort`). Until 2026-09-25 api was the
 one exception (it served `/metrics` on `api.service.port` itself, which
 made it internet-reachable through the api Ingress whenever
 `ingress.api.enabled` was also set — a Signal Box Audit Low finding); it
@@ -1295,7 +1325,7 @@ now matches every other workload.
 | Key | Default | Description |
 |---|---|---|
 | `metrics.enabled` | `true` | Expose Prometheus `/metrics` on every workload, and render the metrics port, env, `prometheus.io/*` scrape annotations and NetworkPolicy allows. |
-| `metrics.port` | `9091` | Port every workload, including api, serves `/metrics` on — a listener separate from api's own public/service port. |
+| `metrics.port` | `9091` | Port api, the aggregator, the enricher, the notifier, the `pollers.*` and schedule-ingest serve `/metrics` on — a listener separate from api's own public/service port. The workloads listed above use their own `metricsPort` values. |
 | `metrics.podMonitor.enabled` | `false` | Render a Prometheus Operator `PodMonitor`. Off by default — the CRD is absent on clusters without the operator, and installing it would fail the release outright. |
 | `metrics.podMonitor.interval` | `30s` | Scrape interval on the `PodMonitor`. |
 | `metrics.podMonitor.scrapeTimeout` | `10s` | Scrape timeout on the `PodMonitor`. Must stay below `interval`. |
@@ -1304,7 +1334,7 @@ now matches every other workload.
 | `metrics.prometheusRule.annotations` | `{}` | Extra annotations on the `PrometheusRule` object. |
 | `metrics.prometheusRule.ruleLabels` | `{}` | Extra labels added to every alert, next to `severity`. |
 | `metrics.prometheusRule.runbookBaseUrl` | GitHub `main` | Prefix for each alert's `runbook_url`; the repo-relative doc path is appended. |
-| `metrics.prometheusRule.<alert>.enabled` / `.for` / `.severity` / thresholds | see `values.yaml` | Per-alert toggles, `for` durations, severities and thresholds for `movementLag`, `movementLagGrowing`, `streamGap`, `deadLetter`, `deadLetterFull`, `enricherErrors`, `componentMemory`, `pollerFailures`, `ldbwsStalestStation` and `ldbwsInvalidCrs`. |
+| `metrics.prometheusRule.<alert>.enabled` / `.for` / `.severity` / thresholds | see `values.yaml` | Per-alert toggles, `for` durations, severities and thresholds for `movementLag`, `movementLagGrowing`, `streamGap`, `deadLetter`, `deadLetterFull`, `enricherErrors`, `componentMemory`, `fullCoverageWindow`, `notifierPushDropped`, `archiveUploadFailures`, `schedulePipeline`, `pollerFailures`, `ldbwsStalestStation` and `ldbwsInvalidCrs`. |
 
 #### Alerts
 
@@ -1315,7 +1345,10 @@ cluster's own rules and are deliberately not duplicated here. Every
 expression is scoped to `namespace="<release namespace>"`, the label the
 `PodMonitor` attaches, so the rules only see series scraped that way (or by
 an equivalent scrape that sets `namespace`). The `movement-events` group is
-rendered only when `movementRelay.enabled` is true.
+rendered only when `movementRelay.enabled` is true, the full-coverage-window
+group only when `fullCoverageConsumer.windowedStats.enabled`, the archive
+alert only when `archive.enabled`, and the schedule-pipeline group only when
+`scheduleFeed.enabled`.
 
 | Alert | Severity | Fires when (defaults) |
 |---|---|---|
@@ -1327,8 +1360,19 @@ rendered only when `movementRelay.enabled` is true.
 | `DistantSignalDeadLetterNearFull` | warning | `movement_feed_deadletter_length` above 80% of the 10,000-record cap. |
 | `DistantSignalDeadLetterFull` | critical | A dead-letter write was refused because the stream is full (`movement_feed_deadletter_full_total`) within the last 1h. |
 | `DistantSignalEnricherErrors` | warning | Over 30m, more than 50% of an LLM call site's calls (`enricher_llm_call_total{outcome!="success"}`: `error`, `timeout`, `rate_limited`, `gateway_error`, `http_error` or `empty_content`) failed, with at least 3 failures, for 15m. |
+| `DistantSignalFullCoverageWindowFeedStale` | warning | full-coverage-consumer has marked its windows `feed_stale` (`full_coverage_consumer_window_feed_stale` is 1) for 15m. |
+| `DistantSignalFullCoverageWindowPostErrors` | warning | A POST to `/private/full-coverage-window-stats` failed (`full_coverage_consumer_errors_total{operation="post_window_stats"}`) within the last 30m. |
+| `DistantSignalFullCoverageWindowStatsStalled` | warning | No window rows posted (`full_coverage_consumer_window_rows_posted_total`) over 10m, for 15m. |
 | `DistantSignalComponentMemoryHigh` | warning | A container in this release's pods (`pod=~"<fullname>-.*"`) has a working set (cadvisor) above 80% of its memory limit (kube-state-metrics) for 10m. |
-| `DistantSignalPollerFailing` | warning | A poller completed no successful cycle and at least one failed one (`poller_cycle_total{result}`) over the last 2h (SVC-08). Rendered only when a poller is enabled, in a separate `<fullname>-pollers` PrometheusRule. |
+| `DistantSignalNotifierPushDropped` | warning | The notifier dropped at least 5 decided pushes (`notifier_push_dropped_total{reason}`) within the last 1h. Delivery is at-most-once. |
+| `DistantSignalArchiveUploadFailures` | warning | At least 3 cold-archive batch uploads or verifications failed (`aggregator_archive_upload_failures_total`) within the last 1h. |
+| `DistantSignalScheduleReferenceNotSeeded` | warning | schedule-reference has not read its last completed publish from api (`schedule_reference_seeded` is 0) for 30m. |
+| `DistantSignalScheduleFeedZipRejected` | warning | schedule-ingest quarantined a delivery zip (`schedule_feed_zip_rejected_total`) within the last 6h. |
+| `DistantSignalScheduleReferencePublishStale` | warning | No CIF delivery fully published for over 30h (`schedule_reference_last_published_delivery_timestamp_seconds`), for 15m. |
+| `DistantSignalSchedulePublishStagedMismatch` | warning | api skipped a final chunk's delete because the staged key count did not match (`api_schedule_publish_staged_mismatch_total{product}`) within the last 6h. |
+| `DistantSignalScheduleReferencePublishRejected` | warning | api answered 400/413/422 to a schedule-reference product (`schedule_reference_publishes_total{outcome="rejected"}`) within the last 6h. |
+| `DistantSignalLinePopulationMissing` | warning | After 06:00 London, some line still has no schedule population for today (`full_coverage_consumer_population_missing_past_deadline_lines` above 0) for 15m. |
+| `DistantSignalPollerFailing` | warning | A poller completed no successful cycle and at least one failed one (`poller_cycle_total{result}`) over the last 2h (SVC-08). Rendered only when a poller (including an island-of-Ireland one) is enabled, in a separate `<fullname>-pollers` PrometheusRule. |
 | `DistantSignalLdbwsStationStale` | warning | The least recently sampled LDBWS station (`ldbws_stalest_station_age_seconds`) is over 7200s old for 30m: the rotation stopped reaching part of the list (SVC-04). Stations LDBWS rejects as an invalid CRS are excluded. Only when `pollers.ldbws.enabled`. |
 | `DistantSignalLdbwsInvalidCrs` | warning | LDBWS has answered "Invalid crs code supplied" for a sample station (`ldbws_invalid_crs_station{crs}` is 1) for 15m: a `lines/*.toml` typo. The poller re-probes it hourly instead of every cycle. Only when `pollers.ldbws.enabled`. |
 
@@ -1393,8 +1437,8 @@ helm uninstall distant-signal -n distant-signal
   `.github/workflows/containers.yml` covers that (see "Building and pushing
   the images (manual)" above for the fallback path and the full
   Dockerfile-to-repository mapping it uses).
-- **No HorizontalPodAutoscaler.** The aggregator, the enricher and all four
-  pollers are singleton loops that must not be scaled, and the api is
+- **No HorizontalPodAutoscaler.** The aggregator, the enricher and every
+  poller are singleton loops that must not be scaled, and the api is
   database-bound.
 - **No backup or HA for the bundled Redis.** It is a single replica with
   AOF persistence on a PVC; see "Using an external Redis" above.
