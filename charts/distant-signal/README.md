@@ -238,6 +238,18 @@ Read the next section before upgrading if you rely on generated secrets.
 > which is why the pin is still required there. On an expandable class the
 > PVC is resized to 4Gi in place.
 
+> **Upgrade note: movement-relay on by default (2026-09-28).**
+> `movementRelay.enabled` now defaults to `true`, taking any empty
+> `movementRelay.kafka.*` value from `trustConsumer.kafka.*`. An install
+> that already sets `movementRelay.enabled` explicitly is unaffected. One
+> that left it at the old `false` default gains a movement-relay pod, and
+> its render fails unless `trustConsumer.kafka.*` (or
+> `movementRelay.kafka.*`) holds the Kafka connection; set
+> `movementRelay.enabled=false` to keep the old behaviour. If such an
+> install also runs `trustConsumer.movementFeed=kafka`, the render fails
+> until that is switched to `redis-stream` or the relay is turned off,
+> because the two would share one consumer group.
+
 `api` and `aggregator` roll concurrently with no ordering guarantee between
 them. When a release adds a database migration that `aggregator` depends on
 (as `20260822120000_line_status_source.sql` did, for the `line_status.source`
