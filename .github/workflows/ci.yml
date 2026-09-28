@@ -332,6 +332,12 @@ jobs:
       - name: Typecheck (tsc --noEmit)
         run: npx tsc --noEmit
 
+      # The plain-JS files tsconfig.json leaves out (allowJs: false): the
+      # service worker (tsconfig.sw.json, WebWorker lib) and the Node-run
+      # scripts and configs (tsconfig.scripts.json), both checkJs + strict.
+      - name: Typecheck JS scripts (tsc, checkJs)
+        run: npm run typecheck:scripts
+
       - name: npm test (vitest)
         run: npm test
 

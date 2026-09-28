@@ -20,8 +20,15 @@ import nextConfig from './next.config.mjs';
 // lib/csp.ts, tested in lib/csp.test.ts and proxy.test.ts). What stays here
 // is the static policy for the paths proxy.ts skips.
 describe('next.config.mjs static Content-Security-Policy headers', () => {
+  // `headers` is optional on NextConfig; this config always defines it.
+  async function headerEntries() {
+    if (!nextConfig.headers) throw new Error('next.config.mjs defines no headers()');
+    return nextConfig.headers();
+  }
+
+  /** @param {string} source */
   async function cspFor(source) {
-    const entries = await nextConfig.headers();
+    const entries = await headerEntries();
     const values = entries
       .filter((entry) => entry.source === source)
       .flatMap((entry) => entry.headers)
@@ -32,14 +39,14 @@ describe('next.config.mjs static Content-Security-Policy headers', () => {
   }
 
   it('still carries the /sw.js no-cache rule (regression)', async () => {
-    const entries = await nextConfig.headers();
+    const entries = await headerEntries();
     const sw = entries.find((entry) => entry.source === '/sw.js');
-    expect(sw.headers).toContainEqual({ key: 'Content-Security-Policy', value: expect.any(String) });
-    expect(sw.headers).toContainEqual({ key: 'Cache-Control', value: 'no-cache' });
+    expect(sw?.headers).toContainEqual({ key: 'Content-Security-Policy', value: expect.any(String) });
+    expect(sw?.headers).toContainEqual({ key: 'Cache-Control', value: 'no-cache' });
   });
 
   it('no longer sets a catch-all CSP, which would stack a nonce-less policy on every page', async () => {
-    const entries = await nextConfig.headers();
+    const entries = await headerEntries();
     const sources = entries
       .filter((entry) => entry.headers.some((h) => h.key === 'Content-Security-Policy'))
       .map((entry) => entry.source)

@@ -45,7 +45,9 @@ function parsePushPayload(data) {
   if (!data) return null;
   try {
     const parsed = data.json();
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? /** @type {Record<string, unknown>} */ (parsed)
+      : null;
   } catch {
     return null;
   }

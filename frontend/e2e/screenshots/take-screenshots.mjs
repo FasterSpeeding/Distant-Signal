@@ -114,6 +114,41 @@ const OUT_DIR = process.env.SCREENSHOTS_OUT_DIR
   : path.join(__dirname, 'output');
 const MANIFEST_PATH = path.join(OUT_DIR, 'manifest.ndjson');
 
+/** @typedef {import('@playwright/test').Browser} Browser */
+/** @typedef {import('@playwright/test').Page} Page */
+/** @typedef {keyof typeof BROWSER_LAUNCHERS} BrowserName */
+/** @typedef {Partial<Record<BrowserName, Browser>>} Browsers */
+/**
+ * A shot's optional `waitFor` (see "Config file shape" above).
+ * @typedef {string | number | { selector?: string, timeout?: number, delay?: number }} WaitFor
+ */
+/**
+ * One entry of a shots config file. The file is unvalidated JSON, so
+ * validateShot() re-checks the required fields at runtime.
+ * @typedef {object} Shot
+ * @property {string} name
+ * @property {string} url
+ * @property {{ width: number, height: number }} viewport
+ * @property {BrowserName} browser
+ * @property {boolean} [authenticated]
+ * @property {WaitFor} [waitFor]
+ * @property {boolean} [fullPage]
+ * @property {string} description
+ */
+/**
+ * One manifest.ndjson line (see "Output" above).
+ * @typedef {object} ManifestEntry
+ * @property {string} name
+ * @property {string} url
+ * @property {{ width: number, height: number }} viewport
+ * @property {BrowserName} browser
+ * @property {boolean} authenticated
+ * @property {string} description
+ * @property {string} [filePath]
+ * @property {string} timestamp
+ * @property {string} [error]
+ */
+
 const BROWSER_LAUNCHERS = { chromium, firefox };
 const DEVICE_PRESETS = {
   chromium: devices['Desktop Chrome'],
@@ -125,7 +160,9 @@ const DEVICE_PRESETS = {
  * the cookie Secure when served over HTTPS (crates/api/src/routes/auth.rs
  * `cookie_secure`), and a Secure cookie would never be sent to a local
  * http:// origin. Domain is derived from the base URL's hostname (not
- * hardcoded to "localhost") so this also works against 127.0.0.1. */
+ * hardcoded to "localhost") so this also works against 127.0.0.1.
+ * @param {string} hostname
+ * @param {string} value */
 function sessionCookie(hostname, value) {
   return {
     name: 'distant_signal_session',
@@ -134,14 +171,19 @@ function sessionCookie(hostname, value) {
     path: '/',
     httpOnly: true,
     secure: false,
-    sameSite: 'Lax',
+    sameSite: /** @type {const} */ ('Lax'),
   };
 }
 
+/** @param {string} name */
 function kebabCheck(name) {
   return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name);
 }
 
+/**
+ * @param {string} configPath
+ * @returns {Promise<Shot[]>}
+ */
 async function loadShots(configPath) {
   const resolved = path.resolve(configPath);
   if (!existsSync(resolved)) {
@@ -155,6 +197,10 @@ async function loadShots(configPath) {
   return shots;
 }
 
+/**
+ * @param {Shot} shot
+ * @param {number} index
+ */
 function validateShot(shot, index) {
   const problems = [];
   if (!shot.name || typeof shot.name !== 'string') problems.push('missing `name`');
@@ -180,7 +226,9 @@ function validateShot(shot, index) {
 
 /** Applies a shot's optional `waitFor` after navigation. String -> CSS
  * selector wait. Number -> plain delay (ms). Object -> {selector,
- * timeout} or {delay}. */
+ * timeout} or {delay}.
+ * @param {Page} page
+ * @param {WaitFor | undefined} waitFor */
 async function applyWaitFor(page, waitFor) {
   if (waitFor == null) return;
   if (typeof waitFor === 'string') {
@@ -205,14 +253,22 @@ async function applyWaitFor(page, waitFor) {
   throw new Error(`Unrecognized waitFor shape: ${JSON.stringify(waitFor)}`);
 }
 
+/** @param {ManifestEntry} entry */
 async function appendManifestEntry(entry) {
   await appendFile(MANIFEST_PATH, JSON.stringify(entry) + '\n', 'utf8');
 }
 
+/**
+ * @param {Browsers} browsers - one launched browser per `browser` the
+ *   config names
+ * @param {Shot} shot
+ * @returns {Promise<ManifestEntry>}
+ */
 async function takeShot(browsers, shot) {
   const targetUrl = new URL(shot.url, BASE_URL).toString();
   const hostname = new URL(BASE_URL).hostname;
   const launcher = browsers[shot.browser];
+  if (!launcher) throw new Error(`no ${shot.browser} browser was launched`);
 
   const context = await launcher.newContext({
     ...DEVICE_PRESETS[shot.browser],
@@ -264,6 +320,7 @@ async function main() {
   await mkdir(OUT_DIR, { recursive: true });
 
   const neededBrowsers = new Set(shots.map((s) => s.browser));
+  /** @type {Browsers} */
   const browsers = {};
   for (const name of neededBrowsers) {
     browsers[name] = await BROWSER_LAUNCHERS[name].launch();

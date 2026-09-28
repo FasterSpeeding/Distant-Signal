@@ -115,7 +115,11 @@ self.addEventListener('fetch', (event) => {
   // immediately below, which serves the static offline SHELL, never a
   // reconstruction of previously-viewed real content.
   if (request.mode === 'navigate') {
-    event.respondWith(fetch(request).catch(() => caches.match('/offline.html')));
+    // `Response.error()` when the shell is somehow not cached: the same
+    // network error respondWith() gives a promise that resolves to nothing.
+    event.respondWith(
+      fetch(request).catch(() => caches.match('/offline.html').then((cached) => cached ?? Response.error())),
+    );
     return;
   }
 
@@ -141,7 +145,9 @@ self.addEventListener('push', (event) => {
   if (!payload || typeof payload.title !== 'string') {
     return;
   }
-  const { title, body, url, tag } = payload;
+  // Only `title` is checked; the notifier always sends all four fields as
+  // strings (the contract above).
+  const { title, body, url, tag } = /** @type {PushNotificationPayload} */ (/** @type {unknown} */ (payload));
 
   event.waitUntil(
     (async () => {

@@ -10,6 +10,7 @@
     "build": "next build && node scripts/stamp-sw-version.mjs",
     "start": "next start",
     "lint": "eslint .",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json && tsc -p tsconfig.sw.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
