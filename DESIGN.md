@@ -1,7 +1,7 @@
 # Distant Signal: Design Document
 
 A personal UK rail companion: line-status aggregation, individual train
-tracking, accounts, and (soon) ticket/Delay-Repay support.
+tracking, accounts, and ticket/Delay-Repay support.
 
 This document captures the design, the decisions behind it, and the open
 questions, in enough detail that an implementer (human or LLM) can extend
@@ -39,14 +39,17 @@ This project fills that gap.
 - Classifying each incident's scope (exclusive segment, shared trunk,
   operator-wide, etc.) and producing per-line statuses accordingly.
 - Emitting TfL-shaped JSON.
-- Train-level live tracking, implemented via TRUST movement events consumed
-  from Kafka (`crates/trust-consumer`), not deferred TD/TRUST territory.
+- Train-level live tracking, implemented via TRUST movement events that
+  `crates/movement-relay` relays from RDM's Kafka feed into a Redis Stream
+  for `crates/trust-consumer` to read, not deferred TD/TRUST territory.
 - Authentication — OIDC SSO is implemented (`crates/api/src/auth/oidc.rs`).
 
 **Out of scope for v1.**
 - Predicting future disruption (we report current state).
 - Engineering-works calendars beyond what Knowledgebase already exposes.
-- Rate limiting, multi-tenant isolation (deployment-time concerns).
+- Multi-tenant isolation (a deployment-time concern). Per-client-IP rate
+  limiting of the expensive public routes did land in the api
+  (`crates/api/src/rate_limit.rs`).
 
 ---
 
@@ -56,60 +59,90 @@ This project fills that gap.
 |---|---|---|
 | **Darwin Knowledgebase Incidents** | Human-curated disruption messages with operator and station tags | Primary signal for `reason` text and severity. Highest data quality. |
 | **OpenLDBWS** (or the new REST equivalent) | Live departure boards per station, including delay minutes, cancellations, and reason text | Sampling-based inference when no incident covers a line. Secondary signal. |
-| **CIF SCHEDULE feed** (optional, post-v1) | Static + short-term timetable | Resolving service groups for line attribution. Not required for v1. |
-| **TRUST movement events** | Per-train movement and cancellation events, consumed live from Kafka | Implemented and load-bearing: the primary source for individual train tracking (`crates/trust-consumer` + `enricher`). |
+| **CIF SCHEDULE feed** | Static + short-term timetable, pushed to us over SFTP | Implemented (`crates/schedule-ingest` + `crates/schedule-reference`): schedule matching for tracked trains, station timetables, the full-coverage population, and trip planning. Line attribution still comes from the hand-curated catalogue, not CIF service groups (see §9). |
+| **TRUST movement events** | Per-train movement and cancellation events, published by RDM on Kafka | Implemented and load-bearing: `crates/movement-relay` is the only Kafka client and relays every event into the `movement-events` Redis Stream, read by `crates/trust-consumer` (individual train tracking), `crates/full-coverage-consumer` (whole-line delay stats) and `crates/trust-backlog-consumer` (a short backlog for late-tracked trains). |
+| **RDM Stations and TOC reference feeds** | Station and operator reference data | Station/operator catalogues (`poller-stations`, `poller-tocs`). |
+| **TfL Unified API** | TfL's own line status | Shown as-is for TfL lines (`poller-tfl`, `dataQuality: tfl`). |
+| **Island of Ireland feeds** | Iarnród Éireann GTFS and realtime XML; OpenDataNI's NIR station lists | Irish station/line catalogue and departure samples (`poller-irish-rail-gtfs`, `poller-irish-rail-live`, `poller-nir-stations`). |
 
 The wider Network Rail/Darwin ecosystem (TD signal positions, RTPPM
 performance, VSTP short-term schedule changes) is not used. They're
 available if needed but aren't on the path to v1.
 
-Both required sources are accessible via the **Rail Data Marketplace**
-(raildata.org.uk) — single sign-up, free tier sufficient for development
-and small production loads.
+Knowledgebase and LDBWS, the two original sources, are accessible via the
+**Rail Data Marketplace** (raildata.org.uk) — single sign-up, free tier
+sufficient for development and small production loads — as are the
+reference feeds and the TRUST Train Movements feed.
 
 ---
 
 ## 4. Architecture
 
 The system is a Rust workspace of small services around a shared Postgres
-database, plus a Kafka-based streaming pipeline for train-level tracking.
+database, plus a streaming pipeline (Kafka in, Redis Streams inside the
+cluster) for train-level tracking. Only `api`, `aggregator`, `enricher` and
+`notifier` talk to Postgres directly; every other service writes through
+the api's internal-OAuth-protected `/private/*` ingest endpoints.
 
-- A set of `poller-*` crates (`poller-incidents`, `poller-ldbws`,
-  `poller-stations`, `poller-tfl`, `poller-tocs`) each pull one upstream
-  source on a schedule and write into Postgres.
-- The `aggregator` crate periodically loads incidents, samples, and line
-  definitions, runs the matcher, applies scope/threshold rules, and writes
-  `line_status`. It signals the `enricher` via a Redis queue when there's
-  new work for it to pick up.
-- `trust-consumer` is a long-running Kafka consumer for Network Rail's
-  TRUST movement-event feed. It's the first persistent stream-consumer
-  service in the stack (alongside `enricher`), and is what makes
-  individual train tracking possible.
-- `enricher` derives higher-level state (train positions, per-line status
-  detail) from what the pollers and `trust-consumer` produce, triggered via
-  the Redis queue the aggregator writes to.
-- `api` is a Rust/axum HTTP service — the read (and auth) layer, serving
-  both the TfL-shaped line-status endpoints and the newer accounts/
-  train-tracking endpoints, backed by Postgres.
-- `frontend/` is a Next.js web client against the `api` service.
+- The `poller-*` crates (`poller-incidents`, `poller-ldbws`,
+  `poller-stations`, `poller-tocs`, `poller-tfl`, and the island-of-Ireland
+  `poller-irish-rail-gtfs`, `poller-irish-rail-live`, `poller-nir-stations`)
+  each pull one upstream source on a schedule and POST it to the api.
+- `api` is a Rust/axum HTTP service — the ingest, read and auth layer. It
+  serves the TfL-shaped line-status endpoints and the accounts, train
+  tracking, journeys, groups and trip-planning endpoints, backed by
+  Postgres. When an ingested incident's text changes it adds an entry to
+  the `incident-text-changed` Redis Stream.
+- The `aggregator` crate periodically loads incidents and samples from
+  Postgres and the line catalogue from `lines/`, runs the matcher, applies
+  scope/threshold rules, and writes `line_status`/`line_status_history`.
+- `enricher` reads `incident-text-changed`, sends the incident text to an
+  OpenAI-compatible LLM, and stores the extracted resolution status,
+  category and per-period schedule facts, which the aggregator then applies
+  to severity (`apply_extraction`).
+- `movement-relay` is the only Kafka client: it reads RDM's TRUST Train
+  Movements feed and relays every event into the `movement-events` Redis
+  Stream. Three consumer groups read that stream: `trust-consumer`
+  (movements for user-tracked trains), `full-coverage-consumer` (every
+  scheduled train on full-coverage-enabled lines, for delay stats) and
+  `trust-backlog-consumer` (a short backlog so a train tracked late can
+  catch up).
+- `schedule-ingest` watches the directory the CIF SCHEDULE feed is pushed
+  into over SFTP and forwards each new delivery to the api;
+  `schedule-reference`, in the same Pod, reads the extracted delivery and
+  publishes derived tables to the api (STANOX/TIPLOC → CRS mappings, fixed
+  links, per-line schedule populations, destination departures and calling
+  points).
+- `notifier` polls `line_status_history` and train movement events and
+  sends Web Push notifications for users' pinned lines and tracked trains.
+- `frontend/` is a Next.js web client. Browsers only ever talk to it; its
+  `/api/*` route proxies to the `api` service. In production, public
+  traffic arrives through a Cloudflare tunnel (Cloudflare tunnel →
+  cloudflared → frontend → api); there is no ingress controller.
 - The whole stack is deployable via the Helm chart at
   `charts/distant-signal/`.
 
 ```
- poller-incidents  poller-ldbws  poller-stations  poller-tfl  poller-tocs
-        │               │              │              │           │
-        └───────────────┴──────────────┴──────────────┴───────────┘
-                                    │
-                                    ▼
-                              Postgres  ◀──────────────┐
-                                    │                  │
-                                    ▼                  │
-                              aggregator ──(Redis queue)──▶ enricher
-                                                               ▲
-  TRUST/Kafka feed ──▶ trust-consumer ─────────────────────────┘
-                                    │
-                                    ▼
-                            api (axum) ──▶ frontend (Next.js)
+  pollers (8)          schedule-ingest,        RDM Kafka (TRUST)
+      │                schedule-reference             │
+      │                      │                        ▼
+      │                      │                 movement-relay
+      │                      │                        │
+      │                      │                        ▼
+      │                      │          Redis Stream `movement-events`
+      │                      │                        │
+      │                      │                        ▼
+      │                      │        trust-consumer, full-coverage-consumer,
+      │                      │        trust-backlog-consumer
+      │                      │                        │
+      └──────────────────────┴───── POST /private/* ──┘
+                                      │
+                                      ▼
+   browser ──▶ frontend ──▶ api (axum) ──▶ Postgres ◀──▶ aggregator, notifier,
+              (Next.js)        │                           enricher
+                               │                              ▲
+                               └── Redis Stream ──────────────┘
+                                   `incident-text-changed`
 ```
 
 **Why separate pollers from the aggregator.** Pollers are I/O-bound and
@@ -120,16 +153,20 @@ the aggregator trivial (it's a function from inputs to outputs).
 **Why Postgres.** No special needs — boring relational storage with JSON
 columns for the variable bits (incident metadata, sample departures).
 
-**Why Redis.** Used as a lightweight trigger queue between the aggregator
-and `enricher`, not as a database — pub/sub-style signalling for
-push-driven enrichment rather than the enricher polling Postgres.
+**Why Redis.** Used for streams, not as a database: the
+`incident-text-changed` stream gives push-driven enrichment (the api
+signals `enricher` rather than the enricher polling Postgres; an hourly
+sweep is only the backstop for a missed event), and the
+`movement-events` stream lets one Kafka connection feed three independent
+TRUST consumer groups.
 
-**Why Kafka for TRUST.** Unlike Knowledgebase incidents and LDBWS
-departure boards, TRUST movement events are a genuine high-volume stream
-that benefits from an always-on consumer rather than periodic polling.
-`trust-consumer` is a long-running service by design — the operational
-cost of a 24/7 stream consumer was worth it once individual train
-tracking became a real feature, not just a hypothetical.
+**Why Kafka for TRUST.** Kafka is how RDM publishes it. Unlike
+Knowledgebase incidents and LDBWS departure boards, TRUST movement events
+are a genuine high-volume stream that benefits from an always-on consumer
+rather than periodic polling. `movement-relay` and the three consumers are
+long-running services by design — the operational cost of a 24/7 stream
+consumer was worth it once individual train tracking became a real
+feature, not just a hypothetical.
 
 ---
 
