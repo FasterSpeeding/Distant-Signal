@@ -1,5 +1,9 @@
 # Local stack: postgres + redis + api + the four RDM pollers + poller-tfl +
-# aggregator + enricher + frontend.
+# aggregator + notifier + enricher + the TRUST pipeline (movement-relay,
+# trust-consumer, full-coverage-consumer, trust-backlog-consumer) + the
+# schedule feed (schedule-sftp, schedule-ingest, schedule-reference) +
+# frontend, plus the opt-in `rail-mcp` (see below). The island-of-Ireland
+# pollers are chart-only.
 #
 # Real secrets/URLs go in git-ignored env files. There is no automatically
 # loaded `.env` any more: which mode you get is decided entirely by which
@@ -42,12 +46,13 @@
 #
 # Build caching: every Dockerfile here starts with
 # `# syntax=docker/dockerfile:1` and uses BuildKit cache mounts — the cargo
-# registry/git/target dirs for the nine Rust services (api, aggregator,
-# enricher, trust-consumer and the five pollers), npm's download cache and
+# registry/git/target dirs for the fifteen Rust services built here (api,
+# aggregator, notifier, enricher, the five pollers, the four TRUST-pipeline
+# services, schedule-ingest and schedule-reference), npm's download cache and
 # Next's `.next/cache` for the frontend. Rebuilds therefore recompile only
 # what changed rather than the whole dependency tree. One consequence worth
-# knowing: the target-dir cache is keyed by rustc version (all nine Rust
-# services build with rust:1.88-bookworm, so they all share one
+# knowing: the target-dir cache is keyed by rustc version (every Rust
+# Dockerfile builds with rust:1.88-bookworm, so they all share one
 # `cargo-target-1.88` id — this only forks into separate ids again if a
 # future Dockerfile pins a different rustc version), and the `# syntax=`
 # directive makes BuildKit pull the `docker/dockerfile:1` frontend image, so
