@@ -86,19 +86,23 @@ function sessionCookie(hostname, value) {
  * @param {Action} action
  */
 async function applyAction(page, action) {
-  if (action.type === 'click') {
-    if (action.text) {
-      await page.getByText(action.text, { exact: action.exact ?? true }).first().click();
-    } else if (action.selector) {
-      await page.locator(action.selector).first().click();
-    }
-  } else if (action.type === 'fill') {
-    await page.locator(action.selector).first().fill(action.value);
-  } else if (action.type === 'wait') {
-    await page.waitForTimeout(action.ms ?? 500);
-  } else {
-    // Unreachable for a well-formed config; the JSON can still name any type.
-    throw new Error(`Unknown action type: ${String(/** @type {{ type: unknown }} */ (action).type)}`);
+  switch (action.type) {
+    case 'click':
+      if (action.text) {
+        await page.getByText(action.text, { exact: action.exact ?? true }).first().click();
+      } else if (action.selector) {
+        await page.locator(action.selector).first().click();
+      }
+      break;
+    case 'fill':
+      await page.locator(action.selector).first().fill(action.value);
+      break;
+    case 'wait':
+      await page.waitForTimeout(action.ms ?? 500);
+      break;
+    default:
+      // Unreachable for a well-formed config; the JSON can still name any type.
+      throw new Error(`Unknown action type: ${String(/** @type {{ type: unknown }} */ (action).type)}`);
   }
 }
 
@@ -110,7 +114,7 @@ async function appendManifestEntry(entry) {
 /**
  * @param {Browsers} browsers
  * @param {InteractiveShot} shot
- * @returns {Promise<ManifestEntry>}
+ * @returns {Promise<ManifestEntry & { filePath: string }>}
  */
 async function takeShot(browsers, shot) {
   const targetUrl = new URL(shot.url, BASE_URL).toString();
@@ -162,8 +166,9 @@ async function main() {
   }
   const resolved = path.resolve(configPath);
   if (!existsSync(resolved)) throw new Error(`Config file not found: ${resolved}`);
-  /** @type {InteractiveShot[]} */
-  const shots = JSON.parse(await readFile(resolved, 'utf8'));
+  /** @type {unknown} */
+  const parsed = JSON.parse(await readFile(resolved, 'utf8'));
+  const shots = /** @type {InteractiveShot[]} */ (parsed);
 
   await mkdir(OUT_DIR, { recursive: true });
 
@@ -207,7 +212,7 @@ async function main() {
   if (failed > 0) process.exit(1);
 }
 
-main().catch((err) => {
+main().catch((/** @type {unknown} */ err) => {
   console.error(err instanceof Error ? err.stack : err);
   process.exit(1);
 });

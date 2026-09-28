@@ -78,6 +78,7 @@ if (typeof self !== 'undefined') {
   self.parsePushPayload = parsePushPayload;
   self.sameOriginNotificationUrl = sameOriginNotificationUrl;
 }
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- TypeScript assumes CommonJS `module.exports` always exists; kept as a runtime guard
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { isCacheable, parsePushPayload, sameOriginNotificationUrl };
 }

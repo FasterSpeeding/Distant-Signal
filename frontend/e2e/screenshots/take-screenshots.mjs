@@ -124,7 +124,7 @@ const MANIFEST_PATH = path.join(OUT_DIR, 'manifest.ndjson');
  */
 /**
  * One entry of a shots config file. The file is unvalidated JSON, so
- * validateShot() re-checks the required fields at runtime.
+ * validateShot() checks the required fields at runtime.
  * @typedef {object} Shot
  * @property {string} name
  * @property {string} url
@@ -147,6 +147,10 @@ const MANIFEST_PATH = path.join(OUT_DIR, 'manifest.ndjson');
  * @property {string} [filePath]
  * @property {string} timestamp
  * @property {string} [error]
+ */
+/**
+ * A shot as read from the config file, before validateShot() has checked it.
+ * @typedef {{ [K in keyof Shot]?: unknown } & { viewport?: { width?: unknown, height?: unknown } }} UnvalidatedShot
  */
 
 const BROWSER_LAUNCHERS = { chromium, firefox };
@@ -182,7 +186,7 @@ function kebabCheck(name) {
 
 /**
  * @param {string} configPath
- * @returns {Promise<Shot[]>}
+ * @returns {Promise<unknown[]>} the shots, not yet validated
  */
 async function loadShots(configPath) {
   const resolved = path.resolve(configPath);
@@ -190,18 +194,23 @@ async function loadShots(configPath) {
     throw new Error(`Config file not found: ${resolved}`);
   }
   const raw = await readFile(resolved, 'utf8');
+  /** @type {unknown} */
   const shots = JSON.parse(raw);
   if (!Array.isArray(shots)) {
     throw new Error('Config file must contain a JSON array of shots.');
   }
-  return shots;
+  /** @type {unknown[]} */
+  const elements = shots;
+  return elements;
 }
 
 /**
- * @param {Shot} shot
+ * @param {unknown} value - one element of the config file's array
  * @param {number} index
+ * @returns {Shot} `value`, once every check has passed
  */
-function validateShot(shot, index) {
+function validateShot(value, index) {
+  const shot = /** @type {UnvalidatedShot} */ (value);
   const problems = [];
   if (!shot.name || typeof shot.name !== 'string') problems.push('missing `name`');
   else if (!kebabCheck(shot.name)) problems.push(`\`name\` "${shot.name}" is not kebab-case`);
@@ -213,15 +222,17 @@ function validateShot(shot, index) {
   ) {
     problems.push('missing/invalid `viewport` ({width, height})');
   }
-  if (!BROWSER_LAUNCHERS[shot.browser]) {
-    problems.push(`\`browser\` must be "chromium" or "firefox", got "${shot.browser}"`);
+  if (typeof shot.browser !== 'string' || !Object.hasOwn(BROWSER_LAUNCHERS, shot.browser)) {
+    problems.push(`\`browser\` must be "chromium" or "firefox", got "${String(shot.browser)}"`);
   }
   if (!shot.description || typeof shot.description !== 'string') {
     problems.push('missing `description`');
   }
   if (problems.length > 0) {
-    throw new Error(`shots[${index}] (${shot.name ?? '?'}): ${problems.join('; ')}`);
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- echoes whatever the malformed config held, as before
+    throw new Error(`shots[${index}] (${String(shot.name ?? '?')}): ${problems.join('; ')}`);
   }
+  return /** @type {Shot} */ (shot);
 }
 
 /** Applies a shot's optional `waitFor` after navigation. String -> CSS
@@ -262,7 +273,7 @@ async function appendManifestEntry(entry) {
  * @param {Browsers} browsers - one launched browser per `browser` the
  *   config names
  * @param {Shot} shot
- * @returns {Promise<ManifestEntry>}
+ * @returns {Promise<ManifestEntry & { filePath: string }>}
  */
 async function takeShot(browsers, shot) {
   const targetUrl = new URL(shot.url, BASE_URL).toString();
@@ -314,8 +325,8 @@ async function main() {
     process.exit(1);
   }
 
-  const shots = await loadShots(configPath);
-  shots.forEach(validateShot); // fail fast on a malformed config, before launching any browser
+  // Fail fast on a malformed config, before launching any browser.
+  const shots = (await loadShots(configPath)).map(validateShot);
 
   await mkdir(OUT_DIR, { recursive: true });
 
@@ -368,7 +379,7 @@ async function main() {
   if (failed > 0) process.exit(1);
 }
 
-main().catch((err) => {
+main().catch((/** @type {unknown} */ err) => {
   console.error(err instanceof Error ? err.stack : err);
   process.exit(1);
 });

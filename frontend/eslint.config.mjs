@@ -1,6 +1,25 @@
 import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
+import tseslint from "typescript-eslint";
+
+// The plain-JS files tsconfig.json skips (allowJs: false), split by the
+// tsconfig that type-checks them (see `npm run typecheck:scripts`).
+const SERVICE_WORKER_FILES = [
+  "public/sw.js",
+  "public/sw-cache-rules.js",
+  "public/sw-cache-rules.test.js",
+  "types/service-worker.d.ts",
+];
+const NODE_SCRIPT_FILES = [
+  "scripts/stamp-sw-version.mjs",
+  "e2e/screenshots/take-screenshots.mjs",
+  "e2e/screenshots/_interactive-shots.mjs",
+  "eslint.config.mjs",
+  "next.config.mjs",
+  "next.config.test.js",
+  "postcss.config.cjs",
+];
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -49,6 +68,36 @@ const eslintConfig = defineConfig([
       // any warning (--max-warnings 0), but make it an error here too so an
       // editor shows it as one.
       "react-hooks/exhaustive-deps": "error",
+    },
+  },
+
+  // typescript-eslint's strictest type-aware presets for the scripts above,
+  // each linted against the tsconfig that type-checks it. JavaScript has no
+  // compiler of its own, so these rules (floating promises, unsafe `any`
+  // flow, needless conditions) catch what tsc's checkJs cannot. Scoped to
+  // the scripts only: enabling them for the whole app is a separate, much
+  // larger change.
+  {
+    files: SERVICE_WORKER_FILES,
+    extends: [tseslint.configs.strictTypeChecked, tseslint.configs.stylisticTypeChecked],
+    languageOptions: {
+      parserOptions: { project: "./tsconfig.sw.json", tsconfigRootDir: import.meta.dirname },
+    },
+  },
+  {
+    files: NODE_SCRIPT_FILES,
+    extends: [tseslint.configs.strictTypeChecked, tseslint.configs.stylisticTypeChecked],
+    languageOptions: {
+      parserOptions: { project: "./tsconfig.scripts.json", tsconfigRootDir: import.meta.dirname },
+    },
+  },
+  {
+    files: [...SERVICE_WORKER_FILES, ...NODE_SCRIPT_FILES],
+    rules: {
+      // The strict preset also bans numbers in template literals. A number
+      // always stringifies predictably (unlike objects or null/undefined,
+      // which stay banned), and the scripts' log lines interpolate counts.
+      "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
     },
   },
 

@@ -41,7 +41,10 @@ describe('next.config.mjs static Content-Security-Policy headers', () => {
   it('still carries the /sw.js no-cache rule (regression)', async () => {
     const entries = await headerEntries();
     const sw = entries.find((entry) => entry.source === '/sw.js');
-    expect(sw?.headers).toContainEqual({ key: 'Content-Security-Policy', value: expect.any(String) });
+    expect(sw?.headers).toContainEqual({
+      key: 'Content-Security-Policy',
+      value: /** @type {unknown} */ (expect.any(String)),
+    });
     expect(sw?.headers).toContainEqual({ key: 'Cache-Control', value: 'no-cache' });
   });
 

@@ -56,7 +56,7 @@ self.addEventListener('install', (event) => {
   // current build's manifest says"), that request simply isn't in the new
   // precache and falls through to network -- a pre-existing Next.js
   // characteristic of any content-hashed-asset deploy, not new here.
-  self.skipWaiting();
+  void self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
@@ -65,7 +65,7 @@ self.addEventListener('activate', (event) => {
       .keys()
       .then((names) => Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name)))),
   );
-  self.clients.claim();
+  void self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
@@ -99,7 +99,9 @@ self.addEventListener('fetch', (event) => {
             caches
               .open(CACHE_NAME)
               .then((cache) => cache.put(request, copy))
-              .catch(() => {});
+              .catch(() => {
+                // Swallowed on purpose: see above.
+              });
           }
           return response;
         });
@@ -168,7 +170,9 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   // FE-10: only ever open a page on this site, whatever the payload named.
-  const data = event.notification.data || {};
+  /** @type {unknown} */
+  const rawData = event.notification.data;
+  const data = /** @type {{ url?: unknown }} */ (rawData ?? {});
   const target = self.sameOriginNotificationUrl(data.url, self.location.origin);
   if (!target) {
     return;
