@@ -251,9 +251,9 @@ fn relax_fixed_links_in_round(
 /// the returned Pareto set -- see the `_reports_no_improvement` test below,
 /// which is what `raptor_search`'s early-termination `break` actually
 /// relies on being true.
-fn run_one_round(
+fn run_one_round<'c>(
     previous: &RoundState,
-    connections: &[Connection],
+    connections: impl IntoIterator<Item = &'c Connection>,
     origin: &HashSet<String>,
     departure_min: u32,
     interchange: &InterchangeData,
@@ -302,6 +302,15 @@ fn run_one_round(
 }
 
 pub fn raptor_search(options: RaptorOptions) -> Vec<RaptorJourney> {
+    raptor_search_with_overlay(options, None)
+}
+
+/// [`raptor_search`] over the base array with `overlay`'s trains replaced
+/// -- see [`crate::overlay`].
+pub fn raptor_search_with_overlay(
+    options: RaptorOptions,
+    overlay: Option<&crate::overlay::ConnectionOverlay>,
+) -> Vec<RaptorJourney> {
     let origin: HashSet<String> = options
         .from_tiplocs
         .iter()
@@ -333,7 +342,7 @@ pub fn raptor_search(options: RaptorOptions) -> Vec<RaptorJourney> {
         let previous = rounds.last().expect("round0 was just pushed");
         let (current, improved) = run_one_round(
             previous,
-            options.connections,
+            crate::overlay::connections_from(options.connections, overlay, options.departure_min),
             &origin,
             options.departure_min,
             options.interchange,
