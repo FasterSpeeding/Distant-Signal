@@ -121,11 +121,11 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
   }
 
   function selectItinerary(segmentIndex: number, itinerary: TripPlanItinerary) {
-    setSelections(current => current.map((selection, i) => (i === segmentIndex ? { itinerary } : selection)));
+    setSelections((current) => current.map((selection, i) => (i === segmentIndex ? { itinerary } : selection)));
   }
 
   const allSegmentsSelected =
-    plan !== null && selections.length === plan.segments.length && selections.every(s => s.itinerary !== null);
+    plan !== null && selections.length === plan.segments.length && selections.every((s) => s.itinerary !== null);
 
   async function handleTrackJourney() {
     if (!allSegmentsSelected) return;
@@ -136,8 +136,10 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
     // Every TRAIN leg across every selected segment, in order -- a
     // TransferLeg never becomes a journey_legs row (this plan's own
     // Judgment Call 3).
-    const trainLegs = selections.flatMap(selection =>
-      (selection.itinerary?.legs ?? []).filter((leg): leg is Extract<typeof leg, { kind: 'train' }> => leg.kind === 'train')
+    const trainLegs = selections.flatMap((selection) =>
+      (selection.itinerary?.legs ?? []).filter(
+        (leg): leg is Extract<typeof leg, { kind: 'train' }> => leg.kind === 'train',
+      ),
     );
 
     if (trainLegs.length === 0) {
@@ -239,7 +241,7 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
             needsLoginState.markNeedsLogin();
             setCreationError(
               `Tracked ${i} of ${trainLegs.length} legs. Your session expired before leg ${i + 1} could be added. ` +
-                'Log in, then add it manually from the journey page.'
+                'Log in, then add it manually from the journey page.',
             );
             setPendingResult(created);
             return;
@@ -259,7 +261,7 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
           const reason = legError instanceof Error ? legError.message : 'a network error';
           setCreationError(
             `Tracked ${i} of ${trainLegs.length} legs. Adding leg ${i + 1} failed: ${reason}. ` +
-              'You can add it manually from the journey page.'
+              'You can add it manually from the journey page.',
           );
           // C1: do NOT call `onCreated` here -- see this component's own
           // doc comment. Store the already-created journey so the
@@ -337,7 +339,11 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
         <Button onClick={() => onCreated(pendingResult)}>Continue to your journey</Button>
       ) : (
         plan && (
-          <Button disabled={!allSegmentsSelected || creating} loading={creating} onClick={() => void handleTrackJourney()}>
+          <Button
+            disabled={!allSegmentsSelected || creating}
+            loading={creating}
+            onClick={() => void handleTrackJourney()}
+          >
             Track this journey
           </Button>
         )

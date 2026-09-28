@@ -23,15 +23,15 @@ describe('trackedTrainDisplayName', () => {
   });
 
   it('degrades to date-only when pinScheduledDeparture is absent (TrackedTrainState has no such field)', () => {
-    expect(
-      trackedTrainDisplayName({ ...base, pinScheduledDeparture: undefined }),
-    ).toBe('London Kings Cross (KGX) → Edinburgh Waverley (EDB), 10 May 2026');
+    expect(trackedTrainDisplayName({ ...base, pinScheduledDeparture: undefined })).toBe(
+      'London Kings Cross (KGX) → Edinburgh Waverley (EDB), 10 May 2026',
+    );
   });
 
   it('falls back to origin-only when there is no destination yet (a pre-match pin)', () => {
-    expect(
-      trackedTrainDisplayName({ ...base, pinDestinationCrs: null, pinDestinationName: null }),
-    ).toBe('London Kings Cross (KGX), 10 May 2026 · 14:32');
+    expect(trackedTrainDisplayName({ ...base, pinDestinationCrs: null, pinDestinationName: null })).toBe(
+      'London Kings Cross (KGX), 10 May 2026 · 14:32',
+    );
   });
 
   it('falls back to bare CRS codes when no station name resolved', () => {

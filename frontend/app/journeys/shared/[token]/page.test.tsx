@@ -217,7 +217,9 @@ describe('generateMetadata', () => {
 
   it('falls back to CRS codes for the title when no station names are resolved', async () => {
     vi.mocked(getJourneyByShareToken).mockResolvedValue(
-      sharedJourney({ legs: [matchedLeg({ originCrs: 'KGX', originName: null, destinationCrs: 'YRK', destinationName: null })] }),
+      sharedJourney({
+        legs: [matchedLeg({ originCrs: 'KGX', originName: null, destinationCrs: 'YRK', destinationName: null })],
+      }),
     );
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
@@ -228,7 +230,15 @@ describe('generateMetadata', () => {
   it('falls back to a generic title when the leg has no origin/destination at all (unmatched, no window)', async () => {
     vi.mocked(getJourneyByShareToken).mockResolvedValue(
       sharedJourney({
-        legs: [matchedLeg({ originCrs: null, originName: null, destinationCrs: null, destinationName: null, trackedTrainState: null })],
+        legs: [
+          matchedLeg({
+            originCrs: null,
+            originName: null,
+            destinationCrs: null,
+            destinationName: null,
+            trackedTrainState: null,
+          }),
+        ],
       }),
     );
 
@@ -240,7 +250,12 @@ describe('generateMetadata', () => {
   it('describes an on-time journey with its date', async () => {
     vi.mocked(getJourneyByShareToken).mockResolvedValue(
       sharedJourney({
-        legs: [matchedLeg({ serviceDate: '2026-09-22', trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 0 }) })],
+        legs: [
+          matchedLeg({
+            serviceDate: '2026-09-22',
+            trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 0 }),
+          }),
+        ],
       }),
     );
 

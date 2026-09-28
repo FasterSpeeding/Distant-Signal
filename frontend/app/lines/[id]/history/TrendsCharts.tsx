@@ -18,12 +18,16 @@ import type { ChartPoint } from './chartPoint';
  * `{ bucketKey, startKey, endKey }` -- Decision 9 of
  * docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md;
  * the underlying algorithm is unchanged from the daily-only version. */
-export function gapSpans(points: { bucketKey: string; delayRate: number | null }[]): { startKey: string; endKey: string }[] {
+export function gapSpans(
+  points: { bucketKey: string; delayRate: number | null }[],
+): { startKey: string; endKey: string }[] {
   const spans: { startKey: string; endKey: string }[] = [];
   let current: { startKey: string; endKey: string } | null = null;
   for (const point of points) {
     if (point.delayRate === null) {
-      current = current ? { startKey: current.startKey, endKey: point.bucketKey } : { startKey: point.bucketKey, endKey: point.bucketKey };
+      current = current
+        ? { startKey: current.startKey, endKey: point.bucketKey }
+        : { startKey: point.bucketKey, endKey: point.bucketKey };
     } else {
       if (current) spans.push(current);
       current = null;

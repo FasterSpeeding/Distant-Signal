@@ -30,21 +30,17 @@ describe('isEligibleForPunctuality', () => {
   });
 
   it('excludes schedule_matched', () => {
-    expect(
-      isEligibleForPunctuality(train({ resolutionStatus: 'schedule_matched', delayMinutes: null }), TODAY),
-    ).toBe(false);
+    expect(isEligibleForPunctuality(train({ resolutionStatus: 'schedule_matched', delayMinutes: null }), TODAY)).toBe(
+      false,
+    );
   });
 
   it('excludes unresolved', () => {
-    expect(isEligibleForPunctuality(train({ resolutionStatus: 'unresolved', delayMinutes: null }), TODAY)).toBe(
-      false,
-    );
+    expect(isEligibleForPunctuality(train({ resolutionStatus: 'unresolved', delayMinutes: null }), TODAY)).toBe(false);
   });
 
   it('excludes resolved with null delayMinutes', () => {
-    expect(isEligibleForPunctuality(train({ resolutionStatus: 'resolved', delayMinutes: null }), TODAY)).toBe(
-      false,
-    );
+    expect(isEligibleForPunctuality(train({ resolutionStatus: 'resolved', delayMinutes: null }), TODAY)).toBe(false);
   });
 
   it('excludes a resolved row whose serviceDate is today', () => {

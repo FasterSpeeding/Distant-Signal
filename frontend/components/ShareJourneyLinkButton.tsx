@@ -243,8 +243,8 @@ export function ShareJourneyLinkButton({
               not a link exists yet -- it's describing what creating one
               will mean. */}
           <Text size="xs" c="dimmed">
-            Anyone with this link can view this journey (read-only) without logging in, until it expires or you
-            revoke it.
+            Anyone with this link can view this journey (read-only) without logging in, until it expires or you revoke
+            it.
           </Text>
         </Stack>
       </Modal>

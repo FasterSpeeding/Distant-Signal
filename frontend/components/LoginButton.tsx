@@ -53,7 +53,13 @@ function LoginButtonLink({ children, title }: { children: React.ReactNode; title
 export function LoginButton({ children, title }: { children: React.ReactNode; title?: string }) {
   return (
     <Stack gap={4}>
-      <Suspense fallback={<Button disabled title={title}>{children}</Button>}>
+      <Suspense
+        fallback={
+          <Button disabled title={title}>
+            {children}
+          </Button>
+        }
+      >
         <LoginButtonLink title={title}>{children}</LoginButtonLink>
       </Suspense>
       {/* LEG-1: renders nothing until the legal pages are published. */}

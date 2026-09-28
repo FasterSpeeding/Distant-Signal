@@ -41,7 +41,7 @@ describe('londonWallClockToUtc', () => {
 });
 
 describe('nowInLondon', () => {
-  it('reads the London calendar day and time, not the host zone\'s', () => {
+  it("reads the London calendar day and time, not the host zone's", () => {
     process.env.TZ = 'Asia/Tokyo'; // UTC+9
     vi.useFakeTimers();
     // 16:30Z: 17:30 on 5 Sep in London (BST), 01:30 on 6 Sep in Tokyo.

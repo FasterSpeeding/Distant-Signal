@@ -226,11 +226,15 @@ export function TicketEntryForm({
         return;
       }
       if (response.status === 503) {
-        setUploadError('Too many tickets are being read right now — try again in a moment, or fill in the details manually');
+        setUploadError(
+          'Too many tickets are being read right now — try again in a moment, or fill in the details manually',
+        );
         return;
       }
       if (response.status === 504) {
-        setUploadError('That file took too long to read — try a smaller or simpler PDF, or fill in the details manually');
+        setUploadError(
+          'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually',
+        );
         return;
       }
       if (response.status === 413) {
@@ -322,9 +326,8 @@ export function TicketEntryForm({
       <Alert color="blue" title="Ticket saved">
         <Stack gap="sm">
           <Text size="sm">
-            This ticket isn&apos;t attached to a tracked train yet — extraction can&apos;t tell us exactly which
-            service you mean. Find or create the tracked train it&apos;s for, and it&apos;ll be attached
-            automatically.
+            This ticket isn&apos;t attached to a tracked train yet — extraction can&apos;t tell us exactly which service
+            you mean. Find or create the tracked train it&apos;s for, and it&apos;ll be attached automatically.
           </Text>
           <Group>
             <TextLink href={`/track?${trackParams.toString()}`} underline="always">
@@ -499,13 +502,25 @@ export function TicketEntryForm({
         </Tabs.Panel>
 
         <Tabs.Panel value="pkpass" pt="md">
-          <UploadPanel kind="pkpass" accept={['.pkpass']} uploading={uploading} error={uploadError} onFile={handleUpload}
-            onFallback={() => setTab('manual')} />
+          <UploadPanel
+            kind="pkpass"
+            accept={['.pkpass']}
+            uploading={uploading}
+            error={uploadError}
+            onFile={handleUpload}
+            onFallback={() => setTab('manual')}
+          />
         </Tabs.Panel>
 
         <Tabs.Panel value="pdf" pt="md">
-          <UploadPanel kind="pdf" accept={PDF_MIME_TYPE} uploading={uploading} error={uploadError} onFile={handleUpload}
-            onFallback={() => setTab('manual')} />
+          <UploadPanel
+            kind="pdf"
+            accept={PDF_MIME_TYPE}
+            uploading={uploading}
+            error={uploadError}
+            onFile={handleUpload}
+            onFallback={() => setTab('manual')}
+          />
         </Tabs.Panel>
       </Tabs>
 
@@ -561,8 +576,7 @@ function UploadPanel({
         multiple={false}
         loading={uploading}
         inputProps={{
-          'aria-label':
-            kind === 'pkpass' ? 'Upload an Apple Wallet .pkpass file' : 'Upload a PDF e-ticket',
+          'aria-label': kind === 'pkpass' ? 'Upload an Apple Wallet .pkpass file' : 'Upload a PDF e-ticket',
         }}
         onDrop={(files) => onFile(files[0] ?? null, kind)}
         onReject={() => {

@@ -20,7 +20,10 @@ vi.mock('next/navigation', () => ({
 // origin field holds a valid CRS, and its useSuggestions hooks fetch for
 // any non-empty query. Nothing here is pre-filled, but an inert 200 keeps
 // this file independent of network behaviour either way.
-vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async () => new Response('[]', { status: 200 })),
+);
 
 describe('TrackPage', () => {
   it('renders the heading, the default subtitle and the tracking form', async () => {
@@ -102,9 +105,7 @@ describe('TrackPage', () => {
   });
 
   it('pre-fills the pin-mode destination for a plain ?destination= with no ?mode=', async () => {
-    renderWithMantine(
-      await TrackPage({ searchParams: Promise.resolve({ origin: 'wat', destination: 'rdg' }) }),
-    );
+    renderWithMantine(await TrackPage({ searchParams: Promise.resolve({ origin: 'wat', destination: 'rdg' }) }));
 
     expect(screen.getByDisplayValue('RDG')).toBeInTheDocument();
   });

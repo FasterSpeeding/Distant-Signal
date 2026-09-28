@@ -35,9 +35,7 @@ export function categoryLabel(category: string): string {
   // `app/lines/[id]/page.tsx` would render that function where it expects a
   // string, printing "[object Function]"-shaped output. Guarding with
   // `hasOwnProperty` keeps the lookup to CATEGORY_LABELS' own declared keys.
-  return Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, category)
-    ? CATEGORY_LABELS[category]
-    : category;
+  return Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, category) ? CATEGORY_LABELS[category] : category;
 }
 
 /** Builds a code -> name lookup from the full TOC reference list

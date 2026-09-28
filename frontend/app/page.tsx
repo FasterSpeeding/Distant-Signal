@@ -273,8 +273,8 @@ export default async function DashboardPage() {
             <NotificationsToggle />
           </Group>
           <Text c="dimmed">
-            Live UK rail line status, train tracking, and Delay Repay support — pin the lines,
-            stations and operators you care about once you&apos;re logged in.
+            Live UK rail line status, train tracking, and Delay Repay support — pin the lines, stations and operators
+            you care about once you&apos;re logged in.
           </Text>
         </Stack>
 
@@ -589,7 +589,9 @@ export default async function DashboardPage() {
                 // above, collapse the repeated reason into a short
                 // cross-reference instead of printing the same disruption
                 // a second (or third, alongside the station row) time.
-                dedupedLineId={operator.worstLineId && pinnedLineIds.has(operator.worstLineId) ? operator.worstLineId : undefined}
+                dedupedLineId={
+                  operator.worstLineId && pinnedLineIds.has(operator.worstLineId) ? operator.worstLineId : undefined
+                }
               />
             ))}
           </SimpleGrid>
@@ -615,9 +617,7 @@ export default async function DashboardPage() {
           of the page (review §3.1.4) -- this is its ordinary spot for the
           narrower case where Lines is empty but Stations or Operators is
           not. */}
-      {!allPinnedSectionsEmpty && pinnedLineReports.length === 0 && (
-        <RightNowModule summary={rightNow} />
-      )}
+      {!allPinnedSectionsEmpty && pinnedLineReports.length === 0 && <RightNowModule summary={rightNow} />}
 
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">
@@ -716,8 +716,8 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
             // `<p>`, or the rest of the sentence gets forced onto its own
             // line. See TextLink's own doc comment.
             <Text size="sm" c="dimmed">
-              Showing the first {worst.length} — {hidden} more{' '}
-              {hidden === 1 ? 'line is' : 'lines are'} not at Good Service.{' '}
+              Showing the first {worst.length} — {hidden} more {hidden === 1 ? 'line is' : 'lines are'} not at Good
+              Service.{' '}
               <TextLink href="/lines" underline="always" inline>
                 Browse all lines
               </TextLink>
@@ -789,9 +789,7 @@ function SharedCustomLineSummaryRow({
  * the shared half can never accidentally be handed to the own-row
  * component (which links to the owner-scoped `/train/by-id/{id}` route) or
  * vice versa. */
-type TrackedTrainRow =
-  | { kind: 'own'; train: TrackedTrainListItem }
-  | { kind: 'shared'; row: MergedSharedTrain };
+type TrackedTrainRow = { kind: 'own'; train: TrackedTrainListItem } | { kind: 'shared'; row: MergedSharedTrain };
 
 /** A train another member shared into a group the caller belongs to,
  * rendered in the same list as the caller's own summary rows above.
@@ -821,12 +819,7 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
   // disagree about what a row's heading even is. /track/mine, whose own
   // rows DO show a custom name, shows it for shared rows for the same
   // consistency reason.
-  const route = routeLabel(
-    train.pinOriginCrs,
-    train.pinOriginName,
-    train.pinDestinationCrs,
-    train.pinDestinationName,
-  );
+  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
   // Same date-only degradation as the own row below, for the same reason:
   // a pin with no schedule data yet has no departure time, and `Invalid
   // Date` is never an acceptable label.
@@ -897,12 +890,7 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
       ? `/train/${train.trainUid}/${train.serviceDate}`
       : `/train/by-id/${train.id}`;
 
-  const route = routeLabel(
-    train.pinOriginCrs,
-    train.pinOriginName,
-    train.pinDestinationCrs,
-    train.pinDestinationName,
-  );
+  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
 
   return (
     <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
@@ -922,4 +910,3 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
     </Link>
   );
 }
-

@@ -67,7 +67,7 @@ describe('GroupInviteLinkCard', () => {
   // Review §3.2.2: the card never said the link expires (spec §2.3 gives
   // every link a 7-day life), so an owner had no way to know a link they'd
   // shared or bookmarked had gone stale until a joiner's click 404'd.
-  it('shows the invite link\'s expiry date', () => {
+  it("shows the invite link's expiry date", () => {
     renderWithMantine(
       <GroupInviteLinkCard
         groupId="grp-1"
@@ -176,7 +176,9 @@ describe('GroupInviteLinkCard', () => {
 
   it('Regenerate POSTs and refreshes', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ token: 'new', expiresAt: '2026-09-19T00:00:00Z' }), { status: 200 }));
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ token: 'new', expiresAt: '2026-09-19T00:00:00Z' }), { status: 200 }),
+    );
 
     renderWithMantine(
       <GroupInviteLinkCard

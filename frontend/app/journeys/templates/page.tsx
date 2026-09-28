@@ -35,8 +35,7 @@ export default async function JourneyTemplatesPage() {
       <Title order={1}>Your journey templates</Title>
       {templates.length === 0 && (
         <Text c="dimmed">
-          No templates yet. Open a journey and choose &quot;Make this a template&quot; to save
-          its shape for reuse.
+          No templates yet. Open a journey and choose &quot;Make this a template&quot; to save its shape for reuse.
         </Text>
       )}
       {templates.map((template) => (
@@ -67,8 +66,7 @@ function TemplateCard({ template }: { template: JourneyTemplateListItem }) {
             </Text>
           )}
           <Text size="xs" c="dimmed">
-            {template.legCount} {template.legCount === 1 ? 'leg' : 'legs'} · saved{' '}
-            {formatDate(template.createdAt)}
+            {template.legCount} {template.legCount === 1 ? 'leg' : 'legs'} · saved {formatDate(template.createdAt)}
           </Text>
         </Stack>
       </Group>

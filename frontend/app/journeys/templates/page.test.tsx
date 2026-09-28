@@ -50,15 +50,11 @@ describe('JourneyTemplatesPage', () => {
   it('shows the empty-state copy when logged in with no templates', async () => {
     vi.mocked(api.getMyJourneyTemplates).mockResolvedValue([]);
     await renderPage();
-    expect(
-      screen.getByText(/No templates yet\. Open a journey and choose "Make this a template"/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/No templates yet\. Open a journey and choose "Make this a template"/)).toBeInTheDocument();
   });
 
   it('renders one card per template, titled by its custom name when set', async () => {
-    vi.mocked(api.getMyJourneyTemplates).mockResolvedValue([
-      template({ id: 1, customName: 'My commute' }),
-    ]);
+    vi.mocked(api.getMyJourneyTemplates).mockResolvedValue([template({ id: 1, customName: 'My commute' })]);
     await renderPage();
     const link = screen.getByRole('link', { name: 'My commute' });
     expect(link).toBeInTheDocument();
@@ -70,9 +66,7 @@ describe('JourneyTemplatesPage', () => {
   it('falls back to the computed route as the title when there is no custom name', async () => {
     vi.mocked(api.getMyJourneyTemplates).mockResolvedValue([template({ id: 2, customName: null })]);
     await renderPage();
-    expect(
-      screen.getByRole('link', { name: 'London Kings Cross (KGX) → Edinburgh (EDB)' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'London Kings Cross (KGX) → Edinburgh (EDB)' })).toBeInTheDocument();
   });
 
   it('shows the leg count, singular for one leg', async () => {

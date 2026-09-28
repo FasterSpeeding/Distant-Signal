@@ -90,9 +90,7 @@ describe('ChatCallback', () => {
   it('shows a plain sentence and a "Back to Chat" button, not the raw message, as the error\'s primary content', async () => {
     mockAuth.mockRejectedValue(new Error('token exchange failed'));
     renderAtWithValidState('?code=abc123');
-    expect(
-      await screen.findByText("We couldn't finish connecting to the rail data service."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("We couldn't finish connecting to the rail data service.")).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Back to Chat' })).toHaveAttribute('href', '/chat');
   });
 
@@ -138,9 +136,7 @@ describe('ChatCallback', () => {
     // both driven off the same fake clock in one `advanceTimersByTime`
     // call, rather than juggling fake timers and a manually-resolved
     // promise side by side.
-    mockAuth.mockImplementation(
-      () => new Promise((resolve) => setTimeout(() => resolve('AUTHORIZED'), 25_000)),
-    );
+    mockAuth.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve('AUTHORIZED'), 25_000)));
     renderAtWithValidState('?code=abc123');
     act(() => {
       vi.advanceTimersByTime(30_000);

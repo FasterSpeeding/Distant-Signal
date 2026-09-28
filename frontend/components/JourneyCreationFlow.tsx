@@ -98,7 +98,7 @@ export function JourneyCreationFlow() {
         <SegmentedControl
           aria-labelledby={entryModeLabelId}
           value={entryMode}
-          onChange={value => setEntryMode(value as 'known' | 'plan')}
+          onChange={(value) => setEntryMode(value as 'known' | 'plan')}
           data={[
             { label: 'I know my route', value: 'known' },
             { label: 'Plan a route for me', value: 'plan' },
@@ -162,7 +162,11 @@ export function JourneyCreationFlow() {
       )}
       <Group>
         {canAddLeg && (
-          <AddJourneyLegButton journeyId={journeyId} priorDestinationCrs={priorDestinationCrs} onAdded={handleLegAdded} />
+          <AddJourneyLegButton
+            journeyId={journeyId}
+            priorDestinationCrs={priorDestinationCrs}
+            onAdded={handleLegAdded}
+          />
         )}
         <Button component={Link} href={`/journeys/${journeyId}`}>
           Done — view journey

@@ -41,13 +41,7 @@ export function realTimeTrainsUrl(trainUid: string, serviceDate: string): string
  * 'pending'`, or the `'unresolved'` give-up state) has nothing on RTT to
  * link to. Mirrors `TrainJourney.tsx`'s own `trainUid`-nullability gating
  * rather than inventing a separate rule for this one link. */
-export function RealTimeTrainsLink({
-  trainUid,
-  serviceDate,
-}: {
-  trainUid: string | null;
-  serviceDate: string;
-}) {
+export function RealTimeTrainsLink({ trainUid, serviceDate }: { trainUid: string | null; serviceDate: string }) {
   if (!trainUid) {
     return null;
   }

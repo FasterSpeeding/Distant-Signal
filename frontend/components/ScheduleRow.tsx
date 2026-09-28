@@ -63,7 +63,11 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
   );
   const trailing = (
     <Group gap="xs" wrap="nowrap">
-      <PlatformBadge platform={row.platform} plannedPlatform={row.plannedPlatform} platformChanged={row.platformChanged} />
+      <PlatformBadge
+        platform={row.platform}
+        plannedPlatform={row.plannedPlatform}
+        platformChanged={row.platformChanged}
+      />
       {statusBadge(row)}
     </Group>
   );

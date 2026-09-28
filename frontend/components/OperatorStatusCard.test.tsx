@@ -94,7 +94,7 @@ describe('OperatorStatusCard', () => {
 
   it('renders the account hint when needsAccountHint is true and pinned is false', () => {
     const { container } = renderWithMantine(
-      <OperatorStatusCard operator={operator} pinned={false} needsAccountHint={true} />
+      <OperatorStatusCard operator={operator} pinned={false} needsAccountHint={true} />,
     );
     const pinToggle = container.querySelector('[aria-label*="Pin"]');
     expect(pinToggle).toHaveAttribute('aria-label', 'Pin — needs an account');
@@ -103,7 +103,7 @@ describe('OperatorStatusCard', () => {
   it('clamps a long reason rather than letting it fill the card', () => {
     const wall = 'Station improvement work: '.repeat(40);
     const { container } = renderWithMantine(
-      <OperatorStatusCard operator={{ ...operator, reason: wall }} pinned={false} />
+      <OperatorStatusCard operator={{ ...operator, reason: wall }} pinned={false} />,
     );
     const reason = container.querySelector('[data-card-reason]') as HTMLElement;
     expect(reason.style.getPropertyValue('-webkit-line-clamp')).toBe('3');
@@ -111,23 +111,24 @@ describe('OperatorStatusCard', () => {
 
   it('keeps the status badge on the title row even when the name wraps', () => {
     const { container } = renderWithMantine(
-      <OperatorStatusCard operator={{ ...operator, name: 'A Very Long Operator Name That Might Wrap' }} pinned={false} />
+      <OperatorStatusCard
+        operator={{ ...operator, name: 'A Very Long Operator Name That Might Wrap' }}
+        pinned={false}
+      />,
     );
     const titleRow = container.querySelector('[data-card-title-row]') as HTMLElement;
     expect(titleRow).toBeInTheDocument();
   });
 
   it('renders no last-updated indicator when computedAt is null', () => {
-    renderWithMantine(
-      <OperatorStatusCard operator={{ ...operator, computedAt: null }} pinned={false} />
-    );
+    renderWithMantine(<OperatorStatusCard operator={{ ...operator, computedAt: null }} pinned={false} />);
     const updatedElements = screen.queryAllByText(/Updated/);
     expect(updatedElements).toHaveLength(0);
   });
 
   // 2026-09-22 UX review, C2: `/operators/[code]/history` shipped with no
   // inbound href anywhere in the app.
-  it('links to this operator\'s history page', () => {
+  it("links to this operator's history page", () => {
     renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
     const link = screen.getByRole('link', { name: 'History for Virgin Trains' });
     expect(link).toHaveAttribute('href', '/operators/VT/history');
@@ -143,9 +144,7 @@ describe('OperatorStatusCard', () => {
   });
 
   it('percent-encodes an operator code that needs it', () => {
-    renderWithMantine(
-      <OperatorStatusCard operator={{ ...operator, code: 'A/B' }} pinned={false} />
-    );
+    renderWithMantine(<OperatorStatusCard operator={{ ...operator, code: 'A/B' }} pinned={false} />);
     expect(screen.getByRole('link', { name: 'History for Virgin Trains' })).toHaveAttribute(
       'href',
       '/operators/A%2FB/history',
@@ -160,9 +159,7 @@ describe('OperatorStatusCard', () => {
   });
 
   it('hides the pin star when showPin is false (review M9)', () => {
-    const { container } = renderWithMantine(
-      <OperatorStatusCard operator={operator} pinned={false} showPin={false} />
-    );
+    const { container } = renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} showPin={false} />);
     expect(container.querySelector('[aria-label*="Pin"]')).not.toBeInTheDocument();
   });
 
@@ -177,7 +174,7 @@ describe('OperatorStatusCard', () => {
         <OperatorStatusCard
           operator={{ ...operator, worstLineId: 'ecml', worstLineName: 'East Coast Main Line' }}
           pinned={false}
-        />
+        />,
       );
       expect(screen.getByText(/Worst of 2 lines/)).toBeInTheDocument();
       const link = screen.getByText('East Coast Main Line').closest('a');
@@ -190,19 +187,14 @@ describe('OperatorStatusCard', () => {
     });
 
     it('says "all running normally" instead of "Worst of" when the worst severity is Good Service', () => {
-      renderWithMantine(
-        <OperatorStatusCard operator={{ ...operator, worstSeverity: 10 }} pinned={false} />
-      );
+      renderWithMantine(<OperatorStatusCard operator={{ ...operator, worstSeverity: 10 }} pinned={false} />);
       expect(screen.getByText('2 lines, all running normally')).toBeInTheDocument();
       expect(screen.queryByText(/Worst of/)).not.toBeInTheDocument();
     });
 
     it('uses singular "line" for a single-line operator', () => {
       renderWithMantine(
-        <OperatorStatusCard
-          operator={{ ...operator, worstSeverity: 10, lineIds: ['ecml'] }}
-          pinned={false}
-        />
+        <OperatorStatusCard operator={{ ...operator, worstSeverity: 10, lineIds: ['ecml'] }} pinned={false} />,
       );
       expect(screen.getByText('1 line, all running normally')).toBeInTheDocument();
     });
@@ -215,7 +207,7 @@ describe('OperatorStatusCard', () => {
           operator={{ ...operator, worstLineId: 'ecml', worstLineName: 'East Coast Main Line' }}
           pinned={false}
           dedupedLineId="ecml"
-        />
+        />,
       );
       expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
       expect(screen.getByText(/See/)).toBeInTheDocument();
@@ -229,7 +221,7 @@ describe('OperatorStatusCard', () => {
           operator={{ ...operator, worstLineId: 'ecml', worstLineName: 'East Coast Main Line' }}
           pinned={false}
           dedupedLineId="wcml"
-        />
+        />,
       );
       expect(screen.getByText('Signal failure')).toBeInTheDocument();
     });

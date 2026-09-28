@@ -36,9 +36,7 @@ describe('RenameTicketButton', () => {
 
   it('POSTs the trimmed name and refreshes on success', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ customName: "Mum's ticket to Leeds" }), { status: 200 }),
-    );
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ customName: "Mum's ticket to Leeds" }), { status: 200 }));
 
     renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));

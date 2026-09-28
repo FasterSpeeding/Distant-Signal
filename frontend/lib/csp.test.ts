@@ -39,9 +39,11 @@ describe('buildContentSecurityPolicy', () => {
     expect(csp).not.toContain('*');
   });
 
-  it("adds the railMcp origin to connect-src when configured (FE-2)", () => {
+  it('adds the railMcp origin to connect-src when configured (FE-2)', () => {
     const csp = buildContentSecurityPolicy({ nonce: 'n', railMcpPublicUrl: 'https://railmcp.example.com/some/path' });
-    expect(directive(csp, 'connect-src')).toBe("connect-src 'self' https://api.anthropic.com https://railmcp.example.com");
+    expect(directive(csp, 'connect-src')).toBe(
+      "connect-src 'self' https://api.anthropic.com https://railmcp.example.com",
+    );
   });
 
   it('omits a malformed railMcp URL rather than throwing', () => {
@@ -78,9 +80,7 @@ describe('railMcpOrigin', () => {
 
 describe('runtimeRailMcpPublicUrl', () => {
   it('reads NEXT_PUBLIC_RAILMCP_PUBLIC_URL from the given environment', () => {
-    expect(runtimeRailMcpPublicUrl({ NEXT_PUBLIC_RAILMCP_PUBLIC_URL: 'https://m.example' })).toBe(
-      'https://m.example',
-    );
+    expect(runtimeRailMcpPublicUrl({ NEXT_PUBLIC_RAILMCP_PUBLIC_URL: 'https://m.example' })).toBe('https://m.example');
     expect(runtimeRailMcpPublicUrl({})).toBeUndefined();
   });
 });

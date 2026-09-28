@@ -49,13 +49,7 @@ const GroupSummariesContext = createContext<GroupSummariesContextValue>({ groups
  * this feature's own follow-up doc/commit for the fuller reasoning on why no
  * *additional* client-only refresh mechanism (a dedicated `router.refresh()`
  * call, a re-fetch-on-focus effect, etc.) is needed on top of that. */
-export function GroupSummariesProvider({
-  groups,
-  children,
-}: {
-  groups: GroupSummary[] | null;
-  children: ReactNode;
-}) {
+export function GroupSummariesProvider({ groups, children }: { groups: GroupSummary[] | null; children: ReactNode }) {
   return <GroupSummariesContext.Provider value={{ groups }}>{children}</GroupSummariesContext.Provider>;
 }
 

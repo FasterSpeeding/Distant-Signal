@@ -321,8 +321,7 @@ export function TrainSearchForm({
   // "RDG") and falling back to naming the field above it when nothing valid
   // has been entered yet, so the sentence still reads naturally.
   const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : 'Station above';
-  const stopsAtDisplay =
-    stopsAtValid && stopsAt.trim() ? stopsAt.trim().toUpperCase() : 'Stops at above';
+  const stopsAtDisplay = stopsAtValid && stopsAt.trim() ? stopsAt.trim().toUpperCase() : 'Stops at above';
 
   /** The current filter set as query parameters. Shared by the initial
    * search and by "Load more" so that page 2 is unambiguously a
@@ -544,8 +543,8 @@ export function TrainSearchForm({
     return (
       <>
         <Text size="sm" c="dimmed">
-          These are from the scheduled timetable, not live running information, and may be up to 30
-          minutes out of date. Open a train to see its live status.
+          These are from the scheduled timetable, not live running information, and may be up to 30 minutes out of date.
+          Open a train to see its live status.
         </Text>
         {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
          * otherwise). It used to be (`<ScrollArea mah={420}
@@ -627,18 +626,12 @@ export function TrainSearchForm({
              * belonging to the row beneath them. */
             <Group key={`${row.uid}-${row.scheduled}`} style={{ rowGap: 4 }}>
               <Text size="sm">
-                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationName ?? row.destinationCrs ?? '?'}
+                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} →{' '}
+                {row.destinationName ?? row.destinationCrs ?? '?'}
               </Text>
               <Group gap="sm" wrap="nowrap" style={{ marginInlineStart: 'auto' }}>
-                <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
-                  View live status
-                </TextLink>
-                <TrackThisTrainButton
-                  uid={row.uid}
-                  date={displayDate}
-                  attachTicketId={attachTicketId}
-                  size="xs"
-                />
+                <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>
+                <TrackThisTrainButton uid={row.uid} date={displayDate} attachTicketId={attachTicketId} size="xs" />
               </Group>
             </Group>
           ))}
@@ -774,9 +767,7 @@ export function TrainSearchForm({
             description={`Only trains reaching ${stopsAtDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
             value={arrivalFrom}
             onChange={setArrivalFrom}
-            onIncompleteChange={(incomplete) =>
-              setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))
-            }
+            onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))}
             error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
           />
           <TimeFilterInput
@@ -785,9 +776,7 @@ export function TrainSearchForm({
             description={`Only trains reaching ${stopsAtDisplay} at or before this time.`}
             value={arrivalTo}
             onChange={setArrivalTo}
-            onIncompleteChange={(incomplete) =>
-              setIncompleteTimes((c) => ({ ...c, arrivalTo: incomplete }))
-            }
+            onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalTo: incomplete }))}
             error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:00' : null}
           />
         </Group>

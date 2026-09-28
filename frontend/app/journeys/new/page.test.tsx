@@ -17,7 +17,10 @@ vi.mock('next/navigation', () => ({
 // origin field holds a valid CRS, and its useSuggestions hooks fetch for
 // any non-empty query -- nothing here is pre-filled, but an inert 200 keeps
 // this file independent of network behaviour either way.
-vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async () => new Response('[]', { status: 200 })),
+);
 
 describe('JourneysNewPage', () => {
   it('renders the heading, an account hint, and the leg-1 tracking form', () => {

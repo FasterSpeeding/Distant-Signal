@@ -16,7 +16,13 @@ import { LoginLink } from './LoginLink';
  * defense in depth, not reliance on the backend alone, same posture as
  * `RemoveMemberButton`'s owner-row gating. Mirrors `DeleteTrainButton.tsx`'s
  * confirm-modal shape. */
-export function RemoveGroupTrainButton({ groupId, trainSubscriptionId }: { groupId: string; trainSubscriptionId: number }) {
+export function RemoveGroupTrainButton({
+  groupId,
+  trainSubscriptionId,
+}: {
+  groupId: string;
+  trainSubscriptionId: number;
+}) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
   const [removing, setRemoving] = useState(false);

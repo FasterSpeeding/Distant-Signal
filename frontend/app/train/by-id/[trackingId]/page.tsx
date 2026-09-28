@@ -9,11 +9,7 @@ import { LastUpdated } from '@/components/LastUpdated';
 import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 
-export default async function TrackedTrainByIdPage({
-  params,
-}: {
-  params: Promise<{ trackingId: string }>;
-}) {
+export default async function TrackedTrainByIdPage({ params }: { params: Promise<{ trackingId: string }> }) {
   const { trackingId } = await params;
 
   // Validated before the fetch fires, per
@@ -47,9 +43,7 @@ export default async function TrackedTrainByIdPage({
               train's own identifier) to a visitor who isn't logged in as
               its owner. */}
           <Title order={1}>Someone&apos;s tracked train — log in to see it</Title>
-          <LoginLink underline="always">
-            Log in to view this tracked train
-          </LoginLink>
+          <LoginLink underline="always">Log in to view this tracked train</LoginLink>
         </Stack>
       );
     }

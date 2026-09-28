@@ -79,8 +79,8 @@ export function SaveAsTemplateButton({ journeyId }: { journeyId: number }) {
       <Modal opened={opened} onClose={close} title="Save this journey as a reusable template">
         <Stack>
           <Text size="sm">
-            Creates a reusable template from this journey&apos;s route — you can run it again
-            for a new date any time from your templates list.
+            Creates a reusable template from this journey&apos;s route — you can run it again for a new date any time
+            from your templates list.
           </Text>
           <TextInput
             label="Template name (optional)"
@@ -89,9 +89,7 @@ export function SaveAsTemplateButton({ journeyId }: { journeyId: number }) {
             onChange={(event) => setCustomName(event.currentTarget.value)}
           />
           {error && <Alert color="red">{error}</Alert>}
-          {needsLoginState.needsLogin && (
-            <LoginLink underline="always">Log in to save a template</LoginLink>
-          )}
+          {needsLoginState.needsLogin && <LoginLink underline="always">Log in to save a template</LoginLink>}
           <Button onClick={handleSubmit} loading={submitting}>
             Save as template
           </Button>

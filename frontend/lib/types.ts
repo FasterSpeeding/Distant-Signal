@@ -104,9 +104,7 @@ export interface SampleStats {
  * (`lib/sampleStats.ts`) -- it is not a meaningful signal on its own for a
  * TfL-quality status (see that module's precedence-order doc comment). */
 export type SampleAvailability =
-  | { state: 'no-coverage' }
-  | { state: 'below-threshold'; observed: number; required: number }
-  | { state: 'available' };
+  { state: 'no-coverage' } | { state: 'below-threshold'; observed: number; required: number } | { state: 'available' };
 
 /** Why `fullCoverageStats` is (or isn't) populated on a given `LineStatus`
  * this cycle -- the full-coverage analog of `SampleAvailability`,
@@ -118,10 +116,7 @@ export type SampleAvailability =
  * the default and, as of this app's current line catalogue, the ONLY value
  * this can take -- nothing sets `full_coverage_enabled` on any line yet, and
  * no producer exists to resolve `'pending'`/`'available'`. */
-export type FullCoverageAvailability =
-  | { state: 'not-enabled' }
-  | { state: 'pending' }
-  | { state: 'available' };
+export type FullCoverageAvailability = { state: 'not-enabled' } | { state: 'pending' } | { state: 'available' };
 
 export interface LineStatus {
   statusSeverity: number;
@@ -535,14 +530,7 @@ export type StopStatus = 'Unknown' | 'Scheduled' | 'Called' | 'Skipped';
  * actual time. 'Scheduled' means no live estimate yet (LDBWS would say
  * "On time"). There is no 'Delayed': DS has no delay-without-estimate
  * state. */
-export type LiveStopStatus =
-  | 'OnTime'
-  | 'Late'
-  | 'Cancelled'
-  | 'NoReport'
-  | 'Arrived'
-  | 'Departed'
-  | 'Scheduled';
+export type LiveStopStatus = 'OnTime' | 'Late' | 'Cancelled' | 'NoReport' | 'Arrived' | 'Departed' | 'Scheduled';
 
 /** `crates/api/src/data/journey.rs`'s `SkipSource` -- which signal(s)
  * support a `stopStatus: 'Skipped'` verdict, carried as a SIBLING field on
@@ -836,7 +824,7 @@ export interface TrainResolveResult {
   serviceDate: string; // "YYYY-MM-DD"
   // "rsid": the full retail service ID matched; "rsidPrefix": only its
   // first 6 characters; "timetable": time plus destination/operator.
-  matchedOn: "rsid" | "rsidPrefix" | "timetable";
+  matchedOn: 'rsid' | 'rsidPrefix' | 'timetable';
   href: string;
 }
 

@@ -15,7 +15,10 @@ vi.mock('next/navigation', () => ({
 // The page mounts TrainSearchForm, whose suggestion hooks fire real
 // fetches on mount for any pre-filled, valid CRS -- give every test an
 // inert 200 so none of them depend on network behaviour.
-vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async () => new Response('[]', { status: 200 })),
+);
 
 describe('TrainsPage', () => {
   // `getByRole('combobox', { name: ... })` here (rather than
@@ -67,34 +70,25 @@ describe('TrainsPage', () => {
   // its rendered <input>'s accessible name/role queries don't apply the
   // way Autocomplete's combobox role does.
   it('pre-fills the date from the query string', async () => {
-    renderWithMantine(
-      await TrainsPage({ searchParams: Promise.resolve({ station: 'man', date: '2026-09-16' }) }),
-    );
+    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'man', date: '2026-09-16' }) }));
     expect(screen.getByDisplayValue('2026-09-16')).toBeInTheDocument();
   });
 
   it('uses the first value when a query param is repeated', async () => {
-    renderWithMantine(
-      await TrainsPage({ searchParams: Promise.resolve({ station: ['MAN', 'EDB'] }) }),
-    );
+    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: ['MAN', 'EDB'] }) }));
     expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
   });
 
   it('shows the ticket-attach explainer copy when arriving with a ticketId', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ ticketId: '7' }) }));
     expect(
-      screen.getByText(
-        "Find the train your saved ticket is for — it'll be attached automatically once you track it.",
-      ),
+      screen.getByText("Find the train your saved ticket is for — it'll be attached automatically once you track it."),
     ).toBeInTheDocument();
   });
 
   it('carries a valid ticketId through to the manual fallback link', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ ticketId: '7' }) }));
-    expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute(
-      'href',
-      '/track?ticketId=7',
-    );
+    expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track?ticketId=7');
   });
 
   // Same posture as app/track/page.tsx:16-21: a malformed value is treated
@@ -102,9 +96,7 @@ describe('TrainsPage', () => {
   it('treats a non-numeric ticketId as absent', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ ticketId: 'nope' }) }));
     expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track');
-    expect(
-      screen.queryByText(/it'll be attached automatically once you track it/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/it'll be attached automatically once you track it/)).not.toBeInTheDocument();
   });
 });
 

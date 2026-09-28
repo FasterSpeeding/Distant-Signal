@@ -7,11 +7,7 @@ import { DataFreshnessInfo } from './DataFreshnessInfo';
 import { PrideToggle } from './PrideToggle';
 import { TextLink } from './TextLink';
 import { ThemeToggle } from './ThemeToggle';
-import {
-  navDrawerDestinations,
-  PRIMARY_NAV_DESTINATIONS,
-  TRACKED_TRAINS_DESTINATION,
-} from '@/lib/navLinks';
+import { navDrawerDestinations, PRIMARY_NAV_DESTINATIONS, TRACKED_TRAINS_DESTINATION } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 /** The site header, lifted out of `app/layout.tsx` so the whole bar can
@@ -186,14 +182,7 @@ export function AppNavBar({
             halves may be pushed to before the row wraps. Mantine's
             default `md` (16px) is what tipped the 390px bar over its
             container by 5px in Chromium. */}
-        <Group
-          justify="space-between"
-          align="center"
-          gap="xs"
-          px="lg"
-          py="md"
-          mih={BAR_MIN_HEIGHT}
-        >
+        <Group justify="space-between" align="center" gap="xs" px="lg" py="md" mih={BAR_MIN_HEIGHT}>
           <Group gap="xs" wrap="nowrap">
             {/* Left of the brand, the conventional position — and the
                 reason the burger is not simply folded in with the
@@ -256,9 +245,7 @@ export function AppNavBar({
                   gets it in the account menu instead, which is part of
                   what buys the authenticated bar its missing 12px. */}
               {!session.authenticated && (
-                <TextLink href={TRACKED_TRAINS_DESTINATION.href}>
-                  {TRACKED_TRAINS_DESTINATION.label}
-                </TextLink>
+                <TextLink href={TRACKED_TRAINS_DESTINATION.href}>{TRACKED_TRAINS_DESTINATION.label}</TextLink>
               )}
             </Group>
             {/* The three always-on icon controls, grouped tightly: they
@@ -294,7 +281,13 @@ export function AppNavBar({
                 purely by streaming timing, not anything route-specific
                 (review §4.9). See `AppNavBar.test.tsx`'s own regression
                 test, which pins the two equal. */}
-            <Suspense fallback={<Text size="sm" c="var(--mantine-color-anchor)">Log in</Text>}>
+            <Suspense
+              fallback={
+                <Text size="sm" c="var(--mantine-color-anchor)">
+                  Log in
+                </Text>
+              }
+            >
               <AuthStatus session={session} chatAllowed={chatAllowed} />
             </Suspense>
           </Group>

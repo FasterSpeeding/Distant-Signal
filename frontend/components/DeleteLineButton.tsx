@@ -80,11 +80,7 @@ export function DeleteLineButton({ id, trigger = 'button' }: { id: string; trigg
       <Modal opened={opened} onClose={close} title="Delete this line?">
         <Text>This cannot be undone.</Text>
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && (
-          <LoginLink underline="always">
-            Log in to delete a line
-          </LoginLink>
-        )}
+        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to delete a line</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={deleting}>
             Cancel

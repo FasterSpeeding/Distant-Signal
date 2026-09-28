@@ -60,12 +60,8 @@ async function hydrateAndCollect(serverHtml: string, element: React.ReactNode) {
   const consoleErrors: string[] = [];
   const consoleWarns: string[] = [];
   const recoverableErrors: string[] = [];
-  const errorSpy = vi
-    .spyOn(console, 'error')
-    .mockImplementation((...args) => void consoleErrors.push(String(args[0])));
-  const warnSpy = vi
-    .spyOn(console, 'warn')
-    .mockImplementation((...args) => void consoleWarns.push(String(args[0])));
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args) => void consoleErrors.push(String(args[0])));
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args) => void consoleWarns.push(String(args[0])));
 
   let root: ReturnType<typeof hydrateRoot> | undefined;
   let text = '';
@@ -94,7 +90,7 @@ async function hydrateAndCollect(serverHtml: string, element: React.ReactNode) {
 }
 
 describe('LocalDateTime', () => {
-  it('server-rendered output is the London time, never the rendering process\'s own zone', () => {
+  it("server-rendered output is the London time, never the rendering process's own zone", () => {
     // Mirrors LastUpdated.test.tsx's regression check: renderToString never
     // runs effects, so this is exactly what the server sends down. TZ is
     // forced to Tokyo to stand in for a server whose ambient zone is not
@@ -164,10 +160,7 @@ describe('LocalDateTime', () => {
       return <span>{text}</span>;
     }
     const serverHtml = renderToString(<Divergent text="server-only text" />);
-    const { recoverableErrors } = await hydrateAndCollect(
-      serverHtml,
-      <Divergent text="client-only text" />,
-    );
+    const { recoverableErrors } = await hydrateAndCollect(serverHtml, <Divergent text="client-only text" />);
     expect(recoverableErrors).toHaveLength(1);
     expect(recoverableErrors[0]).toContain('Hydration failed');
   });

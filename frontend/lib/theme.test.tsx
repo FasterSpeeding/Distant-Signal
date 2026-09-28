@@ -42,9 +42,7 @@ describe('theme', () => {
     // `:root`, so — unlike ordinary inherited custom properties, which
     // jsdom's computed-style implementation doesn't cascade to descendant
     // elements — this only resolves on `document.documentElement` itself.
-    const anchorColor = getComputedStyle(document.documentElement).getPropertyValue(
-      '--mantine-color-anchor',
-    );
+    const anchorColor = getComputedStyle(document.documentElement).getPropertyValue('--mantine-color-anchor');
     expect(anchorColor).toBe('var(--mantine-color-grape-6)');
   });
 
@@ -58,9 +56,7 @@ describe('theme', () => {
         <div>probe</div>
       </MantineProvider>,
     );
-    const anchorColor = getComputedStyle(document.documentElement).getPropertyValue(
-      '--mantine-color-anchor',
-    );
+    const anchorColor = getComputedStyle(document.documentElement).getPropertyValue('--mantine-color-anchor');
     expect(anchorColor).not.toBe('var(--mantine-color-grape-6)');
   });
 
@@ -94,8 +90,11 @@ describe('theme', () => {
   // 4.18:1 (blue) -- both fail AA, regressing an already-passing dark-mode
   // pairing (white was 11.51:1 / 5.02:1). See lib/theme.ts's
   // SCHEME_BLIND_FILLED_COLORS comment for the full derivation.
-  it.each(['gray', 'blue'])('pins filled %s to a scheme-aware light-dark() rather than autoContrast\'s scheme-blind black', (color) => {
-    const resolved = theme.variantColorResolver!({ color, variant: 'filled', theme: mergedTheme });
-    expect(resolved.color).toBe('light-dark(var(--mantine-color-black), var(--mantine-color-white))');
-  });
+  it.each(['gray', 'blue'])(
+    "pins filled %s to a scheme-aware light-dark() rather than autoContrast's scheme-blind black",
+    (color) => {
+      const resolved = theme.variantColorResolver!({ color, variant: 'filled', theme: mergedTheme });
+      expect(resolved.color).toBe('light-dark(var(--mantine-color-black), var(--mantine-color-white))');
+    },
+  );
 });

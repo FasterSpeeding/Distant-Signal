@@ -56,13 +56,9 @@ describe('sanitizeRichText', () => {
   it('keeps https, http and mailto hrefs', () => {
     // `http:` is 45 of the sample's 193 anchors -- an allowlist without it
     // silently drops 23% of the feed's links.
-    expect(sanitizeRichText('<a href="http://www.apcoa.co.uk">APCOA</a>')).toContain(
-      'href="http://www.apcoa.co.uk"',
-    );
+    expect(sanitizeRichText('<a href="http://www.apcoa.co.uk">APCOA</a>')).toContain('href="http://www.apcoa.co.uk"');
     expect(sanitizeRichText('<a href="https://example.com">x</a>')).toContain('href="https://');
-    expect(
-      sanitizeRichText('<a href="mailto:customer.relations@scotrail.co.uk">email</a>'),
-    ).toContain('href="mailto:');
+    expect(sanitizeRichText('<a href="mailto:customer.relations@scotrail.co.uk">email</a>')).toContain('href="mailto:');
     expect(sanitizeRichText('<a href="tel:03450774224">call</a>')).toContain('href="tel:');
   });
 
@@ -90,7 +86,7 @@ describe('sanitizeRichText', () => {
     expect(result).toContain('<p>Details</p>');
   });
 
-  it('decodes the feed\'s entities instead of printing them literally', () => {
+  it("decodes the feed's entities instead of printing them literally", () => {
     expect(sanitizeRichText('<p>ramps can&#39;t be deployed</p>')).toContain("can't");
     expect(sanitizeRichText('<p>&quot;Step Free Access&quot;</p>')).toContain('"Step Free Access"');
   });

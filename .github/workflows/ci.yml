@@ -331,8 +331,8 @@ jobs:
       - name: Lint (eslint)
         run: npm run lint
 
-      # Covers only the files frontend/.prettierignore un-ignores (the
-      # service worker and the JS scripts/configs), not the whole frontend.
+      # Covers the whole frontend except what frontend/.prettierignore
+      # lists (build output, generated files, minified test fixtures).
       - name: Format check (prettier)
         run: npm run format:check
 

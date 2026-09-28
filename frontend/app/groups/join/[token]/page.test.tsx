@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import JoinGroupPage, { generateMetadata } from './page';
-import { getGroup, getGroupJoinPreview, getSessionOrLoggedOut, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
+import {
+  getGroup,
+  getGroupJoinPreview,
+  getSessionOrLoggedOut,
+  ApiNotFoundError,
+  ApiUnauthorizedError,
+} from '@/lib/api';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -81,7 +87,12 @@ describe('JoinGroupPage', () => {
 
   it('shows the explicit Join button when already authenticated', async () => {
     vi.mocked(getGroupJoinPreview).mockResolvedValue({ groupId: 'grp-1', groupName: 'Family', memberCount: 1 });
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      email: null,
+      name: 'Alex',
+    });
 
     renderWithMantine(await JoinGroupPage({ params: Promise.resolve({ token: 'tok123' }) }));
     expect(screen.getByRole('button', { name: 'Join group' })).toBeInTheDocument();
@@ -95,7 +106,12 @@ describe('JoinGroupPage', () => {
   describe('an already-authenticated member', () => {
     it('shows "You\'re already in" and an Open group link instead of Join', async () => {
       vi.mocked(getGroupJoinPreview).mockResolvedValue({ groupId: 'grp-1', groupName: 'Family', memberCount: 3 });
-      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+        authenticated: true,
+        id: 'user-1',
+        email: null,
+        name: 'Alex',
+      });
       vi.mocked(getGroup).mockResolvedValue({
         id: 'grp-1',
         name: 'Family',
@@ -129,7 +145,12 @@ describe('JoinGroupPage', () => {
 
     it('falls back to the ordinary Join button on a lapsed-session race (ApiUnauthorizedError)', async () => {
       vi.mocked(getGroupJoinPreview).mockResolvedValue({ groupId: 'grp-1', groupName: 'Family', memberCount: 3 });
-      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+        authenticated: true,
+        id: 'user-1',
+        email: null,
+        name: 'Alex',
+      });
       vi.mocked(getGroup).mockRejectedValue(new ApiUnauthorizedError('401'));
 
       renderWithMantine(await JoinGroupPage({ params: Promise.resolve({ token: 'tok123' }) }));
@@ -138,7 +159,12 @@ describe('JoinGroupPage', () => {
 
     it('propagates an unexpected error from the membership probe', async () => {
       vi.mocked(getGroupJoinPreview).mockResolvedValue({ groupId: 'grp-1', groupName: 'Family', memberCount: 3 });
-      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+      vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+        authenticated: true,
+        id: 'user-1',
+        email: null,
+        name: 'Alex',
+      });
       vi.mocked(getGroup).mockRejectedValue(new Error('boom'));
 
       await expect(JoinGroupPage({ params: Promise.resolve({ token: 'tok123' }) })).rejects.toThrow('boom');

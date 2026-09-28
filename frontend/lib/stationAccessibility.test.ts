@@ -105,7 +105,7 @@ describe('Pattern A -- facility record', () => {
   const dnoTrainRamp = {
     available: false,
     location: '<p>Speak to on train staff.</p>',
-    notes: "<p>Due to low platform constraints ramps can&#39;t be deployed.</p>",
+    notes: '<p>Due to low platform constraints ramps can&#39;t be deployed.</p>',
     openingHoursNotes: null,
     openingTimes: null,
     operatorContactDetails: null,
@@ -187,13 +187,9 @@ describe('Pattern B -- opening times', () => {
   // BTN's fully-reversed set. Compacting over array order would say
   // "Sun–Mon".
   it('sorts into week order before compacting, whatever order the feed sends', () => {
-    expect(
-      formatDays(['Sunday', 'Saturday', 'Friday', 'Thursday', 'Wednesday', 'Tuesday', 'Monday']),
-    ).toBe('Mon–Sun');
+    expect(formatDays(['Sunday', 'Saturday', 'Friday', 'Thursday', 'Wednesday', 'Tuesday', 'Monday'])).toBe('Mon–Sun');
     // INV, interleaved.
-    expect(
-      formatDays(['Monday', 'Tuesday', 'Thursday', 'Friday', 'Saturday', 'Wednesday']),
-    ).toBe('Mon–Sat');
+    expect(formatDays(['Monday', 'Tuesday', 'Thursday', 'Friday', 'Saturday', 'Wednesday'])).toBe('Mon–Sat');
   });
 
   it('emits Public Holidays as its own trailing token, never folded into a range', () => {
@@ -235,9 +231,7 @@ describe('Pattern B -- opening times', () => {
   });
 
   it('does not claim hours it was not given', () => {
-    expect(formatHours({ openingStatus: 'Specific Hours', openPeriod: [] })).toBe(
-      'hours not published',
-    );
+    expect(formatHours({ openingStatus: 'Specific Hours', openPeriod: [] })).toBe('hours not published');
     // No status at all and no period: nothing to say, and nothing invented.
     expect(formatHours({})).toBe('');
   });
@@ -261,12 +255,12 @@ describe('Pattern B -- opening times', () => {
   });
 
   it('renders a one-sided period rather than discarding the half it has', () => {
-    expect(
-      formatHours({ openingStatus: 'Specific Hours', openPeriod: [{ startTime: '09:00:00.000' }] }),
-    ).toBe('from 09:00');
-    expect(
-      formatHours({ openingStatus: 'Specific Hours', openPeriod: [{ endTime: '17:00:00.000' }] }),
-    ).toBe('until 17:00');
+    expect(formatHours({ openingStatus: 'Specific Hours', openPeriod: [{ startTime: '09:00:00.000' }] })).toBe(
+      'from 09:00',
+    );
+    expect(formatHours({ openingStatus: 'Specific Hours', openPeriod: [{ endTime: '17:00:00.000' }] })).toBe(
+      'until 17:00',
+    );
   });
 
   it('dumps an opening-times array that sits deeper than the bound allows', () => {
@@ -274,13 +268,9 @@ describe('Pattern B -- opening times', () => {
     // through the dispatcher, so it has to check the bound for them itself.
     const entry = [{ daysOfTheWeek: ['Monday'], openPeriod: [], openingStatus: '24 Hours' }];
     // Array at depth 4 -> its period objects at 7, the last allowed level.
-    expect(
-      JSON.stringify(renderAccessibilityValue({ a: { b: { c: { d: entry } } } })),
-    ).not.toContain('"raw"');
+    expect(JSON.stringify(renderAccessibilityValue({ a: { b: { c: { d: entry } } } }))).not.toContain('"raw"');
     // One level deeper and the period objects would fall outside it.
-    expect(
-      JSON.stringify(renderAccessibilityValue({ a: { b: { c: { d: { e: entry } } } } })),
-    ).toContain('"raw"');
+    expect(JSON.stringify(renderAccessibilityValue({ a: { b: { c: { d: { e: entry } } } } }))).toContain('"raw"');
   });
 });
 
@@ -320,9 +310,7 @@ describe('Pattern C -- contact details', () => {
       'contact',
     );
     expect(expectKind(node.fields[0].node, 'link').href).toBe('tel:03450774224');
-    expect(expectKind(node.fields[1].node, 'link').href).toBe(
-      'mailto:customer.relations@scotrail.co.uk',
-    );
+    expect(expectKind(node.fields[1].node, 'link').href).toBe('mailto:customer.relations@scotrail.co.uk');
     // `http:` must survive -- 45 of the sample's 193 anchors use it.
     const website = expectKind(node.fields[2].node, 'link');
     expect(website.href).toBe('http://www.apcoa.co.uk');
@@ -435,7 +423,12 @@ describe('Pattern D -- named-item collection', () => {
               name: 'Car Park 1 Contact Details',
             },
           },
-          accessibleLocations: [{ name: 'Bay 1', accessibilityInfo: { helpPointClose: 'There is no Help Point close to the accessible parking' } }],
+          accessibleLocations: [
+            {
+              name: 'Bay 1',
+              accessibilityInfo: { helpPointClose: 'There is no Help Point close to the accessible parking' },
+            },
+          ],
         },
       ]),
       'collection',
@@ -458,10 +451,7 @@ describe('Pattern D -- named-item collection', () => {
 
   // §4.5's two "fit the bullet branch but read badly there" exceptions.
   it('renders a {name, crsCode} item as "Swansea (SWA)" linked to that station', () => {
-    const node = expectKind(
-      renderAccessibilityValue([{ crsCode: 'SWA', name: 'Swansea' }]),
-      'collection',
-    );
+    const node = expectKind(renderAccessibilityValue([{ crsCode: 'SWA', name: 'Swansea' }]), 'collection');
     expect(node.items[0].label).toBe('Swansea (SWA)');
     expect(node.items[0].link).toEqual({ href: '/stations/SWA', external: false });
   });
@@ -481,10 +471,7 @@ describe('Pattern D -- named-item collection', () => {
   });
 
   it('falls back to a plain text row when a phone number has no digits at all', () => {
-    const node = expectKind(
-      renderAccessibilityValue({ primaryTelephoneNumber: 'see website' }),
-      'contact',
-    );
+    const node = expectKind(renderAccessibilityValue({ primaryTelephoneNumber: 'see website' }), 'contact');
     expectKind(node.fields[0].node, 'text');
   });
 
@@ -504,9 +491,7 @@ describe('Patterns E and F', () => {
       'fields',
     );
     expect(node.fields[0].label).toBeUndefined();
-    expect(expectKind(node.fields[0].node, 'sentence').text).toBe(
-      'There are tactile warnings on all platforms in use',
-    );
+    expect(expectKind(node.fields[0].node, 'sentence').text).toBe('There are tactile warnings on all platforms in use');
   });
 
   // §4.6's failure case for a pure length heuristic: capitalised, spaced,
@@ -520,16 +505,11 @@ describe('Patterns E and F', () => {
       'fields',
     );
     expect(node.fields[0].label).toBe('Category');
-    expect(expectKind(node.fields[0].node, 'text').text).toBe(
-      'B1, (refer to quick reference guide)',
-    );
+    expect(expectKind(node.fields[0].node, 'text').text).toBe('B1, (refer to quick reference guide)');
   });
 
   it('keeps the label on a number or a boolean', () => {
-    const node = expectKind(
-      renderAccessibilityValue({ numberOfSpaces: 80, cctv: true }),
-      'fields',
-    );
+    const node = expectKind(renderAccessibilityValue({ numberOfSpaces: 80, cctv: true }), 'fields');
     // 'cctv' -> 'CCTV': the acronym map review §3.5.11 asks for.
     expect(node.fields.map((field) => field.label)).toEqual(['Number of spaces', 'CCTV']);
     expect(expectKind(node.fields[1].node, 'text').text).toBe('Yes');
@@ -540,12 +520,7 @@ describe('Patterns E and F', () => {
       renderAccessibilityValue(['DepartureScreens', 'Announcements', 'Yes - from help point', 'CCTV']),
       'tokens',
     );
-    expect(node.tokens).toEqual([
-      'Departure screens',
-      'Announcements',
-      'Yes - from help point',
-      'CCTV',
-    ]);
+    expect(node.tokens).toEqual(['Departure screens', 'Announcements', 'Yes - from help point', 'CCTV']);
   });
 });
 
@@ -591,10 +566,7 @@ describe('fields that arrive as an unexpected type', () => {
   // `notes` only when it is a string would do exactly that the day the feed
   // sends an array -- no label, no raw block, no trace.
   it('still renders a facility field whose type the bespoke slot does not handle', () => {
-    const node = expectKind(
-      renderAccessibilityValue({ available: true, notes: ['One note', 'Another'] }),
-      'facility',
-    );
+    const node = expectKind(renderAccessibilityValue({ available: true, notes: ['One note', 'Another'] }), 'facility');
     expect(node.parts[0].label).toBe('Notes');
     expect(expectKind(node.parts[0].node, 'tokens').tokens).toEqual(['One note', 'Another']);
   });
@@ -658,10 +630,7 @@ describe('the fallback branch', () => {
   // §4.9: the old renderer dumped the WHOLE object the moment one value was
   // nested. That bail is what produced the 96.2%.
   it('renders an unmatched object as labelled rows, recursing rather than bailing to raw', () => {
-    const node = expectKind(
-      renderAccessibilityValue({ spaces: { notes: null, numberOfSpaces: 80 } }),
-      'fields',
-    );
+    const node = expectKind(renderAccessibilityValue({ spaces: { notes: null, numberOfSpaces: 80 } }), 'fields');
     const spaces = expectKind(node.fields[0].node, 'fields');
     expect(spaces.fields[0].label).toBe('Number of spaces');
   });
@@ -769,17 +738,13 @@ describe('ACCESSIBILITY_CATEGORIES', () => {
       'helpAndSupport',
       'loungesAndWaiting',
     ];
-    expect([...ACCESSIBILITY_CATEGORIES.flatMap((c) => c.keys)].sort()).toEqual(
-      [...backendAllowlist].sort(),
-    );
+    expect([...ACCESSIBILITY_CATEGORIES.flatMap((c) => c.keys)].sort()).toEqual([...backendAllowlist].sort());
   });
 });
 
 describe('hostLabel (review §3.5.9)', () => {
   it('strips the scheme and a leading www., appending an outbound arrow', () => {
-    expect(hostLabel('https://www.nationalrail.co.uk/stations_destinations/x.aspx')).toBe(
-      'nationalrail.co.uk ↗',
-    );
+    expect(hostLabel('https://www.nationalrail.co.uk/stations_destinations/x.aspx')).toBe('nationalrail.co.uk ↗');
   });
 
   it('keeps a non-www host as-is', () => {
@@ -804,10 +769,7 @@ describe('dedupeAcrossSection (review §3.5.4)', () => {
 
   it('keeps a field that only partially overlaps an earlier one', () => {
     const seen = new Set<string>();
-    dedupeAcrossSection(
-      renderAccessibilityValue({ helpPoints: { available: false, notes: 'Same notes' } }),
-      seen,
-    );
+    dedupeAcrossSection(renderAccessibilityValue({ helpPoints: { available: false, notes: 'Same notes' } }), seen);
     const second = dedupeAcrossSection(
       renderAccessibilityValue({
         helpPoints: { available: false, notes: 'Same notes', inductionLoop: 'Yes' },
@@ -857,7 +819,7 @@ describe('sortEntriesByKind (review §3.5.3)', () => {
 });
 
 describe('computeAtAGlance (review §3.5.3)', () => {
-  it('surfaces a station\'s step-free category, lift count and accessible-toilet facts', () => {
+  it("surfaces a station's step-free category, lift count and accessible-toilet facts", () => {
     const facts = computeAtAGlance({
       stationAccessibility: { stepFreeCategory: { category: 'A, Compliant step-free access' } },
       lifts: { liftsInfo: [{ name: 'Lift 1' }, { name: 'Lift 2' }] },
@@ -887,7 +849,7 @@ describe('computeAtAGlance (review §3.5.3)', () => {
 });
 
 describe('review §3.5.8: a facility free-text duplicate of its own contact phone number', () => {
-  it('drops the facility\'s notes when they are exactly its contact\'s phone number', () => {
+  it("drops the facility's notes when they are exactly its contact's phone number", () => {
     const node = expectKind(
       renderAccessibilityValue({
         available: true,
@@ -902,7 +864,7 @@ describe('review §3.5.8: a facility free-text duplicate of its own contact phon
     expect(node.parts.some((p) => !p.label)).toBe(false);
   });
 
-  it('keeps a facility\'s notes that merely contain, but are not exactly, the contact phone number', () => {
+  it("keeps a facility's notes that merely contain, but are not exactly, the contact phone number", () => {
     const node = expectKind(
       renderAccessibilityValue({
         available: true,
@@ -918,7 +880,10 @@ describe('review §3.5.8: a facility free-text duplicate of its own contact phon
 describe('review §3.5.11: label defects', () => {
   it('does not relabel a nested field with the same name as its own containing key ("Car parks" x2)', () => {
     const node = expectKind(
-      renderAccessibilityValue({ accessibleParkingSpacesAvailable: true, carParks: [{ name: 'Long Stay' }] }, 'carParks'),
+      renderAccessibilityValue(
+        { accessibleParkingSpacesAvailable: true, carParks: [{ name: 'Long Stay' }] },
+        'carParks',
+      ),
       'fields',
     );
     // The nested `carParks` array renders unlabelled -- the group entry's
@@ -946,10 +911,7 @@ describe('review §3.5.11: label defects', () => {
     // `location` (always unlabelled by construction) and a Pattern D item's
     // sibling `location` field (previously only unlabelled when long enough
     // to read as a sentence) used to disagree.
-    const facilityNode = expectKind(
-      renderAccessibilityValue({ available: true, location: 'Concourse' }),
-      'facility',
-    );
+    const facilityNode = expectKind(renderAccessibilityValue({ available: true, location: 'Concourse' }), 'facility');
     expect(facilityNode.parts.find((p) => !p.label)?.node).toEqual({ kind: 'text', text: 'Concourse' });
 
     const plainNode = expectKind(renderAccessibilityValue({ location: 'Concourse' }), 'fields');

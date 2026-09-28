@@ -430,7 +430,11 @@ function JourneyStopRow({
           whose origin platform was captured at pin time. */}
       {showPlatformColumn && (
         <TableTd>
-          <PlatformBadge platform={stop.platform} plannedPlatform={stop.plannedPlatform} platformChanged={stop.platformChanged} />
+          <PlatformBadge
+            platform={stop.platform}
+            plannedPlatform={stop.plannedPlatform}
+            platformChanged={stop.platformChanged}
+          />
         </TableTd>
       )}
     </TableTr>

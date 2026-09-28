@@ -71,7 +71,7 @@ describe('TimeFilterInput', () => {
   // browser language rendered a 12-hour "--:-- --" skeleton on this
   // otherwise all-24h UK site. `lang="en-GB"` pins it to a 24h-clock
   // locale regardless of the visitor's own browser language.
-  it('pins the native input to a 24h-clock locale, independent of the browser\'s own language', () => {
+  it("pins the native input to a 24h-clock locale, independent of the browser's own language", () => {
     renderWithMantine(<Harness />);
     expect(field()).toHaveAttribute('lang', 'en-GB');
   });
@@ -118,9 +118,7 @@ describe('TimeFilterInput', () => {
       throw new DOMException('not allowed', 'NotAllowedError');
     };
 
-    expect(() =>
-      fireEvent.click(screen.getByRole('button', { name: 'Pick earliest departure' })),
-    ).not.toThrow();
+    expect(() => fireEvent.click(screen.getByRole('button', { name: 'Pick earliest departure' }))).not.toThrow();
   });
 
   it('shows a clear button only once there is something to clear', () => {

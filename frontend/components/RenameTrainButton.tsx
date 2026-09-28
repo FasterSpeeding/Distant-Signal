@@ -124,9 +124,7 @@ export const RenameTrainButton = forwardRef<
           data-autofocus
         />
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && (
-          <LoginLink underline="always">Log in to rename this tracked train</LoginLink>
-        )}
+        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to rename this tracked train</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={saving}>
             Cancel

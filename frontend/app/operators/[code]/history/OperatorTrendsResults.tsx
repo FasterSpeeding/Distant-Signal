@@ -7,7 +7,12 @@ import {
 } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
 import type { TrendGranularity } from '@/lib/history';
-import { HONESTY_COPY, HONESTY_COPY_DETAILS, SPARSE_FLOOR, toChartPoints } from '@/app/lines/[id]/history/TrendsResults';
+import {
+  HONESTY_COPY,
+  HONESTY_COPY_DETAILS,
+  SPARSE_FLOOR,
+  toChartPoints,
+} from '@/app/lines/[id]/history/TrendsResults';
 import { TrendsCharts } from '@/app/lines/[id]/history/TrendsCharts';
 import type { ChartPoint } from '@/app/lines/[id]/history/chartPoint';
 
@@ -72,8 +77,8 @@ export async function OperatorTrendsResults({
     return (
       <Paper withBorder p="md">
         <Text c="dimmed">
-          Not enough sampled data yet for this operator. If this operator&apos;s lines are TfL-operated, this
-          may never populate — TfL lines aren&apos;t counted here yet.
+          Not enough sampled data yet for this operator. If this operator&apos;s lines are TfL-operated, this may never
+          populate — TfL lines aren&apos;t counted here yet.
         </Text>
       </Paper>
     );

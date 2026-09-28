@@ -25,13 +25,7 @@ import type { LineSummary } from '@/lib/types';
  * `excludeLineIds` hides lines already shared into this group -- re-sharing
  * one is harmless (the grant is idempotent) but offering it again would be
  * confusing. */
-export function AddCustomLineToGroupButton({
-  groupId,
-  excludeLineIds,
-}: {
-  groupId: string;
-  excludeLineIds: string[];
-}) {
+export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupId: string; excludeLineIds: string[] }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
   const [loading, setLoading] = useState(false);
@@ -99,14 +93,12 @@ export function AddCustomLineToGroupButton({
       </Button>
       <Modal opened={opened} onClose={close} title="Share a custom line with this group">
         <Text size="sm" c="dimmed" mb="sm">
-          Everyone in this group will be able to see this line&apos;s stations, operators and live
-          status. Only you can edit or delete it, and you can stop sharing it at any time.
+          Everyone in this group will be able to see this line&apos;s stations, operators and live status. Only you can
+          edit or delete it, and you can stop sharing it at any time.
         </Text>
         {loading && <Text c="dimmed">Loading your custom lines…</Text>}
         {!loading && lines !== null && lines.length === 0 && (
-          <Text c="dimmed">
-            You have no custom lines left to share with this group.
-          </Text>
+          <Text c="dimmed">You have no custom lines left to share with this group.</Text>
         )}
         {!loading && lines !== null && lines.length > 0 && (
           <Select
@@ -118,9 +110,7 @@ export function AddCustomLineToGroupButton({
           />
         )}
         {error && <Alert color="red">{error}</Alert>}
-        {needsLoginState.needsLogin && (
-          <LoginLink underline="always">Log in to share a line</LoginLink>
-        )}
+        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to share a line</LoginLink>}
         <Button mt="md" onClick={handleAdd} disabled={!selected} loading={submitting}>
           Share with group
         </Button>

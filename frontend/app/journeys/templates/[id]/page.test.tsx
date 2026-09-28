@@ -57,26 +57,18 @@ async function renderPage(id = '167') {
 
 describe('JourneyTemplateDetailPage', () => {
   it('shows a login prompt on a 401 (ApiUnauthorizedError)', async () => {
-    vi.mocked(api.getJourneyTemplate).mockRejectedValue(
-      new api.ApiUnauthorizedError('API request failed: 401'),
-    );
+    vi.mocked(api.getJourneyTemplate).mockRejectedValue(new api.ApiUnauthorizedError('API request failed: 401'));
     await renderPage();
-    expect(
-      screen.getByRole('link', { name: 'Log in to view this template' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in to view this template' })).toBeInTheDocument();
   });
 
   it('calls notFound() on a 404 (ApiNotFoundError)', async () => {
-    vi.mocked(api.getJourneyTemplate).mockRejectedValue(
-      new api.ApiNotFoundError('API request failed: 404'),
-    );
+    vi.mocked(api.getJourneyTemplate).mockRejectedValue(new api.ApiNotFoundError('API request failed: 404'));
     await expect(renderPage()).rejects.toThrow('NEXT_NOT_FOUND');
   });
 
   it('renders the title, the leg editor pre-filled with the template legs, and both header buttons', async () => {
-    vi.mocked(api.getJourneyTemplate).mockResolvedValue(
-      template({ customName: 'My commute' }),
-    );
+    vi.mocked(api.getJourneyTemplate).mockResolvedValue(template({ customName: 'My commute' }));
     await renderPage();
 
     expect(screen.getByRole('heading', { level: 1, name: 'My commute' })).toBeInTheDocument();

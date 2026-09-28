@@ -14,9 +14,15 @@ export const dynamic = 'force-dynamic';
  * each response rather than hand-edited. */
 export const SECURITY_TXT_VALIDITY_DAYS = 180;
 
-export function buildSecurityTxt(now: Date = new Date(), siteOrigin: string | undefined = getConfiguredSiteOrigin()): string {
+export function buildSecurityTxt(
+  now: Date = new Date(),
+  siteOrigin: string | undefined = getConfiguredSiteOrigin(),
+): string {
   const expires = new Date(now.getTime() + SECURITY_TXT_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
-  const lines = [`Contact: mailto:${LEGAL_CONFIG.CONTACT_EMAIL}`, `Expires: ${expires.toISOString().replace(/\.\d{3}Z$/, 'Z')}`];
+  const lines = [
+    `Contact: mailto:${LEGAL_CONFIG.CONTACT_EMAIL}`,
+    `Expires: ${expires.toISOString().replace(/\.\d{3}Z$/, 'Z')}`,
+  ];
   if (siteOrigin) {
     lines.push(`Canonical: ${siteOrigin}/.well-known/security.txt`);
     lines.push(`Policy: ${siteOrigin}/contact`);

@@ -48,11 +48,7 @@ function describeChanges(entry: IncidentHistoryEntry, older: IncidentHistoryEntr
  * call per request, same reasoning as the equivalent, more detailed
  * comment on `app/train/[uid]/[date]/page.tsx`'s `generateMetadata`. Same
  * `notFound()`-on-`ApiNotFoundError` handling as the page component. */
-export async function generateMetadata({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
 
   let incident: IncidentDetail;
@@ -103,9 +99,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
   // in parallel with one another, since a single incident can carry several.
   const [tocs, stationNames] = await Promise.all([
     getAllTocs().catch(() => []),
-    Promise.all(
-      incident.affectedStations.map((crs) => getStationName(crs).catch(() => null)),
-    ),
+    Promise.all(incident.affectedStations.map((crs) => getStationName(crs).catch(() => null))),
   ]);
   const tocLookup = tocNameLookup(tocs);
   const stationNamesByCrs = new Map(incident.affectedStations.map((crs, i) => [crs, stationNames[i]]));
@@ -143,7 +137,9 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           row instead of wrapping the button onto its own. */}
       <Group justify="space-between">
         <Group gap="sm">
-          <Badge color={incident.isPlanned ? 'blue' : 'orange'}>{incident.isPlanned ? 'Planned Work' : 'Real-Time'}</Badge>
+          <Badge color={incident.isPlanned ? 'blue' : 'orange'}>
+            {incident.isPlanned ? 'Planned Work' : 'Real-Time'}
+          </Badge>
           {/* Review §3.3's "at-a-glance strip": the archive rows' own
               Active/Cleared badge, reused verbatim (same colors, same
               copy) so a reader who has seen the archive recognises it

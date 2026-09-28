@@ -1,11 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import {
-  formatDate,
-  formatDateTime,
-  formatLocalDateTime,
-  formatTime,
-  londonDayKey,
-} from './dateFormat';
+import { formatDate, formatDateTime, formatLocalDateTime, formatTime, londonDayKey } from './dateFormat';
 
 describe('formatDate', () => {
   it('renders an unambiguous UK date, never M/D/YYYY', () => {

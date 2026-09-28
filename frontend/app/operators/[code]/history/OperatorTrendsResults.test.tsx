@@ -35,7 +35,9 @@ describe('OperatorTrendsResults', () => {
   // documents for the same bug class.
   it('puts a real space between the honesty copy and the per-page scope sentence', async () => {
     vi.mocked(api.getOperatorDailyStats).mockResolvedValue([dailyRow()]);
-    renderWithMantine(await OperatorTrendsResults({ code: 'GR', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+    renderWithMantine(
+      await OperatorTrendsResults({ code: 'GR', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
+    );
 
     expect(screen.getByText(/flat line\. Rates shown are summed/)).toBeInTheDocument();
     expect(screen.queryByText(/flat line\.Rates/)).not.toBeInTheDocument();

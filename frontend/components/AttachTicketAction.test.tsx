@@ -71,7 +71,10 @@ describe('AttachTicketAction', () => {
     // keeping the listbox structurally valid (axe's
     // `aria-required-children`) once the search comes back empty.
     renderWithMantine(
-      <AttachTicketAction ticketId={5} trains={[train({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' })]} />,
+      <AttachTicketAction
+        ticketId={5}
+        trains={[train({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' })]}
+      />,
     );
     const input = screen.getByRole('combobox', { name: 'Attach to one of your tracked trains' });
     act(() => input.focus());

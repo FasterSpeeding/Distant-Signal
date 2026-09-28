@@ -41,10 +41,7 @@ function Harness({ first }: { first: Observation }) {
   // eslint-disable-next-line react-hooks/globals -- test harness hands the component's setter to the it() blocks (see above)
   observe = setObservation;
   return (
-    <ConnectivityMonitor
-      backendReachable={observation.backendReachable}
-      observedAt={observation.observedAt}
-    >
+    <ConnectivityMonitor backendReachable={observation.backendReachable} observedAt={observation.observedAt}>
       <p>page content</p>
     </ConnectivityMonitor>
   );

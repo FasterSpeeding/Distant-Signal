@@ -63,11 +63,7 @@ vi.mock('@mantine/dates', async (importOriginal) => ({
   }) => (
     <div>
       <label htmlFor="test-search-date">{label}</label>
-      <input
-        id="test-search-date"
-        value={value ?? ''}
-        onChange={(event) => onChange(event.target.value || null)}
-      />
+      <input id="test-search-date" value={value ?? ''} onChange={(event) => onChange(event.target.value || null)} />
       {description && <p>{description}</p>}
     </div>
   ),
@@ -98,23 +94,16 @@ const PAGE_ONE = [
   { uid: 'C10001', scheduled: '08:22', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT' },
   { uid: 'C10002', scheduled: '10:05', stationCrs: 'MAN', originCrs: 'CRE', destinationCrs: 'WAT' },
 ];
-const PAGE_TWO = [
-  { uid: 'C10003', scheduled: '11:40', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT' },
-];
-const PAGE_THREE = [
-  { uid: 'C10004', scheduled: '13:15', stationCrs: 'MAN', originCrs: 'CRE', destinationCrs: 'WAT' },
-];
+const PAGE_TWO = [{ uid: 'C10003', scheduled: '11:40', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT' }];
+const PAGE_THREE = [{ uid: 'C10004', scheduled: '13:15', stationCrs: 'MAN', originCrs: 'CRE', destinationCrs: 'WAT' }];
 
-function mockFetchByUrl(
-  options: { search?: (url: string) => Response; track?: () => Response } = {},
-) {
+function mockFetchByUrl(options: { search?: (url: string) => Response; track?: () => Response } = {}) {
   const {
     search = () => new Response(searchBody(PAGE_ONE), { status: 200 }),
     track = () =>
-      new Response(
-        JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+        status: 200,
+      }),
   } = options;
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
@@ -200,9 +189,7 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm />);
 
     expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
-    expect(
-      screen.getByText('Enter a station above to search for trains that call there.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Enter a station above to search for trains that call there.')).toBeInTheDocument();
   });
 
   it('sends only the station when no optional filter is set', async () => {
@@ -223,9 +210,7 @@ describe('TrainSearchForm', () => {
     fireEvent.change(screen.getByLabelText('Date (optional)'), { target: { value: '2026-09-16' } });
     await clickSearch();
 
-    await waitFor(() =>
-      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&date=2026-09-16'),
-    );
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&date=2026-09-16'));
   });
 
   it('omits date from the search request when no date is picked', async () => {
@@ -333,9 +318,7 @@ describe('TrainSearchForm', () => {
       // Only the cleared field's param is dropped; the other survives.
       await clickSearch();
 
-      await waitFor(() =>
-        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&to=12%3A00'),
-      );
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&to=12%3A00'));
     });
 
     it('offers a clear button only on the time filters that have a value', async () => {
@@ -470,9 +453,7 @@ describe('TrainSearchForm', () => {
       expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
 
       await clickSearch();
-      await waitFor(() =>
-        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'),
-      );
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'));
     });
 
     it('does not let the picker or clear button submit the form', async () => {
@@ -682,8 +663,7 @@ describe('TrainSearchForm', () => {
     expect(row.style.getPropertyValue('--group-wrap')).toBe('wrap');
     // ...and the actions still read flush right on whichever line they land
     // on, which `justify="space-between"` would NOT do once wrapped.
-    const actions = screen.getAllByRole('link', { name: 'View live status' })[0]
-      .parentElement as HTMLElement;
+    const actions = screen.getAllByRole('link', { name: 'View live status' })[0].parentElement as HTMLElement;
     expect(actions.style.marginInlineStart).toBe('auto');
     // ...and a wrapped actions line stays visually tied to ITS summary
     // rather than to the next train's. `Group`'s default `md` gap applies
@@ -714,7 +694,7 @@ describe('TrainSearchForm', () => {
     expect(await screen.findByText('09:00 · ? → MAN → WAT')).toBeInTheDocument();
   });
 
-  it('links each row to the public train page for London\'s today', async () => {
+  it("links each row to the public train page for London's today", async () => {
     // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
@@ -761,11 +741,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(
-      await screen.findByText(
-        /Today's scheduled timetable data isn't available yet/,
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Today's scheduled timetable data isn't available yet/)).toBeInTheDocument();
     // The click's own (second) request already shows the same text as
     // mount's own auto-search 404, so `findByText` above can resolve before
     // this one's response has actually settled -- wait for it too, so its
@@ -776,17 +752,12 @@ describe('TrainSearchForm', () => {
   });
 
   it('says so when the search succeeds but matches nothing', async () => {
-    vi.stubGlobal(
-      'fetch',
-      mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }),
-    );
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }));
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
 
-    expect(
-      await screen.findByText('No scheduled trains match those filters right now.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('No scheduled trains match those filters right now.')).toBeInTheDocument();
   });
 
   it('shows an error state on a 500', async () => {
@@ -796,9 +767,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(
-      await screen.findByText("Couldn't search for trains right now. Try again."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't search for trains right now. Try again.")).toBeInTheDocument();
     // Same rationale as the 404 test above: the click's own (second)
     // request shows the same error text mount's own auto-search already
     // produced, so `findByText` can resolve before this response has
@@ -812,19 +781,14 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(
-      await screen.findByText(/scheduled timetable, not live running information/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/scheduled timetable, not live running information/)).toBeInTheDocument();
   });
 
   it('offers the manual /track fallback, carrying any ticketId through', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm attachTicketId={7} />);
 
-    expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute(
-      'href',
-      '/track?ticketId=7',
-    );
+    expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track?ticketId=7');
   });
 
   it('offers the manual /track fallback with no query string when there is no ticketId', () => {
@@ -923,16 +887,11 @@ describe('TrainSearchForm', () => {
     failNextPage = false;
     await clickSearch();
 
-    await waitFor(() =>
-      expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument());
   });
 
   it('shows neither Load more nor the end-of-results line when the search matched nothing', async () => {
-    vi.stubGlobal(
-      'fetch',
-      mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }),
-    );
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }));
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
@@ -985,18 +944,14 @@ describe('TrainSearchForm', () => {
     expect(urls[1]).toBe('/api/trains/search?station=MAN');
     expect(urls[2]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
 
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument());
   });
 
   it('uses the NEW cursor on a second Load more, not the first one again', async () => {
     const fetchMock = mockFetchByUrl({
       search: (url) => {
-        if (url.includes('after=CURSOR2'))
-          return new Response(searchBody(PAGE_THREE, null), { status: 200 });
-        if (url.includes('after=CURSOR1'))
-          return new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 });
+        if (url.includes('after=CURSOR2')) return new Response(searchBody(PAGE_THREE, null), { status: 200 });
+        if (url.includes('after=CURSOR1')) return new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 });
         return new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 });
       },
     });
@@ -1015,10 +970,9 @@ describe('TrainSearchForm', () => {
     // click; indices 2/3 the two "Load more" presses.
     expect(urls).toHaveLength(4);
     expect(urls[2]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
-    expect(
-      urls[3],
-      'the second Load more must use the cursor from the SECOND response',
-    ).toBe('/api/trains/search?station=MAN&after=CURSOR2');
+    expect(urls[3], 'the second Load more must use the cursor from the SECOND response').toBe(
+      '/api/trains/search?station=MAN&after=CURSOR2',
+    );
     expect(screen.getAllByText('11:40 · EUS → MAN → WAT')).toHaveLength(1);
   });
 
@@ -1063,9 +1017,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    await waitFor(() =>
-      expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument());
     expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
   });
 
@@ -1123,9 +1075,7 @@ describe('TrainSearchForm', () => {
     });
     await clickSearch();
 
-    await waitFor(() =>
-      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'),
-    );
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'));
   });
 
   it('does not render the arrival-time filter until a station is entered in Stops at', async () => {
@@ -1207,10 +1157,7 @@ describe('TrainSearchForm', () => {
       await clickSearch();
 
       await waitFor(() =>
-        expect(replaceMock).toHaveBeenCalledWith(
-          '/trains?station=MAN&origin=EUS&from=09%3A00',
-          { scroll: false },
-        ),
+        expect(replaceMock).toHaveBeenCalledWith('/trains?station=MAN&origin=EUS&from=09%3A00', { scroll: false }),
       );
       expect(replaceMock).toHaveBeenCalledTimes(1);
       // `replace`, not `push`: this should keep /trains a single history
@@ -1249,13 +1196,7 @@ describe('TrainSearchForm', () => {
     it('auto-runs the search on mount when the initial station is valid, with no click at all', async () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(
-        <TrainSearchForm
-          initialStation="MAN"
-          initialOrigin="EUS"
-          initialFrom="09:00"
-        />,
-      );
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialOrigin="EUS" initialFrom="09:00" />);
 
       await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(1));
       expect(searchCallUrls(fetchMock)[0]).toBe('/api/trains/search?station=MAN&origin=EUS&from=09%3A00');

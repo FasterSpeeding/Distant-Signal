@@ -1,0 +1,10 @@
+# Commits that `git blame` should skip: pure mechanical reformats with no
+# behaviour change. GitHub's blame view honours this file automatically;
+# locally, run once:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# NOTE: if a listed commit is rebased or re-created (e.g. the reformat is
+# re-run at merge time), replace its full SHA here.
+
+# style(frontend): run Prettier across the whole frontend
+1d5520321a9d78435349716afa4c96b2e36a88ff

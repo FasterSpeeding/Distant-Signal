@@ -86,8 +86,7 @@ const REAL_STATION_CRS = process.env.E2E_REAL_STATION_CRS ?? 'PAD';
 //    in `components/JourneyProgress.test.tsx`'s "keyboard reachability"
 //    block, exactly as before.
 const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE;
-const LEGAL_PAGES_RENDERED =
-  process.env.LEGAL_PAGES_PREVIEW === 'true' || process.env.LEGAL_PAGES_PUBLISHED === 'true';
+const LEGAL_PAGES_RENDERED = process.env.LEGAL_PAGES_PREVIEW === 'true' || process.env.LEGAL_PAGES_PUBLISHED === 'true';
 const GROUP_ID = process.env.E2E_GROUP_ID;
 const GROUP_INVITE_TOKEN = process.env.E2E_GROUP_INVITE_TOKEN;
 const CUSTOM_LINE_ID = process.env.E2E_CUSTOM_LINE_ID;
@@ -385,7 +384,10 @@ test.describe('accessibility: interactive sub-states', () => {
 
   test('/incidents, results rendered', async ({ page }) => {
     await page.goto('/incidents');
-    await page.getByRole('button', { name: /^Search/ }).first().click();
+    await page
+      .getByRole('button', { name: /^Search/ })
+      .first()
+      .click();
     await expect(page.getByRole('button', { name: /^Search/ }).first()).toBeEnabled();
     await expectNoViolations(page);
   });
@@ -433,14 +435,20 @@ test.describe('accessibility: interactive sub-states', () => {
 
   test('/trains, station autocomplete open with suggestions', async ({ page }) => {
     await page.goto('/trains');
-    await page.getByRole('combobox', { name: /Station/i }).first().fill('Lon');
+    await page
+      .getByRole('combobox', { name: /Station/i })
+      .first()
+      .fill('Lon');
     await expect(page.getByRole('listbox').first()).toBeVisible();
     await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
   });
 
   test('/lines/new, station autocomplete open with suggestions', async ({ page }) => {
     await page.goto('/lines/new');
-    await page.getByRole('combobox', { name: /Add station/i }).first().fill('Lon');
+    await page
+      .getByRole('combobox', { name: /Add station/i })
+      .first()
+      .fill('Lon');
     await expect(page.getByRole('listbox').first()).toBeVisible();
     await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
   });
@@ -461,9 +469,7 @@ test.describe('accessibility: interactive sub-states', () => {
     await expectNoViolations(page);
   });
 
-  test('combobox keyboard reachability (the evidence behind COMBOBOX_PORTAL_WAIVERS)', async ({
-    page,
-  }) => {
+  test('combobox keyboard reachability (the evidence behind COMBOBOX_PORTAL_WAIVERS)', async ({ page }) => {
     // Not a duplicate of the axe run above: this is the assertion that
     // earns the `scrollable-region-focusable` waiver, by demonstrating the
     // thing that rule cannot see. If Mantine ever changes its combobox away
@@ -482,9 +488,7 @@ test.describe('accessibility: interactive sub-states', () => {
     // `.mantine-ScrollArea-viewport` on its own also matches in-page scroll
     // areas, and a page-level one that never scrolls would make this pass
     // or fail for the wrong reason.
-    const viewport = page.locator(
-      '[data-mantine-shared-portal-node] .mantine-ScrollArea-viewport',
-    );
+    const viewport = page.locator('[data-mantine-shared-portal-node] .mantine-ScrollArea-viewport');
     const { scrollable, options } = await viewport.evaluate((el) => ({
       scrollable: el.scrollHeight > el.clientHeight,
       options: el.querySelectorAll('[role="option"]').length,
@@ -515,9 +519,7 @@ test.describe('accessibility: interactive sub-states', () => {
     await expectNoViolations(page);
   });
 
-  test('skip link: first focusable element, visible on focus, targets main content', async ({
-    page,
-  }) => {
+  test('skip link: first focusable element, visible on focus, targets main content', async ({ page }) => {
     // WCAG 2.4.1 (Bypass Blocks): skip link must be the first focusable
     // element, must be visible on keyboard focus, and must target the main
     // content area. This test verifies all three requirements.
@@ -572,7 +574,10 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
   // a full-ruleset sweep is here to keep honest.
   test('the account menu, opened', async ({ page }) => {
     await page.goto('/lines');
-    await page.locator('nav[aria-label="Main"]').getByRole('button', { name: /^Account menu for/ }).click();
+    await page
+      .locator('nav[aria-label="Main"]')
+      .getByRole('button', { name: /^Account menu for/ })
+      .click();
     await expect(page.getByRole('menu')).toBeVisible();
     await expectNoViolations(page, MENU_PORTAL_WAIVERS);
   });
@@ -599,7 +604,10 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     // free-standing "Delete" button -- open that first, then its "Stop
     // tracking" menu item.
     await page.goto('/track/mine');
-    await page.getByRole('button', { name: /^More actions for/ }).first().click();
+    await page
+      .getByRole('button', { name: /^More actions for/ })
+      .first()
+      .click();
     await page.getByRole('menuitem', { name: 'Stop tracking' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Close' })).toBeVisible();
@@ -625,7 +633,10 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
   test('/groups/[id], rename modal', async ({ page }) => {
     test.skip(!GROUP_ID, 'set E2E_GROUP_ID');
     await page.goto(`/groups/${GROUP_ID}`);
-    await page.getByRole('button', { name: /^Rename$/ }).first().click();
+    await page
+      .getByRole('button', { name: /^Rename$/ })
+      .first()
+      .click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expectNoViolations(page);
   });
@@ -651,7 +662,10 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     );
     // Task 3.6.7: open the row's overflow-kebab menu first, same as the
     // confirmation-modal test above.
-    await page.getByRole('button', { name: /^More actions for/ }).first().click();
+    await page
+      .getByRole('button', { name: /^More actions for/ })
+      .first()
+      .click();
     await page.getByRole('menuitem', { name: 'Stop tracking' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await page.getByRole('button', { name: 'Confirm stop tracking' }).click();

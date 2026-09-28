@@ -68,10 +68,9 @@ function mockFetchByUrl(
     }
     if (url === '/api/Journeys' && init?.method === 'POST') {
       return Promise.resolve(
-        new Response(
-          JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
-          { status: 200 },
-        ),
+        new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
+          status: 200,
+        }),
       );
     }
     if (url === '/api/Journeys/99' && (!init || init.method === undefined || init.method === 'GET')) {
@@ -128,7 +127,9 @@ describe('JourneyCreationFlow', () => {
   });
 
   it('hides "Add a leg" while the only leg is still unmatched', async () => {
-    const fetchMock = mockFetchByUrl({ journeyDetail: () => journeyDetailResponse([leg({ trackedTrainState: null })]) });
+    const fetchMock = mockFetchByUrl({
+      journeyDetail: () => journeyDetailResponse([leg({ trackedTrainState: null })]),
+    });
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<JourneyCreationFlow />);
 

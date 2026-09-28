@@ -45,10 +45,7 @@ describe('AppNavBar', () => {
     for (const session of [loggedOut, loggedIn]) {
       const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
       for (const destination of PRIMARY_NAV_DESTINATIONS) {
-        expect(screen.getByRole('link', { name: destination.label })).toHaveAttribute(
-          'href',
-          destination.href,
-        );
+        expect(screen.getByRole('link', { name: destination.label })).toHaveAttribute('href', destination.href);
       }
       unmount();
     }
@@ -68,10 +65,7 @@ describe('AppNavBar', () => {
 
   it('offers "My Trains & Tickets" inline to an anonymous visitor, who has no account menu to find it in', () => {
     renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-    expect(screen.getByRole('link', { name: 'My Trains & Tickets' })).toHaveAttribute(
-      'href',
-      '/track/mine',
-    );
+    expect(screen.getByRole('link', { name: 'My Trains & Tickets' })).toHaveAttribute('href', '/track/mine');
   });
 
   it('moves "My Trains & Tickets" out of the bar once there is an account menu to hold it', () => {
@@ -121,10 +115,7 @@ describe('AppNavBar', () => {
       const drawer = await screen.findByRole('dialog');
 
       for (const destination of [...PRIMARY_NAV_DESTINATIONS, { label: 'My Trains & Tickets', href: '/track/mine' }]) {
-        expect(within(drawer).getByRole('link', { name: destination.label })).toHaveAttribute(
-          'href',
-          destination.href,
-        );
+        expect(within(drawer).getByRole('link', { name: destination.label })).toHaveAttribute('href', destination.href);
       }
     });
 
@@ -183,7 +174,10 @@ describe('auth Suspense fallback colour', () => {
     // could quietly drift from one of them.
     const navBarSource = readFileSync('components/AppNavBar.tsx', 'utf8');
     const textLinkSource = readFileSync('components/TextLink.tsx', 'utf8');
-    const fallbackMatch = navBarSource.match(/<Suspense fallback=\{<Text size="sm" c="([^"]+)">Log in<\/Text>\}>/);
+    // Whitespace-tolerant so Prettier's line-wrapping of the JSX can't break it.
+    const fallbackMatch = navBarSource.match(
+      /<Suspense\s+fallback=\{\s*<Text size="sm" c="([^"]+)">\s*Log in\s*<\/Text>\s*\}\s*>/,
+    );
     const textLinkMatch = textLinkSource.match(/<Text c="([^"]+)"/);
     expect(fallbackMatch).not.toBeNull();
     expect(textLinkMatch).not.toBeNull();

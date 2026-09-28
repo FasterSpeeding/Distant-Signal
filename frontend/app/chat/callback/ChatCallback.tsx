@@ -48,9 +48,7 @@ function ErrorIcon() {
  * abort it. */
 const AUTH_TIMEOUT_MS = 20_000;
 
-type Exchange =
-  | { kind: 'error'; message: string }
-  | { kind: 'pending'; promise: Promise<AuthResult> };
+type Exchange = { kind: 'error'; message: string } | { kind: 'pending'; promise: Promise<AuthResult> };
 
 /** Validates the callback URL and starts the authorization-code exchange.
  * Runs once per mount (see `exchangeRef`). */
@@ -84,10 +82,7 @@ function startExchange(serverUrl: string): Exchange {
   return { kind: 'pending', promise: auth(provider, { serverUrl, authorizationCode: code }) };
 }
 
-type CallbackState =
-  | { kind: 'connecting' }
-  | { kind: 'success' }
-  | { kind: 'error'; message: string };
+type CallbackState = { kind: 'connecting' } | { kind: 'success' } | { kind: 'error'; message: string };
 
 /** `/chat/callback` -- the redirect target `distant-signal-mcp`'s own
  * `/authorize` -> `/connect-claude/authorize` consent bridge sends the
@@ -227,9 +222,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>
-        {state.kind === 'success' ? 'Connected, taking you to Chat…' : 'Connecting…'}
-      </Title>
+      <Title order={1}>{state.kind === 'success' ? 'Connected, taking you to Chat…' : 'Connecting…'}</Title>
       <Group gap="sm">
         {state.kind === 'connecting' && <Loader size="sm" />}
         <Text c="dimmed">Finishing sign-in to the rail data service.</Text>

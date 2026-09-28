@@ -95,8 +95,8 @@ export async function CoverageTrendsResults({ id, from, to }: { id: string; from
           docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
           Decision 4. */}
       <Text size="sm" c="dimmed">
-        Rates shown cover every scheduled service on this line, cross-referenced against real train-movement data —
-        not a sample of live departures at a handful of stations.
+        Rates shown cover every scheduled service on this line, cross-referenced against real train-movement data — not
+        a sample of live departures at a handful of stations.
       </Text>
       <Title order={3} size="h6">
         Full coverage

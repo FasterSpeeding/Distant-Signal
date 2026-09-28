@@ -164,11 +164,7 @@ describe('AllLinesTable', () => {
     // layout/IntersectionObserver here), so a second query issued after an
     // earlier `await` sees nothing. One synchronous snapshot avoids that.
     const optionText = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(optionText).toEqual([
-      'GW - Great Western Railway',
-      'SW - South Western Railway',
-      'VT - Avanti West Coast',
-    ]);
+    expect(optionText).toEqual(['GW - Great Western Railway', 'SW - South Western Railway', 'VT - Avanti West Coast']);
   });
 
   it('narrows rows to lines matching the selected operator', async () => {
@@ -363,11 +359,21 @@ describe('AllLinesTable "NO DATA" status badge', () => {
 describe('AllLinesTable dash tooltip', () => {
   const dashLines: LineSummary[] = [
     { id: 'no-coverage-line', name: 'No Coverage Line', category: 'Regional', operators: ['SW'], source: 'catalogue' },
-    { id: 'below-threshold-line', name: 'Below Threshold Line', category: 'Regional', operators: ['SW'], source: 'catalogue' },
+    {
+      id: 'below-threshold-line',
+      name: 'Below Threshold Line',
+      category: 'Regional',
+      operators: ['SW'],
+      source: 'catalogue',
+    },
     { id: 'tube-line', name: 'Tube Line', category: 'operator', operators: ['TfL'], source: 'catalogue' },
   ];
 
-  function dashReport(id: string, name: string, status: Partial<LineStatusReport['lineStatuses'][number]>): LineStatusReport {
+  function dashReport(
+    id: string,
+    name: string,
+    status: Partial<LineStatusReport['lineStatuses'][number]>,
+  ): LineStatusReport {
     return report({
       id,
       name,
@@ -391,13 +397,14 @@ describe('AllLinesTable dash tooltip', () => {
     dashReport('below-threshold-line', 'Below Threshold Line', {
       sampleAvailability: { state: 'below-threshold', observed: 2, required: 3 },
     }),
-    dashReport('tube-line', 'Tube Line', { dataQuality: 'tfl', sampleAvailability: { state: 'below-threshold', observed: 0, required: 1 } }),
+    dashReport('tube-line', 'Tube Line', {
+      dataQuality: 'tfl',
+      sampleAvailability: { state: 'below-threshold', observed: 0, required: 1 },
+    }),
   ];
 
   function renderDashTable() {
-    return renderWithMantine(
-      <AllLinesTable lines={dashLines} reports={dashReports} pinnedLineIds={[]} tocs={[]} />,
-    );
+    return renderWithMantine(<AllLinesTable lines={dashLines} reports={dashReports} pinnedLineIds={[]} tocs={[]} />);
   }
 
   it('renders a plain dash glyph for every state, no new visual vocabulary', () => {
@@ -694,15 +701,19 @@ describe('AllLinesTable country filter', () => {
   it('renders once a second country is present, and filters correctly', async () => {
     const countryLines: LineSummary[] = [
       { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['VT'], source: 'catalogue' },
-      { id: 'synthetic-ni-line', name: 'Synthetic NI Line', category: 'Regional', operators: ['NI'], source: 'catalogue' },
+      {
+        id: 'synthetic-ni-line',
+        name: 'Synthetic NI Line',
+        category: 'Regional',
+        operators: ['NI'],
+        source: 'catalogue',
+      },
     ];
     const countryReports: LineStatusReport[] = [
       report({ id: 'wcml', name: 'West Coast Main Line' }), // modeName defaults to 'national-rail' -> Gb
       report({ id: 'synthetic-ni-line', name: 'Synthetic NI Line', modeName: 'synthetic-ni-mode' }), // -> NorthernIreland, via the mock above
     ];
-    renderWithMantine(
-      <AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />,
-    );
+    renderWithMantine(<AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />);
 
     expect(screen.getByText('Country — showing all')).toBeInTheDocument();
     // Mantine's Chip in `multiple` mode renders as an accessible checkbox,
@@ -732,16 +743,20 @@ describe('AllLinesTable country filter', () => {
     const countryLines: LineSummary[] = [
       { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['VT'], source: 'catalogue' },
       { id: 'gwr', name: 'Great Western Railway', category: 'Long Distance', operators: ['GW'], source: 'catalogue' },
-      { id: 'synthetic-ni-line', name: 'Synthetic NI Line', category: 'Regional', operators: ['VT'], source: 'catalogue' },
+      {
+        id: 'synthetic-ni-line',
+        name: 'Synthetic NI Line',
+        category: 'Regional',
+        operators: ['VT'],
+        source: 'catalogue',
+      },
     ];
     const countryReports: LineStatusReport[] = [
       report({ id: 'wcml', name: 'West Coast Main Line' }),
       report({ id: 'gwr', name: 'Great Western Railway' }),
       report({ id: 'synthetic-ni-line', name: 'Synthetic NI Line', modeName: 'synthetic-ni-mode' }),
     ];
-    renderWithMantine(
-      <AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />,
-    );
+    renderWithMantine(<AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />);
 
     // Filter to operator "VT" (matches wcml and synthetic-ni-line) AND
     // country "Gb" (matches wcml and gwr) -- intersection is wcml alone.
@@ -767,9 +782,7 @@ describe('status-group filter', () => {
   });
 
   it('shows only lines whose worst status is in the selected group', () => {
-    renderWithMantine(
-      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />,
-    );
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     // A non-`multiple` Mantine `ChipGroup` renders each `Chip` as
     // `type="radio"`, exposed to Testing Library as `role="radio"` (not
     // `role="button"`) -- unlike the country filter's `multiple` ChipGroup
@@ -781,13 +794,7 @@ describe('status-group filter', () => {
 
   it('seeds the filter from initialStatusGroup and filters on first render', () => {
     renderWithMantine(
-      <AllLinesTable
-        lines={lines}
-        reports={reports}
-        pinnedLineIds={[]}
-        tocs={[]}
-        initialStatusGroup="mild"
-      />,
+      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
     );
     expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Great Western Railway' })).not.toBeInTheDocument();

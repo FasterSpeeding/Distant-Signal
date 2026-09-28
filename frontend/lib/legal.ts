@@ -185,7 +185,10 @@ export function retentionPolicy(env: Record<string, string | undefined> = proces
       env.RETENTION_STALE_PUSH_SUBSCRIPTION_DAYS,
       DEFAULT_RETENTION_POLICY.stalePushSubscriptionDays,
     ),
-    inactiveAccountDays: retentionDays(env.RETENTION_INACTIVE_ACCOUNT_DAYS, DEFAULT_RETENTION_POLICY.inactiveAccountDays),
+    inactiveAccountDays: retentionDays(
+      env.RETENTION_INACTIVE_ACCOUNT_DAYS,
+      DEFAULT_RETENTION_POLICY.inactiveAccountDays,
+    ),
   };
 }
 

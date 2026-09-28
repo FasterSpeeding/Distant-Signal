@@ -19,7 +19,10 @@ import { legalPageMetadata } from '@/lib/legal';
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
-  return legalPageMetadata('Cookies and browser storage', 'The cookies and browser storage Distant Signal uses, and why.');
+  return legalPageMetadata(
+    'Cookies and browser storage',
+    'The cookies and browser storage Distant Signal uses, and why.',
+  );
 }
 
 interface StorageItem {
@@ -54,7 +57,8 @@ const LOCAL_STORAGE: readonly StorageItem[] = [
   },
   {
     name: 'lastSuccessfulLoadAt',
-    purpose: 'Records when the app last loaded, so the offline page can say how old its information is. Never sent to us.',
+    purpose:
+      'Records when the app last loaded, so the offline page can say how old its information is. Never sent to us.',
     lasts: 'Until you clear it.',
   },
   {

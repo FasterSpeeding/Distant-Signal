@@ -14,14 +14,7 @@ import {
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from '@/lib/api';
-import type {
-  GroupCustomLine,
-  GroupJourney,
-  GroupMember,
-  GroupRole,
-  GroupTrain,
-  LineStatusReport,
-} from '@/lib/types';
+import type { GroupCustomLine, GroupJourney, GroupMember, GroupRole, GroupTrain, LineStatusReport } from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -131,7 +124,12 @@ describe('GroupDetailPage', () => {
         addedByTag: null,
       },
     ]);
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      email: null,
+      name: 'Alex',
+    });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
@@ -196,7 +194,12 @@ describe('GroupDetailPage', () => {
         addedByTag: null,
       },
     ]);
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      email: null,
+      name: 'Alex',
+    });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
@@ -225,7 +228,13 @@ describe('GroupDetailPage', () => {
     vi.mocked(getGroupMembers).mockResolvedValue([
       { userId: 'user-1', displayName: null, displayTag: 'a1b2c3', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
       { userId: 'user-2', displayName: null, displayTag: 'd4e5f6', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
-      { userId: 'user-3', displayName: 'Ada Rider', displayTag: null, role: 'member', joinedAt: '2026-09-03T00:00:00Z' },
+      {
+        userId: 'user-3',
+        displayName: 'Ada Rider',
+        displayTag: null,
+        role: 'member',
+        joinedAt: '2026-09-03T00:00:00Z',
+      },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([
       {
@@ -278,7 +287,12 @@ describe('GroupDetailPage', () => {
       { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      email: null,
+      name: 'Alex',
+    });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     expect(screen.getByRole('link', { name: '← Groups' })).toHaveAttribute('href', '/groups');
@@ -304,7 +318,12 @@ describe('GroupDetailPage', () => {
       { userId: 'user-2', displayName: 'Sam', displayTag: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      email: null,
+      name: 'Alex',
+    });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     expect(screen.getAllByText('(you)')).toHaveLength(1);
@@ -326,7 +345,12 @@ describe('GroupDetailPage', () => {
       { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      email: null,
+      name: 'Alex',
+    });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
@@ -466,7 +490,7 @@ describe('GroupDetailPage', () => {
       expect(screen.queryByRole('button', { name: 'Remove from group' })).not.toBeInTheDocument();
     });
 
-    it("a plain member viewer DOES see \"Remove from group\" on their own shared train", async () => {
+    it('a plain member viewer DOES see "Remove from group" on their own shared train', async () => {
       await renderAs(PLAIN, 'member', [sharedTrain(PLAIN.userId, 42)]);
       expect(screen.getByRole('button', { name: 'Remove from group' })).toBeInTheDocument();
     });
@@ -547,7 +571,7 @@ describe('GroupDetailPage', () => {
     // query picks the longest-standing remaining ADMIN over a longer-standing
     // plain member, so the copy here must name Adam, not Priya, even though
     // Priya joined first.
-    it("names the longest-standing admin as the successor when the owner leaves", async () => {
+    it('names the longest-standing admin as the successor when the owner leaves', async () => {
       await renderAs(OWNER, 'owner');
 
       fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
@@ -658,9 +682,7 @@ describe('GroupDetailPage', () => {
 
     it('renders an empty state when nothing has been shared', async () => {
       await renderAsViewer('user-owner', 'owner');
-      expect(
-        screen.getByText('No custom lines have been shared into this group yet.'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('No custom lines have been shared into this group yet.')).toBeInTheDocument();
     });
 
     it('renders a shared line with its attribution, status badge and link out', async () => {
@@ -669,10 +691,7 @@ describe('GroupDetailPage', () => {
       await renderAsViewer('user-other', 'member');
 
       expect(screen.getByRole('heading', { name: 'Shared custom lines' })).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'My Commute' })).toHaveAttribute(
-        'href',
-        '/lines/custom-my-commute',
-      );
+      expect(screen.getByRole('link', { name: 'My Commute' })).toHaveAttribute('href', '/lines/custom-my-commute');
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
       expect(screen.getByText('Severe Delays')).toBeInTheDocument();
     });
@@ -797,9 +816,7 @@ describe('GroupDetailPage', () => {
 
     it('renders an empty state when nothing has been shared', async () => {
       await renderAsViewer('user-owner', 'owner');
-      expect(
-        screen.getByText('No journeys have been shared into this group yet.'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('No journeys have been shared into this group yet.')).toBeInTheDocument();
     });
 
     it('renders a shared journey with its route, attribution, status badge and link out', async () => {
@@ -807,9 +824,10 @@ describe('GroupDetailPage', () => {
       await renderAsViewer('user-other', 'member');
 
       expect(screen.getByRole('heading', { name: 'Shared journeys' })).toBeInTheDocument();
-      expect(
-        screen.getByRole('link', { name: /Woking \(WOK\) → London Waterloo \(WAT\)/ }),
-      ).toHaveAttribute('href', '/journeys/501');
+      expect(screen.getByRole('link', { name: /Woking \(WOK\) → London Waterloo \(WAT\)/ })).toHaveAttribute(
+        'href',
+        '/journeys/501',
+      );
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
       // Same shared `TrackedTrainStatusBadge` `/` and `/track/mine` use --
       // the raw `status` enum token must never leak into the page.
@@ -849,7 +867,7 @@ describe('GroupDetailPage', () => {
     // has a regression test for above -- a blank string used to render as
     // "Shared by " with nothing after it rather than falling back to the
     // generic placeholder.
-    it('falls back to a placeholder when the sharer\'s display name is blank rather than null', async () => {
+    it("falls back to a placeholder when the sharer's display name is blank rather than null", async () => {
       vi.mocked(getGroupJourneys).mockResolvedValue([journey({ addedByName: '' })]);
       await renderAsViewer('user-other', 'member');
 

@@ -111,9 +111,7 @@ function halfHourlyStatsRow(overrides: Partial<LineHalfHourlyStats> = {}): LineH
   };
 }
 
-function halfHourlyCoverageStatsRow(
-  overrides: Partial<LineHalfHourlyCoverageStats> = {},
-): LineHalfHourlyCoverageStats {
+function halfHourlyCoverageStatsRow(overrides: Partial<LineHalfHourlyCoverageStats> = {}): LineHalfHourlyCoverageStats {
   return {
     halfHourStart: '2026-08-30T14:00:00Z',
     resolvedWindows: 25,
@@ -172,9 +170,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
     await renderPage();
     expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
-    expect(
-      screen.getByText('Shared with you through a group. Only its owner can edit it.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Shared with you through a group. Only its owner can edit it.')).toBeInTheDocument();
     await screen.findByText('Not enough sampled data yet for this line.');
   });
 
@@ -559,9 +555,7 @@ describe('LineDetailPage -- a line with no status row yet', () => {
 
     expect(notFound).not.toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
-    expect(
-      screen.getByText('Shared with you through a group. Only its owner can edit it.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Shared with you through a group. Only its owner can edit it.')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
@@ -587,7 +581,7 @@ describe('LineDetailPage -- a line with no status row yet', () => {
   // The other half of the fix: a genuinely nonexistent id, or someone
   // else's private custom line (both `getCustomLine` 404 + absent from
   // `getAllLines`), must still 404 the whole page.
-  it('404s when no source can name the line -- an unknown id, or a line that is not the viewer\'s to see', async () => {
+  it("404s when no source can name the line -- an unknown id, or a line that is not the viewer's to see", async () => {
     const { notFound } = await import('next/navigation');
     vi.mocked(notFound).mockClear();
     vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
@@ -774,16 +768,16 @@ describe('generateMetadata', () => {
     const { notFound } = await import('next/navigation');
     vi.mocked(notFound).mockClear();
 
-    await expect(
-      generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) }),
-    ).rejects.toThrow('connect ECONNREFUSED');
+    await expect(generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) })).rejects.toThrow(
+      'connect ECONNREFUSED',
+    );
     expect(notFound).not.toHaveBeenCalled();
   });
 
   it('propagates a non-404 status failure instead of reporting no status', async () => {
     vi.mocked(api.getLineStatus).mockRejectedValue(new Error('connect ECONNREFUSED'));
-    await expect(
-      generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) }),
-    ).rejects.toThrow('connect ECONNREFUSED');
+    await expect(generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) })).rejects.toThrow(
+      'connect ECONNREFUSED',
+    );
   });
 });

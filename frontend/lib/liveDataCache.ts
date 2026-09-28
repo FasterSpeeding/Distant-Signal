@@ -65,11 +65,7 @@ export async function withStaleFallback<T>(key: string, fetcher: () => Promise<T
     }
     return data;
   } catch (err) {
-    if (
-      err instanceof ApiNotFoundError ||
-      err instanceof ApiUnauthorizedError ||
-      err instanceof ApiForbiddenError
-    ) {
+    if (err instanceof ApiNotFoundError || err instanceof ApiUnauthorizedError || err instanceof ApiForbiddenError) {
       throw err;
     }
     const entry = cache.get(mapKey);

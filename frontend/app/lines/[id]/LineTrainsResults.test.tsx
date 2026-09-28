@@ -64,7 +64,7 @@ describe('LineTrainsResults', () => {
     expect(screen.getByText(/08:00/)).toBeInTheDocument();
   });
 
-  it('renders a live row\'s resolved route and links to /train/{uid}/{date}, with a row-specific accessible name', async () => {
+  it("renders a live row's resolved route and links to /train/{uid}/{date}, with a row-specific accessible name", async () => {
     vi.mocked(api.getLineTrains).mockResolvedValue([
       entry({
         liveStatus: {
@@ -256,9 +256,7 @@ describe('LineTrainsResults', () => {
     // Well after the fixture's 08:00 departure.
     const now = new Date('2026-09-22T20:00:00Z');
     renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now }));
-    expect(
-      screen.getByText('No more trains are scheduled on this line for the rest of today.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No more trains are scheduled on this line for the rest of today.')).toBeInTheDocument();
     expect(screen.getByText(/1 earlier train today/)).toBeInTheDocument();
   });
 });

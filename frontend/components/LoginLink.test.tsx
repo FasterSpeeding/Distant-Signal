@@ -63,10 +63,7 @@ describe('LoginLink', () => {
     mockUsePathname.mockReturnValue('/');
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
     renderWithMantine(<LoginLink underline="always">Log in to pin</LoginLink>);
-    expect(screen.getByRole('link', { name: 'Log in to pin' })).toHaveAttribute(
-      'data-text-link',
-      'always',
-    );
+    expect(screen.getByRole('link', { name: 'Log in to pin' })).toHaveAttribute('data-text-link', 'always');
   });
 
   // Review §2.16: AuthStatus's nav-bar use of this component now sets
@@ -83,9 +80,6 @@ describe('LoginLink', () => {
     mockUsePathname.mockReturnValue('/');
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
     renderWithMantine(<LoginLink>Log in</LoginLink>);
-    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
-      'href',
-      '/api/auth/login?return_to=%2F',
-    );
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute('href', '/api/auth/login?return_to=%2F');
   });
 });

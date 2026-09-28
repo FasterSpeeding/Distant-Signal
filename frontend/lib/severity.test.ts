@@ -8,7 +8,7 @@ describe('severityColor', () => {
   });
 
   it('maps informational values to gray', () => {
-    expect(severityColor(0)).toBe('gray');  // SpecialService
+    expect(severityColor(0)).toBe('gray'); // SpecialService
     expect(severityColor(12)).toBe('gray'); // ExitOnly
     expect(severityColor(13)).toBe('gray'); // NoStepFree
   });
@@ -19,19 +19,19 @@ describe('severityColor', () => {
   });
 
   it('maps mild disruption values to yellow', () => {
-    expect(severityColor(9)).toBe('yellow');  // MinorDelays
-    expect(severityColor(7)).toBe('yellow');  // ReducedService
+    expect(severityColor(9)).toBe('yellow'); // MinorDelays
+    expect(severityColor(7)).toBe('yellow'); // ReducedService
     expect(severityColor(14)).toBe('yellow'); // ChangeOfFrequency
     expect(severityColor(20)).toBe('yellow'); // Recovering
   });
 
   it('maps severe disruption values to red', () => {
-    expect(severityColor(6)).toBe('red');  // SevereDelays
-    expect(severityColor(2)).toBe('red');  // Suspended
-    expect(severityColor(3)).toBe('red');  // PartSuspended
-    expect(severityColor(1)).toBe('red');  // Closed
+    expect(severityColor(6)).toBe('red'); // SevereDelays
+    expect(severityColor(2)).toBe('red'); // Suspended
+    expect(severityColor(3)).toBe('red'); // PartSuspended
+    expect(severityColor(1)).toBe('red'); // Closed
     expect(severityColor(11)).toBe('red'); // PartClosed
-    expect(severityColor(8)).toBe('red');  // BusService
+    expect(severityColor(8)).toBe('red'); // BusService
     expect(severityColor(21)).toBe('red'); // Diverted
   });
 
@@ -136,7 +136,7 @@ describe('isGoodSeverity', () => {
   });
 
   it('treats every other severity, and unrecognized ones, as not good', () => {
-    expect(isGoodSeverity(6)).toBe(false);  // SevereDelays
+    expect(isGoodSeverity(6)).toBe(false); // SevereDelays
     expect(isGoodSeverity(22)).toBe(false); // Service Closed (informational, not good)
     expect(isGoodSeverity(999)).toBe(false);
   });
@@ -144,19 +144,19 @@ describe('isGoodSeverity', () => {
 
 describe('severityGroup', () => {
   it('groups every NR severity the same way severityColor already does', () => {
-    expect(severityGroup(10)).toBe('good');        // Good Service
-    expect(severityGroup(9)).toBe('mild');          // Minor Delays
-    expect(severityGroup(7)).toBe('mild');          // Reduced Service
-    expect(severityGroup(2)).toBe('severe');        // Suspended
-    expect(severityGroup(21)).toBe('severe');       // Diverted
-    expect(severityGroup(4)).toBe('planned');       // Planned Closure
+    expect(severityGroup(10)).toBe('good'); // Good Service
+    expect(severityGroup(9)).toBe('mild'); // Minor Delays
+    expect(severityGroup(7)).toBe('mild'); // Reduced Service
+    expect(severityGroup(2)).toBe('severe'); // Suspended
+    expect(severityGroup(21)).toBe('severe'); // Diverted
+    expect(severityGroup(4)).toBe('planned'); // Planned Closure
     expect(severityGroup(0)).toBe('informational'); // Special Service
   });
 
   it('groups the five TfL-only codes the same way severityColor already does', () => {
-    expect(severityGroup(25)).toBe('good');          // No Issues
-    expect(severityGroup(24)).toBe('mild');          // Issues Reported
-    expect(severityGroup(23)).toBe('severe');        // Not Running
+    expect(severityGroup(25)).toBe('good'); // No Issues
+    expect(severityGroup(24)).toBe('mild'); // Issues Reported
+    expect(severityGroup(23)).toBe('severe'); // Not Running
     expect(severityGroup(22)).toBe('informational'); // Service Closed
     expect(severityGroup(26)).toBe('informational'); // Information
   });

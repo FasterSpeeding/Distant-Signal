@@ -86,9 +86,7 @@ describe('IncidentsPage', () => {
     // Mantine also keeps its (closed, `display: none`) options list mounted
     // in the DOM with the same "CODE — Name" text, so an unscoped
     // `getByText` matches both.
-    expect(
-      screen.getByText('SW — South Western Railway', { selector: '.mantine-Pill-label' }),
-    ).toBeInTheDocument();
+    expect(screen.getByText('SW — South Western Railway', { selector: '.mantine-Pill-label' })).toBeInTheDocument();
     await screen.findByRole('button', { name: 'Search' });
   });
 });

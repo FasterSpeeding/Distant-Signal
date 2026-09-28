@@ -589,9 +589,7 @@ describe('IssueList', () => {
       dataQuality: 'planned',
       sampleAvailability: { state: 'no-coverage' },
       fullCoverageAvailability: { state: 'not-enabled' },
-      validityPeriods: [
-        { fromDate: '2026-05-10T00:00:00Z', toDate: '2026-10-11T00:00:00Z', isNow: false },
-      ],
+      validityPeriods: [{ fromDate: '2026-05-10T00:00:00Z', toDate: '2026-10-11T00:00:00Z', isNow: false }],
     };
     renderWithMantine(<IssueList items={toItems([dated])} now={Date.parse('2026-12-01T00:00:00Z')} />);
     expect(screen.getByText('10 May 2026 – 11 Oct 2026')).toBeInTheDocument();
@@ -622,9 +620,7 @@ describe('IssueList', () => {
   });
 
   it('says nothing about lines when an issue only affects one', () => {
-    renderWithMantine(
-      <IssueList items={[{ status: minorNow, lines: [{ id: 'a', name: 'Alton Line' }] }]} now={NOW} />,
-    );
+    renderWithMantine(<IssueList items={[{ status: minorNow, lines: [{ id: 'a', name: 'Alton Line' }] }]} now={NOW} />);
     expect(screen.queryByText(/lines$/)).not.toBeInTheDocument();
   });
 
@@ -644,7 +640,7 @@ describe('IssueList', () => {
     expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
   });
 
-  it('also collapses the chrome for TfL\'s No Issues (25), not just NR\'s Good Service (10)', () => {
+  it("also collapses the chrome for TfL's No Issues (25), not just NR's Good Service (10)", () => {
     // Both severities are classified 'good' in lib/severity.ts's
     // SEVERITY_TABLE; the allGood check has to go through that
     // classification rather than hardcoding statusSeverity === 10, or a
@@ -721,10 +717,13 @@ describe('IssueList', () => {
   });
 
   it('still shows the full list when a Good Service status sits alongside a real issue', () => {
-    const goodService: LineStatus = { ...minorNow, statusSeverity: 10, statusSeverityDescription: 'Good Service', reason: 'Good Service' };
-    renderWithMantine(
-      <IssueList items={[goodService, minorNow].map((status) => ({ status }))} now={NOW} />,
-    );
+    const goodService: LineStatus = {
+      ...minorNow,
+      statusSeverity: 10,
+      statusSeverityDescription: 'Good Service',
+      reason: 'Good Service',
+    };
+    renderWithMantine(<IssueList items={[goodService, minorNow].map((status) => ({ status }))} now={NOW} />);
     expect(screen.getByText(/^All \(2\)/)).toBeInTheDocument();
   });
 
@@ -786,9 +785,7 @@ describe('IssueList', () => {
       fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
     };
-    const { rerender } = renderWithMantine(
-      <IssueList items={toItems([goodService, minorNow])} now={NOW} />,
-    );
+    const { rerender } = renderWithMantine(<IssueList items={toItems([goodService, minorNow])} now={NOW} />);
     expect(screen.getByText(/^All \(2\)/)).toBeInTheDocument();
 
     rerender(

@@ -36,9 +36,7 @@ export const ACCESSIBILITY_FIXTURE_CRS: string[] = readdirSync(FIXTURE_DIR)
   .sort();
 
 export function loadAccessibilityFixture(crs: string): StationAccessibilityData {
-  return JSON.parse(
-    readFileSync(path.join(FIXTURE_DIR, `${crs}.json`), 'utf8'),
-  ) as StationAccessibilityData;
+  return JSON.parse(readFileSync(path.join(FIXTURE_DIR, `${crs}.json`), 'utf8')) as StationAccessibilityData;
 }
 
 export function loadAllAccessibilityFixtures(): { crs: string; data: StationAccessibilityData }[] {

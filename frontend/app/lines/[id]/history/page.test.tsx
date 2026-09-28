@@ -132,7 +132,10 @@ describe('LineHistoryPage', () => {
   });
 
   it('switching to the Trends tab renders the daily-stats charts without crashing', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyStatsRow({ day: '2026-08-30' }), dailyStatsRow({ day: '2026-08-31' })]);
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([
+      dailyStatsRow({ day: '2026-08-30' }),
+      dailyStatsRow({ day: '2026-08-31' }),
+    ]);
     await renderPage();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
@@ -280,9 +283,7 @@ describe('LineHistoryPage', () => {
   // all) and must keep its own, distinct copy rather than collapsing into
   // the redundancy-only "No incidents reported" text above.
   it('still says "No reason given" for a genuinely empty reason', async () => {
-    vi.mocked(api.getLineStatusHistory).mockResolvedValue([
-      report('c2c', 'c2c (London, Tilbury & Southend line)'),
-    ]);
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([report('c2c', 'c2c (London, Tilbury & Southend line)')]);
     renderWithMantine(
       await HistoryResults({
         id: 'c2c',

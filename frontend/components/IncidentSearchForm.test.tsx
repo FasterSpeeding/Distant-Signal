@@ -20,11 +20,7 @@ vi.mock('@mantine/dates', () => ({
   }) => (
     <div>
       <label htmlFor={`test-date-${label}`}>{label}</label>
-      <input
-        id={`test-date-${label}`}
-        value={value ?? ''}
-        onChange={(event) => onChange(event.target.value || null)}
-      />
+      <input id={`test-date-${label}`} value={value ?? ''} onChange={(event) => onChange(event.target.value || null)} />
     </div>
   ),
 }));
@@ -210,9 +206,7 @@ describe('IncidentSearchForm', () => {
   // and take the whole results list with it.
   it('renders a result row that carries no affectedLines field at all', async () => {
     const { affectedLines: _dropped, ...withoutLines } = summary({ incidentId: '1' });
-    fetchMock.mockReturnValue(
-      okResponse({ results: [withoutLines as IncidentSummary], nextCursor: null }),
-    );
+    fetchMock.mockReturnValue(okResponse({ results: [withoutLines as IncidentSummary], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
     await clickSearch();
 
@@ -355,8 +349,7 @@ describe('IncidentSearchForm', () => {
     // once the clipping ancestor is gone. jsdom can't lay anything out, so
     // this is only a tripwire against silent removal -- the reasoning is in
     // `IncidentSearchForm.tsx`'s own comment on this `Group`.
-    const header = screen.getByText('Signal failure at Woking').closest('a')
-      ?.parentElement as HTMLElement;
+    const header = screen.getByText('Signal failure at Woking').closest('a')?.parentElement as HTMLElement;
     expect(header.style.overflowWrap).toBe('anywhere');
     expect(screen.getByText(/2026/).style.whiteSpace).toBe('nowrap');
   });
@@ -420,9 +413,7 @@ describe('IncidentSearchForm', () => {
     // call 2 the failed "Load more", call 3 this retry.
     expect(new URL(fetchMock.mock.calls[3][0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("You've reached the end — no more incidents match these filters."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("You've reached the end — no more incidents match these filters.")).toBeInTheDocument();
   });
 
   it('reports a "Load more" whose fetch throws the same way it reports a non-2xx', async () => {
@@ -506,9 +497,7 @@ describe('IncidentSearchForm', () => {
     } as unknown as Response);
 
     await waitFor(() =>
-      expect(
-        screen.getByText("You've reached the end — no more incidents match these filters."),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("You've reached the end — no more incidents match these filters.")).toBeInTheDocument(),
     );
     expect(screen.queryByText('Trespass incident at Woking')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
@@ -559,12 +548,7 @@ describe('IncidentSearchForm', () => {
   // to inspect -- see the file-level mock's own comment.)
   it('pads the operator and line filter clear buttons to the 24px touch-target floor', async () => {
     renderWithMantine(
-      <IncidentSearchForm
-        lines={TEST_LINES}
-        tocs={TEST_TOCS}
-        initialOperator="SW"
-        initialLine="south-western"
-      />,
+      <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialOperator="SW" initialLine="south-western" />,
     );
     await awaitMountSettled();
 
@@ -596,9 +580,7 @@ describe('IncidentSearchForm', () => {
     });
 
     it('shows Custom… as selected (not an undefined state) when initial filters supply an explicit from date', async () => {
-      renderWithMantine(
-        <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialFrom="2026-08-01T00:00:00Z" />,
-      );
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialFrom="2026-08-01T00:00:00Z" />);
       await awaitMountSettled();
       expect(screen.getByRole('radio', { name: 'Custom…' })).toBeChecked();
       expect(screen.getByLabelText('From (optional)')).toBeInTheDocument();
@@ -634,9 +616,7 @@ describe('IncidentSearchForm', () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
       await awaitMountSettled();
       expect(screen.getByText('Priority range')).toBeInTheDocument();
-      expect(
-        screen.getAllByText(/raw feed value from national rail's own incident data/i),
-      ).toHaveLength(1);
+      expect(screen.getAllByText(/raw feed value from national rail's own incident data/i)).toHaveLength(1);
     });
 
     it('exposes accessible Minimum/Maximum fields instead of two identically-labelled inputs', async () => {
@@ -732,12 +712,7 @@ describe('IncidentSearchForm', () => {
     it('restores the realtime/active branch of Type and Status from initial props', async () => {
       fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
       renderWithMantine(
-        <IncidentSearchForm
-          lines={TEST_LINES}
-          tocs={TEST_TOCS}
-          initialPlanned="false"
-          initialCleared="false"
-        />,
+        <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPlanned="false" initialCleared="false" />,
       );
       await awaitMountSettled();
 
@@ -747,9 +722,7 @@ describe('IncidentSearchForm', () => {
 
     it('falls back to blank instead of crashing on an unparseable initialPriorityMin', async () => {
       fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
-      renderWithMantine(
-        <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMin="not-a-number" />,
-      );
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMin="not-a-number" />);
       await awaitMountSettled();
 
       expect((screen.getByLabelText('Minimum') as HTMLInputElement).value).toBe('');
@@ -774,9 +747,7 @@ describe('IncidentSearchForm', () => {
 
     it('falls back to blank on an initialPriorityMax of "Infinity", rather than treating it as a real bound', async () => {
       fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
-      renderWithMantine(
-        <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMax="Infinity" />,
-      );
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMax="Infinity" />);
       await awaitMountSettled();
 
       expect((screen.getByLabelText('Maximum') as HTMLInputElement).value).toBe('');
@@ -825,12 +796,7 @@ describe('IncidentSearchForm', () => {
       // genuinely empty filter set, not something this test needs to prove
       // separately.
       renderWithMantine(
-        <IncidentSearchForm
-          lines={TEST_LINES}
-          tocs={TEST_TOCS}
-          initialOperator="SW"
-          initialPeriod="all"
-        />,
+        <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialOperator="SW" initialPeriod="all" />,
       );
       await awaitMountSettled();
 

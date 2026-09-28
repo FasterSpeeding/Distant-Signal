@@ -125,7 +125,7 @@ export function ConnectivityMonitor({
     // `setFailures` updater) only to decide whether to also record
     // `lastGoodAt`; it does not need the previous-state indirection
     // `failures` does, since it doesn't depend on any prior local state.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on observedAt alone (see the comment above)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on observedAt alone (see the comment above)
   }, [observedAt]);
 
   const backendDown = failures >= CONSECUTIVE_FAILURES_TO_TRIP;
@@ -172,13 +172,7 @@ export function ConnectivityMonitor({
               their own unsent entries, which this branch answers honestly
               (see `isFormRoute`'s own comment on exactly how honest that
               claim is, and isn't). */}
-          <Notification
-            loading
-            withCloseButton={false}
-            title="Reconnecting…"
-            role="status"
-            aria-live="polite"
-          >
+          <Notification loading withCloseButton={false} title="Reconnecting…" role="status" aria-live="polite">
             {isFormRoute(pathname) ? (
               <>Can&apos;t reach the server right now — your entries are safe until you submit.</>
             ) : lastGoodAt ? (

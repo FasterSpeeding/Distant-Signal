@@ -79,8 +79,7 @@ export default async function NetworkStatusPage() {
       <Stack gap="xs">
         <Title order={1}>Network Status</Title>
         <Text c="dimmed">
-          {overview.totalLines} line{overview.totalLines === 1 ? '' : 's'} tracked across {modesDescription} right
-          now.
+          {overview.totalLines} line{overview.totalLines === 1 ? '' : 's'} tracked across {modesDescription} right now.
         </Text>
         {/* `/network/history` shipped with no inbound `href` anywhere in
             the app -- a repo-wide grep found none outside its own

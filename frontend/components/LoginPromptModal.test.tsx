@@ -63,10 +63,7 @@ describe('LoginPromptModal', () => {
     );
     expect(screen.getByText('Log in required')).toBeInTheDocument();
     expect(screen.getByText('Log in to pin this line.')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
-      'href',
-      '/api/auth/login?return_to=%2Flines',
-    );
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines');
   });
 
   it('calls onClose when the close button fires', () => {

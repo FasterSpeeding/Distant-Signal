@@ -82,9 +82,7 @@ export function RenameTicketButton({
           data-autofocus
         />
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && (
-          <LoginLink underline="always">Log in to rename this ticket</LoginLink>
-        )}
+        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to rename this ticket</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={saving}>
             Cancel

@@ -15,7 +15,11 @@ vi.mock('@mantine/charts', () => ({
     />
   ),
   BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
-    <div data-testid="bar-chart" data-series={props.series.map((s) => s.name).join(',')} data-points={JSON.stringify(props.data)} />
+    <div
+      data-testid="bar-chart"
+      data-series={props.series.map((s) => s.name).join(',')}
+      data-points={JSON.stringify(props.data)}
+    />
   ),
 }));
 
@@ -46,7 +50,12 @@ describe('gapSpans', () => {
     // the spillover risk Task 4 Step 3 itself calls out as a live-render
     // risk to check for.
     expect(
-      gapSpans([point('2026-08-01', 0.1), point('2026-08-02', null), point('2026-08-03', null), point('2026-08-04', 0.2)]),
+      gapSpans([
+        point('2026-08-01', 0.1),
+        point('2026-08-02', null),
+        point('2026-08-03', null),
+        point('2026-08-04', 0.2),
+      ]),
     ).toEqual([{ startKey: '2026-08-02', endKey: '2026-08-03' }]);
   });
 
@@ -118,10 +127,7 @@ describe('gapSpans (half-hourly buckets)', () => {
     // Regression guard for the finding in this plan's Status note: the raw
     // RFC3339 instant, not a formatted "HH:mm" label, must be what
     // gapSpans/referenceAreaBounds treat as the bucket identity.
-    const points = [
-      halfHourPoint('2026-08-30T14:00:00Z', 0.1),
-      halfHourPoint('2026-08-31T14:00:00Z', null),
-    ];
+    const points = [halfHourPoint('2026-08-30T14:00:00Z', 0.1), halfHourPoint('2026-08-31T14:00:00Z', null)];
     const spans = gapSpans(points);
     expect(spans).toEqual([{ startKey: '2026-08-31T14:00:00Z', endKey: '2026-08-31T14:00:00Z' }]);
     expect(spans[0].startKey).not.toBe(spans[0].endKey === points[0].bucketKey ? points[0].bucketKey : undefined);
@@ -130,7 +136,15 @@ describe('gapSpans (half-hourly buckets)', () => {
 
 describe('TrendsCharts granularity prop', () => {
   const points: ChartPoint[] = [
-    { bucketKey: '2026-08-01T12:00:00Z', delayRate: 0.1, cancellationRate: 0, skipRate: 0, avgDelayMinutes: 1, total: 42, sampleCycles: 50 },
+    {
+      bucketKey: '2026-08-01T12:00:00Z',
+      delayRate: 0.1,
+      cancellationRate: 0,
+      skipRate: 0,
+      avgDelayMinutes: 1,
+      total: 42,
+      sampleCycles: 50,
+    },
   ];
 
   it.each(['halfHour', 'hour', 'sixHour'] as const)(
@@ -156,7 +170,15 @@ describe('TrendsCharts granularity prop', () => {
 
 describe('TrendsCharts showVolume prop', () => {
   const points: ChartPoint[] = [
-    { bucketKey: '2026-08-01T12:00:00Z', delayRate: 0.1, cancellationRate: 0, skipRate: 0, avgDelayMinutes: 1, total: 42, sampleCycles: 50 },
+    {
+      bucketKey: '2026-08-01T12:00:00Z',
+      delayRate: 0.1,
+      cancellationRate: 0,
+      skipRate: 0,
+      avgDelayMinutes: 1,
+      total: 42,
+      sampleCycles: 50,
+    },
   ];
 
   it('does not render the bar chart by default', () => {

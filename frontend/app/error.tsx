@@ -19,13 +19,7 @@ import { TextLink } from '@/components/TextLink';
  * server-error correlation hash, which exists precisely to be quoted by a
  * user -- is what gets shown, and only when there is one (client-side
  * render errors have none). */
-export default function Error({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
+export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   const { disconnected } = useConnectivity();
 
   useEffect(() => {
@@ -74,13 +68,12 @@ export default function Error({
       </Title>
       {disconnected ? (
         <Text c="dimmed">
-          Can&apos;t reach live data right now. This page will come back on its own as soon as the
-          connection returns.
+          Can&apos;t reach live data right now. This page will come back on its own as soon as the connection returns.
         </Text>
       ) : (
         <Text c="dimmed">
-          This page couldn&apos;t be loaded. It may be a temporary problem with the live data
-          feeds — try again in a moment.
+          This page couldn&apos;t be loaded. It may be a temporary problem with the live data feeds — try again in a
+          moment.
         </Text>
       )}
       {/* Kept in both states: the auto-reset above only fires on a

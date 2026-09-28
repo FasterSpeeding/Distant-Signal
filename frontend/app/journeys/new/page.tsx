@@ -81,9 +81,9 @@ export default function JourneysNewPage() {
     <Stack p="lg" gap="md">
       <Title order={1}>Track a Journey</Title>
       <Text c="dimmed">
-        Pin a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked
-        you can add another leg right here — for a journey with a change of trains — or stop now; a single train is
-        already a complete journey.
+        Pin a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked you
+        can add another leg right here — for a journey with a change of trains — or stop now; a single train is already
+        a complete journey.
       </Text>
       <Text size="sm" c="dimmed">
         Tracking a journey needs a Distant Signal account — you&apos;ll be sent to log in when you save if you

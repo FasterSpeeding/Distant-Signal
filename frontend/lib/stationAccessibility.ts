@@ -261,12 +261,7 @@ const CODE_LIKE_FIELDS = new Set(['category', 'crsCode', 'postcode']);
  * that is not a real feed value at all. */
 export function isSentence(value: string): boolean {
   const text = value.trim();
-  return (
-    text.length >= 12 &&
-    /^[A-Z£"'(]/.test(text) &&
-    /\s/.test(text) &&
-    /[a-z]/.test(text)
-  );
+  return text.length >= 12 && /^[A-Z£"'(]/.test(text) && /\s/.test(text) && /[a-z]/.test(text);
 }
 
 /** Pattern B. Structural, so `carParks[].openingHours` -- which the feed
@@ -275,9 +270,7 @@ export function isSentence(value: string): boolean {
 function isOpeningTimes(value: unknown[]): boolean {
   return (
     value.length > 0 &&
-    value.every(
-      (entry) => isPlainObject(entry) && 'daysOfTheWeek' in entry && 'openingStatus' in entry,
-    )
+    value.every((entry) => isPlainObject(entry) && 'daysOfTheWeek' in entry && 'openingStatus' in entry)
   );
 }
 
@@ -289,9 +282,7 @@ function isOpeningTimes(value: unknown[]): boolean {
 function isNamedItems(value: unknown[]): boolean {
   return (
     value.length > 0 &&
-    value.every(
-      (item) => isPlainObject(item) && typeof item.name === 'string' && item.name.trim() !== '',
-    )
+    value.every((item) => isPlainObject(item) && typeof item.name === 'string' && item.name.trim() !== '')
   );
 }
 
@@ -412,13 +403,7 @@ function renderObject(value: Record<string, unknown>, depth: number, topKey?: st
  * `names` on `ticketBarriers`, three booleans and `locations` on `toilets`,
  * `points` on `dropOffPickUp`, `liftsInfo`/`statement` on `lifts`) falls
  * through to the same treatment the fallback branch gives it. */
-const FACILITY_FIELDS = [
-  'location',
-  'notes',
-  'openingTimes',
-  'openingHoursNotes',
-  'operatorContactDetails',
-] as const;
+const FACILITY_FIELDS = ['location', 'notes', 'openingTimes', 'openingHoursNotes', 'operatorContactDetails'] as const;
 
 /** Digits and a leading `+` only -- the same normalisation `telHref` (below,
  * Pattern C) applies before dialling, reused here so "0345 077 4224" in one
@@ -503,12 +488,7 @@ function pushUnlabelled(
   parts.push({ node });
 }
 
-function pushLabelled(
-  parts: LabelledNode[],
-  label: string,
-  value: unknown,
-  depth: number,
-): void {
+function pushLabelled(parts: LabelledNode[], label: string, value: unknown, depth: number): void {
   if (!hasRenderableValue(value)) return;
   const node = renderAt(value, depth + 1);
   if (isEmptyNode(node)) return;
@@ -519,15 +499,7 @@ function pushLabelled(
 // Pattern B -- opening times
 // ---------------------------------------------------------------------------
 
-const WEEK_ORDER = [
-  'Monday',
-  'Tuesday',
-  'Wednesday',
-  'Thursday',
-  'Friday',
-  'Saturday',
-  'Sunday',
-];
+const WEEK_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 const WEEK_SHORT: Record<string, string> = {
   Monday: 'Mon',
@@ -564,9 +536,7 @@ export function formatDays(value: unknown): string {
       end += 1;
     }
     parts.push(
-      end > start
-        ? `${WEEK_SHORT[weekdays[start]]}–${WEEK_SHORT[weekdays[end]]}`
-        : WEEK_SHORT[weekdays[start]],
+      end > start ? `${WEEK_SHORT[weekdays[start]]}–${WEEK_SHORT[weekdays[end]]}` : WEEK_SHORT[weekdays[start]],
     );
     start = end + 1;
   }
@@ -610,9 +580,7 @@ export function formatHours(entry: Record<string, unknown>): string {
     // `LLE`'s two `staffHelp.openingTimes` entries say `24 Hours` AND carry
     // a real 06:10-12:40 period. That is the record contradicting itself;
     // showing both is honest, and picking one silently is not (§4.3).
-    return periods.length > 0
-      ? `24 hours (source also lists ${periods.join(', ')})`
-      : '24 hours';
+    return periods.length > 0 ? `24 hours (source also lists ${periods.join(', ')})` : '24 hours';
   }
   if (status === 'Unavailable') return 'closed';
   if (status === 'Specific Hours') {
@@ -796,9 +764,7 @@ function renderCollection(value: unknown[], depth: number): AccessibilityNode {
 
 function renderCollectionItem(item: Record<string, unknown>, depth: number): CollectionItem {
   const name = String(item.name).trim();
-  const siblings = Object.entries(item).filter(
-    ([key, own]) => key !== 'name' && hasRenderableValue(own),
-  );
+  const siblings = Object.entries(item).filter(([key, own]) => key !== 'name' && hasRenderableValue(own));
 
   // §4.5's two "fit the bullet branch but read badly there" exceptions.
   // Both are single-sibling items whose sibling is an identifier rather
@@ -833,9 +799,7 @@ function renderCollectionItem(item: Record<string, unknown>, depth: number): Col
   // it (§4.5).
   const allStrings = siblings.every(([, own]) => typeof own === 'string');
   if (allStrings) {
-    const bullets = siblings
-      .map(([, own]) => renderString(own as string))
-      .filter((node) => !isEmptyNode(node));
+    const bullets = siblings.map(([, own]) => renderString(own as string)).filter((node) => !isEmptyNode(node));
     return { label: name, body: { kind: 'bullets', items: bullets } };
   }
 
@@ -992,11 +956,7 @@ function raw(value: unknown): AccessibilityNode {
  * or an N/A placeholder). */
 function isPunctuationOnlyText(text: string): boolean {
   const trimmed = text.trim();
-  return (
-    trimmed === '' ||
-    /^[.\-]+$/.test(trimmed) ||
-    /^n\/a$/i.test(trimmed)
-  );
+  return trimmed === '' || /^[.\-]+$/.test(trimmed) || /^n\/a$/i.test(trimmed);
 }
 
 /** True when a node would put nothing at all on the page. The section
@@ -1028,9 +988,7 @@ export function isEmptyNode(node: AccessibilityNode): boolean {
     case 'fields':
       return node.fields.every((field) => isEmptyNode(field.node));
     case 'collection':
-      return node.items.every(
-        (item) => item.label.trim() === '' && !item.link && isEmptyNode(item.body),
-      );
+      return node.items.every((item) => item.label.trim() === '' && !item.link && isEmptyNode(item.body));
     case 'bullets':
     case 'list':
       return node.items.every(isEmptyNode);
@@ -1129,11 +1087,7 @@ function nodeSignature(node: AccessibilityNode, label?: string): string {
  * dedup has to keep working on content alone). See `nodeSignature`'s doc
  * comment for why folding the label in only for labelled fields is what
  * fixes the bug without breaking that intended case. */
-export function dedupeAcrossSection(
-  node: AccessibilityNode,
-  seen: Set<string>,
-  label?: string,
-): AccessibilityNode {
+export function dedupeAcrossSection(node: AccessibilityNode, seen: Set<string>, label?: string): AccessibilityNode {
   if (node.kind === 'fields' || node.kind === 'contact') {
     const fields = dedupeFieldList(node.fields, seen);
     return { ...node, fields };

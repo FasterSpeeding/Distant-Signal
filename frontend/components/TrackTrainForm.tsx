@@ -174,11 +174,7 @@ function resolveLdbwsDepartureDate(scheduled: string, now: dayjs.Dayjs): string 
  * of the picker entirely -- never even reachable to click, regardless of
  * how `pickCifDeparture`/`pickDeparture` themselves compute the date once
  * picked. */
-function matchesScheduledDeparture(
-  rowScheduled: string,
-  scheduledDeparture: string | null,
-  rowDayOffset = 0,
-): boolean {
+function matchesScheduledDeparture(rowScheduled: string, scheduledDeparture: string | null, rowDayOffset = 0): boolean {
   if (scheduledDeparture === null) return true;
   const [hh, mm] = rowScheduled.split(':');
   const date = nowInLondon().add(rowDayOffset, 'day').format('YYYY-MM-DD');
@@ -265,10 +261,7 @@ interface ScheduleDepartureRow {
  * neither the LDBWS live board NOR the CIF-derived timetable had data for
  * this station -- see Decision 3/5. */
 type Picker =
-  | { source: 'ldbws'; rows: DepartureRow[] }
-  | { source: 'cif'; rows: ScheduleDepartureRow[] }
-  | 'unavailable'
-  | null;
+  { source: 'ldbws'; rows: DepartureRow[] } | { source: 'cif'; rows: ScheduleDepartureRow[] } | 'unavailable' | null;
 
 /** The v1 entry point for individual train tracking -- a manual form, not
  * a per-departure "track this train" action, per
@@ -525,8 +518,7 @@ export function TrackTrainForm({
   const windowTimesComplete = !Object.values(windowIncompleteTimes).some(Boolean);
   const windowHasABound =
     departFrom.trim() !== '' || departTo.trim() !== '' || arriveFrom.trim() !== '' || arriveTo.trim() !== '';
-  const canSubmitWindow =
-    originValid && destinationValid && windowTimesComplete && windowHasABound && !submitting;
+  const canSubmitWindow = originValid && destinationValid && windowTimesComplete && windowHasABound && !submitting;
 
   // Fetch the live departures picker whenever the origin resolves to a
   // syntactically valid CRS -- same same-origin `/api/*` proxy pattern
@@ -556,22 +548,20 @@ export function TrackTrainForm({
           // switching sources on an error condition. Per
           // docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
           // Decision 3.
-          return fetch(`/api/stations/${crs}/schedule-departures`, { signal: controller.signal }).then(
-            (cifRes) => {
-              if (cifRes.status === 404) {
-                setPickerLoading(false);
-                return setPicker('unavailable');
-              }
-              if (!cifRes.ok) {
-                setPickerLoading(false);
-                return setPicker(null);
-              }
-              return cifRes.json().then((rows: ScheduleDepartureRow[]) => {
-                setPickerLoading(false);
-                setPicker({ source: 'cif', rows });
-              });
-            },
-          );
+          return fetch(`/api/stations/${crs}/schedule-departures`, { signal: controller.signal }).then((cifRes) => {
+            if (cifRes.status === 404) {
+              setPickerLoading(false);
+              return setPicker('unavailable');
+            }
+            if (!cifRes.ok) {
+              setPickerLoading(false);
+              return setPicker(null);
+            }
+            return cifRes.json().then((rows: ScheduleDepartureRow[]) => {
+              setPickerLoading(false);
+              setPicker({ source: 'cif', rows });
+            });
+          });
         }
         if (!res.ok) {
           setPickerLoading(false);
@@ -663,7 +653,9 @@ export function TrackTrainForm({
     // rolled independently of `frontend`) omitting `dayOffset` from the JSON
     // entirely during a rollout, which would otherwise reach dayjs as
     // `undefined` and produce an Invalid Date.
-    const date = nowInLondon().add(row.dayOffset ?? 0, 'day').format('YYYY-MM-DD');
+    const date = nowInLondon()
+      .add(row.dayOffset ?? 0, 'day')
+      .format('YYYY-MM-DD');
     setScheduledDeparture(`${date} ${hh}:${mm}:00`);
   }
 
@@ -1088,8 +1080,8 @@ export function TrackTrainForm({
     return (
       <>
         <Text size="sm" c="dimmed">
-          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead
-          — this is not live running information and may be up to 30 minutes out of date.
+          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead — this
+          is not live running information and may be up to 30 minutes out of date.
         </Text>
         {filtered.length === 0 ? (
           <Text size="sm" c="dimmed">
@@ -1192,33 +1184,33 @@ export function TrackTrainForm({
         </Text>
       )}
       <Stack gap="md" component="form" onSubmit={handleSubmit} maw={640}>
-      <Autocomplete
-        label="Origin station"
-        placeholder="e.g. Woking or WOK"
-        value={originCrs}
-        onChange={setOriginCrs}
-        onBlur={() => setOriginTouched(true)}
-        {...suggestionAutocompleteProps(originSuggestions, {
-          query: originCrs,
-          loading: originSuggestionsLoading,
-          noMatchMessage: 'No matching stations',
-        })}
-        error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
-        // NOT the native `required` attribute (Task 3.6.14): an empty
-        // origin is now validated by `handleSubmit` itself, which sets
-        // `fieldError` and returns before ever calling `submitTrack` --
-        // see that function's own doc comment. A native `required` field
-        // would make the browser's own constraint validation intercept
-        // the submit event before `handleSubmit` ever runs, silently
-        // replacing that explanatory message with (at best) a native
-        // validation bubble the button's near-invisible disabled state
-        // was already standing in for.
-      />
-      {/* Origin is the one field both modes share -- every leg shape
+        <Autocomplete
+          label="Origin station"
+          placeholder="e.g. Woking or WOK"
+          value={originCrs}
+          onChange={setOriginCrs}
+          onBlur={() => setOriginTouched(true)}
+          {...suggestionAutocompleteProps(originSuggestions, {
+            query: originCrs,
+            loading: originSuggestionsLoading,
+            noMatchMessage: 'No matching stations',
+          })}
+          error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
+          // NOT the native `required` attribute (Task 3.6.14): an empty
+          // origin is now validated by `handleSubmit` itself, which sets
+          // `fieldError` and returns before ever calling `submitTrack` --
+          // see that function's own doc comment. A native `required` field
+          // would make the browser's own constraint validation intercept
+          // the submit event before `handleSubmit` ever runs, silently
+          // replacing that explanatory message with (at best) a native
+          // validation bubble the button's near-invisible disabled state
+          // was already standing in for.
+        />
+        {/* Origin is the one field both modes share -- every leg shape
           (`pin`/`knownTrain`/`window`) needs an `originCrs`, so it stays
           above the mode switch rather than being duplicated inside each
           branch. */}
-      {/* Review §2.1/I21: "Pick a departure"/"Search a time window" named
+        {/* Review §2.1/I21: "Pick a departure"/"Search a time window" named
           the FORM's own mechanism, not the traveller's situation -- and the
           sibling `AddJourneyLegButton` modal already used the clearer "I
           know the train" for the equivalent choice, so the codebase had two
@@ -1235,83 +1227,79 @@ export function TrackTrainForm({
           `HistoryRangePicker`'s "Period" control already uses; the
           question is phrased from the traveller's situation rather than
           from the form's mechanism. */}
-      <Text id={modeLabelId} size="xs" fw={600} c="dimmed">
-        How do you want to find the train?
-      </Text>
-      <SegmentedControl
-        aria-labelledby={modeLabelId}
-        value={mode}
-        onChange={(value) => setMode(value as 'pick' | 'window')}
-        data={[
-          { label: 'I know the train', value: 'pick' },
-          { label: 'Search a time window', value: 'window' },
-        ]}
-      />
-      {/* Review §2.1/M23: the toggle swaps ~400px of form beneath it with
+        <Text id={modeLabelId} size="xs" fw={600} c="dimmed">
+          How do you want to find the train?
+        </Text>
+        <SegmentedControl
+          aria-labelledby={modeLabelId}
+          value={mode}
+          onChange={(value) => setMode(value as 'pick' | 'window')}
+          data={[
+            { label: 'I know the train', value: 'pick' },
+            { label: 'Search a time window', value: 'window' },
+          ]}
+        />
+        {/* Review §2.1/M23: the toggle swaps ~400px of form beneath it with
           no announcement -- sighted users see it happen, screen-reader
           users get nothing until they tab forward into different fields.
           `VisuallyHidden` keeps this out of the visual layout entirely; the
           visible cue (the fields themselves changing) is unaffected. */}
-      <VisuallyHidden role="status" aria-live="polite">
-        {mode === 'window' ? 'Showing time-window search.' : 'Showing pick-a-departure search.'}
-      </VisuallyHidden>
-      {mode === 'window' ? (
-        <>
-          <Autocomplete
-            label="Destination station"
-            placeholder="e.g. Reading or RDG"
-            // `destinationCrs`/`setDestinationCrs`/`destinationSuggestions`
-            // -- the SAME state and suggestions hook the pin-mode
-            // Destination field below uses, not a separate window-mode
-            // copy. See the state-declaration comment above
-            // `windowServiceDate` for why: a value typed here now survives
-            // switching back to "I know the train" mode, and vice versa.
-            value={destinationCrs}
-            onChange={setDestinationCrs}
-            {...suggestionAutocompleteProps(destinationSuggestions, {
-              query: destinationCrs,
-              loading: destinationSuggestionsLoading,
-              noMatchMessage: 'No matching stations',
-            })}
-            error={
-              destinationCrs.length > 0 && !destinationValid
-                ? 'Must be a 3-letter CRS code'
-                : null
-            }
-            // NOT the native `required` attribute -- same reasoning as the
-            // Origin field's own comment above: a native `required` field
-            // would let the browser's own constraint validation intercept
-            // the submit event before `handleSubmit` ever runs (confirmed
-            // live -- jsdom enforces this too), silently replacing this
-            // form's own explanatory `fieldError` message with (at best) a
-            // native validation bubble instead. `handleSubmit`'s own
-            // `!destinationValid` check already owns this
-            // validation.
-          />
-          <DatePickerInput
-            label="Date"
-            // Review §2.2/M13: `windowServiceDate` is seeded with today's
-            // real date above (not `null`), so this now shows an actual
-            // value ("22 Sept 2026") the way pin-mode's own default
-            // departure does -- "Today" stays only as the placeholder for
-            // if the field is ever cleared back to empty.
-            placeholder="Today"
-            value={windowServiceDate}
-            onChange={setWindowServiceDate}
-            clearable
-            // Bug: this `clearable` field was the one place in the app
-            // missing the `clearButtonProps` aria-label every other
-            // `clearable` field already carries (see e.g.
-            // `TrainSearchForm.tsx`'s own "Clear the date" and
-            // `IncidentSearchForm.tsx`'s comment on the same pattern).
-            // Mantine's `clearable` renders an icon-only close button with
-            // no accessible name of its own, which axe-core flags as a
-            // critical `button-name` violation -- caught by the
-            // accessibility suite's `/track, departure picker populated`
-            // and route-sweep cases once this field had a value to clear.
-            clearButtonProps={{ 'aria-label': 'Clear the date' }}
-          />
-          {/* Review §2.2/I17: all four fields below say "(optional)" in
+        <VisuallyHidden role="status" aria-live="polite">
+          {mode === 'window' ? 'Showing time-window search.' : 'Showing pick-a-departure search.'}
+        </VisuallyHidden>
+        {mode === 'window' ? (
+          <>
+            <Autocomplete
+              label="Destination station"
+              placeholder="e.g. Reading or RDG"
+              // `destinationCrs`/`setDestinationCrs`/`destinationSuggestions`
+              // -- the SAME state and suggestions hook the pin-mode
+              // Destination field below uses, not a separate window-mode
+              // copy. See the state-declaration comment above
+              // `windowServiceDate` for why: a value typed here now survives
+              // switching back to "I know the train" mode, and vice versa.
+              value={destinationCrs}
+              onChange={setDestinationCrs}
+              {...suggestionAutocompleteProps(destinationSuggestions, {
+                query: destinationCrs,
+                loading: destinationSuggestionsLoading,
+                noMatchMessage: 'No matching stations',
+              })}
+              error={destinationCrs.length > 0 && !destinationValid ? 'Must be a 3-letter CRS code' : null}
+              // NOT the native `required` attribute -- same reasoning as the
+              // Origin field's own comment above: a native `required` field
+              // would let the browser's own constraint validation intercept
+              // the submit event before `handleSubmit` ever runs (confirmed
+              // live -- jsdom enforces this too), silently replacing this
+              // form's own explanatory `fieldError` message with (at best) a
+              // native validation bubble instead. `handleSubmit`'s own
+              // `!destinationValid` check already owns this
+              // validation.
+            />
+            <DatePickerInput
+              label="Date"
+              // Review §2.2/M13: `windowServiceDate` is seeded with today's
+              // real date above (not `null`), so this now shows an actual
+              // value ("22 Sept 2026") the way pin-mode's own default
+              // departure does -- "Today" stays only as the placeholder for
+              // if the field is ever cleared back to empty.
+              placeholder="Today"
+              value={windowServiceDate}
+              onChange={setWindowServiceDate}
+              clearable
+              // Bug: this `clearable` field was the one place in the app
+              // missing the `clearButtonProps` aria-label every other
+              // `clearable` field already carries (see e.g.
+              // `TrainSearchForm.tsx`'s own "Clear the date" and
+              // `IncidentSearchForm.tsx`'s comment on the same pattern).
+              // Mantine's `clearable` renders an icon-only close button with
+              // no accessible name of its own, which axe-core flags as a
+              // critical `button-name` violation -- caught by the
+              // accessibility suite's `/track, departure picker populated`
+              // and route-sweep cases once this field had a value to clear.
+              clearButtonProps={{ 'aria-label': 'Clear the date' }}
+            />
+            {/* Review §2.2/I17: all four fields below say "(optional)" in
               their own label, which is individually true but collectively
               misleading -- `windowHasABound` (used by `handleSubmit`
               above) refuses to submit unless at least one of the four is
@@ -1319,72 +1307,72 @@ export function TrackTrainForm({
               error. This states it up front instead of relabelling the
               fields (which would have to explain "optional, but not all
               four of you" some other way). */}
-          <Text size="sm">At least one of the four times below is required to search.</Text>
-          <SimpleGrid cols={{ base: 1, sm: 2 }}>
-            <TimeFilterInput
-              label="Earliest departure (optional)"
-              name="earliest departure"
-              description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or after this time.`}
-              value={departFrom}
-              onChange={setDepartFrom}
-              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departFrom: v }))}
-              error={null}
-            />
-            <TimeFilterInput
-              label="Latest departure (optional)"
-              name="latest departure"
-              description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or before this time.`}
-              value={departTo}
-              onChange={setDepartTo}
-              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departTo: v }))}
-              error={null}
-            />
-          </SimpleGrid>
-          <SimpleGrid cols={{ base: 1, sm: 2 }}>
-            <TimeFilterInput
-              label="Earliest arrival (optional)"
-              name="earliest arrival"
-              description={`Only trains reaching ${destinationValid ? destinationCrs.trim().toUpperCase() : 'the destination above'} at or after this time.`}
-              value={arriveFrom}
-              onChange={setArriveFrom}
-              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
-              error={null}
-            />
-            <TimeFilterInput
-              label="Latest arrival (optional)"
-              name="latest arrival"
-              description={`Only trains reaching ${destinationValid ? destinationCrs.trim().toUpperCase() : 'the destination above'} at or before this time.`}
-              value={arriveTo}
-              onChange={setArriveTo}
-              onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
-              error={null}
-            />
-          </SimpleGrid>
-        </>
-      ) : (
-        <>
-          {/* Review §2.3/M12: `wrap="nowrap"` plus the button's own
+            <Text size="sm">At least one of the four times below is required to search.</Text>
+            <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <TimeFilterInput
+                label="Earliest departure (optional)"
+                name="earliest departure"
+                description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or after this time.`}
+                value={departFrom}
+                onChange={setDepartFrom}
+                onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departFrom: v }))}
+                error={null}
+              />
+              <TimeFilterInput
+                label="Latest departure (optional)"
+                name="latest departure"
+                description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or before this time.`}
+                value={departTo}
+                onChange={setDepartTo}
+                onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, departTo: v }))}
+                error={null}
+              />
+            </SimpleGrid>
+            <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <TimeFilterInput
+                label="Earliest arrival (optional)"
+                name="earliest arrival"
+                description={`Only trains reaching ${destinationValid ? destinationCrs.trim().toUpperCase() : 'the destination above'} at or after this time.`}
+                value={arriveFrom}
+                onChange={setArriveFrom}
+                onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
+                error={null}
+              />
+              <TimeFilterInput
+                label="Latest arrival (optional)"
+                name="latest arrival"
+                description={`Only trains reaching ${destinationValid ? destinationCrs.trim().toUpperCase() : 'the destination above'} at or before this time.`}
+                value={arriveTo}
+                onChange={setArriveTo}
+                onIncompleteChange={(v) => setWindowIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
+                error={null}
+              />
+            </SimpleGrid>
+          </>
+        ) : (
+          <>
+            {/* Review §2.3/M12: `wrap="nowrap"` plus the button's own
               `flexShrink: 0` -- without them this `Group` wraps at 390px,
               orphaning "Now" alone on its own row under a full-width
               picker (the same §2.5 shrink-guard idiom `StatusRow` already
               centralises for badge/text rows). */}
-          <Group align="flex-end" gap="xs" wrap="nowrap">
-            <DateTimePicker
-              label="Scheduled departure"
-              placeholder="Pick date and time"
-              value={scheduledDeparture}
-              onChange={setScheduledDeparture}
-              // The backend rejects a departure more than 6 hours in the past
-              // (`crates/api/src/data/train_tracking.rs`'s `MAX_PIN_AGE`) --
-              // this hint is here so a rejection is rare rather than the
-              // user's first encounter with the rule, per Decision 1.
-              description="Must be within the last 6 hours, or any time in the future"
-              // Same reasoning as the Origin field above -- a cleared
-              // departure is validated by `handleSubmit` itself now, not by
-              // native `required` constraint validation.
-              style={{ flexGrow: 1 }}
-            />
-            {/* `@mantine/dates`' own `presets` prop (9.5.2) only ever assigns a
+            <Group align="flex-end" gap="xs" wrap="nowrap">
+              <DateTimePicker
+                label="Scheduled departure"
+                placeholder="Pick date and time"
+                value={scheduledDeparture}
+                onChange={setScheduledDeparture}
+                // The backend rejects a departure more than 6 hours in the past
+                // (`crates/api/src/data/train_tracking.rs`'s `MAX_PIN_AGE`) --
+                // this hint is here so a rejection is rare rather than the
+                // user's first encounter with the rule, per Decision 1.
+                description="Must be within the last 6 hours, or any time in the future"
+                // Same reasoning as the Origin field above -- a cleared
+                // departure is validated by `handleSubmit` itself now, not by
+                // native `required` constraint validation.
+                style={{ flexGrow: 1 }}
+              />
+              {/* `@mantine/dates`' own `presets` prop (9.5.2) only ever assigns a
                 *date* (`DatePickerPreset['value']` is a bare `DateStringValue`,
                 like `DatePicker`'s "Today"/"Yesterday" presets) -- it has no
                 way to also fill in a time-of-day, so it can't produce "right
@@ -1397,37 +1385,37 @@ export function TrackTrainForm({
                 is required to avoid an around-midnight day-off-by-one, and
                 why it's anchored to Europe/London rather than `dayjs()`'s
                 host zone (2026-09-26 review, finding M8). */}
-            <Button
-              variant="default"
-              style={{ flexShrink: 0 }}
-              onClick={() => setScheduledDeparture(nowInLondon().format('YYYY-MM-DD HH:mm:ss'))}
-            >
-              Now
-            </Button>
-          </Group>
-          <Autocomplete
-            label="Destination station (optional)"
-            placeholder="e.g. Woking or WOK"
-            value={destinationCrs}
-            onChange={setDestinationCrs}
-            {...suggestionAutocompleteProps(destinationSuggestions, {
-              query: destinationCrs,
-              loading: destinationSuggestionsLoading,
-              noMatchMessage: 'No matching stations',
-            })}
-          />
-          <Autocomplete
-            label="Operator (optional)"
-            placeholder="e.g. SW"
-            value={operator}
-            onChange={setOperator}
-            {...suggestionAutocompleteProps(operatorSuggestions, {
-              query: operator,
-              loading: operatorSuggestionsLoading,
-              noMatchMessage: 'No matching operators',
-            })}
-          />
-          {/* Always present -- never absent from the DOM, per
+              <Button
+                variant="default"
+                style={{ flexShrink: 0 }}
+                onClick={() => setScheduledDeparture(nowInLondon().format('YYYY-MM-DD HH:mm:ss'))}
+              >
+                Now
+              </Button>
+            </Group>
+            <Autocomplete
+              label="Destination station (optional)"
+              placeholder="e.g. Woking or WOK"
+              value={destinationCrs}
+              onChange={setDestinationCrs}
+              {...suggestionAutocompleteProps(destinationSuggestions, {
+                query: destinationCrs,
+                loading: destinationSuggestionsLoading,
+                noMatchMessage: 'No matching stations',
+              })}
+            />
+            <Autocomplete
+              label="Operator (optional)"
+              placeholder="e.g. SW"
+              value={operator}
+              onChange={setOperator}
+              {...suggestionAutocompleteProps(operatorSuggestions, {
+                query: operator,
+                loading: operatorSuggestionsLoading,
+                noMatchMessage: 'No matching operators',
+              })}
+            />
+            {/* Always present -- never absent from the DOM, per
               docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
               Decision 4. `mih={72}` blunts the size jump between the
               one/two-line text states; row-list states can legitimately grow
@@ -1435,31 +1423,31 @@ export function TrackTrainForm({
               `pickerContent`'s own doc comment for why the `mah`-capped
               `ScrollArea` that used to bound them was a clip, not a scroller,
               and why nothing replaced it. */}
-          <Stack gap="xs" mih={72}>
-            {pickerContent()}
-          </Stack>
-        </>
-      )}
-      {fieldError && (
-        <Alert color="red" title={mode === 'window' ? "Couldn't search for a train" : "Couldn't track this train"}>
-          {fieldError}
-        </Alert>
-      )}
-      <Group>
-        {/* Disabled only while a submit is in flight -- see
+            <Stack gap="xs" mih={72}>
+              {pickerContent()}
+            </Stack>
+          </>
+        )}
+        {fieldError && (
+          <Alert color="red" title={mode === 'window' ? "Couldn't search for a train" : "Couldn't track this train"}>
+            {fieldError}
+          </Alert>
+        )}
+        <Group>
+          {/* Disabled only while a submit is in flight -- see
             `handleSubmit`'s own doc comment (Task 3.6.14) for why an
             invalid-but-not-yet-submitted form no longer disables this
             button at all. */}
-        <Button type="submit" disabled={submitting}>
-          {mode === 'window'
-            ? submitting
-              ? 'Searching…'
-              : 'Search for a train'
-            : submitting
-              ? 'Tracking…'
-              : 'Track this train'}
-        </Button>
-      </Group>
+          <Button type="submit" disabled={submitting}>
+            {mode === 'window'
+              ? submitting
+                ? 'Searching…'
+                : 'Search for a train'
+              : submitting
+                ? 'Tracking…'
+                : 'Track this train'}
+          </Button>
+        </Group>
       </Stack>
       <TrackDestinationModal
         opened={destinationPromptOpened}

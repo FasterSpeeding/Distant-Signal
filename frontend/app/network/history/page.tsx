@@ -2,12 +2,7 @@ import { Suspense } from 'react';
 import { Alert, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { getHistoryRetention } from '@/lib/api';
 import { TextLink } from '@/components/TextLink';
-import {
-  availableGranularities,
-  granularityShortfallDays,
-  resolveGranularity,
-  resolveRange,
-} from '@/lib/history';
+import { availableGranularities, granularityShortfallDays, resolveGranularity, resolveRange } from '@/lib/history';
 import { GranularityControl } from '@/app/lines/[id]/history/GranularityControl';
 import { HistoryRangePicker } from '@/app/lines/[id]/history/HistoryRangePicker';
 import { NetworkTrendsResults } from './NetworkTrendsResults';
@@ -79,11 +74,10 @@ export default async function NetworkHistoryPage({
       />
       {granularityShortfall !== null && (
         <Alert color="yellow" variant="light" title="Some of this range isn't available at this granularity">
-          This server only keeps {retentionDaysForGranularity}{' '}
-          {retentionDaysForGranularity === 1 ? 'day' : 'days'} of data at this granularity. The oldest{' '}
-          {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of the range you picked has
-          already been removed — if this range looks empty or short, that may be why, not because nothing
-          happened.
+          This server only keeps {retentionDaysForGranularity} {retentionDaysForGranularity === 1 ? 'day' : 'days'} of
+          data at this granularity. The oldest {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of
+          the range you picked has already been removed — if this range looks empty or short, that may be why, not
+          because nothing happened.
         </Alert>
       )}
       <Suspense

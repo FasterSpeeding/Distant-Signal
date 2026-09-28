@@ -65,8 +65,7 @@ export function trackAgainPrefill(journey: JourneyDetail): TrackAgainPrefill | n
     firstLeg.arriveBefore !== null;
 
   const origin = firstLeg.originCrs ?? firstLeg.trackedTrainState?.pinOriginCrs ?? null;
-  const destination =
-    firstLeg.destinationCrs ?? firstLeg.trackedTrainState?.pinDestinationCrs ?? null;
+  const destination = firstLeg.destinationCrs ?? firstLeg.trackedTrainState?.pinDestinationCrs ?? null;
 
   return {
     mode: hasWindow ? 'window' : 'pick',

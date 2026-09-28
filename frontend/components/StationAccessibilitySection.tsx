@@ -32,10 +32,7 @@ import type { StationAccessibilityData } from '@/lib/types';
 import { TextLink } from './TextLink';
 
 export interface StationAccessibilitySectionProps {
-  result:
-    | { coverage: 'unavailable' }
-    | { coverage: 'empty' }
-    | { coverage: 'present'; data: StationAccessibilityData };
+  result: { coverage: 'unavailable' } | { coverage: 'empty' } | { coverage: 'present'; data: StationAccessibilityData };
 }
 
 /** One collapsed-by-default disclosure, used for every item collection and
@@ -85,24 +82,14 @@ const DISCLOSURE_STYLES = {
   panel: { paddingInlineStart: 'var(--mantine-spacing-md)' },
 } as const;
 
-function Disclosure({
-  label,
-  qualifier,
-  children,
-}: {
-  label: string;
-  qualifier?: string;
-  children: React.ReactNode;
-}) {
+function Disclosure({ label, qualifier, children }: { label: string; qualifier?: string; children: React.ReactNode }) {
   return (
     <Accordion chevronPosition="left" keepMounted={false} styles={DISCLOSURE_STYLES}>
       <AccordionItem value="disclosure">
         {/* A bare string, not a `<Text>`: `AccordionControl` renders its
             children inside a `<button>`, and Mantine's `<Text>` is a `<p>`,
             which is not valid button content. */}
-        <AccordionControl aria-label={qualifier ? `${qualifier}: ${label}` : undefined}>
-          {label}
-        </AccordionControl>
+        <AccordionControl aria-label={qualifier ? `${qualifier}: ${label}` : undefined}>{label}</AccordionControl>
         <AccordionPanel>{children}</AccordionPanel>
       </AccordionItem>
     </Accordion>
@@ -258,15 +245,7 @@ function FieldsView({ fields, path }: { fields: LabelledNode[]; path?: string })
  * put feed-shaped structure into the page outline, and headings arriving
  * *inside* sanitized note copy are demoted to `<p><strong>` by
  * `sanitizeRichText` for the same reason (design §4.7). */
-function AccessibilityNodeView({
-  node,
-  label,
-  path,
-}: {
-  node: AccessibilityNode;
-  label?: string;
-  path?: string;
-}) {
+function AccessibilityNodeView({ node, label, path }: { node: AccessibilityNode; label?: string; path?: string }) {
   switch (node.kind) {
     case 'text':
     case 'sentence': {
@@ -394,9 +373,7 @@ function AccessibilityNodeView({
       // Counted from what will actually be shown, not from the source
       // array's length: an item that renders to nothing is dropped, and a
       // control reading "2 items" over one visible block would be a lie.
-      const visible = node.items.filter(
-        (item) => item.label.trim() !== '' || item.link || !isEmptyNode(item.body),
-      );
+      const visible = node.items.filter((item) => item.label.trim() !== '' || item.link || !isEmptyNode(item.body));
       const items = (
         <Stack gap="sm">
           {visible.map((item, index) => (
@@ -417,10 +394,7 @@ function AccessibilityNodeView({
               )}
               {!isEmptyNode(item.body) && (
                 <Stack gap={4} pl="sm">
-                  <AccessibilityNodeView
-                    node={item.body}
-                    path={path ? `${path} ${item.label}` : item.label}
-                  />
+                  <AccessibilityNodeView node={item.body} path={path ? `${path} ${item.label}` : item.label} />
                 </Stack>
               )}
             </Stack>
@@ -547,9 +521,7 @@ function renderableGroups(data: StationAccessibilityData): RenderableGroup[] {
     // one-item dimmed list.
     const trivialNegative = rawEntries.filter((entry) => isTrivialNegativeFacility(entry.node));
     const fold = trivialNegative.length >= 2;
-    const entries = fold
-      ? rawEntries.filter((entry) => !isTrivialNegativeFacility(entry.node))
-      : rawEntries;
+    const entries = fold ? rawEntries.filter((entry) => !isTrivialNegativeFacility(entry.node)) : rawEntries;
 
     return {
       heading: category.heading,
@@ -607,20 +579,13 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
   // surveyed stations), which measures at 12-36 ms per station. That is
   // paid once on the server and once more on hydration; it must not also be
   // paid on every unrelated re-render of this client component.
-  const groups = useMemo(
-    () => (result.coverage === 'present' ? renderableGroups(result.data) : []),
-    [result],
-  );
-  const atAGlance = useMemo(
-    () => (result.coverage === 'present' ? computeAtAGlance(result.data) : []),
-    [result],
-  );
+  const groups = useMemo(() => (result.coverage === 'present' ? renderableGroups(result.data) : []), [result]);
+  const atAGlance = useMemo(() => (result.coverage === 'present' ? computeAtAGlance(result.data) : []), [result]);
   // A `200` whose every allowlisted value turned out to be `{}`/`[]` is the
   // same fact as a `200 {}` from the reader's point of view -- the station
   // has published nothing -- so it gets the same sentence rather than an
   // empty section under a heading.
-  const nothingPublished =
-    result.coverage === 'empty' || (result.coverage === 'present' && groups.length === 0);
+  const nothingPublished = result.coverage === 'empty' || (result.coverage === 'present' && groups.length === 0);
 
   return (
     // review §3.5.10: this section's prose (rich-text notes, opening-hours
@@ -638,9 +603,7 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
         <Text c="dimmed">We don&apos;t have station reference data for this station yet.</Text>
       )}
       {nothingPublished && (
-        <Text c="dimmed">
-          No accessibility or facilities details have been published for this station.
-        </Text>
+        <Text c="dimmed">No accessibility or facilities details have been published for this station.</Text>
       )}
       <AtAGlanceStrip facts={atAGlance} />
       {groups.map((group) => (
@@ -670,11 +633,7 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
                   `qualifier` -- see `Disclosure`'s own doc comment for why a
                   bare "1 item" / "Raw data" landmark name is both an axe
                   `landmark-unique` failure and useless to navigate by. */}
-              <AccessibilityNodeView
-                node={entry.node}
-                label={humanizeKey(entry.key)}
-                path={humanizeKey(entry.key)}
-              />
+              <AccessibilityNodeView node={entry.node} label={humanizeKey(entry.key)} path={humanizeKey(entry.key)} />
             </Stack>
           ))}
           {/* review §3.5.6: several simply-unavailable facilities folded

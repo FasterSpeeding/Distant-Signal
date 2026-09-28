@@ -182,14 +182,12 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
     try {
       const body: PutJourneyTemplateRequest = {
         ...(customName.trim() ? { customName: customName.trim() } : {}),
-        legs: legs.map(
-          (leg): TemplateLegRequest => ({
-            originCrs: leg.originCrs.trim(),
-            destinationCrs: leg.destinationCrs.trim(),
-            departWindow: { after: leg.departFrom || null, before: leg.departTo || null },
-            arriveWindow: { after: leg.arriveFrom || null, before: leg.arriveTo || null },
-          }),
-        ),
+        legs: legs.map((leg): TemplateLegRequest => ({
+          originCrs: leg.originCrs.trim(),
+          destinationCrs: leg.destinationCrs.trim(),
+          departWindow: { after: leg.departFrom || null, before: leg.departTo || null },
+          arriveWindow: { after: leg.arriveFrom || null, before: leg.arriveTo || null },
+        })),
         daysOfWeek: keysToDaysOfWeek(selectedDays),
         active: !paused,
         startsOn: template.startsOn,

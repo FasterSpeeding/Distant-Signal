@@ -106,7 +106,9 @@ export function AddJourneyToGroupButton({
             placeholder="Pick one"
             data={journeys.map((j) => ({
               value: String(j.id),
-              label: j.customName ?? (j.originCrs && j.destinationCrs ? `${j.originCrs} → ${j.destinationCrs}` : 'Untitled journey'),
+              label:
+                j.customName ??
+                (j.originCrs && j.destinationCrs ? `${j.originCrs} → ${j.destinationCrs}` : 'Untitled journey'),
             }))}
             value={selected}
             onChange={setSelected}

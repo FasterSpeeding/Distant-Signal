@@ -16,9 +16,7 @@ vi.mock('next/headers', () => ({
   cookies: async () => ({
     toString: () => (incomingSession.value ? `distant_signal_session=${incomingSession.value}` : ''),
     get: (name: string) =>
-      name === 'distant_signal_session' && incomingSession.value
-        ? { name, value: incomingSession.value }
-        : undefined,
+      name === 'distant_signal_session' && incomingSession.value ? { name, value: incomingSession.value } : undefined,
   }),
 }));
 
@@ -43,9 +41,7 @@ describe('withStaleFallback', () => {
 
   it('serves the cached value when a later fetch fails', async () => {
     await withStaleFallback('k', async () => ['fresh']);
-    await expect(
-      withStaleFallback('k', () => Promise.reject(new Error('network'))),
-    ).resolves.toEqual(['fresh']);
+    await expect(withStaleFallback('k', () => Promise.reject(new Error('network')))).resolves.toEqual(['fresh']);
   });
 
   it('stops serving a stale entry once it is older than the TTL', async () => {
@@ -74,18 +70,16 @@ describe('withStaleFallback', () => {
   // so an unscoped cache would serve one visitor's private line to
   // another during an outage -- a cross-user data leak, not a staleness
   // inconvenience.
-  it('never serves one session\'s cached data to a different session', async () => {
+  it("never serves one session's cached data to a different session", async () => {
     incomingSession.value = 'session-a';
     await withStaleFallback('lineStatusForMode:national-rail', async () => ['A private line']);
 
     incomingSession.value = 'session-b';
     const boom = new Error('network');
-    await expect(
-      withStaleFallback('lineStatusForMode:national-rail', () => Promise.reject(boom)),
-    ).rejects.toBe(boom);
+    await expect(withStaleFallback('lineStatusForMode:national-rail', () => Promise.reject(boom))).rejects.toBe(boom);
   });
 
-  it('does not serve a logged-in visitor\'s data to an anonymous one', async () => {
+  it("does not serve a logged-in visitor's data to an anonymous one", async () => {
     incomingSession.value = 'session-a';
     await withStaleFallback('k', async () => ['A private line']);
 
@@ -96,9 +90,7 @@ describe('withStaleFallback', () => {
 
   it('shares one entry between anonymous visitors, who get identical responses', async () => {
     await withStaleFallback('k', async () => ['public']);
-    await expect(
-      withStaleFallback('k', () => Promise.reject(new Error('network'))),
-    ).resolves.toEqual(['public']);
+    await expect(withStaleFallback('k', () => Promise.reject(new Error('network')))).resolves.toEqual(['public']);
   });
 
   it('evicts oldest-first once past the entry cap', async () => {
@@ -106,9 +98,7 @@ describe('withStaleFallback', () => {
       await withStaleFallback(`k${i}`, async () => [i]);
     }
     // Exactly at the cap, nothing has been evicted yet.
-    await expect(
-      withStaleFallback('k0', () => Promise.reject(new Error('network'))),
-    ).resolves.toEqual([0]);
+    await expect(withStaleFallback('k0', () => Promise.reject(new Error('network')))).resolves.toEqual([0]);
 
     // One more distinct key pushes the map over the cap, evicting the
     // oldest. Note the stale *serve* above did not renew k0's position --
@@ -117,12 +107,10 @@ describe('withStaleFallback', () => {
 
     const boom = new Error('network');
     await expect(withStaleFallback('k0', () => Promise.reject(boom))).rejects.toBe(boom);
-    await expect(
-      withStaleFallback('k1', () => Promise.reject(new Error('network'))),
-    ).resolves.toEqual([1]);
+    await expect(withStaleFallback('k1', () => Promise.reject(new Error('network')))).resolves.toEqual([1]);
   });
 
-  it('renews an entry\'s eviction position when it is successfully refreshed', async () => {
+  it("renews an entry's eviction position when it is successfully refreshed", async () => {
     for (let i = 0; i < STALE_CACHE_MAX_ENTRIES; i++) {
       await withStaleFallback(`k${i}`, async () => [i]);
     }
@@ -137,8 +125,6 @@ describe('withStaleFallback', () => {
     // k1 is now the oldest and takes the eviction; the refreshed k0 lives.
     const boom = new Error('network');
     await expect(withStaleFallback('k1', () => Promise.reject(boom))).rejects.toBe(boom);
-    await expect(
-      withStaleFallback('k0', () => Promise.reject(new Error('network'))),
-    ).resolves.toEqual(['refreshed']);
+    await expect(withStaleFallback('k0', () => Promise.reject(new Error('network')))).resolves.toEqual(['refreshed']);
   });
 });

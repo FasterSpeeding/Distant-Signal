@@ -40,7 +40,11 @@ const lineChartMock = vi.fn((props: MockLineChartProps) => (
 vi.mock('@mantine/charts', () => ({
   LineChart: (props: MockLineChartProps) => lineChartMock(props),
   BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
-    <div data-testid="bar-chart" data-series={props.series.map((s) => s.name).join(',')} data-points={JSON.stringify(props.data)} />
+    <div
+      data-testid="bar-chart"
+      data-series={props.series.map((s) => s.name).join(',')}
+      data-points={JSON.stringify(props.data)}
+    />
   ),
 }));
 
@@ -171,7 +175,9 @@ describe('HalfHourlyTrendsResults', () => {
   });
 
   it('renders the trains-counted bar chart', async () => {
-    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([halfHourlyRow({ halfHourStart: '2026-08-31T14:00:00Z', total: 9 })]);
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([
+      halfHourlyRow({ halfHourStart: '2026-08-31T14:00:00Z', total: 9 }),
+    ]);
     renderWithMantine(
       await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
@@ -183,7 +189,11 @@ describe('HalfHourlyTrendsResults', () => {
 
   it('a sparse half hour keeps its real total in the bar chart even though its rate is gapped', async () => {
     vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([
-      halfHourlyRow({ halfHourStart: '2026-08-31T13:30:00Z', sampleCycles: SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY - 1, total: 2 }),
+      halfHourlyRow({
+        halfHourStart: '2026-08-31T13:30:00Z',
+        sampleCycles: SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY - 1,
+        total: 2,
+      }),
       halfHourlyRow({ halfHourStart: '2026-08-31T14:00:00Z', sampleCycles: 25, total: 30 }),
     ]);
     renderWithMantine(

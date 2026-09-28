@@ -52,10 +52,7 @@ export function HistoryRangePicker({
 }) {
   const router = useRouter();
   const periodLabelId = useId();
-  const [value, setValue] = useState<[string | null, string | null]>([
-    toCalendarDay(from),
-    toCalendarDay(to),
-  ]);
+  const [value, setValue] = useState<[string | null, string | null]>([toCalendarDay(from), toCalendarDay(to)]);
   // Mirrors `value`'s own resync rationale below: a `RangePreset` prop can
   // change (a preset click navigates, then the page re-renders this same
   // mounted instance with a fresh `preset`) without the component

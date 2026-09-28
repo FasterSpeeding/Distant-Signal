@@ -102,9 +102,7 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
             error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
           />
           {error && <Alert color="red">{error}</Alert>}
-          {needsLoginState.needsLogin && (
-            <LoginLink underline="always">Log in to run this template</LoginLink>
-          )}
+          {needsLoginState.needsLogin && <LoginLink underline="always">Log in to run this template</LoginLink>}
           <Button onClick={handleSubmit} disabled={!serviceDateValid} loading={submitting}>
             Create journey
           </Button>

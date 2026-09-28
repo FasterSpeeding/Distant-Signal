@@ -100,7 +100,9 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: ['swr-alton'], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: ['swr-alton'], pinnedStations: [], pinnedOperators: [] }), {
+          status: 200,
+        });
       }
       return new Response(null, { status: 204 });
     });
@@ -123,7 +125,9 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: ['WOK', 'AON'], pinnedOperators: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: ['WOK', 'AON'], pinnedOperators: [] }), {
+          status: 200,
+        });
       }
       return new Response(null, { status: 204 });
     });
@@ -146,7 +150,9 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: ['SW', 'MTR'] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: ['SW', 'MTR'] }), {
+          status: 200,
+        });
       }
       return new Response(null, { status: 204 });
     });
@@ -200,10 +206,7 @@ describe('PinToggle', () => {
     fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
 
     expect(await screen.findByText('Log in to pin this line.')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
-      'href',
-      '/api/auth/login?return_to=%2Flines',
-    );
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines');
   });
 
   // A 401 on the PUT (read succeeded, write didn't) must surface the same
@@ -212,7 +215,9 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), {
+          status: 200,
+        });
       }
       return new Response('no session', { status: 401 });
     });
@@ -245,7 +250,9 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), {
+          status: 200,
+        });
       }
       return new Response('no session', { status: 401 });
     });
@@ -285,7 +292,9 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), {
+          status: 200,
+        });
       }
       throw new TypeError('Failed to fetch');
     });
@@ -302,7 +311,9 @@ describe('PinToggle', () => {
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), {
+          status: 200,
+        });
       }
       return new Response(null, { status: 204 });
     });

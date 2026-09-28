@@ -70,9 +70,9 @@ function PunctualitySection({ summary }: { summary: PunctualitySummary }) {
     // figure to show, but the cancellations themselves are real data.
     return (
       <Text size="sm" c="dimmed">
-        {summary.cancelledCount} tracked journey{summary.cancelledCount === 1 ? ' was' : 's were'} cancelled, with
-        no on-time/delay outcome recorded yet. Track more trains and check back once they&apos;ve finished
-        running to build up a punctuality picture.
+        {summary.cancelledCount} tracked journey{summary.cancelledCount === 1 ? ' was' : 's were'} cancelled, with no
+        on-time/delay outcome recorded yet. Track more trains and check back once they&apos;ve finished running to build
+        up a punctuality picture.
       </Text>
     );
   }
@@ -80,8 +80,8 @@ function PunctualitySection({ summary }: { summary: PunctualitySummary }) {
   return (
     <Stack gap={4}>
       <Text>
-        Of your last {summary.eligibleCount} tracked journey{summary.eligibleCount === 1 ? '' : 's'} with a
-        recorded outcome, {summary.onTimePct}% were on time
+        Of your last {summary.eligibleCount} tracked journey{summary.eligibleCount === 1 ? '' : 's'} with a recorded
+        outcome, {summary.onTimePct}% were on time
         {summary.avgDelayMinutes !== null && ` (average delay ${summary.avgDelayMinutes.toFixed(1)} minutes)`}.
         {summary.cancelledCount > 0 &&
           ` ${summary.cancelledCount} journey${summary.cancelledCount === 1 ? ' was' : 's were'} cancelled and ${summary.cancelledCount === 1 ? "isn't" : "aren't"} counted in that figure.`}
@@ -131,14 +131,14 @@ const BAND_LABELS: Record<string, string> = {
 // NOT reproduced here: this rollup renders no claim link at all (below),
 // so that clause would describe a link that does not exist on screen.
 const CARRIED_FORWARD_DISCLAIMER =
-  "This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled.";
+  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled.';
 
 function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
   if (rollup.attachedTicketsWithOperator === 0) {
     return (
       <Text size="sm" c="dimmed">
-        Attach a ticket to one of your tracked trains to see whether any of your journeys may have qualified for
-        Delay Repay.
+        Attach a ticket to one of your tracked trains to see whether any of your journeys may have qualified for Delay
+        Repay.
       </Text>
     );
   }
@@ -154,10 +154,9 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
           train" case), so this copy must not say "journeys" here, or it
           would overstate how many distinct trips were involved. */}
       <Alert color="blue" title="Possible Delay Repay eligibility, across your attached tickets" variant="light">
-        Of the {rollup.attachedTicketsWithOperator} ticket{rollup.attachedTicketsWithOperator === 1 ? '' : 's'}{' '}
-        attached to a tracked train with a known operator, {rollup.eligibleCount}{' '}
-        may have qualified for a partial
-        or full refund of that ticket&apos;s fare under the operator&apos;s Delay Repay scheme.
+        Of the {rollup.attachedTicketsWithOperator} ticket{rollup.attachedTicketsWithOperator === 1 ? '' : 's'} attached
+        to a tracked train with a known operator, {rollup.eligibleCount} may have qualified for a partial or full refund
+        of that ticket&apos;s fare under the operator&apos;s Delay Repay scheme.
       </Alert>
       {bandEntries.length > 0 && (
         <Stack gap={2}>
@@ -170,9 +169,9 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
       )}
       <Text size="sm">
         {CARRIED_FORWARD_DISCLAIMER} This is a count of tickets, not a total amount: this app never stores ticket
-        prices, so it has no fare figure to add up into a refund total, and never will. This app does not claim on
-        your behalf for any of them — always verify eligibility and claim directly with each operator, using the
-        link already shown against each ticket below.
+        prices, so it has no fare figure to add up into a refund total, and never will. This app does not claim on your
+        behalf for any of them — always verify eligibility and claim directly with each operator, using the link already
+        shown against each ticket below.
       </Text>
     </Stack>
   );

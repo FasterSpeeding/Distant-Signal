@@ -37,8 +37,8 @@ export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateR
       {/* LEG-14: say how current the rules are and where the delay figure
           comes from. */}
       <Text size="xs" c="dimmed">
-        Rules last checked: {DELAY_REPAY_RULES_CHECKED_ON}. Delays are based on public running data and may differ
-        from the operator&apos;s own records.
+        Rules last checked: {DELAY_REPAY_RULES_CHECKED_ON}. Delays are based on public running data and may differ from
+        the operator&apos;s own records.
       </Text>
       <Text size="sm">This app never submits a claim on your behalf.</Text>
       {/* The only place in this feature that opens a new tab -- every
@@ -56,8 +56,8 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
   if (estimate) {
     return (
       <Alert color="blue" title="Estimated Delay Repay eligibility" variant="light">
-        Estimated compensation: {estimate.percentage}% of your fare ({estimate.scheme}, {estimate.bandMinutes}+
-        minute delay). This is an estimate, not a guarantee.
+        Estimated compensation: {estimate.percentage}% of your fare ({estimate.scheme}, {estimate.bandMinutes}+ minute
+        delay). This is an estimate, not a guarantee.
       </Alert>
     );
   }
@@ -69,9 +69,8 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
     // assert a specific one of the three the response doesn't support.
     return (
       <Text size="sm">
-        Based on the recorded delay ({delayMinutes}
-        {' '}minutes), this operator&apos;s Delay Repay rules may not give
-        a payout at that length — but rules vary and this estimate can be wrong, so it&apos;s still worth checking
+        Based on the recorded delay ({delayMinutes} minutes), this operator&apos;s Delay Repay rules may not give a
+        payout at that length — but rules vary and this estimate can be wrong, so it&apos;s still worth checking
         directly.
       </Text>
     );
@@ -79,8 +78,8 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
 
   return (
     <Text size="sm">
-      No delay data recorded yet for this journey — if you already know you were delayed, the link below still
-      goes straight to the operator.
+      No delay data recorded yet for this journey — if you already know you were delayed, the link below still goes
+      straight to the operator.
     </Text>
   );
 }

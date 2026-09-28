@@ -7,9 +7,7 @@ import { StationAccessibilitySection } from './StationAccessibilitySection';
 describe('StationAccessibilitySection', () => {
   it('renders the "not yet captured" copy for coverage: unavailable', () => {
     renderWithMantine(<StationAccessibilitySection result={{ coverage: 'unavailable' }} />);
-    expect(
-      screen.getByText("We don't have station reference data for this station yet."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("We don't have station reference data for this station yet.")).toBeInTheDocument();
   });
 
   it('renders the "nothing published" copy for coverage: empty, distinct from unavailable', () => {
@@ -17,15 +15,11 @@ describe('StationAccessibilitySection', () => {
     expect(
       screen.getByText('No accessibility or facilities details have been published for this station.'),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("We don't have station reference data for this station yet."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("We don't have station reference data for this station yet.")).not.toBeInTheDocument();
   });
 
   it('renders only the group headings whose keys are present in the data', () => {
-    renderWithMantine(
-      <StationAccessibilitySection result={{ coverage: 'present', data: { lifts: { count: 2 } } }} />,
-    );
+    renderWithMantine(<StationAccessibilitySection result={{ coverage: 'present', data: { lifts: { count: 2 } } }} />);
     expect(screen.getByText('Facilities')).toBeInTheDocument();
     expect(screen.queryByText('Step-free access & assistance')).not.toBeInTheDocument();
     expect(screen.queryByText('Platform & station facilities')).not.toBeInTheDocument();
@@ -194,9 +188,7 @@ describe('StationAccessibilitySection', () => {
   // but this component does not treat that as a hard guarantee.
   it('skips a null-valued key instead of rendering it as raw "null"', () => {
     renderWithMantine(
-      <StationAccessibilitySection
-        result={{ coverage: 'present', data: { cycling: null, lifts: { count: 2 } } }}
-      />,
+      <StationAccessibilitySection result={{ coverage: 'present', data: { cycling: null, lifts: { count: 2 } } }} />,
     );
     expect(screen.queryByText('Cycling')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Raw data/ })).not.toBeInTheDocument();
@@ -218,9 +210,7 @@ describe('StationAccessibilitySection', () => {
       />,
     );
     const headings = screen
-      .getAllByText(
-        /^(Step-free access & assistance|Facilities|Platform & station facilities|Getting here)$/,
-      )
+      .getAllByText(/^(Step-free access & assistance|Facilities|Platform & station facilities|Getting here)$/)
       .map((el) => el.textContent);
     expect(headings).toEqual([
       'Step-free access & assistance',
@@ -243,16 +233,12 @@ describe('StationAccessibilitySection', () => {
     expect(
       screen.getByText('No accessibility or facilities details have been published for this station.'),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("We don't have station reference data for this station yet."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("We don't have station reference data for this station yet.")).not.toBeInTheDocument();
     expect(screen.queryByText('Facilities')).not.toBeInTheDocument();
   });
 
   it('does not show the "nothing published" copy alongside real content', () => {
-    renderWithMantine(
-      <StationAccessibilitySection result={{ coverage: 'present', data: { lifts: { count: 2 } } }} />,
-    );
+    renderWithMantine(<StationAccessibilitySection result={{ coverage: 'present', data: { lifts: { count: 2 } } }} />);
     expect(
       screen.queryByText('No accessibility or facilities details have been published for this station.'),
     ).not.toBeInTheDocument();
@@ -283,9 +269,7 @@ describe('StationAccessibilitySection', () => {
   });
 
   it('skips an array whose every item renders to nothing', () => {
-    renderWithMantine(
-      <StationAccessibilitySection result={{ coverage: 'present', data: { carParks: [{}, {}] } }} />,
-    );
+    renderWithMantine(<StationAccessibilitySection result={{ coverage: 'present', data: { carParks: [{}, {}] } }} />);
     expect(screen.queryByText('Car parks')).not.toBeInTheDocument();
     expect(
       screen.getByText('No accessibility or facilities details have been published for this station.'),
@@ -351,9 +335,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
 
   it('names a Pattern A key once, on its own availability line', () => {
     renderWithMantine(
-      <StationAccessibilitySection
-        result={{ coverage: 'present', data: { lifts: { available: true } } }}
-      />,
+      <StationAccessibilitySection result={{ coverage: 'present', data: { lifts: { available: true } } }} />,
     );
     expect(screen.getByText('Lifts — Available')).toBeInTheDocument();
     // Not also as a separate label above it.
@@ -368,8 +350,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
           data: {
             stationAccessibility: {
               available: true,
-              notes:
-                '<p>Call <a href="https://example.com/assist">Passenger Assist</a> in advance.</p>',
+              notes: '<p>Call <a href="https://example.com/assist">Passenger Assist</a> in advance.</p>',
             },
           },
         }}
@@ -496,10 +477,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
         }}
       />,
     );
-    expect(screen.getByRole('link', { name: '0345 077 4224' })).toHaveAttribute(
-      'href',
-      'tel:03450774224',
-    );
+    expect(screen.getByRole('link', { name: '0345 077 4224' })).toHaveAttribute('href', 'tel:03450774224');
     expect(screen.getByRole('link', { name: 'lost.property@example.com' })).toHaveAttribute(
       'href',
       'mailto:lost.property@example.com',
@@ -545,7 +523,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
     expect(list!.querySelectorAll('li')).toHaveLength(1);
   });
 
-  it('numbers the fallback list\'s items so nested disclosures stay distinguishable', () => {
+  it("numbers the fallback list's items so nested disclosures stay distinguishable", () => {
     // An array of objects with no `name` matches none of B/D/F. Nothing in
     // the 31 real payloads reaches it, but the wire type is `unknown` and
     // this branch is what stops such a value disappearing. Only two items,
@@ -592,9 +570,7 @@ describe('StationAccessibilitySection, against real station payloads', () => {
   // named fixture for an `available: false` record with explanatory notes.
   it('renders DNO without a single raw-JSON disclosure', () => {
     renderWithMantine(
-      <StationAccessibilitySection
-        result={{ coverage: 'present', data: loadAccessibilityFixture('DNO') }}
-      />,
+      <StationAccessibilitySection result={{ coverage: 'present', data: loadAccessibilityFixture('DNO') }} />,
     );
     expect(screen.queryByRole('button', { name: /Raw data/ })).not.toBeInTheDocument();
     expect(screen.getByText('Lifts — Not available')).toBeInTheDocument();
@@ -603,9 +579,7 @@ describe('StationAccessibilitySection, against real station payloads', () => {
   // BAL (smallest payload) and MAN (largest).
   it.each(['BAL', 'MAN'])('renders %s, and every disclosure keeps a unique accessible name', (crs) => {
     renderWithMantine(
-      <StationAccessibilitySection
-        result={{ coverage: 'present', data: loadAccessibilityFixture(crs) }}
-      />,
+      <StationAccessibilitySection result={{ coverage: 'present', data: loadAccessibilityFixture(crs) }} />,
     );
     expect(screen.queryByRole('button', { name: /Raw data/ })).not.toBeInTheDocument();
     // The axe `landmark-unique` property, asserted on the collapsed page --
@@ -618,9 +592,7 @@ describe('StationAccessibilitySection, against real station payloads', () => {
 
   it('shows all four category groups for a full payload', () => {
     renderWithMantine(
-      <StationAccessibilitySection
-        result={{ coverage: 'present', data: loadAccessibilityFixture('MAN') }}
-      />,
+      <StationAccessibilitySection result={{ coverage: 'present', data: loadAccessibilityFixture('MAN') }} />,
     );
     for (const heading of [
       'Step-free access & assistance',

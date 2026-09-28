@@ -145,8 +145,7 @@ function rewriteRawUrlLinks(root: Element): void {
  * Deliberately conservative -- a plausible-looking run of digits that isn't
  * really a phone number is far less costly to leave as plain text than a
  * false match turning an unrelated number into a dead `tel:` link. */
-const UK_PHONE_PATTERN =
-  /(?:\+44\s?\d{2,4}|\(?0\d{2,4}\)?)(?:[\s-]?\d){6,8}\b/g;
+const UK_PHONE_PATTERN = /(?:\+44\s?\d{2,4}|\(?0\d{2,4}\)?)(?:[\s-]?\d){6,8}\b/g;
 
 /** Digits and a leading `+` only, mirroring `stationAccessibility.ts`'s own
  * `digitsOnly` -- duplicated rather than imported, since importing that

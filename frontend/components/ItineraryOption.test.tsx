@@ -42,7 +42,7 @@ describe('ItineraryOption', () => {
         itinerary={{ ...trainItinerary, changeCount: 3, exceedsRecommendedChanges: true }}
         selected={false}
         onSelect={vi.fn()}
-      />
+      />,
     );
     expect(screen.getByText('More changes than usually recommended')).toBeInTheDocument();
   });
@@ -84,7 +84,9 @@ describe('ItineraryOption', () => {
         stationNames={stationNames}
       />,
     );
-    expect(screen.getByText('Walk/transfer (TUBE) EUS — London Euston → KGX — London Kings Cross, 5 min')).toBeInTheDocument();
+    expect(
+      screen.getByText('Walk/transfer (TUBE) EUS — London Euston → KGX — London Kings Cross, 5 min'),
+    ).toBeInTheDocument();
   });
 
   it('falls back to bare codes for an end whose name did not resolve, without mixing forms', () => {

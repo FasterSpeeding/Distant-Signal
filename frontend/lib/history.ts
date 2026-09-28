@@ -36,9 +36,7 @@ const SAMPLE_COUNT_CLAUSE = /\d+ of \d+ sampled services/g;
  * its own row, not noise to collapse away — see `collapseDay`'s regression
  * tests for both directions of this. */
 function coreReason(reason: string): string {
-  return reason
-    .replace(LIVE_SAMPLE_ANNOTATION, '')
-    .replace(SAMPLE_COUNT_CLAUSE, 'N of M sampled services');
+  return reason.replace(LIVE_SAMPLE_ANNOTATION, '').replace(SAMPLE_COUNT_CLAUSE, 'N of M sampled services');
 }
 
 /** Stand-in for "this recompute had no active status" (i.e. good service),
@@ -131,7 +129,13 @@ function collapseDay(entries: LineStatusHistoryEntry[]): HistorySpan[] {
         current.samples += 1;
         continue;
       }
-      flips.push({ severity: point.status.statusSeverity, status: point.status, from: point.at, to: point.at, samples: 1 });
+      flips.push({
+        severity: point.status.statusSeverity,
+        status: point.status,
+        from: point.at,
+        to: point.at,
+        samples: 1,
+      });
     }
 
     const worst = points.reduce((worst, point) => worstOf(worst, point.status), points[0].status);
@@ -208,10 +212,7 @@ const PRESET_DAYS: Record<RangePreset, number> = { '7d': 7, '30d': 30 };
  * segment as its own defence (see its "Path-segment encoding invariant"
  * note), and this is the matching half of that: nothing but a string this
  * function itself produced can ever reach the URL builder. */
-export function resolveRange(
-  params: { from?: string; to?: string; range?: string },
-  now: number,
-): ResolvedRange {
+export function resolveRange(params: { from?: string; to?: string; range?: string }, now: number): ResolvedRange {
   const from = params.from ? Date.parse(params.from) : NaN;
   const to = params.to ? Date.parse(params.to) : NaN;
   if (!Number.isNaN(from) && !Number.isNaN(to) && from <= to) {
@@ -347,7 +348,8 @@ export function availableGranularities(
   ceilings: GranularityRetentionCeilings,
 ): TrendGranularity[] {
   return GRANULARITY_ORDER.filter(
-    (granularity) => withinRetention(granularity, rangeWidthMs, ceilings) && withinPointBudget(granularity, rangeWidthMs),
+    (granularity) =>
+      withinRetention(granularity, rangeWidthMs, ceilings) && withinPointBudget(granularity, rangeWidthMs),
   );
 }
 

@@ -40,9 +40,7 @@ function stop(overrides: Partial<JourneyStop>): JourneyStop {
 describe('isGenuineCallingPoint', () => {
   it('is false for a stop with no identity and no booked time at all (a genuine junction pass)', () => {
     expect(
-      isGenuineCallingPoint(
-        stop({ crs: null, name: null, scheduledArrival: null, scheduledDeparture: null }),
-      ),
+      isGenuineCallingPoint(stop({ crs: null, name: null, scheduledArrival: null, scheduledDeparture: null })),
     ).toBe(false);
   });
 
@@ -61,9 +59,7 @@ describe('isGenuineCallingPoint', () => {
 
   it('is true for a stop with a resolved identity even when it has no booked time', () => {
     expect(
-      isGenuineCallingPoint(
-        stop({ crs: 'RDG', name: 'Reading', scheduledArrival: null, scheduledDeparture: null }),
-      ),
+      isGenuineCallingPoint(stop({ crs: 'RDG', name: 'Reading', scheduledArrival: null, scheduledDeparture: null })),
     ).toBe(true);
   });
 });
@@ -90,9 +86,7 @@ describe('JourneyTimeline', () => {
 
   it('shows only the scheduled time for a stop with no actual time yet', () => {
     renderWithMantine(
-      <JourneyTimeline
-        stops={[stop({ scheduledDeparture: '2026-09-08T08:00:00Z', actualDeparture: null })]}
-      />,
+      <JourneyTimeline stops={[stop({ scheduledDeparture: '2026-09-08T08:00:00Z', actualDeparture: null })]} />,
     );
     expect(screen.queryByText(/late|early|on time/i)).not.toBeInTheDocument();
   });
@@ -165,7 +159,11 @@ describe('JourneyTimeline', () => {
       <JourneyTimeline
         stops={[
           stop({ delayMinutes: null }),
-          stop({ scheduledDeparture: '2026-09-08T08:00:00Z', actualDeparture: '2026-09-08T08:04:00Z', delayMinutes: 4 }),
+          stop({
+            scheduledDeparture: '2026-09-08T08:00:00Z',
+            actualDeparture: '2026-09-08T08:04:00Z',
+            delayMinutes: 4,
+          }),
         ]}
       />,
     );
@@ -174,7 +172,9 @@ describe('JourneyTimeline', () => {
 
   it('shows a platform badge for a stop with a known platform', () => {
     renderWithMantine(
-      <JourneyTimeline stops={[stop({ kind: 'Origin', platform: '6', plannedPlatform: '6', platformChanged: false })]} />,
+      <JourneyTimeline
+        stops={[stop({ kind: 'Origin', platform: '6', plannedPlatform: '6', platformChanged: false })]}
+      />,
     );
     expect(screen.getByText('Platform 6')).toBeInTheDocument();
   });

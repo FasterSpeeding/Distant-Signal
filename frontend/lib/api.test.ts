@@ -200,12 +200,18 @@ describe('api client', () => {
   // wrapper words the two differently, so this must not collapse into a
   // generic Error.
   it('getStationAccessibility throws ApiNotFoundError on a 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getStationAccessibility('ZZZ')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
   it('getStationAccessibility resolves an empty object as an ordinary 200, not an error', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 200 })),
+    );
     await expect(getStationAccessibility('ZZZ')).resolves.toEqual({});
   });
 
@@ -304,7 +310,10 @@ describe('api client', () => {
   });
 
   it('getLineHourlyStats builds the correct URL', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
     await getLineHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
@@ -313,7 +322,10 @@ describe('api client', () => {
   });
 
   it('getLineSixHourlyStats builds the correct URL', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
     await getLineSixHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/wcml/Stats/SixHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
@@ -400,8 +412,7 @@ describe('api client', () => {
     ],
     [
       'getLineHalfHourlyCoverageStats',
-      () =>
-        getLineHalfHourlyCoverageStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
+      () => getLineHalfHourlyCoverageStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
       'http://test-api:8080/Line/wcml/Stats/Coverage/HalfHourly/2026-08-31T00%3A00%3A00.000Z/to/2026-09-01T00%3A00%3A00.000Z',
     ],
   ];
@@ -409,7 +420,10 @@ describe('api client', () => {
   for (const [name, call, url] of statsFetchers) {
     it(`${name} forwards the incoming request cookies to the backend`, async () => {
       incomingCookies.header = 'distant_signal_session=abc123';
-      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+      );
       await call();
       expect(fetch).toHaveBeenCalledWith(
         url,
@@ -418,7 +432,10 @@ describe('api client', () => {
     });
 
     it(`${name} sends no Cookie header when the visitor has no cookies at all`, async () => {
-      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+      );
       await call();
       const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
       expect(init.headers).toBeUndefined();
@@ -428,7 +445,12 @@ describe('api client', () => {
   it('getPreferences fetches the correct URL with no caching', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: ['WOK'], pinnedOperators: [] }), { status: 200 })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: ['WOK'], pinnedOperators: [] }), {
+            status: 200,
+          }),
+      ),
     );
     await getPreferences();
     expect(fetch).toHaveBeenCalledWith(
@@ -446,7 +468,12 @@ describe('api client', () => {
     incomingCookies.header = 'distant_signal_session=abc123; theme=dark';
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: [], pinnedOperators: [] }), { status: 200 })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: [], pinnedOperators: [] }), {
+            status: 200,
+          }),
+      ),
     );
     await expect(getPreferences()).resolves.toEqual({ pinnedLines: ['wcml'], pinnedStations: [], pinnedOperators: [] });
     // Only the session cookie is forwarded -- see the dedicated
@@ -462,7 +489,10 @@ describe('api client', () => {
   it('getPreferences sends no Cookie header when the visitor has no cookies at all', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 }),
+      ),
     );
     await getPreferences();
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
@@ -507,7 +537,10 @@ describe('api client', () => {
     incomingCookies.header = 'distant_signal_session=abc123';
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ authenticated: false, id: null, email: null, name: null }), { status: 200 })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ authenticated: false, id: null, email: null, name: null }), { status: 200 }),
+      ),
     );
     await getSession();
     expect(fetch).toHaveBeenCalledWith(
@@ -525,12 +558,20 @@ describe('api client', () => {
   // itself must NOT quietly return a logged-out-shaped value on failure, or
   // there would be nothing left to distinguish.
   it('getSession rejects (does not swallow) on a 5xx', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('db error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('db error', { status: 500 })),
+    );
     await expect(getSession()).rejects.toThrow(/500/);
   });
 
   it('getSession rejects on a network failure (fetch itself throwing)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed');
+      }),
+    );
     await expect(getSession()).rejects.toThrow('fetch failed');
   });
 
@@ -558,7 +599,8 @@ describe('api client', () => {
         return controller.signal;
       });
       const fire = () => {
-        for (const c of controllers) c.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+        for (const c of controllers)
+          c.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
       };
       return { requested, fire };
     }
@@ -608,7 +650,10 @@ describe('api client', () => {
       const { requested } = controllableTimeout();
       vi.stubGlobal(
         'fetch',
-        vi.fn(async () => new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 })),
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 }),
+        ),
       );
       await getPreferences();
       expect(requested).toEqual([API_FETCH_TIMEOUT_MS]);
@@ -644,7 +689,12 @@ describe('api client', () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.stubGlobal(
         'fetch',
-        vi.fn(async () => new Response(JSON.stringify({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' }), { status: 200 })),
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' }), {
+              status: 200,
+            }),
+        ),
       );
       await expect(getSessionOrLoggedOut()).resolves.toEqual({
         authenticated: true,
@@ -677,7 +727,12 @@ describe('api client', () => {
     // before.
     it('degrades to LOGGED_OUT_SESSION AND logs when getSession() rejects on a network failure', async () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          throw new TypeError('fetch failed');
+        }),
+      );
       await expect(getSessionOrLoggedOut()).resolves.toEqual(LOGGED_OUT_SESSION);
       expect(consoleError).toHaveBeenCalledTimes(1);
       expect(consoleError.mock.calls[0][0]).toMatch(/getSession\(\) failed/);
@@ -690,7 +745,10 @@ describe('api client', () => {
     // newly-visible failure is actually surfaced instead of swallowed here.
     it('degrades to LOGGED_OUT_SESSION AND logs when the backend responds 5xx', async () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.stubGlobal('fetch', vi.fn(async () => new Response('db error', { status: 500 })));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('db error', { status: 500 })),
+      );
       await expect(getSessionOrLoggedOut()).resolves.toEqual(LOGGED_OUT_SESSION);
       expect(consoleError).toHaveBeenCalledTimes(1);
     });
@@ -827,12 +885,18 @@ describe('api client', () => {
   // 401 and a genuine 404 collapse into the same ApiNotFoundError -- unlike
   // getTrackedTrainById below, which keeps them distinct.
   it('getCustomLine collapses a 401 into ApiNotFoundError', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unauthorized', { status: 401 })),
+    );
     await expect(getCustomLine('custom-my-commute')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
   it('getCustomLine collapses a 404 into ApiNotFoundError', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getCustomLine('custom-my-commute')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
@@ -909,7 +973,10 @@ describe('api client', () => {
   });
 
   it('getLineTrains throws ApiNotFoundError on a 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getLineTrains('swr-alton')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
@@ -1007,10 +1074,7 @@ describe('api client', () => {
 
   it('getTrackedTrainById fetches the correct URL with no caching', async () => {
     await getTrackedTrainById(42);
-    expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Train/42',
-      expect.objectContaining({ cache: 'no-store' }),
-    );
+    expect(fetch).toHaveBeenCalledWith('http://test-api:8080/Train/42', expect.objectContaining({ cache: 'no-store' }));
   });
 
   it('getTrackedTrainById forwards the incoming request cookies to the backend', async () => {
@@ -1048,25 +1112,35 @@ describe('api client', () => {
   });
 
   it('getTrackedTrainById throws ApiNotFoundError on a 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getTrackedTrainById(999)).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
   it('getTrackedTrainById throws ApiUnauthorizedError specifically on a 401', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unauthorized', { status: 401 })),
+    );
     await expect(getTrackedTrainById(999)).rejects.toBeInstanceOf(ApiUnauthorizedError);
   });
 
   it('getPublicTrainByUidAndDate throws ApiNotFoundError on a 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
-    await expect(getPublicTrainByUidAndDate('C21373', '2026-08-28')).rejects.toBeInstanceOf(
-      ApiNotFoundError,
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
     );
+    await expect(getPublicTrainByUidAndDate('C21373', '2026-08-28')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
   it('getTicketsForTrackedTrain fetches the correct URL, forwarding cookies, with no caching', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await getTicketsForTrackedTrain(1);
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Train/1/tickets',
@@ -1078,28 +1152,43 @@ describe('api client', () => {
   });
 
   it('getTicketsForTrackedTrain returns null on a 401 (not logged in)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no session', { status: 401 })),
+    );
     await expect(getTicketsForTrackedTrain(1)).resolves.toBeNull();
   });
 
   it('getTicketsForTrackedTrain returns null on a 404 (logged in, not the owner)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getTicketsForTrackedTrain(1)).resolves.toBeNull();
   });
 
   it('getTicketsForTrackedTrain resolves an empty array as owner-with-no-tickets, not null', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await expect(getTicketsForTrackedTrain(1)).resolves.toEqual([]);
   });
 
   it('getTicketsForTrackedTrain still throws on a non-401/404 failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
     await expect(getTicketsForTrackedTrain(1)).rejects.toThrow(/500/);
   });
 
   it('getMyTrackedTrains fetches the correct URL, forwarding cookies, with no caching', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await getMyTrackedTrains();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Train/mine',
@@ -1111,23 +1200,35 @@ describe('api client', () => {
   });
 
   it('getMyTrackedTrains returns null on a 401 (not logged in)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no session', { status: 401 })),
+    );
     await expect(getMyTrackedTrains()).resolves.toBeNull();
   });
 
   it('getMyTrackedTrains resolves an empty array as logged-in-with-nothing-tracked, not null', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await expect(getMyTrackedTrains()).resolves.toEqual([]);
   });
 
   it('getMyTrackedTrains still throws on a non-401 failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
     await expect(getMyTrackedTrains()).rejects.toThrow(/500/);
   });
 
   it('getSharedGroupTrains fetches the correct URL, forwarding cookies, with no caching', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await getSharedGroupTrains();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/groups/shared-trains',
@@ -1139,23 +1240,35 @@ describe('api client', () => {
   });
 
   it('getSharedGroupTrains returns null on a 401 (not logged in), matching getMyTrackedTrains', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no session', { status: 401 })),
+    );
     await expect(getSharedGroupTrains()).resolves.toBeNull();
   });
 
   it('getSharedGroupTrains resolves an empty array as "no groups / nothing shared", not null', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await expect(getSharedGroupTrains()).resolves.toEqual([]);
   });
 
   it('getSharedGroupTrains still throws on a non-401 failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
     await expect(getSharedGroupTrains()).rejects.toThrow(/500/);
   });
 
   it('getGroupCustomLines fetches the group-scoped grant list, forwarding cookies', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await getGroupCustomLines('group-1');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/groups/group-1/lines/custom',
@@ -1167,13 +1280,19 @@ describe('api client', () => {
   });
 
   it('getGroupCustomLines throws on a 404 (not a member / no such group)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no group with that id', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no group with that id', { status: 404 })),
+    );
     await expect(getGroupCustomLines('group-1')).rejects.toThrow(/404/);
   });
 
   it('getSharedGroupCustomLines fetches the correct URL, forwarding cookies, with no caching', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await getSharedGroupCustomLines();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/groups/shared-custom-lines',
@@ -1185,23 +1304,35 @@ describe('api client', () => {
   });
 
   it('getSharedGroupCustomLines returns null on a 401, matching getSharedGroupTrains', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no session', { status: 401 })),
+    );
     await expect(getSharedGroupCustomLines()).resolves.toBeNull();
   });
 
   it('getSharedGroupCustomLines resolves an empty array as "nothing shared", not null', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await expect(getSharedGroupCustomLines()).resolves.toEqual([]);
   });
 
   it('getSharedGroupCustomLines still throws on a non-401 failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
     await expect(getSharedGroupCustomLines()).rejects.toThrow(/500/);
   });
 
   it('getDelayRepayEstimate fetches the correct URL with no caching', async () => {
     const sample = { delayMinutes: 45, estimate: null, claimUrl: 'https://example.com', disclaimer: 'x' };
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(sample), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(sample), { status: 200 })),
+    );
     await getDelayRepayEstimate(1, 7);
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Train/1/tickets/7/delay-repay',
@@ -1210,15 +1341,24 @@ describe('api client', () => {
   });
 
   it('getDelayRepayEstimate returns null on a 401 or 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no session', { status: 401 })),
+    );
     await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
   });
 
   it('getMyTickets fetches the correct URL, forwarding cookies, with no caching', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await getMyTickets();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Train/tickets/mine',
@@ -1230,33 +1370,54 @@ describe('api client', () => {
   });
 
   it('getMyTickets returns null on a 401 (not logged in)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no session', { status: 401 })),
+    );
     await expect(getMyTickets()).resolves.toBeNull();
   });
 
   it('getMyTickets resolves an empty array as logged-in-with-no-tickets, not null', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
     await expect(getMyTickets()).resolves.toEqual([]);
   });
 
   it('getMyTickets still throws on a non-401 failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
     await expect(getMyTickets()).rejects.toThrow(/500/);
   });
 
   it('getIncident fetches the correct URL with no caching', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })),
+    );
     await getIncident('123');
-    expect(fetch).toHaveBeenCalledWith('http://test-api:8080/public/incidents/123', expect.objectContaining({ cache: 'no-store' }));
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/incidents/123',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
   });
 
   it('getIncident throws ApiNotFoundError on a 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getIncident('does-not-exist')).rejects.toThrow(ApiNotFoundError);
   });
 
   it('getIncident still throws on a non-404 failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
     await expect(getIncident('123')).rejects.toThrow(/500/);
   });
 
@@ -1265,7 +1426,10 @@ describe('api client', () => {
   // interpolated into the URL -- otherwise a path-like value (e.g.
   // containing `/` or `..`) could resolve to an unrelated route.
   it('getIncident percent-encodes the incident id in the URL', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123/../lines' }), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ incidentId: '123/../lines' }), { status: 200 })),
+    );
     await getIncident('123/../lines');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/incidents/123%2F..%2Flines',
@@ -1280,7 +1444,10 @@ describe('api client', () => {
   // pattern (and same assertion) as `getAllLines` above.
   it('getIncident forwards the incoming request cookies to the backend', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })),
+    );
     await getIncident('123');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/incidents/123',
@@ -1289,19 +1456,28 @@ describe('api client', () => {
   });
 
   it('getIncident sends no Cookie header when the visitor has no cookies at all', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })),
+    );
     await getIncident('123');
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
   it('getChatbotAccess returns "allowed" for a 200', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ allowed: true }), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ allowed: true }), { status: 200 })),
+    );
     await expect(getChatbotAccess()).resolves.toBe('allowed');
   });
 
   it('getChatbotAccess returns "unauthenticated" for a 401 -- no session at all', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unauthorized', { status: 401 })),
+    );
     await expect(getChatbotAccess()).resolves.toBe('unauthenticated');
   });
 
@@ -1314,13 +1490,19 @@ describe('api client', () => {
   });
 
   it('getChatbotAccess fails closed to "forbidden" on any other failure (never a positive allow on an ambiguous answer)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
     await expect(getChatbotAccess()).resolves.toBe('forbidden');
   });
 
   it('getChatbotAccess fetches GET /public/chatbot/access, forwarding cookies, with no caching', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ allowed: true }), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ allowed: true }), { status: 200 })),
+    );
     await getChatbotAccess();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/chatbot/access',
@@ -1329,7 +1511,10 @@ describe('api client', () => {
   });
 
   it('getJourneyByShareToken throws ApiNotFoundError on a 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
     await expect(getJourneyByShareToken('invalid-token')).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 
@@ -1338,9 +1523,12 @@ describe('api client', () => {
   // through `cookieForwardInit()`, so one representative call site's own
   // multi-cookie test (plus `getPreferences`'s own copy above) stands in for
   // all of them -- the fix lives in the one shared helper, not per call site.
-  it('forwards only the session cookie to the backend, never the visitor\'s whole cookie jar', async () => {
+  it("forwards only the session cookie to the backend, never the visitor's whole cookie jar", async () => {
     incomingCookies.header = 'theme=dark; distant_signal_session=abc123; consent=1';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
     await getAllLines();
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.headers).toEqual({ Cookie: 'distant_signal_session=abc123' });
@@ -1348,7 +1536,10 @@ describe('api client', () => {
 
   it('sends no Cookie header when the visitor has other cookies but no session cookie', async () => {
     incomingCookies.header = 'theme=dark; consent=1';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
     await getAllLines();
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.headers).toBeUndefined();
@@ -1412,7 +1603,11 @@ describe('api client path-segment encoding (traversal regression)', () => {
   const cases: { name: string; call: () => Promise<unknown>; intendedPrefix: string }[] = [
     { name: 'getStopPointDisruption', call: () => getStopPointDisruption(PAYLOAD), intendedPrefix: '/StopPoint/' },
     { name: 'getStationSampleStats', call: () => getStationSampleStats(PAYLOAD), intendedPrefix: '/public/stations/' },
-    { name: 'getStationAccessibility', call: () => getStationAccessibility(PAYLOAD), intendedPrefix: '/public/stations/' },
+    {
+      name: 'getStationAccessibility',
+      call: () => getStationAccessibility(PAYLOAD),
+      intendedPrefix: '/public/stations/',
+    },
     { name: 'getCustomLine', call: () => getCustomLine(PAYLOAD), intendedPrefix: '/public/lines/' },
     { name: 'getLineDefinition', call: () => getLineDefinition(PAYLOAD), intendedPrefix: '/public/lines/' },
     { name: 'getLineTrains', call: () => getLineTrains(PAYLOAD), intendedPrefix: '/public/lines/' },

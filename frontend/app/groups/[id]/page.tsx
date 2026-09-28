@@ -238,10 +238,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           <Title order={2} size="h4">
             Shared trains
           </Title>
-          <AddTrainToGroupButton
-            groupId={id}
-            excludeTrainSubscriptionIds={trains.map((t) => t.trainSubscriptionId)}
-          />
+          <AddTrainToGroupButton groupId={id} excludeTrainSubscriptionIds={trains.map((t) => t.trainSubscriptionId)} />
         </Group>
         {trains.length === 0 ? (
           <Text c="dimmed">No trains have been shared into this group yet.</Text>
@@ -272,10 +269,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           <Title order={2} size="h4">
             Shared custom lines
           </Title>
-          <AddCustomLineToGroupButton
-            groupId={id}
-            excludeLineIds={customLines.map((l) => l.lineId)}
-          />
+          <AddCustomLineToGroupButton groupId={id} excludeLineIds={customLines.map((l) => l.lineId)} />
         </Group>
         {customLines.length === 0 ? (
           <Text c="dimmed">No custom lines have been shared into this group yet.</Text>
@@ -306,10 +300,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           <Title order={2} size="h4">
             Shared journeys
           </Title>
-          <AddJourneyToGroupButton
-            groupId={id}
-            excludeJourneyIds={journeys.map((j) => j.journeyId)}
-          />
+          <AddJourneyToGroupButton groupId={id} excludeJourneyIds={journeys.map((j) => j.journeyId)} />
         </Group>
         {journeys.length === 0 ? (
           <Text c="dimmed">No journeys have been shared into this group yet.</Text>
@@ -457,9 +448,7 @@ function SharedTrainRow({
                 this card and those two pages can never drift on wording
                 again (review §2.9). */}
             <TrackedTrainStatusBadge train={train} />
-            {canRemove && (
-              <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
-            )}
+            {canRemove && <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />}
           </Group>
         }
       />
@@ -500,9 +489,7 @@ function SharedJourneyRow({
   // signal that there's more to it.
   const displayName =
     trackedTrainDisplayName(journey) +
-    (journey.legCount > 1
-      ? ` (+${journey.legCount - 1} more leg${journey.legCount > 2 ? 's' : ''})`
-      : '');
+    (journey.legCount > 1 ? ` (+${journey.legCount - 1} more leg${journey.legCount > 2 ? 's' : ''})` : '');
   return (
     <Card withBorder>
       <StatusRow
@@ -534,9 +521,7 @@ function SharedJourneyRow({
                 delayMinutes: journey.delayMinutes,
               }}
             />
-            {canRemove && (
-              <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />
-            )}
+            {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
           </Group>
         }
       />
@@ -594,11 +579,7 @@ function SharedCustomLineRow({
           <Group gap="xs" wrap="nowrap">
             {report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
             {canRemove && (
-              <RemoveCustomLineGrantButton
-                groupId={groupId}
-                lineId={line.lineId}
-                lineName={line.lineName}
-              />
+              <RemoveCustomLineGrantButton groupId={groupId} lineId={line.lineId} lineName={line.lineName} />
             )}
           </Group>
         }

@@ -164,12 +164,9 @@ describe('JourneyLegCard', () => {
   // `serviceDate`, same source of truth `JourneyLegCandidates` already
   // reads off this card (`serviceDate={leg.serviceDate}`), not the matched
   // train's own `state.serviceDate`.
-  it('links the headcode through to that train\'s own tracking page', () => {
+  it("links the headcode through to that train's own tracking page", () => {
     renderWithMantine(<JourneyLegCard journeyId={167} leg={baseLeg()} isOwner isOnlyLeg={false} />);
-    expect(screen.getByRole('link', { name: 'Train P9E010' })).toHaveAttribute(
-      'href',
-      '/train/P9E010/2026-09-22',
-    );
+    expect(screen.getByRole('link', { name: 'Train P9E010' })).toHaveAttribute('href', '/train/P9E010/2026-09-22');
   });
 
   // A leg can be "matched" (`trackedTrainState !== null`) while still
@@ -293,7 +290,7 @@ describe('JourneyLegCard', () => {
   // 2026-09-22 UX review finding I18: "the window the user just typed is
   // never shown back to them" -- an open leg's own departAfter/etc. used
   // to be silently dropped from the card entirely.
-  it('shows the leg\'s own search window on an open leg', () => {
+  it("shows the leg's own search window on an open leg", () => {
     renderWithMantine(
       <JourneyLegCard
         journeyId={167}
@@ -308,9 +305,7 @@ describe('JourneyLegCard', () => {
         isOnlyLeg={false}
       />,
     );
-    expect(
-      screen.getByText('Departing at or after 18:00 · arriving at or before 21:30'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Departing at or after 18:00 · arriving at or before 21:30')).toBeInTheDocument();
   });
 
   // 2026-09-22 UX review addendum: with both bounds on the SAME side set
@@ -420,7 +415,10 @@ describe('JourneyLegCard (open leg)', () => {
   });
 
   it('renders resolved station names in the header, not raw CRS codes, when names resolve', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     renderWithMantine(
       <JourneyLegCard
         journeyId={1}
@@ -436,7 +434,10 @@ describe('JourneyLegCard (open leg)', () => {
   });
 
   it('falls back to bare CRS codes when no station name resolved, still using the shared formatter', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
@@ -444,7 +445,10 @@ describe('JourneyLegCard (open leg)', () => {
   });
 
   it('shows the persisted search window back to the user, and an Edit search link for the owner', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     renderWithMantine(
       <JourneyLegCard
         journeyId={1}
@@ -455,9 +459,7 @@ describe('JourneyLegCard (open leg)', () => {
     );
     await settleCandidates();
 
-    expect(
-      screen.getByText('Departing at or after 08:00 · arriving at or before 12:30'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Departing at or after 08:00 · arriving at or before 12:30')).toBeInTheDocument();
     const editLink = screen.getByRole('link', { name: 'Edit search' });
     expect(editLink).toHaveAttribute('href', '/track?mode=window&origin=KGX');
   });
@@ -465,7 +467,9 @@ describe('JourneyLegCard (open leg)', () => {
   it('does not offer Edit search to a non-owning group member', () => {
     // A non-owner never renders `JourneyLegCandidates` at all (the API
     // would 404 a pick attempt anyway) -- no fetch to await here.
-    renderWithMantine(<JourneyLegCard journeyId={1} isOwner={false} isOnlyLeg={false} leg={openLeg({ departAfter: '08:00:00' })} />);
+    renderWithMantine(
+      <JourneyLegCard journeyId={1} isOwner={false} isOnlyLeg={false} leg={openLeg({ departAfter: '08:00:00' })} />,
+    );
 
     expect(screen.queryByRole('link', { name: 'Edit search' })).not.toBeInTheDocument();
     // Still shows the criteria, just without the edit affordance.
@@ -473,7 +477,10 @@ describe('JourneyLegCard (open leg)', () => {
   });
 
   it('renders no window-criteria line when the leg has no persisted bound', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
@@ -481,7 +488,10 @@ describe('JourneyLegCard (open leg)', () => {
   });
 
   it('no longer shows the old unconditional "Searching…" copy — the candidate list owns its own state text', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
@@ -494,7 +504,10 @@ describe('JourneyLegCard (open leg)', () => {
   // links per candidate row instead (see that component's own test file);
   // the card itself renders no top-level train link.
   it('renders no top-level train link on an open leg', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
@@ -507,7 +520,10 @@ describe('JourneyLegCard (open leg)', () => {
   // never cared whether the leg was matched, so this was a frontend-only
   // gap.
   it('offers "Remove leg" to the owner on an open leg too', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
@@ -542,7 +558,10 @@ describe('JourneyLegCard (open leg)', () => {
   // non-owner branches (only the OWNER can act, but both are states that
   // need a train picked).
   it('gives the open-leg card a left accent border, unlike a plain card', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
+    );
     const { container } = renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
@@ -551,7 +570,9 @@ describe('JourneyLegCard (open leg)', () => {
   });
 
   it('accents the non-owner "waiting for the owner" card the same way', () => {
-    const { container } = renderWithMantine(<JourneyLegCard journeyId={1} isOwner={false} isOnlyLeg={false} leg={openLeg()} />);
+    const { container } = renderWithMantine(
+      <JourneyLegCard journeyId={1} isOwner={false} isOnlyLeg={false} leg={openLeg()} />,
+    );
 
     const card = container.querySelector('.mantine-Card-root');
     expect(card).toHaveStyle({ borderLeftWidth: '4px' });

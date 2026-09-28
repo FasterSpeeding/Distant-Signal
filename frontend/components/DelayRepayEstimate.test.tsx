@@ -60,7 +60,10 @@ describe('DelayRepayEstimate', () => {
     const cases = [
       response(),
       response({ delayMinutes: 10 }),
-      response({ delayMinutes: 35, estimate: { scheme: 'DR15', bandMinutes: 30, percentage: 50, disclaimer: ESTIMATE_DISCLAIMER } }),
+      response({
+        delayMinutes: 35,
+        estimate: { scheme: 'DR15', bandMinutes: 30, percentage: 50, disclaimer: ESTIMATE_DISCLAIMER },
+      }),
     ];
     for (const r of cases) {
       const { unmount } = renderWithMantine(<DelayRepayEstimate response={r} />);
@@ -93,7 +96,7 @@ describe('DelayRepayEstimate', () => {
   });
 
   // LEG-14
-  it('says when the rules were last checked and that delays may differ from the operator\'s records', () => {
+  it("says when the rules were last checked and that delays may differ from the operator's records", () => {
     renderWithMantine(<DelayRepayEstimate response={response({ estimate: null, delayMinutes: 12 })} />);
     expect(screen.getByText(/Rules last checked: 29 August 2026/)).toBeInTheDocument();
     expect(screen.getByText(/may differ from the operator.s own records/)).toBeInTheDocument();

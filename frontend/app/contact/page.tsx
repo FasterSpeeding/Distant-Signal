@@ -31,8 +31,8 @@ export default function ContactPage() {
           <TextLink href="/terms" underline="always" inline>
             terms
           </TextLink>
-          , such as a group name, a shared journey or a display name, email us with where it is and what the problem
-          is. The same address handles complaints about how we dealt with a report.
+          , such as a group name, a shared journey or a display name, email us with where it is and what the problem is.
+          The same address handles complaints about how we dealt with a report.
         </Text>
       </LegalSection>
 
@@ -57,8 +57,8 @@ export default function ContactPage() {
 
       <LegalSection title="Accessibility and everything else">
         <Text>
-          If something on the site is hard to use, or you have any other question, email us and tell us what you
-          need. See also our{' '}
+          If something on the site is hard to use, or you have any other question, email us and tell us what you need.
+          See also our{' '}
           <TextLink href="/accessibility" underline="always" inline>
             accessibility statement
           </TextLink>

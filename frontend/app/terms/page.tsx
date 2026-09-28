@@ -31,8 +31,8 @@ export default function TermsPage() {
     <LegalPage draft={mode === 'preview'} title="Terms of use">
       <LegalSection title="About these terms">
         <Text>
-          Distant Signal is a free rail information service run by {OPERATOR_NAME} (&quot;we&quot;). By using it, or
-          by signing in, you agree to these terms. Our{' '}
+          Distant Signal is a free rail information service run by {OPERATOR_NAME} (&quot;we&quot;). By using it, or by
+          signing in, you agree to these terms. Our{' '}
           <TextLink href="/privacy" underline="always" inline>
             privacy notice
           </TextLink>{' '}
@@ -54,9 +54,9 @@ export default function TermsPage() {
           <TextLink href="/attribution" underline="always" inline>
             data sources
           </TextLink>
-          ). It is provided &quot;as is&quot; and can be late, incomplete or wrong. Some incident timing and severity
-          is worked out by an AI model and is marked as AI. Always check with the train operator or National Rail
-          before you travel.
+          ). It is provided &quot;as is&quot; and can be late, incomplete or wrong. Some incident timing and severity is
+          worked out by an AI model and is marked as AI. Always check with the train operator or National Rail before
+          you travel.
         </Text>
         <Text>
           Delay Repay estimates are a guide, not advice or a guarantee. We never submit claims for you. The train
@@ -78,8 +78,12 @@ export default function TermsPage() {
             put illegal, abusive, hateful or harassing content in anything other people can see, such as group names,
             names of trains, journeys and custom lines, or your display name;
           </ListItem>
-          <ListItem>use share or invite links to harass people, or share them with people you know will misuse them;</ListItem>
-          <ListItem>scrape the site or its API, or send automated requests in volumes that affect other users;</ListItem>
+          <ListItem>
+            use share or invite links to harass people, or share them with people you know will misuse them;
+          </ListItem>
+          <ListItem>
+            scrape the site or its API, or send automated requests in volumes that affect other users;
+          </ListItem>
           <ListItem>try to get into accounts or data that are not yours, or disrupt the service.</ListItem>
         </List>
       </LegalSection>
@@ -87,8 +91,8 @@ export default function TermsPage() {
       <LegalSection title="Reporting content and complaints">
         <Text>
           If you see content on Distant Signal that you think is illegal or breaks these terms, report it to{' '}
-          <ContactEmail />. Tell us where it is (for example the group or share link) and what the problem is. We
-          review every report, remove illegal content as soon as we become aware of it, and may suspend the account
+          <ContactEmail />. Tell us where it is (for example the group or share link) and what the problem is. We review
+          every report, remove illegal content as soon as we become aware of it, and may suspend the account
           responsible.
         </Text>
         <Text>
@@ -106,8 +110,8 @@ export default function TermsPage() {
 
       <LegalSection title="Suspension and ending your account">
         <Text>
-          We may suspend or close an account that breaks these terms, and may change or stop the service. You can
-          delete your account at any time from your account page.
+          We may suspend or close an account that breaks these terms, and may change or stop the service. You can delete
+          your account at any time from your account page.
         </Text>
       </LegalSection>
 
@@ -115,8 +119,8 @@ export default function TermsPage() {
         <Text>
           The service is free, and we are not responsible for travel decisions you make using it, including missed
           connections, extra travel costs or unsuccessful Delay Repay claims. Nothing in these terms limits our
-          liability for death or personal injury caused by our negligence, for fraud, or for anything else the law
-          does not allow us to limit.
+          liability for death or personal injury caused by our negligence, for fraud, or for anything else the law does
+          not allow us to limit.
         </Text>
       </LegalSection>
 

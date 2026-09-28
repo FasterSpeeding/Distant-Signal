@@ -96,9 +96,7 @@ describe('JourneyProgress', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(
-      screen.getByRole('group', { name: /Journey progress: matched to train/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /Journey progress: matched to train/ })).toBeInTheDocument();
   });
 
   it('marks the highest-index stop with a confirmed actualArrival/actualDeparture as the marker', () => {
@@ -412,7 +410,7 @@ describe('JourneyProgress', () => {
     expect(container.querySelector('[data-may-have-arrived]')).not.toBeInTheDocument();
   });
 
-  it('every decorative node circle is aria-hidden, but an intermediate node\'s focusable Tooltip trigger is not', () => {
+  it("every decorative node circle is aria-hidden, but an intermediate node's focusable Tooltip trigger is not", () => {
     const { container } = renderWithMantine(
       <JourneyProgress
         stops={[
@@ -585,7 +583,7 @@ describe('JourneyProgress', () => {
     });
   });
 
-  it('always shows the origin and terminus station names as visible text, but not an intermediate node\'s', () => {
+  it("always shows the origin and terminus station names as visible text, but not an intermediate node's", () => {
     renderWithMantine(
       <JourneyProgress
         stops={[
@@ -605,7 +603,7 @@ describe('JourneyProgress', () => {
     expect(screen.queryByText('Clapham Junction')).not.toBeInTheDocument();
   });
 
-  it('shows an endpoint node\'s platform badge underneath its name when known', () => {
+  it("shows an endpoint node's platform badge underneath its name when known", () => {
     renderWithMantine(
       <JourneyProgress
         stops={[
@@ -622,7 +620,7 @@ describe('JourneyProgress', () => {
     expect(screen.getByText('Platform 6')).toBeInTheDocument();
   });
 
-  it('names both the current and originally planned platform in text when an endpoint\'s platform changed', () => {
+  it("names both the current and originally planned platform in text when an endpoint's platform changed", () => {
     renderWithMantine(
       <JourneyProgress
         stops={[
@@ -663,7 +661,7 @@ describe('JourneyProgress', () => {
     expect(screen.queryByText(/Platform/)).not.toBeInTheDocument();
   });
 
-  it('reveals an intermediate node\'s name and scheduled time via Tooltip on hover', async () => {
+  it("reveals an intermediate node's name and scheduled time via Tooltip on hover", async () => {
     renderWithMantine(
       <JourneyProgress
         stops={[
@@ -693,7 +691,7 @@ describe('JourneyProgress', () => {
   // Same confidence-hedged wording as `JourneyTimeline.tsx`'s own
   // `skipCaption` -- the two must never disagree about how to word the
   // same stop's skip status.
-  it('reveals a skipped intermediate node\'s hedged caption via Tooltip on hover', async () => {
+  it("reveals a skipped intermediate node's hedged caption via Tooltip on hover", async () => {
     renderWithMantine(
       <JourneyProgress
         stops={[
@@ -745,7 +743,7 @@ describe('JourneyProgress', () => {
     expect(await screen.findByText('Did not stop here')).toBeInTheDocument();
   });
 
-  it('reveals a bare node\'s name even with no scheduled time known', async () => {
+  it("reveals a bare node's name even with no scheduled time known", async () => {
     renderWithMantine(
       <JourneyProgress
         stops={[
@@ -788,9 +786,7 @@ describe('JourneyProgress auto-scroll', () => {
     );
     const scroller = container.querySelector('[data-journey-progress-scroll]');
     expect(scroller).toBeInTheDocument();
-    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(
-      expect.objectContaining({ behavior: 'smooth' }),
-    );
+    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }));
     expect((window.Element.prototype.scrollTo as ReturnType<typeof vi.fn>).mock.instances[0]).toBe(scroller);
   });
 
@@ -934,9 +930,7 @@ describe('JourneyProgress auto-scroll', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(
-      expect.objectContaining({ behavior: 'auto' }),
-    );
+    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }));
   });
 
   it('re-scrolls when lastReachedIndex advances on rerender (a new confirmed event moved the marker)', () => {
@@ -1101,9 +1095,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(
-      screen.getByText('Matched to train C21373 — waiting for its first movement report.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Matched to train C21373 — waiting for its first movement report.')).toBeInTheDocument();
     expect(
       screen.getByRole('group', {
         name: 'Journey progress: matched to train C21373, waiting for first movement report',
@@ -1202,9 +1194,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     });
 
     it('says "Currently at", not "Last reported at", when the per-stop overlay confirmed the same stop itself', () => {
-      const overlaid = doncasterRoute.map((s, i) =>
-        i === 2 ? { ...s, actualDeparture: '2026-09-22T17:57:00Z' } : s,
-      );
+      const overlaid = doncasterRoute.map((s, i) => (i === 2 ? { ...s, actualDeparture: '2026-09-22T17:57:00Z' } : s));
       renderWithMantine(
         <JourneyProgress
           stops={overlaid}
