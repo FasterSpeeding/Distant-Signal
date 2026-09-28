@@ -4217,6 +4217,183 @@ mod db_tests {
             .ok();
     }
 
+    /// `journeyStops[].board` end to end (`data::stop_board`): the origin
+    /// matches its own board by RSID over a same-time decoy, a sub-CRS
+    /// intermediate stop (no board of its own) matches the main station's
+    /// board through `station_samples.tiplocs` and carries the cancellation,
+    /// and the terminating stop is `null`. Times are built around the real
+    /// clock because the overlay only reads boards polled in the last 10
+    /// minutes.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_serves_each_stops_ldbws_board_match \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_serves_each_stops_ldbws_board_match() {
+        let pool = connect().await;
+        let train_uid = "TEST-STOP-BOARD";
+        let london = |at: chrono::DateTime<chrono::Utc>| {
+            at.with_timezone(&chrono_tz::Europe::London).naive_local()
+        };
+        let now = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 0);
+        let origin_at = london(now + chrono::Duration::minutes(60));
+        let sub_at = london(now + chrono::Duration::minutes(70));
+        let service_date = origin_at.date();
+        let hhmm = |at: chrono::NaiveDateTime| at.format("%H:%M").to_string();
+
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, operator_atoc, rsid) \
+             VALUES ($1, 'ZSC', $2, $3, 'ZSA', 'ZZ', 'ZZ123400')",
+        )
+        .bind(service_date)
+        .bind(origin_at.time())
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed schedule_destination_departures");
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                ("TEST-SB-1", "ZSA", "ZSBORG"),
+                ("TEST-SB-2", "ZSX", "ZSBSUB"),
+                ("TEST-SB-3", "ZSC", "ZSBTRM"),
+            ]
+            .map(|(stanox, crs, tiploc)| common::StanoxCrsRecord {
+                stanox: stanox.to_string(),
+                crs: crs.to_string(),
+                tiploc: tiploc.to_string(),
+                station_name: crs.to_string(),
+                source_sequence: 1,
+                change_time_minutes: None,
+            }),
+        )
+        .await
+        .expect("seed stanox_crs");
+        let cp = |seq: i16,
+                  tiploc: &str,
+                  kind: &str,
+                  arr: Option<chrono::NaiveDateTime>,
+                  dep: Option<chrono::NaiveDateTime>| {
+            let at = dep.or(arr).unwrap();
+            crate::data::queries::ScheduleCallingPointsFullRow {
+                service_date,
+                uid: train_uid.to_string(),
+                seq,
+                tiploc: tiploc.to_string(),
+                kind: kind.to_string(),
+                booked_arrival: arr.map(|a| a.time()),
+                booked_departure: dep.map(|d| d.time()),
+                day_offset: at.date().signed_duration_since(service_date).num_days() as i16,
+                platform: None,
+            }
+        };
+        let terminate_at = london(now + chrono::Duration::minutes(90));
+        crate::data::queries::upsert_schedule_calling_points_full(
+            &pool,
+            &[
+                cp(0, "ZSBORG", "origin", None, Some(origin_at)),
+                cp(1, "ZSBSUB", "intermediate", Some(sub_at), Some(sub_at)),
+                cp(2, "ZSBTRM", "terminate", Some(terminate_at), None),
+            ],
+        )
+        .await
+        .expect("seed schedule_calling_points_full");
+
+        let row = |service_id: &str, std: &str, rsid: &str| common::StationDeparture {
+            service_id: service_id.to_string(),
+            operator: "ZZ".to_string(),
+            destination_crs: "ZSC".to_string(),
+            scheduled: std.to_string(),
+            estimated: "On time".to_string(),
+            is_cancelled: false,
+            delay_minutes: 0,
+            cancel_reason: None,
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: vec![],
+            platform: None,
+            planned_platform: None,
+            rsid: Some(rsid.to_string()),
+            calling_points: vec![],
+        };
+        let mut ours = row("9100001ZSBORG_1", &hhmm(origin_at), "ZZ123400");
+        ours.estimated = hhmm(origin_at + chrono::Duration::minutes(4));
+        ours.delay_reason = Some("a points failure".to_string());
+        let mut sub = row("9100001ZSBSUB_1", &hhmm(sub_at), "ZZ123400");
+        sub.is_cancelled = true;
+        sub.estimated = "Cancelled".to_string();
+        sub.cancel_reason = Some("a shortage of train crew".to_string());
+        crate::data::queries::upsert_station_samples(
+            &pool,
+            &[
+                common::StationSample {
+                    crs: "ZSA".to_string(),
+                    polled_at: now,
+                    departures: vec![row("9100002ZSBORG_1", &hhmm(origin_at), "ZZ999900"), ours],
+                },
+                // The main station whose board covers the sub-CRS TIPLOC.
+                common::StationSample {
+                    crs: "ZSM".to_string(),
+                    polled_at: now,
+                    departures: vec![row("9100003ZSBMAIN", &hhmm(sub_at), "ZZ777700"), sub],
+                },
+            ],
+        )
+        .await
+        .expect("seed station_samples");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/{train_uid}/{service_date}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let stops = body["journeyStops"].as_array().expect("journeyStops");
+        assert_eq!(stops.len(), 3, "{stops:?}");
+        let origin = &stops[0]["board"];
+        assert_eq!(origin["delayReason"], "a points failure");
+        assert_eq!(origin["delayMinutes"], 4);
+        assert_eq!(origin["isCancelled"], false);
+        assert!(origin["cancelReason"].is_null());
+        assert_eq!(
+            origin["observedAt"],
+            now.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+        );
+        let sub = &stops[1]["board"];
+        assert_eq!(stops[1]["crs"], "ZSX");
+        assert_eq!(sub["isCancelled"], true);
+        assert_eq!(sub["cancelReason"], "a shortage of train crew");
+        assert_eq!(sub["estimated"], "Cancelled");
+        assert!(sub["delayMinutes"].is_null());
+        assert!(stops[2].get("board").is_some_and(Value::is_null));
+
+        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZSA', 'ZSM')")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-SB-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     /// Regression test for the real production bug this closes
     /// (`https://ds.cursed.solutions/train/Y80908/2026-09-24` showing no
     /// schedule at all): a `trains` row that already has real live TRUST

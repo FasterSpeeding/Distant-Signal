@@ -8,8 +8,9 @@
 //! different wire shapes, no shared logic beyond the DB read itself.
 
 use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app::{App, Router};
@@ -73,10 +74,34 @@ pub fn router() -> Router {
 /// (`dayOffset` only moves the departure's calendar day, never the service
 /// date), so a caller that can pick from that board instead of the live one
 /// needs no resolution step: `GET /Train/by-uid/{uid}/{today}` directly.
+///
+/// **`?callingAt={CRS}`** (optional) keeps only the rows whose
+/// `callingPoints` (LDBWS `subsequentCallingPoints`) include that station,
+/// or whose `destinationCrs` is it. A cancelled call still counts: the row
+/// is still booked to call there, and its `callingPoints` entry says
+/// `isCancelled`. A malformed code is a `400`. Rows stored before the
+/// poller kept calling points match on `destinationCrs` only.
+///
+/// **`X-Generated-At`** (response header, RFC 3339 UTC) is when this board
+/// was polled (`station_samples.polled_at`). It is a header, not a body
+/// field, because the body is a bare JSON array that existing clients
+/// (`frontend/components/TrackTrainForm.tsx`, the MCP) index directly;
+/// wrapping it in an object would break them.
 async fn get_station_departures(
     State(app): State<App>,
     Path(crs): Path<String>,
-) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    Query(params): Query<StationDeparturesParams>,
+) -> Result<(HeaderMap, Json<Vec<Value>>), (StatusCode, String)> {
+    let calling_at = match params.calling_at.as_deref().map(str::trim) {
+        None => None,
+        Some(code) if super::is_crs_code(code) => Some(code.to_ascii_uppercase()),
+        Some(code) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("callingAt must be a 3-letter CRS code, got: {code:?}"),
+            ));
+        }
+    };
     let Some(sample) = queries::latest_station_sample(&app.database, &crs)
         .await
         .map_err(internal_error)?
@@ -97,8 +122,16 @@ async fn get_station_departures(
     // multi-CRS lookup `routes::lines.rs` already uses), and hand the map
     // to the renderer -- see `render::station_departure_json`'s own doc
     // comment.
-    let destination_crs: Vec<String> = sample
+    let departures: Vec<&common::StationDeparture> = sample
         .departures
+        .iter()
+        .filter(|d| {
+            calling_at
+                .as_deref()
+                .is_none_or(|at| d.calls_at(at) || d.destination_crs.eq_ignore_ascii_case(at))
+        })
+        .collect();
+    let destination_crs: Vec<String> = departures
         .iter()
         .map(|d| d.destination_crs.clone())
         .collect();
@@ -109,13 +142,35 @@ async fn get_station_departures(
     // Order preserved exactly as stored -- `parse_departures` never
     // re-sorts (poller-ldbws/src/schema.rs), and RDM's own board is
     // already chronological by convention. No new sort introduced here.
-    Ok(Json(
-        sample
-            .departures
-            .iter()
-            .map(|d| station_departure_json(d, &destination_names))
-            .collect(),
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(
+        &sample
+            .polled_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    ) {
+        headers.insert(GENERATED_AT_HEADER, value);
+    }
+    Ok((
+        headers,
+        Json(
+            departures
+                .into_iter()
+                .map(|d| station_departure_json(d, &destination_names))
+                .collect(),
+        ),
     ))
+}
+
+/// See [`get_station_departures`]'s doc comment.
+pub(crate) const GENERATED_AT_HEADER: HeaderName = HeaderName::from_static("x-generated-at");
+
+/// Query string of [`get_station_departures`]. Unknown keys are ignored
+/// (not `deny_unknown_fields`): this route took no query string before, so
+/// a client's cache-buster must keep working.
+#[derive(Debug, Deserialize)]
+struct StationDeparturesParams {
+    #[serde(rename = "callingAt")]
+    calling_at: Option<String>,
 }
 
 /// `GET /public/stations/{crs}/schedule-departures`: today's CIF
@@ -468,6 +523,113 @@ mod db_tests {
         assert_eq!(json[1]["cancelReason"], "fleet issue");
 
         delete_fixture(&pool, "ZQU").await;
+    }
+
+    /// `rsid`, `callingPoints`, `?callingAt=` and `X-Generated-At`, end to
+    /// end from the stored compact JSONB. The second row predates the
+    /// poller keeping calling points (no `rsid`/`calling_points` keys) and
+    /// must still render, and still match `callingAt` on its destination.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                departures -- --ignored --test-threads=1`"]
+    async fn departures_serve_rsid_calling_points_calling_at_filter_and_generated_at() {
+        let pool = connect().await;
+        delete_fixture(&pool, "ZQV").await;
+        let departures = serde_json::json!([
+            {
+                "service_id": "9134470ZQVTIP_1", "operator": "SW", "destination_crs": "WOK",
+                "scheduled": "14:40", "estimated": "14:47", "is_cancelled": false,
+                "delay_minutes": 7, "skipped_stations": ["ZQX"], "rsid": "SW123400",
+                "calling_points": [
+                    {"crs": "CLJ", "n": "Clapham Junction", "st": "14:47", "et": "14:54"},
+                    {"crs": "ZQX", "st": "14:55", "et": "Cancelled", "x": true},
+                    {"crs": "WOK", "n": "Woking", "st": "15:10", "et": "15:17"}
+                ]
+            },
+            {
+                "service_id": "legacy", "operator": "SW", "destination_crs": "CLJ",
+                "scheduled": "14:50", "estimated": "On time", "is_cancelled": false,
+                "delay_minutes": 0, "skipped_stations": []
+            }
+        ]);
+        sqlx::query(
+            "INSERT INTO station_samples (crs, polled_at, departures) \
+             VALUES ('ZQV', '2026-09-28T13:40:05Z', $1)",
+        )
+        .bind(departures)
+        .execute(&pool)
+        .await
+        .expect("seed fixture row");
+
+        let get = |uri: &'static str| {
+            let router: axum::Router = crate::app::Router::new()
+                .merge(router())
+                .with_state(test_app(pool.clone()));
+            async move {
+                let response = router
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let generated_at = response
+                    .headers()
+                    .get("x-generated-at")
+                    .map(|v| v.to_str().unwrap().to_string());
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, generated_at, body)
+            }
+        };
+
+        let (status, generated_at, body) = get("/stations/ZQV/departures").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(generated_at.as_deref(), Some("2026-09-28T13:40:05Z"));
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["rsid"], "SW123400");
+        assert_eq!(
+            json[0]["callingPoints"],
+            serde_json::json!([
+                {"crs": "CLJ", "locationName": "Clapham Junction", "st": "14:47", "et": "14:54", "at": null, "isCancelled": false},
+                {"crs": "ZQX", "locationName": null, "st": "14:55", "et": "Cancelled", "at": null, "isCancelled": true},
+                {"crs": "WOK", "locationName": "Woking", "st": "15:10", "et": "15:17", "at": null, "isCancelled": false},
+            ])
+        );
+        assert!(json[1]["rsid"].is_null());
+        assert_eq!(json[1]["callingPoints"], serde_json::json!([]));
+
+        // Both rows call at CLJ (the second by destination only); only the
+        // first at WOK, and a cancelled call (ZQX) still counts.
+        let (_, _, body) = get("/stations/ZQV/departures?callingAt=clj").await;
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        let (_, _, body) = get("/stations/ZQV/departures?callingAt=WOK").await;
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["serviceId"], "9134470ZQVTIP_1");
+        let (_, _, body) = get("/stations/ZQV/departures?callingAt=ZQX").await;
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        let (status, generated_at, body) = get("/stations/ZQV/departures?callingAt=EDB").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(generated_at.is_some());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            serde_json::json!([])
+        );
+
+        for bad in [
+            "/stations/ZQV/departures?callingAt=",
+            "/stations/ZQV/departures?callingAt=WO",
+            "/stations/ZQV/departures?callingAt=W0K",
+            "/stations/ZQV/departures?callingAt=WOKK",
+        ] {
+            let (status, _, _) = get(bad).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+
+        delete_fixture(&pool, "ZQV").await;
     }
 
     /// End-to-end (storage -> route -> render) proof of the platform fields

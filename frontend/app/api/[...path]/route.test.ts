@@ -319,6 +319,19 @@ describe('/api/[...path] proxy', () => {
       expect(res.headers.get('cache-control')).toBe('no-store');
     });
 
+    it('passes X-Generated-At through (live departure board sample time)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'X-Generated-At': '2026-09-28T13:40:05Z' },
+        }),
+      );
+      const res = await GET(makeRequest('/api/stations/WAT/departures'), {
+        params: Promise.resolve({ path: ['stations', 'WAT', 'departures'] }),
+      });
+      expect(res.headers.get('x-generated-at')).toBe('2026-09-28T13:40:05Z');
+    });
+
     it('403s a DELETE whose Origin does not match', async () => {
       const req = makeRequest('/api/Train/1', {
         method: 'DELETE',

@@ -559,6 +559,21 @@ export type LiveStopStatus =
  * confident as `'Darwin'` alone. */
 export type SkipSource = 'Darwin' | 'Trust' | 'Both';
 
+/** One subsequent calling point of a live departure-board row
+ * (`GET /public/stations/{crs}/departures`'s `callingPoints`, from LDBWS
+ * `subsequentCallingPoints`; `crates/api/src/render.rs`'s
+ * `board_calling_point_json`). `st`/`et`/`at` are LDBWS's own strings:
+ * `"HH:MM"` London local time, or for `et` a status word ("On time",
+ * "Delayed", "Cancelled"). */
+export interface BoardCallingPoint {
+  crs: string;
+  locationName: string | null;
+  st: string | null;
+  et: string | null;
+  at: string | null;
+  isCancelled: boolean;
+}
+
 /** One calling point of a train's journey, booked schedule merged with the
  * latest reported live data for that location --
  * `crates/api/src/data/journey.rs`'s `JourneyStop`, camelCase on the wire.
@@ -624,6 +639,26 @@ export interface JourneyStop {
   status?: LiveStopStatus | null;
   // Minutes late the stop is expected to be; set only when `status` is 'Late'.
   lateMinutes?: number | null;
+  // This train's row on the stop's live LDBWS departure board, or `null`
+  // when there is no unique fresh match (`crates/api/src/data/stop_board.rs`).
+  // `null` means "not known", never "on time". Optional so older fixtures
+  // and older backends stay valid.
+  board?: StopBoard | null;
+}
+
+/** `JourneyStop.board`: Darwin's view of this train at this stop, from the
+ * station's live departure board. Darwin-sourced, unlike the TRUST-derived
+ * fields around it. */
+export interface StopBoard {
+  delayReason: string | null;
+  cancelReason: string | null;
+  isCancelled: boolean;
+  // `etd - std` in minutes (0 when on time or early); `null` when `estimated`
+  // is "Delayed" or "Cancelled". Not the stop's TRUST `delayMinutes`.
+  delayMinutes: number | null;
+  // LDBWS `etd` verbatim: "HH:MM" (London), "On time", "Delayed", "Cancelled".
+  estimated: string;
+  observedAt: string; // RFC3339, when the board was polled
 }
 
 /** `GET /Train/{trackingId}`'s response shape

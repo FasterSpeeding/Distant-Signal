@@ -490,6 +490,12 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
         .iter()
         .map(|s| serde_json::to_value(&s.departures))
         .collect::<Result<_, _>>()?;
+    // One Postgres array literal per row (UNNEST cannot take a
+    // two-dimensional array of ragged rows). See `board_tiplocs`.
+    let tiplocs: Vec<String> = batch
+        .iter()
+        .map(|s| pg_text_array_literal(&board_tiplocs(&s.departures)))
+        .collect();
 
     // `polled_at` is the sample's own age, read per station, so it must
     // advance on every poll even when the board is unchanged. The narrowest
@@ -501,25 +507,101 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
     // HOT (no indexed column changes).
     sqlx::query(
         r#"
-        INSERT INTO station_samples (crs, polled_at, departures)
-        SELECT * FROM UNNEST($1::text[], $2::timestamptz[], $3::jsonb[])
+        INSERT INTO station_samples (crs, polled_at, departures, tiplocs)
+        SELECT crs, polled_at, departures, tiplocs::text[]
+        FROM UNNEST($1::text[], $2::timestamptz[], $3::jsonb[], $4::text[])
+            AS i(crs, polled_at, departures, tiplocs)
         ON CONFLICT (crs) DO UPDATE SET
             polled_at  = EXCLUDED.polled_at,
             departures = CASE
                 WHEN station_samples.departures IS DISTINCT FROM EXCLUDED.departures
                 THEN EXCLUDED.departures
                 ELSE station_samples.departures
-            END
-        WHERE (station_samples.polled_at, station_samples.departures)
-              IS DISTINCT FROM (EXCLUDED.polled_at, EXCLUDED.departures)
+            END,
+            tiplocs    = EXCLUDED.tiplocs
+        WHERE (station_samples.polled_at, station_samples.departures, station_samples.tiplocs)
+              IS DISTINCT FROM (EXCLUDED.polled_at, EXCLUDED.departures, EXCLUDED.tiplocs)
         "#,
     )
     .bind(&crs)
     .bind(&polled_at)
     .bind(&departures)
+    .bind(&tiplocs)
     .execute(pool)
     .await?;
     Ok(samples.len() as u64)
+}
+
+/// The distinct TIPLOCs a board's rows are for, from their serviceIDs
+/// (`common::service_id_tiploc`), sorted and upper-cased. Stored as
+/// `station_samples.tiplocs` so a stop at a sub-CRS TIPLOC (PADTLL -> PDX)
+/// can find the main station's board -- see
+/// `migrations/20260928163000_station_samples_tiplocs.sql`.
+fn board_tiplocs(departures: &[common::StationDeparture]) -> Vec<String> {
+    let mut tiplocs: Vec<String> = departures
+        .iter()
+        .filter_map(|d| common::service_id_tiploc(&d.service_id))
+        .map(str::to_ascii_uppercase)
+        .collect();
+    tiplocs.sort();
+    tiplocs.dedup();
+    tiplocs
+}
+
+/// `{"A","B"}`. Only for values already restricted to ASCII alphanumerics
+/// (TIPLOCs from [`board_tiplocs`]), so no element needs escaping beyond the
+/// quotes.
+fn pg_text_array_literal(values: &[String]) -> String {
+    let quoted: Vec<String> = values.iter().map(|v| format!("\"{v}\"")).collect();
+    format!("{{{}}}", quoted.join(","))
+}
+
+/// One `station_samples` row for the per-stop board overlay, with the
+/// TIPLOCs its board covers (`tiplocs`; empty when the row predates that
+/// column).
+#[derive(Debug, Clone)]
+pub struct BoardSampleRow {
+    pub sample: StationSample,
+    pub tiplocs: Vec<String>,
+}
+
+/// Every `station_samples` row whose CRS is in `crs_codes` OR whose board
+/// covers one of `tiplocs` -- the latter finds the main station's board for
+/// a sub-CRS stop (see [`board_tiplocs`]). One query; backs
+/// `journey::build_journey_stops_batch`'s platform and board overlays.
+/// `tiplocs` must be upper-case, as stored.
+pub async fn station_samples_for_crs_or_tiplocs(
+    pool: &PgPool,
+    crs_codes: &[String],
+    tiplocs: &[String],
+) -> Result<Vec<BoardSampleRow>> {
+    use sqlx::Row;
+    if crs_codes.is_empty() && tiplocs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let upper: Vec<String> = crs_codes.iter().map(|c| normalize_code(c)).collect();
+    let rows = sqlx::query(
+        "SELECT crs, polled_at, departures, COALESCE(tiplocs, '{}') AS tiplocs \
+         FROM station_samples WHERE crs = ANY($1::bpchar[]) OR tiplocs && $2::text[]",
+    )
+    .bind(&upper)
+    .bind(tiplocs)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let departures_json: serde_json::Value = row.try_get("departures")?;
+            Ok(BoardSampleRow {
+                sample: StationSample {
+                    crs: row.try_get::<String, _>("crs")?.trim().to_string(),
+                    polled_at: row.try_get("polled_at")?,
+                    departures: serde_json::from_value(departures_json)?,
+                },
+                tiplocs: row.try_get("tiplocs")?,
+            })
+        })
+        .collect()
 }
 
 /// Upserts a batch of per-(crs, operator) full-coverage rows. No
@@ -12167,6 +12249,119 @@ mod db_review_guard_and_normalisation_tests {
             .await
             .unwrap();
         sqlx::query("DELETE FROM tocs WHERE atoc_code = 'Z9'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn station_sample_upserts_fill_tiplocs_and_the_board_read_finds_a_sub_crs_tiploc() {
+        let pool = test_pool().await;
+        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZQC', 'ZQD')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let row = |service_id: &str| common::StationDeparture {
+            service_id: service_id.to_string(),
+            operator: "XR".to_string(),
+            destination_crs: "ABW".to_string(),
+            scheduled: "10:00".to_string(),
+            estimated: "On time".to_string(),
+            is_cancelled: false,
+            delay_minutes: 0,
+            cancel_reason: None,
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: vec![],
+            platform: None,
+            planned_platform: None,
+            rsid: None,
+            calling_points: vec![],
+        };
+        let polled_at = chrono::Utc::now();
+        // Main-line and low-level TIPLOCs on one board, plus an opaque ID.
+        let sample = StationSample {
+            crs: "ZQC".to_string(),
+            polled_at,
+            departures: vec![
+                row("9100001ZQCMAIN1"),
+                row("9100002ZQCLL__2"),
+                row("9100003ZQCMAIN_"),
+                row("opaque=="),
+            ],
+        };
+        upsert_station_samples(&pool, std::slice::from_ref(&sample))
+            .await
+            .unwrap();
+        let stored: Vec<String> =
+            sqlx::query_scalar("SELECT tiplocs FROM station_samples WHERE crs = 'ZQC'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, vec!["ZQCLL".to_string(), "ZQCMAIN".to_string()]);
+
+        // A row written before the column existed (NULL) is backfilled by
+        // the next ingest even though the board itself is unchanged.
+        sqlx::query("UPDATE station_samples SET tiplocs = NULL WHERE crs = 'ZQC'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        upsert_station_samples(&pool, std::slice::from_ref(&sample))
+            .await
+            .unwrap();
+        let stored: Option<Vec<String>> =
+            sqlx::query_scalar("SELECT tiplocs FROM station_samples WHERE crs = 'ZQC'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored.map(|t| t.len()), Some(2));
+
+        // An unrelated board, and a sub-CRS stop (ZQD has no board of its
+        // own) whose TIPLOC is on ZQC's board.
+        upsert_station_samples(
+            &pool,
+            &[StationSample {
+                crs: "ZQD".to_string(),
+                polled_at,
+                departures: vec![row("9100009ZQDX___1")],
+            }],
+        )
+        .await
+        .unwrap();
+        let found =
+            station_samples_for_crs_or_tiplocs(&pool, &["ZQX".to_string()], &["ZQCLL".to_string()])
+                .await
+                .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].sample.crs, "ZQC");
+        assert_eq!(found[0].sample.departures.len(), 4);
+        assert!(found[0].tiplocs.contains(&"ZQCLL".to_string()));
+        let found = station_samples_for_crs_or_tiplocs(&pool, &[" zqd".to_string()], &[])
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].sample.crs, "ZQD");
+
+        // The board changes: the stored set follows it.
+        upsert_station_samples(
+            &pool,
+            &[StationSample {
+                departures: vec![row("9100001ZQCMAIN1")],
+                ..sample
+            }],
+        )
+        .await
+        .unwrap();
+        let stored: Vec<String> =
+            sqlx::query_scalar("SELECT tiplocs FROM station_samples WHERE crs = 'ZQC'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, vec!["ZQCMAIN".to_string()]);
+
+        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZQC', 'ZQD')")
             .execute(&pool)
             .await
             .unwrap();
