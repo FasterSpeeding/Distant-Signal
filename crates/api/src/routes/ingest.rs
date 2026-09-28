@@ -646,6 +646,13 @@ async fn post_corpus_locations(
         rows = upserted,
         "replaced corpus_locations"
     );
+    // Read-only comparison with the timetable crosswalk, logged and exported
+    // as gauges; off the request path so the load's response is not held
+    // up by it.
+    let pool = app.database.clone();
+    tokio::spawn(async move {
+        crate::data::corpus_comparison::log_after_load(&pool, &req.locations).await;
+    });
     Ok(Json(UpsertResponse { upserted }))
 }
 

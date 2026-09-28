@@ -150,6 +150,8 @@ async fn server_main() -> anyhow::Result<()> {
         .init();
 
     let app = AppState::init().await?;
+    // CORPUS_FALLBACK_ENABLED (default off): see `data::corpus_crosswalk`.
+    data::corpus_crosswalk::init_fallback_from_env()?;
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public,
@@ -399,6 +401,14 @@ fn spawn_background_loops(app: &App) {
     tokio::spawn(reconciliation_sweep_loop(app.clone()));
     tokio::spawn(backlog_match_sweep_loop(app.clone()));
     tokio::spawn(session_cleanup_sweep_loop(app.clone()));
+    // One-shot: rebuilds the CORPUS crosswalk if the stored one predates the
+    // newest delivery or this build's rules (one MAX() when no CORPUS).
+    let pool = app.database.clone();
+    tokio::spawn(async move {
+        if let Err(err) = data::corpus_crosswalk::rebuild_if_stale(&pool).await {
+            tracing::error!(error = ?err, "CORPUS crosswalk startup rebuild failed");
+        }
+    });
 }
 
 /// Starts api's own internal-only `/metrics` listener on a SEPARATE port

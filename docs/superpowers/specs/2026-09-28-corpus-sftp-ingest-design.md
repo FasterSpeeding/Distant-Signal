@@ -198,6 +198,35 @@ at 3 processed and 3 rejected.
 - A `chart_env_wiring_tests` module in `schedule-ingest` asserts that every
   `CORPUS_*`/`CIF_*`/`*_URL` env var is set on the `ingest` container.
 
+## Follow-up (2026-09-28): comparison, fallback, CSV regeneration
+
+Built after this design, in the user's order:
+
+1. **Comparison, read-only.** `api::data::corpus_comparison` compares
+   CORPUS (through the shared conservative inference,
+   `common::corpus_inference`) with `tiploc_crs`/`stanox_crs` and
+   `stations`. Every load logs a summary and sets
+   `distant_signal_api_corpus_comparison_{tiplocs,stanoxes}{outcome}`; the
+   full report is `kubectl exec deploy/distant-signal-api -c api --
+   corpus_compare [--full]`.
+2. **Runtime fallback, off by default** (`api.corpusFallback.enabled`,
+   `CORPUS_FALLBACK_ENABLED`). See `api::data::corpus_crosswalk`: the
+   timetable crosswalk stays primary and wins every conflict; CORPUS fills
+   TIPLOCs neither timetable table has and STANOXes the timetable does not
+   know. Applied in the five `queries` lookups, so every api caller and the
+   `GET /private/stanox-crs` consumers get it unchanged.
+3. **`crs-tiploc.csv` from the loaded CORPUS**: a manual runbook in
+   `reference-data/line-catalogue-validation.md` ("From the CORPUS the app
+   has loaded"), plus `line-catalogue-validator
+   --regenerate-crs-tiploc-from-db` (feature `db`).
+
+The consumers below that are NOT covered: `schedule-reference`'s own
+in-process CIF crosswalk (`crs_to_tiploc_map`, which decides which lines'
+schedules are published) and names. No UI shows the timetable's terse
+TPS names: station names come from the Knowledgebase `stations` table, and
+the TIPLOC fallback lets more stops reach it. So no name substitution was
+built; the comparison lists the name differences for a later decision.
+
 ## Consumers (not changed here)
 
 - The **`stanox_crs` / `tiploc_crs` crosswalks** are currently derived from

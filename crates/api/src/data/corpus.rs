@@ -4,8 +4,10 @@
 //! `crates/api/migrations/20260928100000_corpus_locations.sql` and
 //! docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md.
 //!
-//! Nothing reads the table yet; the candidate consumers are listed in the
-//! design doc.
+//! Every load also rebuilds the CORPUS-derived crosswalk in the same
+//! transaction ([`crate::data::corpus_crosswalk`]), which only the
+//! off-by-default lookup fallback reads, and the route logs a comparison
+//! against the timetable crosswalk ([`crate::data::corpus_comparison`]).
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -39,6 +41,10 @@ pub struct CorpusLocation {
 /// readers on the old snapshot until the new one commits. The ~56k dead
 /// tuples a month are autovacuum's job.
 ///
+/// The derived crosswalk (`corpus_tiploc_crs`/`corpus_stanox_crs`) is
+/// rebuilt from `locations` in the same transaction, so it always matches
+/// the stored set.
+///
 /// Callers must reject an empty `locations` first (the route does): an
 /// empty load would wipe the table.
 pub async fn replace_corpus_locations(
@@ -63,11 +69,12 @@ pub async fn replace_corpus_locations(
     let nlc_desc = column(|l| &l.nlc_desc);
     let nlc_desc16 = column(|l| &l.nlc_desc16);
 
+    let (_, crosswalk) = crate::data::corpus_crosswalk::derive(
+        &crate::data::corpus_crosswalk::corpus_rows(locations),
+    );
+
     let mut tx = pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(CORPUS_LOAD_LOCK_KEY)
-        .execute(&mut *tx)
-        .await?;
+    take_load_lock(&mut tx).await?;
     sqlx::query("DELETE FROM corpus_locations")
         .execute(&mut *tx)
         .await?;
@@ -105,8 +112,19 @@ pub async fn replace_corpus_locations(
     .bind(row_count)
     .execute(&mut *tx)
     .await?;
+    crate::data::corpus_crosswalk::write(&mut tx, delivered_at, &crosswalk).await?;
     tx.commit().await?;
     Ok(inserted)
+}
+
+/// Takes the CORPUS load lock for the rest of `tx`: loads and crosswalk
+/// rebuilds serialise on it.
+pub(crate) async fn take_load_lock(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(CORPUS_LOAD_LOCK_KEY)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// The newest loaded delivery's `delivered_at`, or `None` before the first
