@@ -18,7 +18,9 @@ name: CI
 # commit directly with the fix. Piped's remaining workflows (rustfmt.yml,
 # lint.yml, type-check.yml, py-test.yml, verify-types.yml,
 # freeze-for-pr.yml, ...) are not used here: they are either Python/nox-
-# oriented (this repo has no Python code) or depend on a `justfile` +
+# oriented (this repo's only Python is a standalone script under scripts/,
+# with no package or nox sessions; the `scripts-lint` job below checks it)
+# or depend on a `justfile` +
 # `mise.toml` vendored from the `piped` git submodule via the
 # `just-jobs`/`handle-diff-file` composite actions in Piped-actions, which
 # this repo does not have and this change does not introduce. See the PR

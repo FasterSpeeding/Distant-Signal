@@ -39,8 +39,9 @@
   // renovate.json5 adds exactly one thing on top of the shared preset: a
   // `mise.managerFilePatterns` override so Renovate also watches
   // `artifacts/skel/.config/mise/config.yaml` -- a path specific to
-  // that repo's own project-skeleton tooling. This repo has no mise.toml,
-  // no `piped` submodule, and no Python code at all, so that block is
+  // that repo's own project-skeleton tooling. This repo has no mise.toml
+  // and no `piped` submodule (its only Python is a standalone script under
+  // scripts/, with no package or skeleton tooling), so that block is
   // dropped rather than adapted -- there is nothing in this repo for a
   // mise-file override to point at.
 
@@ -84,5 +85,20 @@
   //                   instead of a subchart, see the chart's own top-of-
   //                   file comment) -- nothing for this manager to do.
   //   github-actions - see above; both new workflow files are picked up
-  //                   with no extra config.
+  //                   with no extra config. That includes the scripts-lint
+  //                   job's actions/setup-python SHA pin AND its
+  //                   `python-version` input: the manager extracts
+  //                   setup-python's python-version as a dependency of its
+  //                   own (github-releases of actions/python-versions).
+  //                   Confirmed with `renovate --platform=local
+  //                   --dry-run=extract` (44.115.13), as were the pep621
+  //                   deps below.
+  //   pep621        - default pattern `/(^|/)pyproject\.toml$/` matches the
+  //                   root pyproject.toml, which has no [project] table
+  //                   (tool config only); the manager needs none and
+  //                   extracts its [dependency-groups] `lint` group (PEP
+  //                   735): ruff, mypy, and shellcheck-py / shfmt-py /
+  //                   actionlint-py, which carry the shellcheck, shfmt and
+  //                   actionlint binaries the scripts-lint job runs. Each is
+  //                   an exact `==` pin, so Renovate bumps the pin.
 }
