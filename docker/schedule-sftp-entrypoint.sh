@@ -68,25 +68,26 @@ umask 077
 # string and add or change fields. Control characters are rejected outright.
 # Keep in step with charts/distant-signal/templates/schedulefeed-configmap.yaml.
 reject_control_chars() {
-  case "$2" in
-    *[[:cntrl:]]*)
-      echo "sftp-entrypoint: $1 contains a control character (newline, tab, ...); refusing to provision the account" >&2
-      exit 1
-      ;;
-  esac
+    case "$2" in
+        *[[:cntrl:]]*)
+            echo "sftp-entrypoint: $1 contains a control character (newline, tab, ...); refusing to provision the account" >&2
+            exit 1
+            ;;
+        *) ;; # no control characters: accept
+    esac
 }
 json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
-reject_control_chars SCHEDULE_SFTP_USERNAME "$SCHEDULE_SFTP_USERNAME"
-reject_control_chars SCHEDULE_SFTP_PASSWORD "$SCHEDULE_SFTP_PASSWORD"
-reject_control_chars SCHEDULE_FEED_DESTINATION_PATH "$HOME_DIR"
-USERNAME_JSON="$(json_escape "$SCHEDULE_SFTP_USERNAME")"
-PASSWORD_JSON="$(json_escape "$SCHEDULE_SFTP_PASSWORD")"
-HOME_DIR_JSON="$(json_escape "$HOME_DIR")"
+reject_control_chars SCHEDULE_SFTP_USERNAME "${SCHEDULE_SFTP_USERNAME}"
+reject_control_chars SCHEDULE_SFTP_PASSWORD "${SCHEDULE_SFTP_PASSWORD}"
+reject_control_chars SCHEDULE_FEED_DESTINATION_PATH "${HOME_DIR}"
+USERNAME_JSON="$(json_escape "${SCHEDULE_SFTP_USERNAME}")"
+PASSWORD_JSON="$(json_escape "${SCHEDULE_SFTP_PASSWORD}")"
+HOME_DIR_JSON="$(json_escape "${HOME_DIR}")"
 
-cat > "$LOADDATA_FILE" <<EOF
+cat >"${LOADDATA_FILE}" <<EOF
 {
   "version": 17,
   "users": [
@@ -103,4 +104,4 @@ cat > "$LOADDATA_FILE" <<EOF
 }
 EOF
 
-exec sftpgo serve --loaddata-from "$LOADDATA_FILE" --loaddata-mode 1
+exec sftpgo serve --loaddata-from "${LOADDATA_FILE}" --loaddata-mode 1

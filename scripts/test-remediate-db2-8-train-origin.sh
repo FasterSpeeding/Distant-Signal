@@ -19,13 +19,13 @@ TEST_URL="postgres://postgres:postgres@localhost:5432/${TEST_DB}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${REPO_ROOT}/scripts/remediate-db2-8-train-origin.sql"
 
-cleanup() { psql -X -q "$PG_ADMIN_URL" -c "DROP DATABASE IF EXISTS ${TEST_DB}" >/dev/null; }
+cleanup() { psql -X -q "${PG_ADMIN_URL}" -c "DROP DATABASE IF EXISTS ${TEST_DB}" >/dev/null; }
 trap cleanup EXIT
 
-psql -X -q "$PG_ADMIN_URL" -c "CREATE DATABASE ${TEST_DB}" >/dev/null
-sqlx migrate run --source "${REPO_ROOT}/crates/api/migrations" --database-url "$TEST_URL" >/dev/null
+psql -X -q "${PG_ADMIN_URL}" -c "CREATE DATABASE ${TEST_DB}" >/dev/null
+sqlx migrate run --source "${REPO_ROOT}/crates/api/migrations" --database-url "${TEST_URL}" >/dev/null
 
-q() { psql -X -q -t -A "$TEST_URL" -c "$1"; }
+q() { psql -X -q -t -A "${TEST_URL}" -c "$1"; }
 
 q "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) VALUES
      ('T-WAT', 'ZWA', 'TWATRLMN', 'ORIGIN', 1), ('T-RAY', 'ZRA', 'TRAYNSPK', 'MIDDLE', 1)"
@@ -37,20 +37,25 @@ q "INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure,
      ('TGOOD1', '2026-09-24', 'ZWA', '2026-09-24 07:47:00+01', '${cp}', NOW()),
      ('TNOCRS', '2026-09-24', 'ZZZ', '2026-09-24 09:00:00+01', '${nocrs}', NOW())"
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+    echo "FAIL: $*" >&2
+    exit 1
+}
 
-preview=$(PGOPTIONS="-c default_transaction_read_only=on" psql -X -q -t -A "$TEST_URL" -f "$SCRIPT")
-[[ "$(wc -l <<<"$preview")" == 1 && "$preview" == *"TBAD01|2026-09-24|ZRA|ZWA|"* ]] \
-  || fail "preview should list only TBAD01, got: $preview"
+preview=$(PGOPTIONS="-c default_transaction_read_only=on" psql -X -q -t -A "${TEST_URL}" -f "${SCRIPT}")
+preview_lines=$(wc -l <<<"${preview}")
+[[ "${preview_lines}" == 1 && "${preview}" == *"TBAD01|2026-09-24|ZRA|ZWA|"* ]] \
+    || fail "preview should list only TBAD01, got: ${preview}"
 
-psql -X -q -t -A "$TEST_URL" -v apply=1 -f "$SCRIPT" >/dev/null
-[[ "$(q "SELECT origin_crs || ' ' || scheduled_departure FROM trains WHERE train_uid = 'TBAD01'")" \
-   == "ZWA 2026-09-24 06:47:00+00" ]] || fail "TBAD01 not fixed"
-[[ "$(q "SELECT origin_crs FROM trains WHERE train_uid = 'TNOCRS'")" == "ZZZ" ]] \
-  || fail "a row whose first TIPLOC has no CRS must keep its origin_crs"
-[[ "$(q "SELECT origin_crs FROM trains WHERE train_uid = 'TGOOD1'")" == "ZWA" ]] || fail "TGOOD1 changed"
+psql -X -q -t -A "${TEST_URL}" -v apply=1 -f "${SCRIPT}" >/dev/null
+bad=$(q "SELECT origin_crs || ' ' || scheduled_departure FROM trains WHERE train_uid = 'TBAD01'")
+[[ "${bad}" == "ZWA 2026-09-24 06:47:00+00" ]] || fail "TBAD01 not fixed"
+nocrs_origin=$(q "SELECT origin_crs FROM trains WHERE train_uid = 'TNOCRS'")
+[[ "${nocrs_origin}" == "ZZZ" ]] || fail "a row whose first TIPLOC has no CRS must keep its origin_crs"
+good=$(q "SELECT origin_crs FROM trains WHERE train_uid = 'TGOOD1'")
+[[ "${good}" == "ZWA" ]] || fail "TGOOD1 changed"
 
-again=$(PGOPTIONS="-c default_transaction_read_only=on" psql -X -q -t -A "$TEST_URL" -f "$SCRIPT")
-[[ -z "$again" ]] || fail "second preview should be empty, got: $again"
+again=$(PGOPTIONS="-c default_transaction_read_only=on" psql -X -q -t -A "${TEST_URL}" -f "${SCRIPT}")
+[[ -z "${again}" ]] || fail "second preview should be empty, got: ${again}"
 
 echo "PASS: remediate-db2-8-train-origin.sql"

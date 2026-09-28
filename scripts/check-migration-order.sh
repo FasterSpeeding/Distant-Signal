@@ -30,9 +30,9 @@ version_of() {
     sed -n 's#^.*/\([0-9]\{1,\}\)_[^/]*\.sql$#\1#p'
 }
 
-max_base="$(git ls-tree -r --name-only "$base" -- "$dir/" | version_of | sort -n | tail -n 1)"
-if [ -z "$max_base" ]; then
-    echo "no migrations at $base; nothing to compare"
+max_base="$(git ls-tree -r --name-only "${base}" -- "${dir}/" | version_of | sort -n | tail -n 1)"
+if [[ -z "${max_base}" ]]; then
+    echo "no migrations at ${base}; nothing to compare"
     exit 0
 fi
 
@@ -40,31 +40,31 @@ status=0
 
 # --no-renames reports a rename as a deletion plus an addition, so the old
 # name fails here and the new name is checked as an added file below.
-changed="$(git diff --no-renames --name-status --diff-filter=MDT "$base" HEAD -- "$dir/" \
+changed="$(git diff --no-renames --name-status --diff-filter=MDT "${base}" HEAD -- "${dir}/" \
     | awk -F '\t' '$2 ~ /\.sql$/ { print $1 "\t" $2 }' || true)"
 while IFS=$'\t' read -r kind file; do
-    [ -n "$file" ] || continue
-    case "$kind" in
+    [[ -n "${file}" ]] || continue
+    case "${kind}" in
         D) what="deleted (or renamed)" ;;
         *) what="modified" ;;
     esac
-    echo "::error file=$file::$file already exists on the base and was $what. Merged migrations are immutable: sqlx checks every applied file's checksum at startup. Add a new migration instead."
+    echo "::error file=${file}::${file} already exists on the base and was ${what}. Merged migrations are immutable: sqlx checks every applied file's checksum at startup. Add a new migration instead."
     status=1
-done <<<"$changed"
+done <<<"${changed}"
 
-added="$(git diff --no-renames --name-only --diff-filter=A "$base" HEAD -- "$dir/" | grep '\.sql$' || true)"
-for file in $added; do
-    version="$(printf '%s\n' "$file" | version_of)"
-    if [ -z "$version" ]; then
-        echo "::error file=$file::cannot read a numeric version from $file"
+added="$(git diff --no-renames --name-only --diff-filter=A "${base}" HEAD -- "${dir}/" | grep '\.sql$' || true)"
+for file in ${added}; do
+    version="$(printf '%s\n' "${file}" | version_of)"
+    if [[ -z "${version}" ]]; then
+        echo "::error file=${file}::cannot read a numeric version from ${file}"
         status=1
-    elif [ "$version" -le "$max_base" ]; then
-        echo "::error file=$file::$file (version $version) is not newer than the newest migration on the base ($max_base); sqlx would apply it out of order. Give it a later timestamp."
+    elif [[ "${version}" -le "${max_base}" ]]; then
+        echo "::error file=${file}::${file} (version ${version}) is not newer than the newest migration on the base (${max_base}); sqlx would apply it out of order. Give it a later timestamp."
         status=1
     else
-        echo "ok: $file ($version > $max_base)"
+        echo "ok: ${file} (${version} > ${max_base})"
     fi
 done
-[ -n "$added" ] || echo "no migrations added since $base (newest there: $max_base)"
-[ -n "$changed" ] || echo "no existing migrations modified, deleted or renamed since $base"
-exit "$status"
+[[ -n "${added}" ]] || echo "no migrations added since ${base} (newest there: ${max_base})"
+[[ -n "${changed}" ]] || echo "no existing migrations modified, deleted or renamed since ${base}"
+exit "${status}"
