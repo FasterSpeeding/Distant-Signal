@@ -639,6 +639,26 @@ export interface JourneyStop {
   status?: LiveStopStatus | null;
   // Minutes late the stop is expected to be; set only when `status` is 'Late'.
   lateMinutes?: number | null;
+  // This train's row on the stop's live LDBWS departure board, or `null`
+  // when there is no unique fresh match (`crates/api/src/data/stop_board.rs`).
+  // `null` means "not known", never "on time". Optional so older fixtures
+  // and older backends stay valid.
+  board?: StopBoard | null;
+}
+
+/** `JourneyStop.board`: Darwin's view of this train at this stop, from the
+ * station's live departure board. Darwin-sourced, unlike the TRUST-derived
+ * fields around it. */
+export interface StopBoard {
+  delayReason: string | null;
+  cancelReason: string | null;
+  isCancelled: boolean;
+  // `etd - std` in minutes (0 when on time or early); `null` when `estimated`
+  // is "Delayed" or "Cancelled". Not the stop's TRUST `delayMinutes`.
+  delayMinutes: number | null;
+  // LDBWS `etd` verbatim: "HH:MM" (London), "On time", "Delayed", "Cancelled".
+  estimated: string;
+  observedAt: string; // RFC3339, when the board was polled
 }
 
 /** `GET /Train/{trackingId}`'s response shape

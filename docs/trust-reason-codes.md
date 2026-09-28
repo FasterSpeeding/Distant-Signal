@@ -23,6 +23,7 @@ All of them are additive and nullable.
 | `cancelReasonCode`, `cancelReason` | The latest `0002` `canx_reason_code`, and its glossary text. Served only while `cancelled` is true. |
 | `changeOfOriginReasonCode`, `changeOfOriginReason` | The latest `0006` `reason_code`, and its text |
 | `journeyStops[].status`, `journeyStops[].lateMinutes` | Per-stop LDBWS-style status (below) |
+| `journeyStops[].board` | This train's row on the stop's live LDBWS departure board, including Darwin's `delayReason` (below). Not on the line trains list. |
 
 Example of a cancelled train:
 
@@ -44,13 +45,45 @@ Example of a cancelled train:
 }
 ```
 
-## There is no delay reason
+## Delay reasons come from the live board, not TRUST
 
 TRUST's open movement feed carries a reason code only on a `0002`
 Cancellation and a `0006` Change of Origin. A `0003` Movement has none,
 because delay attribution happens later in TRUST DA and is not in the feed.
-DS therefore has **no equivalent of Darwin's `delayReason`**, and serves no
-such field.
+So there is **no TRUST delay reason**.
+
+Darwin's own passenger text is served instead, per stop, from the LDBWS
+departure boards `poller-ldbws` samples (about 560 stations):
+`journeyStops[].board` (`crates/api/src/data/stop_board.rs`).
+
+```json
+"board": {
+  "delayReason": "This train has been delayed by a points failure",
+  "cancelReason": null,
+  "isCancelled": false,
+  "delayMinutes": 4,
+  "estimated": "17:04",
+  "observedAt": "2026-09-28T16:01:12Z"
+}
+```
+
+- `board` is `null` unless the stop's station board, polled in the last 10
+  minutes, lists exactly one row that is this train. Matching uses the
+  stop's TIPLOC (embedded in the LDBWS serviceID), the booked departure
+  (within 5 minutes) and the Retail Service ID (RSID), which both the board
+  and the CIF schedule carry. Without an RSID it falls back to destination,
+  operator and time within 2 minutes. Any tie is `null`, never a guess.
+- Departures only. A terminating stop, an unsampled station, a stop the
+  train has already left, and a train not yet on the board (a busy
+  station's 10-row board can reach as little as 20 minutes ahead) are all
+  `null`. **`null` means not known, never on time.**
+- `delayMinutes` is Darwin's `etd - std`: `0` for "On time" or early,
+  `null` for "Delayed" and "Cancelled". It is separate from the stop's own
+  `delayMinutes`, which is TRUST's.
+- `cancelReason` and `isCancelled` here are Darwin's, for this service at
+  this station. The train-level `cancelReason` is TRUST's glossary text.
+- Relaying the text needs the National Rail Enquiries attribution, as for
+  any LDBWS data.
 
 ## Reason text
 
@@ -82,7 +115,7 @@ Rules (`data::train_reasons`):
 |---|---|---|
 | Source | TOC-entered, a curated list of about 500 numeric reason codes with passenger prose ("This train has been cancelled because of a shortage of train crew") | Network Rail delay attribution code (two characters), typed in TRUST at the time |
 | Wording | For passengers | Industry attribution text ("Driver", "Late arrival of booked inward stock …", "Exclusion commercially agreed …") |
-| Delay reason | Yes | No (see above) |
+| Delay reason | Yes | No. Darwin's own text is served per stop as `journeyStops[].board.delayReason` (see above). |
 | Stability | Updated by the TOC as the cause is understood | The code as first entered. TRUST DA can re-attribute it later, and that change never reaches the feed. |
 | Per stop | The reason is per service | The reason is per train. For `EN ROUTE`, the location it was cancelled from is stored (`train_reasons.loc_stanox`) but not served. |
 
