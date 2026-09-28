@@ -755,6 +755,29 @@ jobs:
             --show-only templates/movement-relay-deployment.yaml)
           grep -A1 'name: MOVEMENT_STREAM_MAXLEN' <<<"${relay}" | grep -q 'value: "1048576"'
 
+      # The sftp entrypoint ConfigMap embeds files/schedule-sftp-entrypoint.sh
+      # (also bind-mounted by docker-compose.yml) with .Files.Get; the
+      # rendered script must be that file, byte for byte.
+      - name: helm template (sftp entrypoint is the shared script)
+        run: |
+          set -euo pipefail
+          cm=$(helm template distant-signal charts/distant-signal \
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094 \
+            --set trustConsumer.kafka.topic=test-topic \
+            --set trustConsumer.kafka.saslMechanism=PLAIN \
+            --set enricher.llm.baseUrl=http://llm.example.com/v1 \
+            --set enricher.llm.model=test-model \
+            --set api.sso.issuerUrl=https://sso.example.com \
+            --set api.sso.clientId=test-client \
+            --set api.sso.clientSecret=test-secret \
+            --set api.sso.redirectUrl=https://app.example.com/callback \
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
+            --set scheduleFeed.enabled=true \
+            --set scheduleFeed.sftp.authMethod=password \
+            --show-only templates/schedulefeed-configmap.yaml)
+          script=$(sed -n '/^  entrypoint.sh: |$/,$p' <<<"${cm}" | tail -n +2 | sed 's/^    //')
+          diff -u charts/distant-signal/files/schedule-sftp-entrypoint.sh <(printf '%s\n' "${script}")
+
       # INF-3 Redis AUTH. Off (the default) must render no REDIS_PASSWORD,
       # no --requirepass and no redis-password Secret key. On must give all
       # six Redis clients REDIS_PASSWORD from the Secret (never inline),
