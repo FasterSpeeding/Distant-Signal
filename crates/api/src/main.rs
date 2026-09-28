@@ -402,11 +402,17 @@ fn spawn_background_loops(app: &App) {
     tokio::spawn(backlog_match_sweep_loop(app.clone()));
     tokio::spawn(session_cleanup_sweep_loop(app.clone()));
     // One-shot: rebuilds the CORPUS crosswalk if the stored one predates the
-    // newest delivery or this build's rules (one MAX() when no CORPUS).
+    // newest delivery or this build's rules (one MAX() when no CORPUS), then
+    // seeds the CORPUS freshness gauge.
     let pool = app.database.clone();
     tokio::spawn(async move {
         if let Err(err) = data::corpus_crosswalk::rebuild_if_stale(&pool).await {
             tracing::error!(error = ?err, "CORPUS crosswalk startup rebuild failed");
+        }
+        // Seeds the CORPUS freshness gauge from the durable marker, so the
+        // staleness alert survives restarts between monthly deliveries.
+        if let Err(err) = data::corpus::refresh_last_delivery_metric(&pool).await {
+            tracing::error!(error = ?err, "CORPUS freshness gauge startup read failed");
         }
     });
 }

@@ -140,6 +140,16 @@ It records these metrics:
 - `schedule_feed_corpus_rejected_total`, which feeds the new
   `DistantSignalCorpusRejected` alert.
 
+Freshness (added 2026-09-28): `GET /public/freshness` reports
+`corpus`, the newest `corpus_deliveries.delivered_at` (`null` before the
+first load), shown in the frontend's nav-bar data-freshness tooltip as
+"Network Rail CORPUS" ("not yet received" when `null`). api also exports
+`api_corpus_last_delivered_at_seconds` from that table at startup and after
+each load: unlike schedule-ingest's process-local gauge above, it survives
+restarts, so it backs the `DistantSignalCorpusStale` alert (over
+`schedulePipeline.corpusStaleAfterDays`, 45 by default: one monthly cycle
+plus two weeks' grace; rendered only while `scheduleFeed.corpus.enabled`).
+
 ### api: `POST /private/corpus-locations`
 
 This route has its own group, `INTERNAL_OAUTH_GROUP_CORPUS` (default

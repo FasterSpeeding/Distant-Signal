@@ -171,6 +171,7 @@ const UNAVAILABLE_FRESHNESS: DataFreshness = {
   incidents: null,
   tfl: null,
   schedule_feed: null,
+  corpus: null,
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

@@ -646,11 +646,16 @@ async fn post_corpus_locations(
         rows = upserted,
         "replaced corpus_locations"
     );
-    // Read-only comparison with the timetable crosswalk, logged and exported
-    // as gauges; off the request path so the load's response is not held
+    // The CORPUS freshness gauge, then the read-only comparison with the
+    // timetable crosswalk, logged and exported as gauges; off the request path so the load's response is not held
     // up by it.
     let pool = app.database.clone();
     tokio::spawn(async move {
+        // Re-read rather than taking `req.delivered_at`: a re-load of an
+        // older delivery must not move the freshness gauge backwards.
+        if let Err(err) = crate::data::corpus::refresh_last_delivery_metric(&pool).await {
+            tracing::error!(error = ?err, "CORPUS freshness gauge refresh failed; the load itself succeeded");
+        }
         crate::data::corpus_comparison::log_after_load(&pool, &req.locations).await;
     });
     Ok(Json(UpsertResponse { upserted }))
