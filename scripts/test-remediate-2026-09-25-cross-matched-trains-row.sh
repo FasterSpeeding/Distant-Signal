@@ -41,7 +41,7 @@ fail=0
 
 check() {
     local desc="$1" expected="$2" actual="$3"
-    if [[ "$expected" == "$actual" ]]; then
+    if [[ "${expected}" == "${actual}" ]]; then
         echo "  [PASS] ${desc}"
         pass=$((pass + 1))
     else
@@ -51,18 +51,18 @@ check() {
 }
 
 cleanup() {
-    psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS ${TEST_DB};" >/dev/null 2>&1 || true
+    psql "${PG_ADMIN_URL}" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS ${TEST_DB};" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 echo "== Building scratch database ${TEST_DB} =="
-psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${TEST_DB};" >/dev/null
+psql "${PG_ADMIN_URL}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${TEST_DB};" >/dev/null
 
 echo "== Applying real crates/api migrations (including the risky 20260925222000 unique index) =="
-DATABASE_URL="$TEST_URL" sqlx migrate run --source "${REPO_ROOT}/crates/api/migrations" >/dev/null
+DATABASE_URL="${TEST_URL}" sqlx migrate run --source "${REPO_ROOT}/crates/api/migrations" >/dev/null
 
 echo "== Seeding the corrupted shape + unrelated control data =="
-psql "$TEST_URL" -v ON_ERROR_STOP=1 -q <<'SEED'
+psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q <<'SEED'
 -- Users.
 INSERT INTO users (id, email, name) VALUES
     ('test-user-y80926', 'y80926-owner@example.com', 'Y80926 Owner'),
@@ -174,7 +174,7 @@ echo "== Pre-check: reproducing the exact deploy-time risk =="
 # train_id, must fail with a unique-violation before remediation -- this is
 # exactly what would make 20260925222000's CREATE UNIQUE INDEX CONCURRENTLY
 # fail at deploy time if this state existed in production.
-if psql "$TEST_URL" -v ON_ERROR_STOP=1 -q -c \
+if psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q -c \
     "INSERT INTO trains (id, train_uid, service_date, train_id, resolved_at)
      VALUES (6095141, 'W34058', DATE '2026-09-25', 'W345801FAKE', NOW());" \
     >/tmp/pretest_insert_output_$$.txt 2>&1; then
@@ -193,7 +193,7 @@ fi
 rm -f /tmp/pretest_insert_output_$$.txt
 
 echo "== Running the dry-run preview query =="
-psql "$TEST_URL" -v ON_ERROR_STOP=1 <<'DRYRUN'
+psql "${TEST_URL}" -v ON_ERROR_STOP=1 <<'DRYRUN'
 WITH affected AS (
     SELECT
         t.id                 AS trains_id,
@@ -226,7 +226,7 @@ SELECT
 FROM affected a;
 DRYRUN
 
-dry_run_row_count=$(psql "$TEST_URL" -t -A -v ON_ERROR_STOP=1 -c "
+dry_run_row_count=$(psql "${TEST_URL}" -t -A -v ON_ERROR_STOP=1 -c "
     SELECT count(*) FROM trains t
     WHERE t.train_id IS NOT NULL
       AND (
@@ -238,58 +238,58 @@ dry_run_row_count=$(psql "$TEST_URL" -t -A -v ON_ERROR_STOP=1 -c "
             OR (t.train_uid = 'Y80926' AND t.service_date = DATE '2026-09-25')
           );
 ")
-check "dry-run finds exactly 1 affected trains row (control row not flagged)" "1" "$dry_run_row_count"
+check "dry-run finds exactly 1 affected trains row (control row not flagged)" "1" "${dry_run_row_count}"
 
 echo "== Running the remediation script (1st time) =="
-psql "$TEST_URL" -v ON_ERROR_STOP=1 -f "$REMEDIATION_SQL"
+psql "${TEST_URL}" -v ON_ERROR_STOP=1 -f "${REMEDIATION_SQL}"
 
 echo "== Assertions after 1st run =="
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT train_id IS NULL FROM trains WHERE id = 6095140;")
-check "corrupted row train_id cleared to NULL" "t" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT train_id IS NULL FROM trains WHERE id = 6095140;")
+check "corrupted row train_id cleared to NULL" "t" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolved_at IS NULL FROM trains WHERE id = 6095140;")
-check "corrupted row resolved_at cleared to NULL" "t" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolved_at IS NULL FROM trains WHERE id = 6095140;")
+check "corrupted row resolved_at cleared to NULL" "t" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT train_uid FROM trains WHERE id = 6095140;")
-check "corrupted row train_uid still Y80926 (untouched)" "Y80926" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT train_uid FROM trains WHERE id = 6095140;")
+check "corrupted row train_uid still Y80926 (untouched)" "Y80926" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT destination_crs FROM trains WHERE id = 6095140;")
-check "corrupted row schedule-derived destination_crs untouched" "BHM" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT destination_crs FROM trains WHERE id = 6095140;")
+check "corrupted row schedule-derived destination_crs untouched" "BHM" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id = 6095140;")
-check "corrupted row's wrongly-glued movement events deleted" "0" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id = 6095140;")
+check "corrupted row's wrongly-glued movement events deleted" "0" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id = 6095140;")
-check "corrupted row's wrongly-glued current_state deleted" "0" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id = 6095140;")
+check "corrupted row's wrongly-glued current_state deleted" "0" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status FROM train_subscriptions WHERE id = 9100001;")
-check "user's subscription resolution_status reset to schedule_matched" "schedule_matched" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status FROM train_subscriptions WHERE id = 9100001;")
+check "user's subscription resolution_status reset to schedule_matched" "schedule_matched" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT custom_name FROM train_subscriptions WHERE id = 9100001;")
-check "user's subscription custom_name untouched" "My commute to Birmingham" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT custom_name FROM train_subscriptions WHERE id = 9100001;")
+check "user's subscription custom_name untouched" "My commute to Birmingham" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM tracked_train_tickets WHERE tracked_train_id = 9100001;")
-check "user's ticket still present, untouched" "1" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM tracked_train_tickets WHERE tracked_train_id = 9100001;")
+check "user's ticket still present, untouched" "1" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_subscriptions WHERE id = 9100001;")
-check "user's subscription row still exists (not deleted)" "1" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_subscriptions WHERE id = 9100001;")
+check "user's subscription row still exists (not deleted)" "1" "${v}"
 
 # Control row / control subscription must be completely untouched.
-v=$(psql "$TEST_URL" -t -A -c "SELECT train_id FROM trains WHERE id = 7000001;")
-check "control trains row train_id untouched" "Y80999REALID" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT train_id FROM trains WHERE id = 7000001;")
+check "control trains row train_id untouched" "Y80999REALID" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id = 7000001;")
-check "control row's own movement events untouched" "1" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id = 7000001;")
+check "control row's own movement events untouched" "1" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id = 7000001;")
-check "control row's own current_state untouched" "1" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id = 7000001;")
+check "control row's own current_state untouched" "1" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status FROM train_subscriptions WHERE id = 9100002;")
-check "control subscription resolution_status untouched" "resolved" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status FROM train_subscriptions WHERE id = 9100002;")
+check "control subscription resolution_status untouched" "resolved" "${v}"
 
 echo "== Post-check: the deploy-time risk is now gone =="
-if psql "$TEST_URL" -v ON_ERROR_STOP=1 -q -c \
+if psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q -c \
     "INSERT INTO trains (id, train_uid, service_date, train_id, resolved_at)
      VALUES (6095141, 'W34058', DATE '2026-09-25', 'W345801FAKE', NOW());" \
     >/tmp/posttest_insert_output_$$.txt 2>&1; then
@@ -303,25 +303,25 @@ fi
 rm -f /tmp/posttest_insert_output_$$.txt
 
 echo "== Running the remediation script a 2nd time (idempotency check) =="
-psql "$TEST_URL" -v ON_ERROR_STOP=1 -f "$REMEDIATION_SQL"
+psql "${TEST_URL}" -v ON_ERROR_STOP=1 -f "${REMEDIATION_SQL}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT train_id FROM trains WHERE id = 6095140;")
-check "2nd run: corrupted row train_id still NULL" "" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT train_id FROM trains WHERE id = 6095140;")
+check "2nd run: corrupted row train_id still NULL" "" "${v}"
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status FROM train_subscriptions WHERE id = 9100001;")
-check "2nd run: subscription resolution_status unchanged (still schedule_matched)" "schedule_matched" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status FROM train_subscriptions WHERE id = 9100001;")
+check "2nd run: subscription resolution_status unchanged (still schedule_matched)" "schedule_matched" "${v}"
 
 # The newly-inserted real W34058 row from the post-check above must be
 # untouched by a second remediation run (it correctly matches its own
 # Activation, so it must never be flagged by the corruption signature).
-v=$(psql "$TEST_URL" -t -A -c "SELECT train_id FROM trains WHERE id = 6095141;")
-check "2nd run: the real, correctly-resolved W34058 row is left alone" "W345801FAKE" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT train_id FROM trains WHERE id = 6095141;")
+check "2nd run: the real, correctly-resolved W34058 row is left alone" "W345801FAKE" "${v}"
 
 echo
 echo "================================================================"
 echo "RESULTS: ${pass} passed, ${fail} failed"
 echo "================================================================"
 
-if [[ "$fail" -ne 0 ]]; then
+if [[ "${fail}" -ne 0 ]]; then
     exit 1
 fi

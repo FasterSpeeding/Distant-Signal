@@ -37,13 +37,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MIGRATIONS_DIR="${REPO_ROOT}/crates/api/migrations"
 TARGET_MIGRATION="${MIGRATIONS_DIR}/20260925221500_close_out_trains_train_id_service_date_collisions.sql"
 PRE_TARGET_VERSION="20260925221000"
+# Fail fast if the migration under test was renamed or removed.
+if [[ ! -f "${TARGET_MIGRATION}" ]]; then
+    echo "missing ${TARGET_MIGRATION}" >&2
+    exit 1
+fi
 
 pass=0
 fail=0
 
 check() {
     local desc="$1" expected="$2" actual="$3"
-    if [[ "$expected" == "$actual" ]]; then
+    if [[ "${expected}" == "${actual}" ]]; then
         echo "  [PASS] ${desc}"
         pass=$((pass + 1))
     else
@@ -53,19 +58,19 @@ check() {
 }
 
 cleanup() {
-    psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS ${TEST_DB};" >/dev/null 2>&1 || true
+    psql "${PG_ADMIN_URL}" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS ${TEST_DB};" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 echo "== Building scratch database ${TEST_DB} =="
-psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${TEST_DB};" >/dev/null
+psql "${PG_ADMIN_URL}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${TEST_DB};" >/dev/null
 
 echo "== Applying every real migration up to (not including) 20260925221500 =="
-DATABASE_URL="$TEST_URL" sqlx migrate run --source "$MIGRATIONS_DIR" \
-    --target-version "$PRE_TARGET_VERSION" >/dev/null
+DATABASE_URL="${TEST_URL}" sqlx migrate run --source "${MIGRATIONS_DIR}" \
+    --target-version "${PRE_TARGET_VERSION}" >/dev/null
 
 echo "== Seeding collisions + control data =="
-psql "$TEST_URL" -v ON_ERROR_STOP=1 -q <<'SEED'
+psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q <<'SEED'
 -- Users.
 INSERT INTO users (id, email, name) VALUES
     ('test-user-y80926',   'y80926-owner@example.com',   'Y80926 Owner'),
@@ -206,89 +211,89 @@ VALUES (7000001, 'en_route', 'EUS', 'DEPARTURE', 0);
 SEED
 
 echo "== Pre-check: collisions exist before the migration runs =="
-v=$(psql "$TEST_URL" -t -A -c "
+v=$(psql "${TEST_URL}" -t -A -c "
     SELECT count(*) FROM trains t
     WHERE t.train_id IS NOT NULL
       AND EXISTS (SELECT 1 FROM trains t2 WHERE t2.train_id = t.train_id AND t2.service_date = t.service_date AND t2.id <> t.id);
 ")
-check "5 trains rows currently in a collision (2 known-incident + 3 synthetic)" "5" "$v"
+check "5 trains rows currently in a collision (2 known-incident + 3 synthetic)" "5" "${v}"
 
 echo "== Applying the remaining pending migrations (including the new 20260925221500 cleanup + the 20260925222000 index build) =="
-DATABASE_URL="$TEST_URL" sqlx migrate run --source "$MIGRATIONS_DIR" >/dev/null
+DATABASE_URL="${TEST_URL}" sqlx migrate run --source "${MIGRATIONS_DIR}" >/dev/null
 
 echo "== Assertions =="
 
 # Known-incident collision: both rows gone.
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM trains WHERE id IN (6095140, 6095141);")
-check "both known-incident colliding trains rows deleted" "0" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM trains WHERE id IN (6095140, 6095141);")
+check "both known-incident colliding trains rows deleted" "0" "${v}"
 
 # 3-way collision: all three rows gone.
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM trains WHERE id IN (6200001, 6200002, 6200003);")
-check "all 3 synthetic-collision trains rows deleted" "0" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM trains WHERE id IN (6200001, 6200002, 6200003);")
+check "all 3 synthetic-collision trains rows deleted" "0" "${v}"
 
 # Subscription 9100001 was 'resolved' -> 'pending', trains_id NULL.
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9100001;")
-check "resolved subscription on deleted row -> pending, trains_id NULL" "pending|t" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9100001;")
+check "resolved subscription on deleted row -> pending, trains_id NULL" "pending|t" "${v}"
 
 # Subscription 9100002 was 'schedule_matched' -> 'pending', trains_id NULL.
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9100002;")
-check "schedule_matched subscription on deleted row -> pending, trains_id NULL" "pending|t" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9100002;")
+check "schedule_matched subscription on deleted row -> pending, trains_id NULL" "pending|t" "${v}"
 
 # Subscription 9100003 was 'unresolved' -> stays 'unresolved', trains_id NULL.
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9100003;")
-check "unresolved subscription on deleted row stays unresolved, trains_id NULL" "unresolved|t" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9100003;")
+check "unresolved subscription on deleted row stays unresolved, trains_id NULL" "unresolved|t" "${v}"
 
 # 3-way subscriptions: 'resolved' -> 'pending' (x2), 'unresolved' stays.
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9200001;")
-check "3-way A resolved -> pending, trains_id NULL" "pending|t" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9200002;")
-check "3-way B resolved -> pending, trains_id NULL" "pending|t" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9200003;")
-check "3-way C unresolved stays unresolved, trains_id NULL" "unresolved|t" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9200001;")
+check "3-way A resolved -> pending, trains_id NULL" "pending|t" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9200002;")
+check "3-way B resolved -> pending, trains_id NULL" "pending|t" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id IS NULL FROM train_subscriptions WHERE id = 9200003;")
+check "3-way C unresolved stays unresolved, trains_id NULL" "unresolved|t" "${v}"
 
 # Every subscription row itself still exists (never deleted).
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_subscriptions WHERE id IN (9100001, 9100002, 9100003, 9200001, 9200002, 9200003);")
-check "all 6 affected subscription rows still exist" "6" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_subscriptions WHERE id IN (9100001, 9100002, 9100003, 9200001, 9200002, 9200003);")
+check "all 6 affected subscription rows still exist" "6" "${v}"
 
 # Ticket + custom_name + group share on subscription 9100001 survive.
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM tracked_train_tickets WHERE tracked_train_id = 9100001;")
-check "user's ticket survives" "1" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT custom_name FROM train_subscriptions WHERE id = 9100001;")
-check "user's custom_name survives" "My commute to Birmingham" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM group_trains WHERE train_subscription_id = 9100001;")
-check "user's group share survives" "1" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM tracked_train_tickets WHERE tracked_train_id = 9100001;")
+check "user's ticket survives" "1" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT custom_name FROM train_subscriptions WHERE id = 9100001;")
+check "user's custom_name survives" "My commute to Birmingham" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM group_trains WHERE train_subscription_id = 9100001;")
+check "user's group share survives" "1" "${v}"
 
 # Cascaded child rows on deleted trains rows are gone (acceptable loss).
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id IN (6095140, 6095141, 6200001, 6200002, 6200003);")
-check "movement events on deleted trains rows are gone" "0" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id IN (6095140, 6095141, 6200001, 6200002, 6200003);")
-check "current_state rows on deleted trains rows are gone" "0" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM notifier_forward_queue WHERE trains_id IN (6095140, 6095141);")
-check "notifier_forward_queue rows on deleted trains rows are gone" "0" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id IN (6095140, 6095141, 6200001, 6200002, 6200003);")
+check "movement events on deleted trains rows are gone" "0" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id IN (6095140, 6095141, 6200001, 6200002, 6200003);")
+check "current_state rows on deleted trains rows are gone" "0" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM notifier_forward_queue WHERE trains_id IN (6095140, 6095141);")
+check "notifier_forward_queue rows on deleted trains rows are gone" "0" "${v}"
 
 # Control data completely untouched.
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM trains WHERE id = 7000001;")
-check "control trains row still exists" "1" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = 9100099;")
-check "control subscription completely untouched" "resolved|7000001" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM tracked_train_tickets WHERE tracked_train_id = 9100099;")
-check "control ticket untouched" "1" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id = 7000001;")
-check "control movement events untouched" "1" "$v"
-v=$(psql "$TEST_URL" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id = 7000001;")
-check "control current_state untouched" "1" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM trains WHERE id = 7000001;")
+check "control trains row still exists" "1" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = 9100099;")
+check "control subscription completely untouched" "resolved|7000001" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM tracked_train_tickets WHERE tracked_train_id = 9100099;")
+check "control ticket untouched" "1" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_movement_events WHERE trains_id = 7000001;")
+check "control movement events untouched" "1" "${v}"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT count(*) FROM train_current_state WHERE trains_id = 7000001;")
+check "control current_state untouched" "1" "${v}"
 
 # The unique index exists and is valid.
-v=$(psql "$TEST_URL" -t -A -c "SELECT indisvalid FROM pg_index WHERE indexrelid = 'trains_train_id_service_date'::regclass;")
-check "trains_train_id_service_date index is valid" "t" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT indisvalid FROM pg_index WHERE indexrelid = 'trains_train_id_service_date'::regclass;")
+check "trains_train_id_service_date index is valid" "t" "${v}"
 
 # No more collisions remain.
-v=$(psql "$TEST_URL" -t -A -c "
+v=$(psql "${TEST_URL}" -t -A -c "
     SELECT count(*) FROM trains t
     WHERE t.train_id IS NOT NULL
       AND EXISTS (SELECT 1 FROM trains t2 WHERE t2.train_id = t.train_id AND t2.service_date = t.service_date AND t2.id <> t.id);
 ")
-check "no collisions remain" "0" "$v"
+check "no collisions remain" "0" "${v}"
 
 echo "== Idempotency: re-applying the migration's own SQL statements directly =="
 # sqlx itself never re-runs an already-applied migration -- but confirm the
@@ -297,7 +302,7 @@ echo "== Idempotency: re-applying the migration's own SQL statements directly ==
 # are themselves no-ops if executed again against a database already past
 # this state -- i.e. re-running this migration's cleanup logic after it has
 # already converged errors on nothing and changes nothing further.
-psql "$TEST_URL" -v ON_ERROR_STOP=1 -q <<'REPLAY'
+psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q <<'REPLAY'
 UPDATE train_subscriptions ts
 SET trains_id = NULL,
     resolution_status = CASE
@@ -330,23 +335,23 @@ REPLAY
 echo "  [PASS] replaying the UPDATE/DELETE statements against a converged database is a clean no-op"
 pass=$((pass + 1))
 
-v=$(psql "$TEST_URL" -t -A -c "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = 9100001;")
-check "replay didn't touch the already-recomputed subscription" "pending|" "$v"
+v=$(psql "${TEST_URL}" -t -A -c "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = 9100001;")
+check "replay didn't touch the already-recomputed subscription" "pending|" "${v}"
 
 echo "== Fresh-empty-database sanity: full migrate-from-scratch is a clean no-op for the new statements =="
 FRESH_DB="ds_trains_unique_migration_fresh_$$"
 FRESH_URL="postgres://postgres:postgres@localhost:5432/${FRESH_DB}"
-psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${FRESH_DB};" >/dev/null
-DATABASE_URL="$FRESH_URL" sqlx migrate run --source "$MIGRATIONS_DIR" >/dev/null
-v=$(psql "$FRESH_URL" -t -A -c "SELECT indisvalid FROM pg_index WHERE indexrelid = 'trains_train_id_service_date'::regclass;")
-check "fresh database: index builds and is valid with nothing to collide" "t" "$v"
-psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS ${FRESH_DB};" >/dev/null 2>&1 || true
+psql "${PG_ADMIN_URL}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${FRESH_DB};" >/dev/null
+DATABASE_URL="${FRESH_URL}" sqlx migrate run --source "${MIGRATIONS_DIR}" >/dev/null
+v=$(psql "${FRESH_URL}" -t -A -c "SELECT indisvalid FROM pg_index WHERE indexrelid = 'trains_train_id_service_date'::regclass;")
+check "fresh database: index builds and is valid with nothing to collide" "t" "${v}"
+psql "${PG_ADMIN_URL}" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS ${FRESH_DB};" >/dev/null 2>&1 || true
 
 echo
 echo "================================================================"
 echo "RESULTS: ${pass} passed, ${fail} failed"
 echo "================================================================"
 
-if [[ "$fail" -ne 0 ]]; then
+if [[ "${fail}" -ne 0 ]]; then
     exit 1
 fi
