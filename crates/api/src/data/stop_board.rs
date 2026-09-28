@@ -17,7 +17,8 @@
 //! **Matching (train -> board, per stop).** Candidates are the rows of a
 //! fresh board for the stop's station whose `std` is within
 //! [`RSID_WINDOW_MINUTES`] of the stop's booked departure (dated against the
-//! board's own `polled_at`, as the platform overlay does), and whose
+//! board's own `polled_at`, so a dead board's rows date to the day it
+//! was polled), and whose
 //! serviceID TIPLOC (`common::service_id_tiploc`) is the stop's TIPLOC. A
 //! serviceID that doesn't parse is no veto, except on a board found only
 //! through its `tiplocs` (below), where the TIPLOC is the only reason the
@@ -49,10 +50,31 @@
 //! therefore matched against its own CRS's board AND any board whose
 //! `station_samples.tiplocs` contains its TIPLOC.
 //!
-//! **Not changed:** `journey::apply_station_sample_platforms` still uses its
-//! own destination-and-nearest-time match for platforms. Moving it onto
-//! this matcher would change which platforms are shown (fewer, but never
-//! another train's), which has not been approved.
+//! **Platforms.** The same match, computed once per stop, also feeds
+//! `JourneyStop.platform`/`plannedPlatform`/`platformChanged` (user
+//! decision 2026-09-28; this replaced a destination-and-nearest-time match
+//! on the stop's own CRS board that could hand a stop another train's
+//! platform). Only the rules below differ from `board`:
+//!
+//! - A matched row changes the platform fields only when it carries a
+//!   platform and is not cancelled; otherwise the stop keeps what it had
+//!   (`null`, or the origin's pin-time snapshot from
+//!   `journey::apply_origin_platform`). The old overlay never took a
+//!   platform from a cancelled row either, and a cancelled service's
+//!   platform is not somewhere to go and wait; `board.isCancelled` says why.
+//! - "The train has left" does not suppress the platform: which platform it
+//!   left from is still true, unlike a delay estimate. In practice the row
+//!   drops off the board within one poll (60-90 s) of departure anyway.
+//! - The same [`BOARD_FRESHNESS`] applies. Every sampled station is
+//!   re-polled every 60-90 s, so this only bites when the poller has
+//!   stopped (outage, or a station dropped from rotation). The old overlay
+//!   had no age limit, so after an outage it kept serving the last-seen
+//!   platform for as long as the train's time stayed on the dead board,
+//!   with nothing on `JourneyStop` to say how old it was; a platform change
+//!   during the outage would be missed silently. Unknown is better.
+//! - `plannedPlatform` keeps `common::StationDeparture.planned_platform`'s
+//!   meaning (the earliest platform the poller saw for that row), and
+//!   `platformChanged` is true only when both are known and differ.
 
 use std::collections::HashMap;
 
@@ -182,19 +204,16 @@ fn only<T>(mut items: Vec<T>) -> Option<T> {
 }
 
 /// The one board row that is this train at `stop`, with its board's poll
-/// time. See the module doc for every rule.
+/// time. See the module doc for every rule; "has the train left" is the
+/// caller's, as it gates `board` but not the platform.
 fn match_stop<'a>(
     stop: &JourneyStop,
-    has_left: bool,
     boards: &BoardIndex<'a>,
     keys: &TrainBoardKeys,
     terminus_crs: Option<&str>,
     now: DateTime<Utc>,
 ) -> Option<(&'a common::StationDeparture, DateTime<Utc>)> {
     let booked = stop.scheduled_departure?;
-    if has_left {
-        return None;
-    }
     let stop_tiploc = stop.tiploc.as_deref();
 
     struct Candidate<'a> {
@@ -283,9 +302,11 @@ fn match_stop<'a>(
     Some((picked.row, picked.polled_at))
 }
 
-/// Sets `board` on every stop of one train (see the module doc). Run after
-/// the movement overlay, which it reads to tell whether the train has left
-/// a stop.
+/// Sets `board` on every stop of one train, and its platform fields where
+/// the matched row has a platform (see the module doc). Run after the
+/// movement overlay, which it reads to tell whether the train has left a
+/// stop, and after `journey::apply_origin_platform`, whose pin-time
+/// snapshot a live board row replaces.
 pub fn apply_station_sample_board(
     stops: &mut [JourneyStop],
     boards: &BoardIndex<'_>,
@@ -309,24 +330,49 @@ pub fn apply_station_sample_board(
         .iter()
         .rposition(|stop| stop.actual_arrival.is_some() || stop.actual_departure.is_some());
     for (index, stop) in stops.iter_mut().enumerate() {
+        let Some((row, polled_at)) = match_stop(stop, boards, keys, terminus_crs.as_deref(), now)
+        else {
+            continue;
+        };
+        apply_board_platform(stop, row);
         let has_left =
             stop.actual_departure.is_some() || last_reported.is_some_and(|last| index < last);
-        let board = match_stop(stop, has_left, boards, keys, terminus_crs.as_deref(), now).map(
-            |(row, polled_at)| StopBoard {
-                delay_reason: row.delay_reason.clone(),
-                cancel_reason: row.cancel_reason.clone(),
-                is_cancelled: row.is_cancelled,
-                delay_minutes: if row.is_cancelled {
-                    None
-                } else {
-                    board_delay_minutes(&row.scheduled, &row.estimated)
-                },
-                estimated: row.estimated.clone(),
-                observed_at: polled_at,
+        if has_left {
+            continue;
+        }
+        stop.board = Some(StopBoard {
+            delay_reason: row.delay_reason.clone(),
+            cancel_reason: row.cancel_reason.clone(),
+            is_cancelled: row.is_cancelled,
+            delay_minutes: if row.is_cancelled {
+                None
+            } else {
+                board_delay_minutes(&row.scheduled, &row.estimated)
             },
-        );
-        stop.board = board;
+            estimated: row.estimated.clone(),
+            observed_at: polled_at,
+        });
     }
+}
+
+/// The platform half of the overlay: a matched, not-cancelled row with a
+/// platform replaces the stop's platform fields wholesale; anything else
+/// leaves them as they were. See the module doc.
+fn apply_board_platform(stop: &mut JourneyStop, row: &common::StationDeparture) {
+    if row.is_cancelled {
+        return;
+    }
+    let Some(platform) = row.platform.clone() else {
+        return;
+    };
+    stop.planned_platform = row.planned_platform.clone();
+    // Mirrors `api::render::station_departure_json`'s identical derivation
+    // for `StationDeparture`.
+    stop.platform_changed = stop
+        .planned_platform
+        .as_deref()
+        .is_some_and(|planned| planned != platform);
+    stop.platform = Some(platform);
 }
 
 /// [`TrainBoardKeys`] for every `(train_uid, service_date)`, from
@@ -800,6 +846,284 @@ mod tests {
             "2026-09-28T23:01:00Z".parse().unwrap(),
         );
         assert_eq!(stops[0].board.as_ref().unwrap().delay_minutes, Some(2));
+    }
+
+    // --- The platform half of the overlay ---
+
+    fn with_platform(
+        mut row: common::StationDeparture,
+        platform: Option<&str>,
+        planned: Option<&str>,
+    ) -> common::StationDeparture {
+        row.platform = platform.map(str::to_string);
+        row.planned_platform = planned.map(str::to_string);
+        row
+    }
+
+    fn platforms(stops: &[JourneyStop]) -> Vec<(Option<&str>, Option<&str>, bool)> {
+        stops
+            .iter()
+            .map(|stop| {
+                (
+                    stop.platform.as_deref(),
+                    stop.planned_platform.as_deref(),
+                    stop.platform_changed,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_departing_stop_takes_its_own_rows_platform_and_the_terminus_stays_unknown() {
+        let mut stops = journey();
+        // Pin-time origin snapshot; the fresher board row replaces it.
+        stops[0].platform = Some("6".to_string());
+        stops[0].planned_platform = Some("6".to_string());
+        let rows = [
+            sample_board(
+                "WAT",
+                "2026-09-28T15:58:00Z",
+                &[],
+                vec![with_platform(
+                    row(
+                        "9100001WATRLMN_",
+                        "17:00",
+                        "On time",
+                        "WOK",
+                        Some("SW123400"),
+                    ),
+                    Some("9"),
+                    Some("6"),
+                )],
+            ),
+            sample_board(
+                "CLJ",
+                "2026-09-28T15:59:00Z",
+                &[],
+                // Board `std` a minute off the CIF working time.
+                vec![with_platform(
+                    row(
+                        "9100001CLPHMJM_",
+                        "17:08",
+                        "On time",
+                        "WOK",
+                        Some("SW123400"),
+                    ),
+                    Some("10"),
+                    None,
+                )],
+            ),
+        ];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(
+            platforms(&stops),
+            vec![
+                (Some("9"), Some("6"), true),
+                (Some("10"), None, false),
+                (None, None, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn another_trains_platform_no_longer_leaks_onto_the_stop() {
+        // The old overlay took the nearest same-destination row: here, the
+        // other train's, exactly on the booked time.
+        let foreign = with_platform(
+            row(
+                "9100002WATRLMN_",
+                "17:00",
+                "On time",
+                "WOK",
+                Some("SW999900"),
+            ),
+            Some("1"),
+            Some("1"),
+        );
+        let ours = with_platform(
+            row(
+                "9100001WATRLMN_",
+                "17:01",
+                "On time",
+                "WOK",
+                Some("SW123400"),
+            ),
+            Some("9"),
+            Some("9"),
+        );
+        let mut stops = journey();
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![foreign.clone(), ours],
+        )];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(platforms(&stops)[0], (Some("9"), Some("9"), false));
+
+        // Our row is not on the board (yet): nothing, not the other train's.
+        let mut stops = journey();
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![foreign],
+        )];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(platforms(&stops)[0], (None, None, false));
+    }
+
+    #[test]
+    fn an_rsid_mismatch_supplies_no_platform_and_keeps_the_origin_snapshot() {
+        let mut stops = journey();
+        stops[0].platform = Some("6".to_string());
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![with_platform(
+                row(
+                    "9100001WATRLMN_",
+                    "17:00",
+                    "On time",
+                    "WOK",
+                    Some("SW555500"),
+                ),
+                Some("4"),
+                Some("4"),
+            )],
+        )];
+        apply(&mut stops, &rows, &keys(Some("SW123400")));
+        assert_eq!(platforms(&stops)[0], (Some("6"), None, false));
+        assert_eq!(stops[0].board, None);
+    }
+
+    #[test]
+    fn a_tie_supplies_no_platform() {
+        let mut stops = journey();
+        let rows = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &[],
+            vec![
+                with_platform(
+                    row("9100001WATRLMN_", "17:00", "On time", "WOK", None),
+                    Some("3"),
+                    Some("3"),
+                ),
+                with_platform(
+                    row("9100002WATRLMN_", "17:02", "On time", "WOK", None),
+                    Some("4"),
+                    Some("4"),
+                ),
+            ],
+        )];
+        apply(&mut stops, &rows, &keys(None));
+        assert_eq!(platforms(&stops)[0], (None, None, false));
+    }
+
+    #[test]
+    fn a_sub_crs_stop_gets_its_platform_from_the_main_stations_board() {
+        // PADTLL's CRS is PDX, which has no board; PAD's covers PADTLL.
+        let mut stops = vec![
+            stop("PDX", "PADTLL", Origin, Some("2026-09-28T16:00:00Z")),
+            stop("ABW", "ABWDXR", Terminate, None),
+        ];
+        let rows = [sample_board(
+            "PAD",
+            "2026-09-28T15:59:00Z",
+            &["PADTON", "PADTLL"],
+            vec![
+                with_platform(
+                    row(
+                        "9100001PADTON_1",
+                        "17:00",
+                        "On time",
+                        "ABW",
+                        Some("XR111100"),
+                    ),
+                    Some("12"),
+                    Some("12"),
+                ),
+                with_platform(
+                    row(
+                        "9100002PADTLL_1",
+                        "17:00",
+                        "On time",
+                        "ABW",
+                        Some("XR123400"),
+                    ),
+                    Some("B"),
+                    Some("A"),
+                ),
+            ],
+        )];
+        let keys = TrainBoardKeys {
+            rsid: Some("XR123400".to_string()),
+            operator: Some("XR".to_string()),
+        };
+        apply(&mut stops, &rows, &keys);
+        assert_eq!(platforms(&stops)[0], (Some("B"), Some("A"), true));
+    }
+
+    #[test]
+    fn a_cancelled_or_platformless_row_leaves_the_origin_snapshot_alone() {
+        for cancelled in [true, false] {
+            let mut stops = journey();
+            stops[0].platform = Some("6".to_string());
+            stops[0].planned_platform = Some("6".to_string());
+            let mut ours = row(
+                "9100001WATRLMN_",
+                "17:00",
+                "On time",
+                "WOK",
+                Some("SW123400"),
+            );
+            if cancelled {
+                ours.is_cancelled = true;
+                ours.estimated = "Cancelled".to_string();
+                ours.platform = Some("2".to_string());
+            }
+            let rows = [sample_board("WAT", "2026-09-28T15:58:00Z", &[], vec![ours])];
+            apply(&mut stops, &rows, &keys(Some("SW123400")));
+            assert_eq!(platforms(&stops)[0], (Some("6"), Some("6"), false));
+            assert!(stops[0].board.is_some(), "the row still matched");
+        }
+    }
+
+    #[test]
+    fn the_platform_survives_leaving_but_not_a_stale_board() {
+        let board = |polled_at| {
+            [sample_board(
+                "WAT",
+                polled_at,
+                &[],
+                vec![with_platform(
+                    row("9100001WATRLMN_", "17:00", "17:01", "WOK", Some("SW123400")),
+                    Some("9"),
+                    Some("9"),
+                )],
+            )]
+        };
+        // Departed per TRUST, row not yet off the board: `board` is null,
+        // the platform it left from is still true.
+        let mut stops = journey();
+        stops[0].actual_departure = Some("2026-09-28T16:01:00Z".parse().unwrap());
+        apply(
+            &mut stops,
+            &board("2026-09-28T15:59:00Z"),
+            &keys(Some("SW123400")),
+        );
+        assert_eq!(stops[0].board, None);
+        assert_eq!(stops[0].platform.as_deref(), Some("9"));
+
+        let mut stops = journey();
+        apply(
+            &mut stops,
+            &board("2026-09-28T15:49:59Z"),
+            &keys(Some("SW123400")),
+        );
+        assert_eq!(platforms(&stops)[0], (None, None, false));
     }
 
     #[test]
