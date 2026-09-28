@@ -1,0 +1,244 @@
+//! Network Rail CORPUS location reference data (`corpus_locations`,
+//! `corpus_deliveries`), loaded by `schedule-ingest` through
+//! `POST /private/corpus-locations`. See
+//! `crates/api/migrations/20260928100000_corpus_locations.sql` and
+//! docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md.
+//!
+//! Nothing reads the table yet; the candidate consumers are listed in the
+//! design doc.
+
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+
+/// Serialises concurrent loads (`pg_advisory_xact_lock` key). Arbitrary but
+/// fixed; only this module takes it.
+const CORPUS_LOAD_LOCK_KEY: i64 = 0x0C0B_9053;
+
+/// One CORPUS location, already normalised by `schedule-ingest` (trimmed,
+/// blank as `None`, digit codes zero-padded). Mirrors
+/// `schedule-ingest::corpus::CorpusLocation` field for field.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CorpusLocation {
+    pub nlc: String,
+    pub stanox: Option<String>,
+    pub tiploc: Option<String>,
+    pub crs: Option<String>,
+    pub uic: Option<String>,
+    pub nlc_desc: Option<String>,
+    pub nlc_desc16: Option<String>,
+}
+
+/// Replaces every row of `corpus_locations` with `locations` and records the
+/// delivery in `corpus_deliveries`, all in one transaction. Returns the
+/// number of rows inserted.
+///
+/// `DELETE` rather than `TRUNCATE`: `TRUNCATE` takes an `ACCESS EXCLUSIVE`
+/// lock that would block every reader until commit, while a `DELETE` leaves
+/// readers on the old snapshot until the new one commits. The ~56k dead
+/// tuples a month are autovacuum's job.
+///
+/// Callers must reject an empty `locations` first (the route does): an
+/// empty load would wipe the table.
+pub async fn replace_corpus_locations(
+    pool: &PgPool,
+    delivered_at: DateTime<Utc>,
+    source_file: &str,
+    locations: &[CorpusLocation],
+) -> Result<u64> {
+    anyhow::ensure!(
+        !locations.is_empty(),
+        "refusing to replace corpus_locations with an empty delivery"
+    );
+    let row_count = i32::try_from(locations.len())?;
+    let nlc: Vec<&str> = locations.iter().map(|l| l.nlc.as_str()).collect();
+    let column = |f: fn(&CorpusLocation) -> &Option<String>| -> Vec<Option<&str>> {
+        locations.iter().map(|l| f(l).as_deref()).collect()
+    };
+    let stanox = column(|l| &l.stanox);
+    let tiploc = column(|l| &l.tiploc);
+    let crs = column(|l| &l.crs);
+    let uic = column(|l| &l.uic);
+    let nlc_desc = column(|l| &l.nlc_desc);
+    let nlc_desc16 = column(|l| &l.nlc_desc16);
+
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(CORPUS_LOAD_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM corpus_locations")
+        .execute(&mut *tx)
+        .await?;
+    let inserted = sqlx::query(
+        r#"
+        INSERT INTO corpus_locations
+            (nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16, delivered_at, source_file)
+        SELECT nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16, $8, $9
+        FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+            AS i(nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16)
+        "#,
+    )
+    .bind(&nlc)
+    .bind(&stanox)
+    .bind(&tiploc)
+    .bind(&crs)
+    .bind(&uic)
+    .bind(&nlc_desc)
+    .bind(&nlc_desc16)
+    .bind(delivered_at)
+    .bind(source_file)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query(
+        "INSERT INTO corpus_deliveries (delivered_at, source_file, row_count, loaded_at) \
+         VALUES ($1, $2, $3, now()) \
+         ON CONFLICT (delivered_at) DO UPDATE SET \
+             source_file = EXCLUDED.source_file, \
+             row_count = EXCLUDED.row_count, \
+             loaded_at = EXCLUDED.loaded_at",
+    )
+    .bind(delivered_at)
+    .bind(source_file)
+    .bind(row_count)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(inserted)
+}
+
+/// The newest loaded delivery's `delivered_at`, or `None` before the first
+/// load -- the CORPUS freshness read.
+pub async fn last_corpus_delivery(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
+    let (latest,): (Option<DateTime<Utc>>,) =
+        sqlx::query_as("SELECT MAX(delivered_at) FROM corpus_deliveries")
+            .fetch_one(pool)
+            .await?;
+    Ok(latest)
+}
+
+/// Database-gated: each test gets its own throwaway database
+/// (`#[sqlx::test]`, migrated from `./migrations`), because a load replaces
+/// the WHOLE table and must never run against a shared database that may
+/// hold a real extract (see `crate::test_support`'s module doc). Needs a
+/// `DATABASE_URL` whose role may create databases.
+#[cfg(test)]
+mod db_tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    fn location(nlc: &str, tiploc: Option<&str>, crs: Option<&str>) -> CorpusLocation {
+        CorpusLocation {
+            nlc: nlc.to_string(),
+            stanox: Some("87219".to_string()),
+            tiploc: tiploc.map(str::to_string),
+            crs: crs.map(str::to_string),
+            uic: None,
+            nlc_desc: Some("CLAPHAM JUNCTION LONDON".to_string()),
+            nlc_desc16: None,
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn a_load_replaces_the_whole_set_and_records_the_delivery(pool: PgPool) {
+        let first = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2026, 10, 1, 3, 0, 0).unwrap();
+        assert_eq!(last_corpus_delivery(&pool).await.unwrap(), None);
+
+        let n = replace_corpus_locations(
+            &pool,
+            first,
+            "CORPUSExtract.json.gz",
+            &[
+                location("559500", Some("CLPHMJN"), Some("CLJ")),
+                location("559569", Some("CLPHMJC"), None),
+                location("000800", None, None),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 3);
+
+        let n = replace_corpus_locations(
+            &pool,
+            second,
+            "CORPUSExtract.json.gz",
+            &[location("559500", Some("CLPHMJN"), Some("CLJ"))],
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+
+        type Row = (String, Option<String>, Option<String>, DateTime<Utc>);
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT nlc, tiploc, crs, delivered_at FROM corpus_locations ORDER BY nlc",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "559500".to_string(),
+                Some("CLPHMJN".to_string()),
+                Some("CLJ".to_string()),
+                second
+            )]
+        );
+        assert_eq!(last_corpus_delivery(&pool).await.unwrap(), Some(second));
+        let (deliveries,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM corpus_deliveries")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(deliveries, 2);
+    }
+
+    /// Loading the same delivery twice (a restart between the load and the
+    /// file's archive move) is idempotent.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn reloading_the_same_delivery_is_idempotent(pool: PgPool) {
+        let at = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
+        let rows = [location("559500", Some("CLPHMJN"), Some("CLJ"))];
+        for _ in 0..2 {
+            replace_corpus_locations(&pool, at, "CORPUSExtract.json.gz", &rows)
+                .await
+                .unwrap();
+        }
+        let (locations, deliveries): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM corpus_locations), (SELECT COUNT(*) FROM corpus_deliveries)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((locations, deliveries), (1, 1));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn an_empty_load_is_refused_and_keeps_the_current_set(pool: PgPool) {
+        let at = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
+        replace_corpus_locations(
+            &pool,
+            at,
+            "CORPUSExtract.json.gz",
+            &[location("559500", Some("CLPHMJN"), Some("CLJ"))],
+        )
+        .await
+        .unwrap();
+        assert!(
+            replace_corpus_locations(&pool, at, "CORPUSExtract.json.gz", &[])
+                .await
+                .is_err()
+        );
+        let (locations,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM corpus_locations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(locations, 1);
+    }
+}

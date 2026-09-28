@@ -112,6 +112,7 @@ services:
       INTERNAL_OAUTH_GROUP_TRUST_CONSUMER: ${INTERNAL_OAUTH_GROUP_TRUST_CONSUMER:-svc-trust-consumer}
       INTERNAL_OAUTH_GROUP_SCHEDULE_INGEST: ${INTERNAL_OAUTH_GROUP_SCHEDULE_INGEST:-svc-schedule-ingest}
       INTERNAL_OAUTH_GROUP_SCHEDULE_REFERENCE: ${INTERNAL_OAUTH_GROUP_SCHEDULE_REFERENCE:-svc-schedule-reference}
+      INTERNAL_OAUTH_GROUP_CORPUS: ${INTERNAL_OAUTH_GROUP_CORPUS:-svc-corpus-ingest}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
       # All five are required by the binary with no defaults, so they use
@@ -748,6 +749,11 @@ services:
       INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST:?INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST must be set}
       RUST_LOG: ${RUST_LOG:-info}
       API_INGEST_URL: http://api:8080/private/schedule-feed-ingests
+      # Network Rail CORPUS loads (crates/schedule-ingest/src/corpus.rs),
+      # off unless CORPUS_INGEST_ENABLED=true. The schedule-ingest user
+      # must also be in INTERNAL_OAUTH_GROUP_CORPUS.
+      CORPUS_INGEST_ENABLED: ${CORPUS_INGEST_ENABLED:-false}
+      CORPUS_API_URL: http://api:8080/private/corpus-locations
     volumes:
       - schedule_feed_data:/data/schedule-feed
 

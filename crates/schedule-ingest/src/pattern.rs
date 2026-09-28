@@ -7,8 +7,10 @@
 //! selection used to take the newest `*.zip`, so either pushed as a zip
 //! could have been extracted and published as the day's timetable. A file
 //! is now a CIF candidate only if it matches `cif` and not `cif_exclude`
-//! (`CORPUSExtract*` by default, whatever the extension). Anything else is
-//! left in place and gets the existing one-time "stray file" warning.
+//! (`CORPUSExtract*` by default, whatever the extension). While CORPUS
+//! ingest is on, a file matching `corpus` (`CORPUSExtract.json.gz`) goes to
+//! `corpus.rs` instead. Anything else is left in place and gets the
+//! existing one-time "stray file" warning.
 
 /// A comma-separated list of case-insensitive globs. `*` matches any run of
 /// characters (including none); every other character matches itself. No
@@ -75,19 +77,39 @@ fn glob_matches(glob: &str, name: &str) -> bool {
 pub struct Routing {
     pub cif: FilePattern,
     pub cif_exclude: FilePattern,
+    /// The CORPUS extract's pattern, or `None` while CORPUS ingest is off
+    /// (so a CORPUS file stays a plain stray, as before).
+    pub corpus: Option<FilePattern>,
 }
 
 impl Routing {
+    /// A CIF candidate: matches `cif`, and neither `cif_exclude` nor the
+    /// CORPUS pattern (should an operator point that at a zip name).
     pub fn is_cif(&self, name: &str) -> bool {
-        self.cif.matches(name) && !self.cif_exclude.matches(name)
+        self.cif.matches(name) && !self.cif_exclude.matches(name) && !self.is_corpus(name)
     }
 
-    /// The defaults the service ships with (`config.rs`), for tests.
+    /// A CORPUS candidate (always `false` while CORPUS ingest is off).
+    pub fn is_corpus(&self, name: &str) -> bool {
+        self.corpus.as_ref().is_some_and(|p| p.matches(name))
+    }
+
+    /// The defaults the service ships with (`config.rs`), CORPUS off.
     #[cfg(test)]
     pub fn defaults() -> Self {
         Self {
             cif: FilePattern::parse(crate::config::DEFAULT_CIF_FILE_PATTERN).unwrap(),
             cif_exclude: FilePattern::parse(crate::config::DEFAULT_CIF_EXCLUDE_PATTERN).unwrap(),
+            corpus: None,
+        }
+    }
+
+    /// The defaults with CORPUS ingest on.
+    #[cfg(test)]
+    pub fn with_corpus() -> Self {
+        Self {
+            corpus: Some(FilePattern::parse(crate::config::DEFAULT_CORPUS_FILE_PATTERN).unwrap()),
+            ..Self::defaults()
         }
     }
 }
@@ -125,19 +147,37 @@ mod tests {
     /// a CIF candidate, while the real CIF delivery name still is.
     #[test]
     fn corpus_named_files_in_every_format_are_never_cif_candidates() {
-        let routing = Routing::defaults();
-        for name in [
-            "CORPUSExtract.json.gz",
-            "CORPUSExtract.csv.gz",
-            "CORPUSExtract.json",
-            "CORPUSExtract.csv",
-            "CORPUSExtract.zip",
-            "CORPUSExtract.json.zip",
-            "CORPUSExtract.csv.zip",
-            "corpusextract.ZIP",
-        ] {
-            assert!(!routing.is_cif(name), "{name}");
+        for routing in [Routing::defaults(), Routing::with_corpus()] {
+            for name in [
+                "CORPUSExtract.json.gz",
+                "CORPUSExtract.csv.gz",
+                "CORPUSExtract.json",
+                "CORPUSExtract.csv",
+                "CORPUSExtract.zip",
+                "CORPUSExtract.json.zip",
+                "CORPUSExtract.csv.zip",
+                "corpusextract.ZIP",
+            ] {
+                assert!(!routing.is_cif(name), "{name}");
+            }
         }
+        // Only the JSON extract is a CORPUS candidate, and only when on;
+        // the SMART `.csv.gz` never is.
+        let on = Routing::with_corpus();
+        assert!(on.is_corpus("CORPUSExtract.json.gz"));
+        assert!(on.is_corpus("corpusextract.JSON.GZ"));
+        assert!(!on.is_corpus("CORPUSExtract.csv.gz"));
+        assert!(!on.is_corpus("CORPUSExtract.zip"));
+        assert!(!Routing::defaults().is_corpus("CORPUSExtract.json.gz"));
+
+        // A CORPUS pattern pointed at a zip name still keeps it out of CIF.
+        let zip_corpus = Routing {
+            cif_exclude: FilePattern::parse("nothing-matches-this").unwrap(),
+            corpus: Some(FilePattern::parse("corpus.zip").unwrap()),
+            ..Routing::defaults()
+        };
+        assert!(!zip_corpus.is_cif("corpus.zip"));
+        let routing = Routing::with_corpus();
         assert!(routing.is_cif("timetable_full.zip"));
         assert!(routing.is_cif("TIMETABLE_FULL.ZIP"));
         assert!(!routing.is_cif("readme.txt"));

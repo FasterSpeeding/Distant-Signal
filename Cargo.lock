@@ -4191,6 +4191,7 @@ dependencies = [
  "clap",
  "common",
  "dotenv",
+ "flate2",
  "health-http",
  "metrics",
  "reqwest 0.13.4",
@@ -4200,6 +4201,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
  "zip",
 ]
 

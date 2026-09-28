@@ -101,6 +101,15 @@ pub struct ServiceArguments {
     /// Task 1.
     #[arg(long, env, default_value = "svc-poller-nir-stations")]
     pub internal_oauth_group_nir_stations: String,
+    /// Gates `POST /private/corpus-locations` -- Network Rail CORPUS loads
+    /// from `schedule-ingest`'s CORPUS mode
+    /// (docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md).
+    /// Its own group rather than `internal_oauth_group_schedule_ingest`, so
+    /// replacing the whole location table is a grant made on purpose: the
+    /// schedule-ingest service account is added to this group in Authentik
+    /// when CORPUS ingest is enabled.
+    #[arg(long, env, default_value = "svc-corpus-ingest")]
+    pub internal_oauth_group_corpus: String,
     /// Authentik/SSO group (via the `groups` OIDC claim, already decoded
     /// into `AuthenticatedUser.groups` on every login -- see
     /// `crates/api/src/auth/oidc.rs` and `data::users::upsert_user`) that

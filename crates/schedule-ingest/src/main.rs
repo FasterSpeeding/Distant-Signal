@@ -30,6 +30,7 @@
 //! costs one harmless redundant POST, not a silently swallowed gap.
 
 mod config;
+mod corpus;
 mod delivery;
 mod pattern;
 mod scan;
@@ -122,7 +123,19 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|err| anyhow::anyhow!("CIF_FILE_PATTERN: {err}"))?,
         cif_exclude: FilePattern::parse(&config.cif_exclude_pattern)
             .map_err(|err| anyhow::anyhow!("CIF_EXCLUDE_PATTERN: {err}"))?,
+        corpus: if config.corpus.corpus_ingest_enabled {
+            Some(
+                FilePattern::parse(&config.corpus.corpus_file_pattern)
+                    .map_err(|err| anyhow::anyhow!("CORPUS_FILE_PATTERN: {err}"))?,
+            )
+        } else {
+            None
+        },
     };
+    if config.corpus.corpus_ingest_enabled {
+        corpus::register_metrics();
+        tracing::info!(pattern = %config.corpus.corpus_file_pattern, "CORPUS ingest enabled");
+    }
 
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
@@ -149,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
     let mut last_ingested_mtime: Option<SystemTime> = None;
     let mut pending_post: Option<ScheduleFeedIngestRequest> = None;
     let mut rejected_mtime: Option<SystemTime> = None;
+    let mut corpus_state = corpus::CorpusState::new();
 
     // `tokio::time::interval`'s first `tick()` fires immediately regardless
     // of missed-tick behavior, so every run -- including the very first --
@@ -189,6 +203,21 @@ async fn main() -> anyhow::Result<()> {
         .await
         {
             tracing::error!(error = ?err, "scan cycle failed unexpectedly; will retry next poll interval");
+        }
+        if config.corpus.corpus_ingest_enabled
+            && let Err(err) = corpus::run_corpus_cycle(
+                &client,
+                &config.watch_dir,
+                &config.storage_dir,
+                &config.corpus,
+                &routing,
+                &internal_oauth,
+                config.stability_cycles,
+                &mut corpus_state,
+            )
+            .await
+        {
+            tracing::error!(error = ?err, "CORPUS cycle failed unexpectedly; will retry next poll interval");
         }
         progress.beat();
 
@@ -277,10 +306,14 @@ async fn run_scan_cycle(
     // stray names actually changes since the last cycle -- otherwise a
     // single leftover file would re-log every `poll_interval_secs` forever,
     // drowning out the signal.
+    //
+    // A CORPUS candidate is not stray while CORPUS ingest is on: it is
+    // `corpus.rs`'s to handle (`routing.is_corpus` is false while it is off).
     let stray: HashSet<String> = snapshot
         .0
         .keys()
         .filter(|name| Some(name.as_str()) != winner.as_ref().map(|(name, _)| name.as_str()))
+        .filter(|name| !routing.is_corpus(name))
         .cloned()
         .collect();
     if &stray != known_stray_files {
@@ -1043,6 +1076,14 @@ mod tests {
             storage_dir: storage_dir.to_path_buf(),
             cif_file_pattern: config::DEFAULT_CIF_FILE_PATTERN.to_string(),
             cif_exclude_pattern: config::DEFAULT_CIF_EXCLUDE_PATTERN.to_string(),
+            corpus: config::CorpusArgs {
+                corpus_ingest_enabled: false,
+                corpus_file_pattern: config::DEFAULT_CORPUS_FILE_PATTERN.to_string(),
+                corpus_api_url: "http://127.0.0.1:1/corpus-locations".to_string(),
+                corpus_max_decompressed_bytes: 256 * 1024 * 1024,
+                corpus_min_rows: 1,
+                corpus_retention_keep: 3,
+            },
             check_times: "22:00,16:00".to_string(),
             poll_interval_secs: 120,
             retention_keep_deliveries: 2,

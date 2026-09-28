@@ -622,6 +622,7 @@ mod tests {
         let routing = Routing {
             cif: crate::pattern::FilePattern::parse("timetable*.zip").unwrap(),
             cif_exclude: crate::pattern::FilePattern::parse("CORPUSExtract*").unwrap(),
+            corpus: None,
         };
         let candidates = find_zip_candidates(&snap, &routing);
         assert_eq!(candidates.len(), 1);
