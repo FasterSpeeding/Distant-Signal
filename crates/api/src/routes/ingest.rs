@@ -86,6 +86,10 @@ pub fn router() -> Router {
             axum::routing::get(get_stanox_crs).post(post_stanox_crs),
         )
         .route("/tiploc-crs", axum::routing::post(post_tiploc_crs))
+        .route(
+            "/corpus-locations",
+            axum::routing::post(post_corpus_locations),
+        )
         .route("/fixed-links", axum::routing::post(post_fixed_links))
         .route(
             "/schedule-line-population",
@@ -605,6 +609,57 @@ async fn post_tiploc_crs(
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
+}
+
+/// One Network Rail CORPUS delivery from `schedule-ingest`'s CORPUS mode.
+/// Mirrors `schedule-ingest::corpus::CorpusLoadRequest` field for field.
+/// `delivered_at` is the delivered file's own mtime.
+#[derive(Debug, Deserialize)]
+struct CorpusLoadRequest {
+    delivered_at: chrono::DateTime<chrono::Utc>,
+    source_file: String,
+    locations: Vec<crate::data::corpus::CorpusLocation>,
+}
+
+/// Replaces `corpus_locations` with one whole delivery -- see
+/// `data::corpus::replace_corpus_locations`. An empty delivery or a row
+/// with a blank NLC is refused with 400 rather than wiping the table;
+/// `schedule-ingest` validates first, so this is a backstop.
+async fn post_corpus_locations(
+    State(app): State<App>,
+    Json(req): Json<CorpusLoadRequest>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    if let Some(problem) = corpus_load_problem(&req) {
+        return Err((StatusCode::BAD_REQUEST, problem));
+    }
+    let upserted = crate::data::corpus::replace_corpus_locations(
+        &app.database,
+        req.delivered_at,
+        &req.source_file,
+        &req.locations,
+    )
+    .await
+    .map_err(internal_error)?;
+    tracing::info!(
+        delivered_at = %req.delivered_at,
+        source_file = %req.source_file,
+        rows = upserted,
+        "replaced corpus_locations"
+    );
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+fn corpus_load_problem(req: &CorpusLoadRequest) -> Option<String> {
+    if req.locations.is_empty() {
+        return Some("a CORPUS delivery must carry at least one location".to_string());
+    }
+    if req.source_file.trim().is_empty() {
+        return Some("source_file must not be blank".to_string());
+    }
+    req.locations
+        .iter()
+        .position(|l| l.nlc.trim().is_empty())
+        .map(|i| format!("location {i} has a blank nlc"))
 }
 
 /// `crates/schedule-reference`'s per-cycle fixed-links batch -- see
@@ -1164,6 +1219,7 @@ mod db_tests {
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
+            internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
@@ -3400,5 +3456,58 @@ mod schedule_chunk_params_tests {
             };
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
+    }
+}
+
+#[cfg(test)]
+mod corpus_load_validation_tests {
+    use super::*;
+
+    fn request(body: serde_json::Value) -> CorpusLoadRequest {
+        serde_json::from_value(body).expect("valid CorpusLoadRequest JSON")
+    }
+
+    fn location(nlc: &str) -> serde_json::Value {
+        serde_json::json!({
+            "nlc": nlc, "stanox": "87219", "tiploc": "CLPHMJN", "crs": "CLJ",
+            "uic": "55950", "nlc_desc": "CLAPHAM JUNCTION LONDON", "nlc_desc16": null
+        })
+    }
+
+    #[test]
+    fn a_well_formed_delivery_has_no_problem() {
+        let req = request(serde_json::json!({
+            "delivered_at": "2026-09-28T03:00:00Z",
+            "source_file": "CORPUSExtract.json.gz",
+            "locations": [location("559500")]
+        }));
+        assert_eq!(corpus_load_problem(&req), None);
+    }
+
+    #[test]
+    fn an_empty_delivery_a_blank_nlc_or_a_blank_source_is_refused() {
+        let empty = request(serde_json::json!({
+            "delivered_at": "2026-09-28T03:00:00Z",
+            "source_file": "CORPUSExtract.json.gz",
+            "locations": []
+        }));
+        assert!(corpus_load_problem(&empty).is_some());
+
+        let blank_nlc = request(serde_json::json!({
+            "delivered_at": "2026-09-28T03:00:00Z",
+            "source_file": "CORPUSExtract.json.gz",
+            "locations": [location("559500"), location(" ")]
+        }));
+        assert_eq!(
+            corpus_load_problem(&blank_nlc).as_deref(),
+            Some("location 1 has a blank nlc")
+        );
+
+        let blank_source = request(serde_json::json!({
+            "delivered_at": "2026-09-28T03:00:00Z",
+            "source_file": "",
+            "locations": [location("559500")]
+        }));
+        assert!(corpus_load_problem(&blank_source).is_some());
     }
 }

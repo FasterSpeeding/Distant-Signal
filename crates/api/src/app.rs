@@ -270,6 +270,15 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
+        // POST-only, one caller: schedule-ingest's CORPUS mode replacing
+        // the whole `corpus_locations` table. Its own group, not
+        // schedule-ingest's CIF group -- see
+        // `ServiceArguments::internal_oauth_group_corpus`.
+        (
+            "/corpus-locations",
+            Method::POST,
+            vec![config.internal_oauth_group_corpus.clone()],
+        ),
         (
             "/station-full-coverage-samples",
             Method::GET,

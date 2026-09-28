@@ -2,6 +2,61 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+/// Default for [`Config::cif_file_pattern`]: any zip (the delivery is
+/// `timetable_full.zip` today, but the repo owner asked for detection by
+/// shape, not by that exact name -- see `delivery.rs`).
+pub const DEFAULT_CIF_FILE_PATTERN: &str = "*.zip";
+
+/// Default for [`Config::cif_exclude_pattern`]: everything named like a
+/// Network Rail CORPUS extract, whatever its extension. The same SFTP
+/// account now also receives `CORPUSExtract.json.gz` (CORPUS) and
+/// `CORPUSExtract.csv.gz` (SMART berth data), and a zip of either must
+/// never become the timetable.
+pub const DEFAULT_CIF_EXCLUDE_PATTERN: &str = "CORPUSExtract*";
+
+/// Default for [`CorpusArgs::corpus_file_pattern`]: the RDM delivery name of
+/// Network Rail's CORPUS extract. Only this gzipped-JSON shape is loaded;
+/// the provider's `CORPUSExtract.csv.gz` is SMART berth data, deliberately
+/// ignored (a stray).
+pub const DEFAULT_CORPUS_FILE_PATTERN: &str = "CORPUSExtract.json.gz";
+
+/// Network Rail CORPUS loading (`corpus.rs`,
+/// docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md).
+#[derive(Debug, Clone, clap::Args)]
+pub struct CorpusArgs {
+    /// Load CORPUS deliveries from `watch_dir` into api's
+    /// `corpus_locations`. Off by default: until it is on, a CORPUS file is
+    /// left in `watch_dir` and reported once as a stray, as before.
+    #[arg(long, env, default_value_t = false)]
+    pub corpus_ingest_enabled: bool,
+
+    /// Case-insensitive `*` globs (see `pattern.rs`) naming the CORPUS
+    /// extract in `watch_dir`. Never a CIF candidate.
+    #[arg(long, env, default_value = DEFAULT_CORPUS_FILE_PATTERN)]
+    pub corpus_file_pattern: String,
+
+    /// api's CORPUS load endpoint.
+    #[arg(long, env, default_value = "http://api:8080/private/corpus-locations")]
+    pub corpus_api_url: String,
+
+    /// The most bytes one extract may decompress to (gzip-bomb guard). The
+    /// real extract is ~7 MB of JSON.
+    #[arg(long, env, default_value_t = 256 * 1024 * 1024)]
+    pub corpus_max_decompressed_bytes: u64,
+
+    /// The fewest rows an extract must carry to replace the table (the
+    /// real one has ~56,000), so a truncated or placeholder file cannot
+    /// wipe it.
+    #[arg(long, env, default_value_t = 10_000)]
+    pub corpus_min_rows: usize,
+
+    /// How many processed extracts to keep in `storage_dir/corpus/` (and,
+    /// separately, rejected ones in `storage_dir/corpus/rejected/`). Every
+    /// processed file is moved out of `watch_dir`.
+    #[arg(long, env, default_value_t = 3)]
+    pub corpus_retention_keep: u32,
+}
+
 /// CLI/env configuration for the `schedule-ingest` service.
 ///
 /// Unlike the now-superseded pull design's equivalent `Config`, this crate
@@ -15,6 +70,21 @@ pub struct Config {
     /// via `std::fs::read_dir` — see `src/scan.rs`.
     #[arg(long, env, default_value = "/data/schedule-feed/incoming")]
     pub watch_dir: PathBuf,
+
+    /// Comma-separated, case-insensitive `*` globs naming CIF SCHEDULE
+    /// deliveries in `watch_dir` (see `pattern.rs`).
+    #[arg(long, env, default_value = DEFAULT_CIF_FILE_PATTERN)]
+    pub cif_file_pattern: String,
+
+    /// Globs (same syntax) that are never CIF candidates even when they
+    /// match `cif_file_pattern`. Guards the CIF pipeline against the other
+    /// files the same SFTP account receives.
+    #[arg(long, env, default_value = DEFAULT_CIF_EXCLUDE_PATTERN)]
+    pub cif_exclude_pattern: String,
+
+    /// Network Rail CORPUS loading (`corpus.rs`), off by default.
+    #[command(flatten)]
+    pub corpus: CorpusArgs,
 
     /// Root of the shared PVC. Each verified-stable delivery is extracted
     /// into `storage_dir/<timestamp>/` (a compact sortable UTC rendering of
@@ -124,4 +194,64 @@ pub struct Config {
     /// `/livez` listener and stall window (SVC-08/INF-9).
     #[command(flatten)]
     pub health: common::service_args::HealthArgs,
+}
+
+/// Every routing/CORPUS/URL env var this `Config` declares must be set on
+/// the `ingest` container in
+/// `charts/distant-signal/templates/schedulefeed-deployment.yaml` -- the
+/// same declared-but-unwired guard as
+/// `crates/schedule-reference/src/config.rs`'s own `chart_env_wiring_tests`.
+/// An unwired `*_URL` silently falls back to `http://api:8080/...`, a host
+/// that does not exist under Helm, and an unwired `CORPUS_*`/`CIF_*` means
+/// the chart value an operator sets does nothing.
+#[cfg(test)]
+mod chart_env_wiring_tests {
+    use clap::CommandFactory;
+
+    use super::Config;
+
+    /// The `ingest` container's slice of the schedulefeed Deployment: from
+    /// its `- name: ingest` line to the next container (`reference`), so a
+    /// var set only on a sibling container cannot satisfy the check.
+    fn ingest_container_block() -> String {
+        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../charts/distant-signal/templates/schedulefeed-deployment.yaml");
+        let rendered = std::fs::read_to_string(&chart)
+            .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));
+        let start = rendered
+            .find("- name: ingest\n")
+            .expect("the schedulefeed Deployment must still declare a container named `ingest`");
+        let end = rendered[start..]
+            .find("- name: reference\n")
+            .map_or(rendered.len(), |offset| start + offset);
+        rendered[start..end].to_string()
+    }
+
+    #[test]
+    fn every_routing_corpus_and_url_env_var_is_set_on_the_charts_ingest_container() {
+        let block = ingest_container_block();
+        let command = Config::command();
+        let declared: Vec<String> = command
+            .get_arguments()
+            .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+            .filter(|env| {
+                env.starts_with("CORPUS_") || env.starts_with("CIF_") || env.ends_with("_URL")
+            })
+            .map(str::to_string)
+            .collect();
+        assert!(
+            declared.len() >= 9,
+            "sanity check: expected the CIF_*, CORPUS_* and *_URL env vars; got {declared:?}"
+        );
+        let missing: Vec<&String> = declared
+            .iter()
+            .filter(|env| !block.contains(&format!("- name: {env}\n")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "declared by crates/schedule-ingest/src/config.rs but not set on the `ingest` \
+             container in charts/distant-signal/templates/schedulefeed-deployment.yaml: \
+             {missing:?}"
+        );
+    }
 }

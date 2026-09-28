@@ -934,6 +934,7 @@ mod route_scoping_tests {
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
+            internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
@@ -1254,6 +1255,41 @@ mod route_scoping_tests {
                 send(&router, Method::POST, "/tiploc-crs", Some(&token)).await,
                 StatusCode::FORBIDDEN,
                 "expected group {group} to be rejected on POST /tiploc-crs"
+            );
+        }
+    }
+
+    /// `/corpus-locations` (2026-09-28) replaces the whole CORPUS table, so
+    /// only its own group may call it -- in particular NOT schedule-ingest's
+    /// CIF group, which the same service account already carries, and not
+    /// schedule-reference's writer group.
+    #[tokio::test]
+    async fn only_the_corpus_group_is_accepted_on_post_corpus_locations() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let config = test_config();
+
+        let token = token_for(
+            &server.uri(),
+            "svc-under-test",
+            &[config.internal_oauth_group_corpus.as_str()],
+        );
+        assert_eq!(
+            send(&router, Method::POST, "/corpus-locations", Some(&token)).await,
+            StatusCode::OK
+        );
+
+        for group in [
+            &config.internal_oauth_group_schedule_ingest,
+            &config.internal_oauth_group_schedule_reference,
+            &config.internal_oauth_group_trust_consumer,
+            &config.internal_oauth_group_stations,
+        ] {
+            let token = token_for(&server.uri(), "svc-under-test", &[group.as_str()]);
+            assert_eq!(
+                send(&router, Method::POST, "/corpus-locations", Some(&token)).await,
+                StatusCode::FORBIDDEN,
+                "expected group {group} to be rejected on POST /corpus-locations"
             );
         }
     }

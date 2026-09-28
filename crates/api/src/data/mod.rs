@@ -1,5 +1,6 @@
 pub mod account;
 pub mod config;
+pub mod corpus;
 pub mod custom_lines;
 pub mod delay_repay_rules;
 pub mod eta_blend;

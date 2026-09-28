@@ -30,7 +30,9 @@
 //! costs one harmless redundant POST, not a silently swallowed gap.
 
 mod config;
+mod corpus;
 mod delivery;
+mod pattern;
 mod scan;
 
 use std::collections::HashSet;
@@ -42,6 +44,7 @@ use chrono_tz::Europe::London;
 use clap::Parser;
 use config::Config;
 use delivery::DeliveryRelation;
+use pattern::{FilePattern, Routing};
 use reqwest::Client;
 use scan::{StabilityTracker, scan_incoming};
 use serde::Serialize;
@@ -115,6 +118,25 @@ async fn main() -> anyhow::Result<()> {
         .first()
         .expect("parse_check_times guarantees a non-empty list");
 
+    let routing = Routing {
+        cif: FilePattern::parse(&config.cif_file_pattern)
+            .map_err(|err| anyhow::anyhow!("CIF_FILE_PATTERN: {err}"))?,
+        cif_exclude: FilePattern::parse(&config.cif_exclude_pattern)
+            .map_err(|err| anyhow::anyhow!("CIF_EXCLUDE_PATTERN: {err}"))?,
+        corpus: if config.corpus.corpus_ingest_enabled {
+            Some(
+                FilePattern::parse(&config.corpus.corpus_file_pattern)
+                    .map_err(|err| anyhow::anyhow!("CORPUS_FILE_PATTERN: {err}"))?,
+            )
+        } else {
+            None
+        },
+    };
+    if config.corpus.corpus_ingest_enabled {
+        corpus::register_metrics();
+        tracing::info!(pattern = %config.corpus.corpus_file_pattern, "CORPUS ingest enabled");
+    }
+
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
     // Registered at 0 so the alert's increase() sees the first rejection.
@@ -124,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
     // adopted (or left for re-extraction), and scratch directories from an
     // interrupted extraction removed, before anything else touches the
     // volume.
-    match delivery::adopt_legacy_deliveries(&config.storage_dir, &config.watch_dir) {
+    match delivery::adopt_legacy_deliveries(&config.storage_dir, &config.watch_dir, &routing) {
         Ok(adopted) if !adopted.is_empty() => {
             tracing::info!(adopted = ?adopted, "marked pre-existing complete delivery directories as complete");
         }
@@ -140,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
     let mut last_ingested_mtime: Option<SystemTime> = None;
     let mut pending_post: Option<ScheduleFeedIngestRequest> = None;
     let mut rejected_mtime: Option<SystemTime> = None;
+    let mut corpus_state = corpus::CorpusState::new();
 
     // `tokio::time::interval`'s first `tick()` fires immediately regardless
     // of missed-tick behavior, so every run -- including the very first --
@@ -167,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
         if let Err(err) = run_scan_cycle(
             &client,
             &config,
+            &routing,
             &internal_oauth,
             &mut tracker,
             &mut known_stable,
@@ -179,6 +203,21 @@ async fn main() -> anyhow::Result<()> {
         .await
         {
             tracing::error!(error = ?err, "scan cycle failed unexpectedly; will retry next poll interval");
+        }
+        if config.corpus.corpus_ingest_enabled
+            && let Err(err) = corpus::run_corpus_cycle(
+                &client,
+                &config.watch_dir,
+                &config.storage_dir,
+                &config.corpus,
+                &routing,
+                &internal_oauth,
+                config.stability_cycles,
+                &mut corpus_state,
+            )
+            .await
+        {
+            tracing::error!(error = ?err, "CORPUS cycle failed unexpectedly; will retry next poll interval");
         }
         progress.beat();
 
@@ -203,6 +242,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_scan_cycle(
     client: &Client,
     config: &Config,
+    routing: &Routing,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
     tracker: &mut StabilityTracker,
     known_stable: &mut HashSet<String>,
@@ -249,7 +289,7 @@ async fn run_scan_cycle(
     // drop-and-restart-from-zero behavior for the same filenames.
     known_stable.retain(|name| snapshot.0.contains_key(name));
 
-    let mut candidates = delivery::find_zip_candidates(&snapshot);
+    let mut candidates = delivery::find_zip_candidates(&snapshot, routing);
     if candidates.len() > 1 {
         tracing::warn!(
             candidates = ?candidates.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
@@ -266,10 +306,14 @@ async fn run_scan_cycle(
     // stray names actually changes since the last cycle -- otherwise a
     // single leftover file would re-log every `poll_interval_secs` forever,
     // drowning out the signal.
+    //
+    // A CORPUS candidate is not stray while CORPUS ingest is on: it is
+    // `corpus.rs`'s to handle (`routing.is_corpus` is false while it is off).
     let stray: HashSet<String> = snapshot
         .0
         .keys()
         .filter(|name| Some(name.as_str()) != winner.as_ref().map(|(name, _)| name.as_str()))
+        .filter(|name| !routing.is_corpus(name))
         .cloned()
         .collect();
     if &stray != known_stray_files {
@@ -793,6 +837,7 @@ mod tests {
             run_scan_cycle(
                 &client,
                 &config,
+                &Routing::defaults(),
                 &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
@@ -830,6 +875,70 @@ mod tests {
         );
     }
 
+    /// The CIF guard end to end: CORPUS-named files that land after the CIF
+    /// zip (a zip of the extract, the JSON extract, the SMART `.csv.gz`)
+    /// are never extracted as the timetable; the CIF zip still is.
+    #[tokio::test]
+    async fn newer_corpus_named_files_never_displace_the_cif_zip() {
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let cif = delivery::build_test_zip(&[("RJTTF942MCA.txt", b"mca content")]);
+        std::fs::write(watch_dir.path().join("timetable_full.zip"), &cif).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let corpus_zip = delivery::build_test_zip(&[("CORPUSExtract.json", b"{}")]);
+        std::fs::write(watch_dir.path().join("CORPUSExtract.zip"), &corpus_zip).unwrap();
+        std::fs::write(watch_dir.path().join("CORPUSExtract.json.gz"), b"gz").unwrap();
+        std::fs::write(watch_dir.path().join("CORPUSExtract.csv.gz"), b"gz").unwrap();
+
+        let config = test_config(watch_dir.path(), storage_dir.path());
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let internal_oauth = test_oauth();
+        let mut tracker = StabilityTracker::new();
+        let mut known_stable = HashSet::new();
+        let mut known_stray_files = HashSet::new();
+        let mut last_ingested_mtime = None;
+        let mut pending_post = None;
+        let mut rejected_mtime = None;
+        for _ in 0..2 {
+            run_scan_cycle(
+                &client,
+                &config,
+                &Routing::defaults(),
+                &internal_oauth,
+                &mut tracker,
+                &mut known_stable,
+                &mut known_stray_files,
+                &mut last_ingested_mtime,
+                &mut pending_post,
+                &mut rejected_mtime,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+
+        let dirs: Vec<_> = std::fs::read_dir(storage_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(dirs[0].join("RJTTF942MCA.txt")).unwrap(),
+            "mca content"
+        );
+        assert!(!dirs[0].join("CORPUSExtract.json").exists());
+        let mut stray: Vec<&str> = known_stray_files.iter().map(String::as_str).collect();
+        stray.sort_unstable();
+        assert_eq!(
+            stray,
+            [
+                "CORPUSExtract.csv.gz",
+                "CORPUSExtract.json.gz",
+                "CORPUSExtract.zip"
+            ]
+        );
+    }
+
     /// PL-5: a zip over the extraction caps is quarantined: nothing is
     /// written to storage_dir, no POST is queued, and later cycles do not
     /// try it again until a new upload (a new mtime) replaces it.
@@ -859,6 +968,7 @@ mod tests {
             run_scan_cycle(
                 &client,
                 &config,
+                &Routing::defaults(),
                 &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
@@ -909,6 +1019,7 @@ mod tests {
             run_scan_cycle(
                 &client,
                 &config,
+                &Routing::defaults(),
                 &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
@@ -963,6 +1074,16 @@ mod tests {
         Config {
             watch_dir: watch_dir.to_path_buf(),
             storage_dir: storage_dir.to_path_buf(),
+            cif_file_pattern: config::DEFAULT_CIF_FILE_PATTERN.to_string(),
+            cif_exclude_pattern: config::DEFAULT_CIF_EXCLUDE_PATTERN.to_string(),
+            corpus: config::CorpusArgs {
+                corpus_ingest_enabled: false,
+                corpus_file_pattern: config::DEFAULT_CORPUS_FILE_PATTERN.to_string(),
+                corpus_api_url: "http://127.0.0.1:1/corpus-locations".to_string(),
+                corpus_max_decompressed_bytes: 256 * 1024 * 1024,
+                corpus_min_rows: 1,
+                corpus_retention_keep: 3,
+            },
             check_times: "22:00,16:00".to_string(),
             poll_interval_secs: 120,
             retention_keep_deliveries: 2,

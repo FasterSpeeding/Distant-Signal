@@ -34,6 +34,7 @@ use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 use common::schedule_delivery::{COMPLETE_MARKER, TEMP_DIR_PREFIX};
 
+use crate::pattern::Routing;
 use crate::scan::DirSnapshot;
 
 /// Whether `name` has a `.zip` extension, case-insensitively. Deliberately
@@ -56,11 +57,14 @@ pub fn is_zip_filename(name: &str) -> bool {
 /// a single file, overwritten in place) -- a second candidate is a
 /// pathological case the caller is expected to log a warning about, same
 /// defensive posture the old manifest-candidate handling had.
-pub fn find_zip_candidates(snapshot: &DirSnapshot) -> Vec<(String, SystemTime)> {
+///
+/// Only names `routing` classifies as CIF are candidates: a CORPUS extract
+/// (any format, a zip included) never is -- see `pattern.rs`.
+pub fn find_zip_candidates(snapshot: &DirSnapshot, routing: &Routing) -> Vec<(String, SystemTime)> {
     let mut candidates: Vec<(String, SystemTime)> = snapshot
         .0
         .iter()
-        .filter(|(name, _)| is_zip_filename(name))
+        .filter(|(name, _)| is_zip_filename(name) && routing.is_cif(name))
         .map(|(name, &(mtime, _))| (name.clone(), mtime))
         .collect();
     candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
@@ -444,6 +448,7 @@ fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<
 pub fn adopt_legacy_deliveries(
     storage_dir: &Path,
     watch_dir: &Path,
+    routing: &Routing,
 ) -> anyhow::Result<Vec<String>> {
     let read_dir = match std::fs::read_dir(storage_dir) {
         Ok(read_dir) => read_dir,
@@ -468,7 +473,7 @@ pub fn adopt_legacy_deliveries(
     }
 
     let current_zips: std::collections::HashMap<String, PathBuf> =
-        find_zip_candidates(&crate::scan::scan_incoming(watch_dir)?)
+        find_zip_candidates(&crate::scan::scan_incoming(watch_dir)?, routing)
             .into_iter()
             .map(|(name, mtime)| (delivery_dir_name(mtime), watch_dir.join(name)))
             .collect();
@@ -580,7 +585,46 @@ mod tests {
             ("RJTTF942DAT.txt", 100, 1),
             ("readme.txt", 100, 1),
         ]);
-        let candidates = find_zip_candidates(&snap);
+        let candidates = find_zip_candidates(&snap, &Routing::defaults());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, "timetable_full.zip");
+    }
+
+    /// The CIF guard: a newer CORPUS extract pushed as a zip must not take
+    /// the CIF delivery's place, and a CORPUS extract in any other format
+    /// is not a candidate either.
+    #[test]
+    fn find_zip_candidates_never_picks_a_corpus_delivery() {
+        let snap = snapshot(&[
+            ("timetable_full.zip", 100, 1234),
+            ("CORPUSExtract.zip", 200, 99),
+            ("CORPUSExtract.json.zip", 201, 99),
+            ("CORPUSExtract.csv.zip", 202, 99),
+            ("CORPUSExtract.json.gz", 203, 99),
+            ("CORPUSExtract.csv.gz", 204, 99),
+            ("CORPUSExtract.csv", 205, 99),
+            ("CORPUSExtract.json", 206, 99),
+        ]);
+        let candidates = find_zip_candidates(&snap, &Routing::defaults());
+        assert_eq!(
+            candidates,
+            vec![(
+                "timetable_full.zip".to_string(),
+                UNIX_EPOCH + Duration::from_secs(100)
+            )]
+        );
+    }
+
+    /// A tightened CIF pattern excludes other zips entirely.
+    #[test]
+    fn find_zip_candidates_honours_a_narrower_cif_pattern() {
+        let snap = snapshot(&[("timetable_full.zip", 100, 1), ("other.zip", 200, 1)]);
+        let routing = Routing {
+            cif: crate::pattern::FilePattern::parse("timetable*.zip").unwrap(),
+            cif_exclude: crate::pattern::FilePattern::parse("CORPUSExtract*").unwrap(),
+            corpus: None,
+        };
+        let candidates = find_zip_candidates(&snap, &routing);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, "timetable_full.zip");
     }
@@ -588,7 +632,7 @@ mod tests {
     #[test]
     fn find_zip_candidates_sorts_the_most_recently_modified_last() {
         let snap = snapshot(&[("old.zip", 100, 1), ("new.zip", 200, 1)]);
-        let candidates = find_zip_candidates(&snap);
+        let candidates = find_zip_candidates(&snap, &Routing::defaults());
         assert_eq!(
             candidates.last().map(|(name, _)| name.as_str()),
             Some("new.zip")
@@ -967,7 +1011,8 @@ mod tests {
         );
         write(".tmp-20200103T000000Z", &[("RJTTF3MCA.txt", b"a")]);
 
-        let adopted = adopt_legacy_deliveries(storage.path(), watch.path()).unwrap();
+        let adopted =
+            adopt_legacy_deliveries(storage.path(), watch.path(), &Routing::defaults()).unwrap();
 
         assert_eq!(adopted, vec!["20200101T000000Z".to_string()]);
         assert!(
@@ -993,7 +1038,8 @@ mod tests {
             b"mca content",
         )
         .unwrap();
-        let adopted = adopt_legacy_deliveries(storage.path(), watch.path()).unwrap();
+        let adopted =
+            adopt_legacy_deliveries(storage.path(), watch.path(), &Routing::defaults()).unwrap();
         assert_eq!(adopted, vec![current]);
     }
 }
