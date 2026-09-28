@@ -5,9 +5,9 @@
 //! and [`ReferenceData::fetch_live`] (thorough tier: scrapes
 //! railwaycodes.org.uk's CRS pages live, and takes operator codes from the
 //! real RDM TOC feed when credentials are available, else from the vendored
-//! Knowledgebase `toc-codes.csv`). `crs-tiploc.csv` is still a
-//! railwaycodes.org.uk snapshot; `toc-codes.csv` is now a Knowledgebase TOC
-//! List snapshot (DQ13) -- see `regenerate.rs`.
+//! Knowledgebase `toc-codes.csv`). `crs-tiploc.csv` is a Network Rail
+//! CORPUS snapshot and `toc-codes.csv` a Knowledgebase TOC List snapshot
+//! (DQ13) -- see `regenerate.rs`.
 //!
 //! Both tiers build the exact same [`ReferenceData`] shape, so
 //! `checks::validate_lines`/`checks::coverage_report` have no idea which
@@ -598,9 +598,10 @@ ABBEYWD<span class="popup" onclick="popup26()"><span class="popuptext" id="myPop
 
         // No real TIPLOC is shared by a large number of unrelated CRS
         // codes; a token that is, is footnote prose (`CODE` reached 242).
-        // Genuine multi-CRS TIPLOCs top out at 4 in this snapshot (e.g.
-        // CANWHRF: CWF/CWX/ZCW/ZQC), so 6 is a comfortable ceiling that
-        // still catches the artifact class by two orders of magnitude.
+        // Genuine multi-CRS TIPLOCs topped out at 4 in the railwaycodes
+        // snapshot (e.g. CANWHRF: CWF/CWX/ZCW/ZQC) and at fewer in the
+        // CORPUS one, so 6 is a comfortable ceiling that still catches the
+        // artifact class by two orders of magnitude.
         let mut tiploc_to_crs: HashMap<&str, Vec<&str>> = HashMap::new();
         for (crs, tiplocs) in &data.crs_to_tiploc {
             for tiploc in tiplocs {
