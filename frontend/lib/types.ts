@@ -559,6 +559,21 @@ export type LiveStopStatus =
  * confident as `'Darwin'` alone. */
 export type SkipSource = 'Darwin' | 'Trust' | 'Both';
 
+/** One subsequent calling point of a live departure-board row
+ * (`GET /public/stations/{crs}/departures`'s `callingPoints`, from LDBWS
+ * `subsequentCallingPoints`; `crates/api/src/render.rs`'s
+ * `board_calling_point_json`). `st`/`et`/`at` are LDBWS's own strings:
+ * `"HH:MM"` London local time, or for `et` a status word ("On time",
+ * "Delayed", "Cancelled"). */
+export interface BoardCallingPoint {
+  crs: string;
+  locationName: string | null;
+  st: string | null;
+  et: string | null;
+  at: string | null;
+  isCancelled: boolean;
+}
+
 /** One calling point of a train's journey, booked schedule merged with the
  * latest reported live data for that location --
  * `crates/api/src/data/journey.rs`'s `JourneyStop`, camelCase on the wire.

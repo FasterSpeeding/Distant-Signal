@@ -29,7 +29,7 @@ import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
 import { nowInLondon, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
-import type { CreateJourneyResponse } from '@/lib/types';
+import type { BoardCallingPoint, CreateJourneyResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
@@ -221,6 +221,11 @@ interface DepartureRow {
   platform: string | null;
   plannedPlatform: string | null;
   platformChanged: boolean;
+  // LDBWS Retail Service ID and the service's subsequent calling points
+  // (see `BoardCallingPoint` in `lib/types.ts`). Optional: older backends
+  // and older stored boards don't send them. Not rendered by the picker.
+  rsid?: string | null;
+  callingPoints?: BoardCallingPoint[];
 }
 
 /** Wire shape of `GET /public/stations/{crs}/schedule-departures`

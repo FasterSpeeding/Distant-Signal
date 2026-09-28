@@ -405,7 +405,9 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   // `GET /account/export` answers with an attachment filename and
   // `no-store`, so the browser saves it as a file (the "Download my data"
   // link) and nothing caches a copy of someone's personal data.
-  for (const name of ['Content-Disposition', 'Cache-Control']) {
+  // `X-Generated-At` is when a live departure board was polled
+  // (`GET /public/stations/{crs}/departures`); its body is a bare array.
+  for (const name of ['Content-Disposition', 'Cache-Control', 'X-Generated-At']) {
     const value = response.headers.get(name);
     if (value) {
       responseHeaders.set(name, value);
