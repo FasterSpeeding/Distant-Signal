@@ -906,8 +906,17 @@ services:
       # (see api:'s own REDIS_URL above) -- src/oauth/store.ts namespaces
       # its own keys under `railmcp:oauth:` to avoid collision.
       OAUTH_REDIS_URL: redis://redis:6379
+      # Only /mcp's own CORS scoping now (the in-app chat calls /mcp from
+      # the browser); the login flow no longer involves the DS frontend.
       DS_FRONTEND_ORIGIN: ${RAIL_MCP_DS_FRONTEND_ORIGIN:-http://localhost:${FRONTEND_HOST_PORT:-3000}}
-      OAUTH_INTERNAL_COMPLETE_TOKEN: ${RAIL_MCP_INTERNAL_COMPLETE_TOKEN}
+      # The service's own Authentik OIDC client ("Authentik-direct", MCP
+      # commit 1c1e101). It replaced DS's /connect-claude/authorize consent
+      # bridge and its OAUTH_INTERNAL_COMPLETE_TOKEN shared secret, both
+      # retired 2026-09-29. Register <RAIL_MCP_PUBLIC_URL>/oauth/authentik/callback
+      # as the provider's redirect URI.
+      AUTHENTIK_ISSUER: ${RAIL_MCP_AUTHENTIK_ISSUER}
+      AUTHENTIK_CLIENT_ID: ${RAIL_MCP_AUTHENTIK_CLIENT_ID}
+      AUTHENTIK_CLIENT_SECRET: ${RAIL_MCP_AUTHENTIK_CLIENT_SECRET}
       # LDBWS/Rail Data Marketplace credentials the fork's board/service-
       # detail tools still call directly (Decision 5 -- unchanged by this
       # integration, board tools are not routed through DS).
@@ -931,15 +940,13 @@ services:
       # frontend/lib/api.ts: baseUrl(). Server-side only — resolved
       # inside the docker-compose network, not exposed to the browser.
       API_BASE_URL: http://api:8080
-      # frontend/app/connect-claude/{authorize/route.ts,page.tsx} --
-      # embedded-chatbot-shared-foundation-and-option-c plan, Tasks 6/9.
-      # Harmless to always set, even when the `rail-mcp` service isn't
-      # started (it's opt-in behind the `rail-mcp` Compose profile, see
-      # that service's own comment above): these are only read at request
-      # time, when a request actually reaches /connect-claude, not at
-      # frontend boot.
-      RAILMCP_BASE_URL: http://rail-mcp:3000
-      RAILMCP_INTERNAL_COMPLETE_TOKEN: ${RAIL_MCP_INTERNAL_COMPLETE_TOKEN}
+      # The MCP service's public URL, for the in-app chat (/chat,
+      # /chat/callback, the CSP connect-src) and the /connect-claude
+      # instructions page. Only the browser uses it; the frontend makes no
+      # server-to-server call to rail-mcp. Harmless to always set, even
+      # when the `rail-mcp` service isn't started (it's opt-in behind the
+      # `rail-mcp` Compose profile, see that service's own comment above):
+      # it is only read at request time, not at frontend boot.
       NEXT_PUBLIC_RAILMCP_PUBLIC_URL: ${RAIL_MCP_PUBLIC_URL:-http://localhost:3100}
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
