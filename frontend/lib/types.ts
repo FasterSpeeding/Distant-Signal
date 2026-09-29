@@ -997,6 +997,9 @@ export type TripPlanLeg =
       destinationCrs: string | null;
       scheduledDeparture: string; // "HH:MM:SS"
       scheduledArrival: string;
+      // Days past `serviceDate` the departure falls on (an onward train
+      // boarded after midnight). Absent from older responses.
+      departureDayOffset?: number;
       arrivalDayOffset: number;
       // CIF booked (timetabled) platform at the boarding / alighting calling
       // point -- never live/Darwin. `null` when the CIF field is blank.
@@ -1009,6 +1012,9 @@ export type TripPlanLeg =
       // headcode (e.g. "1S00"). `null` when unknown or ambiguous. Not the
       // TRUST 10-character train id.
       headcode?: string | null;
+      // The live overlay's view of this leg: absent unless live data was
+      // applied, `null` when nothing is known (or outside the live window).
+      live?: TripPlanLegLive | null;
     }
   | {
       kind: 'transfer';
@@ -1028,6 +1034,23 @@ export interface TripPlanItinerary {
   changeCount: number;
   totalDurationMinutes: number;
   exceedsRecommendedChanges?: boolean;
+  /** Live overlay only: no cancelled leg and every change still works. */
+  liveFeasible?: boolean;
+}
+
+/** A train leg's live status
+ * (`crates/api/src/data/trip_plan_live.rs::LegLive`). Delays are minutes
+ * after the leg's `scheduledDeparture`/`scheduledArrival`. */
+export interface TripPlanLegLive {
+  status: 'Cancelled' | 'Departed' | 'Late' | 'Delayed' | 'OnTime' | 'Scheduled';
+  cancelled: boolean;
+  delayMinutes: number | null;
+  arrivalDelayMinutes: number | null;
+  reason: string | null;
+  reasonSource: 'darwin' | 'trust' | null;
+  platform: string | null;
+  observedAt: string | null; // RFC3339
+  interchangeFeasible: boolean | null;
 }
 
 /** One origin->destination hop of a (possibly multi-waypoint) plan
@@ -1037,12 +1060,24 @@ export interface TripPlanSegment {
   destinationCrs: string;
   itineraries: TripPlanItinerary[];
   cappedByMaxChanges: boolean;
+  /** When this segment was searched from: `departAfter` for the first,
+   * the previous segment's arrival plus the change time for later ones;
+   * `null` when the previous segment found nothing. */
+  departAfter?: { time: string; dayOffset: number } | null;
 }
 
 /** `GET /Trips/plan`'s full response. */
 export interface TripPlanResponse {
   results: 'fastest' | 'options';
   segments: TripPlanSegment[];
+  /** Present when live data was requested (the default). */
+  live?: {
+    applied: boolean;
+    reason: string | null;
+    replans?: number;
+    trainsRead?: number;
+    adjustedTrains?: number;
+  };
 }
 
 /** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec

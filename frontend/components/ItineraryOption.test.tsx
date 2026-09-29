@@ -47,6 +47,45 @@ describe('ItineraryOption', () => {
     expect(screen.getByText('More changes than usually recommended')).toBeInTheDocument();
   });
 
+  it('annotates a late or cancelled leg and an itinerary live data breaks', () => {
+    const live = {
+      status: 'Late' as const,
+      cancelled: false,
+      delayMinutes: 12,
+      arrivalDelayMinutes: 9,
+      reason: null,
+      reasonSource: null,
+      platform: null,
+      observedAt: null,
+      interchangeFeasible: null,
+    };
+    const [leg] = trainItinerary.legs;
+    const { unmount } = renderWithMantine(
+      <ItineraryOption
+        itinerary={{ ...trainItinerary, legs: [{ ...leg, live } as typeof leg], liveFeasible: true }}
+        selected={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/08:00 EUS → MKC 08:50 · 12 min late/)).toBeInTheDocument();
+    expect(screen.queryByText('Live data says this route may no longer work')).not.toBeInTheDocument();
+    unmount();
+
+    renderWithMantine(
+      <ItineraryOption
+        itinerary={{
+          ...trainItinerary,
+          legs: [{ ...leg, live: { ...live, status: 'Cancelled', cancelled: true } } as typeof leg],
+          liveFeasible: false,
+        }}
+        selected={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/08:50 · cancelled/)).toBeInTheDocument();
+    expect(screen.getByText('Live data says this route may no longer work')).toBeInTheDocument();
+  });
+
   it('disables selection for a fixed-link-only itinerary with no train leg', () => {
     renderWithMantine(<ItineraryOption itinerary={fixedLinkOnlyItinerary} selected={false} onSelect={vi.fn()} />);
     expect(screen.getByRole('radio')).toBeDisabled();

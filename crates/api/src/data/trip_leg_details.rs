@@ -106,6 +106,7 @@ pub fn apply_leg_details(
                     train_uid,
                     scheduled_departure,
                     scheduled_arrival,
+                    departure_day_offset,
                     arrival_day_offset,
                     booked_departure_platform,
                     booked_arrival_platform,
@@ -116,11 +117,10 @@ pub fn apply_leg_details(
                 else {
                     continue;
                 };
-                // A leg's own departure can itself be past midnight only if
-                // the arrival is too; the planner never reports a departure
-                // day offset separately, so try the arrival's offset first
-                // and then the same-day reading.
-                let departure_minutes = [*arrival_day_offset, 0]
+                // The planner's own departure day offset first; the
+                // arrival's offset and the same-day reading remain as
+                // fallbacks for legs built without one.
+                let departure_minutes = [*departure_day_offset, *arrival_day_offset, 0]
                     .into_iter()
                     .map(|offset| minutes(*scheduled_departure, offset))
                     .find(|at| departures.contains_key(&(train_uid.clone(), *at)));
@@ -241,11 +241,17 @@ mod tests {
             destination_crs: None,
             scheduled_departure: departs.parse().unwrap(),
             scheduled_arrival: arrives.parse().unwrap(),
+            departure_day_offset: 0,
             arrival_day_offset,
             booked_departure_platform: None,
             booked_arrival_platform: None,
             operator: None,
             headcode: None,
+            from_tiploc: String::new(),
+            to_tiploc: String::new(),
+            departure_min: 0,
+            arrival_min: 0,
+            live: None,
         }
     }
 
@@ -274,8 +280,13 @@ mod tests {
                 change_count: 0,
                 total_duration_minutes: 0,
                 exceeds_recommended_changes: None,
+                departure_min: 0,
+                arrival_min: 0,
+                arrival_tiploc: None,
+                live_feasible: None,
             }],
             capped_by_max_changes: false,
+            depart_after_min: None,
         }]
     }
 

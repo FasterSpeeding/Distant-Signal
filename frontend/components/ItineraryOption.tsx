@@ -1,6 +1,6 @@
 import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
 import { codeRouteLabel } from '@/lib/stationLabel';
-import type { TripPlanItinerary, TripPlanLeg } from '@/lib/types';
+import type { TripPlanItinerary, TripPlanLeg, TripPlanLegLive } from '@/lib/types';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
  * full name -- `GET /Trips/plan` (unlike every other station-bearing
@@ -17,9 +17,19 @@ function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string
   const destinationName = leg.destinationCrs ? stationNames.get(leg.destinationCrs) : undefined;
   const route = codeRouteLabel(leg.originCrs, originName, leg.destinationCrs, destinationName);
   if (leg.kind === 'train') {
-    return `${leg.scheduledDeparture.slice(0, 5)} ${route} ${leg.scheduledArrival.slice(0, 5)}`;
+    return `${leg.scheduledDeparture.slice(0, 5)} ${route} ${leg.scheduledArrival.slice(0, 5)}${liveNote(leg.live)}`;
   }
   return `Walk/transfer (${leg.mode}) ${route}, ${leg.minutes} min`;
+}
+
+/** A short live annotation for a train leg (`GET /Trips/plan`'s live
+ * overlay): empty when nothing is known or the train is on time. */
+function liveNote(live: TripPlanLegLive | null | undefined): string {
+  if (!live) return '';
+  if (live.cancelled) return ' · cancelled';
+  if (live.delayMinutes !== null && live.delayMinutes >= 1) return ` · ${live.delayMinutes} min late`;
+  if (live.status === 'Delayed') return ' · delayed';
+  return '';
 }
 
 /** One selectable itinerary card -- design spec §5.3's "route-summary
@@ -64,6 +74,11 @@ export function ItineraryOption({
           <Badge color={itinerary.changeCount === 0 ? 'green' : 'blue'}>
             {itinerary.changeCount} {itinerary.changeCount === 1 ? 'change' : 'changes'}
           </Badge>
+          {itinerary.liveFeasible === false && (
+            <Text size="xs" c="red">
+              Live data says this route may no longer work
+            </Text>
+          )}
           {itinerary.exceedsRecommendedChanges && (
             <Text size="xs" c="orange">
               More changes than usually recommended

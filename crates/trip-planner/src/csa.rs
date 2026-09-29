@@ -259,6 +259,15 @@ impl<'a> Scan<'a> {
 /// earlier than `options.departure_min`. `None` when no connection reaches
 /// the destination at all.
 pub fn scan_connections(options: ScanOptions) -> Option<Journey> {
+    scan_connections_with_overlay(options, None)
+}
+
+/// [`scan_connections`] over the base array with `overlay`'s trains
+/// replaced -- see [`crate::overlay`].
+pub fn scan_connections_with_overlay(
+    options: ScanOptions,
+    overlay: Option<&crate::overlay::ConnectionOverlay>,
+) -> Option<Journey> {
     // Normalized at this module's own boundary, same defense-in-depth
     // `schedule_query::interchange` already applies at its own boundary --
     // every other TIPLOC-keyed lookup and containment check in this file
@@ -301,7 +310,9 @@ pub fn scan_connections(options: ScanOptions) -> Option<Journey> {
         scan.relax_fixed_links(tiploc, options.departure_min);
     }
 
-    for connection in options.connections {
+    for connection in
+        crate::overlay::connections_from(options.connections, overlay, options.departure_min)
+    {
         // No later-departing connection can beat a destination arrival
         // already found (csa.ts:372-379).
         if connection.departure_min >= scan.best_dest_arrival {
