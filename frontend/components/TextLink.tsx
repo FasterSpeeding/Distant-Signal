@@ -129,7 +129,7 @@ export function TextLink({
   const inheritTone = tone === 'inherit';
   const text = (
     <Text
-      c={inheritTone ? 'inherit' : 'var(--mantine-color-anchor)'}
+      c={inheritTone ? 'inherit' : ANCHOR_COLOR}
       inherit={inheritTone}
       component={inline ? 'span' : undefined}
       size={size}
@@ -165,3 +165,7 @@ export function TextLink({
 
 /** `https:`, `mailto:`, `tel:` and the like -- not a path or `#fragment`. */
 const HAS_URL_SCHEME = /^[a-z][a-z\d+.-]*:/i;
+
+/** The default link colour. `AppNavBar`'s auth Suspense fallback must match
+ * it (`AppNavBar.test.tsx` compares the two in source). */
+const ANCHOR_COLOR = 'var(--mantine-color-anchor)';

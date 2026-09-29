@@ -179,7 +179,7 @@ describe('auth Suspense fallback colour', () => {
     const fallbackMatch = navBarSource.match(
       /<Suspense\s+fallback=\{\s*<Text size="sm" c="([^"]+)">\s*Log in\s*<\/Text>\s*\}\s*>/,
     );
-    const textLinkMatch = textLinkSource.match(/<Text c="([^"]+)"/);
+    const textLinkMatch = textLinkSource.match(/const ANCHOR_COLOR = '([^']+)'/);
     expect(fallbackMatch).not.toBeNull();
     expect(textLinkMatch).not.toBeNull();
     expect(fallbackMatch?.[1]).toBe(textLinkMatch?.[1]);
