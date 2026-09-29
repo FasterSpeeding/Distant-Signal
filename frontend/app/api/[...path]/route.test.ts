@@ -4,8 +4,7 @@ import { NextRequest } from 'next/server';
 // `getSiteOrigin()` (lib/siteOrigin.ts) -- used by this proxy's own new
 // Origin check on mutating methods -- reads `next/headers` when
 // `NEXT_PUBLIC_SITE_URL` isn't set. There is no Next request context in a
-// unit test (same stub shape `app/connect-claude/authorize/route.test.ts`'s
-// own `next/headers` mock uses). Left empty by default: with no `host`
+// unit test. Left empty by default: with no `host`
 // header, `getSiteOrigin()` falls back to `http://localhost:3000` --
 // exactly the origin every request below is already built against, so
 // every pre-existing test needs no changes; only the tests below that care
@@ -253,8 +252,8 @@ describe('/api/[...path] proxy', () => {
   // share link, logging out -- roughly 50 call sites) relied solely on the
   // backend's `SameSite=Lax` session cookie for CSRF protection, with this
   // proxy doing no Origin verification of its own before forwarding a
-  // POST/PUT/DELETE. Mirrors the Origin check
-  // `app/connect-claude/authorize/route.ts` already carries for its own
+  // POST/PUT/DELETE. Mirrors the Origin check the retired MCP consent
+  // bridge (`app/connect-claude/authorize/route.ts`) carried for its own
   // single state-changing POST, applied here at the shared-proxy level.
   describe('Origin check on mutating methods', () => {
     it("403s a POST whose Origin does not match this app's real public origin", async () => {
@@ -380,8 +379,8 @@ describe('/api/[...path] proxy', () => {
       expect(res.status).toBe(200);
     });
 
-    // Regression for the same underlying bug Finding 1 describes for
-    // `connect-claude/authorize/route.ts`: this app's real public origin
+    // Regression for the same underlying bug Finding 1 described for the
+    // retired `connect-claude/authorize/route.ts`: this app's real public origin
     // (from the `Host`/`X-Forwarded-Proto` headers `getSiteOrigin()`
     // reads) can legitimately differ from `req.nextUrl.origin` (this
     // app's bare bound host under plain `next start`) -- a mutating

@@ -14,8 +14,9 @@ export const DISALLOWED_PATHS: readonly string[] = [
   '/api/',
   // `/chat` is login-gated, and `/chat/callback` is the MCP OAuth callback.
   '/chat',
-  // MCP OAuth authorize/consent bridge (`app/connect-claude/authorize/route.ts`).
-  // `/connect-claude` itself is a public instructions page and stays crawlable.
+  // The retired MCP consent bridge; now only a "this moved" note
+  // (`app/connect-claude/authorize/page.tsx`). `/connect-claude` itself is a
+  // public instructions page and stays crawlable.
   '/connect-claude/authorize',
   // Every groups page is per-user. This also covers `/groups/join/<token>`
   // invite links, which carry a secret token and must never be crawled.

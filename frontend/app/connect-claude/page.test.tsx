@@ -2,17 +2,6 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import ConnectClaudePage, { metadata } from './page';
-import * as api from '@/lib/api';
-import type { SessionInfo } from '@/lib/types';
-
-vi.mock('@/lib/api');
-// LoginLink calls usePathname()/useSearchParams() -- same stub this app's
-// other not-logged-in-nudge tests use (e.g. app/track/mine/page.test.tsx),
-// since those hooks throw outside an app router context.
-vi.mock('next/navigation', () => ({
-  usePathname: () => '/connect-claude',
-  useSearchParams: () => new URLSearchParams(''),
-}));
 
 // jsdom doesn't implement `navigator.clipboard` -- same stub pattern
 // ShareButton.test.tsx uses, trimmed to just the one method Mantine's
@@ -23,14 +12,6 @@ function stubClipboard(writeText: ReturnType<typeof vi.fn>) {
     writable: true,
     configurable: true,
   });
-}
-
-function loggedOut(): SessionInfo {
-  return { authenticated: false, id: null, email: null, name: null };
-}
-
-function loggedIn(overrides: Partial<SessionInfo> = {}): SessionInfo {
-  return { authenticated: true, id: 'user-1', email: 'rider@example.com', name: 'Ada Rider', ...overrides };
 }
 
 describe('/connect-claude', () => {
@@ -46,39 +27,26 @@ describe('/connect-claude', () => {
     delete navigator.clipboard;
   });
 
-  it('shows a login prompt when not authenticated', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedOut());
-    renderWithMantine(await ConnectClaudePage());
-    expect(screen.getAllByText(/log in/i).length).toBeGreaterThan(0);
-  });
-
-  // Review §2.16: this used to be an underlined text link -- promoted to a
-  // filled button so the page's one anonymous action doesn't read as the
-  // weakest thing on it.
-  it('renders the login prompt as a filled button, not a plain text link', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedOut());
-    renderWithMantine(await ConnectClaudePage());
-    expect(screen.getByRole('button', { name: 'Log in' })).toBeInTheDocument();
-  });
-
-  it('does not show the connector URL when not authenticated', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedOut());
-    renderWithMantine(await ConnectClaudePage());
-    expect(screen.queryByText('https://mcp.example.com')).not.toBeInTheDocument();
-  });
-
-  it('shows the connector URL and step-by-step instructions when authenticated', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    renderWithMantine(await ConnectClaudePage());
+  // Since the consent bridge's retirement there is no Distant Signal
+  // session in the flow, so the page no longer gates on one (no
+  // getSession() mock needed: the page never calls the backend).
+  it('shows the connector URL and step-by-step instructions to everyone', () => {
+    renderWithMantine(ConnectClaudePage());
     expect(screen.getByText(/Customize/)).toBeInTheDocument();
     expect(screen.getByText(/Add custom connector/i)).toBeInTheDocument();
     expect(screen.getByText('https://mcp.example.com')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
   });
 
-  it('falls back to a placeholder when NEXT_PUBLIC_RAILMCP_PUBLIC_URL is unset (railMcp not enabled on this deployment)', async () => {
+  it('describes the sign-in step without the retired confirmation screen', () => {
+    renderWithMantine(ConnectClaudePage());
+    expect(screen.getByText(/sends you to the sign-in page/)).toBeInTheDocument();
+    expect(screen.queryByText(/confirm the connection/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to a placeholder when NEXT_PUBLIC_RAILMCP_PUBLIC_URL is unset (railMcp not enabled on this deployment)', () => {
     vi.unstubAllEnvs();
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    renderWithMantine(await ConnectClaudePage());
+    renderWithMantine(ConnectClaudePage());
     expect(screen.getByText('(not configured on this deployment)')).toBeInTheDocument();
   });
 
@@ -86,15 +54,13 @@ describe('/connect-claude', () => {
   it('offers a "Copy connector URL" button for the long connector URL', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     stubClipboard(writeText);
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    renderWithMantine(await ConnectClaudePage());
+    renderWithMantine(ConnectClaudePage());
     fireEvent.click(screen.getByRole('button', { name: 'Copy connector URL' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://mcp.example.com'));
   });
 
-  it("renders the plan-requirement Alert in grape, not Mantine's default blue (blue is reserved for planned-severity)", async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    renderWithMantine(await ConnectClaudePage());
+  it("renders the plan-requirement Alert in grape, not Mantine's default blue (blue is reserved for planned-severity)", () => {
+    renderWithMantine(ConnectClaudePage());
     // Mantine encodes an Alert's color as CSS custom properties on its
     // root's inline `style`, not as a colour name in its `className`.
     const alert = screen.getByRole('alert');
@@ -102,16 +68,14 @@ describe('/connect-claude', () => {
     expect(alert).toHaveStyle({ '--alert-bg': 'var(--mantine-color-grape-light)' });
   });
 
-  it('says "Click the + button", not the terser "Click +"', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    renderWithMantine(await ConnectClaudePage());
+  it('says "Click the + button", not the terser "Click +"', () => {
+    renderWithMantine(ConnectClaudePage());
     expect(screen.getByText(/Click the/)).toBeInTheDocument();
     expect(screen.queryByText(/^Click \+/)).not.toBeInTheDocument();
   });
 
-  it('uses an em dash rather than a literal "--" in its copy', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    const { container } = renderWithMantine(await ConnectClaudePage());
+  it('uses an em dash rather than a literal "--" in its copy', () => {
+    const { container } = renderWithMantine(ConnectClaudePage());
     // MantineProvider injects its own `<style>` tags full of `--mantine-*`
     // CSS custom properties into the container -- strip those before
     // checking the page's own rendered copy, or every render of this test
@@ -125,9 +89,8 @@ describe('/connect-claude', () => {
     expect(metadata.title).toBe('Connect Claude — Distant Signal');
   });
 
-  it('has one h1, and puts the steps in a "How to connect" section headed by an h2', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    renderWithMantine(await ConnectClaudePage());
+  it('has one h1, and puts the steps in a "How to connect" section headed by an h2', () => {
+    renderWithMantine(ConnectClaudePage());
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
     expect(screen.getByRole('heading', { level: 1, name: 'Connect Claude to Distant Signal' })).toBeInTheDocument();
     const section = screen.getByRole('region', { name: 'How to connect' });
@@ -135,16 +98,8 @@ describe('/connect-claude', () => {
     expect(within(section).getAllByRole('listitem')).toHaveLength(4);
   });
 
-  it('lets the long connector URL wrap instead of running off a phone-width screen', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
-    renderWithMantine(await ConnectClaudePage());
+  it('lets the long connector URL wrap instead of running off a phone-width screen', () => {
+    renderWithMantine(ConnectClaudePage());
     expect(screen.getByText('https://mcp.example.com')).toHaveStyle({ wordBreak: 'break-all' });
-  });
-
-  it('keeps the logged-out branch to one h1 and the login button', async () => {
-    vi.mocked(api.getSession).mockResolvedValue(loggedOut());
-    renderWithMantine(await ConnectClaudePage());
-    expect(screen.getAllByRole('heading')).toHaveLength(1);
-    expect(screen.queryByRole('region', { name: 'How to connect' })).not.toBeInTheDocument();
   });
 });

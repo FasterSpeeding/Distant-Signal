@@ -85,9 +85,10 @@ function startExchange(serverUrl: string): Exchange {
 type CallbackState = { kind: 'connecting' } | { kind: 'success' } | { kind: 'error'; message: string };
 
 /** `/chat/callback` -- the redirect target `distant-signal-mcp`'s own
- * `/authorize` -> `/connect-claude/authorize` consent bridge sends the
- * browser back to once the user approves (client-side-tokens design doc,
- * Decisions 1/3, Architecture step 3). Exchanges the `code` query param
+ * `/authorize` sends the browser back to once the user has signed in
+ * (client-side-tokens design doc, Decisions 1/3, Architecture step 3; since
+ * 2026-09-29 that sign-in is the MCP service's own Authentik login, not
+ * Distant Signal's retired `/connect-claude/authorize` consent bridge). Exchanges the `code` query param
  * for a bearer token via the MCP SDK's own `auth()` orchestrator
  * (`@modelcontextprotocol/sdk/client/auth.js`) -- the SAME function
  * `StreamableHTTPClientTransport` calls internally on a 401, reused here

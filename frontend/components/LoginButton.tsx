@@ -12,9 +12,9 @@ import { LoginConsentNote } from './LoginConsentNote';
  * `next build` static-prerendering failure this works around). Exported
  * here, rather than duplicated a third time, because review §2.16's
  * anonymous-CTA promotion (see `LoginButton`'s own doc comment below) needs
- * this same shape at three more call sites
- * (`app/groups/join/[token]/page.tsx`, `app/connect-claude/page.tsx`,
- * `app/groups/page.tsx`) -- all Server Components, none of which can call
+ * this same shape at more call sites
+ * (`app/groups/join/[token]/page.tsx`, `app/groups/page.tsx`,
+ * `app/account/page.tsx`) -- all Server Components, none of which can call
  * `useLoginHref` directly. */
 function LoginButtonLink({ children, title }: { children: React.ReactNode; title?: string }) {
   const href = useLoginHref();
@@ -30,7 +30,8 @@ function LoginButtonLink({ children, title }: { children: React.ReactNode; title
  * applies here unchanged -- this wraps the exact same href).
  *
  * Review §2.16's design decision: on `/groups/join/[token]`,
- * `/connect-claude` and `/groups`, the anonymous call-to-action was an
+ * `/connect-claude` (which, since 2026-09-29, no longer needs a login at
+ * all) and `/groups`, the anonymous call-to-action was an
  * underlined text link (`LoginLink`) sitting next to -- or in place of --
  * an authenticated equivalent rendered as a filled, full-width `Button`
  * (`JoinGroupButton`, `CustomLineForm`'s and `TrackTrainForm`'s own submit

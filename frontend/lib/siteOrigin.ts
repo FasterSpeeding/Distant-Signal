@@ -25,8 +25,8 @@ import { headers } from 'next/headers';
  * `hostname:port`, nothing else. Guards the request-header fallback below
  * (Signal Box Audit, flib Low finding: "production never sets the public
  * site URL") -- this value ends up in share links, invite links, and the
- * same-origin checks `app/connect-claude/authorize/route.ts` and
- * `app/api/[...path]/route.ts` build from `getSiteOrigin()`, so a `Host`
+ * same-origin check `app/api/[...path]/route.ts` builds from
+ * `getSiteOrigin()`, so a `Host`
  * value that isn't a plain hostname (embedded whitespace/CRLF, a stray `/`
  * or `@` that could turn "the origin" into something else once spliced into
  * a URL) is treated as absent rather than trusted verbatim. Every reverse

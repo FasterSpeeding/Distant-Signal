@@ -50,14 +50,14 @@ describe('LoginButton', () => {
   });
 
   it('disables next/link prefetch -- same side-effecting-backend-endpoint reasoning as LoginLink', () => {
-    mockUsePathname.mockReturnValue('/connect-claude');
+    mockUsePathname.mockReturnValue('/groups');
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
     renderWithMantine(<LoginButton>Log in</LoginButton>);
     expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute('data-prefetch', 'false');
   });
 
   it('carries an optional title hint that the action needs an account', () => {
-    mockUsePathname.mockReturnValue('/connect-claude');
+    mockUsePathname.mockReturnValue('/groups');
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
     renderWithMantine(<LoginButton title="Log in — needs a Distant Signal account">Log in</LoginButton>);
     expect(screen.getByRole('button', { name: 'Log in' })).toHaveAttribute(
@@ -67,7 +67,7 @@ describe('LoginButton', () => {
   });
 
   it('renders with no title at all when none is given', () => {
-    mockUsePathname.mockReturnValue('/connect-claude');
+    mockUsePathname.mockReturnValue('/groups');
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
     renderWithMantine(<LoginButton>Log in</LoginButton>);
     expect(screen.getByRole('button', { name: 'Log in' })).not.toHaveAttribute('title');

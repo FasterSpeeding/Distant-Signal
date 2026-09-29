@@ -140,18 +140,19 @@ function resolveTargetPath(path: string[]): string {
  * `crates/api/src/main.rs`'s CORS comment relies on), but not against a
  * same-site sibling subdomain or a future XSS that can issue same-site
  * fetches -- either can still ride the ambient cookie through this proxy
- * today. Mirrors the Origin check `app/connect-claude/authorize/route.ts`
- * already carries for its own single state-changing POST, applied here at
- * the shared-proxy level instead: reject a non-GET request whose `Origin`
- * header is present and doesn't match this app's real public origin
- * (`getSiteOrigin()`, not `req.nextUrl.origin` -- see that route's own doc
- * comment on why `req.nextUrl.origin` is useless for this comparison under
- * plain `next start`). An ABSENT Origin is let through rather than
+ * today. Mirrors the Origin check the MCP consent bridge
+ * (`app/connect-claude/authorize/route.ts`, retired 2026-09-29) carried for
+ * its own single state-changing POST, applied here at the shared-proxy
+ * level instead: reject a non-GET request whose `Origin` header is present
+ * and doesn't match this app's real public origin (`getSiteOrigin()`, not
+ * `req.nextUrl.origin`: this app runs under plain `next start` with no
+ * host config, so `req.nextUrl.origin` is always the bare bound host, never
+ * the public origin a browser's `Origin` header carries). An ABSENT Origin is let through rather than
  * rejected: some legitimate same-origin requests (and any non-browser API
  * client that exists) may not send one, and this app has no CSRF-token
  * convention to fall back on to tell those apart from a forged request --
- * same posture `isSameOriginRequest`'s own doc comment describes, except
- * that route also falls back to Referer, which this shared proxy does not
+ * same posture the consent bridge's `isSameOriginRequest` took, except
+ * that route also fell back to Referer, which this shared proxy does not
  * (its ~50 call sites are same-origin `fetch()` calls that always send
  * Origin on a non-GET request in every browser this app supports, so a
  * Referer fallback would add complexity with no real call site to serve). */

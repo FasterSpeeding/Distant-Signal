@@ -13,17 +13,13 @@ import {
   Tooltip,
 } from '@mantine/core';
 import type { Metadata } from 'next';
-import { getSession } from '@/lib/api';
-import { LoginButton } from '@/components/LoginButton';
 import { InfoIcon } from '@/components/InfoIcon';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 
-// This route has no dynamic segment, so without this Next.js treats it as
-// eligible for static generation and tries to prerender it during `next
-// build` -- same reasoning as app/page.tsx's own `revalidate = 0` comment
-// (getSession() needs the `api` service, which only exists on the runtime
-// network, not at build time).
-export const revalidate = 0;
+// Read the environment per request, never at build time: the connector URL
+// comes from the runtime env (see railMcpPublicUrl() below), and the image
+// is built without it. Same as app/chat/callback/page.tsx.
+export const dynamic = 'force-dynamic';
 
 // Same metadata shape as app/account/page.tsx: the root layout's bare
 // "Distant Signal" title otherwise names every tab this page is open in.
@@ -72,36 +68,20 @@ function CopyIcon() {
   );
 }
 
-/** Option C's own thin instructional route (embedded-chatbot-shared-
- * foundation-and-option-c plan, Task 9) -- distinct from
- * app/connect-claude/authorize/route.ts's OAuth protocol bridge (Task 6),
- * which this page's own step-by-step instructions eventually send a user
- * through. Per the dual-mode design's Decision 6: the connector URL plus
- * static instructions mirroring the documented Claude.ai flow, gated behind
- * DS's own login the same way any other authenticated route is -- a
- * logged-out visitor has no DS identity to connect to in the first place. */
-export default async function ConnectClaudePage() {
-  const session = await getSession();
-
-  if (!session.authenticated) {
-    return (
-      // `maw={640}`: the same reading width as the other single-column
-      // flow pages (/account, /account/deleted).
-      <Stack p="lg" gap="md" maw={640}>
-        <Title order={1}>Connect Claude to Distant Signal</Title>
-        <Text>
-          Log in to Distant Signal first, then come back here to connect your own Claude.ai or Claude Desktop account.
-        </Text>
-        {/* Review §2.16: a filled `Button`, not the underlined text link
-            this used to be -- the anonymous visitor's one action on this
-            page had noticeably less visual weight than the authenticated
-            branch's own step-by-step instructions below suggest a "real"
-            page should have. */}
-        <LoginButton title="Log in — needs a Distant Signal account">Log in</LoginButton>
-      </Stack>
-    );
-  }
-
+/** Option C's instructional page (embedded-chatbot-shared-foundation-and-
+ * option-c plan, Task 9; the dual-mode design's Decision 6): the connector
+ * URL plus static instructions mirroring the documented Claude.ai flow.
+ *
+ * Since 2026-09-29 the MCP service is its own Authentik OIDC client, so
+ * Claude's login goes straight from the MCP service to the single sign-on
+ * page and back. Distant Signal's own consent bridge
+ * (`/connect-claude/authorize`) is retired -- that path now only shows a
+ * short "this moved" note (`authorize/page.tsx`). With no Distant Signal
+ * session involved any more, this page no longer gates on one either: the
+ * connector URL is public, and the MCP service itself enforces the login
+ * and its access group. `maw={640}`: the same reading width as the other
+ * single-column flow pages (/account, /account/deleted). */
+export default function ConnectClaudePage() {
   return (
     <Stack p="lg" gap="md" maw={640}>
       <Title order={1}>Connect Claude to Distant Signal</Title>
@@ -178,8 +158,8 @@ export default async function ConnectClaudePage() {
               </Group>
             </ListItem>
             <ListItem>
-              Approve access when prompted — you&apos;ll be sent to Distant Signal&apos;s own login if you aren&apos;t
-              already signed in here, then asked to confirm the connection.
+              Connect it when Claude asks. Claude sends you to the sign-in page, where you log in with your Distant
+              Signal account — there is no separate confirmation step — and then finishes the connection itself.
             </ListItem>
           </List>
         </Stack>

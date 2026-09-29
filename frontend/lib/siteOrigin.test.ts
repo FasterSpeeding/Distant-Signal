@@ -67,9 +67,8 @@ describe('getSiteOrigin', () => {
 
   // A malformed or hostile Host header (here, one carrying an embedded
   // path/credential-like segment) must not be trusted verbatim -- it ends up
-  // in share/invite links and in the same-origin checks
-  // app/connect-claude/authorize/route.ts and app/api/[...path]/route.ts
-  // build from this value.
+  // in share/invite links and in the same-origin check
+  // app/api/[...path]/route.ts builds from this value.
   it('falls back to localhost:3000 when the Host header is not a well-formed hostname[:port]', async () => {
     incomingHeaders.set('host', 'evil.example/@attacker.example');
     expect(await getSiteOrigin()).toBe('http://localhost:3000');

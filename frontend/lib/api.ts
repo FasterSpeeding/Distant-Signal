@@ -134,7 +134,7 @@ async function fetchJson<T>(url: string, init: RequestInit, timeoutMs: number = 
 }
 
 /** The session cookie's own name -- must match `SESSION_COOKIE_NAME` in
- * `app/connect-claude/authorize/route.ts` and `crates/api/src/auth.rs`. */
+ * `crates/api/src/auth.rs`. */
 const SESSION_COOKIE_NAME = 'distant_signal_session';
 
 /** Builds the `fetch`/`fetchJson` `init` fragment that forwards ONLY the

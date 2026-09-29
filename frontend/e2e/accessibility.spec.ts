@@ -206,6 +206,8 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/track', '/track'],
   ['/groups/new', '/groups/new'],
   ['/connect-claude', '/connect-claude'],
+  // The retired consent bridge's "this moved" note.
+  ['/connect-claude/authorize', '/connect-claude/authorize'],
   // A client-only page, and the only route here reachable without any
   // backend state. Visited with no OAuth params on purpose: that is its
   // error branch, which is the state a user actually lands in when the
@@ -273,8 +275,8 @@ test.describe('accessibility: logged in', () => {
   // The routes whose logged-in DOM differs meaningfully from the anonymous
   // one: `/` gains the pinned-lines/stations/tracked-trains sections,
   // `/track/mine` and `/groups` replace a login modal with real content,
-  // `/lines` gains pin controls, `/chat` and `/connect-claude` swap their
-  // whole body.
+  // `/lines` gains pin controls, `/chat` swaps its whole body.
+  // (`/connect-claude` no longer depends on a session at all.)
   for (const [name, path] of [
     ['/', '/'],
     ['/lines', '/lines'],
@@ -283,7 +285,6 @@ test.describe('accessibility: logged in', () => {
     ['/track/mine/add-ticket', '/track/mine/add-ticket'],
     ['/groups', '/groups'],
     ['/chat', '/chat'],
-    ['/connect-claude', '/connect-claude'],
   ] as const) {
     test(name, async ({ page }) => {
       await page.goto(path);
