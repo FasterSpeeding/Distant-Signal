@@ -26,6 +26,7 @@ use schedule_query::{
 };
 
 use crate::csa::{JourneyLeg, TrainLeg, TransferLeg};
+use crate::restrictions::{self, Restrictions};
 
 fn train_leg_count(legs: &[JourneyLeg]) -> u32 {
     legs.iter()
@@ -137,6 +138,7 @@ fn ready_source_at(
     origin: &HashSet<String>,
     departure_min: u32,
     interchange: &InterchangeData,
+    restrictions: Option<&Restrictions>,
     tiploc: &str,
 ) -> Option<ReadySource> {
     let tiploc = normalize_tiploc(tiploc);
@@ -145,6 +147,9 @@ fn ready_source_at(
             time: departure_min,
             from: tiploc.to_string(),
         });
+    }
+    if !restrictions::allows_interchange(restrictions, tiploc) {
+        return None;
     }
     let ChangeTime::Finite(change_time) = minimum_change_time(interchange, tiploc) else {
         return None;
@@ -182,16 +187,21 @@ fn ready_source_at(
 /// `relax_fixed_links_in_round` safe (every link has strictly positive
 /// `minutes`, and there are finitely many CRS codes, so this always
 /// terminates -- same reasoning as `csa::Scan::relax`'s own doc comment).
+#[allow(clippy::too_many_arguments)]
 fn relax_in_round(
     round: &mut RoundState,
     touched: &mut HashSet<String>,
     interchange: &InterchangeData,
+    restrictions: Option<&Restrictions>,
     date: NaiveDate,
     tiploc: &str,
     arrival_min: u32,
     via: ArrivalSource,
 ) {
     let tiploc = normalize_tiploc(tiploc);
+    if !restrictions::allows_interchange(restrictions, tiploc) {
+        return;
+    }
     let current_best = round.arrival.get(tiploc).copied().unwrap_or(u32::MAX);
     if arrival_min >= current_best {
         return;
@@ -199,13 +209,22 @@ fn relax_in_round(
     round.arrival.insert(tiploc.to_string(), arrival_min);
     round.arrived_via.insert(tiploc.to_string(), via);
     touched.insert(tiploc.to_string());
-    relax_fixed_links_in_round(round, touched, interchange, date, tiploc, arrival_min);
+    relax_fixed_links_in_round(
+        round,
+        touched,
+        interchange,
+        restrictions,
+        date,
+        tiploc,
+        arrival_min,
+    );
 }
 
 fn relax_fixed_links_in_round(
     round: &mut RoundState,
     touched: &mut HashSet<String>,
     interchange: &InterchangeData,
+    restrictions: Option<&Restrictions>,
     date: NaiveDate,
     from_tiploc: &str,
     at_min: u32,
@@ -229,6 +248,7 @@ fn relax_fixed_links_in_round(
                 round,
                 touched,
                 interchange,
+                restrictions,
                 date,
                 &to_tiploc,
                 candidate,
@@ -251,12 +271,14 @@ fn relax_fixed_links_in_round(
 /// the returned Pareto set -- see the `_reports_no_improvement` test below,
 /// which is what `raptor_search`'s early-termination `break` actually
 /// relies on being true.
+#[allow(clippy::too_many_arguments)]
 fn run_one_round<'c>(
     previous: &RoundState,
     connections: impl IntoIterator<Item = &'c Connection>,
     origin: &HashSet<String>,
     departure_min: u32,
     interchange: &InterchangeData,
+    restrictions: Option<&Restrictions>,
     date: NaiveDate,
 ) -> (RoundState, bool /* improved */) {
     let mut current = previous.clone_for_next_round();
@@ -264,6 +286,12 @@ fn run_one_round<'c>(
     let mut reachable_trip: HashSet<String> = HashSet::new();
 
     for connection in connections {
+        // Unusable, and ends any ride on its train -- see
+        // `crate::restrictions`'s module doc.
+        if restrictions::blocks(restrictions, connection) {
+            reachable_trip.remove(&connection.uid);
+            continue;
+        }
         let already_aboard = reachable_trip.contains(&connection.uid);
         if !already_aboard {
             let Some(source) = ready_source_at(
@@ -271,6 +299,7 @@ fn run_one_round<'c>(
                 origin,
                 departure_min,
                 interchange,
+                restrictions,
                 &connection.from_tiploc,
             ) else {
                 continue;
@@ -290,6 +319,7 @@ fn run_one_round<'c>(
             &mut current,
             &mut touched,
             interchange,
+            restrictions,
             date,
             &connection.to_tiploc,
             connection.arrival_min,
@@ -311,6 +341,16 @@ pub fn raptor_search_with_overlay(
     options: RaptorOptions,
     overlay: Option<&crate::overlay::ConnectionOverlay>,
 ) -> Vec<RaptorJourney> {
+    raptor_search_restricted(options, overlay, None)
+}
+
+/// [`raptor_search_with_overlay`] honouring `restrictions` -- see
+/// [`crate::restrictions`].
+pub fn raptor_search_restricted(
+    options: RaptorOptions,
+    overlay: Option<&crate::overlay::ConnectionOverlay>,
+    restrictions: Option<&Restrictions>,
+) -> Vec<RaptorJourney> {
     let origin: HashSet<String> = options
         .from_tiplocs
         .iter()
@@ -324,6 +364,7 @@ pub fn raptor_search_with_overlay(
             &mut round0,
             &mut round0_touched,
             options.interchange,
+            restrictions,
             options.date,
             tiploc,
             options.departure_min,
@@ -346,6 +387,7 @@ pub fn raptor_search_with_overlay(
             &origin,
             options.departure_min,
             options.interchange,
+            restrictions,
             options.date,
         );
         rounds.push(current);
@@ -700,8 +742,15 @@ mod tests {
         let origin: HashSet<String> = ["EUSTON".to_string()].into_iter().collect();
 
         let round0 = RoundState::empty();
-        let (round1, improved1) =
-            run_one_round(&round0, &connections, &origin, 480, &interchange, date());
+        let (round1, improved1) = run_one_round(
+            &round0,
+            &connections,
+            &origin,
+            480,
+            &interchange,
+            None,
+            date(),
+        );
         assert!(improved1, "round 1 should board U1 and reach MKC");
         assert_eq!(round1.arrival.get("MKC"), Some(&530));
 
@@ -709,8 +758,15 @@ mod tests {
         // reached in round 1, so re-scanning the same connections array
         // against round 1's frozen arrivals cannot produce a strictly
         // better arrival anywhere.
-        let (_round2, improved2) =
-            run_one_round(&round1, &connections, &origin, 480, &interchange, date());
+        let (_round2, improved2) = run_one_round(
+            &round1,
+            &connections,
+            &origin,
+            480,
+            &interchange,
+            None,
+            date(),
+        );
         assert!(
             !improved2,
             "a round that cannot improve on the previous round's arrivals must report no \

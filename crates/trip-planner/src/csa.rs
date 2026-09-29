@@ -17,6 +17,8 @@ use schedule_query::{
     normalize_tiploc, sibling_tiplocs,
 };
 
+use crate::restrictions::{self, Restrictions};
+
 /// One merged leg of a [`Journey`]: every consecutive [`Connection`] sharing
 /// a `uid` collapsed into a single ride, exactly as a passenger who never
 /// got off would describe it.
@@ -111,6 +113,7 @@ struct ReadySource {
 /// as struct fields -- see this plan's Judgment Call 2.
 struct Scan<'a> {
     interchange: &'a InterchangeData,
+    restrictions: Option<&'a Restrictions>,
     date: NaiveDate,
     origin: HashSet<String>,
     destinations: HashSet<String>,
@@ -156,6 +159,10 @@ impl<'a> Scan<'a> {
                 from: tiploc.to_string(),
             });
         }
+        // An avoided station (`avoidChange` and stricter): no fresh boarding.
+        if !restrictions::allows_interchange(self.restrictions, tiploc) {
+            return None;
+        }
         let ChangeTime::Finite(change_time) = minimum_change_time(self.interchange, tiploc) else {
             return None;
         };
@@ -197,6 +204,11 @@ impl<'a> Scan<'a> {
         // straight off a `Connection::to_tiploc`, potentially still padded
         // (Finding 2 of the whole-branch review).
         let tiploc = normalize_tiploc(tiploc);
+        // Never alight at (or walk into) an avoided station; a train that
+        // calls there simply carries on.
+        if !restrictions::allows_interchange(self.restrictions, tiploc) {
+            return;
+        }
         let current_best = self
             .earliest_arrival
             .get(tiploc)
@@ -268,6 +280,16 @@ pub fn scan_connections_with_overlay(
     options: ScanOptions,
     overlay: Option<&crate::overlay::ConnectionOverlay>,
 ) -> Option<Journey> {
+    scan_connections_restricted(options, overlay, None)
+}
+
+/// [`scan_connections_with_overlay`] honouring `restrictions` -- see
+/// [`crate::restrictions`].
+pub fn scan_connections_restricted(
+    options: ScanOptions,
+    overlay: Option<&crate::overlay::ConnectionOverlay>,
+    restrictions: Option<&Restrictions>,
+) -> Option<Journey> {
     // Normalized at this module's own boundary, same defense-in-depth
     // `schedule_query::interchange` already applies at its own boundary --
     // every other TIPLOC-keyed lookup and containment check in this file
@@ -288,6 +310,7 @@ pub fn scan_connections_with_overlay(
 
     let mut scan = Scan {
         interchange: options.interchange,
+        restrictions,
         date: options.date,
         origin: origin.clone(),
         destinations,
@@ -317,6 +340,12 @@ pub fn scan_connections_with_overlay(
         // already found (csa.ts:372-379).
         if connection.departure_min >= scan.best_dest_arrival {
             break;
+        }
+        // A blocked connection is unusable, and ends any ride on its train
+        // (see `crate::restrictions`'s module doc).
+        if restrictions::blocks(restrictions, connection) {
+            scan.reachable_trip.remove(&connection.uid);
+            continue;
         }
 
         let already_aboard = scan.reachable_trip.contains(&connection.uid);

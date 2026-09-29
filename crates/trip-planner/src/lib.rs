@@ -7,10 +7,20 @@
 pub mod csa;
 pub mod overlay;
 pub mod raptor;
+pub mod restrictions;
+pub mod reverse;
 
 pub use csa::{
     Journey, JourneyLeg, ScanOptions, TrainLeg, TransferLeg, scan_connections,
-    scan_connections_with_overlay,
+    scan_connections_restricted, scan_connections_with_overlay,
 };
 pub use overlay::ConnectionOverlay;
-pub use raptor::{RaptorJourney, RaptorOptions, raptor_search, raptor_search_with_overlay};
+pub use raptor::{
+    RaptorJourney, RaptorOptions, raptor_search, raptor_search_restricted,
+    raptor_search_with_overlay,
+};
+pub use restrictions::{PassLeg, Restrictions};
+pub use reverse::{
+    ArriveByOptions, latest_departure, latest_departures_by_trips, raptor_arrive_by,
+    raptor_arrive_by_from_latest, scan_connections_arrive_by,
+};
