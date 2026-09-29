@@ -200,3 +200,9 @@ exists for an incident, not as a rollout gate.
   into adjusted connections and re-running the search for a bounded number
   of rounds, for legs within about two hours. No train-mcp or
   Distant-Signal-MCP code was read or copied.
+
+## Decisions (2026-09-29, repo owner)
+- The overlay is **on by default** (`api.tripPlanLive.enabled: true`).
+- The live window stays at today/yesterday service dates, for legs departing from 2 hours ago to 3 hours ahead.
+- **Re-plan budget per mode:** 3 for `results=fastest` (`maxReplans`) and **1** for `results=options` (`maxReplansOptions`). This keeps the options worst case near 1 s.
+- Porting arrive-by and via/avoid from train-mcp / Distant-Signal-MCP is approved and follows as separate work.

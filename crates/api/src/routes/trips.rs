@@ -441,7 +441,8 @@ struct LiveSummary {
 /// not yet read; if the plan no longer works on live times (a cancelled leg,
 /// an impossible change, a broken waypoint chain) or a late train from the
 /// origin has become catchable, plan again with every known change applied
-/// -- at most `config.max_replans` times. A plan that is merely late is
+/// -- at most `config.max_replans_for(results)` times (3 for fastest, 1 for
+/// options by default). A plan that is merely late is
 /// annotated, not re-planned. Trains read after the last allowed re-plan
 /// are still annotated. Any read error aborts the overlay; the caller then
 /// serves the timetable plan.
@@ -505,7 +506,7 @@ async fn plan_live(
         .await?;
         chains.extend(new_chains);
         lives.extend(fetched);
-        if replans >= config.max_replans {
+        if replans >= config.max_replans_for(&request.results) {
             break;
         }
         let (next, next_withdrawn) = trip_plan_live::build_overlay(&chains, &lives);

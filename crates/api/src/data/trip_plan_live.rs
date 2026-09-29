@@ -38,8 +38,13 @@ use crate::data::trip_planning_itinerary::{PlannedLeg, SegmentResult};
 pub struct LiveConfig {
     /// Kill-switch, `TRIP_PLAN_LIVE_ENABLED` (default `true`).
     pub enabled: bool,
-    /// Re-plans after the first plan, `TRIP_PLAN_LIVE_MAX_REPLANS` (3).
+    /// Re-plans after the first plan for `results=fastest`,
+    /// `TRIP_PLAN_LIVE_MAX_REPLANS` (3). CSA is cheap (80-150 ms with live).
     pub max_replans: u32,
+    /// Re-plans for `results=options`, `TRIP_PLAN_LIVE_MAX_REPLANS_OPTIONS`
+    /// (1). RAPTOR is the expensive pass (0.5-1.3 s with live); one round
+    /// caps the worst case near 1 s (repo-owner decision, 2026-09-29).
+    pub max_replans_options: u32,
     /// A TRUST delay whose `train_current_state` row was last updated longer
     /// ago than this is ignored, `TRIP_PLAN_LIVE_TRUST_MAX_AGE_MINUTES` (30).
     /// Board freshness is `stop_board::BOARD_FRESHNESS` (10 minutes).
@@ -58,6 +63,7 @@ impl Default for LiveConfig {
         Self {
             enabled: true,
             max_replans: 3,
+            max_replans_options: 1,
             trust_max_age_minutes: 30,
             horizon_minutes: 180,
             lookback_minutes: 120,
@@ -73,11 +79,24 @@ pub const ORIGIN_LOOKBACK_MINUTES: u32 = 60;
 pub const ORIGIN_LOOKBACK_TRAINS: usize = 20;
 
 impl LiveConfig {
+    /// The re-plan budget for a `results` mode (`"fastest"` or `"options"`).
+    pub fn max_replans_for(&self, results: &str) -> u32 {
+        if results == "options" {
+            self.max_replans_options
+        } else {
+            self.max_replans
+        }
+    }
+
     pub fn from_env() -> Self {
         let default = Self::default();
         Self {
             enabled: env_bool("TRIP_PLAN_LIVE_ENABLED", default.enabled),
             max_replans: env_num("TRIP_PLAN_LIVE_MAX_REPLANS", default.max_replans),
+            max_replans_options: env_num(
+                "TRIP_PLAN_LIVE_MAX_REPLANS_OPTIONS",
+                default.max_replans_options,
+            ),
             trust_max_age_minutes: env_num(
                 "TRIP_PLAN_LIVE_TRUST_MAX_AGE_MINUTES",
                 default.trust_max_age_minutes,
@@ -1065,6 +1084,13 @@ mod tests {
     use super::*;
     use crate::data::stop_board::StopBoard;
     use schedule_query::CallingPointKind;
+
+    #[test]
+    fn options_gets_its_own_smaller_replan_budget() {
+        let config = LiveConfig::default();
+        assert_eq!(config.max_replans_for("fastest"), 3);
+        assert_eq!(config.max_replans_for("options"), 1);
+    }
 
     fn date() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 9, 28).unwrap()
