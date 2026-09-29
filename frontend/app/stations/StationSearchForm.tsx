@@ -8,6 +8,7 @@ import { searchNearbyStations, searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { NearbyStation } from '@/lib/types';
+import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 
 /** The "near me" lookup's own state machine -- mirrors the shape
  * `IncidentSearchForm.tsx`'s `Results` type already establishes (one
@@ -120,10 +121,14 @@ export function StationSearchForm() {
         // Several seconds of a static, disabled button is not enough
         // feedback for where the user is actually looking — this mirrors
         // the shape of the results the target page is about to render.
-        <Stack gap="xs" role="status" aria-label="Looking up disruptions">
+        // `LoadingPlaceholder` gives it a visible, announced label: the
+        // old `aria-label` on a `role="status"` of bare `Skeleton`s gave a
+        // live region with no content to announce and nothing in words
+        // for a sighted user either.
+        <LoadingPlaceholder label="Looking up disruptions…">
           <Skeleton height={20} width="40%" />
           <Skeleton height={60} />
-        </Stack>
+        </LoadingPlaceholder>
       )}
       {/* Hidden entirely (not just disabled) when this browser has no
           `navigator.geolocation` at all -- outcome (c) of the feature's own

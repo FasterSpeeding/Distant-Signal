@@ -1039,9 +1039,9 @@ export function TrackTrainForm({
         // used to cause made them literally unselectable.
         //
         // Rows render via the shared `ScheduleRow` component (not
-        // hand-rolled here) -- see that component's own doc comment for
-        // the AA-contrast reasoning behind dimming only the row's TEXT,
-        // never its status badge, for a non-clickable (cancelled) row.
+        // hand-rolled here) -- see that component's own comments for
+        // its non-clickable cancelled treatment (struck-through time, red
+        // "Cancelled" badge, screen-reader text; never dimmed, for AA).
         <>
           <Stack gap="xs" data-departure-picker-rows>
             {filtered.map((row) => (

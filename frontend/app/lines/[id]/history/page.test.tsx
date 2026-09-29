@@ -126,9 +126,27 @@ describe('LineHistoryPage', () => {
     vi.mocked(api.getLineStatusHistory).mockReturnValue(new Promise(() => {}));
     await renderPage();
 
-    const fallback = await screen.findByText('Loading history…');
-    expect(fallback).toHaveAttribute('role', 'status');
+    const fallback = await screen.findByRole('status');
+    expect(fallback).toHaveTextContent('Loading history…');
     expect(fallback).toHaveAttribute('aria-busy', 'true');
+  });
+
+  // Style-guide review: the Trends tab's two chart fallbacks were still
+  // bare `Skeleton`s. Both now carry a visible, announced label, with the
+  // 320px skeleton kept (aria-hidden) to hold the chart's space.
+  it('shows labelled, announced loading states while the Trends tab fetches are pending', async () => {
+    vi.mocked(api.getLineDailyStats).mockReturnValue(new Promise(() => {}));
+    vi.mocked(api.getLineDailyCoverageStats).mockReturnValue(new Promise(() => {}));
+    await renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
+
+    const statuses = await screen.findAllByRole('status');
+    const labels = statuses.map((s) => s.textContent);
+    expect(labels).toContain('Loading trends…');
+    expect(labels).toContain('Loading full-coverage trends…');
+    for (const status of statuses) {
+      expect(status).toHaveAttribute('aria-busy', 'true');
+    }
   });
 
   it('switching to the Trends tab renders the daily-stats charts without crashing', async () => {

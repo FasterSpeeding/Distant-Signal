@@ -68,6 +68,22 @@ describe('OperatorHistoryPage', () => {
     ).toBeInTheDocument();
   });
 
+  // Style-guide review: the chart's Suspense fallback was a bare,
+  // unlabelled `Skeleton`. A stats call that never resolves keeps the
+  // boundary suspended so the fallback can be asserted on directly.
+  it('shows a labelled, announced loading state while the trends fetch is pending', async () => {
+    vi.mocked(api.getAllTocs).mockResolvedValue(tocs);
+    vi.mocked(api.getHistoryRetention).mockResolvedValue(retention);
+    vi.mocked(api.getOperator).mockResolvedValue(operator());
+    vi.mocked(api.getOperatorDailyStats).mockReturnValue(new Promise(() => {}));
+
+    await renderPage();
+
+    const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('Loading trends…');
+    expect(status).toHaveAttribute('aria-busy', 'true');
+  });
+
   // Review [OH] §3.4/I11: "History: London North Eastern Railway" used to
   // give no sense of scope until the last sentence of the methodology
   // paragraph -- this line under the title states it up front.

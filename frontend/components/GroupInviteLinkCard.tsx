@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { ActionIcon, Button, Card, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { CheckIcon } from './CheckIcon';
+import { ShareIcon } from './ShareIcon';
 import { formatDate } from '@/lib/dateFormat';
 import type { GroupInviteLink } from '@/lib/types';
 import { freshTokenFromResponse } from '@/lib/freshLinkToken';
@@ -143,12 +145,12 @@ export function GroupInviteLinkCard({
                   primary-action floor) to match the adjacent `TextInput`'s
                   own default height, since this sits flush against it in a
                   `nowrap` `Group` -- still comfortably above the 24px
-                  minimum. The children are plain text glyphs, not a
-                  fixed-size SVG, but `ActionIcon`'s font-size isn't tied to
-                  its `--ai-size` box (`ActionIcon.css`), so they don't grow
-                  with it. */}
+                  minimum. The children are fixed 16px `aria-hidden` SVGs
+                  (`ShareIcon`/`CheckIcon`, not the "⇪"/"✓" text glyphs they
+                  replaced), so they don't grow with the box; the button's
+                  `aria-label` is its accessible name. */}
               <ActionIcon variant="outline" color="gray" onClick={share} aria-label="Share invite link" size={36}>
-                {copied ? '✓' : '⇪'}
+                {copied ? <CheckIcon /> : <ShareIcon />}
               </ActionIcon>
             </Tooltip>
           </Group>

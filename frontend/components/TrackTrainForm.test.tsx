@@ -1223,8 +1223,9 @@ describe('TrackTrainForm', () => {
       expect(await screen.findByText(/Basingstoke \(BSK\)/)).toBeInTheDocument();
       // The cancelled row's destination (WAT) has no resolved name in this
       // fixture -- falls back to the bare code, same convention as
-      // elsewhere in this app.
-      expect(screen.getByText(/10:15 · WAT/)).toBeInTheDocument();
+      // elsewhere in this app. (Its time is struck through in its own `<s>`,
+      // with screen-reader "(cancelled)" text -- see `ScheduleRow`.)
+      expect(screen.getByText(/· WAT · ZA/)).toHaveTextContent('10:15 (cancelled) · WAT · ZA');
     });
 
     it('clicking a non-cancelled row fills destinationCrs/operator/scheduledDeparture', async () => {

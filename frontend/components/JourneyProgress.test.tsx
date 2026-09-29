@@ -388,7 +388,13 @@ describe('JourneyProgress', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(container.querySelector('[data-may-have-arrived="true"]')).toBeInTheDocument();
+    const warning = container.querySelector('[data-may-have-arrived="true"]');
+    expect(warning).toBeInTheDocument();
+    // An aria-hidden inline SVG, not a "⚠" text/emoji glyph; the group's
+    // aria-label carries "may have arrived" in words.
+    expect(warning).toHaveAttribute('aria-hidden', 'true');
+    expect(warning?.querySelector('svg[data-icon="warning"]')).toBeInTheDocument();
+    expect(warning?.textContent).toBe('');
     const marker = container.querySelector('[data-node-state="marker"]');
     expect(marker).toHaveAttribute('data-delay-state', 'on-time');
   });

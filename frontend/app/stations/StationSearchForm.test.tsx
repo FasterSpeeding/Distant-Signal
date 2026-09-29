@@ -188,7 +188,11 @@ describe('StationSearchForm', () => {
     // The results area itself carries a real pending indicator too, not
     // just the button — several seconds of a static button is not enough
     // feedback for where the user is actually looking.
-    expect(screen.getByRole('status')).toBeInTheDocument();
+    // ...and says so in words (visible and announced), not just as bare
+    // skeleton boxes.
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Looking up disruptions…');
+    expect(status).toHaveAttribute('aria-busy', 'true');
 
     await act(async () => {
       resolveNavigation();
