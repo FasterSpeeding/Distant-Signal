@@ -9,6 +9,7 @@ pub mod overlay;
 pub mod raptor;
 pub mod restrictions;
 pub mod reverse;
+pub mod staged;
 
 pub use csa::{
     Journey, JourneyLeg, ScanOptions, TrainLeg, TransferLeg, scan_connections,
@@ -22,5 +23,7 @@ pub use raptor::{
 pub use restrictions::{PassLeg, Restrictions};
 pub use reverse::{
     ArriveByOptions, latest_departure, latest_departures_by_trips, raptor_arrive_by,
-    raptor_arrive_by_from_latest, scan_connections_arrive_by,
+    raptor_arrive_by_from_latest, scan_connections_arrive_by, staged_arrive_by,
+    staged_raptor_arrive_by_from_latest,
 };
+pub use staged::{JourneyPart, StagedJourney, StagedOptions, raptor_staged, scan_staged};

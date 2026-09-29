@@ -41,14 +41,14 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
-    ChangeTime, Connection, InterchangeData, fixed_links_from, minimum_change_time,
-    normalize_tiploc, sibling_tiplocs,
+    Connection, InterchangeData, fixed_links_from, normalize_tiploc, sibling_tiplocs,
 };
 
 use crate::csa::{Journey, ScanOptions, scan_connections_restricted};
 use crate::overlay::ConnectionOverlay;
 use crate::raptor::{RaptorJourney, RaptorOptions, raptor_search_restricted};
 use crate::restrictions::{self, Restrictions};
+use crate::staged::{StagedJourney, StagedOptions, raptor_staged, scan_staged};
 
 pub struct ArriveByOptions<'a> {
     /// Sorted as `build_connections` returns it (same contract as
@@ -56,24 +56,39 @@ pub struct ArriveByOptions<'a> {
     pub connections: &'a [Connection],
     pub interchange: &'a InterchangeData,
     pub from_tiplocs: &'a [String],
+    /// Waypoints to call at in order, each as every TIPLOC it covers (see
+    /// [`crate::staged`]); empty for a direct search. The Journey-returning
+    /// functions ([`scan_connections_arrive_by`], [`raptor_arrive_by`])
+    /// need it empty; the `staged_*` ones take any.
+    pub waypoints: &'a [Vec<String>],
     pub to_tiplocs: &'a [String],
     /// Latest acceptable arrival, minutes from service-day midnight.
     pub arrive_by_min: u32,
     pub date: NaiveDate,
 }
 
-/// The per-stop labels of one backward pass (or one round).
-#[derive(Clone, Default)]
+/// The per-stop labels of one backward pass (or one round), per stage
+/// (see [`crate::staged`]: stage `s` = the first `s` waypoints called at).
+#[derive(Clone)]
 struct Labels {
     /// Latest time a traveller may have ARRIVED at a stop (by train or
-    /// walk) and still reach the destination by the deadline.
-    latest_arrival: HashMap<String, u32>,
+    /// walk), at that stage, and still reach the destination by the
+    /// deadline.
+    latest_arrival: Vec<HashMap<String, u32>>,
     /// Latest departure from the origin found so far.
     origin_departure: Option<u32>,
     touched: bool,
 }
 
 impl Labels {
+    fn new(stages: usize) -> Self {
+        Self {
+            latest_arrival: vec![HashMap::new(); stages],
+            origin_departure: None,
+            touched: false,
+        }
+    }
+
     fn offer_origin(&mut self, departure: u32) {
         if self.origin_departure.is_none_or(|best| departure > best) {
             self.origin_departure = Some(departure);
@@ -87,6 +102,8 @@ struct Reverse<'a> {
     restrictions: Option<&'a Restrictions>,
     date: NaiveDate,
     origin: HashSet<String>,
+    /// `targets[s]`: waypoint `s`'s TIPLOCs.
+    targets: Vec<HashSet<String>>,
     /// to-CRS -> every CRS with at least one fixed link into it.
     links_into: HashMap<&'a str, Vec<&'a str>>,
 }
@@ -102,45 +119,69 @@ impl<'a> Reverse<'a> {
                 }
             }
         }
+        let set = |tiplocs: &[String]| -> HashSet<String> {
+            tiplocs
+                .iter()
+                .map(|t| normalize_tiploc(t).to_string())
+                .collect()
+        };
         Self {
             interchange: options.interchange,
             restrictions,
             date: options.date,
-            origin: options
-                .from_tiplocs
-                .iter()
-                .map(|t| normalize_tiploc(t).to_string())
-                .collect(),
+            origin: set(options.from_tiplocs),
+            targets: options.waypoints.iter().map(|w| set(w)).collect(),
             links_into,
         }
     }
 
-    /// Round 0: standing at the destination by the deadline, and every stop
-    /// a walk from which reaches it in time.
+    fn stages(&self) -> usize {
+        self.targets.len() + 1
+    }
+
+    /// Round 0: standing at the destination (last stage) by the deadline,
+    /// and every stop a walk from which reaches it in time.
     fn initial_labels(&self, options: &ArriveByOptions) -> Labels {
-        let mut labels = Labels::default();
+        let mut labels = Labels::new(self.stages());
         for tiploc in options.to_tiplocs {
-            self.set_arrival(&mut labels, tiploc, options.arrive_by_min);
+            self.set_arrival(
+                &mut labels,
+                self.stages() - 1,
+                tiploc,
+                options.arrive_by_min,
+            );
         }
         labels
     }
 
-    /// Mirror of `csa::Scan::relax`: `tiploc` may be arrived at as late as
-    /// `time`. Propagates backwards over every fixed link into it.
-    fn set_arrival(&self, labels: &mut Labels, tiploc: &str, time: u32) {
+    /// Mirror of `csa::Scan::relax`: `tiploc` may be arrived at, at
+    /// `stage`, as late as `time`. Propagates backwards over every fixed
+    /// link into it, and -- at a waypoint -- to the stage before it (being
+    /// there at stage `s + 1` is being there at stage `s`, then calling).
+    fn set_arrival(&self, labels: &mut Labels, stage: usize, tiploc: &str, time: u32) {
         let tiploc = normalize_tiploc(tiploc);
         if !restrictions::allows_interchange(self.restrictions, tiploc) {
             return;
         }
-        if labels
-            .latest_arrival
+        if labels.latest_arrival[stage]
             .get(tiploc)
             .is_some_and(|&known| known >= time)
         {
             return;
         }
-        labels.latest_arrival.insert(tiploc.to_string(), time);
+        // Dominated: a plan from here that still has to call at MORE of the
+        // waypoints works at least this late, and serves this stage too.
+        if labels.latest_arrival[..stage]
+            .iter()
+            .any(|earlier| earlier.get(tiploc).is_some_and(|&known| known >= time))
+        {
+            return;
+        }
+        labels.latest_arrival[stage].insert(tiploc.to_string(), time);
         labels.touched = true;
+        if stage > 0 && self.targets[stage - 1].contains(tiploc) {
+            self.set_arrival(labels, stage - 1, tiploc, time);
+        }
 
         let Some(crs) = self.interchange.tiploc_to_crs.get(tiploc) else {
             return;
@@ -173,10 +214,10 @@ impl<'a> Reverse<'a> {
                     continue;
                 };
                 for from_tiploc in from_tiplocs {
-                    if self.origin.contains(normalize_tiploc(from_tiploc)) {
+                    if stage == 0 && self.origin.contains(normalize_tiploc(from_tiploc)) {
                         labels.offer_origin(start);
                     } else {
-                        self.set_arrival(labels, from_tiploc, start);
+                        self.set_arrival(labels, stage, from_tiploc, start);
                     }
                 }
             }
@@ -187,7 +228,11 @@ impl<'a> Reverse<'a> {
     /// is the round whose labels decide where alighting works (`None` for
     /// the single-pass CSA mirror, which reads and writes `current`).
     fn sweep(&self, connections: &[&Connection], previous: Option<&Labels>, current: &mut Labels) {
-        let mut aboard_ok: HashSet<&str> = HashSet::new();
+        let stages = self.stages();
+        // Per stage, the UIDs a traveller aboard at that stage can stay on
+        // and still make it (from their later connections).
+        let mut aboard_ok: Vec<HashSet<&str>> = vec![HashSet::new(); stages];
+        let mut ok_stages: Vec<usize> = Vec::with_capacity(stages);
         for connection in connections.iter().rev() {
             // Nothing departing at or before the best origin departure found
             // can improve on it (every departure a path yields is no later
@@ -198,38 +243,61 @@ impl<'a> Reverse<'a> {
             {
                 break;
             }
+            let uid = connection.uid.as_str();
             if restrictions::blocks(self.restrictions, connection) {
-                aboard_ok.remove(connection.uid.as_str());
+                for ok in &mut aboard_ok {
+                    ok.remove(uid);
+                }
                 continue;
             }
             let to = normalize_tiploc(&connection.to_tiploc);
-            let labels = previous.unwrap_or(&*current);
-            let alight_ok = labels
-                .latest_arrival
-                .get(to)
-                .is_some_and(|&latest| connection.arrival_min <= latest);
-            if !alight_ok && !aboard_ok.contains(connection.uid.as_str()) {
-                continue;
+            // Every stage at which riding this connection works, decided
+            // before any of them is recorded: alighting at `to`, staying
+            // aboard, or -- `to` being this stage's waypoint -- staying
+            // aboard through it into the next stage.
+            ok_stages.clear();
+            {
+                let labels = previous.unwrap_or(&*current);
+                for stage in 0..stages {
+                    let alight = labels.latest_arrival[stage]
+                        .get(to)
+                        .is_some_and(|&latest| connection.arrival_min <= latest);
+                    let stay = aboard_ok[stage].contains(uid);
+                    let through = stage + 1 < stages
+                        && self.targets[stage].contains(to)
+                        && aboard_ok[stage + 1].contains(uid);
+                    if alight || stay || through {
+                        // The lowest such stage dominates the higher ones
+                        // (see `set_arrival`).
+                        ok_stages.push(stage);
+                        break;
+                    }
+                }
             }
-            aboard_ok.insert(connection.uid.as_str());
 
             let from = normalize_tiploc(&connection.from_tiploc);
-            if self.origin.contains(from) {
-                current.offer_origin(connection.departure_min);
-                continue;
-            }
-            if !restrictions::allows_interchange(self.restrictions, from) {
-                continue;
-            }
-            let ChangeTime::Finite(change) = minimum_change_time(self.interchange, from) else {
-                continue;
-            };
-            let Some(ready_by) = connection.departure_min.checked_sub(change) else {
-                continue;
-            };
-            self.set_arrival(current, from, ready_by);
-            for sibling in sibling_tiplocs(self.interchange, from) {
-                self.set_arrival(current, sibling, ready_by);
+            for &stage in &ok_stages {
+                aboard_ok[stage].insert(uid);
+                if stage == 0 && self.origin.contains(from) {
+                    current.offer_origin(connection.departure_min);
+                    continue;
+                }
+                let Some(change) = crate::staged::change_minutes(
+                    self.interchange,
+                    self.restrictions,
+                    &self.targets,
+                    stage,
+                    from,
+                ) else {
+                    continue;
+                };
+                let Some(ready_by) = connection.departure_min.checked_sub(change) else {
+                    continue;
+                };
+                self.set_arrival(current, stage, from, ready_by);
+                for sibling in sibling_tiplocs(self.interchange, from) {
+                    self.set_arrival(current, stage, sibling, ready_by);
+                }
             }
         }
     }
@@ -301,7 +369,7 @@ pub fn latest_departures_by_trips(
 /// `train-mcp`'s `latestDepartureFor` (see the module doc): the latest
 /// departure in `[0, deadline]` whose `probe` journey arrives by `deadline`.
 /// Only the fallback when the forward search disagrees with the backward one.
-fn latest_by_bisection(deadline: u32, probe: impl Fn(u32) -> Option<Journey>) -> Option<Journey> {
+fn latest_by_bisection<T>(deadline: u32, probe: impl Fn(u32) -> Option<T>) -> Option<T> {
     let mut best = probe(0)?;
     let (mut lo, mut hi) = (0u32, deadline);
     while lo < hi {
@@ -396,6 +464,71 @@ pub fn raptor_arrive_by_from_latest(
     out
 }
 
+/// [`scan_connections_arrive_by`] through `options.waypoints`: the
+/// latest-departing journey calling at every waypoint in order and arriving
+/// by the deadline (see [`crate::staged`]).
+pub fn staged_arrive_by(
+    options: &ArriveByOptions,
+    overlay: Option<&ConnectionOverlay>,
+    restrictions: Option<&Restrictions>,
+) -> Option<StagedJourney> {
+    let deadline = options.arrive_by_min;
+    let departure = latest_departure(options, overlay, restrictions)?;
+    let staged = StagedOptions {
+        connections: base_by(options.connections, deadline),
+        interchange: options.interchange,
+        from_tiplocs: options.from_tiplocs,
+        waypoints: options.waypoints,
+        to_tiplocs: options.to_tiplocs,
+        date: options.date,
+    };
+    let forward = |departure_min: u32| {
+        scan_staged(&staged, departure_min, overlay, restrictions)
+            .filter(|journey| journey.arrival_min <= deadline)
+    };
+    forward(departure).or_else(|| latest_by_bisection(departure, forward))
+}
+
+/// [`raptor_arrive_by_from_latest`] through `options.waypoints`, trains
+/// (and so changes) counted over the whole journey.
+pub fn staged_raptor_arrive_by_from_latest(
+    options: &ArriveByOptions,
+    overlay: Option<&ConnectionOverlay>,
+    restrictions: Option<&Restrictions>,
+    latest: &[Option<u32>],
+) -> Vec<StagedJourney> {
+    let deadline = options.arrive_by_min;
+    let staged = StagedOptions {
+        connections: base_by(options.connections, deadline),
+        interchange: options.interchange,
+        from_tiplocs: options.from_tiplocs,
+        waypoints: options.waypoints,
+        to_tiplocs: options.to_tiplocs,
+        date: options.date,
+    };
+    let mut out: Vec<StagedJourney> = Vec::new();
+    for (index, departure) in latest.iter().enumerate() {
+        let Some(departure) = *departure else {
+            continue;
+        };
+        if out.last().is_some_and(|j| departure <= j.departure_min) {
+            continue;
+        }
+        let best = raptor_staged(&staged, departure, index as u32 + 1, overlay, restrictions)
+            .into_iter()
+            .filter(|j| j.arrival_min <= deadline)
+            .min_by_key(|j| (j.arrival_min, j.changes));
+        if let Some(journey) = best
+            && out
+                .last()
+                .is_none_or(|j| journey.departure_min > j.departure_min)
+        {
+            out.push(journey);
+        }
+    }
+    out
+}
+
 /// [`latest_departures_by_trips`] then [`raptor_arrive_by_from_latest`].
 pub fn raptor_arrive_by(
     options: ArriveByOptions,
@@ -476,6 +609,7 @@ mod tests {
             connections,
             interchange,
             from_tiplocs: from,
+            waypoints: &[],
             to_tiplocs: to,
             arrive_by_min: deadline,
             date: date(),

@@ -145,6 +145,7 @@ fn bench_arrive_by_and_restrictions() {
             connections: &connections,
             interchange: &interchange,
             from_tiplocs: &from,
+            waypoints: &[],
             to_tiplocs: &to,
             arrive_by_min: deadline,
             date,
@@ -208,6 +209,115 @@ fn bench_arrive_by_and_restrictions() {
             "{label:28} median {:>8.1?}  max {:>8.1?}",
             values[values.len() / 2],
             values[values.len() - 1]
+        );
+    }
+}
+
+/// Cost of the joint (staged) waypoint search by number of waypoints, the
+/// input to `/Trips/plan`'s `MAX_WAYPOINTS`. Waypoints are hubs, so most
+/// pairs are a change or two apart. Each row: CSA depart-after, CSA
+/// arrive-by (deadline 23:00), RAPTOR over 6 rounds (maxChanges 4), and the
+/// old chained CSA (one search per segment) for comparison.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_waypoints() {
+    use trip_planner::{
+        StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
+    };
+    let (connections, interchange) = network();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(11);
+    for count in [0usize, 2, 4, 8, 12, 20] {
+        let mut rows = Vec::new();
+        for _ in 0..3 {
+            let from = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+            let to = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+            let mut waypoints: Vec<Vec<String>> = Vec::new();
+            while waypoints.len() < count {
+                let hub = vec![tiploc(rng.next(HUBS))];
+                if waypoints.last() != Some(&hub) {
+                    waypoints.push(hub);
+                }
+            }
+            let staged = StagedOptions {
+                connections: &connections,
+                interchange: &interchange,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                date,
+            };
+            let arrive = ArriveByOptions {
+                connections: &connections,
+                interchange: &interchange,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                arrive_by_min: 1380,
+                date,
+            };
+            let chained = || {
+                let mut stops = vec![from.clone()];
+                stops.extend(waypoints.iter().cloned());
+                stops.push(to.clone());
+                let mut ready = Some(360u32);
+                for pair in stops.windows(2) {
+                    ready = ready.and_then(|start| {
+                        scan_connections_restricted(
+                            ScanOptions {
+                                connections: &connections,
+                                interchange: &interchange,
+                                from_tiplocs: &pair[0],
+                                to_tiplocs: &pair[1],
+                                departure_min: start,
+                                date,
+                            },
+                            None,
+                            None,
+                        )
+                        .map(|j| j.arrival_min + 5)
+                    });
+                }
+                usize::from(ready.is_some())
+            };
+            let once = |f: &dyn Fn() -> usize| {
+                let started = Instant::now();
+                let found = f();
+                (started.elapsed(), found)
+            };
+            rows.push([
+                once(&|| usize::from(scan_staged(&staged, 360, None, None).is_some())),
+                once(&|| usize::from(staged_arrive_by(&arrive, None, None).is_some())),
+                once(&|| raptor_staged(&staged, 360, 6, None, None).len()),
+                once(&|| {
+                    latest_departures_by_trips(&arrive, None, None, 6)
+                        .iter()
+                        .flatten()
+                        .count()
+                }),
+                once(&chained),
+            ]);
+            println!(
+                "  {count} waypoints, pair done: {:?}",
+                rows.last().unwrap().map(|(t, n)| (t, n))
+            );
+        }
+        let column = |i: usize| {
+            let mut values: Vec<Duration> = rows.iter().map(|row| row[i].0).collect();
+            values.sort();
+            let found: usize = rows.iter().map(|row| usize::from(row[i].1 > 0)).sum();
+            format!(
+                "{:>8.1?} (max {:>8.1?}, {found}/3 found)",
+                values[1], values[2]
+            )
+        };
+        println!(
+            "{count:2} waypoints: csa {} | arriveBy {} | raptor {} | arriveBy rounds {} | chained csa {}",
+            column(0),
+            column(1),
+            column(2),
+            column(3),
+            column(4)
         );
     }
 }
