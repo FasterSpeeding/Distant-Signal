@@ -201,6 +201,13 @@ async fn post_stations(
     let upserted = queries::upsert_stations(&app.database, &stations)
         .await
         .map_err(internal_error)?;
+    // The CORPUS crosswalk only keeps CRS codes that are stations: a new
+    // station gets its fills now. Cheap when nothing changed (see
+    // `rebuild_if_stale`); a failure never fails the stations refresh, and
+    // the next refresh or startup retries it.
+    if let Err(err) = crate::data::corpus_crosswalk::rebuild_if_stale(&app.database).await {
+        tracing::error!(error = ?err, "CORPUS crosswalk rebuild after a stations refresh failed");
+    }
     Ok(Json(UpsertResponse { upserted }))
 }
 

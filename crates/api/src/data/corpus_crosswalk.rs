@@ -5,11 +5,25 @@
 //! **Derivation.** `common::corpus_inference` (the same conservative rule
 //! `line-catalogue-validator` regenerates `reference-data/crs-tiploc.csv`
 //! with) runs over the whole current `corpus_locations`; [`write`] stores its
-//! unambiguous keys. That happens in the same transaction as every CORPUS
-//! load ([`crate::data::corpus::replace_corpus_locations`]), and at startup
-//! when the stored build is older than the newest delivery or than this
-//! build's `RULES_VERSION` ([`rebuild_if_stale`]). With no CORPUS loaded,
-//! the startup check is one `MAX()` over the empty `corpus_deliveries`.
+//! unambiguous keys whose CRS is a Knowledgebase station (`stations`; see
+//! [`corpus_inference::restrict_to_stations`]). That happens in the same
+//! transaction as every CORPUS load
+//! ([`crate::data::corpus::replace_corpus_locations`]), and
+//! ([`rebuild_if_stale`]) at startup and after every `stations` refresh
+//! when the stored build is older than the newest delivery, than this
+//! build's `RULES_VERSION`, or than the current set of `stations` CRS codes
+//! (tracked by a fingerprint in `corpus_crosswalk_build`). With no CORPUS
+//! loaded, the check is one `MAX()` over the empty `corpus_deliveries`.
+//!
+//! **Why filter at build time, and rebuild on a `stations` change**, rather
+//! than join `stations` in every lookup: the lookups stay exactly the SQL
+//! they were (no extra join in the per-stop hot paths or in the whole-table
+//! `list_*` reads), the comparison report and the stored rows apply the one
+//! same Rust filter, and `stations` changes rarely (a new Knowledgebase
+//! station a few times a year), so a rebuild per changed station set costs
+//! next to nothing. The fingerprint makes this self-healing: a crash
+//! between a `stations` refresh and its rebuild is caught at the next
+//! refresh or startup.
 //!
 //! **Fallback** (`CORPUS_FALLBACK_ENABLED=true`, chart
 //! `api.corpusFallback.enabled`, default false). When on, the TIPLOC/STANOX
@@ -31,6 +45,7 @@
 //! callers; each lookup also has a `*_with` variant taking the flag
 //! explicitly, which is what the tests use.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
@@ -130,14 +145,80 @@ where
         .collect())
 }
 
-/// Replaces the stored crosswalk with `crosswalk`, derived from the delivery
-/// `delivered_at`, inside the caller's transaction (which must hold the
-/// CORPUS load lock).
+/// The CRS codes in `stations` (Knowledgebase), which the stored crosswalk
+/// is restricted to, and a fingerprint of that set.
+#[derive(Debug, Clone, Default)]
+pub struct StationSet {
+    pub crs: BTreeSet<String>,
+    pub fingerprint: String,
+}
+
+/// `md5` of the sorted, comma-joined `stations` CRS codes: changes exactly
+/// when a station is added or removed. An aggregate over ~2,600 rows, read
+/// on every [`rebuild_if_stale`] call.
+const STATIONS_FINGERPRINT_SQL: &str =
+    "md5(COALESCE(string_agg(UPPER(TRIM(crs)), ',' ORDER BY UPPER(TRIM(crs))), ''))";
+
+/// Reads the station set and its fingerprint in one statement (one
+/// snapshot, so the two always agree).
+pub async fn load_station_set<'e, E>(executor: E) -> Result<StationSet>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let (crs, fingerprint): (Vec<String>, String) = sqlx::query_as(&format!(
+        "SELECT COALESCE(array_agg(UPPER(TRIM(crs))), '{{}}'), {STATIONS_FINGERPRINT_SQL} FROM stations"
+    ))
+    .fetch_one(executor)
+    .await
+    .context("reading the stations CRS set")?;
+    Ok(StationSet {
+        crs: crs.into_iter().collect(),
+        fingerprint,
+    })
+}
+
+async fn stations_fingerprint<'e, E>(executor: E) -> Result<String>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let (fingerprint,): (String,) =
+        sqlx::query_as(&format!("SELECT {STATIONS_FINGERPRINT_SQL} FROM stations"))
+            .fetch_one(executor)
+            .await
+            .context("fingerprinting stations")?;
+    Ok(fingerprint)
+}
+
+/// What [`write`] stored, and what the stations filter left out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildCounts {
+    pub tiplocs: usize,
+    pub stanoxes: usize,
+    pub tiplocs_excluded: usize,
+    pub stanoxes_excluded: usize,
+}
+
+/// Replaces the stored crosswalk with `crosswalk` (as [`derive`] gave it,
+/// derived from the delivery `delivered_at`) restricted to the CRS codes
+/// currently in `stations`
+/// ([`corpus_inference::restrict_to_stations`]), inside the caller's
+/// transaction (which must hold the CORPUS load lock). Records the station
+/// set's fingerprint, so a later change to `stations` makes
+/// [`rebuild_if_stale`] rebuild.
 pub async fn write(
     tx: &mut Transaction<'_, Postgres>,
     delivered_at: DateTime<Utc>,
-    crosswalk: &Crosswalk,
-) -> Result<()> {
+    crosswalk: Crosswalk,
+) -> Result<BuildCounts> {
+    let stations = load_station_set(&mut **tx).await?;
+    let (crosswalk, excluded) =
+        corpus_inference::restrict_to_stations(crosswalk, |crs| stations.crs.contains(crs));
+    let counts = BuildCounts {
+        tiplocs: crosswalk.tiplocs.len(),
+        stanoxes: crosswalk.stanoxes.len(),
+        tiplocs_excluded: excluded.tiplocs.len(),
+        stanoxes_excluded: excluded.stanoxes.len(),
+    };
     sqlx::query("DELETE FROM corpus_tiploc_crs")
         .execute(&mut **tx)
         .await?;
@@ -178,32 +259,51 @@ pub async fn write(
     .await?;
     sqlx::query(
         "INSERT INTO corpus_crosswalk_build \
-             (singleton, delivered_at, rules_version, tiploc_rows, stanox_rows, built_at) \
-         VALUES (TRUE, $1, $2, $3, $4, now()) \
+             (singleton, delivered_at, rules_version, tiploc_rows, stanox_rows, \
+              stations_fingerprint, tiploc_rows_excluded, stanox_rows_excluded, built_at) \
+         VALUES (TRUE, $1, $2, $3, $4, $5, $6, $7, now()) \
          ON CONFLICT (singleton) DO UPDATE SET \
              delivered_at = EXCLUDED.delivered_at, \
              rules_version = EXCLUDED.rules_version, \
              tiploc_rows = EXCLUDED.tiploc_rows, \
              stanox_rows = EXCLUDED.stanox_rows, \
+             stations_fingerprint = EXCLUDED.stations_fingerprint, \
+             tiploc_rows_excluded = EXCLUDED.tiploc_rows_excluded, \
+             stanox_rows_excluded = EXCLUDED.stanox_rows_excluded, \
              built_at = EXCLUDED.built_at",
     )
     .bind(delivered_at)
     .bind(corpus_inference::RULES_VERSION)
-    .bind(i32::try_from(t.len())?)
-    .bind(i32::try_from(s.len())?)
+    .bind(i32::try_from(counts.tiplocs)?)
+    .bind(i32::try_from(counts.stanoxes)?)
+    .bind(&stations.fingerprint)
+    .bind(i32::try_from(counts.tiplocs_excluded)?)
+    .bind(i32::try_from(counts.stanoxes_excluded)?)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(counts)
 }
 
+/// What a stored build was derived from.
+type BuildKey = (DateTime<Utc>, i32, Option<String>);
+
 /// Rebuilds the stored crosswalk from `corpus_locations` when it was derived
-/// from an older delivery or by older rules (or never). Returns the delivery
-/// it rebuilt from, or `None` when there was nothing to do -- always the
-/// case before the first CORPUS load, which costs one `MAX()` over an empty
-/// table.
+/// from an older delivery, by older rules, or against a different set of
+/// `stations` (or never). Returns the delivery it rebuilt from, or `None`
+/// when there was nothing to do -- always the case before the first CORPUS
+/// load, which costs one `MAX()` over an empty table.
+///
+/// Called at startup and after every `stations` refresh
+/// (`POST /private/stations`), so a newly published Knowledgebase station
+/// gets its CORPUS fills without waiting for the next CORPUS delivery. An
+/// up-to-date check is three single-row reads (the `stations` fingerprint
+/// aggregates ~2,600 CRS codes); a rebuild -- once per changed station set
+/// -- re-derives from `corpus_locations` in one transaction.
 pub async fn rebuild_if_stale(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
-    let is_stale = |latest: Option<DateTime<Utc>>, built: Option<(DateTime<Utc>, i32)>| {
-        latest.filter(|latest| built != Some((*latest, corpus_inference::RULES_VERSION)))
+    let is_stale = |latest: Option<DateTime<Utc>>, built: Option<BuildKey>, stations: String| {
+        latest.filter(|latest| {
+            built != Some((*latest, corpus_inference::RULES_VERSION, Some(stations)))
+        })
     };
     let (latest,): (Option<DateTime<Utc>>,) =
         sqlx::query_as("SELECT MAX(delivered_at) FROM corpus_deliveries")
@@ -213,13 +313,14 @@ pub async fn rebuild_if_stale(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
         return Ok(None);
     }
     let built = stored_build(pool).await?;
-    if is_stale(latest, built).is_none() {
+    let stations = stations_fingerprint(pool).await?;
+    if is_stale(latest, built, stations).is_none() {
         return Ok(None);
     }
 
-    // Stale: redo the check under the load lock, so a load committing
-    // meanwhile (which writes its own crosswalk) is not overwritten with
-    // rows derived from the older set.
+    // Stale: redo the check under the load lock, so a load or rebuild
+    // committing meanwhile (which writes its own crosswalk) is not
+    // overwritten with rows derived from an older set.
     let mut tx = pool.begin().await?;
     crate::data::corpus::take_load_lock(&mut tx).await?;
     let (latest,): (Option<DateTime<Utc>>,) =
@@ -227,31 +328,36 @@ pub async fn rebuild_if_stale(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
             .fetch_one(&mut *tx)
             .await?;
     let built = stored_build(&mut *tx).await?;
-    let Some(latest) = is_stale(latest, built) else {
+    let stations = stations_fingerprint(&mut *tx).await?;
+    let Some(latest) = is_stale(latest, built, stations) else {
         return Ok(None);
     };
     let locations = load_corpus_locations(&mut *tx).await?;
     let (_, crosswalk) = derive(&corpus_rows(&locations));
-    write(&mut tx, latest, &crosswalk).await?;
+    let counts = write(&mut tx, latest, crosswalk).await?;
     tx.commit().await?;
     tracing::info!(
         delivered_at = %latest,
         rules_version = corpus_inference::RULES_VERSION,
-        tiplocs = crosswalk.tiplocs.len(),
-        stanoxes = crosswalk.stanoxes.len(),
+        tiplocs = counts.tiplocs,
+        stanoxes = counts.stanoxes,
+        tiplocs_not_stations = counts.tiplocs_excluded,
+        stanoxes_not_stations = counts.stanoxes_excluded,
         "rebuilt the CORPUS crosswalk"
     );
     Ok(Some(latest))
 }
 
-async fn stored_build<'e, E>(executor: E) -> Result<Option<(DateTime<Utc>, i32)>>
+async fn stored_build<'e, E>(executor: E) -> Result<Option<BuildKey>>
 where
     E: sqlx::PgExecutor<'e>,
 {
-    sqlx::query_as("SELECT delivered_at, rules_version FROM corpus_crosswalk_build")
-        .fetch_optional(executor)
-        .await
-        .context("reading corpus_crosswalk_build")
+    sqlx::query_as(
+        "SELECT delivered_at, rules_version, stations_fingerprint FROM corpus_crosswalk_build",
+    )
+    .fetch_optional(executor)
+    .await
+    .context("reading corpus_crosswalk_build")
 }
 
 #[cfg(test)]
@@ -311,8 +417,9 @@ mod db_tests {
 
     /// A small hand-made CORPUS: Clapham Junction with a platform TIPLOC
     /// and a loop, a TIPLOC the timetable maps to another CRS, a station
-    /// the timetable lacks, and a station at a STANOX the timetable left out
-    /// of `stanox_crs` on purpose.
+    /// the timetable lacks, a station at a STANOX the timetable left out
+    /// of `stanox_crs` on purpose, and two CORPUS codes that are not
+    /// stations (a pseudo `X` code and an Underground-style one).
     fn corpus() -> Vec<CorpusLocation> {
         vec![
             loc(
@@ -328,7 +435,33 @@ mod db_tests {
             loc("222200", "22222", "NEWSTN", "NEW", "NEW STATION"),
             loc("333300", "33333", "SHARED1", "SHA", "SHARED ONE"),
             loc("000800", "", "", "", "MERSEYRAIL ELECTRICS-HQ INPUT"),
+            loc("999900", "99999", "XBUSSTP", "XBS", "SOMEWHERE BUS STATION"),
+            loc("888800", "88888", "LULSTOP", "LUA", "SOMEWHERE LUL"),
         ]
+    }
+
+    /// The Knowledgebase stations: every CORPUS CRS above except the two
+    /// non-stations (`XBS`, `LUA`).
+    const STATIONS: [&str; 4] = ["CLJ", "AAA", "NEW", "SHA"];
+
+    async fn seed_stations(pool: &PgPool, codes: &[&str]) {
+        for crs in codes {
+            sqlx::query("INSERT INTO stations (crs, name) VALUES ($1, $1)")
+                .bind(crs)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn stored_tiplocs(pool: &PgPool) -> Vec<String> {
+        sqlx::query_as::<_, (String,)>("SELECT tiploc FROM corpus_tiploc_crs ORDER BY tiploc")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(t,)| t)
+            .collect()
     }
 
     async fn seed_timetable(pool: &PgPool) {
@@ -375,7 +508,8 @@ mod db_tests {
     /// comparison.
     async fn snapshot(pool: &PgPool, fallback: bool) -> serde_json::Value {
         let tiplocs: Vec<String> = [
-            "CLPHMJN", "CLPHMJW", "CLPHJLP", "CONFLCT", "NEWSTN", "TTONLY", "NOPE",
+            "CLPHMJN", "CLPHMJW", "CLPHJLP", "CONFLCT", "NEWSTN", "TTONLY", "NOPE", "XBUSSTP",
+            "LULSTOP",
         ]
         .into_iter()
         .map(String::from)
@@ -415,6 +549,7 @@ mod db_tests {
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn a_load_stores_the_crosswalk_and_marks_the_build(pool: PgPool) {
         assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
+        seed_stations(&pool, &STATIONS).await;
         replace_corpus_locations(&pool, at(), "CORPUSExtract.json.gz", &corpus())
             .await
             .unwrap();
@@ -435,15 +570,29 @@ mod db_tests {
                 (s("SHARED1"), s("SHA"), Some(s("33333")), s("direct")),
             ]
         );
-        let (delivered_at, version, stanoxes): (DateTime<Utc>, i32, i32) = sqlx::query_as(
-            "SELECT delivered_at, rules_version, stanox_rows FROM corpus_crosswalk_build",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        type Build = (
+            DateTime<Utc>,
+            i32,
+            i32,
+            Option<i32>,
+            Option<i32>,
+            Option<String>,
+        );
+        let (delivered_at, version, stanoxes, tiplocs_out, stanoxes_out, fingerprint): Build =
+            sqlx::query_as(
+                "SELECT delivered_at, rules_version, stanox_rows, tiploc_rows_excluded, \
+                        stanox_rows_excluded, stations_fingerprint FROM corpus_crosswalk_build",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(
-            (delivered_at, version, stanoxes),
-            (at(), corpus_inference::RULES_VERSION, 4)
+            (delivered_at, version, stanoxes, tiplocs_out, stanoxes_out),
+            (at(), corpus_inference::RULES_VERSION, 4, Some(2), Some(2))
+        );
+        assert_eq!(
+            fingerprint,
+            Some(load_station_set(&pool).await.unwrap().fingerprint)
         );
         // Up to date: nothing to rebuild.
         assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
@@ -452,25 +601,133 @@ mod db_tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn an_outdated_build_is_rebuilt_from_corpus_locations(pool: PgPool) {
+        seed_stations(&pool, &STATIONS).await;
         replace_corpus_locations(&pool, at(), "CORPUSExtract.json.gz", &corpus())
             .await
             .unwrap();
-        // As if built by older rules, or before this table existed.
+        let expected = ["CLPHMJN", "CLPHMJW", "CONFLCT", "NEWSTN", "SHARED1"];
+        // As built by RULES_VERSION 1 (before the stations filter): every
+        // unambiguous key, non-stations included, and no fingerprint.
+        sqlx::query(
+            "INSERT INTO corpus_tiploc_crs (tiploc, crs, stanox, station_name, rule) VALUES \
+             ('XBUSSTP', 'XBS', '99999', 'SOMEWHERE BUS STATION', 'direct'), \
+             ('LULSTOP', 'LUA', '88888', 'SOMEWHERE LUL', 'direct')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE corpus_crosswalk_build SET rules_version = 1, stations_fingerprint = NULL",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored_tiplocs(&pool).await.len(), 7);
+        assert_eq!(rebuild_if_stale(&pool).await.unwrap(), Some(at()));
+        assert_eq!(stored_tiplocs(&pool).await, expected);
+        assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
+
+        // An older rules version alone also rebuilds.
         sqlx::query("DELETE FROM corpus_tiploc_crs")
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("UPDATE corpus_crosswalk_build SET rules_version = 0")
+        sqlx::query("UPDATE corpus_crosswalk_build SET rules_version = 1")
             .execute(&pool)
             .await
             .unwrap();
         assert_eq!(rebuild_if_stale(&pool).await.unwrap(), Some(at()));
-        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM corpus_tiploc_crs")
-            .fetch_one(&pool)
+        assert_eq!(stored_tiplocs(&pool).await, expected);
+        assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
+    }
+
+    /// Flag on: a TIPLOC or STANOX whose CORPUS CRS is not a station
+    /// (pseudo `XBS`, non-station `LUA`) is never filled; a platform TIPLOC
+    /// of a real station (`CLPHMJW`, Clapham Junction's Windsor side) is.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn the_stations_filter_drops_non_station_fills_and_keeps_platform_fills(pool: PgPool) {
+        seed_timetable(&pool).await;
+        seed_stations(&pool, &STATIONS).await;
+        replace_corpus_locations(&pool, at(), "CORPUSExtract.json.gz", &corpus())
             .await
             .unwrap();
-        assert_eq!(n, 5);
+        let crs = |t: &'static str| {
+            let pool = pool.clone();
+            async move { queries::crs_for_tiploc_with(&pool, t, true).await.unwrap() }
+        };
+        assert_eq!(crs("CLPHMJW").await.as_deref(), Some("CLJ"));
+        assert_eq!(crs("XBUSSTP").await, None);
+        assert_eq!(crs("LULSTOP").await, None);
+        let batch = queries::crs_for_tiplocs_batch_with(
+            &pool,
+            &["CLPHMJW".into(), "XBUSSTP".into(), "LULSTOP".into()],
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch["CLPHMJW"], "CLJ");
+        let stanoxes: Vec<String> = queries::list_stanox_crs_with(&pool, true)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.stanox)
+            .collect();
+        assert!(!stanoxes.contains(&"99999".to_owned()));
+        assert!(!stanoxes.contains(&"88888".to_owned()));
+        assert!(
+            queries::list_stanox_crs_for_crs_with(&pool, "XBS", true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A station added to (or removed from) `stations` after the CORPUS load
+    /// changes the fingerprint, so the next check rebuilds and the fallback
+    /// picks it up.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn a_stations_change_rebuilds_the_crosswalk(pool: PgPool) {
+        seed_stations(&pool, &STATIONS).await;
+        replace_corpus_locations(&pool, at(), "CORPUSExtract.json.gz", &corpus())
+            .await
+            .unwrap();
         assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
+        assert_eq!(
+            queries::crs_for_tiploc_with(&pool, "LULSTOP", true)
+                .await
+                .unwrap(),
+            None
+        );
+
+        // The Knowledgebase publishes LUA as a station.
+        seed_stations(&pool, &["LUA"]).await;
+        assert_eq!(rebuild_if_stale(&pool).await.unwrap(), Some(at()));
+        assert_eq!(
+            queries::crs_for_tiploc_with(&pool, "LULSTOP", true)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("LUA")
+        );
+        assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
+
+        // An unrelated update (a renamed station) is not a change.
+        sqlx::query("UPDATE stations SET name = 'Renamed' WHERE crs = 'LUA'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
+
+        // And it is withdrawn again.
+        sqlx::query("DELETE FROM stations WHERE crs = 'LUA'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rebuild_if_stale(&pool).await.unwrap(), Some(at()));
+        assert!(!stored_tiplocs(&pool).await.contains(&"LULSTOP".to_owned()));
     }
 
     /// Flag off: every lookup returns exactly what it returned before
@@ -480,6 +737,7 @@ mod db_tests {
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn with_the_flag_off_corpus_changes_nothing(pool: PgPool) {
         seed_timetable(&pool).await;
+        seed_stations(&pool, &STATIONS).await;
         let before = snapshot(&pool, false).await;
         replace_corpus_locations(&pool, at(), "CORPUSExtract.json.gz", &corpus())
             .await
@@ -502,6 +760,7 @@ mod db_tests {
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn with_the_flag_on_corpus_fills_gaps_and_the_timetable_wins(pool: PgPool) {
         seed_timetable(&pool).await;
+        seed_stations(&pool, &STATIONS).await;
         replace_corpus_locations(&pool, at(), "CORPUSExtract.json.gz", &corpus())
             .await
             .unwrap();

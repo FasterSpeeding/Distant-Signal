@@ -215,6 +215,16 @@ Built after this design, in the user's order:
    TIPLOCs neither timetable table has and STANOXes the timetable does not
    know. Applied in the five `queries` lookups, so every api caller and the
    `GET /private/stanox-crs` consumers get it unchanged.
+   **Stations filter (2026-09-28, after the first production load):** the
+   stored crosswalk keeps a TIPLOC or STANOX only when its CRS is in
+   `stations` (Knowledgebase). Unfiltered, the fallback would have filled
+   605 TIPLOCs, 579 of them with bus-stop, tram/Underground, foreign,
+   closed-station or pseudo X/Z/Q codes; 26 remain (platform groups at
+   Victoria, Barking, Newcastle, Waterloo, Woking, Vauxhall, Perth,
+   Farringdon). Applied at build time (`RULES_VERSION` 2); a change to the
+   `stations` CRS set (fingerprinted in `corpus_crosswalk_build`) rebuilds
+   it at the next `stations` refresh or startup. The comparison reports
+   fills before and after the filter and the excluded ones by kind.
 3. **`crs-tiploc.csv` from the loaded CORPUS**: a manual runbook in
    `reference-data/line-catalogue-validation.md` ("From the CORPUS the app
    has loaded"), plus `line-catalogue-validator
