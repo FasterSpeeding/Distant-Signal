@@ -220,6 +220,28 @@ pub enum SkipSource {
     Both,
 }
 
+/// `JourneyStop.platformStatus`: what the stop's `platform` means for a
+/// passenger. Serialized lowercase (`"active"`, `"cancelled"`); `null` when
+/// there is no platform.
+///
+/// A string enum rather than a `platformCancelled` boolean so that further
+/// states (e.g. "provisional" before Darwin confirms an allocation) can be
+/// added without another field; clients should render an unknown value as
+/// `active`. "Changed" is deliberately not a state: `platformChanged` is
+/// orthogonal (a cancelled call can also have changed platform) and is
+/// already served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlatformStatus {
+    /// The train is expected to call at this platform.
+    Active,
+    /// Darwin's board lists this train as cancelled at this stop: this is
+    /// the platform it was allocated, but it is no longer calling there.
+    /// Served (and shown struck through) rather than hidden, so a passenger
+    /// waiting on that platform can see that it is their train that is gone.
+    Cancelled,
+}
+
 /// One calling point of a train's journey, booked schedule merged with the
 /// latest reported live data for that location -- see this module's own
 /// doc comment and the design doc §2/§3.
@@ -263,9 +285,10 @@ pub struct JourneyStop {
     /// and, for ANY departing calling point whose station `poller-ldbws`
     /// samples, this train's row on that station's current departure board
     /// (`stop_board::apply_station_sample_board`, the same unique match as
-    /// `board`, which wins when its row has a platform and is not
-    /// cancelled). Darwin/LDBWS's board only ever reports a station's OWN
-    /// platform for a service departing FROM it
+    /// `board`, which wins when its row has a platform; a cancelled row's
+    /// platform is served with `platform_status` `Cancelled`).
+    /// Darwin/LDBWS's board only ever reports a station's OWN platform
+    /// for a service departing FROM it
     /// (`poller-ldbws/src/schema.rs`'s `RdmCallingPoint` carries no
     /// platform field at all), so a terminating stop, a stop at an
     /// unsampled station, a stop whose board row is ambiguous or more than
@@ -284,6 +307,9 @@ pub struct JourneyStop {
     /// derivation for `StationDeparture`. Always `false` for a stop with no
     /// platform signal at all (there is nothing to have changed).
     pub platform_changed: bool,
+    /// Whether the train still calls at `platform`: `Some` exactly when
+    /// `platform` is, `None` otherwise. See [`PlatformStatus`].
+    pub platform_status: Option<PlatformStatus>,
     /// The TIMETABLED platform from the CIF schedule itself
     /// (`schedule_query::CallingPoint::platform`: `LO`/`LT` `19..22`, `LI`
     /// `33..36`), independent of any Darwin data -- known for every calling
@@ -364,6 +390,7 @@ impl JourneyStop {
             platform: None,
             planned_platform: None,
             platform_changed: false,
+            platform_status: None,
             booked_platform: cp.platform.clone(),
             live_status: None,
             late_minutes: None,
@@ -1052,6 +1079,7 @@ fn apply_origin_platform(
     // for `StationDeparture` -- see that function's own comment.
     origin.platform_changed =
         origin.planned_platform.is_some() && origin.planned_platform.as_deref() != Some(platform);
+    origin.platform_status = Some(PlatformStatus::Active);
 }
 
 /// The instant a movement event actually describes -- its reported
@@ -1587,6 +1615,7 @@ pub(crate) mod test_support {
             platform: None,
             planned_platform: None,
             platform_changed: false,
+            platform_status: None,
             booked_platform: None,
             live_status: None,
             late_minutes: None,
@@ -1619,6 +1648,7 @@ mod tests {
             platform: None,
             planned_platform: None,
             platform_changed: false,
+            platform_status: None,
             booked_platform: None,
             live_status: None,
             late_minutes: None,
@@ -2794,9 +2824,11 @@ mod tests {
         assert_eq!(stops[0].platform, Some("6".to_string()));
         assert_eq!(stops[0].planned_platform, Some("6".to_string()));
         assert!(!stops[0].platform_changed);
+        assert_eq!(stops[0].platform_status, Some(PlatformStatus::Active));
         // Every other stop is genuinely unknown -- Darwin has no
         // per-calling-point platform signal for the rest of the route.
         assert_eq!(stops[1].platform, None);
+        assert_eq!(stops[1].platform_status, None);
         assert_eq!(stops[2].platform, None);
     }
 
@@ -3840,6 +3872,8 @@ mod db_tests {
     /// - a sub-CRS intermediate stop (its own CRS has no board) gets its
     ///   platform from the main station's board through
     ///   `station_samples.tiplocs`;
+    /// - a stop whose own row is cancelled still gets that row's platform,
+    ///   with `platformStatus` `cancelled`;
     /// - the terminating stop (on no departure board) stays `None`.
     ///
     /// Times are relative to now: boards older than 10 minutes are ignored.
@@ -3857,6 +3891,7 @@ mod db_tests {
         };
         let origin_at = london(polled_at + Duration::minutes(20));
         let intermediate_at = origin_at + Duration::minutes(10);
+        let cancelled_at = origin_at + Duration::minutes(20);
         let terminus_at = origin_at + Duration::minutes(30);
         let service_date = origin_at.date_naive();
         let hhmm = |at: &DateTime<chrono_tz::Tz>| at.format("%H:%M").to_string();
@@ -3883,6 +3918,7 @@ mod db_tests {
             ("TEST-JRNP-1", "ZPA", "ZTJPA"),
             ("TEST-JRNP-2", "ZPX", "ZTJPBX"),
             ("TEST-JRNP-3", "ZPC", "ZTJPC"),
+            ("TEST-JRNP-4", "ZPD", "ZTJPD"),
         ]
         .into_iter()
         .map(|(stanox, crs, tiploc)| common::StanoxCrsRecord {
@@ -3907,6 +3943,9 @@ mod db_tests {
                     "platform": platform, "planned_platform": planned
                 })
             };
+        let mut cancelled = row("9100001ZTJPD__1", hhmm(&cancelled_at), "SW123400", "5", "5");
+        cancelled["is_cancelled"] = serde_json::json!(true);
+        cancelled["estimated"] = serde_json::json!("Cancelled");
         for (crs, tiplocs, departures) in [
             (
                 "ZPA",
@@ -3934,6 +3973,7 @@ mod db_tests {
                     "2"
                 )]),
             ),
+            ("ZPD", vec!["ZTJPD"], serde_json::json!([cancelled])),
         ] {
             sqlx::query(
                 "INSERT INTO station_samples (crs, polled_at, departures, tiplocs) \
@@ -3957,6 +3997,10 @@ mod db_tests {
               "dayOffset": day_offset(&intermediate_at),
               "bookedArrival": hhmmss(&(intermediate_at - Duration::minutes(1))),
               "bookedDeparture": hhmmss(&intermediate_at) },
+            { "tiploc": "ZTJPD", "kind": "Intermediate",
+              "dayOffset": day_offset(&cancelled_at),
+              "bookedArrival": hhmmss(&(cancelled_at - Duration::minutes(1))),
+              "bookedDeparture": hhmmss(&cancelled_at) },
             { "tiploc": "ZTJPC", "kind": "Terminate", "dayOffset": day_offset(&terminus_at),
               "bookedArrival": hhmmss(&terminus_at), "bookedDeparture": null }
         ]);
@@ -3992,19 +4036,24 @@ mod db_tests {
         );
         assert_eq!(stops[1].planned_platform.as_deref(), Some("2"));
         assert!(!stops[1].platform_changed);
-        assert_eq!(stops[2].platform, None);
-        assert_eq!(stops[2].planned_platform, None);
+        assert_eq!(stops[1].platform_status, Some(PlatformStatus::Active));
+        assert_eq!(stops[2].platform.as_deref(), Some("5"), "cancelled row");
+        assert_eq!(stops[2].platform_status, Some(PlatformStatus::Cancelled));
+        assert!(stops[2].board.as_ref().unwrap().is_cancelled);
+        assert_eq!(stops[3].platform, None);
+        assert_eq!(stops[3].planned_platform, None);
+        assert_eq!(stops[3].platform_status, None);
         // CIF booked platform off `trains.calling_points`: present where the
         // stored JSON carries one, `None` where it doesn't (an older row).
         assert_eq!(stops[0].booked_platform.as_deref(), Some("6"));
         assert_eq!(stops[1].booked_platform, None);
-        assert_eq!(stops[2].booked_platform, None);
+        assert_eq!(stops[3].booked_platform, None);
 
-        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZPA', 'ZPB')")
+        sqlx::query("DELETE FROM station_samples WHERE crs IN ('ZPA', 'ZPB', 'ZPD')")
             .execute(&pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM stanox_crs WHERE tiploc IN ('ZTJPA', 'ZTJPBX', 'ZTJPC')")
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc IN ('ZTJPA', 'ZTJPBX', 'ZTJPC', 'ZTJPD')")
             .execute(&pool)
             .await
             .ok();

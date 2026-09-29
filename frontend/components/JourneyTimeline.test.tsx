@@ -205,6 +205,22 @@ describe('JourneyTimeline', () => {
     expect(screen.getByText('Platform 9 (changed from 6)')).toBeInTheDocument();
   });
 
+  it("marks a cancelled stop's platform as cancelled in text, struck through", () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ kind: 'Intermediate', platform: '4', plannedPlatform: '4', platformStatus: 'cancelled' }),
+          stop({ kind: 'Intermediate', crs: 'WOK', platform: '2', plannedPlatform: '2', platformStatus: 'active' }),
+        ]}
+      />,
+    );
+    const cancelled = screen.getByText('Platform 4');
+    expect(cancelled.tagName).toBe('S');
+    expect(cancelled.closest('.mantine-Badge-root')).toHaveTextContent('Platform 4 (cancelled)');
+    const active = screen.getByText('Platform 2');
+    expect(active.closest('[data-platform-cancelled]')).toBeNull();
+  });
+
   it('renders as a table with a column for each fact shown, and hides the ones with no data', () => {
     renderWithMantine(<JourneyTimeline stops={[stop({})]} />);
     const table = screen.getByRole('table', { name: 'Journey timeline' });

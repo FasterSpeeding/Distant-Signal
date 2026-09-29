@@ -57,4 +57,47 @@ describe('PlatformBadge', () => {
     // reliable way to see which colour actually reached the DOM.
     expect(badge?.getAttribute('style')).not.toMatch(/orange/i);
   });
+
+  describe('a cancelled platform', () => {
+    it('reads "Platform 4 (cancelled)" to assistive technology, not colour or strike-through alone', () => {
+      renderWithMantine(
+        <PlatformBadge platform="4" plannedPlatform="4" platformChanged={false} platformStatus="cancelled" />,
+      );
+      const badge = screen.getByText('Platform 4').closest('.mantine-Badge-root');
+      expect(badge).toHaveTextContent('Platform 4 (cancelled)');
+      expect(badge).toHaveAttribute('data-platform-cancelled', 'true');
+    });
+
+    it('is red and struck through', () => {
+      renderWithMantine(
+        <PlatformBadge platform="4" plannedPlatform="4" platformChanged={false} platformStatus="cancelled" />,
+      );
+      const text = screen.getByText('Platform 4');
+      expect(text.tagName).toBe('S');
+      expect(text.closest('.mantine-Badge-root')?.getAttribute('style')).toMatch(/red/i);
+    });
+
+    it('still names a platform change', () => {
+      renderWithMantine(
+        <PlatformBadge platform="9" plannedPlatform="6" platformChanged={true} platformStatus="cancelled" />,
+      );
+      expect(screen.getByText('Platform 9 (changed from 6)').closest('.mantine-Badge-root')).toHaveTextContent(
+        'Platform 9 (changed from 6) (cancelled)',
+      );
+    });
+
+    it('renders an active or unknown status as a normal platform', () => {
+      renderWithMantine(
+        <PlatformBadge
+          platform="4"
+          plannedPlatform="4"
+          platformChanged={false}
+          platformStatus={'provisional' as unknown as 'active'}
+        />,
+      );
+      const badge = screen.getByText('Platform 4');
+      expect(badge.tagName).not.toBe('S');
+      expect(badge.closest('[data-platform-cancelled]')).toBeNull();
+    });
+  });
 });

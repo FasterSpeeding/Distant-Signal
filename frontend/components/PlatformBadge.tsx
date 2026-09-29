@@ -1,4 +1,5 @@
-import { Badge } from '@mantine/core';
+import { Badge, VisuallyHidden } from '@mantine/core';
+import type { PlatformStatus } from '@/lib/types';
 
 /** A small colour+text badge naming a calling point's Darwin/LDBWS
  * platform, shared between `ScheduleRow.tsx` (list-view rows) and
@@ -28,20 +29,47 @@ import { Badge } from '@mantine/core';
  * thing". `blue` is neutral everywhere else in this app (see
  * `JourneyStatusBadge`'s `unmatched` colour), leaving orange/red free to
  * mean lateness/cancellation only, the one axis the rest of the app
- * already reserves them for. */
+ * already reserves them for.
+ *
+ * A `platformStatus` of `cancelled` (a journey stop whose own board row
+ * Darwin lists as cancelled: the platform it was allocated, but the train
+ * no longer calls there) renders red -- the app's cancellation colour, as
+ * in `ScheduleRow`'s "Cancelled" badge -- with the platform text struck
+ * through. Neither cue is announced by a screen reader, so a visually
+ * hidden " (cancelled)" completes the text: "Platform 4 (cancelled)".
+ * Any other status (including one this client doesn't know yet) renders
+ * as a normal platform. */
 export function PlatformBadge({
   platform,
   plannedPlatform,
   platformChanged,
+  platformStatus = null,
 }: {
   platform: string | null;
   plannedPlatform: string | null;
   platformChanged: boolean;
+  platformStatus?: PlatformStatus | null;
 }) {
   if (platform === null) return null;
 
   const changed = platformChanged && plannedPlatform !== null;
   const label = changed ? `Platform ${platform} (changed from ${plannedPlatform})` : `Platform ${platform}`;
+
+  if (platformStatus === 'cancelled') {
+    return (
+      <Badge
+        color="red"
+        variant="light"
+        tt="none"
+        data-platform-changed={changed}
+        data-platform-cancelled="true"
+        title="Cancelled: the train no longer calls at this platform"
+      >
+        <s>{label}</s>
+        <VisuallyHidden> (cancelled)</VisuallyHidden>
+      </Badge>
+    );
+  }
 
   return (
     <Badge color={changed ? 'blue' : 'gray'} variant="light" tt="none" data-platform-changed={changed}>
