@@ -1,4 +1,18 @@
-import { Alert, Code, CopyButton, Group, List, ListItem, Stack, Text, Title, ActionIcon, Tooltip } from '@mantine/core';
+import {
+  Alert,
+  Card,
+  Code,
+  CopyButton,
+  Group,
+  List,
+  ListItem,
+  Stack,
+  Text,
+  Title,
+  ActionIcon,
+  Tooltip,
+} from '@mantine/core';
+import type { Metadata } from 'next';
 import { getSession } from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
 import { InfoIcon } from '@/components/InfoIcon';
@@ -10,6 +24,18 @@ import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 // (getSession() needs the `api` service, which only exists on the runtime
 // network, not at build time).
 export const revalidate = 0;
+
+// Same metadata shape as app/account/page.tsx: the root layout's bare
+// "Distant Signal" title otherwise names every tab this page is open in.
+const METADATA_TITLE = 'Connect Claude — Distant Signal';
+const METADATA_DESCRIPTION =
+  'Connect your own Claude.ai or Claude Desktop account to Distant Signal to ask about UK train departures, arrivals and journeys.';
+export const metadata: Metadata = {
+  title: METADATA_TITLE,
+  description: METADATA_DESCRIPTION,
+  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
+  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
+};
 
 /** The MCP server's own public URL (`railMcp.publicUrl` in the chart).
  * FE-2: read through `runtimeRailMcpPublicUrl()`, which looks the name up
@@ -59,7 +85,9 @@ export default async function ConnectClaudePage() {
 
   if (!session.authenticated) {
     return (
-      <Stack p="lg" gap="md">
+      // `maw={640}`: the same reading width as the other single-column
+      // flow pages (/account, /account/deleted).
+      <Stack p="lg" gap="md" maw={640}>
         <Title order={1}>Connect Claude to Distant Signal</Title>
         <Text>
           Log in to Distant Signal first, then come back here to connect your own Claude.ai or Claude Desktop account.
@@ -75,7 +103,7 @@ export default async function ConnectClaudePage() {
   }
 
   return (
-    <Stack p="lg" gap="md">
+    <Stack p="lg" gap="md" maw={640}>
       <Title order={1}>Connect Claude to Distant Signal</Title>
       <Text>
         Distant Signal exposes an MCP server so you can ask Claude directly about UK train departures, arrivals, and
@@ -94,55 +122,68 @@ export default async function ConnectClaudePage() {
         Connecting requires a Pro, Max, Team, or Enterprise Claude plan for full support (a free Claude.ai account gets
         one custom connector).
       </Alert>
-      {/* Flat `ListItem` named export, not the `List.Item` dot-notation
-          compound API -- this page is a Server Component and `List` carries
-          a `"use client"` directive, so a dot-notation sub-component
-          reached off its reference resolves to `undefined` once Next
-          actually compiles the Server/Client boundary, 500ing the route
-          with "Element type is invalid ... got: undefined". Same bug class
-          already hit and fixed for Table (AllLinesTable.tsx) and Tabs
-          (app/lines/[id]/history/page.tsx) -- confirmed live against a
-          running dev server, not reproducible via
-          jsdom/@testing-library/react (renderWithMantine renders
-          everything as one ordinary client tree and never enforces this
-          boundary). */}
-      <List type="ordered">
-        <ListItem>
-          In Claude.ai or Claude Desktop, open <strong>Customize &gt; Connectors</strong>.
-        </ListItem>
-        <ListItem>
-          Click the <strong>+</strong> button, then <strong>Add custom connector</strong>.
-        </ListItem>
-        <ListItem>
-          <Group gap="xs" wrap="nowrap">
-            <Text span>Enter this URL:</Text>
-            <Code>{railMcpPublicUrl()}</Code>
-            {/* Review §3.1.6: the connector URL is long enough (a full
-                hostname plus path) that selecting it precisely by hand is
-                fiddly on a phone. `CopyButton` is Mantine's own render-prop
-                for this -- it owns the copied/not-copied toggle state, this
-                just supplies the icon and the accessible name. */}
-            <CopyButton value={railMcpPublicUrl()}>
-              {({ copied, copy }) => (
-                <Tooltip label={copied ? 'Copied' : 'Copy connector URL'} withArrow>
-                  <ActionIcon
-                    variant="subtle"
-                    color={copied ? 'teal' : 'gray'}
-                    onClick={copy}
-                    aria-label="Copy connector URL"
-                  >
-                    <CopyIcon />
-                  </ActionIcon>
-                </Tooltip>
-              )}
-            </CopyButton>
-          </Group>
-        </ListItem>
-        <ListItem>
-          Approve access when prompted — you&apos;ll be sent to Distant Signal&apos;s own login if you aren&apos;t
-          already signed in here, then asked to confirm the connection.
-        </ListItem>
-      </List>
+      {/* A bordered, headed section, the same shape as /account's cards,
+          so the steps read as the page's one task rather than as more
+          body copy. */}
+      <Card withBorder component="section" aria-labelledby="connect-steps-heading">
+        <Stack gap="sm">
+          <Title order={2} size="h3" id="connect-steps-heading">
+            How to connect
+          </Title>
+          {/* Flat `ListItem` named export, not the `List.Item` dot-notation
+              compound API -- this page is a Server Component and `List` carries
+              a `"use client"` directive, so a dot-notation sub-component
+              reached off its reference resolves to `undefined` once Next
+              actually compiles the Server/Client boundary, 500ing the route
+              with "Element type is invalid ... got: undefined". Same bug class
+              already hit and fixed for Table (AllLinesTable.tsx) and Tabs
+              (app/lines/[id]/history/page.tsx) -- confirmed live against a
+              running dev server, not reproducible via
+              jsdom/@testing-library/react (renderWithMantine renders
+              everything as one ordinary client tree and never enforces this
+              boundary). */}
+          <List type="ordered">
+            <ListItem>
+              In Claude.ai or Claude Desktop, open <strong>Customize &gt; Connectors</strong>.
+            </ListItem>
+            <ListItem>
+              Click the <strong>+</strong> button, then <strong>Add custom connector</strong>.
+            </ListItem>
+            <ListItem>
+              {/* The URL gets its own line and may break anywhere: on one
+                  `nowrap` row with the label it ran off the side of a
+                  phone-width screen. */}
+              <Text span>Enter this URL:</Text>
+              <Group gap="xs" wrap="nowrap" align="center">
+                <Code style={{ wordBreak: 'break-all' }}>{railMcpPublicUrl()}</Code>
+                {/* Review §3.1.6: the connector URL is long enough (a full
+                    hostname plus path) that selecting it precisely by hand is
+                    fiddly on a phone. `CopyButton` is Mantine's own render-prop
+                    for this -- it owns the copied/not-copied toggle state, this
+                    just supplies the icon and the accessible name. */}
+                <CopyButton value={railMcpPublicUrl()}>
+                  {({ copied, copy }) => (
+                    <Tooltip label={copied ? 'Copied' : 'Copy connector URL'} withArrow>
+                      <ActionIcon
+                        variant="subtle"
+                        color={copied ? 'teal' : 'gray'}
+                        onClick={copy}
+                        aria-label="Copy connector URL"
+                      >
+                        <CopyIcon />
+                      </ActionIcon>
+                    </Tooltip>
+                  )}
+                </CopyButton>
+              </Group>
+            </ListItem>
+            <ListItem>
+              Approve access when prompted — you&apos;ll be sent to Distant Signal&apos;s own login if you aren&apos;t
+              already signed in here, then asked to confirm the connection.
+            </ListItem>
+          </List>
+        </Stack>
+      </Card>
       <Text size="sm" c="dimmed">
         Conversations happen entirely inside Claude&apos;s own interface, billed to your own Claude plan — Distant
         Signal never sees the conversation itself, only the specific train/line/journey lookups Claude asks it to run on

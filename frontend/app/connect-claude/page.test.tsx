@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import ConnectClaudePage from './page';
+import ConnectClaudePage, { metadata } from './page';
 import * as api from '@/lib/api';
 import type { SessionInfo } from '@/lib/types';
 
@@ -120,5 +120,31 @@ describe('/connect-claude', () => {
     clone.querySelectorAll('style').forEach((el) => el.remove());
     expect(clone.textContent).not.toMatch(/--/);
     expect(clone.textContent).toMatch(/—/);
+  });
+  it('names the tab after the page, not just the site', () => {
+    expect(metadata.title).toBe('Connect Claude — Distant Signal');
+  });
+
+  it('has one h1, and puts the steps in a "How to connect" section headed by an h2', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
+    renderWithMantine(await ConnectClaudePage());
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 1, name: 'Connect Claude to Distant Signal' })).toBeInTheDocument();
+    const section = screen.getByRole('region', { name: 'How to connect' });
+    expect(within(section).getByRole('heading', { level: 2, name: 'How to connect' })).toBeInTheDocument();
+    expect(within(section).getAllByRole('listitem')).toHaveLength(4);
+  });
+
+  it('lets the long connector URL wrap instead of running off a phone-width screen', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn());
+    renderWithMantine(await ConnectClaudePage());
+    expect(screen.getByText('https://mcp.example.com')).toHaveStyle({ wordBreak: 'break-all' });
+  });
+
+  it('keeps the logged-out branch to one h1 and the login button', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedOut());
+    renderWithMantine(await ConnectClaudePage());
+    expect(screen.getAllByRole('heading')).toHaveLength(1);
+    expect(screen.queryByRole('region', { name: 'How to connect' })).not.toBeInTheDocument();
   });
 });

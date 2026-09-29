@@ -215,6 +215,8 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   // Deliberate 404, exercising not-found.tsx + the `<main>` landmark every
   // not-found.tsx inherits from app/layout.tsx.
   ['a deliberate 404', '/lines/nonexistent-line-slug'],
+  // The app-wide 404 (app/not-found.tsx), for a URL no route matches.
+  ['an unmatched-route 404', '/this-route-does-not-exist'],
   // These four gate on a session and, logged out, render a heading plus an
   // auto-opened `LoginPromptModal`. That modal state is a real, reachable,
   // first-paint DOM for an anonymous visitor -- and is where the Mantine
