@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Alert, Button, Loader, Group, Stack, Text, Title } from '@mantine/core';
 import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
-import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
+import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
 
 /** Plain exclamation-in-a-circle, in the same inline-SVG house style as
  * `components/InfoIcon.tsx` (`@tabler/icons-react` is not a project
@@ -54,12 +54,23 @@ type Exchange = { kind: 'error'; message: string } | { kind: 'pending'; promise:
  * Runs once per mount (see `exchangeRef`). */
 function startExchange(serverUrl: string): Exchange {
   const params = new URLSearchParams(window.location.search);
+  const provider = chatOAuthProvider();
+  // RFC 6749 §4.1.2.1: the authorization server refused or the visitor
+  // declined. Consume the pending state either way so /chat doesn't also
+  // report this as an unfinished sign-in.
+  const oauthError = params.get('error');
+  if (oauthError) {
+    provider.consumeAndVerifyState(params.get('state'));
+    const description = params.get('error_description');
+    return {
+      kind: 'error',
+      message: `The authorization server returned "${oauthError}"${description ? `: ${description}` : ''}.`,
+    };
+  }
   const code = params.get('code');
   if (!code) {
     return { kind: 'error', message: 'No authorization code was present in the callback URL.' };
   }
-
-  const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
 
   // Finding 3 of the deferred fapp Low-severity batch (2026-09-24
   // security review): before this, nothing about this callback verified
@@ -123,6 +134,22 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
   // while the first run's exchange still completed and navigated. The ref
   // survives that re-run, so the second run attaches to the same exchange.
   const exchangeRef = useRef<Exchange | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectError, setReconnectError] = useState<string | null>(null);
+
+  // Starts over with a fresh registration and tokens (`startMcpSignIn`), so
+  // a failure caused by a registration the server has since expired (its
+  // token endpoint answers `invalid_client`) can't simply repeat.
+  async function reconnect(url: string) {
+    setReconnecting(true);
+    setReconnectError(null);
+    try {
+      await startMcpSignIn(url);
+    } catch (err) {
+      setReconnecting(false);
+      setReconnectError(err instanceof Error ? err.message : 'Signing in could not be started.');
+    }
+  }
 
   useEffect(() => {
     if (!serverUrl) return; // initial state is already the error
@@ -199,6 +226,8 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
         <Alert color="red" icon={<ErrorIcon />} role="alert">
           <Stack gap="sm">
             <Text>We couldn&apos;t finish connecting to the rail data service.</Text>
+            {serverUrl && <Text>Reconnect to sign in again with a fresh connection.</Text>}
+            {reconnectError && <Text size="sm">Couldn&apos;t start signing in: {reconnectError}</Text>}
             {/* `<Link>` wrapping a plain `Button`, not Mantine's
                 `component={Link}` polymorphic prop -- the same pattern
                 `components/ChatPanel.tsx`'s own "Track this train" button
@@ -206,9 +235,16 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
                 environment indefinitely (a real, reproducible hang, not
                 mere slowness -- isolated by bisecting this file's tests
                 down to this one render). */}
-            <Link href="/chat" style={{ textDecoration: 'none' }}>
-              <Button>Back to Chat</Button>
-            </Link>
+            <Group gap="sm">
+              {serverUrl && (
+                <Button onClick={() => void reconnect(serverUrl)} loading={reconnecting}>
+                  Reconnect
+                </Button>
+              )}
+              <Link href="/chat" style={{ textDecoration: 'none' }}>
+                <Button variant={serverUrl ? 'default' : 'filled'}>Back to Chat</Button>
+              </Link>
+            </Group>
             <details>
               <summary>Show error details</summary>
               <Text size="sm" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>

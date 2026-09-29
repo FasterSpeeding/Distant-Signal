@@ -10,6 +10,7 @@ describe('clearBrowserAccountData', () => {
       [
         'ds-anthropic-api-key',
         'ds-mcp-oauth:client-information',
+        'ds-mcp-oauth:client-saved-at',
         'ds-mcp-oauth:code-verifier',
         'ds-mcp-oauth:oauth-state',
         'ds-mcp-oauth:tokens',

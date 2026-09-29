@@ -1,13 +1,15 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { RenderedTrainLeg } from '@/lib/types';
 import { getAnthropicApiKey } from '@/lib/anthropicKey';
-import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
+import { chatOAuthProvider, mcpEndpointUrl, startMcpSignIn } from '@/lib/mcpAuthorization';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
@@ -51,8 +53,25 @@ const CHAT_MODEL = 'claude-opus-4-6';
 type ChatError =
   | { kind: 'no-key' }
   | { kind: 'anthropic-rejected' }
+  | { kind: 'mcp-connect' }
   | { kind: 'mcp-reconnect' }
+  | { kind: 'mcp-incomplete' }
+  | { kind: 'sign-in-failed'; message: string }
   | { kind: 'tool-error'; message: string };
+
+function noSubscription(): () => void {
+  return () => {};
+}
+
+/** The error states whose way forward is (re)running the MCP sign-in. */
+function needsSignIn(error: ChatError): boolean {
+  return (
+    error.kind === 'mcp-connect' ||
+    error.kind === 'mcp-reconnect' ||
+    error.kind === 'mcp-incomplete' ||
+    error.kind === 'sign-in-failed'
+  );
+}
 
 interface ChatPanelProps {
   /** The MCP server's public base URL (`railMcp.publicUrl`), read at
@@ -81,6 +100,36 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   // DQ12 (FE-6): a tool call waiting on the passenger's Allow/Don't allow.
   const [pendingTool, setPendingTool] = useState<{ toolName: string; args: Record<string, unknown> } | null>(null);
   const confirmResolver = useRef<((allowed: boolean) => void) | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
+
+  // A sign-in that left for the authorization server and never came back
+  // through /chat/callback -- most often because the server refused a
+  // stale registration with a bare 400 page. Say so, and offer Reconnect
+  // (which starts over with a fresh registration), instead of leaving the
+  // visitor to discover it on their next message. Read via
+  // `useSyncExternalStore` so the server render (no localStorage) and the
+  // first client render agree.
+  const abandonedAuthorization = useSyncExternalStore(
+    noSubscription,
+    () => chatOAuthProvider().hasAbandonedAuthorization(),
+    () => false,
+  );
+  const shownError: ChatError | null = error ?? (abandonedAuthorization ? { kind: 'mcp-incomplete' } : null);
+
+  async function signIn() {
+    setSigningIn(true);
+    try {
+      await startMcpSignIn(mcpServerUrl);
+      // 'REDIRECT': the browser is already navigating away; leave the
+      // button busy until it does.
+    } catch (err) {
+      setSigningIn(false);
+      setError({
+        kind: 'sign-in-failed',
+        message: err instanceof Error ? err.message : 'Something went wrong.',
+      });
+    }
+  }
 
   const confirmToolCall: ConfirmToolCall = (request) =>
     new Promise<boolean>((resolve) => {
@@ -124,10 +173,13 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       return;
     }
 
-    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
-    const tokens = provider.tokens();
-    if (!tokens) {
-      setError({ kind: 'mcp-reconnect' });
+    const provider = chatOAuthProvider();
+    const hadTokens = provider.tokens() !== undefined;
+    // Drops a registration old enough that the server has expired it
+    // (and the tokens issued to it) -- see `MCP_CLIENT_MAX_AGE_MS`.
+    provider.clientInformation();
+    if (!provider.tokens()) {
+      setError({ kind: hadTokens ? 'mcp-reconnect' : 'mcp-connect' });
       return;
     }
 
@@ -152,7 +204,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       for await (const event of runChatTurn({
         anthropic,
         model: CHAT_MODEL,
-        mcpUrl: `${mcpServerUrl.replace(/\/+$/, '')}/mcp`,
+        mcpUrl: mcpEndpointUrl(mcpServerUrl),
         mcpAuthProvider: provider,
         conversationHistory: historyRef.current,
         userMessage: trimmed,
@@ -173,7 +225,13 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       // message stays visible, with the error shown alongside it, rather
       // than silently disappearing too.
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
-      setError(classifyChatError(err));
+      const chatError = classifyChatError(err);
+      // The transport already tried the SDK's own reauth (refresh, or
+      // re-registration on `invalid_client`) before this surfaced, so the
+      // stored tokens are dead: drop them so the next Send offers Connect
+      // rather than replaying them into the same failure.
+      if (chatError.kind === 'mcp-reconnect') provider.invalidateCredentials('tokens');
+      setError(chatError);
     } finally {
       answerToolCall(false);
       setSending(false);
@@ -183,7 +241,13 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   return (
     <Stack gap="md" h="100%" style={{ flex: 1, minHeight: 0 }}>
       <AnthropicKeySettings />
-      {error && <ChatErrorAlert error={error} />}
+      {shownError && (
+        <ChatErrorAlert
+          error={shownError}
+          onSignIn={needsSignIn(shownError) ? signIn : undefined}
+          signingIn={signingIn}
+        />
+      )}
       <ScrollArea viewportRef={viewport} style={{ flex: 1 }} offsetScrollbars>
         <Stack gap="md" p="xs">
           {messages.length === 0 && (
@@ -296,6 +360,14 @@ function classifyChatError(err: unknown): ChatError {
   // before the code) is a distinct, reliable signal that doesn't share the
   // false-positive risk a bare number does -- no upstream/tool text in this
   // app phrases anything else that way.
+  // The SDK's own auth failures: `UnauthorizedError` (the transport's
+  // reauth ended in a redirect, or found no usable credentials) and any
+  // OAuth error response from the authorization server (e.g.
+  // `invalid_client` for an expired registration surviving `auth()`'s
+  // one retry). Both mean "sign in again", never a tool failure.
+  if (isNamedError(err, UnauthorizedError, 'UnauthorizedError') || err instanceof OAuthError) {
+    return { kind: 'mcp-reconnect' };
+  }
   const status = mcpHttpStatus(err);
   if (status === 401 || status === 403) {
     return { kind: 'mcp-reconnect' };
@@ -307,7 +379,28 @@ function classifyChatError(err: unknown): ChatError {
   return { kind: 'tool-error', message };
 }
 
-function ChatErrorAlert({ error }: { error: ChatError }) {
+function isNamedError(err: unknown, ctor: abstract new (...args: never[]) => unknown, name: string): boolean {
+  if (err instanceof ctor) return true;
+  return !!err && typeof err === 'object' && (err as { constructor?: { name?: string } }).constructor?.name === name;
+}
+
+function ChatErrorAlert({
+  error,
+  onSignIn,
+  signingIn,
+}: {
+  error: ChatError;
+  onSignIn?: () => void;
+  signingIn: boolean;
+}) {
+  const signInButton = (label: string) =>
+    onSignIn && (
+      <Group mt="xs">
+        <Button size="xs" onClick={onSignIn} loading={signingIn}>
+          {label}
+        </Button>
+      </Group>
+    );
   switch (error.kind) {
     case 'no-key':
       return (
@@ -321,11 +414,34 @@ function ChatErrorAlert({ error }: { error: ChatError }) {
           Your Anthropic API key was rejected. Check that it&apos;s correct and try again.
         </Alert>
       );
+    case 'mcp-connect':
+      return (
+        <Alert color="orange" variant="light">
+          Connect Chat to the rail data service to start asking about trains. You&apos;ll be asked to sign in and
+          approve access, then brought back here.
+          {signInButton('Connect')}
+        </Alert>
+      );
     case 'mcp-reconnect':
       return (
         <Alert color="red" variant="light">
-          Your connection to the rail data service has expired or was not found -- reconnect from the Chat page to keep
-          chatting.
+          Your connection to the rail data service has expired or was not found. Reconnect to keep chatting --
+          you&apos;ll be asked to sign in again.
+          {signInButton('Reconnect')}
+        </Alert>
+      );
+    case 'mcp-incomplete':
+      return (
+        <Alert color="orange" variant="light">
+          Your last sign-in to the rail data service didn&apos;t finish. Reconnect to try again with a fresh connection.
+          {signInButton('Reconnect')}
+        </Alert>
+      );
+    case 'sign-in-failed':
+      return (
+        <Alert color="red" variant="light">
+          Couldn&apos;t start signing in to the rail data service: {error.message}
+          {signInButton('Try again')}
         </Alert>
       );
     case 'tool-error':

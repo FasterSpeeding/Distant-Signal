@@ -234,6 +234,6 @@ test.describe('/chat, mocked network', () => {
     await page.goto('/chat');
     await page.getByPlaceholder(/ask about/i).fill('hi');
     await page.getByRole('button', { name: /send/i }).click();
-    await expect(page.getByText(/reconnect/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reconnect' })).toBeVisible();
   });
 });
