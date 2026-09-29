@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import ChatPage from './page';
@@ -17,6 +17,10 @@ vi.mock('next/navigation', () => ({
 }));
 
 describe('ChatPage', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('renders a login prompt for an unauthenticated visitor', async () => {
     vi.mocked(api.getChatbotAccess).mockResolvedValue('unauthenticated');
     renderWithMantine(await ChatPage());
@@ -41,16 +45,23 @@ describe('ChatPage', () => {
     expect(screen.getByText(/Not available for your account yet/)).toBeInTheDocument();
   });
 
-  // Review §3.1.2 (F8): this dead end used to have no explanation and no
-  // next step -- /connect-claude works for every logged-in user regardless
-  // of the chatbot allowlist, so it's a real next step.
-  it('offers /connect-claude as a next step for a forbidden (non-allowlisted) user', async () => {
+  // Review §3.1.2 (F8): a forbidden user gets a next step -- the MCP
+  // server has its own access group, separate from the chat allowlist.
+  it('offers the add-to-your-own-assistant section to a forbidden user when the MCP URL is set', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
     vi.mocked(api.getChatbotAccess).mockResolvedValue('forbidden');
     renderWithMantine(await ChatPage());
-    expect(screen.getByRole('link', { name: 'connecting Claude to Distant Signal' })).toHaveAttribute(
-      'href',
-      '/connect-claude',
-    );
+    expect(screen.getByRole('heading', { name: 'Use Distant Signal in your own assistant' })).toBeInTheDocument();
+    expect(screen.getByLabelText('MCP server URL')).toHaveValue('https://mcp.example.com/mcp');
+  });
+
+  it('forbidden with no MCP URL: no add-to-assistant section and no link to nowhere', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', '');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue('forbidden');
+    renderWithMantine(await ChatPage());
+    expect(screen.getByText(/only available to a limited allowlist/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Use Distant Signal in your own assistant' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('renders the ChatPanel for an allowed user', async () => {
@@ -58,6 +69,7 @@ describe('ChatPage', () => {
     vi.mocked(api.getChatbotAccess).mockResolvedValue('allowed');
     renderWithMantine(await ChatPage());
     expect(screen.getByPlaceholderText(/next train/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Use Distant Signal in your own assistant' })).toBeInTheDocument();
   });
 
   // FE-2: the MCP URL is read at request time on the server.
@@ -67,5 +79,6 @@ describe('ChatPage', () => {
     renderWithMantine(await ChatPage());
     expect(screen.getByText(/not configured on this deployment/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/next train/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Use Distant Signal in your own assistant' })).not.toBeInTheDocument();
   });
 });
