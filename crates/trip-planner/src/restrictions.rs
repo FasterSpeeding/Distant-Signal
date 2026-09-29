@@ -325,4 +325,84 @@ mod tests {
         assert_eq!(csa, vec!["S"]);
         assert_eq!(raptor, vec!["S"]);
     }
+
+    /// Regression: a train left at a blocked connection and boarded again
+    /// further on must not rewrite the first ride. Here T is ridden A -> X,
+    /// blocked X -> Y, and boarded again at Y (reached on S); the journey to
+    /// E uses the FIRST ride (A -> X) then R. Looking the ride up by UID
+    /// afterwards used to find the second boarding and report "Y -> X".
+    #[test]
+    fn a_train_boarded_again_after_a_block_keeps_its_first_ride() {
+        use crate::{JourneyLeg, RaptorOptions, ScanOptions};
+        let mut connections = vec![
+            timed("T", "A", "X", 100, 110),
+            timed("T", "X", "Y", 111, 120),
+            timed("T", "Y", "Z", 121, 130),
+            timed("S", "A", "Y", 100, 110),
+            timed("R", "X", "E", 115, 200),
+        ];
+        connections.sort_by_key(|c| (c.departure_min, c.uid.clone(), c.from_tiploc.clone()));
+        let r = Restrictions::new(
+            ["P".to_string()],
+            [],
+            HashMap::from([(
+                "T".to_string(),
+                vec![
+                    leg("A", "X", false),
+                    leg("X", "Y", true),
+                    leg("Y", "Z", false),
+                ],
+            )]),
+        );
+        let interchange = schedule_query::InterchangeData {
+            change_time_by_tiploc: HashMap::new(),
+            tiploc_to_crs: HashMap::new(),
+            crs_to_tiplocs: HashMap::new(),
+            fixed_links_from_crs: HashMap::new(),
+        };
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+        let (from, to) = (vec!["A".to_string()], vec!["E".to_string()]);
+        let shape = |legs: &[JourneyLeg]| -> Vec<(String, String, String)> {
+            legs.iter()
+                .filter_map(|leg| match leg {
+                    JourneyLeg::Train(t) => {
+                        Some((t.uid.clone(), t.from_tiploc.clone(), t.to_tiploc.clone()))
+                    }
+                    JourneyLeg::Transfer(_) => None,
+                })
+                .collect()
+        };
+        let expected = vec![
+            ("T".to_string(), "A".to_string(), "X".to_string()),
+            ("R".to_string(), "X".to_string(), "E".to_string()),
+        ];
+        let csa = crate::scan_connections_restricted(
+            ScanOptions {
+                connections: &connections,
+                interchange: &interchange,
+                from_tiplocs: &from,
+                to_tiplocs: &to,
+                departure_min: 0,
+                date,
+            },
+            None,
+            Some(&r),
+        )
+        .expect("T then R");
+        assert_eq!(shape(&csa.legs), expected);
+        let raptor = crate::raptor_search_restricted(
+            RaptorOptions {
+                connections: &connections,
+                interchange: &interchange,
+                from_tiplocs: &from,
+                to_tiplocs: &to,
+                departure_min: 0,
+                date,
+                max_rounds: 4,
+            },
+            None,
+            Some(&r),
+        );
+        assert_eq!(shape(&raptor.last().expect("T then R").legs), expected);
+    }
 }

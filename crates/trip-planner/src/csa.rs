@@ -96,7 +96,12 @@ pub struct ScanOptions<'a> {
 /// How a stop's earliest-arrival entry was produced.
 #[derive(Debug, Clone)]
 enum ArrivalSource {
-    Train(Connection),
+    /// The connection that arrived, and the ride it was part of (an index
+    /// into `Scan::boardings`). The ride is recorded here, not looked up by
+    /// UID afterwards: with restrictions a train can be left (a blocked
+    /// connection) and boarded again further on, and an arrival made on the
+    /// first ride must still reconstruct from the first boarding.
+    Train(Connection, usize),
     Link {
         from_tiploc: String,
         mode: String,
@@ -121,9 +126,11 @@ struct Scan<'a> {
 
     earliest_arrival: HashMap<String, u32>,
     arrived_via: HashMap<String, ArrivalSource>,
-    reachable_trip: HashSet<String>,
-    leg_boarded_at: HashMap<String, Connection>,
-    boarded_from: HashMap<String, String>,
+    /// UID -> the ride (index into `boardings`) the traveller is on.
+    reachable_trip: HashMap<String, usize>,
+    /// Every ride: the connection boarded, and the TIPLOC whose readiness
+    /// allowed it.
+    boardings: Vec<(Connection, String)>,
 
     best_dest_arrival: u32,
     best_dest_tiploc: Option<String>,
@@ -317,9 +324,8 @@ pub fn scan_connections_restricted(
         departure_min: options.departure_min,
         earliest_arrival: HashMap::new(),
         arrived_via: HashMap::new(),
-        reachable_trip: HashSet::new(),
-        leg_boarded_at: HashMap::new(),
-        boarded_from: HashMap::new(),
+        reachable_trip: HashMap::new(),
+        boardings: Vec::new(),
         best_dest_arrival: u32::MAX,
         best_dest_tiploc: None,
     };
@@ -348,25 +354,26 @@ pub fn scan_connections_restricted(
             continue;
         }
 
-        let already_aboard = scan.reachable_trip.contains(&connection.uid);
-        if !already_aboard {
-            let Some(source) = scan.ready_source_at(&connection.from_tiploc) else {
-                continue;
-            };
-            if source.time > connection.departure_min {
-                continue;
+        let ride = match scan.reachable_trip.get(&connection.uid) {
+            Some(&ride) => ride,
+            None => {
+                let Some(source) = scan.ready_source_at(&connection.from_tiploc) else {
+                    continue;
+                };
+                if source.time > connection.departure_min {
+                    continue;
+                }
+                scan.boardings.push((connection.clone(), source.from));
+                let ride = scan.boardings.len() - 1;
+                scan.reachable_trip.insert(connection.uid.clone(), ride);
+                ride
             }
-            scan.reachable_trip.insert(connection.uid.clone());
-            scan.leg_boarded_at
-                .insert(connection.uid.clone(), connection.clone());
-            scan.boarded_from
-                .insert(connection.uid.clone(), source.from);
-        }
+        };
 
         scan.relax(
             &connection.to_tiploc,
             connection.arrival_min,
-            ArrivalSource::Train(connection.clone()),
+            ArrivalSource::Train(connection.clone(), ride),
         );
     }
 
@@ -417,13 +424,8 @@ fn reconstruct_legs(end_tiploc: &str, scan: &Scan) -> Vec<JourneyLeg> {
                 }));
                 stop = from_tiploc.clone();
             }
-            ArrivalSource::Train(connection) => {
-                let boarded = scan.leg_boarded_at.get(&connection.uid).unwrap_or_else(|| {
-                    panic!(
-                        "internal error: uid {} was relaxed without ever being boarded",
-                        connection.uid
-                    )
-                });
+            ArrivalSource::Train(connection, ride) => {
+                let (boarded, source) = &scan.boardings[*ride];
                 legs.push(JourneyLeg::Train(TrainLeg {
                     uid: boarded.uid.clone(),
                     from_tiploc: boarded.from_tiploc.clone(),
@@ -431,12 +433,6 @@ fn reconstruct_legs(end_tiploc: &str, scan: &Scan) -> Vec<JourneyLeg> {
                     departure_min: boarded.departure_min,
                     arrival_min: connection.arrival_min,
                 }));
-                let source = scan.boarded_from.get(&connection.uid).unwrap_or_else(|| {
-                    panic!(
-                        "internal error: uid {} was boarded without a recorded readiness source",
-                        connection.uid
-                    )
-                });
                 stop = source.clone();
             }
         }

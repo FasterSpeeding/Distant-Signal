@@ -86,7 +86,12 @@ pub struct RaptorOptions<'a> {
 /// How a stop's arrival in a given round was produced.
 #[derive(Debug, Clone)]
 enum ArrivalSource {
-    Train(Connection),
+    /// The connection that arrived, the round it was ridden in and the ride
+    /// (an index into that round's `boardings`). Recorded here rather than
+    /// looked up by UID afterwards: an arrival can be carried into later
+    /// rounds, and with restrictions a train can be left and boarded again
+    /// within a round -- see `csa::ArrivalSource::Train`.
+    Train(Connection, usize, usize),
     Link {
         from_tiploc: String,
         mode: String,
@@ -109,8 +114,9 @@ struct ReadySource {
 struct RoundState {
     arrival: HashMap<String, u32>,
     arrived_via: HashMap<String, ArrivalSource>,
-    leg_boarded_at: HashMap<String, Connection>,
-    boarded_from: HashMap<String, String>,
+    /// This round's rides: the connection boarded, and the TIPLOC whose
+    /// (previous-round) readiness allowed it.
+    boardings: Vec<(Connection, String)>,
 }
 
 impl RoundState {
@@ -118,8 +124,7 @@ impl RoundState {
         Self {
             arrival: HashMap::new(),
             arrived_via: HashMap::new(),
-            leg_boarded_at: HashMap::new(),
-            boarded_from: HashMap::new(),
+            boardings: Vec::new(),
         }
     }
 
@@ -127,8 +132,7 @@ impl RoundState {
         Self {
             arrival: self.arrival.clone(),
             arrived_via: self.arrived_via.clone(),
-            leg_boarded_at: HashMap::new(),
-            boarded_from: HashMap::new(),
+            boardings: Vec::new(),
         }
     }
 }
@@ -280,10 +284,11 @@ fn run_one_round<'c>(
     interchange: &InterchangeData,
     restrictions: Option<&Restrictions>,
     date: NaiveDate,
+    round: usize,
 ) -> (RoundState, bool /* improved */) {
     let mut current = previous.clone_for_next_round();
     let mut touched = HashSet::new();
-    let mut reachable_trip: HashSet<String> = HashSet::new();
+    let mut reachable_trip: HashMap<String, usize> = HashMap::new();
 
     for connection in connections {
         // Unusable, and ends any ride on its train -- see
@@ -292,29 +297,28 @@ fn run_one_round<'c>(
             reachable_trip.remove(&connection.uid);
             continue;
         }
-        let already_aboard = reachable_trip.contains(&connection.uid);
-        if !already_aboard {
-            let Some(source) = ready_source_at(
-                &previous.arrival,
-                origin,
-                departure_min,
-                interchange,
-                restrictions,
-                &connection.from_tiploc,
-            ) else {
-                continue;
-            };
-            if source.time > connection.departure_min {
-                continue;
+        let ride = match reachable_trip.get(&connection.uid) {
+            Some(&ride) => ride,
+            None => {
+                let Some(source) = ready_source_at(
+                    &previous.arrival,
+                    origin,
+                    departure_min,
+                    interchange,
+                    restrictions,
+                    &connection.from_tiploc,
+                ) else {
+                    continue;
+                };
+                if source.time > connection.departure_min {
+                    continue;
+                }
+                current.boardings.push((connection.clone(), source.from));
+                let ride = current.boardings.len() - 1;
+                reachable_trip.insert(connection.uid.clone(), ride);
+                ride
             }
-            reachable_trip.insert(connection.uid.clone());
-            current
-                .leg_boarded_at
-                .insert(connection.uid.clone(), connection.clone());
-            current
-                .boarded_from
-                .insert(connection.uid.clone(), source.from);
-        }
+        };
         relax_in_round(
             &mut current,
             &mut touched,
@@ -323,7 +327,7 @@ fn run_one_round<'c>(
             date,
             &connection.to_tiploc,
             connection.arrival_min,
-            ArrivalSource::Train(connection.clone()),
+            ArrivalSource::Train(connection.clone(), round, ride),
         );
     }
 
@@ -389,6 +393,7 @@ pub fn raptor_search_restricted(
             options.interchange,
             restrictions,
             options.date,
+            rounds.len(),
         );
         rounds.push(current);
         if !improved {
@@ -495,11 +500,8 @@ fn reconstruct_legs(
                 }));
                 stop = from_tiploc.clone();
             }
-            ArrivalSource::Train(connection) => {
-                let boarded = round
-                    .leg_boarded_at
-                    .get(&connection.uid)
-                    .unwrap_or_else(|| panic!("internal error: uid {} relaxed in round {round_index} without ever being boarded there", connection.uid));
+            ArrivalSource::Train(connection, ridden_round, ride) => {
+                let (boarded, source) = &rounds[*ridden_round].boardings[*ride];
                 legs.push(JourneyLeg::Train(TrainLeg {
                     uid: boarded.uid.clone(),
                     from_tiploc: boarded.from_tiploc.clone(),
@@ -507,12 +509,10 @@ fn reconstruct_legs(
                     departure_min: boarded.departure_min,
                     arrival_min: connection.arrival_min,
                 }));
-                let source = round
-                    .boarded_from
-                    .get(&connection.uid)
-                    .unwrap_or_else(|| panic!("internal error: uid {} boarded in round {round_index} without a recorded readiness source", connection.uid));
                 stop = source.clone();
-                round_index -= 1;
+                // The boarding read the labels of the round before the one
+                // it was made in.
+                round_index = ridden_round - 1;
             }
         }
     }
@@ -750,6 +750,7 @@ mod tests {
             &interchange,
             None,
             date(),
+            1,
         );
         assert!(improved1, "round 1 should board U1 and reach MKC");
         assert_eq!(round1.arrival.get("MKC"), Some(&530));
@@ -766,6 +767,7 @@ mod tests {
             &interchange,
             None,
             date(),
+            2,
         );
         assert!(
             !improved2,
