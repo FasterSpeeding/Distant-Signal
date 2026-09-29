@@ -5,19 +5,23 @@ import { InfoIcon } from './InfoIcon';
 import { LastUpdated } from './LastUpdated';
 import type { DataFreshness } from '@/lib/types';
 
-function freshnessRow(label: string, timestamp: string | null) {
-  if (timestamp === null) {
+/** `missing` is what a source with no timestamp yet shows: the polled
+ * feeds say "never fetched", a pushed delivery (CORPUS) "not yet received".
+ * `undefined` (an older api that doesn't send the field) reads as missing. */
+function freshnessRow(label: string, timestamp: string | null | undefined, missing = 'never fetched') {
+  if (timestamp === null || timestamp === undefined) {
     return (
       <Text size="xs" c="dimmed" key={label}>
-        {label}: never fetched
+        {label}: {missing}
       </Text>
     );
   }
   return <LastUpdated key={label} timestamp={timestamp} label={`${label}:`} withTooltip={false} />;
 }
 
-/** Nav-bar info icon for the freshness of the three data sources feeding
- * the aggregator (as opposed to `LastUpdated` on each line card, which
+/** Nav-bar info icon for the freshness of the data sources behind
+ * `/public/freshness` (the polled reference and status feeds, the CIF
+ * schedule feed and the Network Rail CORPUS extract) (as opposed to `LastUpdated` on each line card, which
  * shows when that line's own status was last computed). Same
  * `ActionIcon` + `Tooltip` pattern as `LineDefinitionTooltip`. Each row
  * reuses `LastUpdated` with `withTooltip={false}` — nesting a
@@ -34,6 +38,7 @@ export function DataFreshnessInfo({ freshness }: { freshness: DataFreshness }) {
           {freshnessRow('Incidents', freshness.incidents)}
           {freshnessRow('TfL', freshness.tfl)}
           {freshnessRow('Schedule feed', freshness.schedule_feed)}
+          {freshnessRow('Network Rail CORPUS', freshness.corpus, 'not yet received')}
         </Stack>
       }
       multiline

@@ -436,6 +436,13 @@ export interface DataFreshness {
   // was last recorded by `schedule-ingest`'s push to
   // `/private/schedule-feed-ingests`.
   schedule_feed: string | null;
+  // Also snake_case on the wire, for the same reason: the `delivered_at`
+  // (the delivered file's own mtime) of the newest Network Rail CORPUS
+  // extract `schedule-ingest` loaded through `/private/corpus-locations`
+  // (`MAX(corpus_deliveries.delivered_at)`). `null` until the first load.
+  // Optional only for deploy skew: an api older than this field omits it,
+  // which `DataFreshnessInfo` renders the same as `null`.
+  corpus?: string | null;
 }
 
 /** `GET /public/history-retention`'s response: how many days of

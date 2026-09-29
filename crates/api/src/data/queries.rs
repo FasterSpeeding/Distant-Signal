@@ -937,20 +937,24 @@ async fn last_ingest(pool: &PgPool, source: &str) -> Result<Option<chrono::DateT
 /// Every `/public/freshness` timestamp in ONE query (it used to be five
 /// concurrent `MAX()` scans on five pooled connections per request; DB
 /// review 2026-09-27 F10/F11). Same values as the five `last_*_fetch`
-/// functions: `(stations, tocs, incidents, tfl, schedule_feed)`.
-pub async fn data_freshness(pool: &PgPool) -> Result<[Option<chrono::DateTime<chrono::Utc>>; 5]> {
+/// functions plus `data::corpus::last_corpus_delivery`:
+/// `(stations, tocs, incidents, tfl, schedule_feed, corpus)`. The CORPUS
+/// `MAX()` is an index-only read of `corpus_deliveries`' primary key (about
+/// a dozen rows a year).
+pub async fn data_freshness(pool: &PgPool) -> Result<[Option<chrono::DateTime<chrono::Utc>>; 6]> {
     type Ts = Option<chrono::DateTime<chrono::Utc>>;
-    let row: (Ts, Ts, Ts, Ts, Ts) = sqlx::query_as(
+    let row: (Ts, Ts, Ts, Ts, Ts, Ts) = sqlx::query_as(
         "SELECT \
             (SELECT fetched_at FROM ingest_freshness WHERE source = 'stations'), \
             (SELECT fetched_at FROM ingest_freshness WHERE source = 'tocs'), \
             (SELECT fetched_at FROM ingest_freshness WHERE source = 'incidents'), \
             (SELECT fetched_at FROM ingest_freshness WHERE source = 'tfl'), \
-            (SELECT MAX(delivered_at) FROM schedule_feed_ingests)",
+            (SELECT MAX(delivered_at) FROM schedule_feed_ingests), \
+            (SELECT MAX(delivered_at) FROM corpus_deliveries)",
     )
     .fetch_one(pool)
     .await?;
-    Ok([row.0, row.1, row.2, row.3, row.4])
+    Ok([row.0, row.1, row.2, row.3, row.4, row.5])
 }
 
 /// Upserts a batch of TOC reference records. No history, same rationale as

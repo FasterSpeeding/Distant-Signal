@@ -10,6 +10,7 @@ const freshness: DataFreshness = {
   incidents: null,
   tfl: '2026-08-22T03:00:00Z',
   schedule_feed: '2026-08-30T04:00:00Z',
+  corpus: '2026-09-01T03:00:00Z',
 };
 
 describe('DataFreshnessInfo', () => {
@@ -59,6 +60,28 @@ describe('DataFreshnessInfo', () => {
     renderWithMantine(<DataFreshnessInfo freshness={{ ...freshness, schedule_feed: null }} />);
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
     expect(await screen.findByText(/^Schedule feed: never fetched/)).toBeInTheDocument();
+  });
+
+  it('shows a last-updated row for Network Rail CORPUS once a delivery has been received', async () => {
+    renderWithMantine(<DataFreshnessInfo freshness={freshness} />);
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
+    const row = await screen.findByText(/^Network Rail CORPUS:/);
+    expect(row).toBeInTheDocument();
+    expect(row.textContent).not.toMatch(/not yet received/);
+  });
+
+  it('shows "not yet received" when no CORPUS delivery has ever been loaded', async () => {
+    renderWithMantine(<DataFreshnessInfo freshness={{ ...freshness, corpus: null }} />);
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
+    expect(await screen.findByText(/^Network Rail CORPUS: not yet received/)).toBeInTheDocument();
+  });
+
+  it('treats a missing corpus field (an older api) as "not yet received"', async () => {
+    const withoutCorpus: DataFreshness = { ...freshness };
+    delete withoutCorpus.corpus;
+    renderWithMantine(<DataFreshnessInfo freshness={withoutCorpus} />);
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
+    expect(await screen.findByText(/^Network Rail CORPUS: not yet received/)).toBeInTheDocument();
   });
 
   it('shows the freshness rows on a touch tap, not just mouse hover', async () => {

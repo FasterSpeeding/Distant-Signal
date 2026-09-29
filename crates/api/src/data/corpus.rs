@@ -137,6 +137,31 @@ pub async fn last_corpus_delivery(pool: &PgPool) -> Result<Option<DateTime<Utc>>
     Ok(latest)
 }
 
+/// `distant_signal_api_corpus_last_delivered_at_seconds`: the newest loaded
+/// CORPUS delivery's `delivered_at` as a Unix timestamp, the series behind
+/// the chart's `DistantSignalCorpusStale` alert.
+///
+/// Set from `corpus_deliveries` (the durable marker), not from the request
+/// that just loaded: at startup ([`refresh_last_delivery_metric`] from
+/// `main`'s background loops) and after every load. `schedule-ingest`'s own
+/// `schedule_feed_corpus_last_load_delivered_at_seconds` only exists in the
+/// process that performed a load, so a restart between monthly deliveries
+/// would make any alert on it silently absent; this one survives restarts.
+/// Not set at all before the first load, so the alert cannot fire on a
+/// freshly enabled install that is still waiting for its first delivery.
+pub const LAST_DELIVERY_METRIC: &str = "api_corpus_last_delivered_at_seconds";
+
+/// Reads the newest delivery and, if there is one, sets
+/// [`LAST_DELIVERY_METRIC`]. Returns what it read.
+pub async fn refresh_last_delivery_metric(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
+    let latest = last_corpus_delivery(pool).await?;
+    if let Some(delivered_at) = latest {
+        metrics::gauge!(common::metrics::metric_name(LAST_DELIVERY_METRIC))
+            .set(delivered_at.timestamp() as f64);
+    }
+    Ok(latest)
+}
+
 /// Database-gated: each test gets its own throwaway database
 /// (`#[sqlx::test]`, migrated from `./migrations`), because a load replaces
 /// the WHOLE table and must never run against a shared database that may

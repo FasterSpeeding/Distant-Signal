@@ -21,6 +21,7 @@ const freshness: DataFreshness = {
   incidents: null,
   tfl: null,
   schedule_feed: null,
+  corpus: null,
 };
 
 const loggedOut: SessionInfo = { authenticated: false, id: null, email: null, name: null };
