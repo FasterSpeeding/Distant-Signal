@@ -31,6 +31,12 @@ describe('AddMcpServerLinks', () => {
     expect(screen.getByText(/Only accounts that have been given access/)).toBeInTheDocument();
   });
 
+  it('drops the access-restriction note when access is not restricted', () => {
+    renderWithMantine(<AddMcpServerLinks mcpPublicUrl={PUBLIC_URL} accessRestricted={false} />);
+    expect(screen.getByLabelText('MCP server URL')).toHaveValue(ENDPOINT);
+    expect(screen.queryByText(/Only accounts that have been given access/)).not.toBeInTheDocument();
+  });
+
   it('links to the Cursor and VS Code installers with the endpoint', () => {
     renderWithMantine(<AddMcpServerLinks mcpPublicUrl={PUBLIC_URL} />);
     const cursor = screen.getByRole('link', { name: 'Add to Cursor' }).getAttribute('href') ?? '';

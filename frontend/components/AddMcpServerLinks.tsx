@@ -115,8 +115,19 @@ function CopyField({ label, value, description }: { label: string; value: string
 /** "Use Distant Signal in your own assistant": the MCP server URL plus the
  * documented way to add it to each assistant. Research and sources are in
  * docs/superpowers/specs/2026-09-29-chat-add-mcp-server-links.md. The
- * caller renders this only when `railMcp.publicUrl` is configured. */
-export function AddMcpServerLinks({ mcpPublicUrl }: { mcpPublicUrl: string }) {
+ * caller renders this only when `railMcp.publicUrl` is configured.
+ *
+ * `accessRestricted` (default `true`, the conservative wording) shows the
+ * "only accounts that have been given access" note. `/chat` passes `false`
+ * when the api reports `CHATBOT_ACCESS=authenticated`, which is flipped at
+ * the same time as the MCP server's own ungating. */
+export function AddMcpServerLinks({
+  mcpPublicUrl,
+  accessRestricted = true,
+}: {
+  mcpPublicUrl: string;
+  accessRestricted?: boolean;
+}) {
   const endpoint = mcpEndpointUrl(mcpPublicUrl);
   const headingId = useId();
 
@@ -130,10 +141,12 @@ export function AddMcpServerLinks({ mcpPublicUrl }: { mcpPublicUrl: string }) {
           Add Distant Signal to an AI assistant you already use, then ask it about live departures, disruptions and
           journeys there. When the assistant first connects, you’ll sign in with your Distant Signal account.
         </Text>
-        <Text size="sm" c="dimmed">
-          Only accounts that have been given access to the Distant Signal MCP server can connect. If yours hasn’t,
-          sign-in will be refused.
-        </Text>
+        {accessRestricted && (
+          <Text size="sm" c="dimmed">
+            Only accounts that have been given access to the Distant Signal MCP server can connect. If yours hasn’t,
+            sign-in will be refused.
+          </Text>
+        )}
 
         <CopyField label="MCP server URL" value={endpoint} />
 

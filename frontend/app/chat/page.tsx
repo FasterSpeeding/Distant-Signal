@@ -22,11 +22,12 @@ export const revalidate = 0;
  * non-allowlisted user, per the dual-mode design's own Error handling
  * section ("a logged-in-but-not-allowlisted user... gets a plain 'not
  * available for your account' state, not a 404 -- the feature's existence
- * is not a secret"). */
+ * is not a secret"). `forbidden` only happens in the api's `group` mode;
+ * with `CHATBOT_ACCESS=authenticated` every logged-in user is `allowed`. */
 export default async function ChatPage() {
   const access = await getChatbotAccess();
 
-  if (access === 'unauthenticated') {
+  if (access.status === 'unauthenticated') {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Chat</Title>
@@ -50,7 +51,7 @@ export default async function ChatPage() {
   // inlined at `next build`, where the image has no value for it.
   const mcpServerUrl = runtimeRailMcpPublicUrl();
 
-  if (access === 'forbidden') {
+  if (access.status === 'forbidden') {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Chat</Title>
@@ -89,7 +90,10 @@ export default async function ChatPage() {
     <Stack p="lg" gap="md" h="100%">
       <Title order={1}>Chat</Title>
       <ChatPanel mcpServerUrl={mcpServerUrl} />
-      <AddMcpServerLinks mcpPublicUrl={mcpServerUrl} />
+      {/* The MCP server's own access rule is flipped together with this
+          api's (CHATBOT_ACCESS), so the "only accounts that have been
+          given access" note follows the api's mode. */}
+      <AddMcpServerLinks mcpPublicUrl={mcpServerUrl} accessRestricted={access.mode === 'group'} />
     </Stack>
   );
 }

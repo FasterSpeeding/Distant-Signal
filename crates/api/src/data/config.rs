@@ -133,8 +133,23 @@ pub struct ServiceArguments {
     /// -- an operator's actual Authentik group name is not mandated by this
     /// design. Supersedes the former per-user `chatbot_allowed_users` DB
     /// allowlist (dropped; see the migration removing it).
+    ///
+    /// Only consulted when `chatbot_access` is [`ChatbotAccessMode::Group`]
+    /// (the default). In that mode an empty value means NOBODY gets the
+    /// chatbot (no stored group is ever blank), exactly as before
+    /// `chatbot_access` existed; use `CHATBOT_ACCESS=authenticated`, not an
+    /// empty group, to open it to every logged-in user.
     #[arg(long, env, default_value = "distant-signal-chatbot-users")]
     pub chatbot_access_group: String,
+
+    /// Who gets the embedded chatbot (`/chat`, `GET /public/chatbot/access`):
+    /// `group` (the default) -- only logged-in users in
+    /// `chatbot_access_group`; `authenticated` -- every logged-in user,
+    /// whatever their groups. Logged-out requests are refused (`401`) in both
+    /// modes. A deploy-time switch so the ungating ships dark and is flipped
+    /// together with distant-signal-mcp's own ungating.
+    #[arg(long, env, value_enum, default_value_t = ChatbotAccessMode::Group)]
+    pub chatbot_access: ChatbotAccessMode,
 
     /// Authentik/SSO end-user group (read from the same `groups` OIDC claim
     /// as `chatbot_access_group`) whose members may call the admin
@@ -464,12 +479,36 @@ pub struct ServiceArguments {
     pub inactive_account_retention_days: i64,
 }
 
+/// `ServiceArguments::chatbot_access`: who gets the embedded chatbot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ChatbotAccessMode {
+    /// Only logged-in users in `ServiceArguments::chatbot_access_group`.
+    #[default]
+    Group,
+    /// Every logged-in user; `chatbot_access_group` is ignored.
+    Authenticated,
+}
+
+impl ChatbotAccessMode {
+    /// The wire/env spelling, also returned by `GET /public/chatbot/access`
+    /// so the frontend can word its access notes to match.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatbotAccessMode::Group => "group",
+            ChatbotAccessMode::Authenticated => "authenticated",
+        }
+    }
+}
+
 /// LEG-6 (UK GDPR data minimisation): `users.groups` keeps only the IdP
 /// groups something reads, not every group the SSO user belongs to (the
 /// production IdP maps unrelated groups such as `grafana-access` into the
 /// claim). The groups read are:
 ///
-/// - `chatbot_access_group` (the `/chat` gate);
+/// - `chatbot_access_group` (the `/chat` gate), only while `chatbot_access`
+///   is `group` -- in `authenticated` mode nothing reads it, so it is not
+///   kept (switching back to `group` then takes effect per user at their
+///   next login, like any other group change);
 /// - `admin_group`, when set (admin session revocation);
 /// - the groups the separate `distant-signal-mcp` adapter reads back from
 ///   `GET /public/auth/session` to gate its tools: `mcp-users` and
@@ -487,7 +526,11 @@ impl ServiceArguments {
     pub fn stored_group_allowlist(&self) -> Vec<String> {
         let extra = std::env::var(STORED_GROUPS_EXTRA_ENV)
             .unwrap_or_else(|_| DEFAULT_STORED_GROUPS_EXTRA.to_string());
-        stored_group_allowlist(&self.chatbot_access_group, &self.admin_group, &extra)
+        let chatbot_group = match self.chatbot_access {
+            ChatbotAccessMode::Group => self.chatbot_access_group.as_str(),
+            ChatbotAccessMode::Authenticated => "",
+        };
+        stored_group_allowlist(chatbot_group, &self.admin_group, &extra)
     }
 }
 
@@ -660,6 +703,48 @@ mod chart_env_wiring_tests {
              crates/api/src/data/config.rs no longer declares them, so clap ignores them and any \
              operator who configures one gets no effect at all: {stale:?}"
         );
+    }
+
+    /// `CHATBOT_ACCESS` has a safe default (`group`), so an unwired var would
+    /// not fail -- it would just make the coordinated ungating impossible to
+    /// flip from values.yaml. Also pins the chart's default to `group`.
+    #[test]
+    fn chatbot_access_is_set_on_the_charts_api_container() {
+        let block = api_container_block();
+        let declared = ServiceArguments::command()
+            .get_arguments()
+            .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+            .any(|env| env == "CHATBOT_ACCESS");
+        assert!(declared, "config.rs must still declare CHATBOT_ACCESS");
+        assert!(
+            block.contains("- name: CHATBOT_ACCESS\n"),
+            "CHATBOT_ACCESS is declared by crates/api/src/data/config.rs but never set on the \
+             `api` container in charts/distant-signal/templates/api-deployment.yaml"
+        );
+        let values = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../charts/distant-signal/values.yaml"),
+        )
+        .expect("read values.yaml");
+        assert!(
+            values.contains("\n  chatbotAccess: group\n"),
+            "api.chatbotAccess must default to `group` so shipping this code changes nothing"
+        );
+    }
+
+    #[test]
+    fn chatbot_access_parses_both_modes_and_defaults_to_group() {
+        use super::ChatbotAccessMode;
+        use clap::ValueEnum;
+        assert_eq!(ChatbotAccessMode::default(), ChatbotAccessMode::Group);
+        for mode in ChatbotAccessMode::value_variants() {
+            assert_eq!(
+                ChatbotAccessMode::from_str(mode.as_str(), false),
+                Ok(*mode),
+                "as_str must match the clap/env spelling"
+            );
+        }
+        assert!(ChatbotAccessMode::from_str("", false).is_err());
     }
 
     /// Narrower cousin of the two tests above, for the four sweep-cadence

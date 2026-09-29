@@ -1468,9 +1468,30 @@ describe('api client', () => {
   it('getChatbotAccess returns "allowed" for a 200', async () => {
     vi.stubGlobal(
       'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ allowed: true, access: 'group' }), { status: 200 })),
+    );
+    await expect(getChatbotAccess()).resolves.toEqual({ status: 'allowed', mode: 'group' });
+  });
+
+  it('getChatbotAccess reports the api\'s "authenticated" mode (any logged-in user)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ allowed: true, access: 'authenticated' }), { status: 200 })),
+    );
+    await expect(getChatbotAccess()).resolves.toEqual({ status: 'allowed', mode: 'authenticated' });
+  });
+
+  it('getChatbotAccess reads a 200 with no (or an unknown) access mode as "group" -- an older api', async () => {
+    vi.stubGlobal(
+      'fetch',
       vi.fn(async () => new Response(JSON.stringify({ allowed: true }), { status: 200 })),
     );
-    await expect(getChatbotAccess()).resolves.toBe('allowed');
+    await expect(getChatbotAccess()).resolves.toEqual({ status: 'allowed', mode: 'group' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ allowed: true, access: 'everyone' }), { status: 200 })),
+    );
+    await expect(getChatbotAccess()).resolves.toEqual({ status: 'allowed', mode: 'group' });
   });
 
   it('getChatbotAccess returns "unauthenticated" for a 401 -- no session at all', async () => {
@@ -1478,7 +1499,7 @@ describe('api client', () => {
       'fetch',
       vi.fn(async () => new Response('unauthorized', { status: 401 })),
     );
-    await expect(getChatbotAccess()).resolves.toBe('unauthenticated');
+    await expect(getChatbotAccess()).resolves.toEqual({ status: 'unauthenticated' });
   });
 
   it('getChatbotAccess returns "forbidden" for a 403 -- a real, logged-in, non-allowlisted user', async () => {
@@ -1486,7 +1507,7 @@ describe('api client', () => {
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ error: 'chatbot_not_available' }), { status: 403 })),
     );
-    await expect(getChatbotAccess()).resolves.toBe('forbidden');
+    await expect(getChatbotAccess()).resolves.toEqual({ status: 'forbidden' });
   });
 
   it('getChatbotAccess fails closed to "forbidden" on any other failure (never a positive allow on an ambiguous answer)', async () => {
@@ -1494,7 +1515,7 @@ describe('api client', () => {
       'fetch',
       vi.fn(async () => new Response('server error', { status: 500 })),
     );
-    await expect(getChatbotAccess()).resolves.toBe('forbidden');
+    await expect(getChatbotAccess()).resolves.toEqual({ status: 'forbidden' });
   });
 
   it('getChatbotAccess fetches GET /public/chatbot/access, forwarding cookies, with no caching', async () => {

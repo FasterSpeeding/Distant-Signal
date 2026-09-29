@@ -18,6 +18,13 @@
 //! operator now manages membership in Authentik like every other access
 //! group in this app.
 //!
+//! `ServiceArguments::chatbot_access` (`CHATBOT_ACCESS`, chart value
+//! `api.chatbotAccess`) switches the group check off: `authenticated` lets
+//! every logged-in user in (logged-out requests still get `401`). The `200`
+//! body reports the active mode (`"access": "group" | "authenticated"`) so
+//! the frontend shows its "only accounts that have been given access" notes
+//! only in group mode, without a frontend-side setting of its own.
+//!
 //! One caller: `frontend/app/chat/page.tsx`'s own page-load gate. (The
 //! former second caller, `orchestrator/`'s `checkChatbotAccess` -- "the
 //! actual cost-protecting check, since a request can reach the
@@ -26,9 +33,10 @@
 //! Task 5.)
 
 use axum::Json;
+use axum::extract::State;
 use serde_json::{Value, json};
 
-use crate::app::Router;
+use crate::app::{App, Router};
 use crate::auth::ChatbotAuthorizedUser;
 
 pub fn router() -> Router {
@@ -37,11 +45,14 @@ pub fn router() -> Router {
 
 /// `401` (via `ChatbotAuthorizedUser`'s inner `AuthenticatedUser`, unchanged)
 /// for no session at all; `403 { "error": "chatbot_not_available" }` for a
-/// logged-in user not in the configured chatbot-access SSO group;
-/// `200 { "allowed": true }` otherwise -- never `404`, see
-/// `ChatbotAuthorizedUser`'s own doc comment.
-async fn access(ChatbotAuthorizedUser(_user): ChatbotAuthorizedUser) -> Json<Value> {
-    Json(json!({ "allowed": true }))
+/// logged-in user not in the configured chatbot-access SSO group (group
+/// mode only); `200 { "allowed": true, "access": "<mode>" }` otherwise --
+/// never `404`, see `ChatbotAuthorizedUser`'s own doc comment.
+async fn access(
+    State(app): State<App>,
+    ChatbotAuthorizedUser(_user): ChatbotAuthorizedUser,
+) -> Json<Value> {
+    Json(json!({ "allowed": true, "access": app.config.chatbot_access.as_str() }))
 }
 
 /// HTTP-layer tests for `GET /chatbot/access`'s three outcomes. Follows the
@@ -64,10 +75,14 @@ mod db_tests {
     use crate::app::{App, AppState};
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
-    use crate::data::config::{LineCatalogue, ServiceArguments};
+    use crate::data::config::{ChatbotAccessMode, LineCatalogue, ServiceArguments};
     use crate::data::users::insert_session;
 
     fn test_app(pool: PgPool) -> App {
+        test_app_with_mode(pool, ChatbotAccessMode::Group)
+    }
+
+    fn test_app_with_mode(pool: PgPool, chatbot_access: ChatbotAccessMode) -> App {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
@@ -91,6 +106,7 @@ mod db_tests {
             internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
+            chatbot_access,
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
@@ -276,7 +292,69 @@ mod db_tests {
         let (status, body) = request(router, Some(&token)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.get("allowed").and_then(Value::as_bool), Some(true));
+        assert_eq!(body.get("access").and_then(Value::as_str), Some("group"));
 
         cleanup_user(&pool, "TEST-CHATBOT-ALLOWED").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                chatbot -- --ignored --test-threads=1` and DATABASE_URL set"]
+    async fn authenticated_mode_lets_a_logged_in_user_with_no_groups_in() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-CHATBOT-AUTHN-NO-GROUP", &[]).await;
+        let router = test_router(test_app_with_mode(
+            pool.clone(),
+            ChatbotAccessMode::Authenticated,
+        ));
+
+        let (status, body) = request(router, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.get("allowed").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            body.get("access").and_then(Value::as_str),
+            Some("authenticated")
+        );
+
+        cleanup_user(&pool, "TEST-CHATBOT-AUTHN-NO-GROUP").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                chatbot -- --ignored --test-threads=1` and DATABASE_URL set"]
+    async fn authenticated_mode_lets_a_user_with_an_unrelated_group_in() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-CHATBOT-AUTHN-OTHER", &["some-other-group"]).await;
+        let router = test_router(test_app_with_mode(
+            pool.clone(),
+            ChatbotAccessMode::Authenticated,
+        ));
+
+        let (status, _body) = request(router, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        cleanup_user(&pool, "TEST-CHATBOT-AUTHN-OTHER").await;
+    }
+
+    /// Ungating is "any logged-in user", never "anyone".
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                chatbot -- --ignored --test-threads=1` and DATABASE_URL set"]
+    async fn authenticated_mode_still_401s_an_anonymous_request() {
+        let pool = connect().await;
+        let router = test_router(test_app_with_mode(pool, ChatbotAccessMode::Authenticated));
+        let (status, _body) = request(router, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// A bogus cookie is no session, so still `401` in authenticated mode.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                chatbot -- --ignored --test-threads=1` and DATABASE_URL set"]
+    async fn authenticated_mode_still_401s_an_unknown_session_token() {
+        let pool = connect().await;
+        let router = test_router(test_app_with_mode(pool, ChatbotAccessMode::Authenticated));
+        let (status, _body) = request(router, Some("not-a-real-session-token")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }
