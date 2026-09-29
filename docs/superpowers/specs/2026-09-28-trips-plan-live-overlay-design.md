@@ -97,8 +97,15 @@ plan with the current overlay
   -> trains in the result (within horizon) not yet read?  no -> done
   -> read them (batched); overlay changed?                 no -> done
   -> replans == maxRounds (3)?                            yes -> done
+  -> plan invalidated on live times (cancelled leg, impossible change,
+     broken waypoint chain) or a late origin train now catchable?  no -> done
   -> rebuild overlay, plan again
 ```
+
+A plan that is merely late (every change still works) is annotated, not
+re-planned: re-planning it could only find a marginally earlier arrival
+at the cost of another search. This halved the median added latency in
+the benchmark below.
 
 The first read also includes up to 20 trains booked to leave the origin in
 the hour before `departAfter`: a late one may now be catchable. Trains read
@@ -147,6 +154,13 @@ query, `build_journey_stops_batch` (4-5 batched queries plus one small
 per-train calling-point read, since `trains.calling_points` is empty for
 feed-created rows), and one extra search. Measured numbers are in the
 implementation report.
+
+Benchmark (release build, loaded dev box, production snapshot of
+2026-09-28 07:46 BST: 486k calling points, 8.6k `trains`, 4.1k states,
+562 boards; `bench_trip_plan_live` in `routes::trips`, median of 5):
+`fastest` 10-51 ms timetable vs 80-150 ms live; `options` 0.43-0.96 s vs
+0.51-2.2 s (the worst, VIC->BTN, used all 3 re-plans). 12-26 trains read
+per request; 4 of 10 `fastest` queries re-planned once.
 
 ### 4.7 Metrics
 

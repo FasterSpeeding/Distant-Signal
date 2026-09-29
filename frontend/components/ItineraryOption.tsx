@@ -50,7 +50,7 @@ export function ItineraryOption({
    * doc comment. */
   stationNames?: Map<string, string>;
 }) {
-  const hasTrainLeg = itinerary.legs.some(leg => leg.kind === 'train');
+  const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
 
   return (
     <Card withBorder>

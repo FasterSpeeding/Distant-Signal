@@ -667,6 +667,54 @@ pub fn origin_lookback_uids(
     uids
 }
 
+/// Whether an [`annotate`]d plan no longer works on live times: an
+/// itinerary with a cancelled leg or an impossible change, or a waypoint
+/// segment searched from before the previous segment's live arrival (plus
+/// change time) now lets the traveller continue. This is what triggers a
+/// re-plan; a plan that is merely late is annotated, not re-planned.
+pub fn plan_invalidated(segments: &[SegmentResult], interchange: &InterchangeData) -> bool {
+    if segments
+        .iter()
+        .flat_map(|s| &s.itineraries)
+        .any(|i| i.live_feasible == Some(false))
+    {
+        return true;
+    }
+    segments.windows(2).any(|pair| {
+        let ready = crate::data::trip_planning_itinerary::chain_ready_min(
+            &pair[0].itineraries,
+            interchange,
+        );
+        let earliest_onward = pair[1].itineraries.iter().map(|i| i.departure_min).min();
+        matches!((ready, earliest_onward), (Some(ready), Some(onward)) if onward < ready)
+    })
+}
+
+/// Whether any of `seeds` (trains booked to leave the origin before
+/// `depart_after_min`) now leaves one of `origin_tiplocs` at or after it on
+/// live times -- a late train that has become catchable, worth a re-plan.
+pub fn seed_became_catchable(
+    seeds: &[String],
+    chains: &HashMap<String, Vec<Connection>>,
+    lives: &HashMap<String, TrainLive>,
+    origin_tiplocs: &[String],
+    depart_after_min: u32,
+) -> bool {
+    let origins: HashSet<&str> = origin_tiplocs.iter().map(|t| normalize_tiploc(t)).collect();
+    seeds.iter().any(|uid| {
+        let (Some(chain), Some(live)) = (chains.get(uid), lives.get(uid)) else {
+            return false;
+        };
+        let refs: Vec<&Connection> = chain.iter().collect();
+        evaluate_chain(&refs, live).iter().any(|p| {
+            p.served
+                && origins.contains(normalize_tiploc(&p.tiploc))
+                && p.sched_dep.is_some_and(|d| d < depart_after_min)
+                && p.live_dep.is_some_and(|d| d >= depart_after_min)
+        })
+    })
+}
+
 fn change_minutes(interchange: &InterchangeData, tiploc: &str) -> u32 {
     match schedule_query::minimum_change_time(interchange, tiploc) {
         schedule_query::ChangeTime::Finite(minutes) => minutes,
@@ -1220,6 +1268,114 @@ mod tests {
         let points = evaluate(&live);
         assert!(!points[1].served);
         assert!(points[0].served && points[2].served);
+    }
+
+    /// A -> B on U1 (08:00-08:10), change at B (default 5 minutes), B -> C on
+    /// U2 (08:20-08:40), planned from 07:50 with "now" 07:50.
+    fn two_leg_plan_with_u1_late_by(delay: i32) -> (Vec<SegmentResult>, bool) {
+        let connections = vec![
+            conn("U1", "A", "B", 480, 490),
+            conn("U2", "B", "C", 500, 520),
+        ];
+        let mut interchange = InterchangeData {
+            change_time_by_tiploc: HashMap::new(),
+            tiploc_to_crs: HashMap::new(),
+            crs_to_tiplocs: HashMap::new(),
+            fixed_links_from_crs: HashMap::new(),
+        };
+        for (crs, tiploc) in [("AAA", "A"), ("BBB", "B"), ("CCC", "C")] {
+            interchange
+                .tiploc_to_crs
+                .insert(tiploc.to_string(), crs.to_string());
+            interchange
+                .crs_to_tiplocs
+                .insert(crs.to_string(), vec![tiploc.to_string()]);
+        }
+        let mut segments = crate::data::trip_planning_itinerary::plan_via_waypoints(
+            &connections,
+            &interchange,
+            date(),
+            "AAA",
+            &[],
+            "CCC",
+            NaiveTime::from_hms_opt(7, 50, 0).unwrap(),
+            "fastest",
+            2,
+        )
+        .unwrap();
+        let mut stops = vec![stop("A", None, Some(480)), stop("B", Some(490), None)];
+        stops[0].board = Some(board("x", Some(delay), false));
+        let lives = HashMap::from([("U1".to_string(), profile(&stops, None, &[]))]);
+        let chains = chains_for(&connections, &HashSet::from(["U1".to_string()]));
+        let config = LiveConfig::default();
+        annotate(
+            &mut segments,
+            &LiveContext {
+                date: date(),
+                now: utc(470),
+                config: &config,
+                interchange: &interchange,
+                chains: &chains,
+                lives: &lives,
+                overlaid: &HashSet::new(),
+            },
+        );
+        let invalidated = plan_invalidated(&segments, &interchange);
+        (segments, invalidated)
+    }
+
+    #[test]
+    fn a_late_plan_that_still_connects_is_annotated_not_invalidated() {
+        let (segments, invalidated) = two_leg_plan_with_u1_late_by(3);
+        assert!(!invalidated);
+        let itinerary = &segments[0].itineraries[0];
+        assert_eq!(itinerary.live_feasible, Some(true));
+        let PlannedLeg::Train {
+            live: Some(Some(live)),
+            scheduled_departure,
+            ..
+        } = &itinerary.legs[0]
+        else {
+            panic!("expected an annotated train leg: {:?}", itinerary.legs[0]);
+        };
+        assert_eq!(live.status, "Late");
+        assert_eq!(live.delay_minutes, Some(3));
+        assert_eq!(live.reason.as_deref(), Some("a signalling fault"));
+        assert_eq!(live.reason_source, Some("darwin"));
+        assert_eq!(
+            *scheduled_departure,
+            NaiveTime::from_hms_opt(8, 0, 0).unwrap()
+        );
+        let PlannedLeg::Train {
+            live: Some(onward), ..
+        } = &itinerary.legs[1]
+        else {
+            panic!("expected a train leg");
+        };
+        assert!(onward.is_none(), "no live record for U2");
+    }
+
+    #[test]
+    fn a_delay_that_breaks_the_change_invalidates_the_plan() {
+        // 8 late: arrives B 08:18, ready 08:23, after U2's 08:20.
+        let (segments, invalidated) = two_leg_plan_with_u1_late_by(8);
+        assert!(invalidated);
+        assert_eq!(segments[0].itineraries[0].live_feasible, Some(false));
+    }
+
+    #[test]
+    fn a_late_origin_train_that_became_catchable_is_noticed() {
+        let connections = vec![conn("EARLY", "A", "B", 470, 490)];
+        let chains = chains_for(&connections, &HashSet::from(["EARLY".to_string()]));
+        let mut stops = vec![stop("A", None, Some(470)), stop("B", Some(490), None)];
+        stops[0].board = Some(board("08:05", Some(15), false));
+        let lives = HashMap::from([("EARLY".to_string(), profile(&stops, None, &[]))]);
+        let seeds = ["EARLY".to_string()];
+        let origin = ["A".to_string()];
+        assert!(seed_became_catchable(&seeds, &chains, &lives, &origin, 480));
+        assert!(!seed_became_catchable(
+            &seeds, &chains, &lives, &origin, 490
+        ));
     }
 
     #[test]

@@ -438,10 +438,13 @@ struct LiveSummary {
 
 /// The live overlay's bounded re-planning loop (design doc §4.4): read the
 /// live profile of every train in the current plan (inside the live window)
-/// not yet read, rebuild the overlay, and plan again while that changes the
-/// overlay -- at most `config.max_replans` times. Trains read after the last
-/// allowed re-plan are still annotated. Any read error aborts the overlay;
-/// the caller then serves the timetable plan.
+/// not yet read; if the plan no longer works on live times (a cancelled leg,
+/// an impossible change, a broken waypoint chain) or a late train from the
+/// origin has become catchable, plan again with every known change applied
+/// -- at most `config.max_replans` times. A plan that is merely late is
+/// annotated, not re-planned. Trains read after the last allowed re-plan
+/// are still annotated. Any read error aborts the overlay; the caller then
+/// serves the timetable plan.
 async fn plan_live(
     app: &App,
     graph: &Arc<trip_planning::PlanningGraph>,
@@ -454,8 +457,7 @@ async fn plan_live(
     use std::collections::{HashMap, HashSet};
 
     let date = request.date;
-    let mut segments: Vec<trip_planning_itinerary::SegmentResult> = Vec::new();
-    let mut first_pass = Some(timetable);
+    let mut segments = timetable.to_vec();
     let mut lives: HashMap<String, trip_plan_live::TrainLive> = HashMap::new();
     let mut read: HashSet<String> = HashSet::new();
     let mut chains: HashMap<String, Vec<schedule_query::Connection>> = HashMap::new();
@@ -469,25 +471,22 @@ async fn plan_live(
         use chrono::Timelike;
         request.depart_after.num_seconds_from_midnight() / 60
     };
-    let mut seed = if trip_plan_live::within_horizon(date, depart_min, now, config) {
-        let origin_tiplocs = graph
-            .interchange
-            .crs_to_tiplocs
-            .get(&request.origin)
-            .cloned()
-            .unwrap_or_default();
+    let origin_tiplocs = graph
+        .interchange
+        .crs_to_tiplocs
+        .get(&request.origin)
+        .cloned()
+        .unwrap_or_default();
+    let seeds = if trip_plan_live::within_horizon(date, depart_min, now, config) {
         trip_plan_live::origin_lookback_uids(&graph.connections, &origin_tiplocs, depart_min)
     } else {
         Vec::new()
     };
+    let mut pending_seeds = seeds.clone();
 
     loop {
-        let current: &[trip_planning_itinerary::SegmentResult] = match first_pass {
-            Some(timetable) => timetable,
-            None => &segments,
-        };
-        let mut wanted = trip_plan_live::uids_in_window(current, date, now, config);
-        wanted.append(&mut seed);
+        let mut wanted = trip_plan_live::uids_in_window(&segments, date, now, config);
+        wanted.append(&mut pending_seeds);
         wanted.sort();
         wanted.dedup();
         wanted.retain(|uid| !read.contains(uid));
@@ -515,6 +514,32 @@ async fn plan_live(
         {
             break;
         }
+        // Re-plan only when the current plan no longer works on what is now
+        // known (or a late origin train became catchable).
+        let mut probe = segments.clone();
+        trip_plan_live::annotate(
+            &mut probe,
+            &trip_plan_live::LiveContext {
+                date,
+                now,
+                config,
+                interchange: &graph.interchange,
+                chains: &chains,
+                lives: &lives,
+                overlaid: overlay.replaced_uids(),
+            },
+        );
+        let invalidated = trip_plan_live::plan_invalidated(&probe, &graph.interchange)
+            || trip_plan_live::seed_became_catchable(
+                &seeds,
+                &chains,
+                &lives,
+                &origin_tiplocs,
+                depart_min,
+            );
+        if !invalidated {
+            break;
+        }
         overlay = Arc::new(next);
         withdrawn = next_withdrawn;
         segments = run_plan(
@@ -526,11 +551,7 @@ async fn plan_live(
         .await
         .map_err(|(_, msg)| anyhow::anyhow!(msg))?
         .map_err(|msg| anyhow::anyhow!(msg))?;
-        first_pass = None;
         replans += 1;
-    }
-    if first_pass.is_some() {
-        segments = timetable.to_vec();
     }
 
     trip_plan_live::annotate(
@@ -1818,16 +1839,36 @@ mod db_tests {
         assert_eq!(train_uids(&stale, 0), ["TLVDLY1", "TLVDLY2"], "{stale:?}");
         assert_eq!(stale["live"]["replans"], 0, "{stale:?}");
 
+        // Fresh but only 3 late: 10:33 + 5 still makes the 10:40, so the
+        // plan is annotated, not re-planned.
+        let set_delay = |delay: i32| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE train_current_state SET updated_at = $1, delay_minutes = $2 \
+                     WHERE trains_id = (SELECT id FROM trains WHERE train_uid = 'TLVDLY1')",
+                )
+                .bind(live_now())
+                .bind(delay)
+                .execute(&pool)
+                .await
+                .expect("freshen");
+            }
+        };
+        set_delay(3).await;
+        let (status, late) = get(test_router(test_app(pool.clone())), uri.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{late:?}");
+        assert_eq!(late["live"]["replans"], 0, "{late:?}");
+        assert_eq!(train_uids(&late, 0), ["TLVDLY1", "TLVDLY2"], "{late:?}");
+        let itinerary = &late["segments"][0]["itineraries"][0];
+        assert_eq!(itinerary["legs"][0]["live"]["delayMinutes"], 3, "{late:?}");
+        assert_eq!(itinerary["legs"][1]["live"], Value::Null, "{late:?}");
+        assert_eq!(itinerary["liveFeasible"], true);
+        assert_eq!(itinerary["totalDurationMinutes"], 57, "10:03 to 11:00");
+
         // Fresh: the 15-minute delay lands at 10:45, inside the 5-minute
         // change onto the 10:40 -> re-planned onto the 11:00.
-        sqlx::query(
-            "UPDATE train_current_state SET updated_at = $1 \
-             WHERE trains_id = (SELECT id FROM trains WHERE train_uid = 'TLVDLY1')",
-        )
-        .bind(live_now())
-        .execute(&pool)
-        .await
-        .expect("freshen");
+        set_delay(15).await;
         let (status, fresh) = get(test_router(test_app(pool.clone())), uri).await;
         assert_eq!(status, StatusCode::OK, "{fresh:?}");
         assert_eq!(fresh["live"]["replans"], 1, "{fresh:?}");
@@ -1919,6 +1960,84 @@ mod db_tests {
         assert_eq!(leg["live"]["cancelled"], false, "{leg:?}");
 
         cleanup_live(&pool, &uids, "TLVENR").await;
+    }
+
+    /// Latency of `/Trips/plan` with and without the live overlay on a real
+    /// day's data. Does nothing unless `TRIP_PLAN_BENCH_NOW` (RFC 3339, the
+    /// instant the data was snapshotted) is set; run it against a database
+    /// holding a production snapshot, in release mode, with the graph cache
+    /// on (`TRIP_PLAN_GRAPH_CACHE_DATES=2`):
+    ///
+    /// ```text
+    /// TRIP_PLAN_BENCH_NOW=2026-09-28T06:46:30Z TRIP_PLAN_GRAPH_CACHE_DATES=2 \
+    ///   cargo test --release -p api --lib bench_trip_plan_live -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "benchmark; see its doc comment"]
+    async fn bench_trip_plan_live() {
+        let Ok(raw_now) = std::env::var("TRIP_PLAN_BENCH_NOW") else {
+            return;
+        };
+        let now: chrono::DateTime<chrono::Utc> = raw_now.parse().expect("RFC 3339");
+        let pool = connect().await;
+        let _pin = crate::routes::pin_london_now_for_tests(now);
+        let date = crate::routes::london_today();
+        let depart = now
+            .with_timezone(&chrono_tz::Europe::London)
+            .format("%H:%M")
+            .to_string();
+        let router = test_router(test_app(pool.clone()));
+        let warm = std::time::Instant::now();
+        let (status, _) = get(
+            router.clone(),
+            format!("/Trips/plan?origin=WAT&destination=WOK&date={date}&live=false"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        println!("graph build (first request): {:?}", warm.elapsed());
+        let queries = [
+            ("WAT", "WOK", ""),
+            ("WAT", "SOU", ""),
+            ("EUS", "MAN", ""),
+            ("KGX", "EDB", ""),
+            ("PAD", "BRI", ""),
+            ("VIC", "BTN", ""),
+            ("MAN", "LDS", ""),
+            ("BHM", "NCL", ""),
+            ("WAT", "BTN", "&waypoints=CLJ"),
+            ("EUS", "GLC", "&waypoints=PRE"),
+        ];
+        for results in ["fastest", "options"] {
+            for (origin, destination, extra) in queries {
+                let mut timings = Vec::new();
+                let mut summary = Value::Null;
+                for live in ["false", "true"] {
+                    let mut samples = Vec::new();
+                    for _ in 0..5 {
+                        let started = std::time::Instant::now();
+                        let (status, body) = get(
+                            router.clone(),
+                            format!(
+                                "/Trips/plan?origin={origin}&destination={destination}&date={date}\
+                                 &departAfter={depart}&results={results}&live={live}{extra}"
+                            ),
+                        )
+                        .await;
+                        samples.push(started.elapsed());
+                        assert_eq!(status, StatusCode::OK, "{body:?}");
+                        if live == "true" {
+                            summary = body["live"].clone();
+                        }
+                    }
+                    samples.sort();
+                    timings.push(samples[samples.len() / 2]);
+                }
+                println!(
+                    "{results:8} {origin}->{destination}{extra:16} timetable {:>8.1?} live {:>8.1?} {summary}",
+                    timings[0], timings[1]
+                );
+            }
+        }
     }
 
     /// Live data is only applied for today's (or yesterday's) service date.
