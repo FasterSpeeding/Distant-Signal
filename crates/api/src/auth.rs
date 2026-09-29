@@ -251,11 +251,11 @@ pub fn expected_browser_origin(sso_redirect_url: &str) -> Option<String> {
 }
 
 /// Standard OWASP-recommended Origin check for a state-changing request,
-/// mirroring `frontend/app/connect-claude/authorize/route.ts`'s own
-/// `isSameOriginRequest` -- see that function's doc comment for the fuller
-/// rationale this codebase already committed to there: `SameSite=Lax` is
-/// this app's only other CSRF precedent, and it's enforced entirely
-/// client-side (by the browser) with nothing backing it up server-side.
+/// mirroring the `isSameOriginRequest` of the frontend's MCP consent bridge
+/// (`frontend/app/connect-claude/authorize/route.ts`, retired 2026-09-29).
+/// The rationale this codebase committed to there: `SameSite=Lax` is this
+/// app's only other CSRF precedent, and it's enforced entirely client-side
+/// (by the browser) with nothing backing it up server-side.
 /// Checks `origin` first; falls back to `referer` only when `origin` is
 /// absent (a real browser-submitted POST -- or any genuine `fetch`/XHR --
 /// always carries at least one of the two); returns `false` when neither

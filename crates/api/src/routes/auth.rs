@@ -336,9 +336,9 @@ async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Respo
     // that acts on whatever session cookie the browser happens to attach,
     // exactly the shape a CSRF-vulnerable endpoint takes if `SameSite`
     // alone (enforced entirely client-side, nothing backing it up
-    // server-side) is its only guard. Mirrors
-    // `frontend/app/connect-claude/authorize/route.ts`'s own
-    // `isSameOriginRequest` -- the strict form (unlike `login` above): a
+    // server-side) is its only guard. Mirrors the retired frontend consent
+    // bridge's `isSameOriginRequest` (see `auth::is_same_origin`) -- the
+    // strict form (unlike `login` above): a
     // real POST always carries an `Origin` or `Referer` header, so
     // rejecting when neither is present has no legitimate-request cost
     // here the way it would on a plain top-level GET navigation.
