@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { Badge, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getAllTocs, getIncident, getStationName } from '@/lib/api';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
@@ -175,9 +176,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
               page". `stationLabel` is the same "Name (CRS)"/bare-code
               fallback every other station reference on this app already
               uses. */}
-          <Title order={2} size="h5">
-            Affected stations
-          </Title>
+          <SectionTitle>Affected stations</SectionTitle>
           <Group gap="xs">
             {incident.affectedStations.map((crs) => (
               <Badge key={crs} variant="outline" color="gray">
@@ -191,11 +190,9 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
       <Stack gap={4}>
         {/* Review §3.3 (a11y): "Validity"/"Currently affects"/"History" used
             to be `Text fw={500}`, not real headings, so the document
-            outline was a lone `<h1>` and nothing else. `Title order={2}
-            size="h5"` is visually identical to the old bold text. */}
-        <Title order={2} size="h5">
-          Validity
-        </Title>
+            outline was a lone `<h1>` and nothing else. They are now
+            `SectionTitle` `h2`s at the app-wide section size. */}
+        <SectionTitle>Validity</SectionTitle>
         {incident.validityPeriods.map((period, i) => (
           <Text key={i} size="sm" c="dimmed">
             {formatValidityPeriod(period)}
@@ -219,9 +216,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
         </Text>
       ) : (
         <Stack gap={4}>
-          <Title order={2} size="h5">
-            Currently affects
-          </Title>
+          <SectionTitle>Currently affects</SectionTitle>
           {incident.currentlyAffectsLines.length === 0 ? (
             <Text size="sm" c="dimmed">
               Not currently reported on any tracked line.
@@ -241,9 +236,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
       <Divider />
 
       <Stack gap="xs">
-        <Title order={2} size="h5">
-          History
-        </Title>
+        <SectionTitle>History</SectionTitle>
         {/* Review §3.3: the detail-page spec assumed history "always has at
             least the first-seen snapshot", but a freshly ingested incident
             can be caught between ingest and its first change -- and the

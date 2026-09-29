@@ -1,4 +1,5 @@
 import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import {
   getGroup,
@@ -208,16 +209,12 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
       </Group>
 
       <Stack gap="sm">
-        {/* `size="h4"` (review §3.2.5), matching `/lines/[id]`'s own
-            section headings: an `order={2}` `Title` with no `size` renders
-            at near-`h1` scale on mobile, which reads as a second page
-            title rather than a subsection heading. The semantic level
-            (`order={2}`, still correct for a heading one below the page's
-            own `<h1>`) is unchanged -- this only shrinks the rendered
-            size. */}
-        <Title order={2} size="h4">
-          Members
-        </Title>
+        {/* `SectionTitle` (review §3.2.5; docs/style-guide.md "Heading
+            rules"): an `order={2}` `Title` with no `size` renders at
+            near-`h1` scale on mobile, which reads as a second page title
+            rather than a section heading. It stays an `h2` and is drawn at
+            the app-wide section size. */}
+        <SectionTitle>Members</SectionTitle>
         {members.map((member) => (
           <MemberRow
             key={member.userId}
@@ -235,9 +232,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
 
       <Stack gap="sm">
         <Group justify="space-between" align="baseline">
-          <Title order={2} size="h4">
-            Shared trains
-          </Title>
+          <SectionTitle>Shared trains</SectionTitle>
           <AddTrainToGroupButton groupId={id} excludeTrainSubscriptionIds={trains.map((t) => t.trainSubscriptionId)} />
         </Group>
         {trains.length === 0 ? (
@@ -266,9 +261,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           See the design doc §3.4. */}
       <Stack gap="sm">
         <Group justify="space-between" align="baseline">
-          <Title order={2} size="h4">
-            Shared custom lines
-          </Title>
+          <SectionTitle>Shared custom lines</SectionTitle>
           <AddCustomLineToGroupButton groupId={id} excludeLineIds={customLines.map((l) => l.lineId)} />
         </Group>
         {customLines.length === 0 ? (
@@ -297,9 +290,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           spec's §6. */}
       <Stack gap="sm">
         <Group justify="space-between" align="baseline">
-          <Title order={2} size="h4">
-            Shared journeys
-          </Title>
+          <SectionTitle>Shared journeys</SectionTitle>
           <AddJourneyToGroupButton groupId={id} excludeJourneyIds={journeys.map((j) => j.journeyId)} />
         </Group>
         {journeys.length === 0 ? (
@@ -327,9 +318,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
         <>
           <Divider />
           <Stack gap="sm">
-            <Title order={2} size="h4">
-              Danger zone
-            </Title>
+            <SectionTitle>Danger zone</SectionTitle>
             <DeleteGroupButton groupId={id} name={group.name} />
           </Stack>
         </>

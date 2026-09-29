@@ -96,6 +96,19 @@ describe('NetworkStatusPage', () => {
     expect(screen.getByText('Every line is running a Good Service.')).toBeInTheDocument();
   });
 
+  it('draws its section headings as h2s at the app-wide section size (docs/style-guide.md "Heading rules")', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 10 })] }),
+    ]);
+    renderWithMantine(await NetworkStatusPage());
+    expect(screen.getByRole('heading', { level: 1, name: 'Network Status' })).toBeInTheDocument();
+    const sections = screen.getAllByRole('heading', { level: 2 });
+    expect(sections.map((h) => h.textContent)).toEqual(expect.arrayContaining(['By mode', 'Lines to watch']));
+    for (const heading of sections) {
+      expect(heading.style.getPropertyValue('--title-fz')).toContain('--mantine-h3-font-size');
+    }
+  });
+
   it('lists affected lines worst-first, unbounded (no five-row cap), as real LineStatusCard links', async () => {
     const reports = Array.from({ length: 8 }, (_, i) =>
       report({ id: `line-${i}`, name: `Line ${i}`, lineStatuses: [status({ statusSeverity: 2 })] }),

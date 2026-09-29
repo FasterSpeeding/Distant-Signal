@@ -14,6 +14,7 @@ import {
   Title,
   Typography,
 } from '@mantine/core';
+import { SectionTitle } from './SectionTitle';
 import {
   ACCESSIBILITY_CATEGORIES,
   computeAtAGlance,
@@ -596,9 +597,7 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
     // design asks for without touching every `Text`/`Typography` site
     // individually.
     <Stack gap="xs" style={{ maxWidth: '70ch' }}>
-      <Title order={2} size="h4">
-        Accessibility &amp; facilities
-      </Title>
+      <SectionTitle>Accessibility &amp; facilities</SectionTitle>
       {result.coverage === 'unavailable' && (
         <Text c="dimmed">We don&apos;t have station reference data for this station yet.</Text>
       )}

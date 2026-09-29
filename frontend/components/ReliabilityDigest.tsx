@@ -1,4 +1,5 @@
-import { Alert, Card, Group, Stack, Text, Title } from '@mantine/core';
+import { Alert, Card, Group, Stack, Text } from '@mantine/core';
+import { SectionTitle } from './SectionTitle';
 import Link from 'next/link';
 import {
   computeDelayRepayRollup,
@@ -26,7 +27,7 @@ export function ReliabilityDigest({ trains, tickets }: { trains: TrackedTrainLis
   return (
     <Card withBorder>
       <Stack gap="md">
-        <Title order={2}>Your reliability</Title>
+        <SectionTitle>Your reliability</SectionTitle>
         <PunctualitySection summary={punctuality} />
         <DelayRepaySection rollup={rollup} />
       </Stack>

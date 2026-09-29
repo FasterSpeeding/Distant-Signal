@@ -337,6 +337,26 @@ describe('DashboardPage', () => {
     expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
   });
 
+  it('draws every section heading as an h2 at the app-wide section size, never the unsized 26px h2', async () => {
+    // docs/style-guide.md "Heading rules": `SectionTitle` (h2 at h3 size).
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'u1',
+      email: 'a@b.com',
+      name: 'A',
+    });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    renderWithMantine(await DashboardPage());
+    const sections = screen.getAllByRole('heading', { level: 2 });
+    expect(sections.map((h) => h.textContent)).toEqual(
+      expect.arrayContaining(['Right now', 'Your Stations', 'Your Operators']),
+    );
+    for (const heading of sections) {
+      expect(heading.style.getPropertyValue('--title-fz')).toContain('--mantine-h3-font-size');
+    }
+  });
+
   // Review §3.1.4: the authenticated dashboard used to double a "Browse
   // all lines"/"Look up a station" link beside its section heading with an
   // identical link ~40px below it, inside the empty-state sentence.

@@ -1,4 +1,5 @@
 import { Badge, Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import {
@@ -491,7 +492,7 @@ export default async function DashboardPage() {
 
       {sharedLines.length > 0 && (
         <Stack gap="md">
-          <Title order={2}>Lines shared with you</Title>
+          <SectionTitle>Lines shared with you</SectionTitle>
           <Stack gap="xs">
             {sharedLines.map((row) => (
               <SharedCustomLineSummaryRow
@@ -506,7 +507,7 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <Title order={2}>Your Stations</Title>
+          <SectionTitle>Your Stations</SectionTitle>
           {pinnedStationEntries.length > 0 && <TextLink href="/stations">Look up a station</TextLink>}
         </Group>
         {pinnedStationEntries.length === 0 ? (
@@ -553,7 +554,7 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <Title order={2}>Your Operators</Title>
+          <SectionTitle>Your Operators</SectionTitle>
           {pinnedOperatorSummaries.length > 0 && <TextLink href="/operators">Browse all operators</TextLink>}
         </Group>
         {pinnedOperatorSummaries.length === 0 ? (
@@ -622,7 +623,7 @@ export default async function DashboardPage() {
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">
           <Group justify="space-between">
-            <Title order={2}>Your Tracked Trains</Title>
+            <SectionTitle>Your Tracked Trains</SectionTitle>
             <TextLink href="/track/mine">View all</TextLink>
           </Group>
           <Stack gap="xs">
@@ -665,7 +666,7 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
   const hidden = count - worst.length;
   return (
     <Stack gap="md">
-      <Title order={2}>Right now</Title>
+      <SectionTitle>Right now</SectionTitle>
       {count === 0 ? (
         <Text>Every line is running a Good Service.</Text>
       ) : (

@@ -1,4 +1,5 @@
 import { Alert, Stack, Text, Title } from '@mantine/core';
+import { SectionTitle } from './SectionTitle';
 import { notFound } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { LEGAL_CONFIG, legalPagesMode } from '@/lib/legal';
@@ -37,9 +38,7 @@ export function LegalPage({ title, draft, children }: { title: string; draft: bo
 export function LegalSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <Stack gap="xs" component="section">
-      <Title order={2} size="h3">
-        {title}
-      </Title>
+      <SectionTitle>{title}</SectionTitle>
       {children}
     </Stack>
   );

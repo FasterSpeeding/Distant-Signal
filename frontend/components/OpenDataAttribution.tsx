@@ -1,4 +1,5 @@
-import { Box, Group, List, ListItem, Stack, Text, Title } from '@mantine/core';
+import { Box, Group, List, ListItem, Stack, Text } from '@mantine/core';
+import { SectionTitle } from './SectionTitle';
 import type { ReactNode } from 'react';
 import { TextLink } from './TextLink';
 import { LEGAL_LINKS, legalPagesVisible } from '@/lib/legal';
@@ -317,9 +318,7 @@ export function OpenDataAttributionDetails() {
       </Text>
       {DATA_SOURCES.map((source) => (
         <Stack key={source.id} gap={4} component="section" aria-labelledby={`source-${source.id}`}>
-          <Title order={2} size="h4" id={`source-${source.id}`}>
-            {source.title}
-          </Title>
+          <SectionTitle id={`source-${source.id}`}>{source.title}</SectionTitle>
           <Text size="sm">{source.use}</Text>
           <Text size="sm" fw={500} data-attribution-statement>
             {source.statement}
@@ -330,9 +329,7 @@ export function OpenDataAttributionDetails() {
         </Stack>
       ))}
       <Stack gap={4} component="section" aria-labelledby="source-disclaimer">
-        <Title order={2} size="h4" id="source-disclaimer">
-          Not an official service
-        </Title>
+        <SectionTitle id="source-disclaimer">Not an official service</SectionTitle>
         <Text size="sm">{NON_AFFILIATION_STATEMENT}</Text>
         <List size="sm">
           <ListItem>No data provider&apos;s logo or brand is used.</ListItem>

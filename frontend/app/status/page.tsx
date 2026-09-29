@@ -1,4 +1,5 @@
 import { Badge, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getLineStatusForMode } from '@/lib/api';
@@ -107,7 +108,7 @@ export default async function NetworkStatusPage() {
       <WorstLinesSection worstFirst={overview.worstFirst} />
 
       <Stack gap="md">
-        <Title order={2}>By mode</Title>
+        <SectionTitle>By mode</SectionTitle>
         <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
           <ModeCard label="National Rail" reports={overview.byMode.nationalRail} />
           <ModeCard label="TfL" reports={overview.byMode.tfl} />
@@ -121,7 +122,7 @@ export default async function NetworkStatusPage() {
           AllLinesTable's own identical self-hiding country filter. */}
       {Object.keys(overview.byCountry).length > 1 && (
         <Stack gap="md">
-          <Title order={2}>By country</Title>
+          <SectionTitle>By country</SectionTitle>
           <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
             {(Object.entries(overview.byCountry) as [Country, LineStatusReport[]][]).map(([country, reports]) => (
               <ModeCard key={country} label={COUNTRY_LABELS[country]} reports={reports} />
@@ -227,7 +228,7 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
 function WorstLinesSection({ worstFirst }: { worstFirst: LineStatusReport[] }) {
   return (
     <Stack gap="md">
-      <Title order={2}>Lines to watch</Title>
+      <SectionTitle>Lines to watch</SectionTitle>
       {worstFirst.length === 0 ? (
         <Text>Every line is running a Good Service.</Text>
       ) : (
