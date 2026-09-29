@@ -1,18 +1,6 @@
-import {
-  Alert,
-  Card,
-  Code,
-  CopyButton,
-  Group,
-  List,
-  ListItem,
-  Stack,
-  Text,
-  Title,
-  ActionIcon,
-  Tooltip,
-} from '@mantine/core';
+import { Alert, Card, List, ListItem, Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
+import { CopyConnectorUrl } from '@/components/CopyConnectorUrl';
 import { InfoIcon } from '@/components/InfoIcon';
 import { TextLink } from '@/components/TextLink';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
@@ -54,26 +42,6 @@ function connectorUrl(): string {
  * icons-react` isn't a project dependency). Decorative: the accessible
  * name for the button it sits in comes from that button's own
  * `aria-label`, not from this glyph. */
-function CopyIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="9" y="9" width="13" height="13" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
 /** Option C's instructional page (embedded-chatbot-shared-foundation-and-
  * option-c plan, Task 9; the dual-mode design's Decision 6): the connector
  * URL plus static instructions mirroring the documented Claude.ai flow.
@@ -137,32 +105,10 @@ export default function ConnectClaudePage() {
               Click the <strong>+</strong> button, then <strong>Add custom connector</strong>.
             </ListItem>
             <ListItem>
-              {/* The URL gets its own line and may break anywhere: on one
-                  `nowrap` row with the label it ran off the side of a
-                  phone-width screen. */}
+              {/* The URL gets its own line; see CopyConnectorUrl for why it's a
+                  client component. */}
               <Text span>Enter this URL:</Text>
-              <Group gap="xs" wrap="nowrap" align="center">
-                <Code style={{ wordBreak: 'break-all' }}>{url}</Code>
-                {/* Review §3.1.6: the connector URL is long enough (a full
-                    hostname plus path) that selecting it precisely by hand is
-                    fiddly on a phone. `CopyButton` is Mantine's own render-prop
-                    for this -- it owns the copied/not-copied toggle state, this
-                    just supplies the icon and the accessible name. */}
-                <CopyButton value={url}>
-                  {({ copied, copy }) => (
-                    <Tooltip label={copied ? 'Copied' : 'Copy connector URL'} withArrow>
-                      <ActionIcon
-                        variant="subtle"
-                        color={copied ? 'teal' : 'gray'}
-                        onClick={copy}
-                        aria-label="Copy connector URL"
-                      >
-                        <CopyIcon />
-                      </ActionIcon>
-                    </Tooltip>
-                  )}
-                </CopyButton>
-              </Group>
+              <CopyConnectorUrl url={url} />
             </ListItem>
             <ListItem>
               Connect it when Claude asks. Claude sends you to the sign-in page, where you log in with your Distant

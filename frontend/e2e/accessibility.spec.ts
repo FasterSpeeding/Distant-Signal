@@ -246,7 +246,10 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
 test.describe('accessibility: anonymous, light scheme', () => {
   for (const [name, path] of PUBLIC_ROUTES) {
     test(name, async ({ page }) => {
-      await page.goto(path);
+      // Next's error shell is itself accessible, so without this a route that
+      // 500s would pass the sweep (it did: /connect-claude, 2026-09-29).
+      const response = await page.goto(path);
+      expect(response?.status() ?? 0, `${path} returned a server error`).toBeLessThan(500);
       await expectNoViolations(page);
     });
   }
@@ -262,7 +265,10 @@ test.describe('accessibility: anonymous, dark scheme', () => {
   test.use({ colorScheme: 'dark' });
   for (const [name, path] of PUBLIC_ROUTES) {
     test(name, async ({ page }) => {
-      await page.goto(path);
+      // Next's error shell is itself accessible, so without this a route that
+      // 500s would pass the sweep (it did: /connect-claude, 2026-09-29).
+      const response = await page.goto(path);
+      expect(response?.status() ?? 0, `${path} returned a server error`).toBeLessThan(500);
       await expectNoViolations(page);
     });
   }
@@ -287,7 +293,10 @@ test.describe('accessibility: logged in', () => {
     ['/chat', '/chat'],
   ] as const) {
     test(name, async ({ page }) => {
-      await page.goto(path);
+      // Next's error shell is itself accessible, so without this a route that
+      // 500s would pass the sweep (it did: /connect-claude, 2026-09-29).
+      const response = await page.goto(path);
+      expect(response?.status() ?? 0, `${path} returned a server error`).toBeLessThan(500);
       await expectNoViolations(page);
     });
   }
@@ -698,7 +707,10 @@ test.describe('accessibility: logged in, dark scheme', () => {
     [`/lines/${REAL_LINE_ID}`, `/lines/${REAL_LINE_ID}`],
   ] as const) {
     test(name, async ({ page }) => {
-      await page.goto(path);
+      // Next's error shell is itself accessible, so without this a route that
+      // 500s would pass the sweep (it did: /connect-claude, 2026-09-29).
+      const response = await page.goto(path);
+      expect(response?.status() ?? 0, `${path} returned a server error`).toBeLessThan(500);
       await expectNoViolations(page);
     });
   }
