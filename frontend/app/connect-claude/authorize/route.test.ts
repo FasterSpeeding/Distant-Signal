@@ -191,6 +191,44 @@ describe('GET /connect-claude/authorize', () => {
     expect(body).not.toContain('<script>alert(1)</script>');
     expect(body).toContain('&lt;script&gt;');
   });
+
+  // The consent screen is styled (consentPage.ts); its one inline script
+  // must carry the per-request nonce proxy.ts forwards as `x-nonce`, or the
+  // page CSP (lib/csp.ts) blocks it.
+  it("stamps the request's CSP nonce onto the consent screen's inline script", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ clientName: 'Claude' }), { status: 200 })),
+    );
+    const req = makeRequest('/connect-claude/authorize?mcp_request_id=req1', {
+      cookie: 'distant_signal_session=raw-token-value',
+      headers: { 'x-nonce': 'bm9uY2U=' },
+    });
+    const body = await (await GET(req)).text();
+    expect(body).toContain('<script nonce="bm9uY2U=">');
+    expect(body).toContain('<main id="main-content">');
+  });
+
+  it('renders the expired (410) and malformed-link (400) cases as styled pages, not bare text', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 404 })),
+    );
+    const expired = await GET(
+      makeRequest('/connect-claude/authorize?mcp_request_id=req1', {
+        cookie: 'distant_signal_session=raw-token-value',
+      }),
+    );
+    expect(expired.status).toBe(410);
+    expect(expired.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    const expiredBody = await expired.text();
+    expect(expiredBody).toContain('<h1 id="error-heading">This connection request has expired</h1>');
+    expect(expiredBody).toContain('role="alert"');
+
+    const missing = await GET(makeRequest('/connect-claude/authorize'));
+    expect(missing.status).toBe(400);
+    expect(await missing.text()).toContain('This connection link isn&#39;t valid');
+  });
 });
 
 describe('POST /connect-claude/authorize', () => {

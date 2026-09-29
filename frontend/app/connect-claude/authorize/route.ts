@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSiteOrigin } from '@/lib/siteOrigin';
+import { NONCE_HEADER } from '@/lib/csp';
+import { renderConsentScreen, renderErrorPage } from './consentPage';
 
 // SESSION_COOKIE_NAME, crates/api/src/auth.rs:63 -- must match exactly. This
 // route is the one place in frontend/ that reads this cookie's raw value
@@ -94,56 +96,18 @@ function isValidMcpRequestId(value: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
-/** Escapes the only untrusted value this page ever interpolates into HTML --
- * the DCR-registered client_name (Open questions/risks #2: entirely
- * self-reported by the connecting MCP client, never verified). */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-/** A small, deliberately non-Mantine-styled server-rendered HTML form --
- * this route is protocol machinery, not a product page (Task 9's own
- * /connect-claude page is where the actual designed UI lives). Mirrors this
- * app's existing precedent of bare, minimal auth-adjacent plumbing
- * (crates/api's own auth routes return bare text/redirects, not styled
- * HTML, for the same reason). A Route Handler can't render a React Server
- * Component tree directly, which is the other reason this stays plain HTML
- * rather than JSX. */
-function renderConsentScreen({
-  mcpRequestId,
-  clientName,
-}: {
-  mcpRequestId: string;
-  clientName?: string;
-}): NextResponse {
-  const title = clientName ? escapeHtml(clientName) : 'An application';
-  const html = `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Connect to Distant Signal</title></head>
-<body style="font-family: sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem;">
-  <h1>Connect ${title} to Distant Signal</h1>
-  <p>${title} wants to use your Distant Signal account to look up train departures, arrivals, and journeys on your behalf.</p>
-  <form method="POST" action="/connect-claude/authorize?mcp_request_id=${encodeURIComponent(mcpRequestId)}">
-    <button type="submit" name="decision" value="approve">Approve</button>
-    <button type="submit" name="decision" value="deny">Deny</button>
-  </form>
-</body>
-</html>`;
-  return new NextResponse(html, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-}
-
 export async function GET(req: NextRequest) {
+  // The per-request CSP nonce proxy.ts mints and forwards on the request
+  // headers -- the consent/error pages' one inline script needs it.
+  const nonce = req.headers.get(NONCE_HEADER);
   const mcpRequestId = req.nextUrl.searchParams.get('mcp_request_id');
-  if (!mcpRequestId) {
-    return new NextResponse('missing mcp_request_id', { status: 400 });
-  }
-  if (!isValidMcpRequestId(mcpRequestId)) {
-    return new NextResponse('invalid mcp_request_id', { status: 400 });
+  if (!mcpRequestId || !isValidMcpRequestId(mcpRequestId)) {
+    return renderErrorPage({
+      status: 400,
+      heading: "This connection link isn't valid",
+      message: "This link doesn't include a valid connection request. Please try connecting again from Claude.",
+      nonce,
+    });
   }
 
   // This app's own real public origin, NOT `req.url` -- `req.url` is
@@ -180,15 +144,23 @@ export async function GET(req: NextRequest) {
     if (pendingRes.ok) {
       clientName = ((await pendingRes.json()) as { clientName?: string }).clientName;
     } else if (pendingRes.status === 404) {
-      return new NextResponse('This authorization request has expired. Please try connecting again from Claude.', {
+      return renderErrorPage({
         status: 410,
+        heading: 'This connection request has expired',
+        message: 'This authorization request has expired. Please try connecting again from Claude.',
+        nonce,
       });
     } else {
       // FE-12: any other non-OK answer (a 401 from a mis-set
       // RAILMCP_INTERNAL_COMPLETE_TOKEN, a 500) means approving would only
       // fail after the round trip, so stop here and log the real cause.
       console.error(`connect-claude/authorize: pending-authorization lookup failed with HTTP ${pendingRes.status}`);
-      return new NextResponse('Could not start the connection. Please try again later.', { status: 502 });
+      return renderErrorPage({
+        status: 502,
+        heading: "Couldn't start the connection",
+        message: 'Could not start the connection. Please try again later.',
+        nonce,
+      });
     }
   } catch (err) {
     // Best-effort only -- render the consent screen without a client name
@@ -197,7 +169,7 @@ export async function GET(req: NextRequest) {
     console.error('connect-claude/authorize: pending-authorization lookup threw', err);
   }
 
-  return renderConsentScreen({ mcpRequestId, clientName });
+  return renderConsentScreen({ mcpRequestId, clientName, nonce });
 }
 
 export async function POST(req: NextRequest) {
@@ -227,7 +199,12 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify(body),
   });
   if (!completeRes.ok) {
-    return new NextResponse('Could not complete the connection. Please try again.', { status: 502 });
+    return renderErrorPage({
+      status: 502,
+      heading: "Couldn't complete the connection",
+      message: 'Could not complete the connection. Please try again.',
+      nonce: req.headers.get(NONCE_HEADER),
+    });
   }
   const { redirectUrl } = (await completeRes.json()) as { redirectUrl: string };
   // `redirectUrl` is `railMcp`'s own (external, cross-service) value --
