@@ -1,4 +1,4 @@
-import { Badge, Box, Group, Text } from '@mantine/core';
+import { Badge, Box, Group, Text, VisuallyHidden } from '@mantine/core';
 import { StatusRow } from './StatusRow';
 import { PlatformBadge } from './PlatformBadge';
 import { stationLabel } from '@/lib/stationLabel';
@@ -35,10 +35,43 @@ export interface ScheduleRowData {
   platformChanged: boolean;
 }
 
+/** The row's status badge, in the app's shared light-variant, sentence-case
+ * delay pattern (`JourneyTimeline.tsx`'s `delayBadge`, `TrainJourney.tsx`'s
+ * "Delay:" badge): "12m late" orange, "3m early" teal, "On time" green,
+ * "Cancelled" red. `tt="none"` for the same reason `TrainJourney.tsx`
+ * gives -- Mantine's default 11px uppercase measured borderline, and these
+ * are phrases with units. Every light-variant text colour here is pinned
+ * in `app/globals.css` to >= 4.5:1 on its own tint (orange #bb3e0d 4.64:1,
+ * teal #087a57 4.62:1, green #267b37 4.61:1, red 9 #c92a2a 4.51:1); the
+ * dark scheme's light variants invert to a pale shade-0 text on a deep
+ * tint. Each state is a different word, never colour alone. */
 function statusBadge(row: ScheduleRowData) {
-  if (row.isCancelled) return <Badge color="red">Cancelled</Badge>;
-  if (row.delayMinutes > 0) return <Badge color="orange">+{row.delayMinutes} min</Badge>;
-  return <Badge color="green">On time</Badge>;
+  if (row.isCancelled) {
+    return (
+      <Badge color="red" variant="light" tt="none">
+        Cancelled
+      </Badge>
+    );
+  }
+  if (row.delayMinutes > 0) {
+    return (
+      <Badge color="orange" variant="light" tt="none">
+        {row.delayMinutes}m late
+      </Badge>
+    );
+  }
+  if (row.delayMinutes < 0) {
+    return (
+      <Badge color="teal" variant="light" tt="none">
+        {Math.abs(row.delayMinutes)}m early
+      </Badge>
+    );
+  }
+  return (
+    <Badge color="green" variant="light" tt="none">
+      On time
+    </Badge>
+  );
 }
 
 /** A single reusable schedule/departure row -- one Darwin/LDBWS live
@@ -55,9 +88,25 @@ function statusBadge(row: ScheduleRowData) {
  * rule rather than becoming a second, divergently-behaved copy of it. */
 export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?: () => void }) {
   const clickable = onSelect !== undefined && !row.isCancelled;
+  // A cancelled row is NOT dimmed: the `opacity: 0.6` it used to carry
+  // pulled body text down to ~4.3:1 on the dark body (under 4 on a dark
+  // Card) -- below AA on exactly the row a traveller most needs to read.
+  // Instead, the same cancelled treatment `PlatformBadge` uses: the time is
+  // struck through, the red "Cancelled" badge says it in words, and a
+  // visually hidden "(cancelled)" puts it in the row text itself, since a
+  // screen reader announces neither the strike-through nor the colour.
+  // Text stays full body colour in both schemes (21:1 light, 8.2:1+ dark).
   const title = (
-    <Text size="sm" style={{ opacity: row.isCancelled ? 0.6 : 1 }}>
-      {row.scheduled} · {stationLabel(row.destinationCrs, row.destinationName)}
+    <Text size="sm" data-cancelled={row.isCancelled || undefined}>
+      {row.isCancelled ? (
+        <>
+          <s>{row.scheduled}</s>
+          <VisuallyHidden> (cancelled)</VisuallyHidden>
+        </>
+      ) : (
+        row.scheduled
+      )}{' '}
+      · {stationLabel(row.destinationCrs, row.destinationName)}
       {row.operator ? ` · ${row.operator}` : ''}
     </Text>
   );

@@ -43,14 +43,55 @@ describe('ScheduleRow', () => {
     expect(screen.getByText('On time')).toBeInTheDocument();
   });
 
-  it('shows an orange delay badge naming the minutes late, not colour alone', () => {
+  // Same light-variant, sentence-case "Nm late"/"Nm early" badge pattern as
+  // `JourneyTimeline`/`TrainJourney` (not the old filled "+12 MIN").
+  it('shows a light orange "Nm late" badge naming the minutes late, not colour alone', () => {
     renderWithMantine(<ScheduleRow row={row({ delayMinutes: 12 })} />);
-    expect(screen.getByText('+12 min')).toBeInTheDocument();
+    const badge = screen.getByText('12m late').closest('.mantine-Badge-root');
+    expect(badge).toHaveAttribute('data-variant', 'light');
+    expect(badge).toHaveStyle({ '--badge-color': 'var(--mantine-color-orange-light-color)' });
+    expect(screen.queryByText(/\+12 min/)).not.toBeInTheDocument();
   });
 
-  it('shows a red "Cancelled" badge, not colour alone', () => {
+  it('shows a light teal "Nm early" badge for a service running early', () => {
+    renderWithMantine(<ScheduleRow row={row({ delayMinutes: -3 })} />);
+    const badge = screen.getByText('3m early').closest('.mantine-Badge-root');
+    expect(badge).toHaveAttribute('data-variant', 'light');
+    expect(badge).toHaveStyle({ '--badge-color': 'var(--mantine-color-teal-light-color)' });
+  });
+
+  it('keeps status badges in sentence case (tt="none"), not Mantine\'s default uppercase', () => {
+    renderWithMantine(<ScheduleRow row={row({ delayMinutes: 5 })} />);
+    expect(screen.getByText('5m late').closest('.mantine-Badge-root')).toHaveStyle({ textTransform: 'none' });
+  });
+
+  it('shows a light red "Cancelled" badge, not colour alone', () => {
     renderWithMantine(<ScheduleRow row={row({ isCancelled: true })} />);
-    expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    const badge = screen.getByText('Cancelled').closest('.mantine-Badge-root');
+    expect(badge).toHaveAttribute('data-variant', 'light');
+    expect(badge).toHaveStyle({ '--badge-color': 'var(--mantine-color-red-light-color)' });
+  });
+
+  // Style-guide review: the cancelled row used to be `opacity: 0.6`, which
+  // pushed its text under AA in the dark scheme. It is now full-contrast,
+  // with the time struck through and "(cancelled)" for screen readers.
+  it('renders a cancelled row at full opacity, with the time struck through and screen-reader text', () => {
+    renderWithMantine(
+      <ScheduleRow row={row({ isCancelled: true, scheduled: '14:40', destinationCrs: 'BSK', operator: 'SW' })} />,
+    );
+    const struck = screen.getByText('14:40');
+    expect(struck.tagName).toBe('S');
+    const title = struck.closest('[data-cancelled]') as HTMLElement;
+    expect(title).not.toHaveStyle({ opacity: '0.6' });
+    expect(title.getAttribute('style') ?? '').not.toMatch(/opacity/);
+    expect(title).toHaveTextContent('14:40 (cancelled) · BSK · SW');
+    expect(screen.getByText('(cancelled)', { exact: false })).toBeInTheDocument();
+  });
+
+  it('does not strike through or mark a running service as cancelled', () => {
+    renderWithMantine(<ScheduleRow row={row({ scheduled: '14:40' })} />);
+    expect(document.querySelector('s')).toBeNull();
+    expect(screen.queryByText(/cancelled/i)).not.toBeInTheDocument();
   });
 
   it('shows the platform badge when a platform is known', () => {
