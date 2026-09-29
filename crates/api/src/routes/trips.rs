@@ -32,6 +32,13 @@ use crate::data::{trip_plan_live, trip_planning, trip_planning_itinerary};
 /// an unbounded one.
 const MAX_WAYPOINTS: usize = 8;
 
+/// Cap on each of `?avoid=`, `?avoidStop=` and `?avoidChange=`, checked
+/// before any database read like [`MAX_WAYPOINTS`]. An avoided station adds
+/// no search of its own (the restrictions are applied inside the one search
+/// per segment), but `avoid` reads every train that runs through it, and an
+/// empty segment is explained by re-running it without each list.
+const MAX_AVOIDED: usize = 8;
+
 /// Global cap on trip plans being computed at once (2026-09-25 review, High
 /// 4c). This is a per-process concurrency gate, NOT a per-IP rate limit --
 /// stated plainly because the two are often conflated: it bounds how much of
@@ -110,6 +117,22 @@ struct TripPlanParams {
     date: NaiveDate,
     #[serde(default)]
     depart_after: Option<NaiveTime>,
+    /// `?arriveBy=HH:MM`: the latest acceptable arrival at the destination.
+    /// Mutually exclusive with `departAfter` (a 400 when both are given).
+    #[serde(default)]
+    arrive_by: Option<NaiveTime>,
+    /// `?avoid=CRS[,CRS]`: never call at, run through, change at or walk
+    /// via these stations. See [`trip_planning_itinerary::build_restrictions`].
+    #[serde(default)]
+    avoid: Option<String>,
+    /// `?avoidStop=CRS[,CRS]`: never ride a train that CALLS at these
+    /// stations (running through without stopping is fine).
+    #[serde(default)]
+    avoid_stop: Option<String>,
+    /// `?avoidChange=CRS[,CRS]`: never board, alight or change at these
+    /// stations (staying aboard a train calling there is fine).
+    #[serde(default)]
+    avoid_change: Option<String>,
     #[serde(default = "default_results")]
     results: String,
     /// Optional interchange cap, `?maxChanges=0`..`=4` (inclusive). Absent
@@ -136,8 +159,36 @@ fn default_results() -> String {
     "fastest".to_string()
 }
 
-/// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&departAfter=]
+/// `GET /Trips/plan?origin=&destination=&date=[&waypoints=]
+/// [&departAfter=|&arriveBy=][&avoid=][&avoidStop=][&avoidChange=]
 /// [&results=fastest|options][&maxChanges=0..4][&live=true|false]`.
+///
+/// - `arriveBy=HH:MM` (2026-09-29): instead of the earliest arrival after
+///   `departAfter` (exclusive with it: both given is a 400), the
+///   LATEST-DEPARTING itineraries arriving at the destination by this time
+///   (a backward Connection Scan, `trip_planner::reverse`). `fastest`: the
+///   single latest departure that makes it; `options`: for each number of
+///   changes up to `maxChanges`, the latest departure that makes it (one
+///   itinerary per change count, fewest changes first). With waypoints, the
+///   LAST segment is searched to arrive by `arriveBy` and each earlier one
+///   to arrive by the next one's latest departure less the waypoint's
+///   minimum change time (the mirror of the depart-after chain); each
+///   segment echoes the deadline it was searched for as `arriveBy`, and
+///   `departAfter` is then `null`. With `live`, an itinerary whose live
+///   arrival is after its segment's `arriveBy` is `liveFeasible: false`, and
+///   that triggers a re-plan within the usual budget.
+/// - `avoid`, `avoidStop`, `avoidChange` (2026-09-29): comma-separated CRS
+///   lists (at most [`MAX_AVOIDED`] each), applied to every segment:
+///   `avoid` = never call at, pass through, change at or walk via;
+///   `avoidStop` = never ride a train that calls there; `avoidChange` =
+///   never board, alight or change there. An unknown code, or an avoided
+///   origin, destination or waypoint, is a 400. The semantics of `avoid` and
+///   `avoidStop` are Skye's `train-mcp`'s; see
+///   docs/superpowers/specs/2026-09-29-trips-plan-arrive-by-avoid-design.md.
+/// - A segment with no itineraries carries `noResultReason`
+///   (`{constraint, values, message}`, see
+///   [`trip_planning_itinerary::NoResultReason`]) naming the constraint that
+///   made it infeasible -- still a 200, as before.
 ///
 /// - `live` (default `true`): for today's or yesterday's service date, TRUST
 ///   and Darwin facts are applied and the plan re-run while they change it
@@ -224,6 +275,15 @@ async fn get_trip_plan(
     let waypoints = parse_waypoints(params.waypoints.as_deref())?;
     let max_changes = parse_max_changes(params.max_changes.as_deref())?;
     let live_requested = parse_live(params.live.as_deref())?;
+    let time = parse_time_bound(params.depart_after, params.arrive_by)?;
+    let origin = params.origin.trim().to_ascii_uppercase();
+    let destination = params.destination.trim().to_ascii_uppercase();
+    let avoid = trip_planning_itinerary::AvoidLists {
+        avoid: parse_station_list("avoid", params.avoid.as_deref())?,
+        avoid_stop: parse_station_list("avoidStop", params.avoid_stop.as_deref())?,
+        avoid_change: parse_station_list("avoidChange", params.avoid_change.as_deref())?,
+    };
+    check_avoid_conflicts(&avoid, &origin, &waypoints, &destination)?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -256,13 +316,14 @@ async fn get_trip_plan(
             let interchange = trip_planning::fetch_interchange_data(&pool).await?;
             // The sort over every calling point of the day, on the blocking
             // pool (bound 4 in this fn's doc comment).
-            let connections = tokio::task::spawn_blocking(move || {
-                trip_planning::build_connections(calling_points)
+            let (connections, passes) = tokio::task::spawn_blocking(move || {
+                trip_planning::build_connections_with_passes(calling_points)
             })
             .await?;
             Ok(Some(trip_planning::PlanningGraph {
                 connections,
                 interchange,
+                passes,
             }))
         })
         .await
@@ -290,12 +351,42 @@ async fn get_trip_plan(
     // blocking search (the live overlay may run several) and released only
     // when the last of them finishes -- see bound 3 in this fn's doc comment.
     let permit = Arc::new(permit);
+    // The avoid lists' search restrictions, once per request (`avoid` walks
+    // the day's connections for the trains running through a station).
+    let restrictions = if avoid.is_empty() {
+        None
+    } else {
+        let graph = graph.clone();
+        let lists = avoid.clone();
+        let permit = permit.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            trip_planning_itinerary::build_restrictions(
+                &graph.connections,
+                &graph.interchange,
+                Some(&graph.passes),
+                &lists,
+            )
+        })
+        .await
+        .map_err(|join_err| {
+            tracing::error!(error = ?join_err, "trip planning task panicked or was cancelled");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to plan trip".to_string(),
+            )
+        })?
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?
+        .map(Arc::new)
+    };
     let request = Arc::new(PlanRequest {
         date,
-        origin: params.origin.trim().to_ascii_uppercase(),
-        destination: params.destination.trim().to_ascii_uppercase(),
+        origin,
+        destination,
         waypoints,
-        depart_after: params.depart_after.unwrap_or(NaiveTime::MIN),
+        time,
+        avoid,
+        restrictions,
         results: params.results.clone(),
         max_changes,
     });
@@ -361,6 +452,15 @@ async fn get_trip_plan(
     let mut body = serde_json::json!({
         "results": params.results,
         "maxChanges": max_changes,
+        // Additive (2026-09-29): the arrive-by deadline (`null` for a
+        // depart-after request) and the avoid lists as applied.
+        "arriveBy": match request.time {
+            trip_planning_itinerary::TimeBound::ArriveBy(minutes) => Some(segment_clock(minutes)),
+            trip_planning_itinerary::TimeBound::DepartAfter(_) => None,
+        },
+        "avoid": request.avoid.avoid,
+        "avoidStop": request.avoid.avoid_stop,
+        "avoidChange": request.avoid.avoid_change,
         "segments": segments.iter().map(|segment| serde_json::json!({
             "originCrs": segment.origin_crs,
             "destinationCrs": segment.destination_crs,
@@ -369,8 +469,15 @@ async fn get_trip_plan(
             // Additive (2026-09-28): when this segment was searched from --
             // `departAfter` for the first, the previous segment's arrival
             // plus the waypoint's change time for later ones; `null` when
-            // the previous segment found nothing to chain from.
+            // the previous segment found nothing to chain from, and for an
+            // arrive-by request.
             "departAfter": segment.depart_after_min.map(segment_clock),
+            // Additive (2026-09-29), arrive-by only: the latest arrival this
+            // segment was searched for; `null` otherwise.
+            "arriveBy": segment.arrive_by_min.map(segment_clock),
+            // Additive (2026-09-29): why `itineraries` is empty; `null` when
+            // it is not.
+            "noResultReason": segment.no_result_reason,
         })).collect::<Vec<_>>(),
     });
     if let Some(summary) = live_summary {
@@ -385,7 +492,10 @@ struct PlanRequest {
     origin: String,
     destination: String,
     waypoints: Vec<String>,
-    depart_after: NaiveTime,
+    time: trip_planning_itinerary::TimeBound,
+    avoid: trip_planning_itinerary::AvoidLists,
+    /// `build_restrictions(avoid)`, `None` when no list is given.
+    restrictions: Option<Arc<trip_planner::Restrictions>>,
     results: String,
     max_changes: u32,
 }
@@ -405,18 +515,23 @@ async fn run_plan(
         // Held until the search itself finishes, not until this handler's
         // future does -- see bound 3 in `get_trip_plan`'s doc comment.
         let _permit = permit;
-        trip_planning_itinerary::plan_via_waypoints_with_overlay(
-            &graph.connections,
-            &graph.interchange,
-            request.date,
-            &request.origin,
-            &request.waypoints,
-            &request.destination,
-            request.depart_after,
-            &request.results,
-            request.max_changes,
-            overlay.as_deref(),
-        )
+        trip_planning_itinerary::plan_trip(&trip_planning_itinerary::TripPlanInput {
+            search: trip_planning_itinerary::SegmentSearch {
+                connections: &graph.connections,
+                interchange: &graph.interchange,
+                date: request.date,
+                results: &request.results,
+                max_changes: request.max_changes,
+                overlay: overlay.as_deref(),
+                restrictions: request.restrictions.as_deref(),
+            },
+            passes: Some(&graph.passes),
+            avoid: &request.avoid,
+            origin_crs: &request.origin,
+            waypoints: &request.waypoints,
+            destination_crs: &request.destination,
+            time: request.time,
+        })
     })
     .await
     .map_err(|join_err| {
@@ -467,10 +582,12 @@ async fn plan_live(
     let mut replans = 0u32;
 
     // Trains booked to leave the origin in the hour before `departAfter`:
-    // one running late may now be catchable.
-    let depart_min = {
-        use chrono::Timelike;
-        request.depart_after.num_seconds_from_midnight() / 60
+    // one running late may now be catchable. Not for arrive-by: a late train
+    // only arrives later, and the backward search already takes the latest
+    // departure that works.
+    let depart_min = match request.time {
+        trip_planning_itinerary::TimeBound::DepartAfter(minutes) => Some(minutes),
+        trip_planning_itinerary::TimeBound::ArriveBy(_) => None,
     };
     let origin_tiplocs = graph
         .interchange
@@ -478,10 +595,11 @@ async fn plan_live(
         .get(&request.origin)
         .cloned()
         .unwrap_or_default();
-    let seeds = if trip_plan_live::within_horizon(date, depart_min, now, config) {
-        trip_plan_live::origin_lookback_uids(&graph.connections, &origin_tiplocs, depart_min)
-    } else {
-        Vec::new()
+    let seeds = match depart_min {
+        Some(depart_min) if trip_plan_live::within_horizon(date, depart_min, now, config) => {
+            trip_plan_live::origin_lookback_uids(&graph.connections, &origin_tiplocs, depart_min)
+        }
+        _ => Vec::new(),
     };
     let mut pending_seeds = seeds.clone();
 
@@ -531,13 +649,15 @@ async fn plan_live(
             },
         );
         let invalidated = trip_plan_live::plan_invalidated(&probe, &graph.interchange)
-            || trip_plan_live::seed_became_catchable(
-                &seeds,
-                &chains,
-                &lives,
-                &origin_tiplocs,
-                depart_min,
-            );
+            || depart_min.is_some_and(|depart_min| {
+                trip_plan_live::seed_became_catchable(
+                    &seeds,
+                    &chains,
+                    &lives,
+                    &origin_tiplocs,
+                    depart_min,
+                )
+            });
         if !invalidated {
             break;
         }
@@ -616,6 +736,85 @@ fn parse_waypoints(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String
         ));
     }
     Ok(waypoints)
+}
+
+/// Splits, trims and uppercases one avoid list (`name` is its wire name,
+/// for the message), capped at [`MAX_AVOIDED`] -- a 400 before any database
+/// read, like [`parse_waypoints`].
+fn parse_station_list(name: &str, raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String)> {
+    let mut codes: Vec<String> = Vec::new();
+    for code in raw
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let code = code.to_ascii_uppercase();
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
+    }
+    if codes.len() > MAX_AVOIDED {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "too many {name} stations: {} given, at most {MAX_AVOIDED} allowed",
+                codes.len()
+            ),
+        ));
+    }
+    Ok(codes)
+}
+
+/// An avoided station that is also the origin, the destination or a
+/// waypoint makes the request contradictory: a 400 naming both, before any
+/// database read.
+fn check_avoid_conflicts(
+    avoid: &trip_planning_itinerary::AvoidLists,
+    origin: &str,
+    waypoints: &[String],
+    destination: &str,
+) -> Result<(), (StatusCode, String)> {
+    for (name, codes) in avoid.lists() {
+        for code in codes {
+            let role = if code == origin {
+                "the origin"
+            } else if code == destination {
+                "the destination"
+            } else if waypoints.contains(code) {
+                "a waypoint"
+            } else {
+                continue;
+            };
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("{name}: '{code}' is {role}; a trip cannot avoid it"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `?departAfter=` / `?arriveBy=`: at most one. Neither means departing
+/// after 00:00, as before.
+fn parse_time_bound(
+    depart_after: Option<NaiveTime>,
+    arrive_by: Option<NaiveTime>,
+) -> Result<trip_planning_itinerary::TimeBound, (StatusCode, String)> {
+    use chrono::Timelike;
+    let minutes = |time: NaiveTime| time.num_seconds_from_midnight() / 60;
+    match (depart_after, arrive_by) {
+        (Some(_), Some(_)) => Err((
+            StatusCode::BAD_REQUEST,
+            "departAfter and arriveBy are mutually exclusive; give at most one".to_string(),
+        )),
+        (_, Some(arrive_by)) => Ok(trip_planning_itinerary::TimeBound::ArriveBy(minutes(
+            arrive_by,
+        ))),
+        (depart_after, None) => Ok(trip_planning_itinerary::TimeBound::DepartAfter(minutes(
+            depart_after.unwrap_or(NaiveTime::MIN),
+        ))),
+    }
 }
 
 /// Validates `?maxChanges=`: absent, empty or whitespace-only means the
@@ -825,6 +1024,69 @@ mod tests {
         let Query(params) =
             Query::<TripPlanParams>::try_from_uri(&uri).expect("valid query string");
         assert_eq!(params.max_changes.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn depart_after_and_arrive_by_are_mutually_exclusive() {
+        let at = |h| NaiveTime::from_hms_opt(h, 30, 0);
+        let (status, message) = parse_time_bound(at(9), at(10)).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("mutually exclusive"), "{message}");
+        assert_eq!(
+            parse_time_bound(None, at(10)),
+            Ok(trip_planning_itinerary::TimeBound::ArriveBy(630))
+        );
+        assert_eq!(
+            parse_time_bound(at(9), None),
+            Ok(trip_planning_itinerary::TimeBound::DepartAfter(570))
+        );
+        assert_eq!(
+            parse_time_bound(None, None),
+            Ok(trip_planning_itinerary::TimeBound::DepartAfter(0))
+        );
+    }
+
+    #[test]
+    fn the_new_parameters_are_read_from_their_camel_case_wire_names() {
+        let uri: axum::http::Uri = "http://example.com/Trips/plan?origin=EUS&destination=MKC&\
+                                     date=2026-09-23&arriveBy=17:00&avoid=CRE&\
+                                     avoidStop=BHM,wvh&avoidChange=CLJ"
+            .parse()
+            .expect("parse uri");
+        let Query(params) =
+            Query::<TripPlanParams>::try_from_uri(&uri).expect("valid query string");
+        assert_eq!(params.arrive_by, NaiveTime::from_hms_opt(17, 0, 0));
+        assert_eq!(params.avoid.as_deref(), Some("CRE"));
+        assert_eq!(params.avoid_stop.as_deref(), Some("BHM,wvh"));
+        assert_eq!(params.avoid_change.as_deref(), Some("CLJ"));
+    }
+
+    #[test]
+    fn avoid_lists_are_normalised_capped_and_checked_against_the_stops() {
+        assert_eq!(
+            parse_station_list("avoid", Some(" cre, ,CRE,bhm ")),
+            Ok(vec!["CRE".to_string(), "BHM".to_string()])
+        );
+        let raw = (0..=MAX_AVOIDED)
+            .map(|i| format!("Z{i:02}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let (status, message) = parse_station_list("avoidStop", Some(&raw)).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("avoidStop") && message.contains(&MAX_AVOIDED.to_string()));
+
+        let lists = trip_planning_itinerary::AvoidLists {
+            avoid_change: vec!["YRK".to_string()],
+            ..Default::default()
+        };
+        let (status, message) =
+            check_avoid_conflicts(&lists, "KGX", &["YRK".to_string()], "EDB").unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            message.contains("avoidChange") && message.contains("a waypoint"),
+            "{message}"
+        );
+        assert!(check_avoid_conflicts(&lists, "KGX", &[], "EDB").is_ok());
     }
 }
 
@@ -2180,5 +2442,230 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    // ---------------------------------------------------------------------
+    // Arrive-by, avoid lists and noResultReason (2026-09-29), live on and
+    // off. Same live date and pinned "now" (09:30 BST) as above.
+    //
+    // ZVA -> ZVC, with ZVB a calling point and ZVP a station run through:
+    //   TAVF1  ZVA 10:00 -> (passes ZVP) -> ZVC 10:40   fast, direct
+    //   TAVS1  ZVA 09:50 -> ZVB 10:10/10:12 -> ZVC 10:50
+    //   TAVE1  ZVA 09:40 -> ZVC 10:30                     earlier, direct
+    // ---------------------------------------------------------------------
+
+    async fn seed_arrive_by_network(pool: &PgPool) -> [&'static str; 3] {
+        let uids = ["TAVF1", "TAVS1", "TAVE1"];
+        cleanup_live(pool, &uids, "TAVNET").await;
+        seed_stations(
+            pool,
+            "TAVNET",
+            &[
+                ("ZVA", "TAVA"),
+                ("ZVB", "TAVB"),
+                ("ZVC", "TAVC"),
+                ("ZVP", "TAVP"),
+            ],
+        )
+        .await;
+        seed_schedule(
+            pool,
+            "TAVF1",
+            &[
+                (0, "TAVA", "origin", None, Some("10:00:00")),
+                (1, "TAVP", "intermediate", None, None),
+                (2, "TAVC", "terminate", Some("10:40:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            pool,
+            "TAVS1",
+            &[
+                (0, "TAVA", "origin", None, Some("09:50:00")),
+                (
+                    1,
+                    "TAVB",
+                    "intermediate",
+                    Some("10:10:00"),
+                    Some("10:12:00"),
+                ),
+                (2, "TAVC", "terminate", Some("10:50:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            pool,
+            "TAVE1",
+            &[
+                (0, "TAVA", "origin", None, Some("09:40:00")),
+                (1, "TAVC", "terminate", Some("10:30:00"), None),
+            ],
+        )
+        .await;
+        uids
+    }
+
+    fn arrive_by_uri(query: &str) -> String {
+        format!(
+            "/Trips/plan?origin=ZVA&destination=ZVC&date={}{query}",
+            live_date()
+        )
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn arrive_by_and_avoid_end_to_end_live_on_and_off() {
+        let pool = connect().await;
+        let uids = seed_arrive_by_network(&pool).await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+
+        for live in ["&live=false", ""] {
+            let plan = |query: &str| {
+                let pool = pool.clone();
+                let uri = arrive_by_uri(&format!("{query}{live}"));
+                async move { get(test_router(test_app(pool)), uri).await }
+            };
+
+            // The latest departure arriving by 10:45 is the 10:00.
+            let (status, body) = plan("&arriveBy=10:45").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(train_uids(&body, 0), ["TAVF1"], "{live} {body:?}");
+            assert_eq!(body["arriveBy"]["time"], "10:45:00", "{body:?}");
+            let segment = &body["segments"][0];
+            assert_eq!(segment["arriveBy"]["time"], "10:45:00", "{body:?}");
+            assert!(segment["departAfter"].is_null(), "{body:?}");
+            assert!(segment["noResultReason"].is_null(), "{body:?}");
+            if live.is_empty() {
+                assert_eq!(body["live"]["applied"], true, "{body:?}");
+                assert_eq!(body["live"]["replans"], 0, "{body:?}");
+                assert_eq!(segment["itineraries"][0]["liveFeasible"], true);
+            } else {
+                assert!(body.get("live").is_none(), "{body:?}");
+            }
+
+            // avoid ZVP: the 10:00 runs through it; the 09:50 is too late,
+            // so the 09:40.
+            let (status, body) = plan("&arriveBy=10:45&avoid=ZVP").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(train_uids(&body, 0), ["TAVE1"], "{live} {body:?}");
+            assert_eq!(body["avoid"], serde_json::json!(["ZVP"]), "{body:?}");
+
+            // avoidStop ZVP: the 10:00 never CALLS there, so it stands.
+            let (status, body) = plan("&arriveBy=10:45&avoidStop=zvp").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(train_uids(&body, 0), ["TAVF1"], "{live} {body:?}");
+            assert_eq!(body["avoidStop"], serde_json::json!(["ZVP"]), "{body:?}");
+
+            // Arrive by 10:55 avoiding ZVP: the 09:50 via ZVB -- unless it
+            // may not call at ZVB either.
+            let (_, body) = plan("&arriveBy=10:55&avoid=ZVP").await;
+            assert_eq!(train_uids(&body, 0), ["TAVS1"], "{live} {body:?}");
+            let (_, body) = plan("&arriveBy=10:55&avoid=ZVP&avoidStop=ZVB").await;
+            assert_eq!(train_uids(&body, 0), ["TAVE1"], "{live} {body:?}");
+            // ...but staying aboard through ZVB is fine under avoidChange.
+            let (_, body) = plan("&arriveBy=10:55&avoid=ZVP&avoidChange=ZVB").await;
+            assert_eq!(train_uids(&body, 0), ["TAVS1"], "{live} {body:?}");
+
+            // options: one itinerary per change count, latest first-found.
+            let (_, body) = plan("&arriveBy=10:55&results=options").await;
+            let itineraries = body["segments"][0]["itineraries"]
+                .as_array()
+                .expect("itineraries");
+            assert_eq!(itineraries.len(), 1, "all direct: {body:?}");
+            assert_eq!(itineraries[0]["legs"][0]["trainUid"], "TAVF1");
+
+            // Too early: nothing arrives by 10:00; the earliest arrival is
+            // 10:30 -- named, not just an empty list.
+            let (status, body) = plan("&arriveBy=10:00").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            let reason = &body["segments"][0]["noResultReason"];
+            assert_eq!(reason["constraint"], "arriveBy", "{body:?}");
+            assert_eq!(reason["values"], serde_json::json!(["10:00"]));
+            assert!(
+                reason["message"].as_str().unwrap().contains("10:30"),
+                "{reason:?}"
+            );
+
+            // Depart after 09:45 while avoiding ZVP and never calling at ZVB:
+            // only the 09:40 is left, and it has gone. Dropping `avoid`
+            // alone brings back the 10:00, so `avoid` is named.
+            let (status, body) = plan("&departAfter=09:45&avoid=ZVP&avoidStop=ZVB").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            let reason = &body["segments"][0]["noResultReason"];
+            assert_eq!(reason["constraint"], "avoid", "{body:?}");
+            assert_eq!(reason["values"], serde_json::json!(["ZVP"]));
+            assert!(
+                reason["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("one exists without that restriction"),
+                "{reason:?}"
+            );
+        }
+
+        // Validation, before and after the graph is read.
+        for (query, needle) in [
+            ("&departAfter=09:00&arriveBy=10:00", "mutually exclusive"),
+            ("&avoid=ZVA", "the origin"),
+            ("&avoidChange=ZVC", "the destination"),
+            ("&avoid=ZVZ", "'ZVZ' is not a recognised station"),
+        ] {
+            let (status, body) =
+                get(test_router(test_app(pool.clone())), arrive_by_uri(query)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body:?}");
+            assert!(body.as_str().unwrap().contains(needle), "{query}: {body:?}");
+        }
+
+        cleanup_live(&pool, &uids, "TAVNET").await;
+    }
+
+    /// Live on: the 10:00 running 10 late would arrive at 10:50, after an
+    /// `arriveBy` of 10:45. The plan is marked, re-planned within the live
+    /// budget, and lands on the 09:40; `live=false` still offers the 10:00.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn live_a_delay_past_arrive_by_replans_onto_an_earlier_train() {
+        let pool = connect().await;
+        let uids = seed_arrive_by_network(&pool).await;
+        seed_trust_state(&pool, "TAVF1", "en_route", Some(10), live_now()).await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+
+        let (status, timetable) = get(
+            test_router(test_app(pool.clone())),
+            arrive_by_uri("&arriveBy=10:45&live=false"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{timetable:?}");
+        assert_eq!(train_uids(&timetable, 0), ["TAVF1"], "{timetable:?}");
+
+        let (status, live) = get(
+            test_router(test_app(pool.clone())),
+            arrive_by_uri("&arriveBy=10:45"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{live:?}");
+        assert_eq!(live["live"]["applied"], true, "{live:?}");
+        assert_eq!(live["live"]["replans"], 1, "{live:?}");
+        assert_eq!(train_uids(&live, 0), ["TAVE1"], "{live:?}");
+        assert_eq!(
+            live["segments"][0]["itineraries"][0]["liveFeasible"], true,
+            "{live:?}"
+        );
+
+        // options mode, whose budget is one re-plan by default, lands on the
+        // same answer.
+        let (status, options) = get(
+            test_router(test_app(pool.clone())),
+            arrive_by_uri("&arriveBy=10:45&results=options"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{options:?}");
+        assert_eq!(options["live"]["replans"], 1, "{options:?}");
+        assert_eq!(train_uids(&options, 0), ["TAVE1"], "{options:?}");
+
+        cleanup_live(&pool, &uids, "TAVNET").await;
     }
 }

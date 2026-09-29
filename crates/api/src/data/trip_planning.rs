@@ -90,6 +90,20 @@ pub fn build_connections(
     schedule_query::build_connections(schedules)
 }
 
+/// [`build_connections`] plus the day's [`schedule_query::PassIndex`] (which
+/// connections run through which TIPLOCs without calling), for
+/// `/Trips/plan`'s pass-through `avoid`. The index holds one `u32` per
+/// untimed calling-point row (about 190k on a 2026-09 weekday, under 1 MB).
+pub fn build_connections_with_passes(
+    by_uid: HashMap<String, Vec<CallingPointForConnections>>,
+) -> (Vec<Connection>, schedule_query::PassIndex) {
+    let schedules: Vec<(&str, &[CallingPointForConnections])> = by_uid
+        .iter()
+        .map(|(uid, points)| (uid.as_str(), points.as_slice()))
+        .collect();
+    schedule_query::build_connections_with_passes(schedules)
+}
+
 /// [`fetch_calling_points_for_date`] plus [`build_connections`] in one call.
 /// Kept for callers that are not on a latency/blocking-sensitive path (this
 /// module's own tests, and any future non-HTTP consumer); the trip-planning
@@ -208,6 +222,8 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
 pub struct PlanningGraph {
     pub connections: Vec<Connection>,
     pub interchange: InterchangeData,
+    /// Indices into `connections`, per TIPLOC run through without calling.
+    pub passes: schedule_query::PassIndex,
 }
 
 /// When `schedule-reference` last finished publishing a delivery

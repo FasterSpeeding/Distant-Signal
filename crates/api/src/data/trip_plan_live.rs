@@ -744,7 +744,8 @@ fn change_minutes(interchange: &InterchangeData, tiploc: &str) -> u32 {
 /// Fills every train leg's `live` (inside the window: `Some(None)` when
 /// nothing is known, `Some(Some(..))` otherwise), restores its timetable
 /// times where the search saw live ones, sets `interchangeFeasible` and each
-/// itinerary's `liveFeasible`.
+/// itinerary's `liveFeasible` -- `false` for a cancelled leg, an impossible
+/// change, or (arrive-by) a live arrival after the segment's `arriveBy`.
 pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
     for segment in segments.iter_mut() {
         for itinerary in &mut segment.itineraries {
@@ -900,6 +901,15 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
             if let Some(arrival) = last_arrival {
                 itinerary.arrival_min = arrival.max(itinerary.departure_min);
                 itinerary.total_duration_minutes = itinerary.arrival_min - itinerary.departure_min;
+            }
+            // Arrive-by: a live arrival after the segment's deadline misses
+            // it (for an earlier waypoint segment, the deadline is the latest
+            // arrival that still makes an onward itinerary).
+            if segment
+                .arrive_by_min
+                .is_some_and(|deadline| itinerary.arrival_min > deadline)
+            {
+                feasible = false;
             }
             itinerary.live_feasible = Some(feasible);
         }
@@ -1387,6 +1397,77 @@ mod tests {
         let (segments, invalidated) = two_leg_plan_with_u1_late_by(8);
         assert!(invalidated);
         assert_eq!(segments[0].itineraries[0].live_feasible, Some(false));
+    }
+
+    /// Arrive-by: U1 (A 08:00 -> B 08:10) is planned to arrive by 08:12. On
+    /// time it makes it; 5 minutes late it does not, which marks the
+    /// itinerary `liveFeasible: false` -- and that is what re-plans.
+    #[test]
+    fn a_delay_past_an_arrive_by_deadline_makes_the_plan_infeasible() {
+        use crate::data::trip_planning_itinerary::{
+            AvoidLists, SegmentSearch, TimeBound, TripPlanInput, plan_trip,
+        };
+        let connections = vec![conn("U1", "A", "B", 480, 490)];
+        let mut interchange = InterchangeData {
+            change_time_by_tiploc: HashMap::new(),
+            tiploc_to_crs: HashMap::new(),
+            crs_to_tiplocs: HashMap::new(),
+            fixed_links_from_crs: HashMap::new(),
+        };
+        for (crs, tiploc) in [("AAA", "A"), ("BBB", "B")] {
+            interchange
+                .tiploc_to_crs
+                .insert(tiploc.to_string(), crs.to_string());
+            interchange
+                .crs_to_tiplocs
+                .insert(crs.to_string(), vec![tiploc.to_string()]);
+        }
+        let annotated = |delay: i32| {
+            let mut segments = plan_trip(&TripPlanInput {
+                search: SegmentSearch {
+                    connections: &connections,
+                    interchange: &interchange,
+                    date: date(),
+                    results: "fastest",
+                    max_changes: 2,
+                    overlay: None,
+                    restrictions: None,
+                },
+                passes: None,
+                avoid: &AvoidLists::default(),
+                origin_crs: "AAA",
+                waypoints: &[],
+                destination_crs: "BBB",
+                time: TimeBound::ArriveBy(492),
+            })
+            .unwrap();
+            let mut stops = vec![stop("A", None, Some(480)), stop("B", Some(490), None)];
+            stops[0].board = Some(board("x", Some(delay), false));
+            let lives = HashMap::from([("U1".to_string(), profile(&stops, None, &[]))]);
+            let chains = chains_for(&connections, &HashSet::from(["U1".to_string()]));
+            let config = LiveConfig::default();
+            annotate(
+                &mut segments,
+                &LiveContext {
+                    date: date(),
+                    now: utc(470),
+                    config: &config,
+                    interchange: &interchange,
+                    chains: &chains,
+                    lives: &lives,
+                    overlaid: &HashSet::new(),
+                },
+            );
+            let invalidated = plan_invalidated(&segments, &interchange);
+            (segments, invalidated)
+        };
+        let (segments, invalidated) = annotated(0);
+        assert_eq!(segments[0].itineraries[0].live_feasible, Some(true));
+        assert!(!invalidated);
+        let (segments, invalidated) = annotated(5);
+        assert_eq!(segments[0].itineraries[0].arrival_min, 495);
+        assert_eq!(segments[0].itineraries[0].live_feasible, Some(false));
+        assert!(invalidated);
     }
 
     #[test]
