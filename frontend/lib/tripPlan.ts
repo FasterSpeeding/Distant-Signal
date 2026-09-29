@@ -1,4 +1,4 @@
-import type { TripPlanResponse } from './types';
+import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
 
 /** Every distinct, non-null CRS code a `GET /Trips/plan` response mentions
  * -- each segment's own origin/destination endpoints, AND every leg (train
@@ -35,6 +35,10 @@ export interface TripPlanQuery {
   waypointCrs: string[];
   date: string; // "YYYY-MM-DD"
   departAfter?: string; // "HH:MM"
+  /** "HH:MM"; the backend rejects it together with `departAfter`. */
+  arriveBy?: string;
+  /** Never call at or pass through these stations. */
+  avoidCrs?: string[];
   results: 'fastest' | 'options';
 }
 
@@ -56,7 +60,49 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
   if (query.departAfter) {
     params.set('departAfter', `${query.departAfter}:00`);
   }
+  if (query.arriveBy) {
+    params.set('arriveBy', `${query.arriveBy}:00`);
+  }
+  const avoid = (query.avoidCrs ?? []).map((c) => c.trim().toUpperCase()).filter((c) => c.length > 0);
+  if (avoid.length > 0) {
+    params.set('avoid', avoid.join(','));
+  }
   return params.toString();
+}
+
+type TrainLeg = Extract<TripPlanLeg, { kind: 'train' }>;
+
+/** Every train leg of the chosen itineraries, in order, for tracking -- a
+ * transfer never becomes a journey leg. A segment whose itinerary
+ * `continuesPreviousTrain` rides on in the same train through the
+ * waypoint, so its first leg extends the previous one rather than
+ * becoming a second leg for the same train. */
+export function trainLegsForTracking(itineraries: TripPlanItinerary[]): TrainLeg[] {
+  const legs: TrainLeg[] = [];
+  for (const itinerary of itineraries) {
+    itinerary.legs.forEach((leg, index) => {
+      if (leg.kind !== 'train') return;
+      const previous = legs[legs.length - 1];
+      if (
+        index === 0 &&
+        itinerary.continuesPreviousTrain &&
+        previous &&
+        previous.trainUid === leg.trainUid &&
+        previous.serviceDate === leg.serviceDate
+      ) {
+        legs[legs.length - 1] = {
+          ...previous,
+          destinationCrs: leg.destinationCrs,
+          scheduledArrival: leg.scheduledArrival,
+          arrivalDayOffset: leg.arrivalDayOffset,
+          bookedArrivalPlatform: leg.bookedArrivalPlatform,
+        };
+        return;
+      }
+      legs.push(leg);
+    });
+  }
+  return legs;
 }
 
 export class TripPlanError extends Error {

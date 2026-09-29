@@ -1036,6 +1036,20 @@ export interface TripPlanItinerary {
   exceedsRecommendedChanges?: boolean;
   /** Live overlay only: no cancelled leg and every change still works. */
   liveFeasible?: boolean;
+  /** The first leg is the same train the previous segment's itinerary
+   * rode into the waypoint: no change is made there. */
+  continuesPreviousTrain?: boolean;
+}
+
+/** One whole journey: `segments[s].itineraries[j]` for every segment `s`,
+ * with its end-to-end change count. */
+export interface TripPlanJourney {
+  changeCount: number;
+  departure: { time: string; dayOffset: number };
+  arrival: { time: string; dayOffset: number };
+  totalDurationMinutes: number;
+  exceedsRecommendedChanges?: boolean;
+  liveFeasible?: boolean;
 }
 
 /** A train leg's live status
@@ -1064,12 +1078,45 @@ export interface TripPlanSegment {
    * the previous segment's arrival plus the change time for later ones;
    * `null` when the previous segment found nothing. */
   departAfter?: { time: string; dayOffset: number } | null;
+  /** Arrive-by requests only: the latest arrival this segment was searched
+   * for (the request's `arriveBy` for the last segment, the next segment's
+   * latest departure less the change time for earlier ones); `null`
+   * otherwise. */
+  arriveBy?: { time: string; dayOffset: number } | null;
+  /** Why `itineraries` is empty (`null` when it is not): which constraint
+   * made the segment infeasible, and a sentence saying so. */
+  noResultReason?: TripPlanNoResultReason | null;
+}
+
+/** See `trip_planning_itinerary::NoResultReason` in the API. */
+export interface TripPlanNoResultReason {
+  constraint:
+    | 'maxChanges'
+    | 'avoid'
+    | 'avoidStop'
+    | 'avoidChange'
+    | 'avoidCombined'
+    | 'departAfter'
+    | 'arriveBy'
+    | 'noRoute'
+    | 'previousSegment'
+    | 'nextSegment';
+  values: string[];
+  message: string;
 }
 
 /** `GET /Trips/plan`'s full response. */
 export interface TripPlanResponse {
   results: 'fastest' | 'options';
   segments: TripPlanSegment[];
+  /** The arrive-by deadline, `null` for a depart-after request. */
+  arriveBy?: { time: string; dayOffset: number } | null;
+  /** Whole journeys, aligned with every segment's `itineraries`. */
+  journeys?: TripPlanJourney[];
+  /** The avoid lists as applied (CRS codes). */
+  avoid?: string[];
+  avoidStop?: string[];
+  avoidChange?: string[];
   /** Present when live data was requested (the default). */
   live?: {
     applied: boolean;

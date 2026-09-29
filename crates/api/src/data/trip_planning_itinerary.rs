@@ -12,7 +12,7 @@
 
 use chrono::{NaiveDate, NaiveTime};
 use schedule_query::InterchangeData;
-use trip_planner::{JourneyLeg, RaptorJourney};
+use trip_planner::{ArriveByOptions, JourneyLeg, RaptorJourney, Restrictions};
 
 /// Design spec §4's default cap, at most 2 interchanges (3 legs) per
 /// computed itinerary -- applied here, in the presentation layer, never
@@ -132,10 +132,18 @@ pub struct PlannedItinerary {
     pub arrival_min: u32,
     #[serde(skip)]
     pub arrival_tiploc: Option<String>,
+    /// Internal: the TIPLOC the itinerary starts from -- what an arrive-by
+    /// chain ([`chain_deadline_min`]) charges the change time at.
+    #[serde(skip)]
+    pub departure_tiploc: Option<String>,
     /// Live overlay only (absent otherwise): no cancelled leg and no change
     /// that live times make impossible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_feasible: Option<bool>,
+    /// The first leg is the same train the previous segment's itinerary rode
+    /// into the waypoint: the traveller stays aboard and makes no change
+    /// there (additive, 2026-09-29; always `false` for the first segment).
+    pub continues_previous_train: bool,
 }
 
 impl PlannedItinerary {
@@ -159,9 +167,14 @@ impl PlannedItinerary {
             departure_min,
             arrival_min,
             live_feasible: None,
+            continues_previous_train: false,
             arrival_tiploc: legs.last().map(|leg| match leg {
                 JourneyLeg::Train(train) => train.to_tiploc.clone(),
                 JourneyLeg::Transfer(transfer) => transfer.to_tiploc.clone(),
+            }),
+            departure_tiploc: legs.first().map(|leg| match leg {
+                JourneyLeg::Train(train) => train.from_tiploc.clone(),
+                JourneyLeg::Transfer(transfer) => transfer.from_tiploc.clone(),
             }),
         }
     }
@@ -348,64 +361,159 @@ pub fn plan_segment_from_min(
     max_changes: u32,
     overlay: Option<&trip_planner::ConnectionOverlay>,
 ) -> Result<(Vec<PlannedItinerary>, bool), String> {
-    let (from_tiplocs, to_tiplocs) =
-        resolve_segment_tiplocs(interchange, origin_crs, destination_crs)?;
+    SegmentSearch {
+        connections,
+        interchange,
+        date,
+        results,
+        max_changes,
+        overlay,
+        restrictions: None,
+    }
+    .search(
+        origin_crs,
+        destination_crs,
+        TimeBound::DepartAfter(departure_min),
+    )
+}
 
-    if results == "fastest" {
-        let Some(journey) = trip_planner::scan_connections_with_overlay(
-            trip_planner::ScanOptions {
-                connections,
-                interchange,
-                from_tiplocs: &from_tiplocs,
-                to_tiplocs: &to_tiplocs,
-                departure_min,
-                date,
-            },
-            overlay,
-        ) else {
-            return Ok((Vec::new(), false));
-        };
-        let change_count = train_leg_count(&journey.legs).saturating_sub(1);
-        let itinerary = PlannedItinerary::from_legs(
-            &journey.legs,
-            journey.departure_min,
-            journey.arrival_min,
-            change_count,
-            // See this plan's Judgment Call 3: CSA has no cap of its own,
-            // so a genuinely-fastest answer that needs more than the
-            // requested cap is still returned, honestly flagged, not hidden.
-            Some(change_count > max_changes),
-            date,
-            interchange,
-        );
-        return Ok((vec![itinerary], false));
+/// Which end of a segment (or trip) the caller's time pins, in minutes from
+/// service-day midnight (may exceed 1440).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeBound {
+    /// `departAfter`: leave no earlier than this.
+    DepartAfter(u32),
+    /// `arriveBy`: arrive no later than this; the latest-departing
+    /// itineraries that do are wanted.
+    ArriveBy(u32),
+}
+
+/// Everything one segment search needs besides its endpoints and time.
+#[derive(Clone, Copy)]
+pub struct SegmentSearch<'a> {
+    pub connections: &'a [schedule_query::Connection],
+    pub interchange: &'a InterchangeData,
+    pub date: NaiveDate,
+    /// `"fastest"` or `"options"` -- see [`plan_segment`].
+    pub results: &'a str,
+    pub max_changes: u32,
+    pub overlay: Option<&'a trip_planner::ConnectionOverlay>,
+    /// `avoid`/`avoidStop`/`avoidChange`, see [`build_restrictions`].
+    pub restrictions: Option<&'a Restrictions>,
+}
+
+impl SegmentSearch<'_> {
+    /// One segment, `bound` either way. Returns the itineraries (possibly
+    /// none) and `cappedByMaxChanges`, or `Err` for an unrecognised CRS.
+    ///
+    /// Arrive-by: `fastest` is the single latest-departing itinerary that
+    /// arrives in time (earliest-arriving among those leaving then);
+    /// `options` is, for each number of changes up to `max_changes`, the
+    /// latest departure that makes it -- one itinerary per change count,
+    /// fewest changes first, each departing strictly later than the one
+    /// before (a later departure is the arrive-by analogue of an earlier
+    /// arrival). `capped` when a later departure needing more changes exists.
+    pub fn search(
+        &self,
+        origin_crs: &str,
+        destination_crs: &str,
+        bound: TimeBound,
+    ) -> Result<(Vec<PlannedItinerary>, bool), String> {
+        let (from_tiplocs, to_tiplocs) =
+            resolve_segment_tiplocs(self.interchange, origin_crs, destination_crs)?;
+        match (self.results, bound) {
+            ("fastest", _) => {
+                let Some(journey) =
+                    self.fastest(&from_tiplocs, &to_tiplocs, bound, self.restrictions)
+                else {
+                    return Ok((Vec::new(), false));
+                };
+                let change_count = train_leg_count(&journey.legs).saturating_sub(1);
+                let itinerary = PlannedItinerary::from_legs(
+                    &journey.legs,
+                    journey.departure_min,
+                    journey.arrival_min,
+                    change_count,
+                    // See this plan's Judgment Call 3: CSA has no cap of its
+                    // own, so a genuinely-fastest answer that needs more than
+                    // the requested cap is still returned, honestly flagged,
+                    // not hidden.
+                    Some(change_count > self.max_changes),
+                    self.date,
+                    self.interchange,
+                );
+                Ok((vec![itinerary], false))
+            }
+            ("options", TimeBound::DepartAfter(departure_min)) => {
+                let all: Vec<RaptorJourney> = trip_planner::raptor_search_restricted(
+                    trip_planner::RaptorOptions {
+                        connections: self.connections,
+                        interchange: self.interchange,
+                        from_tiplocs: &from_tiplocs,
+                        to_tiplocs: &to_tiplocs,
+                        departure_min,
+                        date: self.date,
+                        max_rounds: max_rounds(self.max_changes),
+                    },
+                    self.overlay,
+                    self.restrictions,
+                );
+                let within_cap: Vec<&RaptorJourney> = all
+                    .iter()
+                    .filter(|j| j.changes <= self.max_changes)
+                    .collect();
+                // Judgment Call 2: did the headroom round (`max_rounds`, one
+                // past what `max_changes` alone needs) find something
+                // strictly better than every within-cap entry? If so, the
+                // cap genuinely bound the answer -- flagged honestly, not
+                // silently swallowed.
+                let best_within_cap = within_cap.iter().map(|j| j.arrival_min).min();
+                let capped = all.iter().any(|j| {
+                    j.changes > self.max_changes
+                        && best_within_cap.is_none_or(|best| j.arrival_min < best)
+                });
+                Ok((self.itineraries(within_cap), capped))
+            }
+            ("options", TimeBound::ArriveBy(arrive_by_min)) => {
+                let options = self.arrive_by_options(&from_tiplocs, &to_tiplocs, arrive_by_min);
+                let latest = trip_planner::latest_departures_by_trips(
+                    &options,
+                    self.overlay,
+                    self.restrictions,
+                    max_rounds(self.max_changes),
+                );
+                // `latest[k - 1]` is the latest departure with at most `k`
+                // trains; within the cap is `k <= max_changes + 1`.
+                let (within, beyond) = latest.split_at((self.max_changes + 1) as usize);
+                let best_within_cap = within.iter().flatten().max();
+                let capped = beyond
+                    .iter()
+                    .flatten()
+                    .any(|t| best_within_cap.is_none_or(|best| t > best));
+                let journeys = trip_planner::raptor_arrive_by_from_latest(
+                    &options,
+                    self.overlay,
+                    self.restrictions,
+                    within,
+                );
+                Ok((
+                    self.itineraries(
+                        journeys
+                            .iter()
+                            .filter(|j| j.changes <= self.max_changes)
+                            .collect(),
+                    ),
+                    capped,
+                ))
+            }
+            (results, _) => Err(format!(
+                "results must be 'fastest' or 'options', not '{results}'"
+            )),
+        }
     }
 
-    if results == "options" {
-        let all: Vec<RaptorJourney> = trip_planner::raptor_search_with_overlay(
-            trip_planner::RaptorOptions {
-                connections,
-                interchange,
-                from_tiplocs: &from_tiplocs,
-                to_tiplocs: &to_tiplocs,
-                departure_min,
-                date,
-                max_rounds: max_rounds(max_changes),
-            },
-            overlay,
-        );
-        let within_cap: Vec<&RaptorJourney> =
-            all.iter().filter(|j| j.changes <= max_changes).collect();
-        // Judgment Call 2: did the headroom round (`max_rounds`, one past
-        // what `max_changes` alone needs) find something strictly better
-        // than every within-cap entry? If so, the cap genuinely bound the
-        // answer -- flagged honestly, not silently swallowed.
-        let best_within_cap = within_cap.iter().map(|j| j.arrival_min).min();
-        let capped = all.iter().any(|j| {
-            j.changes > max_changes && best_within_cap.is_none_or(|best| j.arrival_min < best)
-        });
-
-        let itineraries = within_cap
+    fn itineraries(&self, journeys: Vec<&RaptorJourney>) -> Vec<PlannedItinerary> {
+        journeys
             .into_iter()
             .map(|journey| {
                 PlannedItinerary::from_legs(
@@ -414,17 +522,86 @@ pub fn plan_segment_from_min(
                     journey.arrival_min,
                     journey.changes,
                     None,
-                    date,
-                    interchange,
+                    self.date,
+                    self.interchange,
                 )
             })
-            .collect();
-        return Ok((itineraries, capped));
+            .collect()
     }
 
-    Err(format!(
-        "results must be 'fastest' or 'options', not '{results}'"
-    ))
+    fn arrive_by_options<'b>(
+        &'b self,
+        from_tiplocs: &'b [String],
+        to_tiplocs: &'b [String],
+        arrive_by_min: u32,
+    ) -> ArriveByOptions<'b> {
+        ArriveByOptions {
+            connections: self.connections,
+            interchange: self.interchange,
+            from_tiplocs,
+            waypoints: &[],
+            to_tiplocs,
+            arrive_by_min,
+            date: self.date,
+        }
+    }
+
+    /// The single CSA journey for `bound` under `restrictions`.
+    fn fastest(
+        &self,
+        from_tiplocs: &[String],
+        to_tiplocs: &[String],
+        bound: TimeBound,
+        restrictions: Option<&Restrictions>,
+    ) -> Option<trip_planner::Journey> {
+        match bound {
+            TimeBound::DepartAfter(departure_min) => trip_planner::scan_connections_restricted(
+                trip_planner::ScanOptions {
+                    connections: self.connections,
+                    interchange: self.interchange,
+                    from_tiplocs,
+                    to_tiplocs,
+                    departure_min,
+                    date: self.date,
+                },
+                self.overlay,
+                restrictions,
+            ),
+            TimeBound::ArriveBy(arrive_by_min) => trip_planner::scan_connections_arrive_by(
+                self.arrive_by_options(from_tiplocs, to_tiplocs, arrive_by_min),
+                self.overlay,
+                restrictions,
+            ),
+        }
+    }
+}
+
+/// Why a segment has no itineraries -- served as the segment's
+/// `noResultReason` (absent when it has some). Adapted from `train-mcp`'s
+/// `ConstraintFailure` (`src/timetable/plan/constraints.ts`): "no journey
+/// found" is nearly useless once several constraints are in play, so this
+/// names the one that made the query infeasible.
+///
+/// `constraint` is one of:
+///
+/// - `maxChanges` (`results=options`): itineraries exist, but every one
+///   needs more changes than the cap;
+/// - `avoid`, `avoidStop`, `avoidChange`: an itinerary exists without that
+///   list (`values`), none with it;
+/// - `avoidCombined`: one exists without the avoid lists, but dropping any
+///   single list is not enough (`values` is every avoided code);
+/// - `departAfter` / `arriveBy`: nothing leaves late enough / arrives early
+///   enough (`values` is the time, `HH:MM`), though something runs that day;
+/// - `noRoute`: nothing reaches the destination that service day at all
+///   (under the avoid lists, if any);
+/// - `previousSegment` / `nextSegment`: a waypoint segment that was not
+///   searched, because the one it chains from found nothing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoResultReason {
+    pub constraint: &'static str,
+    pub values: Vec<String>,
+    pub message: String,
 }
 
 /// One resolved leg of a multi-waypoint plan -- `origin`/`destination` name
@@ -436,12 +613,21 @@ pub struct SegmentResult {
     pub destination_crs: String,
     pub itineraries: Vec<PlannedItinerary>,
     pub capped_by_max_changes: bool,
-    /// Minutes from service-day midnight this segment was searched from:
-    /// the caller's `departAfter` for the first segment, the previous
-    /// segment's earliest arrival plus the waypoint's minimum change time
-    /// for every later one, `None` when the previous segment found nothing
-    /// to chain from (so this one was not searched). May exceed 1440.
+    /// Depart-after requests: minutes from service-day midnight this segment
+    /// was searched from -- the caller's `departAfter` for the first
+    /// segment, the previous segment's earliest arrival plus the waypoint's
+    /// minimum change time for every later one, `None` when the previous
+    /// segment found nothing to chain from (so this one was not searched).
+    /// May exceed 1440. Always `None` for an arrive-by request.
     pub depart_after_min: Option<u32>,
+    /// Arrive-by requests: the latest arrival this segment was searched for
+    /// -- the caller's `arriveBy` for the last segment, the next segment's
+    /// latest departure less the waypoint's minimum change time for earlier
+    /// ones ([`chain_deadline_min`]), `None` when the next segment found
+    /// nothing. Always `None` for a depart-after request.
+    pub arrive_by_min: Option<u32>,
+    /// Set only when `itineraries` is empty -- see [`NoResultReason`].
+    pub no_result_reason: Option<NoResultReason>,
 }
 
 /// Change time used when chaining a waypoint whose own minimum change time
@@ -452,21 +638,24 @@ pub struct SegmentResult {
 /// record at all.
 const WAYPOINT_FALLBACK_CHANGE_MINUTES: u32 = 5;
 
-/// When the traveller can leave the waypoint `itinerary` arrives at: its
-/// arrival plus the minimum change time at the TIPLOC it arrives at -- the
-/// same figure the CSA/RAPTOR searches charge for an ordinary change there.
-fn ready_after(itinerary: &PlannedItinerary, interchange: &InterchangeData) -> u32 {
-    let change = itinerary
-        .arrival_tiploc
-        .as_deref()
+/// The minimum change time a waypoint chain charges at `tiploc` -- the same
+/// figure the CSA/RAPTOR searches charge for an ordinary change there.
+fn waypoint_change_minutes(interchange: &InterchangeData, tiploc: Option<&str>) -> u32 {
+    tiploc
         .map(
             |tiploc| match schedule_query::minimum_change_time(interchange, tiploc) {
                 schedule_query::ChangeTime::Finite(minutes) => minutes,
                 schedule_query::ChangeTime::NoInterchange => WAYPOINT_FALLBACK_CHANGE_MINUTES,
             },
         )
-        .unwrap_or(WAYPOINT_FALLBACK_CHANGE_MINUTES);
-    itinerary.arrival_min + change
+        .unwrap_or(WAYPOINT_FALLBACK_CHANGE_MINUTES)
+}
+
+/// When the traveller can leave the waypoint `itinerary` arrives at: its
+/// arrival plus the minimum change time at the TIPLOC it arrives at.
+fn ready_after(itinerary: &PlannedItinerary, interchange: &InterchangeData) -> u32 {
+    itinerary.arrival_min
+        + waypoint_change_minutes(interchange, itinerary.arrival_tiploc.as_deref())
 }
 
 /// The earliest a segment following `itineraries` can start: the earliest
@@ -482,6 +671,27 @@ pub fn chain_ready_min(
         .iter()
         .map(|itinerary| ready_after(itinerary, interchange))
         .min()
+}
+
+/// The arrive-by mirror of [`chain_ready_min`]: the latest a segment
+/// PRECEDING `itineraries` may arrive at the waypoint -- the latest
+/// departure among them, less the minimum change time at the TIPLOC it
+/// leaves from (searching to the latest keeps every one of them reachable
+/// from at least one earlier option). `None` when that segment found
+/// nothing.
+pub fn chain_deadline_min(
+    itineraries: &[PlannedItinerary],
+    interchange: &InterchangeData,
+) -> Option<u32> {
+    itineraries
+        .iter()
+        .filter_map(|itinerary| {
+            itinerary.departure_min.checked_sub(waypoint_change_minutes(
+                interchange,
+                itinerary.departure_tiploc.as_deref(),
+            ))
+        })
+        .max()
 }
 
 /// Solves `origin -> waypoints[0] -> waypoints[1] -> ... -> destination` as
@@ -505,6 +715,8 @@ pub fn chain_ready_min(
 /// is no arrival to chain from, and searching from `00:00` would reintroduce
 /// the bug above. Those segments come back with no itineraries and
 /// `depart_after_min: None`.
+///
+/// [`plan_trip`] is the general form (arrive-by, avoid lists).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_via_waypoints(
     connections: &[schedule_query::Connection],
@@ -546,50 +758,881 @@ pub fn plan_via_waypoints_with_overlay(
     max_changes: u32,
     overlay: Option<&trip_planner::ConnectionOverlay>,
 ) -> Result<Vec<SegmentResult>, String> {
-    let mut stops: Vec<&str> = vec![origin_crs];
-    stops.extend(waypoints.iter().map(String::as_str));
-    stops.push(destination_crs);
-
-    let mut segments: Vec<SegmentResult> = Vec::new();
-    for pair in stops.windows(2) {
-        let (from, to) = (pair[0], pair[1]);
-        let depart_after_min = match segments.last() {
-            None => Some(clock_minutes(departure_after)),
-            Some(previous) => chain_ready_min(&previous.itineraries, interchange),
-        };
-        let Some(depart_after_min) = depart_after_min else {
-            resolve_segment_tiplocs(interchange, from, to)
-                .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
-            segments.push(SegmentResult {
-                origin_crs: from.to_string(),
-                destination_crs: to.to_string(),
-                itineraries: Vec::new(),
-                capped_by_max_changes: false,
-                depart_after_min: None,
-            });
-            continue;
-        };
-        let (itineraries, capped) = plan_segment_from_min(
+    plan_chained(&TripPlanInput {
+        search: SegmentSearch {
             connections,
             interchange,
             date,
-            from,
-            to,
-            depart_after_min,
             results,
             max_changes,
             overlay,
-        )
-        .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
-        segments.push(SegmentResult {
+            restrictions: None,
+        },
+        passes: None,
+        avoid: &AvoidLists::default(),
+        origin_crs,
+        waypoints,
+        destination_crs,
+        time: TimeBound::DepartAfter(clock_minutes(departure_after)),
+    })
+}
+
+/// The station lists of `?avoid=`, `?avoidStop=` and `?avoidChange=`, as
+/// the caller named them (CRS codes). See [`build_restrictions`] for what
+/// each means.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AvoidLists {
+    pub avoid: Vec<String>,
+    pub avoid_stop: Vec<String>,
+    pub avoid_change: Vec<String>,
+}
+
+impl AvoidLists {
+    pub fn is_empty(&self) -> bool {
+        self.avoid.is_empty() && self.avoid_stop.is_empty() && self.avoid_change.is_empty()
+    }
+
+    /// `(wire name, codes)` for every list, in a fixed order.
+    pub fn lists(&self) -> [(&'static str, &[String]); 3] {
+        [
+            ("avoid", &self.avoid),
+            ("avoidStop", &self.avoid_stop),
+            ("avoidChange", &self.avoid_change),
+        ]
+    }
+
+    fn without(&self, name: &str) -> Self {
+        let mut copy = self.clone();
+        match name {
+            "avoid" => copy.avoid.clear(),
+            "avoidStop" => copy.avoid_stop.clear(),
+            _ => copy.avoid_change.clear(),
+        }
+        copy
+    }
+
+    /// Every code in every list, in order, deduplicated.
+    fn all_codes(&self) -> Vec<String> {
+        let mut codes: Vec<String> = Vec::new();
+        for (_, list) in self.lists() {
+            for code in list {
+                if !codes.contains(code) {
+                    codes.push(code.clone());
+                }
+            }
+        }
+        codes
+    }
+}
+
+/// "avoiding BHM, CRE" etc. -- how a message describes one list.
+fn describe_list(name: &str, codes: &[String]) -> String {
+    let codes = codes.join(", ");
+    match name {
+        "avoid" => format!("avoiding {codes} (not even passing through)"),
+        "avoidStop" => format!("not calling at {codes}"),
+        _ => format!("not changing at {codes}"),
+    }
+}
+
+/// The search restrictions `lists` expand to, or `None` when every list is
+/// empty. `Err` names an unrecognised code.
+///
+/// - `avoid` (as in `train-mcp`): never ride a train that calls at OR runs
+///   through the station, and never board, alight or walk there. Needs
+///   `passes` (the day's [`schedule_query::PassIndex`]) to see the trains
+///   that run through without calling.
+/// - `avoidStop` (as in `train-mcp`): never ride a train that calls there
+///   (running through without stopping is fine), never board, alight or
+///   walk there.
+/// - `avoidChange` (Distant Signal's own, the loosest): never board, alight,
+///   change or walk there; staying aboard a train that calls there is fine.
+///
+/// Every CRS code covers all of its TIPLOCs.
+pub fn build_restrictions(
+    connections: &[schedule_query::Connection],
+    interchange: &InterchangeData,
+    passes: Option<&schedule_query::PassIndex>,
+    lists: &AvoidLists,
+) -> Result<Option<Restrictions>, String> {
+    use std::collections::{HashMap, HashSet};
+
+    if lists.is_empty() {
+        return Ok(None);
+    }
+    let tiplocs_of = |name: &str, codes: &[String]| -> Result<Vec<String>, String> {
+        let mut tiplocs = Vec::new();
+        for code in codes {
+            match interchange.crs_to_tiplocs.get(code) {
+                Some(found) if !found.is_empty() => tiplocs.extend(found.iter().cloned()),
+                _ => {
+                    return Err(format!(
+                        "{name}: '{code}' is not a recognised station CRS code"
+                    ));
+                }
+            }
+        }
+        Ok(tiplocs)
+    };
+    let avoid = tiplocs_of("avoid", &lists.avoid)?;
+    let avoid_stop = tiplocs_of("avoidStop", &lists.avoid_stop)?;
+    let avoid_change = tiplocs_of("avoidChange", &lists.avoid_change)?;
+
+    // Trains that run through an `avoid` station without calling: every one
+    // of their base connections in order, the spanning ones blocked.
+    let mut pass_legs: HashMap<String, Vec<trip_planner::PassLeg>> = HashMap::new();
+    if let Some(passes) = passes
+        && !avoid.is_empty()
+    {
+        let blocked: HashSet<usize> = avoid
+            .iter()
+            .flat_map(|tiploc| passes.connections_passing(tiploc))
+            .map(|&index| index as usize)
+            .collect();
+        let uids: HashSet<&str> = blocked
+            .iter()
+            .filter_map(|&index| connections.get(index))
+            .map(|c| c.uid.as_str())
+            .collect();
+        if !uids.is_empty() {
+            for (index, connection) in connections.iter().enumerate() {
+                if uids.contains(connection.uid.as_str()) {
+                    pass_legs.entry(connection.uid.clone()).or_default().push(
+                        trip_planner::PassLeg {
+                            from_tiploc: connection.from_tiploc.clone(),
+                            to_tiploc: connection.to_tiploc.clone(),
+                            blocked: blocked.contains(&index),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    let no_call: Vec<String> = avoid.iter().chain(&avoid_stop).cloned().collect();
+    Ok(Some(Restrictions::new(avoid_change, no_call, pass_legs)))
+}
+
+/// Everything [`plan_trip`] needs.
+pub struct TripPlanInput<'a> {
+    /// `search.restrictions` must be [`build_restrictions`] of `avoid`.
+    pub search: SegmentSearch<'a>,
+    /// The day's pass index, for `avoid` -- and for rebuilding the
+    /// restrictions without one list when explaining an empty segment.
+    pub passes: Option<&'a schedule_query::PassIndex>,
+    pub avoid: &'a AvoidLists,
+    pub origin_crs: &'a str,
+    pub waypoints: &'a [String],
+    pub destination_crs: &'a str,
+    /// Applies to the first segment (`DepartAfter`) or the last
+    /// (`ArriveBy`); the others are chained from their neighbour.
+    pub time: TimeBound,
+}
+
+/// The whole `/Trips/plan` computation: `origin -> waypoints... ->
+/// destination`, with every empty segment explained (`no_result_reason`).
+///
+/// With no waypoints this is one [`SegmentSearch`]. With waypoints the trip
+/// is searched as ONE journey that calls at every waypoint in order
+/// (`trip_planner::staged`, 2026-09-29): a traveller who stays aboard a
+/// train calling at a waypoint makes no change there (that part is marked
+/// `continues_previous_train`), a fresh boarding at a waypoint costs its
+/// minimum change time (5 minutes at a `NoInterchange` sentinel), and
+/// `max_changes` caps the changes of the WHOLE journey. The journey is then
+/// split at the waypoints into one itinerary per segment, and the segments'
+/// itinerary lists are ALIGNED: `segments[s].itineraries[j]` is part `s` of
+/// journey `j` (see [`journey_summaries`]). A waypoint is satisfied by a
+/// call there (or a walk into it), not by a train passing through without
+/// stopping.
+///
+/// Until 2026-09-29 each segment was searched on its own and chained
+/// ([`plan_via_waypoints`]); that per-segment planner is still what explains
+/// an infeasible joint plan: it finds the segment that fails and why.
+///
+/// Every segment's CRS codes are validated before any search, so a bad
+/// code is a 400 naming the first segment that has one. A waypoint equal to
+/// the origin, the destination or the waypoint before it is a 400 too.
+pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
+    if input.waypoints.is_empty() {
+        return plan_chained(input);
+    }
+    let search = &input.search;
+    let interchange = search.interchange;
+    let mut stops: Vec<&str> = vec![input.origin_crs];
+    stops.extend(input.waypoints.iter().map(String::as_str));
+    stops.push(input.destination_crs);
+    let pairs: Vec<(&str, &str)> = stops.windows(2).map(|pair| (pair[0], pair[1])).collect();
+    let mut tiplocs: Vec<Vec<String>> = Vec::with_capacity(stops.len());
+    for &(from, to) in &pairs {
+        let (from_tiplocs, to_tiplocs) = resolve_segment_tiplocs(interchange, from, to)
+            .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
+        if tiplocs.is_empty() {
+            tiplocs.push(from_tiplocs);
+        }
+        tiplocs.push(to_tiplocs);
+    }
+    for (index, waypoint) in input.waypoints.iter().enumerate() {
+        let clash = if waypoint.eq_ignore_ascii_case(input.origin_crs) {
+            Some("the origin")
+        } else if waypoint.eq_ignore_ascii_case(input.destination_crs) {
+            Some("the destination")
+        } else if index > 0 && waypoint.eq_ignore_ascii_case(&input.waypoints[index - 1]) {
+            Some("the waypoint before it")
+        } else {
+            None
+        };
+        if let Some(clash) = clash {
+            return Err(format!(
+                "waypoint '{waypoint}' is {clash}; remove it or name a different station"
+            ));
+        }
+    }
+
+    let last = tiplocs.len() - 1;
+    let options = trip_planner::ArriveByOptions {
+        connections: search.connections,
+        interchange,
+        from_tiplocs: &tiplocs[0],
+        waypoints: &tiplocs[1..last],
+        to_tiplocs: &tiplocs[last],
+        arrive_by_min: match input.time {
+            TimeBound::ArriveBy(deadline) => deadline,
+            TimeBound::DepartAfter(_) => 0,
+        },
+        date: search.date,
+    };
+    let staged = trip_planner::StagedOptions {
+        connections: search.connections,
+        interchange,
+        from_tiplocs: &tiplocs[0],
+        waypoints: &tiplocs[1..last],
+        to_tiplocs: &tiplocs[last],
+        date: search.date,
+    };
+    let (overlay, restrictions) = (search.overlay, search.restrictions);
+    let rounds = max_rounds(search.max_changes);
+    let (journeys, capped): (Vec<trip_planner::StagedJourney>, bool) =
+        match (search.results, input.time) {
+            ("fastest", TimeBound::DepartAfter(start)) => (
+                trip_planner::scan_staged(&staged, start, overlay, restrictions)
+                    .into_iter()
+                    .collect(),
+                false,
+            ),
+            ("fastest", TimeBound::ArriveBy(_)) => (
+                trip_planner::staged_arrive_by(&options, overlay, restrictions)
+                    .into_iter()
+                    .collect(),
+                false,
+            ),
+            ("options", TimeBound::DepartAfter(start)) => {
+                let all =
+                    trip_planner::raptor_staged(&staged, start, rounds, overlay, restrictions);
+                let best_within_cap = all
+                    .iter()
+                    .filter(|j| j.changes <= search.max_changes)
+                    .map(|j| j.arrival_min)
+                    .min();
+                let capped = all.iter().any(|j| {
+                    j.changes > search.max_changes
+                        && best_within_cap.is_none_or(|best| j.arrival_min < best)
+                });
+                (
+                    all.into_iter()
+                        .filter(|j| j.changes <= search.max_changes)
+                        .collect(),
+                    capped,
+                )
+            }
+            ("options", TimeBound::ArriveBy(_)) => {
+                let latest = trip_planner::latest_departures_by_trips(
+                    &options,
+                    overlay,
+                    restrictions,
+                    rounds,
+                );
+                let (within, beyond) = latest.split_at((search.max_changes + 1) as usize);
+                let best_within_cap = within.iter().flatten().max();
+                let capped = beyond
+                    .iter()
+                    .flatten()
+                    .any(|t| best_within_cap.is_none_or(|best| t > best));
+                (
+                    trip_planner::staged_raptor_arrive_by_from_latest(
+                        &options,
+                        overlay,
+                        restrictions,
+                        within,
+                    )
+                    .into_iter()
+                    .filter(|j| j.changes <= search.max_changes)
+                    .collect(),
+                    capped,
+                )
+            }
+            (results, _) => {
+                return Err(format!(
+                    "results must be 'fastest' or 'options', not '{results}'"
+                ));
+            }
+        };
+
+    let fastest = search.results == "fastest";
+    let mut segments: Vec<SegmentResult> = pairs
+        .iter()
+        .map(|&(from, to)| SegmentResult {
             origin_crs: from.to_string(),
             destination_crs: to.to_string(),
-            itineraries,
+            itineraries: Vec::with_capacity(journeys.len()),
             capped_by_max_changes: capped,
-            depart_after_min: Some(depart_after_min),
-        });
+            depart_after_min: None,
+            arrive_by_min: None,
+            no_result_reason: None,
+        })
+        .collect();
+    for journey in &journeys {
+        let mut previous_arrival = journey.departure_min;
+        for (segment, part) in segments.iter_mut().zip(&journey.parts) {
+            let departure = part
+                .legs
+                .first()
+                .map(leg_departure_min)
+                .unwrap_or(previous_arrival);
+            let arrival = part.legs.last().map(leg_arrival_min).unwrap_or(departure);
+            previous_arrival = arrival;
+            let changes = train_leg_count(&part.legs).saturating_sub(1);
+            let mut itinerary = PlannedItinerary::from_legs(
+                &part.legs,
+                departure,
+                arrival,
+                changes,
+                // The whole journey's changes against the cap.
+                fastest.then_some(journey.changes > search.max_changes),
+                search.date,
+                interchange,
+            );
+            itinerary.continues_previous_train = part.continues_previous_train;
+            segment.itineraries.push(itinerary);
+        }
+    }
+
+    // What each segment was, in effect, searched from / for.
+    match input.time {
+        TimeBound::DepartAfter(start) => {
+            segments[0].depart_after_min = Some(start);
+            for index in 1..segments.len() {
+                let ready = (0..journeys.len())
+                    .map(|j| {
+                        let (previous, next) = (
+                            &segments[index - 1].itineraries[j],
+                            &segments[index].itineraries[j],
+                        );
+                        waypoint_ready_min(previous, next, interchange)
+                    })
+                    .min();
+                segments[index].depart_after_min = ready;
+            }
+        }
+        TimeBound::ArriveBy(deadline) => {
+            segments[last - 1].arrive_by_min = Some(deadline);
+            for index in 0..segments.len() - 1 {
+                let latest = (0..journeys.len())
+                    .map(|j| {
+                        let (previous, next) = (
+                            &segments[index].itineraries[j],
+                            &segments[index + 1].itineraries[j],
+                        );
+                        waypoint_deadline_min(previous, next, interchange)
+                    })
+                    .max();
+                segments[index].arrive_by_min = latest;
+            }
+        }
+    }
+
+    if journeys.is_empty() {
+        explain_infeasible_joint_plan(input, &mut segments, capped)?;
     }
     Ok(segments)
+}
+
+fn leg_departure_min(leg: &JourneyLeg) -> u32 {
+    match leg {
+        JourneyLeg::Train(train) => train.departure_min,
+        JourneyLeg::Transfer(transfer) => transfer.departure_min,
+    }
+}
+
+fn leg_arrival_min(leg: &JourneyLeg) -> u32 {
+    match leg {
+        JourneyLeg::Train(train) => train.arrival_min,
+        JourneyLeg::Transfer(transfer) => transfer.arrival_min,
+    }
+}
+
+/// When the traveller can leave a waypoint on `next`, having arrived on
+/// `previous`: at once when `next` continues the same train, otherwise
+/// after the change time at the TIPLOC `next` leaves from (the rule the
+/// joint search applies).
+pub fn waypoint_ready_min(
+    previous: &PlannedItinerary,
+    next: &PlannedItinerary,
+    interchange: &InterchangeData,
+) -> u32 {
+    if next.continues_previous_train {
+        previous.arrival_min
+    } else {
+        previous.arrival_min
+            + waypoint_change_minutes(interchange, next.departure_tiploc.as_deref())
+    }
+}
+
+/// The arrive-by mirror of [`waypoint_ready_min`]: the latest `previous`
+/// may arrive at the waypoint and still make `next`.
+fn waypoint_deadline_min(
+    previous: &PlannedItinerary,
+    next: &PlannedItinerary,
+    interchange: &InterchangeData,
+) -> u32 {
+    let _ = previous;
+    if next.continues_previous_train {
+        next.departure_min
+    } else {
+        next.departure_min.saturating_sub(waypoint_change_minutes(
+            interchange,
+            next.departure_tiploc.as_deref(),
+        ))
+    }
+}
+
+/// No journey calls at every waypoint: find out why with the per-segment
+/// chained planner ([`plan_chained`]). The segment it cannot plan keeps its
+/// own reason; every other segment names that one. If every segment plans
+/// on its own, the whole-journey change cap is what failed (`options`).
+fn explain_infeasible_joint_plan(
+    input: &TripPlanInput<'_>,
+    segments: &mut [SegmentResult],
+    capped: bool,
+) -> Result<(), String> {
+    let chained = plan_chained(input)?;
+    let failing = chained.iter().position(|segment| {
+        segment.itineraries.is_empty()
+            && !matches!(
+                segment.no_result_reason.as_ref().map(|r| r.constraint),
+                Some("previousSegment" | "nextSegment")
+            )
+    });
+    let Some(failing) = failing else {
+        let search = &input.search;
+        let reason = if capped {
+            NoResultReason {
+                constraint: "maxChanges",
+                values: vec![search.max_changes.to_string()],
+                message: format!(
+                    "No itinerary through every waypoint on {} has {} or fewer changes in all; \
+                     one with more exists. Raise maxChanges (at most {MAX_CHANGES_LIMIT}) or use \
+                     results=fastest.",
+                    search.date, search.max_changes
+                ),
+            }
+        } else {
+            NoResultReason {
+                constraint: "noRoute",
+                values: Vec::new(),
+                message: format!(
+                    "No itinerary calls at every waypoint in order on {}.",
+                    search.date
+                ),
+            }
+        };
+        for segment in segments.iter_mut() {
+            segment.no_result_reason = Some(reason.clone());
+        }
+        return Ok(());
+    };
+    let label = format!(
+        "{} -> {}",
+        chained[failing].origin_crs, chained[failing].destination_crs
+    );
+    for (index, segment) in segments.iter_mut().enumerate() {
+        segment.no_result_reason = Some(if index == failing {
+            chained[failing]
+                .no_result_reason
+                .clone()
+                .expect("an empty chained segment is explained")
+        } else {
+            NoResultReason {
+                constraint: if index < failing {
+                    "nextSegment"
+                } else {
+                    "previousSegment"
+                },
+                values: vec![label.clone()],
+                message: format!(
+                    "No itinerary for {} -> {}: the {label} segment has none.",
+                    segment.origin_crs, segment.destination_crs
+                ),
+            }
+        });
+    }
+    Ok(())
+}
+
+/// One whole journey of a plan: `segments[s].itineraries[j]` for every `s`,
+/// summarised. Served as the response's `journeys[j]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JourneySummary {
+    /// Changes over the whole journey, a train continuing through a
+    /// waypoint counted once.
+    pub change_count: u32,
+    pub departure_min: u32,
+    pub arrival_min: u32,
+    /// `results=fastest` only: `change_count` is over `maxChanges`.
+    pub exceeds_recommended_changes: Option<bool>,
+    /// Live overlay only: every part live-feasible, and every waypoint
+    /// change still made on live times.
+    pub live_feasible: Option<bool>,
+}
+
+/// The journeys of an aligned plan (see [`plan_trip`]). Empty when the
+/// segments' itinerary counts differ (a plan from the chained planner).
+pub fn journey_summaries(
+    segments: &[SegmentResult],
+    interchange: &InterchangeData,
+) -> Vec<JourneySummary> {
+    let Some(count) = segments.first().map(|s| s.itineraries.len()) else {
+        return Vec::new();
+    };
+    if segments.iter().any(|s| s.itineraries.len() != count) {
+        return Vec::new();
+    }
+    (0..count)
+        .map(|j| {
+            let parts: Vec<&PlannedItinerary> =
+                segments.iter().map(|s| &s.itineraries[j]).collect();
+            let rides: u32 = parts
+                .iter()
+                .map(|part| {
+                    part.legs
+                        .iter()
+                        .filter(|leg| matches!(leg, PlannedLeg::Train { .. }))
+                        .count() as u32
+                        - u32::from(part.continues_previous_train)
+                })
+                .sum();
+            let first = parts[0];
+            let final_part = parts[parts.len() - 1];
+            let live_feasible = if parts.iter().any(|p| p.live_feasible.is_some()) {
+                Some(
+                    parts.iter().all(|p| p.live_feasible != Some(false))
+                        && parts.windows(2).all(|pair| {
+                            waypoint_ready_min(pair[0], pair[1], interchange)
+                                <= pair[1].departure_min
+                        }),
+                )
+            } else {
+                None
+            };
+            JourneySummary {
+                change_count: rides.saturating_sub(1),
+                departure_min: first.departure_min,
+                arrival_min: final_part.arrival_min,
+                exceeds_recommended_changes: first.exceeds_recommended_changes,
+                live_feasible,
+            }
+        })
+        .collect()
+}
+
+/// The per-segment chained planner (the only planner before 2026-09-29):
+/// each segment searched on its own, later ones chained from the previous
+/// arrival (depart-after) or earlier ones from the next departure
+/// (arrive-by). [`plan_trip`] uses it for trips without waypoints, and to
+/// explain a joint plan that finds nothing.
+///
+/// Depart-after chains forwards as [`plan_via_waypoints`] documents.
+/// Arrive-by chains backwards: the LAST segment is searched to arrive by
+/// the caller's time, and each earlier one to arrive by
+/// [`chain_deadline_min`] of the one after it; when a segment finds nothing,
+/// every EARLIER one is validated but not searched. The avoid lists apply
+/// to every segment.
+fn plan_chained(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
+    let interchange = input.search.interchange;
+    let mut stops: Vec<&str> = vec![input.origin_crs];
+    stops.extend(input.waypoints.iter().map(String::as_str));
+    stops.push(input.destination_crs);
+    let pairs: Vec<(&str, &str)> = stops.windows(2).map(|pair| (pair[0], pair[1])).collect();
+    for &(from, to) in &pairs {
+        resolve_segment_tiplocs(interchange, from, to)
+            .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
+    }
+
+    let empty = |from: &str, to: &str| SegmentResult {
+        origin_crs: from.to_string(),
+        destination_crs: to.to_string(),
+        itineraries: Vec::new(),
+        capped_by_max_changes: false,
+        depart_after_min: None,
+        arrive_by_min: None,
+        no_result_reason: None,
+    };
+
+    let mut segments: Vec<SegmentResult> = Vec::with_capacity(pairs.len());
+    match input.time {
+        TimeBound::DepartAfter(first) => {
+            for &(from, to) in &pairs {
+                let start = match segments.last() {
+                    None => Some(first),
+                    Some(previous) => chain_ready_min(&previous.itineraries, interchange),
+                };
+                let Some(start) = start else {
+                    segments.push(empty(from, to));
+                    continue;
+                };
+                let (itineraries, capped) = input
+                    .search
+                    .search(from, to, TimeBound::DepartAfter(start))
+                    .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
+                segments.push(SegmentResult {
+                    itineraries,
+                    capped_by_max_changes: capped,
+                    depart_after_min: Some(start),
+                    ..empty(from, to)
+                });
+            }
+        }
+        TimeBound::ArriveBy(last) => {
+            for &(from, to) in pairs.iter().rev() {
+                let deadline = match segments.last() {
+                    None => Some(last),
+                    Some(next) => chain_deadline_min(&next.itineraries, interchange),
+                };
+                let Some(deadline) = deadline else {
+                    segments.push(empty(from, to));
+                    continue;
+                };
+                let (itineraries, capped) = input
+                    .search
+                    .search(from, to, TimeBound::ArriveBy(deadline))
+                    .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
+                segments.push(SegmentResult {
+                    itineraries,
+                    capped_by_max_changes: capped,
+                    arrive_by_min: Some(deadline),
+                    ..empty(from, to)
+                });
+            }
+            segments.reverse();
+        }
+    }
+
+    for index in 0..segments.len() {
+        if !segments[index].itineraries.is_empty() {
+            continue;
+        }
+        let reason = explain_empty_segment(input, &segments, index);
+        segments[index].no_result_reason = Some(reason);
+    }
+    Ok(segments)
+}
+
+/// `HH:MM`, plus ` (+n day)` past midnight of the service date.
+fn clock_label(minutes: u32) -> String {
+    let (time, day_offset) = minutes_to_clock(minutes);
+    let clock = time.format("%H:%M").to_string();
+    match day_offset {
+        0 => clock,
+        1 => format!("{clock} (+1 day)"),
+        days => format!("{clock} (+{days} days)"),
+    }
+}
+
+/// Far enough past any service day's last call that "arrive by then" means
+/// "arrive at all".
+const END_OF_SERVICE_DAYS_MIN: u32 = 4 * 1440;
+
+/// See [`NoResultReason`]. Adapted from `train-mcp`'s `attributeFailure`:
+/// re-run the segment without the avoid lists, and blame them if that
+/// finds something -- narrowed here to the single list whose removal is
+/// enough, when there is one. Only then is the time (or the route itself)
+/// blamed. Costs a few extra CSA searches, and only for an empty segment.
+fn explain_empty_segment(
+    input: &TripPlanInput<'_>,
+    segments: &[SegmentResult],
+    index: usize,
+) -> NoResultReason {
+    let segment = &segments[index];
+    let (from, to) = (
+        segment.origin_crs.as_str(),
+        segment.destination_crs.as_str(),
+    );
+    let search = &input.search;
+    let bound = match (segment.depart_after_min, segment.arrive_by_min) {
+        (Some(start), _) => TimeBound::DepartAfter(start),
+        (None, Some(deadline)) => TimeBound::ArriveBy(deadline),
+        (None, None) => {
+            return match input.time {
+                TimeBound::DepartAfter(_) => {
+                    let previous = &segments[index - 1];
+                    NoResultReason {
+                        constraint: "previousSegment",
+                        values: vec![format!(
+                            "{} -> {}",
+                            previous.origin_crs, previous.destination_crs
+                        )],
+                        message: format!(
+                            "{from} -> {to} was not searched: the {} -> {} segment found no \
+                             itinerary to continue from.",
+                            previous.origin_crs, previous.destination_crs
+                        ),
+                    }
+                }
+                TimeBound::ArriveBy(_) => {
+                    let next = &segments[index + 1];
+                    NoResultReason {
+                        constraint: "nextSegment",
+                        values: vec![format!("{} -> {}", next.origin_crs, next.destination_crs)],
+                        message: format!(
+                            "{from} -> {to} was not searched: the {} -> {} segment found no \
+                             itinerary to connect into.",
+                            next.origin_crs, next.destination_crs
+                        ),
+                    }
+                }
+            };
+        }
+    };
+    let phrase = match bound {
+        TimeBound::DepartAfter(start) => format!("departing after {}", clock_label(start)),
+        TimeBound::ArriveBy(deadline) => format!("arriving by {}", clock_label(deadline)),
+    };
+    let date = search.date;
+
+    if segment.capped_by_max_changes {
+        return NoResultReason {
+            constraint: "maxChanges",
+            values: vec![search.max_changes.to_string()],
+            message: format!(
+                "No itinerary from {from} to {to} {phrase} on {date} has {} or fewer changes; \
+                 one with more exists. Raise maxChanges (at most {MAX_CHANGES_LIMIT}) or use \
+                 results=fastest.",
+                search.max_changes
+            ),
+        };
+    }
+
+    let Ok((from_tiplocs, to_tiplocs)) = resolve_segment_tiplocs(search.interchange, from, to)
+    else {
+        // Validated before any search; unreachable.
+        return NoResultReason {
+            constraint: "noRoute",
+            values: Vec::new(),
+            message: format!("No itinerary from {from} to {to}."),
+        };
+    };
+    let found = |bound: TimeBound, restrictions: Option<&Restrictions>| {
+        search.fastest(&from_tiplocs, &to_tiplocs, bound, restrictions)
+    };
+
+    let restricted = search.restrictions.is_some();
+    if restricted && found(bound, None).is_some() {
+        let active: Vec<(&'static str, &[String])> = input
+            .avoid
+            .lists()
+            .into_iter()
+            .filter(|(_, codes)| !codes.is_empty())
+            .collect();
+        let single = if active.len() == 1 {
+            Some(active[0])
+        } else {
+            active.iter().copied().find(|(name, _)| {
+                let variant = build_restrictions(
+                    search.connections,
+                    search.interchange,
+                    input.passes,
+                    &input.avoid.without(name),
+                )
+                .ok()
+                .flatten();
+                found(bound, variant.as_ref()).is_some()
+            })
+        };
+        let (constraint, values, described) = match single {
+            Some((name, codes)) => (name, codes.to_vec(), describe_list(name, codes)),
+            None => (
+                "avoidCombined",
+                input.avoid.all_codes(),
+                active
+                    .iter()
+                    .map(|(name, codes)| describe_list(name, codes))
+                    .collect::<Vec<_>>()
+                    .join(" and "),
+            ),
+        };
+        return NoResultReason {
+            constraint,
+            values,
+            message: format!(
+                "No itinerary from {from} to {to} {phrase} on {date} while {described}; one \
+                 exists without that restriction."
+            ),
+        };
+    }
+
+    let under = if restricted {
+        let described: Vec<String> = input
+            .avoid
+            .lists()
+            .into_iter()
+            .filter(|(_, codes)| !codes.is_empty())
+            .map(|(name, codes)| describe_list(name, codes))
+            .collect();
+        format!(" while {}", described.join(" and "))
+    } else {
+        String::new()
+    };
+    let restrictions = search.restrictions;
+    match bound {
+        TimeBound::ArriveBy(deadline) => {
+            if let Some(earliest) = found(TimeBound::DepartAfter(0), restrictions) {
+                return NoResultReason {
+                    constraint: "arriveBy",
+                    values: vec![clock_label(deadline)],
+                    message: format!(
+                        "No itinerary from {from} arrives at {to} by {} on {date}{under}; the \
+                         earliest arrival is {}, leaving at {}.",
+                        clock_label(deadline),
+                        clock_label(earliest.arrival_min),
+                        clock_label(earliest.departure_min)
+                    ),
+                };
+            }
+        }
+        TimeBound::DepartAfter(start) => {
+            let last = trip_planner::latest_departure(
+                &search.arrive_by_options(&from_tiplocs, &to_tiplocs, END_OF_SERVICE_DAYS_MIN),
+                search.overlay,
+                restrictions,
+            );
+            if let Some(last) = last {
+                return NoResultReason {
+                    constraint: "departAfter",
+                    values: vec![clock_label(start)],
+                    message: format!(
+                        "No itinerary from {from} to {to} departs after {} on {date}{under}; \
+                         the last one that gets there leaves at {}.",
+                        clock_label(start),
+                        clock_label(last)
+                    ),
+                };
+            }
+        }
+    }
+    NoResultReason {
+        constraint: "noRoute",
+        values: Vec::new(),
+        message: format!("No itinerary from {from} to {to} runs at all on {date}{under}."),
+    }
 }
 
 #[cfg(test)]
@@ -1184,5 +2227,622 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("fastest"));
         assert!(err.contains("options"));
+    }
+
+    // -----------------------------------------------------------------
+    // Arrive-by, avoid lists and noResultReason (2026-09-29).
+    // -----------------------------------------------------------------
+
+    fn sorted(mut connections: Vec<schedule_query::Connection>) -> Vec<schedule_query::Connection> {
+        connections.sort_by(|a, b| {
+            (a.departure_min, &a.uid, &a.from_tiploc).cmp(&(
+                b.departure_min,
+                &b.uid,
+                &b.from_tiploc,
+            ))
+        });
+        connections
+    }
+
+    fn plan(
+        connections: &[schedule_query::Connection],
+        interchange: &InterchangeData,
+        passes: Option<&schedule_query::PassIndex>,
+        waypoints: &[&str],
+        time: TimeBound,
+        results: &str,
+        avoid: &AvoidLists,
+    ) -> Vec<SegmentResult> {
+        let restrictions = build_restrictions(connections, interchange, passes, avoid)
+            .expect("the avoid lists are valid");
+        let waypoints: Vec<String> = waypoints.iter().map(|w| w.to_string()).collect();
+        plan_trip(&TripPlanInput {
+            search: SegmentSearch {
+                connections,
+                interchange,
+                date: date(),
+                results,
+                max_changes: DEFAULT_MAX_CHANGES,
+                overlay: None,
+                restrictions: restrictions.as_ref(),
+            },
+            passes,
+            avoid,
+            origin_crs: "EUS",
+            waypoints: &waypoints,
+            destination_crs: "MAN",
+            time,
+        })
+        .expect("valid request")
+    }
+
+    fn stations() -> InterchangeData {
+        interchange_with_change_times(
+            &[
+                ("EUS", "EUSTON"),
+                ("MKC", "MILTNKC"),
+                ("CRE", "CREWE"),
+                ("STA", "STAFFRD"),
+                ("MAN", "MANCPIC"),
+                ("WFJ", "WATFDJ"),
+            ],
+            &[("MILTNKC", 5), ("CREWE", 5), ("STAFFRD", 5)],
+        )
+    }
+
+    #[test]
+    fn arrive_by_takes_the_latest_departure_and_chains_waypoints_backwards() {
+        let connections = sorted(vec![
+            conn("A1", "EUSTON", "MILTNKC", 480, 530),
+            conn("A2", "EUSTON", "MILTNKC", 500, 545),
+            conn("A3", "EUSTON", "MILTNKC", 510, 548),
+            conn("B1", "MILTNKC", "MANCPIC", 550, 620),
+            conn("B2", "MILTNKC", "MANCPIC", 600, 700),
+        ]);
+        let segments = plan(
+            &connections,
+            &stations(),
+            None,
+            &["MKC"],
+            TimeBound::ArriveBy(630),
+            "fastest",
+            &AvoidLists::default(),
+        );
+        // Last segment: B1 is the latest arriving by 10:30.
+        assert_eq!(segments[1].arrive_by_min, Some(630));
+        assert_eq!(train_uids(&segments[1].itineraries[0]), vec!["B1"]);
+        // First segment: arrive by 09:10 - 5 = 09:05; A2 (arrives 09:05)
+        // is the latest that makes it, A3 (09:08) is too late.
+        assert_eq!(segments[0].arrive_by_min, Some(545));
+        assert_eq!(train_uids(&segments[0].itineraries[0]), vec!["A2"]);
+        assert!(segments.iter().all(|s| s.depart_after_min.is_none()));
+        assert!(segments.iter().all(|s| s.no_result_reason.is_none()));
+    }
+
+    #[test]
+    fn arrive_by_options_offers_one_itinerary_per_change_count() {
+        // Direct D1 leaves 07:00; changing at MKC (A1 + B1) leaves 07:30.
+        let connections = sorted(vec![
+            conn("D1", "EUSTON", "MANCPIC", 420, 600),
+            conn("A1", "EUSTON", "MILTNKC", 450, 500),
+            conn("B1", "MILTNKC", "MANCPIC", 510, 590),
+        ]);
+        let segments = plan(
+            &connections,
+            &stations(),
+            None,
+            &[],
+            TimeBound::ArriveBy(600),
+            "options",
+            &AvoidLists::default(),
+        );
+        let shape: Vec<(u32, Vec<&str>)> = segments[0]
+            .itineraries
+            .iter()
+            .map(|i| (i.change_count, train_uids(i)))
+            .collect();
+        assert_eq!(shape, vec![(0, vec!["D1"]), (1, vec!["A1", "B1"])]);
+        assert!(!segments[0].capped_by_max_changes);
+    }
+
+    /// `T1` runs EUSTON -> CREWE -> MANCPIC; `S1` is a slower alternative
+    /// changing at STAFFRD.
+    fn crewe_network() -> Vec<schedule_query::Connection> {
+        sorted(vec![
+            conn("T1", "EUSTON", "CREWE", 480, 570),
+            conn("T1", "CREWE", "MANCPIC", 572, 610),
+            conn("S1", "EUSTON", "STAFFRD", 470, 560),
+            conn("S2", "STAFFRD", "MANCPIC", 570, 650),
+        ])
+    }
+
+    #[test]
+    fn avoid_lists_reroute_and_explain_themselves() {
+        let ic = stations();
+        let connections = crewe_network();
+        let lists = |avoid: &[&str], stop: &[&str], change: &[&str]| AvoidLists {
+            avoid: avoid.iter().map(|c| c.to_string()).collect(),
+            avoid_stop: stop.iter().map(|c| c.to_string()).collect(),
+            avoid_change: change.iter().map(|c| c.to_string()).collect(),
+        };
+        let first_uids = |segments: &[SegmentResult]| -> Vec<String> {
+            train_uids(&segments[0].itineraries[0])
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        };
+        for time in [TimeBound::DepartAfter(0), TimeBound::ArriveBy(700)] {
+            // Changing at CRE is not needed, so avoidChange keeps T1.
+            let segments = plan(
+                &connections,
+                &ic,
+                None,
+                &[],
+                time,
+                "fastest",
+                &lists(&[], &[], &["CRE"]),
+            );
+            assert_eq!(first_uids(&segments), vec!["T1"], "{time:?}");
+            // T1 calls at CRE: avoidStop (and avoid) reroute via STA.
+            let segments = plan(
+                &connections,
+                &ic,
+                None,
+                &[],
+                time,
+                "fastest",
+                &lists(&[], &["CRE"], &[]),
+            );
+            assert_eq!(first_uids(&segments), vec!["S1", "S2"], "{time:?}");
+            let segments = plan(
+                &connections,
+                &ic,
+                None,
+                &[],
+                time,
+                "options",
+                &lists(&["CRE"], &[], &[]),
+            );
+            assert_eq!(first_uids(&segments), vec!["S1", "S2"], "{time:?}");
+
+            // Avoiding both STA and CRE: nothing. Dropping either list
+            // alone is enough, so the first (`avoid`) is named.
+            let segments = plan(
+                &connections,
+                &ic,
+                None,
+                &[],
+                time,
+                "fastest",
+                &lists(&["STA"], &["CRE"], &[]),
+            );
+            assert!(segments[0].itineraries.is_empty());
+            let reason = segments[0].no_result_reason.as_ref().expect("explained");
+            assert_eq!(reason.constraint, "avoid", "{time:?}");
+            assert_eq!(reason.values, vec!["STA"]);
+
+            // STA and CRE both in two lists: dropping either alone is not
+            // enough.
+            let segments = plan(
+                &connections,
+                &ic,
+                None,
+                &[],
+                time,
+                "fastest",
+                &lists(&["STA", "CRE"], &["CRE", "STA"], &[]),
+            );
+            let reason = segments[0].no_result_reason.as_ref().expect("explained");
+            assert_eq!(reason.constraint, "avoidCombined", "{time:?}");
+            assert_eq!(reason.values, vec!["STA", "CRE"]);
+
+            // Avoiding CRE and changing at STA: only avoidStop is to blame
+            // when dropping it alone fixes the query.
+            let segments = plan(
+                &connections,
+                &ic,
+                None,
+                &[],
+                time,
+                "fastest",
+                &lists(&[], &["CRE"], &["STA"]),
+            );
+            let reason = segments[0].no_result_reason.as_ref().expect("explained");
+            assert_eq!(reason.constraint, "avoidStop", "{time:?}");
+            assert_eq!(reason.values, vec!["CRE"]);
+            assert!(
+                reason.message.contains("not calling at CRE"),
+                "{}",
+                reason.message
+            );
+        }
+    }
+
+    #[test]
+    fn avoid_excludes_a_train_running_through_without_calling() {
+        // F1 runs EUSTON -> (passes WATFDJ) -> MANCPIC; S1 is slower via
+        // MILTNKC. The pass row only exists in the calling points, so this
+        // builds the connections and the pass index from them.
+        use schedule_query::CallingPointForConnections as Cp;
+        let at = |t: &str| Some(t.parse::<NaiveTime>().unwrap());
+        let cp = |tiploc: &str, arr: Option<NaiveTime>, dep: Option<NaiveTime>| Cp {
+            tiploc: tiploc.to_string(),
+            booked_arrival: arr,
+            booked_departure: dep,
+            day_offset: 0,
+        };
+        let f1 = vec![
+            cp("EUSTON", None, at("08:00")),
+            cp("WATFDJ", None, None),
+            cp("MANCPIC", at("10:00"), None),
+        ];
+        let s1 = vec![
+            cp("EUSTON", None, at("07:30")),
+            cp("MILTNKC", at("08:10"), at("08:12")),
+            cp("MANCPIC", at("10:30"), None),
+        ];
+        let (connections, passes) = schedule_query::build_connections_with_passes([
+            ("F1", f1.as_slice()),
+            ("S1", s1.as_slice()),
+        ]);
+        let ic = stations();
+        let avoid = AvoidLists {
+            avoid: vec!["WFJ".to_string()],
+            ..AvoidLists::default()
+        };
+        let avoid_stop = AvoidLists {
+            avoid_stop: vec!["WFJ".to_string()],
+            ..AvoidLists::default()
+        };
+        for time in [TimeBound::DepartAfter(0), TimeBound::ArriveBy(700)] {
+            let segments = plan(
+                &connections,
+                &ic,
+                Some(&passes),
+                &[],
+                time,
+                "fastest",
+                &avoid,
+            );
+            assert_eq!(
+                train_uids(&segments[0].itineraries[0]),
+                vec!["S1"],
+                "{time:?}"
+            );
+            // avoidStop only cares about calls: F1 never calls at WFJ.
+            let segments = plan(
+                &connections,
+                &ic,
+                Some(&passes),
+                &[],
+                time,
+                "fastest",
+                &avoid_stop,
+            );
+            assert_eq!(
+                train_uids(&segments[0].itineraries[0]),
+                vec!["F1"],
+                "{time:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_avoided_code_is_an_error_naming_the_list() {
+        let err = build_restrictions(
+            &[],
+            &stations(),
+            None,
+            &AvoidLists {
+                avoid_change: vec!["ZZZ".to_string()],
+                ..AvoidLists::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("avoidChange") && err.contains("ZZZ"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_segment_names_the_time_constraint_or_the_chain() {
+        let ic = stations();
+        let connections = crewe_network();
+        let none = AvoidLists::default();
+
+        // Arrive by 09:00: nothing gets there; the earliest arrival is 10:10.
+        let segments = plan(
+            &connections,
+            &ic,
+            None,
+            &[],
+            TimeBound::ArriveBy(540),
+            "fastest",
+            &none,
+        );
+        let reason = segments[0].no_result_reason.as_ref().expect("explained");
+        assert_eq!(reason.constraint, "arriveBy");
+        assert_eq!(reason.values, vec!["09:00"]);
+        assert!(reason.message.contains("10:10"), "{}", reason.message);
+
+        // Depart after 09:00: the last departure that gets there is 08:00.
+        let segments = plan(
+            &connections,
+            &ic,
+            None,
+            &[],
+            TimeBound::DepartAfter(540),
+            "options",
+            &none,
+        );
+        let reason = segments[0].no_result_reason.as_ref().expect("explained");
+        assert_eq!(reason.constraint, "departAfter");
+        assert!(reason.message.contains("08:00"), "{}", reason.message);
+
+        // Via MKC: nothing reaches MKC at all, so EUS -> MKC is `noRoute`
+        // and MKC -> MAN was never searched.
+        let segments = plan(
+            &connections,
+            &ic,
+            None,
+            &["MKC"],
+            TimeBound::DepartAfter(0),
+            "fastest",
+            &none,
+        );
+        assert_eq!(
+            segments[0].no_result_reason.as_ref().unwrap().constraint,
+            "noRoute"
+        );
+        let reason = segments[1].no_result_reason.as_ref().unwrap();
+        assert_eq!(reason.constraint, "previousSegment");
+        assert_eq!(reason.values, vec!["EUS -> MKC"]);
+        // ...and in arrive-by, the chain breaks the other way.
+        let segments = plan(
+            &connections,
+            &ic,
+            None,
+            &["MKC"],
+            TimeBound::ArriveBy(700),
+            "fastest",
+            &none,
+        );
+        assert_eq!(
+            segments[1].no_result_reason.as_ref().unwrap().constraint,
+            "noRoute"
+        );
+        assert_eq!(
+            segments[0].no_result_reason.as_ref().unwrap().constraint,
+            "nextSegment"
+        );
+        assert_eq!(segments[0].arrive_by_min, None);
+    }
+
+    #[test]
+    fn an_options_segment_empty_only_because_of_the_cap_blames_max_changes() {
+        let (connections, interchange) = three_change_only_network();
+        let segments = plan_trip(&TripPlanInput {
+            search: SegmentSearch {
+                connections: &connections,
+                interchange: &interchange,
+                date: date(),
+                results: "options",
+                max_changes: 2,
+                overlay: None,
+                restrictions: None,
+            },
+            passes: None,
+            avoid: &AvoidLists::default(),
+            origin_crs: "EUS",
+            waypoints: &[],
+            destination_crs: "MKC",
+            time: TimeBound::DepartAfter(0),
+        })
+        .unwrap();
+        let reason = segments[0].no_result_reason.as_ref().expect("explained");
+        assert_eq!(reason.constraint, "maxChanges");
+        assert_eq!(reason.values, vec!["2"]);
+    }
+
+    // -----------------------------------------------------------------
+    // Joint waypoint planning (2026-09-29): no phantom change on a through
+    // train, and maxChanges over the whole journey.
+    // -----------------------------------------------------------------
+
+    fn plan_with(
+        connections: &[schedule_query::Connection],
+        waypoints: &[&str],
+        time: TimeBound,
+        results: &str,
+        max_changes: u32,
+    ) -> Result<Vec<SegmentResult>, String> {
+        let interchange = stations();
+        let waypoints: Vec<String> = waypoints.iter().map(|w| w.to_string()).collect();
+        plan_trip(&TripPlanInput {
+            search: SegmentSearch {
+                connections,
+                interchange: &interchange,
+                date: date(),
+                results,
+                max_changes,
+                overlay: None,
+                restrictions: None,
+            },
+            passes: None,
+            avoid: &AvoidLists::default(),
+            origin_crs: "EUS",
+            waypoints: &waypoints,
+            destination_crs: "MAN",
+            time,
+        })
+    }
+
+    #[test]
+    fn a_through_train_at_a_waypoint_is_not_a_change() {
+        // T1 calls at MKC for 2 minutes (a change there needs 5); T2 is the
+        // next train on from MKC. Chaining used to charge 5 minutes at MKC,
+        // missing T1's onward half and offering T2.
+        let connections = sorted(vec![
+            conn("T1", "EUSTON", "MILTNKC", 480, 530),
+            conn("T1", "MILTNKC", "MANCPIC", 532, 600),
+            conn("T2", "MILTNKC", "MANCPIC", 545, 640),
+        ]);
+        for time in [TimeBound::DepartAfter(0), TimeBound::ArriveBy(610)] {
+            for results in ["fastest", "options"] {
+                let segments =
+                    plan_with(&connections, &["MKC"], time, results, 0).expect("valid request");
+                assert_eq!(segments[0].itineraries.len(), 1, "{time:?} {results}");
+                assert_eq!(train_uids(&segments[0].itineraries[0]), vec!["T1"]);
+                assert_eq!(train_uids(&segments[1].itineraries[0]), vec!["T1"]);
+                assert!(!segments[0].itineraries[0].continues_previous_train);
+                assert!(segments[1].itineraries[0].continues_previous_train);
+                let journeys = journey_summaries(&segments, &stations());
+                assert_eq!(journeys.len(), 1);
+                assert_eq!(journeys[0].change_count, 0, "no change at MKC");
+                assert_eq!(
+                    (journeys[0].departure_min, journeys[0].arrival_min),
+                    (480, 600)
+                );
+                if results == "fastest" {
+                    assert_eq!(
+                        segments[1].itineraries[0].exceeds_recommended_changes,
+                        Some(false)
+                    );
+                }
+            }
+        }
+        // The old chained planner, for contrast: a phantom change onto T2.
+        let chained = plan_via_waypoints(
+            &connections,
+            &stations(),
+            date(),
+            "EUS",
+            &["MKC".to_string()],
+            "MAN",
+            NaiveTime::MIN,
+            "fastest",
+            0,
+        )
+        .unwrap();
+        assert_eq!(train_uids(&chained[1].itineraries[0]), vec!["T2"]);
+    }
+
+    /// EUS -> MKC -> CRE -> MAN: the fast way is U1, U2, U3 (two changes, at
+    /// the waypoints); D1 calls at both and needs none, but is slower.
+    fn two_waypoint_network() -> Vec<schedule_query::Connection> {
+        sorted(vec![
+            conn("U1", "EUSTON", "MILTNKC", 480, 520),
+            conn("U2", "MILTNKC", "CREWE", 530, 580),
+            conn("U3", "CREWE", "MANCPIC", 590, 620),
+            conn("D1", "EUSTON", "MILTNKC", 470, 525),
+            conn("D1", "MILTNKC", "CREWE", 527, 600),
+            conn("D1", "CREWE", "MANCPIC", 602, 650),
+        ])
+    }
+
+    #[test]
+    fn max_changes_caps_the_whole_journey_across_waypoints() {
+        let connections = two_waypoint_network();
+        let shape = |segments: &[SegmentResult]| -> Vec<Vec<Vec<String>>> {
+            segments
+                .iter()
+                .map(|segment| {
+                    segment
+                        .itineraries
+                        .iter()
+                        .map(|i| train_uids(i).into_iter().map(str::to_string).collect())
+                        .collect()
+                })
+                .collect()
+        };
+        let via = ["MKC", "CRE"];
+        // Each segment alone is direct (0 changes), but the whole U journey
+        // has 2: maxChanges=1 leaves only D1, and flags the cap.
+        let segments =
+            plan_with(&connections, &via, TimeBound::DepartAfter(0), "options", 1).unwrap();
+        assert_eq!(
+            shape(&segments),
+            vec![vec![vec!["D1"]], vec![vec!["D1"]], vec![vec!["D1"]]]
+        );
+        assert!(segments.iter().all(|s| s.capped_by_max_changes));
+        // maxChanges=2: both, aligned across the segments, fewest changes
+        // first.
+        let segments =
+            plan_with(&connections, &via, TimeBound::DepartAfter(0), "options", 2).unwrap();
+        assert_eq!(
+            shape(&segments),
+            vec![
+                vec![vec!["D1"], vec!["U1"]],
+                vec![vec!["D1"], vec!["U2"]],
+                vec![vec!["D1"], vec!["U3"]],
+            ]
+        );
+        let journeys = journey_summaries(&segments, &stations());
+        assert_eq!(
+            journeys.iter().map(|j| j.change_count).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        // fastest ignores the cap but flags every part against the WHOLE
+        // journey's changes.
+        let segments =
+            plan_with(&connections, &via, TimeBound::DepartAfter(0), "fastest", 1).unwrap();
+        assert_eq!(shape(&segments)[2], vec![vec!["U3"]]);
+        assert!(
+            segments
+                .iter()
+                .all(|s| s.itineraries[0].exceeds_recommended_changes == Some(true))
+        );
+        // Nothing within maxChanges=1 once D1 is gone: `maxChanges` is named.
+        let without_d1: Vec<_> = connections
+            .iter()
+            .filter(|c| c.uid != "D1")
+            .cloned()
+            .collect();
+        let segments =
+            plan_with(&without_d1, &via, TimeBound::DepartAfter(0), "options", 1).unwrap();
+        assert!(segments.iter().all(|s| s.itineraries.is_empty()));
+        let reason = segments[1].no_result_reason.as_ref().unwrap();
+        assert_eq!(reason.constraint, "maxChanges");
+        // Arrive-by, the same cap.
+        let segments =
+            plan_with(&connections, &via, TimeBound::ArriveBy(700), "options", 1).unwrap();
+        // Leaving later is the arrive-by gain: U1 then D1 from MKC (one
+        // change), next to D1 throughout.
+        assert_eq!(
+            shape(&segments),
+            vec![
+                vec![vec!["D1"], vec!["U1"]],
+                vec![vec!["D1"], vec!["D1"]],
+                vec![vec!["D1"], vec!["D1"]],
+            ]
+        );
+        assert!(!segments[1].itineraries[1].continues_previous_train);
+        assert!(segments[2].itineraries[1].continues_previous_train);
+        let journeys = journey_summaries(&segments, &stations());
+        assert_eq!(
+            journeys
+                .iter()
+                .map(|j| (j.change_count, j.departure_min))
+                .collect::<Vec<_>>(),
+            vec![(0, 470), (1, 480)]
+        );
+    }
+
+    #[test]
+    fn a_waypoint_repeating_the_origin_destination_or_itself_is_an_error() {
+        let connections = two_waypoint_network();
+        for (waypoints, needle) in [
+            (vec!["EUS"], "the origin"),
+            (vec!["MAN"], "the destination"),
+            (vec!["MKC", "MKC"], "the waypoint before it"),
+        ] {
+            let err = plan_with(
+                &connections,
+                &waypoints,
+                TimeBound::DepartAfter(0),
+                "fastest",
+                2,
+            )
+            .unwrap_err();
+            assert!(err.contains(needle), "{err}");
+        }
     }
 }

@@ -283,10 +283,14 @@ mod tests {
                 departure_min: 0,
                 arrival_min: 0,
                 arrival_tiploc: None,
+                departure_tiploc: None,
                 live_feasible: None,
+                continues_previous_train: false,
             }],
             capped_by_max_changes: false,
             depart_after_min: None,
+            arrive_by_min: None,
+            no_result_reason: None,
         }]
     }
 

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { buildTripPlanQuery, collectTripPlanStationCodes, fetchTripPlan, TripPlanError } from './tripPlan';
-import type { TripPlanResponse } from './types';
+import {
+  buildTripPlanQuery,
+  collectTripPlanStationCodes,
+  fetchTripPlan,
+  trainLegsForTracking,
+  TripPlanError,
+} from './tripPlan';
+import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
 
 describe('buildTripPlanQuery', () => {
   it('builds a minimal query with no waypoints or departAfter', () => {
@@ -51,6 +57,61 @@ describe('buildTripPlanQuery', () => {
       results: 'fastest',
     });
     expect(new URLSearchParams(query).get('departAfter')).toBe('08:30:00');
+  });
+
+  it('sends arriveBy and a normalised avoid list when given', () => {
+    const params = new URLSearchParams(
+      buildTripPlanQuery({
+        originCrs: 'EUS',
+        destinationCrs: 'MAN',
+        waypointCrs: [],
+        date: '2026-09-29',
+        arriveBy: '10:45',
+        avoidCrs: [' cre', '', 'bhm'],
+        results: 'options',
+      }),
+    );
+    expect(params.get('arriveBy')).toBe('10:45:00');
+    expect(params.get('departAfter')).toBeNull();
+    expect(params.get('avoid')).toBe('CRE,BHM');
+  });
+});
+
+describe('trainLegsForTracking', () => {
+  const train = (trainUid: string, originCrs: string, destinationCrs: string, arrival: string): TripPlanLeg => ({
+    kind: 'train',
+    trainUid,
+    serviceDate: '2026-09-29',
+    originCrs,
+    destinationCrs,
+    scheduledDeparture: '08:00:00',
+    scheduledArrival: arrival,
+    arrivalDayOffset: 0,
+  });
+  const itinerary = (legs: TripPlanLeg[], continuesPreviousTrain = false): TripPlanItinerary => ({
+    legs,
+    changeCount: 0,
+    totalDurationMinutes: 0,
+    continuesPreviousTrain,
+  });
+
+  it('joins a train continuing through a waypoint into one leg', () => {
+    const legs = trainLegsForTracking([
+      itinerary([train('T1', 'EUS', 'MKC', '08:50:00')]),
+      itinerary([train('T1', 'MKC', 'MAN', '10:00:00'), train('T2', 'MAN', 'LDS', '11:00:00')], true),
+    ]);
+    expect(legs.map((leg) => [leg.trainUid, leg.originCrs, leg.destinationCrs, leg.scheduledArrival])).toEqual([
+      ['T1', 'EUS', 'MAN', '10:00:00'],
+      ['T2', 'MAN', 'LDS', '11:00:00'],
+    ]);
+  });
+
+  it('keeps a change at a waypoint as two legs', () => {
+    const legs = trainLegsForTracking([
+      itinerary([train('T1', 'EUS', 'MKC', '08:50:00')]),
+      itinerary([train('T3', 'MKC', 'MAN', '10:00:00')]),
+    ]);
+    expect(legs.map((leg) => leg.trainUid)).toEqual(['T1', 'T3']);
   });
 });
 
