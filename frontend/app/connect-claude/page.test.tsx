@@ -34,7 +34,7 @@ describe('/connect-claude', () => {
     renderWithMantine(ConnectClaudePage());
     expect(screen.getByText(/Customize/)).toBeInTheDocument();
     expect(screen.getByText(/Add custom connector/i)).toBeInTheDocument();
-    expect(screen.getByText('https://mcp.example.com')).toBeInTheDocument();
+    expect(screen.getByText('https://mcp.example.com/mcp')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
   });
 
@@ -42,6 +42,21 @@ describe('/connect-claude', () => {
     renderWithMantine(ConnectClaudePage());
     expect(screen.getByText(/sends you to the sign-in page/)).toBeInTheDocument();
     expect(screen.queryByText(/confirm the connection/)).not.toBeInTheDocument();
+  });
+
+  // The bare origin 404s and the MCP server's OAuth resource check is an
+  // exact match on `{publicUrl}/mcp`, so the connector URL must be that.
+  it('shows the /mcp endpoint, not the bare origin, even when the configured URL has a trailing slash', () => {
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com/');
+    renderWithMantine(ConnectClaudePage());
+    expect(screen.getByText('https://mcp.example.com/mcp')).toBeInTheDocument();
+    expect(screen.queryByText('https://mcp.example.com/')).not.toBeInTheDocument();
+  });
+
+  it('points other assistants at the setup steps on /chat instead of repeating them', () => {
+    renderWithMantine(ConnectClaudePage());
+    expect(screen.getByRole('link', { name: 'the setup steps on the Chat page' })).toHaveAttribute('href', '/chat');
+    expect(screen.queryByText(/codex mcp add/)).not.toBeInTheDocument();
   });
 
   it('falls back to a placeholder when NEXT_PUBLIC_RAILMCP_PUBLIC_URL is unset (railMcp not enabled on this deployment)', () => {
@@ -56,7 +71,7 @@ describe('/connect-claude', () => {
     stubClipboard(writeText);
     renderWithMantine(ConnectClaudePage());
     fireEvent.click(screen.getByRole('button', { name: 'Copy connector URL' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://mcp.example.com'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://mcp.example.com/mcp'));
   });
 
   it("renders the plan-requirement Alert in grape, not Mantine's default blue (blue is reserved for planned-severity)", () => {
@@ -100,6 +115,6 @@ describe('/connect-claude', () => {
 
   it('lets the long connector URL wrap instead of running off a phone-width screen', () => {
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByText('https://mcp.example.com')).toHaveStyle({ wordBreak: 'break-all' });
+    expect(screen.getByText('https://mcp.example.com/mcp')).toHaveStyle({ wordBreak: 'break-all' });
   });
 });

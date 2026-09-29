@@ -1,12 +1,6 @@
+import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
 import { BrowserMcpOAuthProvider } from './mcpOAuthProvider';
-
-/** The chat's MCP endpoint -- the same URL `ChatPanel` hands
- * `StreamableHTTPClientTransport`, so a sign-in started here asks for the
- * same resource the transport's own reauth-on-401 would. */
-export function mcpEndpointUrl(mcpServerUrl: string): string {
-  return `${mcpServerUrl.replace(/\/+$/, '')}/mcp`;
-}
 
 export function chatOAuthProvider(): BrowserMcpOAuthProvider {
   return new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);

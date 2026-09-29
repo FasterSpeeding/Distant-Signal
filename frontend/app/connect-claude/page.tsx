@@ -14,10 +14,12 @@ import {
 } from '@mantine/core';
 import type { Metadata } from 'next';
 import { InfoIcon } from '@/components/InfoIcon';
+import { TextLink } from '@/components/TextLink';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
+import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 
 // Read the environment per request, never at build time: the connector URL
-// comes from the runtime env (see railMcpPublicUrl() below), and the image
+// comes from the runtime env (see connectorUrl() below), and the image
 // is built without it. Same as app/chat/callback/page.tsx.
 export const dynamic = 'force-dynamic';
 
@@ -33,14 +35,18 @@ export const metadata: Metadata = {
   twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
 };
 
-/** The MCP server's own public URL (`railMcp.publicUrl` in the chart).
+/** The connector URL: the MCP endpoint, `{railMcp.publicUrl}/mcp`, built
+ * by the same `mcpEndpointUrl` as /chat and ChatPanel. Not the bare
+ * origin -- that has no route, and the server's OAuth resource check is an
+ * exact match on the `/mcp` URL.
  * FE-2: read through `runtimeRailMcpPublicUrl()`, which looks the name up
  * via a variable. A literal `process.env.NEXT_PUBLIC_…` reference is
  * inlined by Next at `next build` -- in Server Components too -- and the
  * image is built without it. Blank in any deployment where railMcp isn't
  * enabled; this page still renders then, with a placeholder. */
-function railMcpPublicUrl(): string {
-  return runtimeRailMcpPublicUrl() || '(not configured on this deployment)';
+function connectorUrl(): string {
+  const publicUrl = runtimeRailMcpPublicUrl();
+  return publicUrl ? mcpEndpointUrl(publicUrl) : '(not configured on this deployment)';
 }
 
 /** Two overlapping rectangles -- the conventional "copy" glyph, in the
@@ -82,6 +88,7 @@ function CopyIcon() {
  * and its access group. `maw={640}`: the same reading width as the other
  * single-column flow pages (/account, /account/deleted). */
 export default function ConnectClaudePage() {
+  const url = connectorUrl();
   return (
     <Stack p="lg" gap="md" maw={640}>
       <Title order={1}>Connect Claude to Distant Signal</Title>
@@ -135,13 +142,13 @@ export default function ConnectClaudePage() {
                   phone-width screen. */}
               <Text span>Enter this URL:</Text>
               <Group gap="xs" wrap="nowrap" align="center">
-                <Code style={{ wordBreak: 'break-all' }}>{railMcpPublicUrl()}</Code>
+                <Code style={{ wordBreak: 'break-all' }}>{url}</Code>
                 {/* Review §3.1.6: the connector URL is long enough (a full
                     hostname plus path) that selecting it precisely by hand is
                     fiddly on a phone. `CopyButton` is Mantine's own render-prop
                     for this -- it owns the copied/not-copied toggle state, this
                     just supplies the icon and the accessible name. */}
-                <CopyButton value={railMcpPublicUrl()}>
+                <CopyButton value={url}>
                   {({ copied, copy }) => (
                     <Tooltip label={copied ? 'Copied' : 'Copy connector URL'} withArrow>
                       <ActionIcon
@@ -168,6 +175,16 @@ export default function ConnectClaudePage() {
         Conversations happen entirely inside Claude&apos;s own interface, billed to your own Claude plan — Distant
         Signal never sees the conversation itself, only the specific train/line/journey lookups Claude asks it to run on
         your behalf.
+      </Text>
+      {/* The other assistants' steps live in one place, /chat's "Use
+          Distant Signal in your own assistant" section, rather than being
+          copied here. */}
+      <Text size="sm">
+        Using a different assistant, such as ChatGPT, Cursor, VS Code, Claude Code, Codex or Gemini CLI? See{' '}
+        <TextLink href="/chat" underline="always" inline size="sm">
+          the setup steps on the Chat page
+        </TextLink>{' '}
+        (you’ll need to sign in).
       </Text>
     </Stack>
   );

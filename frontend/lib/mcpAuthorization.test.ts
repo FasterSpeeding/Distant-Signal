@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import { BrowserMcpOAuthProvider } from './mcpOAuthProvider';
-import { mcpEndpointUrl, startMcpSignIn } from './mcpAuthorization';
+import { startMcpSignIn } from './mcpAuthorization';
+import { mcpEndpointUrl } from './mcpInstallLinks';
 
 /** Drives the REAL MCP SDK `auth()` (1.30.0) against a fake
  * distant-signal-mcp authorization server, to prove the provider's
