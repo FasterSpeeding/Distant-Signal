@@ -149,9 +149,16 @@ describe('GroupInviteLinkCard', () => {
         origin={ORIGIN}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Share invite link' }));
+    const button = screen.getByRole('button', { name: 'Share invite link' });
+    // Inline aria-hidden SVGs, not the old "⇪"/"✓" text glyphs -- the
+    // button's name comes from its aria-label alone.
+    expect(button.textContent).toBe('');
+    expect(button.querySelector('svg[data-icon="share"]')).toHaveAttribute('aria-hidden', 'true');
+    fireEvent.click(button);
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${ORIGIN}/groups/join/tok123`));
+    await waitFor(() => expect(button.querySelector('svg[data-icon="check"]')).toHaveAttribute('aria-hidden', 'true'));
+    expect(screen.getByRole('button', { name: 'Share invite link' })).toBe(button);
   });
 
   // Review §2.10: Mantine's default `md` `ActionIcon` (28px) is under the

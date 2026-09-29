@@ -33,6 +33,13 @@ describe('RealTimeTrainsLink', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
+  it('says it opens a new tab in its accessible name, with the arrow as an aria-hidden SVG rather than a "↗" glyph', () => {
+    renderWithMantine(<RealTimeTrainsLink trainUid="W12345" serviceDate="2026-08-31" />);
+    const link = screen.getByRole('link', { name: 'View on Real Time Trains (opens in a new tab)' });
+    expect(link).not.toHaveTextContent('↗');
+    expect(link.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
+  });
+
   it('renders nothing when trainUid is null (not yet resolved to a real service)', () => {
     renderWithMantine(<RealTimeTrainsLink trainUid={null} serviceDate="2026-08-31" />);
     expect(screen.queryByRole('link', { name: /Real Time Trains/ })).not.toBeInTheDocument();

@@ -91,6 +91,11 @@ describe('ShareJourneyLinkButton', () => {
     // response itself (and the button flips to Regenerate).
     await waitFor(() => expect(screen.getByRole('button', { name: 'Regenerate' })).toBeEnabled());
     expect(screen.getByRole('textbox', { name: 'Share link' })).toHaveValue(`${ORIGIN}/journeys/shared/new`);
+    // The share action is an icon button named by its aria-label, with an
+    // aria-hidden SVG rather than the old "⇪" text glyph.
+    const shareButton = screen.getByRole('button', { name: 'Share link' });
+    expect(shareButton.textContent).toBe('');
+    expect(shareButton.querySelector('svg[data-icon="share"]')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('shows the expiry and Extend keeps the same link, updating the expiry', async () => {

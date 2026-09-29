@@ -5,6 +5,7 @@ import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
+import { WarningIcon } from './WarningIcon';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
 /** The one place an Origin/Terminate node's diameter is defined --
@@ -594,9 +595,21 @@ function JourneyProgressNode({
   // `TrainJourney.tsx`'s `StatusMessage`.
   const glyph =
     isMarker && mayHaveArrived ? (
-      <Text aria-hidden="true" size="xs" data-may-have-arrived="true" style={{ lineHeight: 1 }}>
-        ⚠
-      </Text>
+      // An inline SVG (`WarningIcon`), not the literal "⚠" character, which
+      // some platforms paint as a full-colour emoji that ignores the theme
+      // entirely. Yellow's light-variant text token -- the colour of the
+      // "May have arrived" `Alert` it echoes -- clears the 3:1 non-text
+      // floor in both schemes (#a85700: 5.2:1 on white; Mantine's dark
+      // yellow light-color on the dark body well above that). Still
+      // `aria-hidden`: the progress group's own `aria-label` already says
+      // "may have arrived" in words.
+      <Box
+        aria-hidden="true"
+        data-may-have-arrived="true"
+        style={{ lineHeight: 1, display: 'flex', color: 'var(--mantine-color-yellow-light-color)' }}
+      >
+        <WarningIcon size={12} />
+      </Box>
     ) : null;
 
   // Both node kinds are the SAME plain `Box` carrying the SAME

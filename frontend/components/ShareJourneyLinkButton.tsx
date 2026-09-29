@@ -6,6 +6,8 @@ import { ActionIcon, Button, Group, Modal, Stack, Text, TextInput, Tooltip } fro
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { CheckIcon } from './CheckIcon';
+import { ShareIcon } from './ShareIcon';
 import type { JourneyShareLink } from '@/lib/types';
 import { readShareLinkBody } from '@/lib/freshLinkToken';
 import { formatDate } from '@/lib/dateFormat';
@@ -195,7 +197,7 @@ export function ShareJourneyLinkButton({
               <TextInput value={url} readOnly aria-label="Share link" style={{ flexGrow: 1 }} />
               <Tooltip label={copied ? COPIED_LABEL : 'Share this link'}>
                 <ActionIcon variant="outline" color="gray" onClick={share} aria-label="Share link" size={36}>
-                  {copied ? '✓' : '⇪'}
+                  {copied ? <CheckIcon /> : <ShareIcon />}
                 </ActionIcon>
               </Tooltip>
             </Group>
