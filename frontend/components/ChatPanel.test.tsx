@@ -11,6 +11,12 @@ vi.mock('@/lib/chatTurn', () => ({
   runChatTurn: (...args: unknown[]) => mockRunChatTurn(...args),
 }));
 
+const mockStartMcpSignIn = vi.fn();
+vi.mock('@/lib/mcpAuthorization', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/mcpAuthorization')>()),
+  startMcpSignIn: (...args: unknown[]) => mockStartMcpSignIn(...args),
+}));
+
 function seedMcpTokens() {
   localStorage.setItem('ds-mcp-oauth:tokens', JSON.stringify({ access_token: 'tok', token_type: 'Bearer' }));
 }
@@ -19,6 +25,7 @@ describe('ChatPanel', () => {
   beforeEach(() => {
     localStorage.clear();
     mockRunChatTurn.mockReset();
+    mockStartMcpSignIn.mockReset();
   });
 
   it('renders a placeholder prompt before any message is sent', () => {
@@ -37,12 +44,13 @@ describe('ChatPanel', () => {
     expect(mockRunChatTurn).not.toHaveBeenCalled();
   });
 
-  it('shows a "reconnect" error when no MCP token is stored', async () => {
+  it('offers "Connect" when no MCP token has ever been stored', async () => {
     setAnthropicApiKey('sk-ant-test');
     renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
-    expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
+    expect(await screen.findByText(/connect chat to the rail data service/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument();
     expect(mockRunChatTurn).not.toHaveBeenCalled();
   });
 
@@ -168,7 +176,7 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
-    expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
   });
 
   // A plain `Error` (no structured status at all -- e.g. a failed-tool-call
@@ -187,7 +195,7 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
-    expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
   });
 
   // Bug found by e2e/chat.spec.ts's "reconnect" case: `@modelcontextprotocol/sdk`'s
@@ -211,7 +219,7 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
-    expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
   });
 
   it('does not submit an empty or whitespace-only message', () => {
@@ -344,6 +352,103 @@ describe('ChatPanel', () => {
       await send();
       fireEvent.click(screen.getByRole('button', { name: "Don't allow" }));
       expect(await screen.findByText('Tool was declined.')).toBeInTheDocument();
+    });
+  });
+
+  describe('MCP sign-in (Connect / Reconnect)', () => {
+    function send(text = 'hi') {
+      fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: text } });
+      fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    }
+
+    it('"Connect" starts a fresh sign-in against the configured MCP server', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      mockStartMcpSignIn.mockReturnValue(new Promise(() => {}));
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      send();
+      fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
+      expect(mockStartMcpSignIn).toHaveBeenCalledWith('https://mcp.example.com');
+    });
+
+    it('on a 401 from /mcp, drops the dead tokens and offers "Reconnect", which restarts sign-in', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      mockRunChatTurn.mockReturnValue(
+        (async function* () {
+          throw new StreamableHTTPError(401, 'Server returned 401 after successful authentication');
+        })(),
+      );
+      mockStartMcpSignIn.mockReturnValue(new Promise(() => {}));
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      send();
+      const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
+      expect(screen.getByText(/has expired or was not found/i)).toBeInTheDocument();
+      expect(localStorage.getItem('ds-mcp-oauth:tokens')).toBeNull();
+      fireEvent.click(reconnect);
+      expect(mockStartMcpSignIn).toHaveBeenCalledWith('https://mcp.example.com');
+    });
+
+    it('treats an SDK OAuth error (invalid_client surviving auth()) as needing Reconnect, not a tool error', async () => {
+      const { InvalidClientError } = await import('@modelcontextprotocol/sdk/server/auth/errors.js');
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      mockRunChatTurn.mockReturnValue(
+        (async function* () {
+          throw new InvalidClientError('Invalid client_id');
+        })(),
+      );
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      send();
+      expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+      expect(screen.queryByText(/something went wrong answering that/i)).not.toBeInTheDocument();
+    });
+
+    it("treats the SDK's UnauthorizedError as needing Reconnect", async () => {
+      const { UnauthorizedError } = await import('@modelcontextprotocol/sdk/client/auth.js');
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      mockRunChatTurn.mockReturnValue(
+        (async function* () {
+          throw new UnauthorizedError();
+        })(),
+      );
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      send();
+      expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+    });
+
+    it('offers "Reconnect" (not Connect) when stored tokens belong to a registration the server has expired', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      seedMcpTokens();
+      localStorage.setItem(
+        'ds-mcp-oauth:client-information',
+        JSON.stringify({ client_id: 'old', client_id_issued_at: Math.floor(Date.now() / 1000) - 31 * 24 * 60 * 60 }),
+      );
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      send();
+      expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+      expect(mockRunChatTurn).not.toHaveBeenCalled();
+      expect(localStorage.getItem('ds-mcp-oauth:client-information')).toBeNull();
+      expect(localStorage.getItem('ds-mcp-oauth:tokens')).toBeNull();
+    });
+
+    it('on load, reports a sign-in that left for the authorization server and never came back', async () => {
+      localStorage.setItem('ds-mcp-oauth:oauth-state', 'pending');
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      expect(await screen.findByText(/last sign-in to the rail data service didn.t finish/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+    });
+
+    it('shows why sign-in could not start, with a way to try again', async () => {
+      setAnthropicApiKey('sk-ant-test');
+      mockStartMcpSignIn.mockRejectedValueOnce(new Error('HTTP 503 registering client'));
+      renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
+      send();
+      fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
+      expect(await screen.findByText(/couldn.t start signing in.*HTTP 503 registering client/i)).toBeInTheDocument();
+      mockStartMcpSignIn.mockReturnValue(new Promise(() => {}));
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(mockStartMcpSignIn).toHaveBeenCalledTimes(2);
     });
   });
 });

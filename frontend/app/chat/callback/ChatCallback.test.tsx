@@ -110,6 +110,58 @@ describe('ChatCallback', () => {
     expect(detailsEl).not.toHaveAttribute('open');
   });
 
+  describe('Reconnect', () => {
+    it('offers Reconnect after a failed exchange, which discards the stale registration and starts a fresh sign-in', async () => {
+      // What the real auth() leaves behind after the token endpoint says
+      // invalid_client (registration expired): it has invalidated 'all' and
+      // its one retry threw.
+      mockAuth.mockRejectedValueOnce(
+        new Error('Existing OAuth client information is required when exchanging an authorization code'),
+      );
+      localStorage.setItem('ds-mcp-oauth:client-information', JSON.stringify({ client_id: 'dead' }));
+      renderAtWithValidState('?code=abc123');
+      const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
+      expect(screen.getByText(/reconnect to sign in again with a fresh connection/i)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Back to Chat' })).toHaveAttribute('href', '/chat');
+
+      mockAuth.mockReturnValueOnce(new Promise(() => {}));
+      act(() => reconnect.click());
+      expect(localStorage.getItem('ds-mcp-oauth:client-information')).toBeNull();
+      expect(mockAuth).toHaveBeenLastCalledWith(expect.anything(), { serverUrl: 'https://mcp.example.com/mcp' });
+    });
+
+    it('offers Reconnect when the state could not be verified', async () => {
+      renderAt('?code=abc123&state=nope');
+      expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+      expect(mockAuth).not.toHaveBeenCalled();
+    });
+
+    it('explains an error the authorization server sent back, consumes the pending state, and offers Reconnect', async () => {
+      const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+      const state = provider.state();
+      renderAt(`?error=access_denied&error_description=User%20denied&state=${state}`);
+      expect(await screen.findByText(/"access_denied": User denied/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+      expect(provider.hasAbandonedAuthorization()).toBe(false);
+      expect(mockAuth).not.toHaveBeenCalled();
+    });
+
+    it('shows why a Reconnect could not start', async () => {
+      renderAt('');
+      mockAuth.mockRejectedValueOnce(new Error('HTTP 503 registering client'));
+      const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
+      act(() => reconnect.click());
+      expect(await screen.findByText(/couldn.t start signing in: HTTP 503 registering client/i)).toBeInTheDocument();
+    });
+
+    it('has no Reconnect when the MCP server URL is not configured', async () => {
+      window.history.pushState({}, '', '/chat/callback?code=abc');
+      renderWithMantine(<ChatCallback serverUrl={undefined} />);
+      expect(await screen.findByRole('heading', { name: "Couldn't connect" })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    });
+  });
+
   it('shows an error when auth() returns REDIRECT instead of AUTHORIZED', async () => {
     mockAuth.mockResolvedValue('REDIRECT');
     renderAtWithValidState('?code=abc123');
