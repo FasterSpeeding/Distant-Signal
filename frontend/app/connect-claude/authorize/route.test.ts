@@ -261,7 +261,7 @@ describe('POST /connect-claude/authorize', () => {
       referer: 'http://localhost:3000/connect-claude/authorize?mcp_request_id=req1',
     });
     const res = await POST(req);
-    expect(res.status).toBe(307);
+    expect(res.status).toBe(303);
   });
 
   // Regression for Finding 1 of the 2026-09-24 security review, and the
@@ -292,7 +292,7 @@ describe('POST /connect-claude/authorize', () => {
       origin: 'https://ds.cursed.solutions',
     });
     const res = await POST(req);
-    expect(res.status).toBe(307);
+    expect(res.status).toBe(303);
   });
 
   it('403s a POST whose Origin matches req.nextUrl.origin but not the real public origin', async () => {
@@ -334,7 +334,10 @@ describe('POST /connect-claude/authorize', () => {
 
     const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value');
     const res = await POST(req);
-    expect(res.status).toBe(307);
+    // Regression (2026-09-29 prod bug): this used to be the default 307,
+    // which made the browser re-POST the consent form to Claude's
+    // GET-only OAuth callback ("Method Not Allowed"). 303 forces a GET.
+    expect(res.status).toBe(303);
     expect(res.headers.get('location')).toBe('https://claude.ai/cb?code=abc&state=xyz');
 
     const [calledUrl, init] = fetchSpy.mock.calls[0];
@@ -355,7 +358,10 @@ describe('POST /connect-claude/authorize', () => {
 
     const req = postRequest('req2', 'deny', 'distant_signal_session=raw-token-value');
     const res = await POST(req);
-    expect(res.status).toBe(307);
+    // Same 303 (not 307) as the approve path -- the `error=access_denied`
+    // authorization response must also reach the client's callback as a GET.
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe('https://claude.ai/cb?error=access_denied&state=xyz');
 
     const [calledUrl, init] = fetchSpy.mock.calls[0];
     expect(calledUrl.toString()).toContain('/internal/deny-authorization');

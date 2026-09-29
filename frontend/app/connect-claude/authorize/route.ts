@@ -244,7 +244,16 @@ export async function POST(req: NextRequest) {
   if (!isValidHttpRedirectUrl(redirectUrl)) {
     return new NextResponse('Received an invalid redirect target from the authorization adapter.', { status: 400 });
   }
-  return NextResponse.redirect(redirectUrl);
+  // 303 See Other, NOT `NextResponse.redirect()`'s default 307: a 307/308
+  // makes the browser replay this Accept/Deny form POST (method and body)
+  // against the OAuth client's redirect URI. Claude's
+  // `https://claude.ai/api/mcp/auth_callback` only accepts GET and answered
+  // the replayed POST with `invalid_request_error: Method Not Allowed`
+  // (2026-09-29 prod bug), so connecting Claude always failed at the final
+  // hop. An OAuth 2.0 authorization response (`code`/`state`, or
+  // `error=access_denied`) is delivered via a GET to the redirect URI, and
+  // 303 is the status that guarantees the follow-up request is a GET.
+  return NextResponse.redirect(redirectUrl, 303);
 }
 
 function isValidHttpRedirectUrl(value: string): boolean {
