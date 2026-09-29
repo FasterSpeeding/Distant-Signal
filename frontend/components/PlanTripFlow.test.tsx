@@ -316,6 +316,35 @@ describe('PlanTripFlow', () => {
     await screen.findByText('No route found for EUS → ZZZ.');
   });
 
+  it('says which constraint left a segment with no itineraries', async () => {
+    const noRoutePlan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'MKC',
+          itineraries: [],
+          cappedByMaxChanges: false,
+          noResultReason: {
+            constraint: 'departAfter',
+            values: ['23:30'],
+            message: 'No itinerary from EUS to MKC departs after 23:30 on 2026-09-29; the last one leaves at 23:10.',
+          },
+        },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(noRoutePlan) } as Response),
+    );
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    await screen.findByText(/the last one leaves at 23:10/);
+  });
+
   it('creates a leg per train across multiple segments, in order (POST /Journeys then POST /Journeys/{id}/legs)', async () => {
     const twoSegmentPlan: TripPlanResponse = {
       results: 'fastest',

@@ -52,6 +52,23 @@ describe('buildTripPlanQuery', () => {
     });
     expect(new URLSearchParams(query).get('departAfter')).toBe('08:30:00');
   });
+
+  it('sends arriveBy and a normalised avoid list when given', () => {
+    const params = new URLSearchParams(
+      buildTripPlanQuery({
+        originCrs: 'EUS',
+        destinationCrs: 'MAN',
+        waypointCrs: [],
+        date: '2026-09-29',
+        arriveBy: '10:45',
+        avoidCrs: [' cre', '', 'bhm'],
+        results: 'options',
+      }),
+    );
+    expect(params.get('arriveBy')).toBe('10:45:00');
+    expect(params.get('departAfter')).toBeNull();
+    expect(params.get('avoid')).toBe('CRE,BHM');
+  });
 });
 
 describe('collectTripPlanStationCodes', () => {

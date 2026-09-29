@@ -35,6 +35,10 @@ export interface TripPlanQuery {
   waypointCrs: string[];
   date: string; // "YYYY-MM-DD"
   departAfter?: string; // "HH:MM"
+  /** "HH:MM"; the backend rejects it together with `departAfter`. */
+  arriveBy?: string;
+  /** Never call at or pass through these stations. */
+  avoidCrs?: string[];
   results: 'fastest' | 'options';
 }
 
@@ -55,6 +59,13 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
   }
   if (query.departAfter) {
     params.set('departAfter', `${query.departAfter}:00`);
+  }
+  if (query.arriveBy) {
+    params.set('arriveBy', `${query.arriveBy}:00`);
+  }
+  const avoid = (query.avoidCrs ?? []).map((c) => c.trim().toUpperCase()).filter((c) => c.length > 0);
+  if (avoid.length > 0) {
+    params.set('avoid', avoid.join(','));
   }
   return params.toString();
 }

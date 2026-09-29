@@ -303,7 +303,12 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
           return (
             <Stack key={segmentIndex} gap="xs">
               <Text fw={600}>{segmentLabel}</Text>
-              {segment.itineraries.length === 0 && <Alert color="yellow">No route found for {segmentLabel}.</Alert>}
+              {segment.itineraries.length === 0 && (
+                <Alert color="yellow">
+                  No route found for {segmentLabel}.
+                  {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
+                </Alert>
+              )}
               {segment.cappedByMaxChanges && (
                 <Text size="xs" c="orange">
                   A faster route exists with more changes than shown below.
