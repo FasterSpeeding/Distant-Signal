@@ -3,60 +3,196 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>Distant Signal — Offline</title>
+    <script>
+      // Mirrors Mantine's ColorSchemeScript: apply a stored explicit
+      // light/dark choice before first paint; "auto" (or nothing stored)
+      // falls through to the prefers-color-scheme rule below.
+      try {
+        var s = localStorage.getItem('mantine-color-scheme-value');
+        if (s === 'light' || s === 'dark') document.documentElement.setAttribute('data-mantine-color-scheme', s);
+      } catch (e) {
+        // Storage blocked: the OS preference still applies.
+      }
+    </script>
     <style>
+      /* This page is served by the service worker with no connection and no
+         React runtime, so it cannot import the Mantine theme. Every value
+         below is copied from @mantine/core's DEFAULT_THEME (Mantine 9) plus
+         the AA overrides in app/globals.css, the same tokens the app renders
+         with; public/offline.test.ts asserts each one still matches, so a
+         Mantine upgrade that changes a shade fails the tests instead of
+         drifting silently.
+           light: body white, text black, dimmed gray 7 (globals.css override),
+                  border gray 3, filled/anchor grape 7 (globals.css override),
+                  filled hover grape 8
+           dark:  body dark 7, text dark 0, dimmed dark 1 (globals.css
+                  override), border dark 4, filled grape 8, hover grape 9,
+                  anchor grape 4
+           wash:  grape 6 at 6% (globals.css body background-image)
+         Spacing, radius and type sizes are Mantine's md/lg defaults at
+         --mantine-scale 1 (16px root). */
       :root {
-        color-scheme: light dark;
+        color-scheme: light;
+        --ds-body: #ffffff;
+        --ds-text: #000000;
+        --ds-dimmed: #495057;
+        --ds-border: #dee2e6;
+        --ds-filled: #ae3ec9;
+        --ds-filled-hover: #9c36b5;
+        --ds-anchor: #ae3ec9;
+        --ds-wash: #be4bdb;
+      }
+      @media (prefers-color-scheme: dark) {
+        html:not([data-mantine-color-scheme='light']) {
+          color-scheme: dark;
+          --ds-body: #242424;
+          --ds-text: #c9c9c9;
+          --ds-dimmed: #b8b8b8;
+          --ds-border: #424242;
+          --ds-filled: #9c36b5;
+          --ds-filled-hover: #862e9c;
+          --ds-anchor: #da77f2;
+        }
+      }
+      html[data-mantine-color-scheme='dark'] {
+        color-scheme: dark;
+        --ds-body: #242424;
+        --ds-text: #c9c9c9;
+        --ds-dimmed: #b8b8b8;
+        --ds-border: #424242;
+        --ds-filled: #9c36b5;
+        --ds-filled-hover: #862e9c;
+        --ds-anchor: #da77f2;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
       }
       body {
         margin: 0;
         min-height: 100vh;
         display: flex;
-        align-items: center;
-        justify-content: center;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-        background: #ffffff;
-        color: #1a1a1a;
+        flex-direction: column;
+        font-family:
+          -apple-system,
+          BlinkMacSystemFont,
+          Segoe UI,
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif,
+          Apple Color Emoji,
+          Segoe UI Emoji;
+        font-size: 16px;
+        line-height: 1.55;
+        background-color: var(--ds-body);
+        background-image: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--ds-wash) 6%, transparent) 0%,
+          transparent 70vh
+        );
+        background-repeat: no-repeat;
+        color: var(--ds-text);
+        -webkit-font-smoothing: antialiased;
       }
-      @media (prefers-color-scheme: dark) {
-        body {
-          background: #242424;
-          color: #f1f1f1;
-        }
+      a {
+        color: var(--ds-anchor);
+        text-decoration: none;
+      }
+      a:hover,
+      a:focus-visible {
+        text-decoration: underline;
+      }
+      :focus-visible {
+        outline: 2px solid var(--ds-filled);
+        outline-offset: 2px;
+      }
+      /* The app's brand bar (components/AppNavBar.tsx): 60px minimum, lg/md
+         padding, a bottom border and the dashed "sleeper" rule from
+         app/globals.css's nav::before. A header element, not a nav: there are no
+         links to navigate to while offline (e2e/service-worker.spec.ts
+         asserts the page has no navigation landmark). */
+      .site-header {
+        position: relative;
+        border-bottom: 1px solid var(--ds-border);
+      }
+      .site-header::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 2px;
+        height: 2px;
+        background-image: repeating-linear-gradient(
+          to right,
+          color-mix(in srgb, var(--ds-text) 20%, transparent) 0,
+          color-mix(in srgb, var(--ds-text) 20%, transparent) 20px,
+          transparent 20px,
+          transparent 36px
+        );
+        background-repeat: repeat-x;
+        background-size: 36px 100%;
+      }
+      .site-header-inner {
+        max-width: 1140px;
+        min-height: 60px;
+        margin: 0 auto;
+        padding: 16px 20px;
+        display: flex;
+        align-items: center;
+      }
+      .brand {
+        color: var(--ds-text);
+        font-weight: 700;
       }
       main {
-        max-width: 28rem;
-        padding: 2rem;
-        text-align: center;
+        flex: 1;
+        width: 100%;
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
       }
+      /* Error pages' h1 is drawn at h2 size (docs/style-guide.md). */
       h1 {
-        font-size: 1.5rem;
-        margin: 0 0 0.5rem;
+        margin: 0;
+        font-size: 26px;
+        line-height: 1.35;
+        font-weight: 700;
       }
       p {
-        color: #6b6b6b;
-        margin: 0 0 1.5rem;
+        margin: 0;
+        color: var(--ds-dimmed);
       }
-      @media (prefers-color-scheme: dark) {
-        p {
-          color: #a8a8a8;
-        }
-      }
+      /* Mantine Button sm, filled primary. */
       button {
         font: inherit;
-        padding: 0.6rem 1.4rem;
-        border: none;
-        border-radius: 4px;
-        background: #ae3ec9;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1;
+        min-height: 36px;
+        padding: 0 18px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: var(--ds-filled);
         color: #ffffff;
         cursor: pointer;
       }
       button:hover {
-        background: #9c35b5;
+        background: var(--ds-filled-hover);
       }
     </style>
   </head>
   <body>
+    <header class="site-header">
+      <div class="site-header-inner"><span class="brand">Distant Signal</span></div>
+    </header>
     <main>
       <h1>You&rsquo;re offline</h1>
       <p id="offline-message">Distant Signal needs a connection to show current line status.</p>
@@ -80,18 +216,31 @@
           var messageEl = document.getElementById('offline-message');
           var baseText = 'Distant Signal needs a connection to show current line status.';
 
+          // Same wording and thresholds as lib/relativeTime.ts ("just now",
+          // "4m ago", "3h ago", "2d ago"); the exact London time goes in the
+          // tooltip, as LastUpdated.tsx does.
+          function relative(fromMs, toMs) {
+            var mins = Math.max(0, Math.floor((toMs - fromMs) / 60000));
+            if (mins < 1) return 'just now';
+            if (mins < 60) return mins + 'm ago';
+            var hours = Math.floor(mins / 60);
+            if (hours < 24) return hours + 'h ago';
+            return Math.floor(hours / 24) + 'd ago';
+          }
+
+          var exact = lastDate.toLocaleString('en-GB', {
+            timeZone: 'Europe/London',
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23',
+          });
+          messageEl.title = 'Last connected ' + exact + ' (UK time)';
+
           function render() {
-            var diffMs = Date.now() - lastDate.getTime();
-            var mins = Math.floor(diffMs / 60000);
-            var relative;
-            if (mins < 1) relative = 'less than a minute ago';
-            else if (mins === 1) relative = '1 minute ago';
-            else if (mins < 60) relative = mins + ' minutes ago';
-            else {
-              var hours = Math.floor(mins / 60);
-              relative = hours === 1 ? '1 hour ago' : hours + ' hours ago';
-            }
-            messageEl.textContent = baseText + ' Last connected around ' + relative + '.';
+            messageEl.textContent = baseText + ' Last connected ' + relative(lastDate.getTime(), Date.now()) + '.';
           }
 
           render();
