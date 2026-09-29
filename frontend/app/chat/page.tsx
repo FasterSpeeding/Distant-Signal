@@ -3,7 +3,7 @@ import { getChatbotAccess } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '@/app/track/mine/AutoOpenLoginPrompt';
 import { LoginLink } from '@/components/LoginLink';
 import { ChatPanel } from '@/components/ChatPanel';
-import { TextLink } from '@/components/TextLink';
+import { AddMcpServerLinks } from '@/components/AddMcpServerLinks';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 
 // Same reasoning as app/page.tsx's own `revalidate = 0` (and
@@ -45,33 +45,37 @@ export default async function ChatPage() {
     );
   }
 
+  // FE-2: read at request time on the server and passed down as a prop.
+  // A `process.env.NEXT_PUBLIC_*` read inside the Client Component would be
+  // inlined at `next build`, where the image has no value for it.
+  const mcpServerUrl = runtimeRailMcpPublicUrl();
+
   if (access === 'forbidden') {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Chat</Title>
         <Text c="dimmed">Not available for your account yet.</Text>
         {/* Review §3.1.2: this used to be a dead end for every logged-in,
-            non-allowlisted visitor -- true today, but with no next step
-            and no explanation of what the feature even is. `/connect-claude`
-            (Claude's own MCP connector, Task 6/9 of the dual-mode design)
-            works for every logged-in user regardless of this allowlist, so
-            it's a real next step, not a placeholder link. */}
-        <Text>
-          This embedded chat is only available to a limited allowlist right now. You can still ask Claude about live
-          departures, disruptions and journeys today by{' '}
-          <TextLink href="/connect-claude" underline="always" inline>
-            connecting Claude to Distant Signal
-          </TextLink>{' '}
-          from your own Claude.ai or Claude Desktop account.
-        </Text>
+            non-allowlisted visitor. The MCP server has its own access
+            group, separate from this allowlist, so where it is configured
+            its "add to your own assistant" section is a real next step.
+            Where it isn't, there is nothing to connect to, so no link. */}
+        {mcpServerUrl ? (
+          <>
+            <Text>
+              This embedded chat is only available to a limited allowlist right now. If your account has access to the
+              Distant Signal MCP server, you can ask your own assistant about live departures, disruptions and journeys
+              instead — see below.
+            </Text>
+            <AddMcpServerLinks mcpPublicUrl={mcpServerUrl} />
+          </>
+        ) : (
+          <Text>This embedded chat is only available to a limited allowlist right now.</Text>
+        )}
       </Stack>
     );
   }
 
-  // FE-2: read at request time on the server and passed down as a prop.
-  // A `process.env.NEXT_PUBLIC_*` read inside the Client Component would be
-  // inlined at `next build`, where the image has no value for it.
-  const mcpServerUrl = runtimeRailMcpPublicUrl();
   if (!mcpServerUrl) {
     return (
       <Stack p="lg" gap="md">
@@ -85,6 +89,7 @@ export default async function ChatPage() {
     <Stack p="lg" gap="md" h="100%">
       <Title order={1}>Chat</Title>
       <ChatPanel mcpServerUrl={mcpServerUrl} />
+      <AddMcpServerLinks mcpPublicUrl={mcpServerUrl} />
     </Stack>
   );
 }
