@@ -1,4 +1,4 @@
-import type { TripPlanResponse } from './types';
+import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
 
 /** Every distinct, non-null CRS code a `GET /Trips/plan` response mentions
  * -- each segment's own origin/destination endpoints, AND every leg (train
@@ -68,6 +68,41 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
     params.set('avoid', avoid.join(','));
   }
   return params.toString();
+}
+
+type TrainLeg = Extract<TripPlanLeg, { kind: 'train' }>;
+
+/** Every train leg of the chosen itineraries, in order, for tracking -- a
+ * transfer never becomes a journey leg. A segment whose itinerary
+ * `continuesPreviousTrain` rides on in the same train through the
+ * waypoint, so its first leg extends the previous one rather than
+ * becoming a second leg for the same train. */
+export function trainLegsForTracking(itineraries: TripPlanItinerary[]): TrainLeg[] {
+  const legs: TrainLeg[] = [];
+  for (const itinerary of itineraries) {
+    itinerary.legs.forEach((leg, index) => {
+      if (leg.kind !== 'train') return;
+      const previous = legs[legs.length - 1];
+      if (
+        index === 0 &&
+        itinerary.continuesPreviousTrain &&
+        previous &&
+        previous.trainUid === leg.trainUid &&
+        previous.serviceDate === leg.serviceDate
+      ) {
+        legs[legs.length - 1] = {
+          ...previous,
+          destinationCrs: leg.destinationCrs,
+          scheduledArrival: leg.scheduledArrival,
+          arrivalDayOffset: leg.arrivalDayOffset,
+          bookedArrivalPlatform: leg.bookedArrivalPlatform,
+        };
+        return;
+      }
+      legs.push(leg);
+    });
+  }
+  return legs;
 }
 
 export class TripPlanError extends Error {

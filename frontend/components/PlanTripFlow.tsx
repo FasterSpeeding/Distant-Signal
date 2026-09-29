@@ -6,7 +6,13 @@ import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
-import { collectTripPlanStationCodes, fetchTripPlan, TripPlanError, type TripPlanQuery } from '@/lib/tripPlan';
+import {
+  collectTripPlanStationCodes,
+  fetchTripPlan,
+  trainLegsForTracking,
+  TripPlanError,
+  type TripPlanQuery,
+} from '@/lib/tripPlan';
 import { getStationNames } from '@/lib/suggestions';
 import { codeRouteLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
@@ -121,6 +127,13 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
   }
 
   function selectItinerary(segmentIndex: number, itinerary: TripPlanItinerary) {
+    // With waypoints, the segments' itineraries are parts of whole
+    // journeys (`plan.journeys`): choosing one part chooses its journey.
+    const index = plan?.segments[segmentIndex]?.itineraries.indexOf(itinerary) ?? -1;
+    if (plan && plan.segments.length > 1 && plan.journeys && index >= 0 && index < plan.journeys.length) {
+      setSelections(plan.segments.map((segment) => ({ itinerary: segment.itineraries[index] ?? null })));
+      return;
+    }
     setSelections((current) => current.map((selection, i) => (i === segmentIndex ? { itinerary } : selection)));
   }
 
@@ -136,10 +149,8 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
     // Every TRAIN leg across every selected segment, in order -- a
     // TransferLeg never becomes a journey_legs row (this plan's own
     // Judgment Call 3).
-    const trainLegs = selections.flatMap((selection) =>
-      (selection.itinerary?.legs ?? []).filter(
-        (leg): leg is Extract<typeof leg, { kind: 'train' }> => leg.kind === 'train',
-      ),
+    const trainLegs = trainLegsForTracking(
+      selections.flatMap((selection) => (selection.itinerary ? [selection.itinerary] : [])),
     );
 
     if (trainLegs.length === 0) {

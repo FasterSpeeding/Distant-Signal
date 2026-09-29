@@ -1036,6 +1036,20 @@ export interface TripPlanItinerary {
   exceedsRecommendedChanges?: boolean;
   /** Live overlay only: no cancelled leg and every change still works. */
   liveFeasible?: boolean;
+  /** The first leg is the same train the previous segment's itinerary
+   * rode into the waypoint: no change is made there. */
+  continuesPreviousTrain?: boolean;
+}
+
+/** One whole journey: `segments[s].itineraries[j]` for every segment `s`,
+ * with its end-to-end change count. */
+export interface TripPlanJourney {
+  changeCount: number;
+  departure: { time: string; dayOffset: number };
+  arrival: { time: string; dayOffset: number };
+  totalDurationMinutes: number;
+  exceedsRecommendedChanges?: boolean;
+  liveFeasible?: boolean;
 }
 
 /** A train leg's live status
@@ -1097,6 +1111,8 @@ export interface TripPlanResponse {
   segments: TripPlanSegment[];
   /** The arrive-by deadline, `null` for a depart-after request. */
   arriveBy?: { time: string; dayOffset: number } | null;
+  /** Whole journeys, aligned with every segment's `itineraries`. */
+  journeys?: TripPlanJourney[];
   /** The avoid lists as applied (CRS codes). */
   avoid?: string[];
   avoidStop?: string[];
