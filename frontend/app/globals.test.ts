@@ -507,7 +507,7 @@ describe('background theming', () => {
   });
 
   it('overrides the wash under rainbow pride mode with the same seven hexes the flag bars use, still at low opacity', () => {
-    const barRule = css.match(/body\[data-pride='rainbow'\]::before\s*\{[^}]*background:[^;]*;/);
+    const barRule = css.match(/--ds-pride-rainbow:[^;]*;/);
     const washRule = css.match(/body\[data-pride='rainbow'\]\s*\{\s*background-image:[^}]*\}/);
     expect(barRule).not.toBeNull();
     expect(washRule).not.toBeNull();
@@ -521,7 +521,7 @@ describe('background theming', () => {
   });
 
   it('overrides the wash under trans pride mode with the same hexes the flag bars use, still at low opacity', () => {
-    const barRule = css.match(/body\[data-pride='trans'\]::before\s*\{[^}]*background:[^;]*;/);
+    const barRule = css.match(/--ds-pride-trans:[^;]*;/);
     const washRule = css.match(/body\[data-pride='trans'\]\s*\{\s*background-image:[^}]*\}/);
     expect(barRule).not.toBeNull();
     expect(washRule).not.toBeNull();
@@ -542,7 +542,7 @@ describe('background theming', () => {
   it.each(['nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'])(
     'overrides the wash under %s pride mode with the same hexes the flag bar uses, still at low opacity',
     (mode) => {
-      const barRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]::before\\s*\\{[^}]*background:[^;]*;`));
+      const barRule = css.match(new RegExp(`--ds-pride-${mode}:[^;]*;`));
       const washRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]\\s*\\{\\s*background-image:[^}]*\\}`));
       expect(barRule).not.toBeNull();
       expect(washRule).not.toBeNull();
@@ -553,6 +553,22 @@ describe('background theming', () => {
         expect(washRule![0].toLowerCase()).toContain(`color-mix(in srgb, ${hex}`);
       }
       expect(washRule![0]).toMatch(/\d%, transparent\)/);
+    },
+  );
+
+  // One copy of each flag's stripes: the bars, the site title and
+  // PrideToggle's swatch all read the `--ds-pride-*` variable, so they can't
+  // drift apart (the wash tests above compare against that same variable).
+  it.each(['rainbow', 'trans', 'nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'])(
+    'paints every %s flag surface from its one --ds-pride variable',
+    (mode) => {
+      expect(css).toMatch(new RegExp(`--ds-pride-${mode}: linear-gradient\\(\\s*to right,\\s*#`));
+      for (const selector of [`::before`, ` nav::after`, ` \\[data-site-title\\]`]) {
+        const rule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]${selector}\\s*\\{[^}]*\\}`));
+        expect(rule, selector).not.toBeNull();
+        expect(rule![0]).toContain(`background: var(--ds-pride-${mode});`);
+        expect(rule![0]).not.toMatch(/#[0-9a-f]{6}/i);
+      }
     },
   );
 

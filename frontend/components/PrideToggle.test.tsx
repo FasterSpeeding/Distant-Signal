@@ -28,8 +28,10 @@ describe('PrideToggle', () => {
       expect(button).toHaveAttribute('aria-pressed', 'true');
       expect(document.body.dataset.pride).toBe(mode);
       // Verify swatch is rendered (a span with background gradient)
-      const swatch = button.querySelector('span[style*="background"]');
+      const swatch = button.querySelector<HTMLElement>('span[style*="background"]');
       expect(swatch).toBeInTheDocument();
+      // The one copy of the flag's stripes lives in globals.css.
+      expect(swatch!.getAttribute('style')).toContain(`var(--ds-pride-${mode})`);
       expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
     }
 
