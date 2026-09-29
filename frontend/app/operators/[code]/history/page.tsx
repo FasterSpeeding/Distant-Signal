@@ -1,5 +1,6 @@
 import { Suspense } from 'react';
-import { Alert, Skeleton, Stack, Text, Title } from '@mantine/core';
+import { Alert, Stack, Text, Title } from '@mantine/core';
+import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { getAllTocs, getHistoryRetention, getOperator } from '@/lib/api';
 import { TextLink } from '@/components/TextLink';
 import { availableGranularities, granularityShortfallDays, resolveGranularity, resolveRange } from '@/lib/history';
@@ -124,7 +125,7 @@ export default async function OperatorHistoryPage({
       )}
       <Suspense
         key={`${granularity}-${range.preset ?? `${range.from}-${range.to}`}`}
-        fallback={<Skeleton height={320} />}
+        fallback={<LoadingPlaceholder label="Loading trends…" height={320} />}
       >
         <OperatorTrendsResults code={code} from={range.from} to={range.to} granularity={granularity} />
       </Suspense>

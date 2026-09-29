@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
-import { Alert, Divider, Paper, Skeleton, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text, Title } from '@mantine/core';
+import { Alert, Divider, Paper, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text, Title } from '@mantine/core';
+import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
@@ -189,14 +190,12 @@ export default async function LineHistoryPage({
                 240px grey box down to one line was a large, jarring shift.
                 `role="status"`/`aria-busy` gives assistive tech something
                 to announce while a slower, longer range is still loading;
-                the old bare `Skeleton` announced nothing. */}
+                the old bare `Skeleton` announced nothing. The shared
+                `LoadingPlaceholder` with no skeleton is exactly that one
+                line of text. */}
             <Suspense
               key={range.preset ?? `${range.from}-${range.to}`}
-              fallback={
-                <Text c="dimmed" role="status" aria-busy="true">
-                  Loading history…
-                </Text>
-              }
+              fallback={<LoadingPlaceholder label="Loading history…" />}
             >
               <HistoryResults
                 id={id}
@@ -236,7 +235,7 @@ export default async function LineHistoryPage({
             )}
             <Suspense
               key={`${granularity}-${range.preset ?? `${range.from}-${range.to}`}`}
-              fallback={<Skeleton height={320} />}
+              fallback={<LoadingPlaceholder label="Loading trends…" height={320} />}
             >
               <TrendsResults id={id} from={range.from} to={range.to} granularity={granularity} />
             </Suspense>
@@ -251,7 +250,10 @@ export default async function LineHistoryPage({
                 "does this line have coverage data at all" lookup and
                 degrades to an honest, harmless empty-state message today,
                 since nothing produces full-coverage data yet. */}
-            <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={320} />}>
+            <Suspense
+              key={range.preset ?? `${range.from}-${range.to}`}
+              fallback={<LoadingPlaceholder label="Loading full-coverage trends…" height={320} />}
+            >
               <CoverageTrendsResults id={id} from={range.from} to={range.to} />
             </Suspense>
           </Stack>

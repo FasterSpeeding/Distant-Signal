@@ -57,4 +57,18 @@ describe('NetworkHistoryPage', () => {
 
     expect(screen.getByText('Every National Rail line this app tracks (TfL not included)')).toBeInTheDocument();
   });
+
+  // Style-guide review: the chart's Suspense fallback was a bare,
+  // unlabelled `Skeleton`. A stats call that never resolves keeps the
+  // boundary suspended so the fallback can be asserted on directly.
+  it('shows a labelled, announced loading state while the trends fetch is pending', async () => {
+    vi.mocked(api.getHistoryRetention).mockResolvedValue(retention);
+    vi.mocked(api.getNetworkDailyStats).mockReturnValue(new Promise(() => {}));
+
+    await renderPage();
+
+    const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('Loading trends…');
+    expect(status).toHaveAttribute('aria-busy', 'true');
+  });
 });
