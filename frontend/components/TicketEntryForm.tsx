@@ -323,7 +323,7 @@ export function TicketEntryForm({
     }
     trackParams.set('ticketId', String(savedStandaloneTicket.id));
     return (
-      <Alert color="blue" title="Ticket saved">
+      <Alert color="green" title="Ticket saved">
         <Stack gap="sm">
           <Text size="sm">
             This ticket isn&apos;t attached to a tracked train yet — extraction can&apos;t tell us exactly which service

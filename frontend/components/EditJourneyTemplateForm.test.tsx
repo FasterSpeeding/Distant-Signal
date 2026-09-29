@@ -149,7 +149,11 @@ describe('EditJourneyTemplateForm', () => {
       );
     });
 
-    expect(await screen.findByText('Saved.')).toBeInTheDocument();
+    const saved = await screen.findByText('Saved.');
+    // Success is green app-wide (docs/style-guide.md "Semantic roles").
+    expect(saved.closest<HTMLElement>('.mantine-Alert-root')?.style.getPropertyValue('--alert-color')).toContain(
+      '--mantine-color-green-',
+    );
     expect(refreshMock).toHaveBeenCalled();
   });
 
