@@ -19,6 +19,9 @@ describe('NationalRailCredit (LEG-23)', () => {
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
     expect(screen.getAllByRole('link')).toHaveLength(1);
+    // A TextLink in the credit's own dimmed colour, underlined.
+    expect(link).toHaveAttribute('data-text-link', 'always');
+    expect(link).toHaveAttribute('data-text-link-tone', 'inherit');
   });
 
   it('uses text only, never an NRE logo', () => {

@@ -98,11 +98,14 @@ export const NRIL_STATEMENT =
 export const NON_AFFILIATION_STATEMENT =
   'Distant Signal is an independent, unofficial service and is not affiliated with or endorsed by National Rail, Network Rail, Rail Delivery Group, TfL, the National Transport Authority, Iarnród Éireann, Translink or any train operator.';
 
+/** A credit or licence link. `tone="inherit"`: it sits in dimmed (footer)
+ * or statement text whose wording is licence text, so it keeps that
+ * colour and is marked by its underline (docs/style-guide.md "TextLink"). */
 function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+    <TextLink href={href} target="_blank" rel="noopener noreferrer" underline="always" inline tone="inherit">
       {children}
-    </a>
+    </TextLink>
   );
 }
 

@@ -1,5 +1,6 @@
 import { Alert, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from './SectionTitle';
+import { TextLink } from './TextLink';
 import { notFound } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { LEGAL_CONFIG, legalPagesMode } from '@/lib/legal';
@@ -12,12 +13,16 @@ export function requireLegalPages(): 'preview' | 'published' {
   return mode as 'preview' | 'published';
 }
 
+/** Max width of a long reading page: the legal pages and `/attribution`
+ * (docs/style-guide.md "Page widths"). */
+export const READING_PAGE_WIDTH = 760;
+
 /** Shared shell for the draft legal pages (`/privacy`, `/terms`,
  * `/cookies`, `/contact`). DRAFT: see `lib/legal.ts` -- operator and legal
  * review required before `LEGAL_PAGES_PUBLISHED` is turned on. */
 export function LegalPage({ title, draft, children }: { title: string; draft: boolean; children: ReactNode }) {
   return (
-    <Stack p="lg" gap="md" maw={760}>
+    <Stack p="lg" gap="md" maw={READING_PAGE_WIDTH}>
       <Title order={1}>{title}</Title>
       {draft && (
         <Alert color="orange" variant="light" title="Draft, not yet published" data-legal-draft>
@@ -44,11 +49,13 @@ export function LegalSection({ title, children }: { title: string; children: Rea
   );
 }
 
-/** The contact email as a mailto link, with the address visible as text. */
+/** The contact email as a mailto link, with the address visible as text.
+ * A `TextLink` like the `/privacy`, `/contact` links in the same
+ * paragraphs, so every link in legal body text looks the same. */
 export function ContactEmail() {
   return (
-    <a href={`mailto:${LEGAL_CONFIG.CONTACT_EMAIL}`} style={{ color: 'inherit', textDecoration: 'underline' }}>
+    <TextLink href={`mailto:${LEGAL_CONFIG.CONTACT_EMAIL}`} underline="always" inline>
       {LEGAL_CONFIG.CONTACT_EMAIL}
-    </a>
+    </TextLink>
   );
 }

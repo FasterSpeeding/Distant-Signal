@@ -55,6 +55,44 @@ describe('TextLink', () => {
     expect(screen.getByText('All Lines')).toHaveStyle({ color: 'var(--mantine-color-anchor)' });
   });
 
+  it('renders a plain anchor, not next/link, for an external or mailto href', () => {
+    renderWithMantine(
+      <>
+        <TextLink href="mailto:hello@example.com" underline="always" inline>
+          hello@example.com
+        </TextLink>
+        <TextLink href="https://www.nationalrail.co.uk">National Rail</TextLink>
+      </>,
+    );
+    for (const [name, href] of [
+      ['hello@example.com', 'mailto:hello@example.com'],
+      ['National Rail', 'https://www.nationalrail.co.uk'],
+    ]) {
+      const link = screen.getByRole('link', { name });
+      expect(link).toHaveAttribute('href', href);
+      // The next/link mock above stamps data-prefetch; a plain <a> doesn't.
+      expect(link).not.toHaveAttribute('data-prefetch');
+    }
+    expect(screen.getByRole('link', { name: 'hello@example.com' })).toHaveAttribute('data-text-link', 'always');
+  });
+
+  it('keeps the anchor colour by default, and inherits the parent colour and font with tone="inherit"', () => {
+    renderWithMantine(
+      <>
+        <TextLink href="/lines">All Lines</TextLink>
+        <TextLink href="https://example.com/licence" tone="inherit" underline="always" inline>
+          the licence
+        </TextLink>
+      </>,
+    );
+    expect(screen.getByRole('link', { name: 'All Lines' })).not.toHaveAttribute('data-text-link-tone');
+    const credit = screen.getByRole('link', { name: 'the licence' });
+    expect(credit).toHaveAttribute('data-text-link-tone', 'inherit');
+    const text = screen.getByText('the licence');
+    expect(text).toHaveStyle({ color: 'inherit' });
+    expect(text).toHaveAttribute('data-inherit', 'true');
+  });
+
   it('defaults to an underline on hover and focus only', () => {
     renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
     // jsdom applies no stylesheet, so the hook the rules in globals.css

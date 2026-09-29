@@ -420,6 +420,14 @@ describe('TextLink underline affordance', () => {
     expect(rule![0]).toContain('text-decoration: underline');
   });
 
+  it('draws an inherit-tone TextLink (credits in dimmed text) and its underline in the parent colour', () => {
+    const rule = css.match(/a\[data-text-link-tone=['"]inherit['"]\]\s*\{[^}]*\}/);
+    expect(rule![0]).toContain('color: inherit');
+    expect(rule![0]).toContain('text-decoration-color: currentColor');
+    // Must come after the base rule's anchor-coloured underline to win.
+    expect(css.indexOf(rule![0])).toBeGreaterThan(css.search(/a\[data-text-link\]\s*\{/));
+  });
+
   it('underlines always-on TextLinks unconditionally', () => {
     const rule = css.match(/a\[data-text-link=['"]always['"]\]\s*\{[^}]*\}/);
     expect(rule![0]).toContain('text-decoration: underline');

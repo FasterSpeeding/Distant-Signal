@@ -1153,6 +1153,15 @@ a[data-text-link='always'] {
   text-decoration: underline;
 }
 
+/* `TextLink tone="inherit"`: credit and licence links inside dimmed text
+   keep their parent's colour (the credit wording is licence text, not a
+   call to action), so the underline has to follow that colour rather than
+   the anchor grape set on `a[data-text-link]` above. */
+a[data-text-link-tone='inherit'] {
+  color: inherit;
+  text-decoration-color: currentColor;
+}
+
 /* Links inside sanitized incident HTML. These anchors come from external
    Knowledgebase copy, not from Mantine's `Anchor` or this app's
    `TextLink`, so nothing had ever set their colour: they rendered
