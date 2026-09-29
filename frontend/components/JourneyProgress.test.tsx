@@ -644,6 +644,32 @@ describe('JourneyProgress', () => {
     expect(screen.getByText('Platform 9 (changed from 6)')).toBeInTheDocument();
   });
 
+  it("marks an endpoint's cancelled platform as cancelled in text, not colour alone", () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({
+            crs: 'WAT',
+            name: 'London Waterloo',
+            kind: 'Origin',
+            platform: '4',
+            plannedPlatform: '4',
+            platformStatus: 'cancelled',
+          }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    const badge = screen.getByText('Platform 4').closest('.mantine-Badge-root');
+    expect(badge).toHaveTextContent('Platform 4 (cancelled)');
+    expect(badge).toHaveAttribute('data-platform-cancelled', 'true');
+  });
+
   it('shows no platform badge for an endpoint node with no known platform', () => {
     renderWithMantine(
       <JourneyProgress

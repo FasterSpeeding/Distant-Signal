@@ -286,8 +286,9 @@ pub struct JourneyStop {
     /// samples, this train's row on that station's current departure board
     /// (`stop_board::apply_station_sample_board`, the same unique match as
     /// `board`, which wins when its row has a platform; a cancelled row's
-    /// platform is served with `platform_status` `Cancelled`). Darwin/LDBWS's board only ever reports a station's OWN
-    /// platform for a service departing FROM it
+    /// platform is served with `platform_status` `Cancelled`).
+    /// Darwin/LDBWS's board only ever reports a station's OWN platform
+    /// for a service departing FROM it
     /// (`poller-ldbws/src/schema.rs`'s `RdmCallingPoint` carries no
     /// platform field at all), so a terminating stop, a stop at an
     /// unsampled station, a stop whose board row is ambiguous or more than

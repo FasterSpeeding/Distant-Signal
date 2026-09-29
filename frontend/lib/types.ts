@@ -547,6 +547,13 @@ export type LiveStopStatus = 'OnTime' | 'Late' | 'Cancelled' | 'NoReport' | 'Arr
  * confident as `'Darwin'` alone. */
 export type SkipSource = 'Darwin' | 'Trust' | 'Both';
 
+// `JourneyStop.platformStatus` -- see `crates/api/src/data/journey.rs`'s
+// `PlatformStatus`. `cancelled`: Darwin lists this train as cancelled at
+// the stop, so `platform` is where it was going to call, not where it
+// will. More values may be added later; render any other value as
+// `active`.
+export type PlatformStatus = 'active' | 'cancelled';
+
 /** One subsequent calling point of a live departure-board row
  * (`GET /public/stations/{crs}/departures`'s `callingPoints`, from LDBWS
  * `subsequentCallingPoints`; `crates/api/src/render.rs`'s
@@ -614,6 +621,10 @@ export interface JourneyStop {
   // showing a changed platform (WCAG 1.4.1). Always `false` when either is
   // `null` -- there is nothing to have changed.
   platformChanged: boolean;
+  // Whether the train still calls at `platform`: `null` exactly when
+  // `platform` is. Optional so a response from an API that predates the
+  // field still type-checks at runtime boundaries (treated as `active`).
+  platformStatus?: PlatformStatus | null;
   // The TIMETABLED platform from the CIF schedule itself (independent of
   // Darwin) -- see `crates/api/src/data/journey.rs`'s
   // `JourneyStop::booked_platform`. Deliberately separate from

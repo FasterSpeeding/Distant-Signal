@@ -434,6 +434,7 @@ function JourneyStopRow({
             platform={stop.platform}
             plannedPlatform={stop.plannedPlatform}
             platformChanged={stop.platformChanged}
+            platformStatus={stop.platformStatus}
           />
         </TableTd>
       )}
