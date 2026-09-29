@@ -8,6 +8,7 @@ import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamable
 import type { RenderedTrainLeg } from '@/lib/types';
 import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
+import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
@@ -152,7 +153,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       for await (const event of runChatTurn({
         anthropic,
         model: CHAT_MODEL,
-        mcpUrl: `${mcpServerUrl.replace(/\/+$/, '')}/mcp`,
+        mcpUrl: mcpEndpointUrl(mcpServerUrl),
         mcpAuthProvider: provider,
         conversationHistory: historyRef.current,
         userMessage: trimmed,

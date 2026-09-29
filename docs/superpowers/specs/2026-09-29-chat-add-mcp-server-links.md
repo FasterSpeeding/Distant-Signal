@@ -11,7 +11,9 @@ only when `railMcp.publicUrl` is configured (read at request time via `runtimeRa
 
 Checked live against production on 2026-09-29:
 
-- Endpoint: `{publicUrl}/mcp`, Streamable HTTP. `/.well-known/oauth-protected-resource/mcp` gives
+- Endpoint: `{publicUrl}/mcp`, Streamable HTTP. It must be exactly that: the bare origin 404s, and the OAuth resource
+  check is an exact match against `new URL('/mcp', publicUrl)`, so a trailing slash or a missing `/mcp` fails. Every
+  user-facing copy (this section, `/connect-claude`, ChatPanel) builds it with `mcpEndpointUrl`. `/.well-known/oauth-protected-resource/mcp` gives
   `resource: https://ds-mcp.cursed.solutions/mcp`.
 - OAuth 2.1 authorization server at `{publicUrl}/`: authorization code + PKCE (S256), public clients only
   (`token_endpoint_auth_methods_supported: ["none"]`), a `registration_endpoint` (DCR) and
@@ -47,11 +49,17 @@ panel, and on the forbidden branch too, because the MCP users group is separate 
 1. A plain note that only accounts given MCP access can connect.
 2. The MCP server URL in a read-only labelled field with a copy button.
 3. One-click "Add to Cursor" and "Add to VS Code" links (server name `distant-signal`).
-4. Copyable commands for Claude Code and Codex CLI, each with its sign-in step.
-5. Short steps for Claude.ai/Desktop (with a link to `claude.ai/customize/connectors`) and for ChatGPT.
+4. Copyable commands for Claude Code, Codex CLI and Gemini CLI, each with its sign-in step.
+5. Short steps for Claude.ai/Desktop (with a link to `claude.ai/customize/connectors`, and to `/connect-claude`) and
+   for ChatGPT.
+6. A collapsed troubleshooting note: an "unregistered redirect_uri" sign-in error means the client used a different
+   loopback host (localhost vs 127.0.0.1) than it registered with; remove and re-add the server.
+
+`/connect-claude` keeps the Claude.ai/Desktop instructions and links here for other assistants, rather than repeating
+the list.
 
 Copy feedback is a visible `role="status"` `aria-live="polite"` line under each field ("Copied." or a "Couldn't
 copy" message). The page adds no dependencies and no logos. Brand names are plain text.
 
-Left out: LM Studio (OAuth not documented), Windsurf (no deep link, and config-file editing is too much for this
-card) and Gemini CLI (to keep the card short). Any of them is a one-line addition.
+Left out: LM Studio (OAuth not documented) and Windsurf (no deep link, and config-file editing is too much for this
+card). Either is a one-line addition.

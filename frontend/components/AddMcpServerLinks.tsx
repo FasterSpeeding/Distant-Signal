@@ -7,6 +7,7 @@ import {
   claudeCodeCommand,
   codexCommand,
   cursorInstallLink,
+  geminiCommand,
   mcpEndpointUrl,
   vscodeInstallLink,
 } from '@/lib/mcpInstallLinks';
@@ -167,6 +168,11 @@ export function AddMcpServerLinks({ mcpPublicUrl }: { mcpPublicUrl: string }) {
             value={codexCommand(endpoint)}
             description="Then run codex mcp login distant-signal to sign in."
           />
+          <CopyField
+            label="Gemini CLI command"
+            value={geminiCommand(endpoint)}
+            description="Then run /mcp auth distant-signal in Gemini CLI to sign in."
+          />
         </Stack>
 
         <Stack gap="xs">
@@ -185,7 +191,10 @@ export function AddMcpServerLinks({ mcpPublicUrl }: { mcpPublicUrl: string }) {
             <ListItem>Paste the MCP server URL above, choose Add, then Connect and sign in.</ListItem>
           </List>
           <Text size="xs" c="dimmed">
-            A free Claude plan allows one custom connector.
+            A free Claude plan allows one custom connector.{' '}
+            <TextLink href="/connect-claude" underline="always" inline size="xs">
+              More about connecting Claude
+            </TextLink>
           </Text>
         </Stack>
 
@@ -201,6 +210,23 @@ export function AddMcpServerLinks({ mcpPublicUrl }: { mcpPublicUrl: string }) {
             Needs a Plus, Pro, Business, Enterprise or Education plan, on the web.
           </Text>
         </Stack>
+
+        {/* Seen with non-Claude clients: they register one loopback
+            redirect (say localhost) then sign in via another (127.0.0.1),
+            and the exact-match redirect check refuses it. Plain
+            <details>, as in NetworkTrendsResults.tsx: small and closed by
+            default, since most people never hit it. */}
+        <details>
+          <summary>
+            <Text span size="xs" c="dimmed">
+              Sign-in fails with “unregistered redirect_uri”?
+            </Text>
+          </summary>
+          <Text size="xs" c="dimmed" mt={4}>
+            Your assistant signed in from a different local address than the one it registered with (localhost instead
+            of 127.0.0.1, or the other way round). Remove Distant Signal from the assistant, add it again, then sign in.
+          </Text>
+        </details>
       </Stack>
     </Card>
   );

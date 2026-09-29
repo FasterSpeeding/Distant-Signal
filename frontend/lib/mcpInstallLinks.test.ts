@@ -3,6 +3,7 @@ import {
   claudeCodeCommand,
   codexCommand,
   cursorInstallLink,
+  geminiCommand,
   mcpEndpointUrl,
   vscodeInstallLink,
 } from './mcpInstallLinks';
@@ -10,7 +11,7 @@ import {
 const ENDPOINT = 'https://ds-mcp.example.com/mcp';
 
 describe('mcpInstallLinks', () => {
-  it('appends /mcp to the public URL, tolerating trailing slashes', () => {
+  it('appends /mcp to the public URL with no trailing slash, tolerating trailing slashes on the input', () => {
     expect(mcpEndpointUrl('https://ds-mcp.example.com')).toBe(ENDPOINT);
     expect(mcpEndpointUrl('https://ds-mcp.example.com//')).toBe(ENDPOINT);
   });
@@ -32,8 +33,9 @@ describe('mcpInstallLinks', () => {
     });
   });
 
-  it('builds the Claude Code and Codex CLI commands', () => {
+  it('builds the Claude Code, Codex CLI and Gemini CLI commands', () => {
     expect(claudeCodeCommand(ENDPOINT)).toBe(`claude mcp add --transport http distant-signal ${ENDPOINT}`);
     expect(codexCommand(ENDPOINT)).toBe(`codex mcp add distant-signal --url ${ENDPOINT}`);
+    expect(geminiCommand(ENDPOINT)).toBe(`gemini mcp add --transport http distant-signal ${ENDPOINT}`);
   });
 });

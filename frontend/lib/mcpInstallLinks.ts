@@ -8,17 +8,24 @@
  *   `{name, type, url}`.
  * - Claude Code: `claude mcp add --transport http <name> <url>`.
  * - Codex CLI: `codex mcp add <name> --url <url>`.
+ * - Gemini CLI: `gemini mcp add --transport http <name> <url>`, then
+ *   `/mcp auth <name>` inside Gemini CLI to sign in (Gemini CLI's
+ *   docs/tools/mcp-server.md).
  *
  * All of them take the Streamable HTTP endpoint, `{publicUrl}/mcp` -- the
  * `resource` the server's own protected-resource metadata advertises, and
- * the same URL ChatPanel connects to. */
+ * the same URL ChatPanel connects to. It has to be exactly that: the bare
+ * origin has no route (404), and the server's OAuth resource check is an
+ * exact string match, so a trailing slash or a missing `/mcp` fails
+ * sign-in. Every user-facing copy of the URL (/chat, /connect-claude,
+ * ChatPanel) goes through `mcpEndpointUrl` so they can't drift apart. */
 
 /** The name each client stores the server under. Lower-case and
  * hyphenated so it also works as a CLI argument without quoting. */
 export const MCP_SERVER_NAME = 'distant-signal';
 
-/** `railMcp.publicUrl` → the MCP endpoint. Tolerates a trailing slash,
- * the same way ChatPanel builds its own `mcpUrl`. */
+/** `railMcp.publicUrl` → the MCP endpoint, `{publicUrl}/mcp`, with no
+ * trailing slash. Tolerates trailing slashes on `publicUrl`. */
 export function mcpEndpointUrl(publicUrl: string): string {
   return `${publicUrl.replace(/\/+$/, '')}/mcp`;
 }
@@ -39,4 +46,8 @@ export function claudeCodeCommand(endpoint: string): string {
 
 export function codexCommand(endpoint: string): string {
   return `codex mcp add ${MCP_SERVER_NAME} --url ${endpoint}`;
+}
+
+export function geminiCommand(endpoint: string): string {
+  return `gemini mcp add --transport http ${MCP_SERVER_NAME} ${endpoint}`;
 }

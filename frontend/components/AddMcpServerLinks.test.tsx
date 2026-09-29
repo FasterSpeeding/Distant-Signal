@@ -56,6 +56,34 @@ describe('AddMcpServerLinks', () => {
     expect(screen.getByRole('heading', { name: 'ChatGPT' })).toBeInTheDocument();
   });
 
+  it('shows the Gemini CLI command and how to sign in there', () => {
+    renderWithMantine(<AddMcpServerLinks mcpPublicUrl={PUBLIC_URL} />);
+    expect(screen.getByLabelText('Gemini CLI command')).toHaveValue(
+      `gemini mcp add --transport http distant-signal ${ENDPOINT}`,
+    );
+    expect(screen.getByText('Then run /mcp auth distant-signal in Gemini CLI to sign in.')).toBeInTheDocument();
+  });
+
+  it('links to /connect-claude from the Claude.ai steps', () => {
+    renderWithMantine(<AddMcpServerLinks mcpPublicUrl={PUBLIC_URL} />);
+    expect(screen.getByRole('link', { name: 'More about connecting Claude' })).toHaveAttribute(
+      'href',
+      '/connect-claude',
+    );
+  });
+
+  it('has a collapsed troubleshooting note for the unregistered redirect_uri error', () => {
+    const { container } = renderWithMantine(<AddMcpServerLinks mcpPublicUrl={PUBLIC_URL} />);
+    const details = container.querySelector('details');
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute('open');
+    expect(within(details as HTMLElement).getByText(/unregistered redirect_uri/)).toBeInTheDocument();
+    expect(within(details as HTMLElement).getByText(/localhost instead of 127\.0\.0\.1/)).toBeInTheDocument();
+    expect(
+      within(details as HTMLElement).getByText(/Remove Distant Signal from the assistant, add it again/),
+    ).toBeInTheDocument();
+  });
+
   it('copies the URL and announces it in a polite live region', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     stubClipboard(writeText);
