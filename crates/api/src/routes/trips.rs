@@ -20,17 +20,29 @@ use crate::app::App;
 use crate::data::{trip_plan_live, trip_planning, trip_planning_itinerary};
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
-/// review, High 4b). `plan_via_waypoints` solves one INDEPENDENT pathfinding
-/// search per consecutive pair of stops, so `n` waypoints means `n + 1` full
-/// searches over the whole day's connections graph -- and nothing capped `n`.
-/// `?waypoints=YRK,YRK,YRK,...` repeated a few hundred times is a legal query
-/// string that turns one unauthenticated GET into hundreds of graph searches.
+/// review, High 4b): before it, `?waypoints=YRK,YRK,YRK,...` repeated a few
+/// hundred times was a legal query string that turned one unauthenticated
+/// GET into hundreds of graph searches.
 ///
-/// 8 is generous for a real itinerary (a ten-leg cross-country trip with
-/// eight intermediate stops the traveller specifically asked to route via)
-/// while keeping the worst case a small multiple of the single-leg cost, not
-/// an unbounded one.
-const MAX_WAYPOINTS: usize = 8;
+/// Waypoints are now searched as one journey (`trip_planner::staged`,
+/// 2026-09-29), whose cost grows with the number of waypoints: every stage
+/// keeps its own labels. Measured (release, synthetic day of ~400k
+/// connections, `crates/trip-planner/tests/bench_arrive_by.rs`
+/// `bench_waypoints`), fastest/CSA took about 10, 50, 86, 170, 197 and
+/// 332 ms at 0, 2, 4, 8, 12 and 20 waypoints; options/RAPTOR (6 rounds)
+/// 0.85, 1.2, 1.7, 1.6, 1.5 and 1.9 s. The per-segment planner it replaced
+/// cost roughly `waypoints + 1` RAPTOR runs for options (about 5-7 s at 8),
+/// so 20 -- what the Distant-Signal-MCP `plan_journey` tool allows -- costs
+/// less than 8 used to. This is the ceiling and the default; the
+/// `TRIP_PLAN_MAX_WAYPOINTS` environment variable (chart
+/// `api.tripPlanMaxWaypoints`) can lower it, see [`WAYPOINT_LIMIT`].
+const MAX_WAYPOINTS: usize = 20;
+const MAX_WAYPOINTS_ENV: &str = "TRIP_PLAN_MAX_WAYPOINTS";
+
+/// The waypoint cap in effect: `TRIP_PLAN_MAX_WAYPOINTS`, clamped to
+/// `1..=`[`MAX_WAYPOINTS`], default [`MAX_WAYPOINTS`].
+static WAYPOINT_LIMIT: LazyLock<usize> =
+    LazyLock::new(|| env_or_default(MAX_WAYPOINTS_ENV, MAX_WAYPOINTS).clamp(1, MAX_WAYPOINTS));
 
 /// Cap on each of `?avoid=`, `?avoidStop=` and `?avoidChange=`, checked
 /// before any database read like [`MAX_WAYPOINTS`]. An avoided station adds
@@ -185,6 +197,15 @@ fn default_results() -> String {
 ///   origin, destination or waypoint, is a 400. The semantics of `avoid` and
 ///   `avoidStop` are Skye's `train-mcp`'s; see
 ///   docs/superpowers/specs/2026-09-29-trips-plan-arrive-by-avoid-design.md.
+/// - `waypoints` (2026-09-29): the trip is planned as ONE journey calling at
+///   every waypoint in order (`trip_planner::staged`), split into one
+///   itinerary per segment. Staying aboard a train through a waypoint is no
+///   change (`continuesPreviousTrain: true` on the onward part), and
+///   `maxChanges` counts the whole journey's changes. The segments'
+///   `itineraries` are aligned -- `segments[s].itineraries[j]` is part `s`
+///   of journey `j` -- and the top-level `journeys` summarises each. A
+///   waypoint repeating the origin, destination or previous waypoint is a
+///   400.
 /// - A segment with no itineraries carries `noResultReason`
 ///   (`{constraint, values, message}`, see
 ///   [`trip_planning_itinerary::NoResultReason`]) naming the constraint that
@@ -222,20 +243,18 @@ fn default_results() -> String {
 /// separate bounds apply, all of them load-bearing (2026-09-25 review, High
 /// 4) and none of them a substitute for another:
 ///
-/// 1. [`MAX_WAYPOINTS`], checked BEFORE any database read -- bounds how many
-///    graph searches one request can ask for. Rejected requests cost a string
-///    split, not a query.
+/// 1. [`WAYPOINT_LIMIT`] (at most [`MAX_WAYPOINTS`]), checked BEFORE any
+///    database read -- bounds how many stages the one joint search carries
+///    (see [`MAX_WAYPOINTS`] for the measured cost). Rejected requests cost
+///    a string split, not a query.
 /// 2. [`trip_planning_itinerary::MAX_CHANGES_LIMIT`], also checked before any
 ///    database read -- bounds how deep each `options`-mode search can go.
 ///    RAPTOR does one full sweep of the day's connections per round, and runs
-///    `maxChanges + 2` rounds at most (fewer if a round improves nothing), so
-///    the worst case per request is `(MAX_WAYPOINTS + 1) * (4 + 2)` = 54
-///    sweeps at `maxChanges=4`, versus 36 at the default of 2 -- a bounded
-///    1.5x on the search phase alone (the whole-day read and graph build,
-///    which dominate memory, are unchanged, and `fastest` mode's single CSA
-///    scan per segment doesn't depend on `maxChanges` at all). Per-search
-///    memory grows the same bounded 1.5x (one arrival map per round), and
-///    segments are solved one after another, never at once.
+///    `maxChanges + 2` rounds at most (fewer if a round improves nothing):
+///    6 sweeps at `maxChanges=4` versus 4 at the default of 2 (the whole-day
+///    read and graph build, which dominate memory, are unchanged, and
+///    `fastest` mode's single CSA scan doesn't depend on `maxChanges`).
+///    Per-search memory is one arrival map per round and stage.
 /// 3. [`PLAN_SLOTS`], held across the whole read-plus-compute body -- bounds
 ///    how many of these can be in flight at once, so the peak is a few
 ///    graphs' worth of memory and a few threads, not one per connection. The
@@ -479,6 +498,27 @@ async fn get_trip_plan(
             // it is not.
             "noResultReason": segment.no_result_reason,
         })).collect::<Vec<_>>(),
+        // Additive (2026-09-29): the whole journeys, aligned with every
+        // segment's `itineraries` -- journey `j` is `itineraries[j]` of each
+        // segment -- with their end-to-end change count.
+        "journeys": trip_planning_itinerary::journey_summaries(&segments, &graph.interchange)
+            .iter()
+            .map(|journey| {
+                let mut value = serde_json::json!({
+                    "changeCount": journey.change_count,
+                    "departure": segment_clock(journey.departure_min),
+                    "arrival": segment_clock(journey.arrival_min),
+                    "totalDurationMinutes": journey.arrival_min - journey.departure_min,
+                });
+                if let Some(exceeds) = journey.exceeds_recommended_changes {
+                    value["exceedsRecommendedChanges"] = exceeds.into();
+                }
+                if let Some(feasible) = journey.live_feasible {
+                    value["liveFeasible"] = feasible.into();
+                }
+                value
+            })
+            .collect::<Vec<_>>(),
     });
     if let Some(summary) = live_summary {
         body["live"] = summary;
@@ -726,12 +766,13 @@ fn parse_waypoints(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String
         .map(|s| s.to_ascii_uppercase())
         .collect();
 
-    if waypoints.len() > MAX_WAYPOINTS {
+    if waypoints.len() > *WAYPOINT_LIMIT {
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
-                "too many waypoints: {} given, at most {MAX_WAYPOINTS} allowed",
-                waypoints.len()
+                "too many waypoints: {} given, at most {} allowed",
+                waypoints.len(),
+                *WAYPOINT_LIMIT
             ),
         ));
     }
@@ -2667,5 +2708,235 @@ mod db_tests {
         assert_eq!(train_uids(&options, 0), ["TAVE1"], "{options:?}");
 
         cleanup_live(&pool, &uids, "TAVNET").await;
+    }
+
+    // ---------------------------------------------------------------------
+    // Waypoints as one journey (2026-09-29): no phantom change on a through
+    // train, maxChanges over the whole journey, and the waypoint cap.
+    // ---------------------------------------------------------------------
+
+    /// ZJA -> ZJB (via) -> ZJC. TWJT1 calls at ZJB for two minutes (a change
+    /// needs the default five); TWJT2 is the next train on. The traveller
+    /// stays aboard TWJT1: no change, one journey, live on and off, depart-
+    /// after and arrive-by.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn a_through_train_at_a_waypoint_is_not_a_change_end_to_end() {
+        let pool = connect().await;
+        let uids = ["TWJT1", "TWJT2"];
+        cleanup_live(&pool, &uids, "TWJNET").await;
+        seed_stations(
+            &pool,
+            "TWJNET",
+            &[("ZJA", "TWJA"), ("ZJB", "TWJB"), ("ZJC", "TWJC")],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TWJT1",
+            &[
+                (0, "TWJA", "origin", None, Some("10:00:00")),
+                (
+                    1,
+                    "TWJB",
+                    "intermediate",
+                    Some("10:30:00"),
+                    Some("10:32:00"),
+                ),
+                (2, "TWJC", "terminate", Some("11:00:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TWJT2",
+            &[
+                (0, "TWJB", "origin", None, Some("10:40:00")),
+                (1, "TWJC", "terminate", Some("11:30:00"), None),
+            ],
+        )
+        .await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+
+        for query in [
+            "&departAfter=09:45",
+            "&departAfter=09:45&live=false",
+            "&arriveBy=11:15",
+            "&arriveBy=11:15&results=options&maxChanges=0",
+        ] {
+            let (status, body) = get(
+                test_router(test_app(pool.clone())),
+                format!(
+                    "/Trips/plan?origin=ZJA&waypoints=ZJB&destination=ZJC&date={}{query}",
+                    live_date()
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body:?}");
+            assert_eq!(train_uids(&body, 0), ["TWJT1"], "{query}: {body:?}");
+            assert_eq!(train_uids(&body, 1), ["TWJT1"], "{query}: {body:?}");
+            let onward = &body["segments"][1]["itineraries"][0];
+            assert_eq!(onward["continuesPreviousTrain"], true, "{query}: {body:?}");
+            assert_eq!(onward["legs"][0]["scheduledDeparture"], "10:32:00");
+            assert_eq!(
+                body["segments"][0]["itineraries"][0]["continuesPreviousTrain"],
+                false
+            );
+            assert_eq!(body["journeys"][0]["changeCount"], 0, "{query}: {body:?}");
+            assert_eq!(body["journeys"][0]["departure"]["time"], "10:00:00");
+            assert_eq!(body["journeys"][0]["arrival"]["time"], "11:00:00");
+            if !query.contains("live=false") {
+                assert_eq!(body["journeys"][0]["liveFeasible"], true, "{body:?}");
+            }
+        }
+
+        cleanup_live(&pool, &uids, "TWJNET").await;
+    }
+
+    /// ZMD -> ZME -> ZMF -> ZMG with a direct train per segment: each
+    /// segment alone has no change, the journey has two. `maxChanges=1`
+    /// finds nothing and says so; `maxChanges=2` finds it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn max_changes_caps_the_whole_journey_across_two_waypoints() {
+        let pool = connect().await;
+        let uids = ["TWMC1", "TWMC2", "TWMC3"];
+        cleanup_live(&pool, &uids, "TWMNET").await;
+        seed_stations(
+            &pool,
+            "TWMNET",
+            &[
+                ("ZMD", "TWMD"),
+                ("ZME", "TWME"),
+                ("ZMF", "TWMF"),
+                ("ZMG", "TWMG"),
+            ],
+        )
+        .await;
+        for (uid, from, to, dep, arr) in [
+            ("TWMC1", "TWMD", "TWME", "10:00:00", "10:20:00"),
+            ("TWMC2", "TWME", "TWMF", "10:30:00", "10:50:00"),
+            ("TWMC3", "TWMF", "TWMG", "11:00:00", "11:20:00"),
+        ] {
+            seed_schedule(
+                &pool,
+                uid,
+                &[
+                    (0, from, "origin", None, Some(dep)),
+                    (1, to, "terminate", Some(arr), None),
+                ],
+            )
+            .await;
+        }
+        let plan = |query: &str| {
+            let pool = pool.clone();
+            let uri = format!(
+                "/Trips/plan?origin=ZMD&waypoints=ZME,ZMF&destination=ZMG&date={}\
+                 &departAfter=09:30&live=false{query}",
+                live_date()
+            );
+            async move { get(test_router(test_app(pool)), uri).await }
+        };
+
+        let (status, capped) = plan("&results=options&maxChanges=1").await;
+        assert_eq!(status, StatusCode::OK, "{capped:?}");
+        for segment in capped["segments"].as_array().unwrap() {
+            assert!(segment["itineraries"].as_array().unwrap().is_empty());
+            assert_eq!(segment["cappedByMaxChanges"], true, "{capped:?}");
+            assert_eq!(segment["noResultReason"]["constraint"], "maxChanges");
+        }
+        assert_eq!(capped["journeys"], serde_json::json!([]));
+
+        let (_, two) = plan("&results=options&maxChanges=2").await;
+        assert_eq!(two["journeys"][0]["changeCount"], 2, "{two:?}");
+        assert_eq!(train_uids(&two, 2), ["TWMC3"], "{two:?}");
+
+        // fastest: found regardless, flagged against the whole journey.
+        let (_, fastest) = plan("&maxChanges=1").await;
+        assert_eq!(fastest["journeys"][0]["changeCount"], 2, "{fastest:?}");
+        assert_eq!(fastest["journeys"][0]["exceedsRecommendedChanges"], true);
+        for segment in fastest["segments"].as_array().unwrap() {
+            assert_eq!(segment["itineraries"][0]["exceedsRecommendedChanges"], true);
+        }
+
+        cleanup_live(&pool, &uids, "TWMNET").await;
+    }
+
+    /// The waypoint cap: exactly [`MAX_WAYPOINTS`] waypoints, all called at
+    /// by one train, plan as one journey with no change; one more is a 400.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn the_maximum_number_of_waypoints_plans_as_one_journey() {
+        let pool = connect().await;
+        let letters: Vec<char> = ('A'..='Z').take(MAX_WAYPOINTS + 2).collect();
+        let stations: Vec<(String, String)> = letters
+            .iter()
+            .map(|l| (format!("ZU{l}"), format!("TWXC{l}")))
+            .collect();
+        cleanup_live(&pool, &["TWXALL"], "TWXNET").await;
+        let station_refs: Vec<(&str, &str)> = stations
+            .iter()
+            .map(|(crs, tiploc)| (crs.as_str(), tiploc.as_str()))
+            .collect();
+        seed_stations(&pool, "TWXNET", &station_refs).await;
+        let times: Vec<String> = (0..stations.len())
+            .map(|i| format!("{:02}:{:02}:00", 10 + i * 3 / 60, i * 3 % 60))
+            .collect();
+        let calls: Vec<SeedCall<'_>> = stations
+            .iter()
+            .enumerate()
+            .map(|(i, (_, tiploc))| {
+                let last = i == stations.len() - 1;
+                (
+                    i as i32,
+                    tiploc.as_str(),
+                    if i == 0 {
+                        "origin"
+                    } else if last {
+                        "terminate"
+                    } else {
+                        "intermediate"
+                    },
+                    (i > 0).then(|| times[i].as_str()),
+                    (!last).then(|| times[i].as_str()),
+                )
+            })
+            .collect();
+        seed_schedule(&pool, "TWXALL", &calls).await;
+
+        let crs: Vec<&str> = stations.iter().map(|(crs, _)| crs.as_str()).collect();
+        let uri = |waypoints: &[&str]| {
+            format!(
+                "/Trips/plan?origin={}&waypoints={}&destination={}&date={}&live=false",
+                crs[0],
+                waypoints.join(","),
+                crs[crs.len() - 1],
+                live_date()
+            )
+        };
+        let waypoints = &crs[1..crs.len() - 1];
+        assert_eq!(waypoints.len(), MAX_WAYPOINTS);
+        let (status, body) = get(test_router(test_app(pool.clone())), uri(waypoints)).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let segments = body["segments"].as_array().unwrap();
+        assert_eq!(segments.len(), MAX_WAYPOINTS + 1);
+        assert!(
+            segments[1..]
+                .iter()
+                .all(|s| s["itineraries"][0]["continuesPreviousTrain"] == true),
+            "{body:?}"
+        );
+        assert_eq!(body["journeys"][0]["changeCount"], 0, "{body:?}");
+
+        let mut too_many: Vec<&str> = waypoints.to_vec();
+        too_many.push("ZZZ");
+        let (status, body) = get(test_router(test_app(pool.clone())), uri(&too_many)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(body.as_str().unwrap().contains("too many waypoints"));
+
+        cleanup_live(&pool, &["TWXALL"], "TWXNET").await;
     }
 }

@@ -285,6 +285,7 @@ mod tests {
                 arrival_tiploc: None,
                 departure_tiploc: None,
                 live_feasible: None,
+                continues_previous_train: false,
             }],
             capped_by_max_changes: false,
             depart_after_min: None,

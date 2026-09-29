@@ -687,9 +687,11 @@ pub fn origin_lookback_uids(
 }
 
 /// Whether an [`annotate`]d plan no longer works on live times: an
-/// itinerary with a cancelled leg or an impossible change, or a waypoint
-/// segment searched from before the previous segment's live arrival (plus
-/// change time) now lets the traveller continue. This is what triggers a
+/// itinerary with a cancelled leg or an impossible change, or a journey
+/// whose change at a waypoint no longer works on live times (for a chained
+/// plan: an onward segment searched from before the previous segment's live
+/// arrival plus change time). Staying aboard through a waypoint is always
+/// fine. This is what triggers a
 /// re-plan; a plan that is merely late is annotated, not re-planned.
 pub fn plan_invalidated(segments: &[SegmentResult], interchange: &InterchangeData) -> bool {
     if segments
@@ -700,11 +702,21 @@ pub fn plan_invalidated(segments: &[SegmentResult], interchange: &InterchangeDat
         return true;
     }
     segments.windows(2).any(|pair| {
-        let ready = crate::data::trip_planning_itinerary::chain_ready_min(
-            &pair[0].itineraries,
-            interchange,
-        );
-        let earliest_onward = pair[1].itineraries.iter().map(|i| i.departure_min).min();
+        let (previous, next) = (&pair[0].itineraries, &pair[1].itineraries);
+        if previous.len() == next.len() {
+            // A joint plan's aligned journeys (`plan_trip`): each journey's
+            // own change at the waypoint.
+            return previous.iter().zip(next).any(|(previous, next)| {
+                next.departure_min
+                    < crate::data::trip_planning_itinerary::waypoint_ready_min(
+                        previous,
+                        next,
+                        interchange,
+                    )
+            });
+        }
+        let ready = crate::data::trip_planning_itinerary::chain_ready_min(previous, interchange);
+        let earliest_onward = next.iter().map(|i| i.departure_min).min();
         matches!((ready, earliest_onward), (Some(ready), Some(onward)) if onward < ready)
     })
 }
