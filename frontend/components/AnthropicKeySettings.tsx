@@ -50,7 +50,7 @@ export function AnthropicKeySettings() {
 
   return (
     <Stack gap="xs">
-      <Alert color="blue" variant="light">
+      <Alert color="grape" variant="light">
         Your Anthropic API key is stored only in your browser (localStorage) and sent only to Anthropic directly when
         you chat -- it is never seen by any Distant Signal server.
       </Alert>

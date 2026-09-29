@@ -203,6 +203,14 @@ links to ten items. The spec is silent, not opposed.
 Keep brand, theme toggle and Log in / avatar in the bar; everything else
 in the drawer.
 
+> **Status (2026-09-29): implemented.** `components/AppNavDrawer.tsx` is a
+> burger + `Drawer` holding the primary links. The breakpoint is `md`
+> (62em), not `sm`: `NAV_BREAKPOINT` in `components/AppNavBar.tsx` drives
+> both the bar's `visibleFrom` and the drawer's `hiddenFrom`, because at
+> 768px the logged-out bar measured 849px of content in 728px and wrapped
+> (the measurement is in that constant's doc comment). See
+> `docs/style-guide.md` ("Layout and page templates").
+
 ### 2.3 · serious · Theme and pride toggles are emoji glyphs and render as tofu in Chromium
 
 **Observed by:** all six slices (Home/Chat C-3, Groups X3, Incidents
@@ -347,6 +355,12 @@ link, so this is unaddressed rather than regressed.
 **Recommendation.** A visually-hidden-until-focused "Skip to content" link
 as the first child of `<body>`, targeting the existing `<main>`
 (`app/layout.tsx:350`). Cheap, and WCAG 2.4.1.
+
+> **Status (2026-09-29): implemented.** `app/layout.tsx` renders
+> `<a href="#main-content" className="skip-link">Skip to content</a>` as the
+> first focusable element, targeting `<main id="main-content">`; the
+> `.skip-link` rule in `app/globals.css` shows it on `:focus-visible` in
+> filled grape with white text (4.85:1).
 
 ### 2.7 · moderate · The authenticated desktop nav wraps to two rows at 1440px
 

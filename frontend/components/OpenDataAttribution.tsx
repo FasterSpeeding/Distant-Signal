@@ -1,4 +1,5 @@
-import { Box, Group, List, ListItem, Stack, Text, Title } from '@mantine/core';
+import { Box, Group, List, ListItem, Stack, Text } from '@mantine/core';
+import { SectionTitle } from './SectionTitle';
 import type { ReactNode } from 'react';
 import { TextLink } from './TextLink';
 import { LEGAL_LINKS, legalPagesVisible } from '@/lib/legal';
@@ -97,11 +98,14 @@ export const NRIL_STATEMENT =
 export const NON_AFFILIATION_STATEMENT =
   'Distant Signal is an independent, unofficial service and is not affiliated with or endorsed by National Rail, Network Rail, Rail Delivery Group, TfL, the National Transport Authority, Iarnród Éireann, Translink or any train operator.';
 
+/** A credit or licence link. `tone="inherit"`: it sits in dimmed (footer)
+ * or statement text whose wording is licence text, so it keeps that
+ * colour and is marked by its underline (docs/style-guide.md "TextLink"). */
 function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+    <TextLink href={href} target="_blank" rel="noopener noreferrer" underline="always" inline tone="inherit">
       {children}
-    </a>
+    </TextLink>
   );
 }
 
@@ -317,9 +321,7 @@ export function OpenDataAttributionDetails() {
       </Text>
       {DATA_SOURCES.map((source) => (
         <Stack key={source.id} gap={4} component="section" aria-labelledby={`source-${source.id}`}>
-          <Title order={2} size="h4" id={`source-${source.id}`}>
-            {source.title}
-          </Title>
+          <SectionTitle id={`source-${source.id}`}>{source.title}</SectionTitle>
           <Text size="sm">{source.use}</Text>
           <Text size="sm" fw={500} data-attribution-statement>
             {source.statement}
@@ -330,9 +332,7 @@ export function OpenDataAttributionDetails() {
         </Stack>
       ))}
       <Stack gap={4} component="section" aria-labelledby="source-disclaimer">
-        <Title order={2} size="h4" id="source-disclaimer">
-          Not an official service
-        </Title>
+        <SectionTitle id="source-disclaimer">Not an official service</SectionTitle>
         <Text size="sm">{NON_AFFILIATION_STATEMENT}</Text>
         <List size="sm">
           <ListItem>No data provider&apos;s logo or brand is used.</ListItem>

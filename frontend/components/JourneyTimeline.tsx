@@ -278,20 +278,20 @@ function delayBadge(delayMinutes: number | null) {
   if (delayMinutes === null) return null;
   if (delayMinutes === 0) {
     return (
-      <Badge color="green" variant="light">
+      <Badge color="green" variant="light" tt="none">
         On time
       </Badge>
     );
   }
   if (delayMinutes > 0) {
     return (
-      <Badge color="orange" variant="light">
+      <Badge color="orange" variant="light" tt="none">
         {delayMinutes}m late
       </Badge>
     );
   }
   return (
-    <Badge color="teal" variant="light">
+    <Badge color="teal" variant="light" tt="none">
       {Math.abs(delayMinutes)}m early
     </Badge>
   );
@@ -371,7 +371,7 @@ function JourneyStopRow({
             {label}
           </Text>
           {isSkippedOnLeg && (
-            <Badge color="red" variant="light" size="sm">
+            <Badge color="red" variant="light" size="sm" tt="none">
               Skipped
             </Badge>
           )}

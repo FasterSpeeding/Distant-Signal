@@ -1,4 +1,5 @@
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import {
@@ -318,9 +319,7 @@ export default async function StationDisruptionPage({ params }: { params: Promis
           coverage-vs-empty split immediately above. */}
       <Divider />
       <Stack gap="xs" id="stats">
-        <Title order={2} size="h4">
-          Sample stats by operator
-        </Title>
+        <SectionTitle>Sample stats by operator</SectionTitle>
         {sampleStatsResult.coverage === 'not-sampled' && (
           <Text c="dimmed">This station isn&apos;t part of our live departure sampling.</Text>
         )}

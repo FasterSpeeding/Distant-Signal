@@ -579,6 +579,11 @@ describe('TicketEntryForm', () => {
       // both carried forward, so `/track`'s own form can pre-fill the
       // origin and attach this ticket automatically once a pin is created.
       expect(link).toHaveAttribute('href', '/track?origin=KGX&ticketId=5');
+      // Success is green app-wide (docs/style-guide.md "Semantic roles"),
+      // matching EditJourneyTemplateForm's "Saved." -- this used to be blue.
+      const alert = link.closest<HTMLElement>('.mantine-Alert-root');
+      expect(alert).toHaveTextContent('Ticket saved');
+      expect(alert?.style.getPropertyValue('--alert-color')).toContain('--mantine-color-green-');
       // The manual-entry form itself is gone -- replaced by this next step.
       expect(screen.queryByRole('combobox', { name: 'Operator (optional)' })).not.toBeInTheDocument();
     });

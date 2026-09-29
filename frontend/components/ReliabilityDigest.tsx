@@ -1,4 +1,5 @@
-import { Alert, Card, Group, Stack, Text, Title } from '@mantine/core';
+import { Alert, Card, Group, Stack, Text } from '@mantine/core';
+import { SectionTitle } from './SectionTitle';
 import Link from 'next/link';
 import {
   computeDelayRepayRollup,
@@ -26,7 +27,7 @@ export function ReliabilityDigest({ trains, tickets }: { trains: TrackedTrainLis
   return (
     <Card withBorder>
       <Stack gap="md">
-        <Title order={2}>Your reliability</Title>
+        <SectionTitle>Your reliability</SectionTitle>
         <PunctualitySection summary={punctuality} />
         <DelayRepaySection rollup={rollup} />
       </Stack>
@@ -153,7 +154,7 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
           `app/track/mine/page.test.tsx`'s "multiple tickets on one
           train" case), so this copy must not say "journeys" here, or it
           would overstate how many distinct trips were involved. */}
-      <Alert color="blue" title="Possible Delay Repay eligibility, across your attached tickets" variant="light">
+      <Alert color="grape" title="Possible Delay Repay eligibility, across your attached tickets" variant="light">
         Of the {rollup.attachedTicketsWithOperator} ticket{rollup.attachedTicketsWithOperator === 1 ? '' : 's'} attached
         to a tracked train with a known operator, {rollup.eligibleCount} may have qualified for a partial or full refund
         of that ticket&apos;s fare under the operator&apos;s Delay Repay scheme.

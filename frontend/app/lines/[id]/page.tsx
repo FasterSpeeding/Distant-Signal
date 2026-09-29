@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { Badge, Stack, Title, Text, Group, Button, Paper } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines, getAllTocs } from '@/lib/api';
@@ -548,18 +549,14 @@ export default async function LineDetailPage({ params }: { params: Promise<{ id:
           of the page behind it. */}
       {showTrainsPanel && (
         <Stack gap="xs">
-          <Title order={2} size="h4">
-            Trains running today
-          </Title>
+          <SectionTitle>Trains running today</SectionTitle>
           <Suspense fallback={<TrainsLoadingFallback />}>
             <LineTrainsResults id={id} date={trainsDate} now={new Date(now)} />
           </Suspense>
         </Stack>
       )}
       <Stack gap="xs">
-        <Title order={2} size="h4">
-          Recent trends (last 24 hours)
-        </Title>
+        <SectionTitle>Recent trends (last 24 hours)</SectionTitle>
         {/* Half-hourly (30-minute buckets), not the dedicated history
             page's daily rollup -- Decision 1/2 of
             docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md

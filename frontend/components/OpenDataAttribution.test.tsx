@@ -43,9 +43,19 @@ describe('OpenDataAttribution', () => {
     // phrase is linked -- the Knowledgebase Stations text appended right
     // after it (see below) carries no link requirement of its own.
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByText('powered by NationalRail');
-    expect(link).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'powered by NationalRail' });
     expect(link).toHaveAttribute('href', 'https://www.nationalrail.co.uk');
+  });
+
+  it('renders credit links as TextLinks that keep the dimmed credit colour, underlined (docs/style-guide.md "TextLink")', () => {
+    renderWithMantine(<OpenDataAttribution />);
+    for (const name of ['powered by NationalRail', NRIL_STATEMENT]) {
+      const link = screen.getByRole('link', { name });
+      expect(link).toHaveAttribute('data-text-link', 'always');
+      expect(link).toHaveAttribute('data-text-link-tone', 'inherit');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    }
   });
 
   it("carries the Knowledgebase Stations feed's required attribution verbatim, concatenated onto the Darwin line", () => {
@@ -63,7 +73,7 @@ describe('OpenDataAttribution', () => {
     // product, so this wording applies, and the operator's 2026-09-27
     // decision treats the RDM terms as permitting current use: final.
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByText('powered by NationalRail');
+    const link = screen.getByRole('link', { name: 'powered by NationalRail' });
     expect(link.parentElement).toHaveTextContent('powered by NationalRail (Train Information Services Ltd)');
   });
 
@@ -79,7 +89,7 @@ describe('OpenDataAttribution', () => {
   // stay at `xs`, since they carry no link of their own.
   it('renders the NationalRail attribution line (the one with a link) at sm, not the xs plain-text lines use', () => {
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByText('powered by NationalRail');
+    const link = screen.getByRole('link', { name: 'powered by NationalRail' });
     expect(link.parentElement).toHaveStyle({ '--text-fz': 'var(--mantine-font-size-sm)' });
     expect(screen.getByText('Powered by TfL Open Data')).not.toHaveStyle({
       '--text-fz': 'var(--mantine-font-size-sm)',

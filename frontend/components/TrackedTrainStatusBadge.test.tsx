@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { badgeTextTransform } from '@/test/badge';
 import { TrackedTrainStatusBadge } from './TrackedTrainStatusBadge';
 
 // Direct unit tests for the component review §2.9 asked to be shared
@@ -15,7 +16,7 @@ describe('TrackedTrainStatusBadge', () => {
     renderWithMantine(
       <TrackedTrainStatusBadge train={{ resolutionStatus: 'pending', status: null, delayMinutes: null }} />,
     );
-    expect(screen.getByText('Pending match')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('Pending match'))).toBe('none');
   });
 
   it('falls back to the raw resolution-status token when it has no label', () => {
@@ -37,15 +38,15 @@ describe('TrackedTrainStatusBadge', () => {
     renderWithMantine(
       <TrackedTrainStatusBadge train={{ resolutionStatus: 'resolved', status: 'en_route', delayMinutes: 5 }} />,
     );
-    expect(screen.getByText('En route')).toBeInTheDocument();
-    expect(screen.getByText('5m late')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('En route'))).toBe('none');
+    expect(badgeTextTransform(screen.getByText('5m late'))).toBe('none');
   });
 
   it('renders "On time" rather than a delay badge when delayMinutes is zero', () => {
     renderWithMantine(
       <TrackedTrainStatusBadge train={{ resolutionStatus: 'resolved', status: 'completed', delayMinutes: 0 }} />,
     );
-    expect(screen.getByText('On time')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('On time'))).toBe('none');
   });
 
   it('renders no status badge when resolved with a null journey status', () => {

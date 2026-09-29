@@ -368,7 +368,9 @@ describe('CustomLineForm', () => {
   // (the route 404s a non-owner before this form ever renders).
   it('shows the account-needed hint only when creating, not editing', () => {
     renderWithProvider();
-    expect(screen.getByText(/Creating a line needs a Distant Signal account/)).toBeInTheDocument();
+    const hint = screen.getByText(/Creating a line needs a Distant Signal account/);
+    // A product notice: grape, not blue (docs/style-guide.md "Alerts").
+    expect(hint.closest('.mantine-Alert-root')).toHaveStyle({ '--alert-bg': 'var(--mantine-color-grape-light)' });
 
     cleanup();
     renderWithProvider({ existingLine });

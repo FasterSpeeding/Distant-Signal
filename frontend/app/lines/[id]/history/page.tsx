@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { Alert, Divider, Paper, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text, Title } from '@mantine/core';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
+import { SectionTitle } from '@/components/SectionTitle';
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
@@ -371,14 +372,12 @@ export async function HistoryResults({
           {/* order={2}, not 3: this page's only other heading is the
               `History: {name}` h1 at :74 -- there is no h2 between them,
               so an h3 here skipped a level (axe `heading-order`).
-              `size="h5"` is unchanged, so this is a tag-only change with
-              no visual effect. Both TabsPanels are mounted at once
+              `SectionTitle` draws it at the app-wide section size. Both
+              TabsPanels are mounted at once
               (Mantine Tabs keepMounted defaults to true), so this and the
               Trends tab's chart headings both have to land at h2 for the
               document to be skip-free either way the tabs are read. */}
-          <Title order={2} size="h5">
-            {formatDate(day.spans[0].to)}
-          </Title>
+          <SectionTitle>{formatDate(day.spans[0].to)}</SectionTitle>
           <Divider />
           {day.spans.map((span) => (
             <div className="issueRow" key={`${span.reason}-${span.from}`}>

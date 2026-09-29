@@ -1,6 +1,7 @@
 import { screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { renderWithMantine } from '@/test/render';
+import { badgeTextTransform } from '@/test/badge';
 import { JourneyTimeline, isGenuineCallingPoint } from './JourneyTimeline';
 import type { JourneyStop } from '@/lib/types';
 
@@ -103,7 +104,7 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(screen.getByText('4m late')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('4m late'))).toBe('none');
   });
 
   it('shows an early badge for a negative delayMinutes', () => {
@@ -118,7 +119,7 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(screen.getByText('1m early')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('1m early'))).toBe('none');
   });
 
   it('shows an on-time badge for a zero delayMinutes', () => {
@@ -133,7 +134,7 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(screen.getByText('On time')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('On time'))).toBe('none');
   });
 
   it('has a Platform column header when a stop has a known platform', () => {

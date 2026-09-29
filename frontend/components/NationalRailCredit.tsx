@@ -1,4 +1,5 @@
 import { Text } from '@mantine/core';
+import { TextLink } from './TextLink';
 
 export const NATIONAL_RAIL_URL = 'https://www.nationalrail.co.uk';
 
@@ -23,9 +24,16 @@ export function NationalRailCredit() {
   return (
     <Text size="xs" c="dimmed" data-nre-credit>
       Live departure data{' '}
-      <a href={NATIONAL_RAIL_URL} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+      <TextLink
+        href={NATIONAL_RAIL_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        underline="always"
+        inline
+        tone="inherit"
+      >
         powered by NationalRail
-      </a>
+      </TextLink>
       {' (Train Information Services Ltd)'}
     </Text>
   );

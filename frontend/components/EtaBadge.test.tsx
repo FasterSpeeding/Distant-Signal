@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { badgeTextTransform } from '@/test/badge';
 import { EtaBadge } from './EtaBadge';
 
 describe('EtaBadge', () => {
@@ -21,12 +22,12 @@ describe('EtaBadge', () => {
 
   it('shows a distinct badge for a darwin-estimated ETA', () => {
     renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="darwin-estimated" />);
-    expect(screen.getByText('Live departure board')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('Live departure board'))).toBe('none');
   });
 
   it('shows a distinct badge for a trust-propagated ETA', () => {
     renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" />);
-    expect(screen.getByText('Estimate (Network Rail)')).toBeInTheDocument();
+    expect(badgeTextTransform(screen.getByText('Estimate (Network Rail)'))).toBe('none');
   });
 
   it('the two sources render visibly different badge text', () => {

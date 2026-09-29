@@ -1,4 +1,5 @@
 import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
@@ -195,7 +196,7 @@ export default async function MyTrackedTrainsPage() {
         <>
           {journeyRows.length > 0 && (
             <Stack gap="xs">
-              <Title order={2}>Your journeys</Title>
+              <SectionTitle>Your journeys</SectionTitle>
               {journeyRows.map((journey) => (
                 <JourneyListRow key={journey.id} journey={journey} />
               ))}
@@ -233,7 +234,7 @@ export default async function MyTrackedTrainsPage() {
           )}
           {unattachedTickets.length > 0 && (
             <Stack gap="md">
-              <Title order={2}>Tickets not yet attached to a train</Title>
+              <SectionTitle>Tickets not yet attached to a train</SectionTitle>
               <Text size="sm" c="dimmed">
                 Extraction can&apos;t tell us exactly which service one of these tickets is for. Attach it to one of
                 your tracked trains below, or track the right one.

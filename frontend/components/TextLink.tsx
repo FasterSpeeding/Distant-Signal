@@ -29,12 +29,24 @@ import { Text } from '@mantine/core';
  * across three lines instead of one. Pair `inline` with
  * `underline="always"` at those call sites -- the two problems (missing
  * non-colour cue, broken sentence flow) share the same "this link sits in
- * body text" root cause. */
+ * body text" root cause.
+ *
+ * External and `mailto:` hrefs (anything with a URL scheme) render a plain
+ * `<a>` rather than `next/link`: there is no client route to prefetch or
+ * transition to, and the styling hooks are the same either way.
+ *
+ * `tone="inherit"` is for credit and licence links sitting inside dimmed
+ * or otherwise coloured text (the footer's data credits, `/attribution`'s
+ * licence statements): the link takes its parent's colour and font instead
+ * of the anchor grape, and relies on `underline="always"` alone as its cue.
+ * Everywhere else, leave the default `'anchor'`. docs/style-guide.md
+ * ("TextLink") records the rule. */
 export function TextLink({
   href,
   children,
   underline = 'hover',
   inline = false,
+  tone = 'anchor',
   size,
   lh,
   target,
@@ -112,26 +124,48 @@ export function TextLink({
   // shape -- N identically-worded links whose distinguishing text is always
   // a sibling `<Text>` -- so they share one prop rather than two.
   ariaLabel?: string;
+  tone?: 'anchor' | 'inherit';
 }) {
-  return (
-    // The undecorated resting state comes from the stylesheet rather than
-    // the `style={{ textDecoration: 'none' }}` these call sites used to
-    // carry: an inline style outranks every selector, so a hover rule
-    // would never have got a look in.
-    <Link
-      href={href}
-      data-text-link={underline}
-      target={target}
-      rel={rel}
-      prefetch={prefetch}
-      onClick={onClick}
-      onKeyDown={onKeyDown}
-      title={title}
-      aria-label={ariaLabel}
+  const inheritTone = tone === 'inherit';
+  const text = (
+    <Text
+      c={inheritTone ? 'inherit' : ANCHOR_COLOR}
+      inherit={inheritTone}
+      component={inline ? 'span' : undefined}
+      size={size}
+      lh={lh}
     >
-      <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined} size={size} lh={lh}>
-        {children}
-      </Text>
+      {children}
+    </Text>
+  );
+  // The undecorated resting state comes from the stylesheet rather than
+  // the `style={{ textDecoration: 'none' }}` these call sites used to
+  // carry: an inline style outranks every selector, so a hover rule
+  // would never have got a look in.
+  const anchorProps = {
+    href,
+    'data-text-link': underline,
+    'data-text-link-tone': inheritTone ? 'inherit' : undefined,
+    target,
+    rel,
+    onClick,
+    onKeyDown,
+    title,
+    'aria-label': ariaLabel,
+  };
+  if (HAS_URL_SCHEME.test(href)) {
+    return <a {...anchorProps}>{text}</a>;
+  }
+  return (
+    <Link {...anchorProps} prefetch={prefetch}>
+      {text}
     </Link>
   );
 }
+
+/** `https:`, `mailto:`, `tel:` and the like -- not a path or `#fragment`. */
+const HAS_URL_SCHEME = /^[a-z][a-z\d+.-]*:/i;
+
+/** The default link colour. `AppNavBar`'s auth Suspense fallback must match
+ * it (`AppNavBar.test.tsx` compares the two in source). */
+const ANCHOR_COLOR = 'var(--mantine-color-anchor)';

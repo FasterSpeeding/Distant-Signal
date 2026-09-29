@@ -531,14 +531,14 @@ export function IncidentSearchForm({
                  * operator-wide incident on a large TOC genuinely matches a
                  * dozen-plus catalogue lines. */}
                 {(row.affectedLines ?? []).slice(0, MAX_LINE_BADGES).map((id) => (
-                  <Badge key={id} variant="outline" color="blue" title="Affected line">
+                  <Badge key={id} variant="outline" color="gray" title="Affected line">
                     {lineNamesById.get(id) ?? id}
                   </Badge>
                 ))}
                 {(row.affectedLines ?? []).length > MAX_LINE_BADGES && (
                   <Badge
                     variant="outline"
-                    color="blue"
+                    color="gray"
                     /* The names themselves, not a generic label: collapsing
                      * must hide them from the layout, not lose them. */
                     title={(row.affectedLines ?? [])

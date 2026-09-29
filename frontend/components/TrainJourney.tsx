@@ -153,7 +153,7 @@ function StatusMessage({
             {destination ? ` to ${destination}` : ''}
           </Text>
           <Tooltip label="This is the booked timetable, not a live report yet. It may change if Network Rail issues a late alteration, and we'll update this automatically once live tracking begins.">
-            <Badge color="gray" variant="light">
+            <Badge color="gray" variant="light" tt="none">
               As scheduled
             </Badge>
           </Tooltip>

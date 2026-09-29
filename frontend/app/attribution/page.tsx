@@ -1,6 +1,7 @@
 import { Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { OpenDataAttributionDetails } from '@/components/OpenDataAttribution';
+import { READING_PAGE_WIDTH } from '@/components/LegalPage';
 
 // Render per request so the footer's legal links (lib/legal.ts, read at
 // request time) are right on this page too. Without it Next prerenders this
@@ -23,7 +24,7 @@ export const metadata: Metadata = {
  * `components/OpenDataAttribution.tsx` beside the footer's short version. */
 export default function AttributionPage() {
   return (
-    <Stack p="lg" gap="lg" maw={760}>
+    <Stack p="lg" gap="lg" maw={READING_PAGE_WIDTH}>
       <Title order={1}>Data sources and licences</Title>
       <OpenDataAttributionDetails />
     </Stack>

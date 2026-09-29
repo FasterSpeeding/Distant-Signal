@@ -26,10 +26,11 @@ import type { PlatformStatus } from '@/lib/types';
  * delay badge sits next to on the same departure row ("+11 MIN") --
  * two adjacent orange badges for two unrelated facts ("where to stand"
  * vs. "how late") read at a glance as "two warnings about the same
- * thing". `blue` is neutral everywhere else in this app (see
- * `JourneyStatusBadge`'s `unmatched` colour), leaving orange/red free to
- * mean lateness/cancellation only, the one axis the rest of the app
- * already reserves them for.
+ * thing". `blue` is the app's colour for a planned or changed
+ * arrangement -- not a fault, but different from the timetable (planned
+ * closures, "Planned Work"; docs/style-guide.md "Semantic roles") --
+ * leaving orange/red free to mean lateness/cancellation only, the one
+ * axis the rest of the app already reserves them for.
  *
  * A `platformStatus` of `cancelled` (a journey stop whose own board row
  * Darwin lists as cancelled: the platform it was allocated, but the train

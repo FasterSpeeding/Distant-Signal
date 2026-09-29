@@ -245,3 +245,28 @@ schedule fact, not a severity — and the review separately noted that a
 line whose only issues are planned currently presents as disrupted. If
 that lands differently, revisit the whole `GROUP_COLOR` map as its own
 piece of work, not as a rider on this one.
+
+> **Decision (2026-09-29): `planned` stays blue, and blue now means only
+> that.** By September blue had picked up five meanings: planned severity,
+> "needs a train picked" (journey rollup and the open-leg card), a changed
+> platform, general info `Alert`s, and "Affected line" tags in the incident
+> archive. The style-guide consistency pass narrowed it to one: *a planned
+> or changed arrangement, not a fault* — planned-severity badges
+> (`GROUP_COLOR.planned`), the incident "Planned Work" badge, and a changed
+> platform (`PlatformBadge`). Everything else moved:
+>
+> - "Needs a train picked" (`JourneyStatusBadge` `unmatched`, the
+>   `JourneyLegCard` open-leg accent) → grape, the app's action colour. It
+>   is the one journey state that asks the user to do something, and
+>   yellow/orange are already "Delayed"/"Not stopping" in the same rollup.
+> - Informational `Alert`s (Delay Repay estimate and rollup, Anthropic key
+>   note, custom-line login hint) → grape, the product-notice colour the
+>   connect-claude notice already used.
+> - "Affected line" tags → gray outline, like "Affected station".
+> - The trip planner's "N changes" badge → gray (a neutral count).
+>
+> Moving `planned` itself off blue (e.g. to gray, treating it as a schedule
+> fact rather than a severity) remains possible but was not done: it would
+> change the severity palette this spec's non-goal protects, and nothing in
+> the September reviews asked for it. Recorded in `docs/style-guide.md`
+> ("Semantic roles").

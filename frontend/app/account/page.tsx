@@ -1,4 +1,5 @@
 import { Button, Card, Stack, Text, Title } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import { getSessionOrLoggedOut } from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
@@ -43,9 +44,7 @@ export default async function AccountPage() {
 
       <Card withBorder component="section" aria-labelledby="download-heading">
         <Stack gap="sm" align="flex-start">
-          <Title order={2} size="h3" id="download-heading">
-            Download my data
-          </Title>
+          <SectionTitle id="download-heading">Download my data</SectionTitle>
           <Text>
             A JSON file of everything Distant Signal holds about you: your account details, tracked trains, tickets,
             journeys, templates, pins, custom lines, groups, share links, notification subscriptions and sessions.
@@ -58,9 +57,7 @@ export default async function AccountPage() {
 
       <Card withBorder component="section" aria-labelledby="retention-heading">
         <Stack gap="xs">
-          <Title order={2} size="h3" id="retention-heading">
-            How long we keep it
-          </Title>
+          <SectionTitle id="retention-heading">How long we keep it</SectionTitle>
           <Text size="sm">
             Tracked trains, tickets and journeys are deleted automatically 18 months after the day of travel. Journey
             templates, groups, pins and custom lines are kept until you delete them or your account.
@@ -73,9 +70,7 @@ export default async function AccountPage() {
 
       <Card withBorder component="section" aria-labelledby="delete-heading">
         <Stack gap="sm" align="flex-start">
-          <Title order={2} size="h3" id="delete-heading">
-            Delete my account
-          </Title>
+          <SectionTitle id="delete-heading">Delete my account</SectionTitle>
           <Text>
             Deletes your account and all of the data above straight away. You&apos;ll be asked to confirm first.
           </Text>

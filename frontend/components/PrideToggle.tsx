@@ -30,20 +30,12 @@ const NEXT_MODE: Record<PrideMode, PrideMode> = {
   lesbian: 'off',
 };
 
-/** CSS-striped swatch gradients, extracted from the flag definitions in
- * `globals.css`. Each gradient uses the same colour stops as the
- * corresponding `body[data-pride='...']::before` rule for consistency. */
-const SWATCH_GRADIENTS: Record<PrideMode, string> = {
-  off: 'transparent',
-  rainbow: 'linear-gradient(to right, #e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303)',
-  trans: 'linear-gradient(to right, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa)',
-  nonbinary: 'linear-gradient(to right, #fcf434, #ffffff, #9c59d1, #2c2c2c, #fcf434)',
-  bisexual: 'linear-gradient(to right, #d60270 0%, #d60270 40%, #9b4f96 40%, #9b4f96 60%, #0038a8 60%, #0038a8 100%)',
-  pansexual: 'linear-gradient(to right, #ff218c, #ffd800, #21b1ff, #ff218c)',
-  asexual: 'linear-gradient(to right, #000000, #a3a3a3, #ffffff, #800080, #000000)',
-  sapphic: 'linear-gradient(to right, #fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8, #fd8ba8)',
-  lesbian: 'linear-gradient(to right, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00)',
-};
+/** The button's striped swatch: the same `--ds-pride-*` gradient
+ * `globals.css` paints the flag bars and site title with, so there is one
+ * copy of each flag's stripes. */
+function swatchGradient(mode: Exclude<PrideMode, 'off'>): string {
+  return `var(--ds-pride-${mode})`;
+}
 
 const SPARKLES: Record<Exclude<PrideMode, 'off'>, [string, string, string]> = {
   rainbow: ['✨', '💖', '✨'],
@@ -146,7 +138,7 @@ export function PrideToggle() {
               display: 'inline-block',
               width: '16px',
               height: '4px',
-              background: SWATCH_GRADIENTS[displayedMode],
+              background: swatchGradient(displayedMode),
               borderRadius: '1px',
             }}
           />

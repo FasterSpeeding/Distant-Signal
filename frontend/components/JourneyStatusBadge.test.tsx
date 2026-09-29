@@ -76,6 +76,9 @@ describe('JourneyStatusBadge', () => {
     const badge = screen.getByText('1 leg needs a train');
     expect(badge).toBeInTheDocument();
     expect(badge.closest('a')).toHaveAttribute('href', '#leg-2');
+    // Grape (the action colour), not blue -- blue means a planned or
+    // changed arrangement (docs/style-guide.md "Semantic roles").
+    expect(badge.closest('.mantine-Badge-root')).toHaveStyle({ '--badge-bg': 'var(--mantine-color-grape-light)' });
   });
 
   it('shows "N legs need a train" (plural) and links to the FIRST unmatched leg when several are', () => {

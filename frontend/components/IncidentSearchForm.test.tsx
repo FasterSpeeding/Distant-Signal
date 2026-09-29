@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { IncidentSearchForm } from './IncidentSearchForm';
 import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
@@ -173,6 +173,11 @@ describe('IncidentSearchForm', () => {
     const list = document.querySelector('[data-incident-results]') as HTMLElement;
     expect(list.textContent).toContain('South Western Main Line');
     expect(list.textContent).toContain('retired-line');
+    // Neutral gray tags like the affected-station ones, not blue (blue
+    // means planned: the "Planned Work" badge on the same row).
+    expect(within(list).getAllByTitle('Affected line')[0].closest('.mantine-Badge-root')).toHaveStyle({
+      '--badge-color': 'var(--mantine-color-gray-outline)',
+    });
   });
 
   it('collapses a long affected-lines list into a "+N more" badge', async () => {

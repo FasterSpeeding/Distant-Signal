@@ -653,6 +653,22 @@ small platform glyph, reserving orange for lateness. If orange must stay for
 "changed", move the platform badge to its own line under the title at small
 widths.
 
+> **Status (2026-09-29): implemented, without the glyph.** `PlatformBadge`
+> renders an unchanged platform gray and a changed one blue ("Platform 6
+> (changed from 4)"), both light variant and sentence case (5abc3ab9); blue
+> is the app's colour for a planned or changed arrangement
+> (`2026-08-18-grape-theme-design.md`, decision of 2026-09-29).
+>
+> A third state, not covered by any spec until now (dc1132af): when Darwin
+> lists a journey stop's board row as **cancelled** (`platformStatus:
+> 'cancelled'`), the badge is red, the platform text is struck through
+> (`<s>`), a `VisuallyHidden` " (cancelled)" completes the text for screen
+> readers ("Platform 2 (cancelled)"), and a `title` tooltip reads
+> "Cancelled: the train no longer calls at this platform". Red because it is
+> the app's cancellation colour; the strike-through and the words keep it
+> from being colour-only (WCAG 1.4.1). An unknown status renders as the
+> normal badge. See `docs/style-guide.md` ("PlatformBadge").
+
 ### I21 · Window mode is under-introduced, jargon-labelled, and not linkable
 **Source:** [JC] §2.1, rec. 2.
 **Screenshots:** `track-pick-mode-*.png`, `track-window-mode-*.png`.
