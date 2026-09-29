@@ -218,6 +218,7 @@ mod session_revocation_db_tests {
             internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
+            chatbot_access: crate::data::config::ChatbotAccessMode::Group,
             admin_group: admin_group.to_string(),
             sso_issuer_url: issuer.to_string(),
             sso_client_id: CLIENT_ID.to_string(),

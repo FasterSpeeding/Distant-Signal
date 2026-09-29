@@ -33,6 +33,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 use crate::app::App;
+use crate::data::config::ChatbotAccessMode;
 
 /// `axum::middleware::from_fn_with_state` handler enforcing internal-service
 /// OAuth2 auth. Applied only to `private_router()` -- `public_router()`
@@ -479,6 +480,10 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
 /// ownership check hiding a secret resource, the feature's existence isn't
 /// a secret, so a logged-in-but-not-in-group user gets a plain `403`
 /// "not available for your account" instead.
+///
+/// `ServiceArguments::chatbot_access` (`CHATBOT_ACCESS`) can switch the group
+/// check off (`authenticated`): every logged-in user then passes, and the
+/// `401` for logged-out requests is unchanged.
 pub struct ChatbotAuthorizedUser(pub AuthenticatedUser);
 
 /// Does `groups` (a resolved user's own group memberships) include the
@@ -487,8 +492,15 @@ pub struct ChatbotAuthorizedUser(pub AuthenticatedUser);
 /// from_request_parts` (the only path that produces a real `groups` list)
 /// always hits `sessions`/`users`, but this check itself needs neither
 /// those tables nor the removed `chatbot_allowed_users` one.
-fn has_chatbot_access(groups: &[String], required_group: &str) -> bool {
-    groups.iter().any(|group| group == required_group)
+///
+/// In [`ChatbotAccessMode::Authenticated`] every resolved user passes and
+/// `required_group` is ignored; the `401` for "no session at all" happens
+/// before this is ever called, in both modes.
+fn has_chatbot_access(groups: &[String], mode: ChatbotAccessMode, required_group: &str) -> bool {
+    match mode {
+        ChatbotAccessMode::Authenticated => true,
+        ChatbotAccessMode::Group => groups.iter().any(|group| group == required_group),
+    }
 }
 
 impl FromRequestParts<App> for ChatbotAuthorizedUser {
@@ -498,7 +510,11 @@ impl FromRequestParts<App> for ChatbotAuthorizedUser {
         let user = AuthenticatedUser::from_request_parts(parts, app)
             .await
             .map_err(|(status, msg)| (status, axum::Json(serde_json::json!({ "error": msg }))))?;
-        if !has_chatbot_access(&user.groups, &app.config.chatbot_access_group) {
+        if !has_chatbot_access(
+            &user.groups,
+            app.config.chatbot_access,
+            &app.config.chatbot_access_group,
+        ) {
             return Err((
                 axum::http::StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({ "error": "chatbot_not_available" })),
@@ -518,19 +534,64 @@ mod chatbot_access_tests {
             "mcp-users".to_string(),
             "distant-signal-chatbot-users".to_string(),
         ];
-        assert!(has_chatbot_access(&groups, "distant-signal-chatbot-users"));
+        assert!(has_chatbot_access(
+            &groups,
+            ChatbotAccessMode::Group,
+            "distant-signal-chatbot-users"
+        ));
     }
 
     #[test]
     fn a_user_whose_groups_does_not_contain_the_configured_group_is_denied_access() {
         let groups = vec!["mcp-users".to_string()];
-        assert!(!has_chatbot_access(&groups, "distant-signal-chatbot-users"));
+        assert!(!has_chatbot_access(
+            &groups,
+            ChatbotAccessMode::Group,
+            "distant-signal-chatbot-users"
+        ));
     }
 
     #[test]
     fn a_user_with_no_groups_at_all_is_denied_access() {
         let groups: Vec<String> = Vec::new();
-        assert!(!has_chatbot_access(&groups, "distant-signal-chatbot-users"));
+        assert!(!has_chatbot_access(
+            &groups,
+            ChatbotAccessMode::Group,
+            "distant-signal-chatbot-users"
+        ));
+    }
+}
+
+#[cfg(test)]
+mod chatbot_access_authenticated_mode_tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_mode_grants_a_user_with_no_groups_at_all() {
+        assert!(has_chatbot_access(
+            &[],
+            ChatbotAccessMode::Authenticated,
+            "distant-signal-chatbot-users"
+        ));
+    }
+
+    #[test]
+    fn authenticated_mode_ignores_an_empty_group_setting() {
+        let groups = vec!["mcp-users".to_string()];
+        assert!(has_chatbot_access(
+            &groups,
+            ChatbotAccessMode::Authenticated,
+            ""
+        ));
+    }
+
+    /// Unchanged meaning: in group mode an empty group grants nobody, not
+    /// everybody -- `authenticated` is the only way to open it up.
+    #[test]
+    fn group_mode_with_an_empty_group_grants_nobody() {
+        let groups = vec!["mcp-users".to_string()];
+        assert!(!has_chatbot_access(&groups, ChatbotAccessMode::Group, ""));
+        assert!(!has_chatbot_access(&[], ChatbotAccessMode::Group, ""));
     }
 }
 
@@ -937,6 +998,7 @@ mod route_scoping_tests {
             internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
+            chatbot_access: crate::data::config::ChatbotAccessMode::Group,
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),

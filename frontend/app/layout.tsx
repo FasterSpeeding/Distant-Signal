@@ -136,7 +136,7 @@ export const viewport: Viewport = {
 // `.catch()` of its own.
 async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
   const [session, chatAccess] = await Promise.all([getSessionOrLoggedOut(), getChatbotAccess()]);
-  return <AppNavBar session={session} freshness={freshness} chatAllowed={chatAccess === 'allowed'} />;
+  return <AppNavBar session={session} freshness={freshness} chatAllowed={chatAccess.status === 'allowed'} />;
 }
 
 /** Because the call below is awaited before RootLayout emits any HTML, an

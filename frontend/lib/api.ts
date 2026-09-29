@@ -563,6 +563,15 @@ export async function getSessionOrLoggedOut(): Promise<SessionInfo> {
   }
 }
 
+/** Who the api lets into the embedded chatbot (`CHATBOT_ACCESS`, chart
+ * value `api.chatbotAccess`): `group` -- only members of its access group;
+ * `authenticated` -- every logged-in user. Learnt from the api's own
+ * `GET /public/chatbot/access` answer, never from a frontend setting. */
+export type ChatbotAccessMode = 'group' | 'authenticated';
+
+export type ChatbotAccess =
+  { status: 'allowed'; mode: ChatbotAccessMode } | { status: 'unauthenticated' } | { status: 'forbidden' };
+
 /** `/chat`'s own three-state page-load gate (embedded-chatbot-option-b
  * plan, Task 5 Step 1 -- `getChatbotAccess()`'s own design note there
  * flagged extending `errorForResponse` with a real `ApiForbiddenError`
@@ -571,22 +580,26 @@ export async function getSessionOrLoggedOut(): Promise<SessionInfo> {
  * "not logged in" convention with the allowlist's own third state, since
  * two booleans (`ApiUnauthorizedError`/`ApiForbiddenError`) collapse
  * neither into the other, unlike every other 401-only gate in this file. */
-export async function getChatbotAccess(): Promise<'allowed' | 'unauthenticated' | 'forbidden'> {
+export async function getChatbotAccess(): Promise<ChatbotAccess> {
   try {
-    await fetchJson(`${baseUrl()}/public/chatbot/access`, {
+    const body = await fetchJson<{ access?: unknown } | null>(`${baseUrl()}/public/chatbot/access`, {
       cache: 'no-store',
       ...(await cookieForwardInit()),
     });
-    return 'allowed';
+    // An api that predates `CHATBOT_ACCESS` sends no `access` field; it can
+    // only have been gating on the group, so anything but an explicit
+    // "authenticated" reads as `group` (keeps the "only accounts that have
+    // been given access" notes -- the conservative wording).
+    return { status: 'allowed', mode: body?.access === 'authenticated' ? 'authenticated' : 'group' };
   } catch (err) {
-    if (err instanceof ApiUnauthorizedError) return 'unauthenticated';
-    if (err instanceof ApiForbiddenError) return 'forbidden';
+    if (err instanceof ApiUnauthorizedError) return { status: 'unauthenticated' };
+    if (err instanceof ApiForbiddenError) return { status: 'forbidden' };
     // Any other failure (network error, 5xx) is treated the same as "not
     // available" -- same fail-closed posture orchestrator/'s own
     // checkChatbotAccess (Task 3) takes for an ambiguous response: never
     // render the chat UI on an answer this page can't positively confirm
     // as "allowed".
-    return 'forbidden';
+    return { status: 'forbidden' };
   }
 }
 

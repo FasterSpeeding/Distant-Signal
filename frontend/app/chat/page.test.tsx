@@ -22,7 +22,7 @@ describe('ChatPage', () => {
   });
 
   it('renders a login prompt for an unauthenticated visitor', async () => {
-    vi.mocked(api.getChatbotAccess).mockResolvedValue('unauthenticated');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'unauthenticated' });
     renderWithMantine(await ChatPage());
     // Two matches now: the server-rendered LoginLink sentence and the
     // AutoOpenLoginPrompt modal's own copy of it -- see the dedicated
@@ -31,7 +31,7 @@ describe('ChatPage', () => {
   });
 
   it('unauthenticated: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
-    vi.mocked(api.getChatbotAccess).mockResolvedValue('unauthenticated');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'unauthenticated' });
     renderWithMantine(await ChatPage());
     const link = screen.getByRole('link', {
       name: 'Sign in to ask about live departures, disruptions and journeys',
@@ -40,7 +40,7 @@ describe('ChatPage', () => {
   });
 
   it('renders a "not available" message for a logged-in, non-allowlisted user -- not a 404', async () => {
-    vi.mocked(api.getChatbotAccess).mockResolvedValue('forbidden');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'forbidden' });
     renderWithMantine(await ChatPage());
     expect(screen.getByText(/Not available for your account yet/)).toBeInTheDocument();
   });
@@ -49,15 +49,16 @@ describe('ChatPage', () => {
   // server has its own access group, separate from the chat allowlist.
   it('offers the add-to-your-own-assistant section to a forbidden user when the MCP URL is set', async () => {
     vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
-    vi.mocked(api.getChatbotAccess).mockResolvedValue('forbidden');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'forbidden' });
     renderWithMantine(await ChatPage());
     expect(screen.getByRole('heading', { name: 'Use Distant Signal in your own assistant' })).toBeInTheDocument();
     expect(screen.getByLabelText('MCP server URL')).toHaveValue('https://mcp.example.com/mcp');
+    expect(screen.getByText(/Only accounts that have been given access/)).toBeInTheDocument();
   });
 
   it('forbidden with no MCP URL: no add-to-assistant section and no link to nowhere', async () => {
     vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', '');
-    vi.mocked(api.getChatbotAccess).mockResolvedValue('forbidden');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'forbidden' });
     renderWithMantine(await ChatPage());
     expect(screen.getByText(/only available to a limited allowlist/)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Use Distant Signal in your own assistant' })).not.toBeInTheDocument();
@@ -66,16 +67,34 @@ describe('ChatPage', () => {
 
   it('renders the ChatPanel for an allowed user', async () => {
     vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
-    vi.mocked(api.getChatbotAccess).mockResolvedValue('allowed');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'group' });
     renderWithMantine(await ChatPage());
     expect(screen.getByPlaceholderText(/next train/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Use Distant Signal in your own assistant' })).toBeInTheDocument();
   });
 
+  it('group mode: keeps the "only accounts that have been given access" note for an allowed user', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'group' });
+    renderWithMantine(await ChatPage());
+    expect(screen.getByText(/Only accounts that have been given access/)).toBeInTheDocument();
+  });
+
+  it('authenticated mode: any logged-in user gets the ChatPanel and no access-restriction notes', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'authenticated' });
+    renderWithMantine(await ChatPage());
+    expect(screen.getByPlaceholderText(/next train/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Use Distant Signal in your own assistant' })).toBeInTheDocument();
+    expect(screen.queryByText(/Only accounts that have been given access/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/allowlist/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Not available for your account/)).not.toBeInTheDocument();
+  });
+
   // FE-2: the MCP URL is read at request time on the server.
   it('says chat is not configured, instead of mounting ChatPanel, when the MCP URL is unset', async () => {
     vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', '');
-    vi.mocked(api.getChatbotAccess).mockResolvedValue('allowed');
+    vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'group' });
     renderWithMantine(await ChatPage());
     expect(screen.getByText(/not configured on this deployment/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/next train/)).not.toBeInTheDocument();
