@@ -80,7 +80,7 @@ export function EtaBadge({
     <Group gap={6} wrap="nowrap">
       <Text size="sm">ETA {formatTime(etaNext)}</Text>
       <Tooltip label={tooltip}>
-        <Badge color={etaSource === 'darwin-estimated' ? 'teal' : 'gray'} variant="light">
+        <Badge color={etaSource === 'darwin-estimated' ? 'teal' : 'gray'} variant="light" tt="none">
           {label}
         </Badge>
       </Tooltip>

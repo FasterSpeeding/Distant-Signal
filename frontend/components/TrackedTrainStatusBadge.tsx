@@ -39,7 +39,7 @@ export function TrackedTrainStatusBadge({
   // backend can't honestly support that distinction today.
   if (train.resolutionStatus !== 'resolved') {
     return (
-      <Badge color={train.resolutionStatus === 'unresolved' ? 'red' : 'gray'} variant="light">
+      <Badge color={train.resolutionStatus === 'unresolved' ? 'red' : 'gray'} variant="light" tt="none">
         {STATUS_LABELS[train.resolutionStatus] ?? train.resolutionStatus}
       </Badge>
     );
@@ -47,12 +47,12 @@ export function TrackedTrainStatusBadge({
   return (
     <Group gap={6} wrap="nowrap">
       {train.status && (
-        <Badge color={train.status === 'cancelled' ? 'red' : 'gray'} variant="light">
+        <Badge color={train.status === 'cancelled' ? 'red' : 'gray'} variant="light" tt="none">
           {STATUS_LABELS[train.status] ?? train.status}
         </Badge>
       )}
       {train.delayMinutes !== null && (
-        <Badge color={train.delayMinutes > 0 ? 'orange' : 'green'} variant="light">
+        <Badge color={train.delayMinutes > 0 ? 'orange' : 'green'} variant="light" tt="none">
           {train.delayMinutes > 0 ? `${train.delayMinutes}m late` : 'On time'}
         </Badge>
       )}
