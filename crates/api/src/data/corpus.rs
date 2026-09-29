@@ -42,8 +42,8 @@ pub struct CorpusLocation {
 /// tuples a month are autovacuum's job.
 ///
 /// The derived crosswalk (`corpus_tiploc_crs`/`corpus_stanox_crs`) is
-/// rebuilt from `locations` in the same transaction, so it always matches
-/// the stored set.
+/// rebuilt from `locations` in the same transaction, restricted to the
+/// current `stations`, so it always matches the stored set.
 ///
 /// Callers must reject an empty `locations` first (the route does): an
 /// empty load would wipe the table.
@@ -112,7 +112,7 @@ pub async fn replace_corpus_locations(
     .bind(row_count)
     .execute(&mut *tx)
     .await?;
-    crate::data::corpus_crosswalk::write(&mut tx, delivered_at, &crosswalk).await?;
+    crate::data::corpus_crosswalk::write(&mut tx, delivered_at, crosswalk).await?;
     tx.commit().await?;
     Ok(inserted)
 }
