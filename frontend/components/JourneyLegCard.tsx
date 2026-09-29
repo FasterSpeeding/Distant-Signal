@@ -196,21 +196,25 @@ export function JourneyLegCard({
       // to be a plain white box with nothing in its border, background,
       // weight or icon saying "action required". Four non-colour-alone
       // cues (WCAG 1.4.1): a left accent border, a tinted surface, a bold
-      // title, and a leading glyph -- all in the blue the app already
-      // reserves for "needs attention" (`JourneyStatusBadge`'s own
-      // `unmatched` colour).
+      // title, and a leading glyph -- all in grape, the app's action
+      // colour, matching `JourneyStatusBadge`'s own `unmatched` colour
+      // (this used to be blue, which the app otherwise keeps for planned
+      // or changed arrangements -- docs/style-guide.md "Semantic roles").
+      // The glyph uses the light variant's text colour, which is measured
+      // AA against this same `grape-light` surface in both schemes.
       <Card
         withBorder
+        data-needs-action
         style={{
           borderLeftWidth: 4,
-          borderLeftColor: 'var(--mantine-color-blue-6)',
-          backgroundColor: 'var(--mantine-color-blue-light)',
+          borderLeftColor: 'var(--mantine-color-grape-filled)',
+          backgroundColor: 'var(--mantine-color-grape-light)',
         }}
       >
         <Stack gap="sm">
           <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
             <Group gap="xs" wrap="nowrap" align="flex-start">
-              <span style={{ color: 'var(--mantine-color-blue-6)', flexShrink: 0, marginTop: 2 }}>
+              <span style={{ color: 'var(--mantine-color-grape-light-color)', flexShrink: 0, marginTop: 2 }}>
                 <AlertIcon />
               </span>
               <Text fw={700}>{header}</Text>

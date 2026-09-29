@@ -26,7 +26,13 @@ const LABEL: Record<LegStatusGroup, string> = {
 const COLOR: Record<LegStatusGroup, string> = {
   good: 'green',
   awaiting: 'gray',
-  unmatched: 'blue',
+  // Grape, not blue: this is the one state that asks the user to act
+  // (pick a train), so it takes the app's action colour. Blue means a
+  // planned or changed arrangement (planned closures, a changed platform)
+  // -- docs/style-guide.md "Semantic roles". Yellow/orange are already
+  // "Delayed"/"Not stopping" in this same rollup, and two facts must not
+  // share a hue here.
+  unmatched: 'grape',
   delayed: 'yellow',
   // Orange, not red: red is already "Cancelled" one row below, and two
   // different facts must not share a hue here (the same rule the 09-22

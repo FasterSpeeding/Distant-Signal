@@ -71,7 +71,7 @@ export function ItineraryOption({
         />
         <Stack gap={4} align="flex-end">
           <Text size="sm">{itinerary.totalDurationMinutes} min</Text>
-          <Badge color={itinerary.changeCount === 0 ? 'green' : 'blue'}>
+          <Badge color={itinerary.changeCount === 0 ? 'green' : 'gray'} tt="none">
             {itinerary.changeCount} {itinerary.changeCount === 1 ? 'change' : 'changes'}
           </Badge>
           {itinerary.liveFeasible === false && (

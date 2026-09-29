@@ -55,7 +55,7 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
 
   if (estimate) {
     return (
-      <Alert color="blue" title="Estimated Delay Repay eligibility" variant="light">
+      <Alert color="grape" title="Estimated Delay Repay eligibility" variant="light">
         Estimated compensation: {estimate.percentage}% of your fare ({estimate.scheme}, {estimate.bandMinutes}+ minute
         delay). This is an estimate, not a guarantee.
       </Alert>

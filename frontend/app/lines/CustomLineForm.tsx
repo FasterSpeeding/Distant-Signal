@@ -181,7 +181,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           upgraded to an `Alert` for more visual weight per the review, not
           duplicated alongside it. */}
       {!existingLine && (
-        <Alert color="blue" variant="light">
+        <Alert color="grape" variant="light">
           Creating a line needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
           aren&apos;t already signed in.
         </Alert>

@@ -280,8 +280,13 @@ describe('JourneyLegCard', () => {
     // 2026-09-22 UX review finding 2.9: "YRK → NCL, 2026-09-22" (a raw ISO
     // date) is gone -- the open leg now uses the same `formatDate` the
     // matched card's own title does ("22 Sept 2026", not "2026-09-22").
-    expect(screen.getByText('YRK → NCL, 22 Sept 2026')).toBeInTheDocument();
+    const title = screen.getByText('YRK → NCL, 22 Sept 2026');
     expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
+    // The "needs action" card is tinted in grape, the app's action colour,
+    // not blue (reserved for planned/changed arrangements).
+    const card = title.closest<HTMLElement>('[data-needs-action]');
+    expect(card?.style.backgroundColor).toBe('var(--mantine-color-grape-light)');
+    expect(card?.style.borderLeftColor).toBe('var(--mantine-color-grape-filled)');
     // The old unconditional "Searching…" copy is gone: `JourneyLegCandidates`
     // now owns its own state text (its match-count line).
     expect(screen.queryByText('Searching for a train to track — pick one below.')).not.toBeInTheDocument();
