@@ -207,7 +207,7 @@ server), only this repository's side was checked.
 | [2026-09-23-unlisted-links-design](specs/2026-09-23-unlisted-links-design.md) | implemented | `20260923110000_unlisted_links.sql`, `frontend/app/journeys/shared/[token]/page.tsx` |
 | [2026-09-27-full-coverage-windowed-stats-design](specs/2026-09-27-full-coverage-windowed-stats-design.md) | implemented | `20260927120000_full_coverage_line_window_stats.sql`; all switches off by default |
 | [2026-09-29-trips-plan-arrive-by-avoid-design](specs/2026-09-29-trips-plan-arrive-by-avoid-design.md) | implemented | `crates/trip-planner/src/{reverse,restrictions}.rs`, `plan_trip` in `trip_planning_itinerary.rs` |
-| [2026-09-30-backup-and-observability-gaps-design](specs/2026-09-30-backup-and-observability-gaps-design.md) | not implemented (approved, implementation in progress) | Approved for implementation 2026-09-30: pgBackRest PITR with the exec grant as designed, CronJob `timeZone`, Prometheus/Grafana PVCs, sealed Postgres and SFTP secrets, cold-archive expiry (730 d, dry-run first), Loki + Alloy (7 d); Redis, MCP SQLite and schedulefeed need no backups |
+| [2026-09-30-backup-and-observability-gaps-design](specs/2026-09-30-backup-and-observability-gaps-design.md) | not implemented (approved, implementation in progress) | Approved for implementation 2026-09-30: pgBackRest PITR with the exec grant as designed, CronJob `timeZone`, Prometheus/Grafana PVCs, sealed Postgres and SFTP secrets, cold-archive expiry (730 d, dry-run first), Loki + Alloy (7 d, all namespaces, shared `logging` service); Postgres password rotated, SFTP host key and push password sealed as current values; Redis, MCP SQLite and schedulefeed need no backups |
 
 ## Plans
 

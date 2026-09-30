@@ -22,8 +22,20 @@ The user answered the open questions in the first draft of this document:
     (X2, items 1 and 5);
   - cold-archive expiry (item 3);
   - Loki + Alloy with 7-day retention (item 6).
+- **Log collection scope:** Loki + Alloy collects **all namespaces
+  cluster-wide**, as a shared service in the `logging` namespace. It is not
+  limited to `distant-signal` and `ds-mcp`.
+- **Sealing the secrets (corrected 2026-09-30):**
+  - **Postgres app password: rotated.** It is sealed as a **fresh value**,
+    not a copy of the current chart-generated one. See "Rotating the
+    Postgres password" under item 5.
+  - **SFTP credentials: not rotated.** The schedulefeed SSH host key and
+    the `dtd-push` password are sealed as their **current values**,
+    because the external DTD push client depends on them. The user seals
+    them with a pipeline from `kubectl get secret` into `kubeseal` that
+    never prints the values.
 
-The questions that are still open are listed at the end of this document.
+The one question still open is listed at the end of this document.
 
 ## Context
 
@@ -896,19 +908,40 @@ ones, and the provider's push client rejects the new host key until the
 provider's operators re-confirm it. That dependency is outside our control
 and slow.
 
-**Action:**
+**Action (decided 2026-09-30: seal the current values, don't rotate):**
 
 1. Check whether the sealed prod values already set
    `scheduleFeed.sftp.existingSecretHostKey` and an existing password
    Secret.
-2. If they don't, seal both into a Ranma-Config SealedSecret, point the
-   values at it, and keep an offline copy of the host key's fingerprint
-   (X2).
+2. If they don't, the user seals the **current** host key and `dtd-push`
+   password with a pipeline from `kubectl get secret` into `kubeseal` that
+   never prints the values. Then point the values at the new SealedSecret
+   and keep an offline copy of the host key's fingerprint (X2).
+
+Because the values don't change, the DTD push client doesn't notice. No
+provider coordination is needed. The chart only switches from its
+lookup-preserved Secret to the sealed one, so time the switch outside the
+22:00–01:30 and 16:00 delivery windows anyway.
+
+**Rotating the Postgres password** (this is the only secret that is
+rotated). The running database still has the old password in
+`pg_authid`, so:
+
+- Run `ALTER ROLE distant_signal PASSWORD …` through `kubectl exec` at the
+  moment the new sealed Secret lands.
+- Reloader restarts the api, aggregator, enricher, notifier and the
+  exporter with the new value. Expect a brief reconnect blip.
+- Point the backup CronJob and the postgres-exporter at the same sealed
+  Secret.
+- Keep the password out of the command line and shell history: pass it in
+  through a `psql` variable read from the unsealed file, then shred the
+  file.
 
 **Cost:** none at runtime.
 
 **Drill:** after the change, the host key fingerprint the server shows
-(`ssh-keyscan -p <nodeport>` from outside) must match the recorded one.
+(`ssh-keyscan -p <nodeport>` from outside) must be **unchanged** from before
+the switch, and the next DTD delivery must arrive normally.
 
 ---
 
@@ -1061,10 +1094,13 @@ revoke audit line with an email address or user id, and OIDC subjects.
    about 25–75 GB of pgBackRest data (item 1's rollout step 1 still
    measures WAL first), and whether the Thoth operator can mint keys
    scoped to a prefix (X4).
-2. **Log namespaces:** whether collection should cover all namespaces or
-   only `distant-signal` and `ds-mcp`. Covering fewer namespaces roughly
-   halves Loki's footprint. The 7-day retention is decided.
 
-Decided on 2026-09-30, and recorded under "Decisions" at the top: Thoth
-is off-host, cold-archive retention is 730 days, pgBackRest was chosen over
-CNPG, and the exec exception was accepted.
+Decided on 2026-09-30, and recorded under "Decisions" at the top:
+
+- Thoth is off-host.
+- Cold-archive retention is 730 days.
+- pgBackRest was chosen over CNPG, and the exec exception was accepted.
+- Logs are collected from all namespaces into a shared `logging` service,
+  kept 7 days.
+- The Postgres app password is rotated to a fresh value. The SFTP host
+  key and `dtd-push` password are sealed as their current values.
