@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
+import { renderWithMantine } from '@/test/render';
+import { ExternalLinkIcon } from '@/components/ExternalLinkIcon';
 import { sanitizeDescription, sanitizeRichText } from './sanitizeHtml';
+
+/** Parses sanitizer output into a detached container, for DOM-level
+ * assertions (accessible text, aria-hidden) rather than substring ones. */
+function parse(html: string): HTMLElement {
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  return container;
+}
 
 describe('sanitizeDescription', () => {
   it('keeps safe HTML tags intact', () => {
@@ -122,7 +132,13 @@ describe('sanitizeRichText', () => {
         '<p><a href="https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx">' +
           'https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx</a></p>',
       );
-      expect(result).toContain('>nationalrail.co.uk ↗<');
+      expect(result).not.toContain('↗');
+      const anchor = parse(result).querySelector('a')!;
+      // Visible text is the host; the full link text, as a screen reader
+      // gets it, adds "(opens in a new tab)" from the visually hidden span.
+      expect(anchor.textContent).toBe('nationalrail.co.uk (opens in a new tab)');
+      expect(anchor.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
+      expect(anchor.querySelector('[data-visually-hidden]')).toHaveTextContent('(opens in a new tab)');
       expect(result).toContain('title="https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx"');
       // The full URL survives in href, just not repeated as visible text.
       expect(result).toContain('href="https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx"');
@@ -132,6 +148,39 @@ describe('sanitizeRichText', () => {
       const result = sanitizeRichText('<a href="https://www.apcoa.co.uk">APCOA car park</a>');
       expect(result).toContain('>APCOA car park<');
       expect(result).not.toContain('title=');
+      expect(result).not.toContain('data-icon');
+    });
+
+    it("draws the same icon as the ExternalLinkIcon component, so the two can't drift apart", () => {
+      const result = sanitizeRichText('<a href="https://example.com/x">https://example.com/x</a>');
+      const fromSanitizer = parse(result).querySelector('svg[data-icon="external-link"]')!;
+      const { container } = renderWithMantine(<ExternalLinkIcon />);
+      const fromComponent = container.querySelector('svg[data-icon="external-link"]')!;
+      const attrs = (el: Element) =>
+        Object.fromEntries(
+          Array.from(el.attributes, (a) => [a.name, a.name === 'style' ? a.value.replace(/[;\s]/g, '') : a.value]),
+        );
+      expect(attrs(fromSanitizer)).toEqual(attrs(fromComponent));
+      expect(fromSanitizer.innerHTML).toBe(fromComponent.innerHTML);
+    });
+
+    it('only ever adds the marker, never input markup: a raw-URL anchor carrying hostile attributes is still stripped', () => {
+      const result = sanitizeRichText(
+        '<a href="https://example.com/x" onclick="alert(1)" style="x">https://example.com/x</a><svg><script>alert(2)</script></svg>',
+      );
+      expect(result).not.toContain('onclick');
+      expect(result).not.toContain('<script');
+      expect(result).not.toContain('style="x"');
+      // Exactly one svg: the one this module built, inside the anchor.
+      const container = parse(result);
+      expect(container.querySelectorAll('svg')).toHaveLength(1);
+      expect(container.querySelector('a svg[data-icon="external-link"]')).not.toBeNull();
+    });
+
+    it('adds no new-tab marker to an anchor whose href the sanitizer rejected', () => {
+      const result = sanitizeRichText('<a href="javascript:alert(1)">javascript:alert(1)</a>');
+      expect(result).not.toContain('data-icon');
+      expect(result).not.toContain('opens in a new tab');
     });
   });
 

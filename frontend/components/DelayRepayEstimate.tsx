@@ -1,6 +1,5 @@
 import { Alert, Stack, Text } from '@mantine/core';
 import { TextLink } from './TextLink';
-import { ExternalLinkIcon } from './ExternalLinkIcon';
 import type { DelayRepayEstimateResponse } from '@/lib/types';
 
 /** Renders one ticket's Delay Repay estimate, per
@@ -44,9 +43,8 @@ export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateR
       <Text size="sm">This app never submits a claim on your behalf.</Text>
       {/* The only place in this feature that opens a new tab -- every
           other action stays same-page. */}
-      <TextLink href={response.claimUrl} underline="always" target="_blank" rel="noopener noreferrer">
+      <TextLink href={response.claimUrl} underline="always" external>
         See how to claim from the operator
-        <ExternalLinkIcon />
       </TextLink>
     </Stack>
   );

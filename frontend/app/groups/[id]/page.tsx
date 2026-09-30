@@ -181,7 +181,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           `app/lines/[id]/history/page.tsx`'s own "Back to line" TextLink,
           placed above the `<h1>` the same way. */}
       <TextLink href="/groups" underline="always">
-        ← Groups
+        <span aria-hidden="true">←</span> Groups
       </TextLink>
       <Group justify="space-between" align="baseline">
         <Title order={1}>{group.name}</Title>

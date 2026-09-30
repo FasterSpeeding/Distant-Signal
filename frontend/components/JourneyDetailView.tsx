@@ -92,7 +92,7 @@ function LegConnector({ leg }: { leg: JourneyLegDetail }) {
   const arrival = legDestinationArrivalLabel(leg.destinationCrs, stops);
   return (
     <Text size="xs" c="dimmed" pl="sm">
-      ↓ Change at {stationName}
+      <span aria-hidden="true">↓</span> Change at {stationName}
       {arrival ? ` — ${arrival}` : ''}
     </Text>
   );

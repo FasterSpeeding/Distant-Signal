@@ -295,7 +295,10 @@ describe('GroupDetailPage', () => {
     });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
-    expect(screen.getByRole('link', { name: '← Groups' })).toHaveAttribute('href', '/groups');
+    // The arrow is decorative and aria-hidden: the name is just "Groups".
+    const back = screen.getByRole('link', { name: 'Groups' });
+    expect(back).toHaveAttribute('href', '/groups');
+    expect(back.querySelector('[aria-hidden="true"]')).toHaveTextContent('←');
   });
 
   // Review §3.2.5: nothing marked which row in the member list was the

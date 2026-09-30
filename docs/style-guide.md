@@ -184,7 +184,10 @@ list-row titles 500.
   credit and licence links inside dimmed or statement text (footer credits,
   `NationalRailCredit`, `/attribution`): the link keeps the surrounding
   colour and is marked by its underline alone. Don't hand-roll
-  `<a style={{ color: 'inherit' }}>`.
+  `<a style={{ color: 'inherit' }}>`. `external` opens a new tab and marks
+  it with the `ExternalLinkIcon` SVG plus visually hidden "(opens in a new
+  tab)"; never write "↗" into link text. Decorative text arrows ("← Groups")
+  go in `<span aria-hidden="true">`.
 - **Buttons**: Mantine Button sm, 36px, 14px/600, radius 8. Filled grape
   for the primary action, light for secondary, default for neutral, red
   filled for destructive (text via `autoContrast`). Icon buttons are

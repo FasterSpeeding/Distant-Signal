@@ -264,7 +264,7 @@ export function StationTimetable({ crs }: { crs: string }) {
           </AccordionItem>
         </Accordion>
         <TextLink href={`/trains?station=${crs.toUpperCase()}`} inline underline="always">
-          Search a different day or filter →
+          Search a different day or filter <span aria-hidden="true">→</span>
         </TextLink>
       </Group>
     </Stack>

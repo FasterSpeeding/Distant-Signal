@@ -112,7 +112,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           page most likely to be reached from a shared URL with no browser
           history to go back to. */}
       <TextLink href="/incidents" underline="always">
-        ← Incident Archive
+        <span aria-hidden="true">←</span> Incident Archive
       </TextLink>
 
       {/* Review §3.3: a ten-word Knowledgebase summary used to wrap to four

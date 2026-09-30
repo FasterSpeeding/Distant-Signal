@@ -401,10 +401,10 @@ describe('StationTimetable', () => {
     );
     renderWithMantine(<StationTimetable crs="RDG" />);
 
-    expect(screen.getByRole('link', { name: /Search a different day or filter/ })).toHaveAttribute(
-      'href',
-      '/trains?station=RDG',
-    );
+    const link = screen.getByRole('link', { name: 'Search a different day or filter' });
+    expect(link).toHaveAttribute('href', '/trains?station=RDG');
+    // The trailing arrow is still on screen, but aria-hidden.
+    expect(link.querySelector('[aria-hidden="true"]')).toHaveTextContent('→');
   });
 
   it('notes that trains terminating at this station will not appear, and that no headcode/operator is shown', async () => {

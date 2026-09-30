@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Text } from '@mantine/core';
+import { ExternalLinkIcon } from './ExternalLinkIcon';
 
 /** The app's in-page text link.
  *
@@ -40,7 +41,12 @@ import { Text } from '@mantine/core';
  * licence statements): the link takes its parent's colour and font instead
  * of the anchor grape, and relies on `underline="always"` alone as its cue.
  * Everywhere else, leave the default `'anchor'`. docs/style-guide.md
- * ("TextLink") records the rule. */
+ * ("TextLink") records the rule.
+ *
+ * `external` opens the link in a new tab (`target="_blank"`, `rel="noopener
+ * noreferrer"`) and says so: a trailing aria-hidden `ExternalLinkIcon` on
+ * screen and "(opens in a new tab)" in the accessible name, never a
+ * literal "↗" in the text. An explicit `target`/`rel` still wins. */
 export function TextLink({
   href,
   children,
@@ -56,6 +62,7 @@ export function TextLink({
   onKeyDown,
   title,
   ariaLabel,
+  external = false,
 }: {
   href: string;
   children: React.ReactNode;
@@ -104,7 +111,7 @@ export function TextLink({
   onKeyDown?: (event: React.KeyboardEvent<HTMLAnchorElement>) => void;
   // The full destination, for a call site whose visible text is a shortened
   // stand-in for it (station-accessibility rich text's raw-URL-as-link-text
-  // fix, review §3.5.9: the link reads "nationalrail.co.uk ↗" on screen but
+  // fix, review §3.5.9: the link reads "nationalrail.co.uk" on screen but
   // still discloses the exact URL on hover/focus).
   title?: string;
   // An explicit accessible name, for one of N identically-worded links in
@@ -125,6 +132,7 @@ export function TextLink({
   // a sibling `<Text>` -- so they share one prop rather than two.
   ariaLabel?: string;
   tone?: 'anchor' | 'inherit';
+  external?: boolean;
 }) {
   const inheritTone = tone === 'inherit';
   const text = (
@@ -136,6 +144,7 @@ export function TextLink({
       lh={lh}
     >
       {children}
+      {external && <ExternalLinkIcon />}
     </Text>
   );
   // The undecorated resting state comes from the stylesheet rather than
@@ -146,8 +155,8 @@ export function TextLink({
     href,
     'data-text-link': underline,
     'data-text-link-tone': inheritTone ? 'inherit' : undefined,
-    target,
-    rel,
+    target: target ?? (external ? '_blank' : undefined),
+    rel: rel ?? (external ? 'noopener noreferrer' : undefined),
     onClick,
     onKeyDown,
     title,

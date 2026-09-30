@@ -107,11 +107,12 @@ function demoteHeadings(root: Element): void {
 /** review §3.5.9: an anchor whose visible text is byte-identical to its own
  * `href` ("https://www.nationalrail.co.uk/stations_destinations/passenger-
  * assist.aspx") reads as noise, not a destination. Rewritten to the
- * hostname plus an outbound arrow, with the full URL kept reachable via
- * `title` -- exactly the same swap `StationAccessibilitySection.tsx`'s own
- * `link`-kind nodes apply, via the same `new URL(...).hostname` shape, so a
- * raw URL reads the same way whether it arrived as a `link` node or as an
- * `<a>` inside sanitized rich text.
+ * hostname plus the external-link marker (`appendExternalLinkMarker`), with
+ * the full URL kept reachable via `title` -- exactly the same swap
+ * `StationAccessibilitySection.tsx`'s own `link`-kind nodes apply, via the
+ * same `new URL(...).hostname` shape, so a raw URL reads the same way
+ * whether it arrived as a `link` node or as an `<a>` inside sanitized rich
+ * text.
  *
  * Only fires on an EXACT match: an anchor whose author already wrote real
  * link text ("click here", a station name) is untouched. Anchors nested
@@ -131,9 +132,66 @@ function rewriteRawUrlLinks(root: Element): void {
     }
     if (hostname === '') return;
     anchor.setAttribute('title', href);
-    anchor.textContent = `${hostname} ↗`;
+    anchor.textContent = hostname;
+    if (anchor.getAttribute('target') === '_blank') appendExternalLinkMarker(anchor);
   });
 }
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** `ExternalLinkIcon.tsx`, rebuilt as DOM nodes for a link that only exists
+ * as sanitized HTML, where no React component can render. The same
+ * aria-hidden Feather-style SVG, then "(opens in a new tab)" in a
+ * `[data-visually-hidden]` span (`app/globals.css` repeats Mantine's
+ * `VisuallyHidden` rules for it), so the link's accessible name says what
+ * the arrow means instead of a screen reader announcing a literal "↗" as
+ * "north east arrow". `sanitizeHtml.test.ts` checks the SVG against the
+ * component's own markup so the two cannot drift apart.
+ *
+ * An inline SVG and a real text node rather than a CSS `::after` with an
+ * SVG mask: generated content is not reliably part of an accessible name
+ * across screen readers, and the mask would need a second copy of the icon
+ * as a data URI in the stylesheet anyway.
+ *
+ * Safe to add after DOMPurify has run: every node, attribute and string
+ * here is a constant of this module -- nothing from the input feed reaches
+ * them -- and the result is never fed back through the sanitizer (which
+ * would strip the `svg`/`span` again, not execute anything). */
+function appendExternalLinkMarker(anchor: Element): void {
+  const doc = anchor.ownerDocument;
+  const svg = doc.createElementNS(SVG_NS, 'svg');
+  for (const [name, value] of Object.entries(EXTERNAL_LINK_SVG_ATTRS)) svg.setAttribute(name, value);
+  for (const [tag, attrs] of EXTERNAL_LINK_SVG_SHAPES) {
+    const shape = doc.createElementNS(SVG_NS, tag);
+    for (const [name, value] of Object.entries(attrs)) shape.setAttribute(name, value);
+    svg.appendChild(shape);
+  }
+  const hidden = doc.createElement('span');
+  hidden.setAttribute('data-visually-hidden', '');
+  hidden.textContent = '(opens in a new tab)';
+  anchor.append(doc.createTextNode(' '), svg, hidden);
+}
+
+const EXTERNAL_LINK_SVG_ATTRS: Record<string, string> = {
+  xmlns: SVG_NS,
+  width: '0.9em',
+  height: '0.9em',
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  'stroke-width': '2',
+  'stroke-linecap': 'round',
+  'stroke-linejoin': 'round',
+  'aria-hidden': 'true',
+  'data-icon': 'external-link',
+  style: 'vertical-align: -0.1em;',
+};
+
+const EXTERNAL_LINK_SVG_SHAPES: [string, Record<string, string>][] = [
+  ['path', { d: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' }],
+  ['polyline', { points: '15 3 21 3 21 9' }],
+  ['line', { x1: '10', y1: '14', x2: '21', y2: '3' }],
+];
 
 /** UK landline/mobile numbers written as plain text in note copy --
  * `0345 077 4224`, `020 7946 0958`, `+44 20 7946 0958` -- linkified to

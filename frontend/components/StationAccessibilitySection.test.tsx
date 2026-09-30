@@ -485,7 +485,9 @@ describe('StationAccessibilitySection, pattern rendering', () => {
     // review §3.5.9: the link text is the raw URL itself, so it is
     // rewritten to the host name -- the full URL survives in `href` and
     // `title`, just not repeated as the visible text.
-    const website = screen.getByRole('link', { name: 'example.com ↗' });
+    const website = screen.getByRole('link', { name: 'example.com (opens in a new tab)' });
+    expect(website).not.toHaveTextContent('↗');
+    expect(website.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
     expect(website).toHaveAttribute('href', 'http://www.example.com');
     expect(website).toHaveAttribute('title', 'http://www.example.com');
     expect(website).toHaveAttribute('target', '_blank');

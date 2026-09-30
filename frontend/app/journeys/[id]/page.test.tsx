@@ -203,7 +203,10 @@ describe('JourneyDetailPage', () => {
     it('draws a connector naming the change point after a non-final leg', async () => {
       vi.mocked(api.getJourney).mockResolvedValue(twoLegJourney());
       await renderPage();
-      expect(screen.getByText(/Change at York/)).toBeInTheDocument();
+      const connector = screen.getByText(/Change at York/);
+      expect(connector).toBeInTheDocument();
+      // The down arrow is decorative: aria-hidden, not read as "down arrow".
+      expect(connector.querySelector('[aria-hidden="true"]')).toHaveTextContent('↓');
     });
 
     // The headline fix: the rollup badge alone would show only "Needs a

@@ -743,12 +743,14 @@ describe('ACCESSIBILITY_CATEGORIES', () => {
 });
 
 describe('hostLabel (review §3.5.9)', () => {
-  it('strips the scheme and a leading www., appending an outbound arrow', () => {
-    expect(hostLabel('https://www.nationalrail.co.uk/stations_destinations/x.aspx')).toBe('nationalrail.co.uk ↗');
+  // The "opens in a new tab" marker is `TextLink`'s `external` icon, not a
+  // glyph baked into this string.
+  it('strips the scheme and a leading www., with no outbound-arrow glyph', () => {
+    expect(hostLabel('https://www.nationalrail.co.uk/stations_destinations/x.aspx')).toBe('nationalrail.co.uk');
   });
 
   it('keeps a non-www host as-is', () => {
-    expect(hostLabel('http://example.com/path')).toBe('example.com ↗');
+    expect(hostLabel('http://example.com/path')).toBe('example.com');
   });
 
   it('returns null for a URL it cannot parse, rather than throwing', () => {

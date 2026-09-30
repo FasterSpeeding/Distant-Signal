@@ -97,18 +97,20 @@ export function humanizeKey(key: string): string {
 }
 
 /** Pattern G/link-text's "the anchor says its own URL" defect (review
- * §3.5.9): `nationalrail.co.uk ↗` reads as a destination, `https://www.
+ * §3.5.9): `nationalrail.co.uk` reads as a destination, `https://www.
  * nationalrail.co.uk/stations_destinations/...` reads as noise, and both
  * this module's own `link` nodes (`renderContact`'s Website field always
  * sets `text` to the raw URL) and the rich-text sanitizer's raw `<a>`s hit
  * this. `www.` is stripped because it names the same host as its bare form
  * and adds nothing a reader needs. Returns `null` on anything `new URL`
  * rejects, so a malformed href is left as plain text rather than crashing
- * or silently losing the link. */
+ * or silently losing the link. Just the host: the "opens in a new tab"
+ * marker is `TextLink`'s `external` icon, rendered by the component, not a
+ * glyph baked into this string. */
 export function hostLabel(url: string): string | null {
   try {
     const host = new URL(url).hostname.replace(/^www\./i, '');
-    return host === '' ? null : `${host} ↗`;
+    return host === '' ? null : host;
   } catch {
     return null;
   }

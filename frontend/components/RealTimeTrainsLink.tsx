@@ -1,5 +1,4 @@
 import { TextLink } from './TextLink';
-import { ExternalLinkIcon } from './ExternalLinkIcon';
 
 /** Builds the URL of this train's service page on Real Time Trains
  * (https://www.realtimetrains.co.uk/), a well-known third-party UK
@@ -48,14 +47,8 @@ export function RealTimeTrainsLink({ trainUid, serviceDate }: { trainUid: string
   }
 
   return (
-    <TextLink
-      href={realTimeTrainsUrl(trainUid, serviceDate)}
-      underline="always"
-      target="_blank"
-      rel="noopener noreferrer"
-    >
+    <TextLink href={realTimeTrainsUrl(trainUid, serviceDate)} underline="always" external>
       View on Real Time Trains
-      <ExternalLinkIcon />
     </TextLink>
   );
 }

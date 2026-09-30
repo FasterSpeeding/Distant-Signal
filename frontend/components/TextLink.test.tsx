@@ -176,6 +176,29 @@ describe('TextLink', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
+  it('with external, opens a new tab and says so: an aria-hidden SVG on screen, "(opens in a new tab)" in the name, no "↗" glyph', () => {
+    renderWithMantine(
+      <TextLink href="https://example.com" external>
+        Example
+      </TextLink>,
+    );
+    const link = screen.getByRole('link', { name: 'Example (opens in a new tab)' });
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).not.toHaveTextContent('↗');
+    expect(link.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('renders no external-link icon without external, even on a target="_blank" link', () => {
+    renderWithMantine(
+      <TextLink href="https://example.com" target="_blank">
+        Example
+      </TextLink>,
+    );
+    const link = screen.getByRole('link', { name: 'Example' });
+    expect(link.querySelector('svg[data-icon="external-link"]')).toBeNull();
+  });
+
   it('overrides the accessible name with an explicit aria-label, for a list of otherwise-identical links (regression: 2026-09-22 UX review, repeated "View live status" links)', () => {
     renderWithMantine(
       <TextLink href="/train/C12345/2026-09-22" ariaLabel="View live status for the 06:00 to Edinburgh">

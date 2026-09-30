@@ -380,12 +380,7 @@ function AccessibilityNodeView({ node, label, path }: { node: AccessibilityNode;
           {visible.map((item, index) => (
             <Stack key={index} gap={4}>
               {item.link ? (
-                <TextLink
-                  href={item.link.href}
-                  underline="always"
-                  target={item.link.external ? '_blank' : undefined}
-                  rel={item.link.external ? 'noopener noreferrer' : undefined}
-                >
+                <TextLink href={item.link.href} underline="always" external={item.link.external}>
                   {item.label}
                 </TextLink>
               ) : (
@@ -447,13 +442,7 @@ function AccessibilityNodeView({ node, label, path }: { node: AccessibilityNode;
       const raw = node.text.trim() === node.href.trim();
       const host = raw ? hostLabel(node.href) : null;
       return (
-        <TextLink
-          href={node.href}
-          underline="always"
-          title={host ? node.href : undefined}
-          target={node.external ? '_blank' : undefined}
-          rel={node.external ? 'noopener noreferrer' : undefined}
-        >
+        <TextLink href={node.href} underline="always" title={host ? node.href : undefined} external={node.external}>
           {host ?? node.text}
         </TextLink>
       );

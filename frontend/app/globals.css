@@ -1216,6 +1216,23 @@ a[data-text-link-tone='inherit'] {
   overflow-wrap: anywhere;
 }
 
+/* The "(opens in a new tab)" text `sanitizeRichText` appends to a rewritten
+   raw-URL anchor, beside its aria-hidden external-link SVG: part of the
+   link's accessible name, invisible on screen. Sanitized HTML can't render
+   Mantine's `VisuallyHidden` component, so this repeats its rules
+   (`.m_515a97f8` in `@mantine/core/styles.css`) under a data hook. */
+[data-visually-hidden] {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  width: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+}
+
 /* review §3.5.7: rich-text paragraphs (station-accessibility notes, mostly)
    had no vertical rhythm of their own -- Mantine's `Typography` doesn't set
    a `p` margin, so two- and three-paragraph notes ran together as one

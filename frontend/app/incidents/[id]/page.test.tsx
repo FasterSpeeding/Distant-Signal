@@ -179,7 +179,10 @@ describe('IncidentDetailPage', () => {
   it('renders a back link to the incident archive', async () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
-    expect(screen.getByRole('link', { name: /Incident Archive/ })).toHaveAttribute('href', '/incidents');
+    // The arrow is decorative and aria-hidden: the name is just "Incident Archive".
+    const back = screen.getByRole('link', { name: 'Incident Archive' });
+    expect(back).toHaveAttribute('href', '/incidents');
+    expect(back.querySelector('[aria-hidden="true"]')).toHaveTextContent('←');
   });
 
   // Review §3.3's "at-a-glance strip": the page previously rendered neither
