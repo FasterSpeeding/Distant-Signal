@@ -372,32 +372,46 @@ pub async fn upsert_incidents(
         return Ok(count);
     }
 
-    // Connecting happens HERE, not at api startup: `AppState.redis` is a
-    // lazy `redis::Client` that has never opened a socket. A Redis that is
-    // down therefore surfaces as a failed publish -- which this function
-    // already logs and continues past -- instead of failing `AppState::init`
-    // and crash-looping the public status API.
-    let mut redis = match redis.get_connection_manager().await {
+    publish_text_changed(redis, text_changed_ids).await;
+
+    Ok(count)
+}
+
+/// XADDs one `incident-text-changed` entry per id, best effort: every
+/// failure is logged and skipped, never returned (the enricher's hourly
+/// sweep is the backstop for a missed publish).
+///
+/// Connecting happens HERE, not at api startup: `AppState.redis` is a lazy
+/// `redis::Client` that has never opened a socket. A Redis that is down
+/// therefore surfaces as a failed publish instead of failing
+/// `AppState::init` and crash-looping the public status API.
+///
+/// The connection is `common::redis_conn::connect`'s (INF-5): ONE connect
+/// attempt bounded by `CONNECT_TIMEOUT`, every command bounded by
+/// `RESPONSE_TIMEOUT`. It used to be redis-rs's default
+/// `get_connection_manager()`, which retries a failed connect 6 more times
+/// on a 1s-then-60s backoff with no connect or response timeout: about
+/// five minutes inside the poller's ingest request whenever the Redis pod
+/// was being recreated, and no bound at all on a half-open connection.
+async fn publish_text_changed(redis: &redis::Client, incident_ids: Vec<String>) {
+    let mut conn = match common::redis_conn::connect(redis).await {
         Ok(conn) => conn,
         Err(err) => {
             tracing::warn!(
                 error = ?err,
-                pending = text_changed_ids.len(),
+                pending = incident_ids.len(),
                 "could not connect to redis to publish text-changed events; hourly sweep will catch them"
             );
-            return Ok(count);
+            return;
         }
     };
-    for incident_id in text_changed_ids {
-        let result: redis::RedisResult<String> = text_changed_xadd(&incident_id)
-            .query_async(&mut redis)
-            .await;
+    for incident_id in incident_ids {
+        let result: redis::RedisResult<String> =
+            text_changed_xadd(&incident_id).query_async(&mut conn).await;
         if let Err(err) = result {
             tracing::warn!(error = ?err, incident_id, "failed to publish text-changed event; hourly sweep will catch it");
         }
     }
-
-    Ok(count)
 }
 
 /// Approximate cap on the `incident-text-changed` stream (API-8). The api
@@ -6457,6 +6471,26 @@ pub async fn station_names_for_crs_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// INF-5: an unreachable Redis costs the ingest request one bounded
+    /// connect attempt, not redis-rs's default retry schedule (seven
+    /// attempts on a 1s-then-60s backoff, about five minutes).
+    #[tokio::test]
+    async fn publishing_to_an_unreachable_redis_gives_up_after_one_bounded_attempt() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let client = redis::Client::open(format!("redis://127.0.0.1:{port}")).unwrap();
+
+        tokio::time::timeout(
+            common::redis_conn::CONNECT_TIMEOUT * 2,
+            publish_text_changed(&client, vec!["INC-1".to_string()]),
+        )
+        .await
+        .expect("a refused connection must fail the publish at once, not be retried for minutes");
+    }
 
     /// API-8: the text-changed publish carries an approximate MAXLEN cap.
     #[test]
