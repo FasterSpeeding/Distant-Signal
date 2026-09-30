@@ -613,6 +613,20 @@ async fn session(
 mod tests {
     use super::*;
 
+    /// The sign-up counter exists at 0 from startup, under its full name.
+    #[test]
+    fn the_users_created_counter_is_registered_at_zero() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        register_user_metrics();
+        let rendered = handle.render();
+        assert!(
+            rendered.contains("distant_signal_api_users_created_total 0"),
+            "{rendered}"
+        );
+    }
+
     /// DB2-23: a failed session delete keeps the cookie and says so.
     #[test]
     fn a_failed_session_delete_keeps_the_cookie() {
