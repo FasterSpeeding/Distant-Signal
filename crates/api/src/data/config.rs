@@ -82,12 +82,18 @@ pub struct ServiceArguments {
     /// `/island-of-ireland-lines` -- the new `poller-irish-rail-gtfs`
     /// crate's own credential. See
     /// docs/superpowers/plans/2026-09-05-ireland-rail-support-plan.md Task A3.
-    #[arg(long, env, default_value = "svc-poller-irish-rail-gtfs")]
+    ///
+    /// Empty by default (2026-09-30), as are the other two island-of-Ireland
+    /// groups below: those pollers ship disabled and no such Authentik group
+    /// exists, so the api no longer names one. Empty closes the routes it
+    /// gates (every caller gets `403`); set it when enabling the poller.
+    #[arg(long, env, default_value = "")]
     pub internal_oauth_group_irish_rail_gtfs: String,
     /// Gates `POST`/`GET /private/island-of-ireland-station-samples` -- the
     /// new `poller-irish-rail-live` crate's own credential. See
     /// docs/superpowers/plans/2026-09-05-ireland-rail-support-plan.md Task B3.
-    #[arg(long, env, default_value = "svc-poller-irish-rail-live")]
+    /// Empty by default: see `internal_oauth_group_irish_rail_gtfs`.
+    #[arg(long, env, default_value = "")]
     pub internal_oauth_group_irish_rail_live: String,
     /// Gates `POST`/`GET /private/island-of-ireland-stations` and
     /// `/island-of-ireland-lines` ALONGSIDE `poller-irish-rail-gtfs`'s own
@@ -98,8 +104,8 @@ pub struct ServiceArguments {
     /// matching this file's existing one-producer-one-credential
     /// convention. See
     /// docs/superpowers/plans/2026-09-05-nir-tier-a-implementation-plan.md
-    /// Task 1.
-    #[arg(long, env, default_value = "svc-poller-nir-stations")]
+    /// Task 1. Empty by default: see `internal_oauth_group_irish_rail_gtfs`.
+    #[arg(long, env, default_value = "")]
     pub internal_oauth_group_nir_stations: String,
     /// Gates `POST /private/corpus-locations` -- Network Rail CORPUS loads
     /// from `schedule-ingest`'s CORPUS mode
@@ -472,7 +478,7 @@ pub struct ServiceArguments {
     /// days and no live session are deleted, through the same path as
     /// self-service deletion (`data::account::delete_account`), so owned
     /// groups are handed over rather than lost. **Off by default (0)**:
-    /// most accounts have no email address, so there is no way to warn a
+    /// the app holds no email addresses, so there is no way to warn a
     /// user first, and turning this on is an operator decision that the
     /// privacy notice must state. The audit suggests 730 (24 months).
     #[arg(long, env, default_value_t = 0)]

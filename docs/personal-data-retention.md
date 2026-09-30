@@ -54,7 +54,7 @@ The inactive-account sweep (below) uses the same function.
 
 | Table | Personal data | On account deletion | Retention while the account exists | Export |
 |---|---|---|---|---|
-| `users` | OIDC subject id, name, username, verified email (if any), IdP groups, created and last-login times | Deleted | Kept while the account exists. Optional inactive-account deletion is **off by default** (`INACTIVE_ACCOUNT_RETENTION_DAYS`). | `account` |
+| `users` | OIDC subject id, name, username, IdP groups (the legacy `email` column is no longer written, and is cleared at each sign-in), created and last-login times | Deleted | Kept while the account exists. Optional inactive-account deletion is **off by default** (`INACTIVE_ACCOUNT_RETENTION_DAYS`). | `account` |
 | `sessions` | Hashed session token, expiry | Cascade | Deleted when expired (`session_ttl_days`, 14), hourly | `sessions` (without id or token) |
 | `oidc_login_state` | PKCE verifier, nonce, CSRF state, return path. Not linked to a user. | n/a | Deleted after 15 minutes | n/a |
 | `push_subscriptions` | Push endpoint URL, encryption keys, timestamps | Cascade | Deleted when the push service reports it gone, beyond 20 per user, or when the user has not logged in **and** the subscription has not been renewed for `STALE_PUSH_SUBSCRIPTION_DAYS` (365) | `pushSubscriptions` (without keys) |
@@ -87,7 +87,7 @@ All three are on the api (`crates/api/src/data/config.rs`), and are set in the c
 | `STALE_PUSH_SUBSCRIPTION_DAYS` | `api.stalePushSubscriptionDays` | 365 | Deletes push subscriptions of users who have been absent this long. |
 | `INACTIVE_ACCOUNT_RETENTION_DAYS` | `api.inactiveAccountRetentionDays` | **0 (off)** | Deletes whole accounts with no login and no live session for this long, at most 100 per run. |
 
-`INACTIVE_ACCOUNT_RETENTION_DAYS` is off by default because most accounts have no email address, so a user cannot be warned first. Before enabling it (the audit suggests 730), state it in the privacy notice.
+`INACTIVE_ACCOUNT_RETENTION_DAYS` is off by default because the app holds no email addresses, so a user cannot be warned first. Before enabling it (the audit suggests 730), state it in the privacy notice.
 
 The `/account` page says "18 months" and "7 days". If `PAST_TRAVEL_RETENTION_DAYS` or the backup retention changes, update that copy too.
 

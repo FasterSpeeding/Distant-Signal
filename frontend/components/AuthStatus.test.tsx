@@ -15,7 +15,7 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
-const loggedOut: SessionInfo = { authenticated: false, id: null, email: null, name: null };
+const loggedOut: SessionInfo = { authenticated: false, id: null, username: null, name: null };
 
 /** The account control's accessible name is where the display name lives
  * now that it is no longer a run of visible text in the bar (see
@@ -60,7 +60,7 @@ describe('AuthStatus', () => {
   });
 
   it('shows an account menu, not a log in link, when logged in', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} />);
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} />);
     expect(accountMenuName()).toBe('Ada');
     expect(screen.queryByRole('link', { name: 'Log in' })).not.toBeInTheDocument();
   });
@@ -72,13 +72,13 @@ describe('AuthStatus', () => {
    * half of that trade, so a future change that puts the name back as
    * bar text has to be a deliberate one. */
   it('does not render the display name as visible bar text', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} />);
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} />);
     expect(screen.queryByText('Ada')).not.toBeInTheDocument();
   });
 
-  it('falls back to the email when logged in with no name', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: null }} />);
-    expect(accountMenuName()).toBe('a@b.com');
+  it('falls back to the username when logged in with no name', () => {
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: null }} />);
+    expect(accountMenuName()).toBe('a');
   });
 
   /** An identity provider with no name on file for a user sends a BLANK
@@ -86,18 +86,18 @@ describe('AuthStatus', () => {
    * as `''` -- which `??` treats as a perfectly good label, leaving the
    * account control with an empty accessible name. Same defect the group
    * member list and shared-train attribution had. */
-  it('falls back to the email when the name is blank rather than null', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: '   ' }} />);
-    expect(accountMenuName()).toBe('a@b.com');
+  it('falls back to the username when the name is blank rather than null', () => {
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: '   ' }} />);
+    expect(accountMenuName()).toBe('a');
   });
 
-  it('falls back to "Signed in" when both name and email are blank', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: '', name: '' }} />);
+  it('falls back to "Signed in" when both name and username are blank', () => {
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: '', name: '' }} />);
     expect(accountMenuName()).toBe('Signed in');
   });
 
-  it('falls back to "Signed in" when both name and email are null', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: null, name: null }} />);
+  it('falls back to "Signed in" when both name and username are null', () => {
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: null, name: null }} />);
     expect(accountMenuName()).toBe('Signed in');
   });
 
@@ -105,7 +105,7 @@ describe('AuthStatus', () => {
   // half of the fix (the drawer's own is in AppNavBar.test.tsx).
   it('adds a Chat entry to the account menu only when chatAllowed is true', async () => {
     renderWithMantine(
-      <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} chatAllowed />,
+      <AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} chatAllowed />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
     // `hidden: true` -- same as AccountMenu.test.tsx's own `menuItem`
@@ -114,7 +114,7 @@ describe('AuthStatus', () => {
   });
 
   it('omits Chat from the account menu by default', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} />);
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
     expect(screen.queryByRole('menuitem', { name: 'Chat' })).not.toBeInTheDocument();
   });

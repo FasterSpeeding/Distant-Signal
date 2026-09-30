@@ -72,7 +72,22 @@ pub struct AppState {
 /// can exercise the REAL production table -- not a hand-copied stand-in
 /// that could silently drift from it -- without needing every other part
 /// of `AppState::init` (a live database connection, etc.).
+///
+/// A blank group is dropped from its entry, so an entry whose only group is
+/// unset (the island-of-Ireland producers', off by default) keeps its path
+/// in the table with no group at all: every caller is refused `403`, and a
+/// token that somehow carried an empty-string group matches nothing.
 pub(crate) fn build_internal_oauth_routes(
+    config: &ServiceArguments,
+) -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
+    let mut routes = internal_oauth_route_table(config);
+    for (_, _, groups) in &mut routes {
+        groups.retain(|group| !group.trim().is_empty());
+    }
+    routes
+}
+
+fn internal_oauth_route_table(
     config: &ServiceArguments,
 ) -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
     use axum::http::Method;
@@ -724,18 +739,9 @@ impl AppState {
                 "internal_oauth_group_trust_backlog",
                 &config.internal_oauth_group_trust_backlog,
             ),
-            (
-                "internal_oauth_group_irish_rail_gtfs",
-                &config.internal_oauth_group_irish_rail_gtfs,
-            ),
-            (
-                "internal_oauth_group_irish_rail_live",
-                &config.internal_oauth_group_irish_rail_live,
-            ),
-            (
-                "internal_oauth_group_nir_stations",
-                &config.internal_oauth_group_nir_stations,
-            ),
+            // Not the three island-of-Ireland groups: those are empty by
+            // default, which closes their routes (see
+            // `build_internal_oauth_routes`).
         ] {
             ensure!(
                 !value.is_empty(),

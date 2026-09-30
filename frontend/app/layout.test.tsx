@@ -10,7 +10,7 @@ vi.mock('@/lib/api', () => ({
   getSessionOrLoggedOut: vi.fn(),
   getMyGroups: vi.fn(),
   getChatbotAccess: vi.fn(),
-  LOGGED_OUT_SESSION: { authenticated: false, id: null, email: null, name: null },
+  LOGGED_OUT_SESSION: { authenticated: false, id: null, username: null, name: null },
 }));
 
 describe('viewport.themeColor', () => {

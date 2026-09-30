@@ -25,7 +25,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 function session(authenticated: boolean) {
-  return { authenticated, id: authenticated ? 'u1' : null, email: authenticated ? 'a@b.com' : null, name: null };
+  return { authenticated, id: authenticated ? 'u1' : null, username: authenticated ? 'a' : null, name: null };
 }
 
 describe('LineNotFound', () => {
@@ -61,7 +61,12 @@ describe('LineNotFound', () => {
   // `LineNotFound` still renders the "Log in" link given the logged-out
   // `SessionInfo` that fallback resolves to.
   it('shows the "Log in" link when getSessionOrLoggedOut() resolves logged-out after a failed check', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     renderWithMantine(await LineNotFound());
 
     expect(screen.getByRole('link', { name: 'Log in' })).toBeInTheDocument();

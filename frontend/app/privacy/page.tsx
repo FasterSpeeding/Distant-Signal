@@ -57,12 +57,12 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
   return [
     {
       title: 'Your account',
-      what: 'The ID our sign-in service gives you, your display name and username, your email address if the sign-in provider supplies a verified one (Discord sign-ins do not), the access groups needed to decide which features you can use, and when you signed up and last signed in.',
+      what: 'The ID our sign-in service gives you, your display name and username, the access groups needed to decide which features you can use, and when you signed up and last signed in.',
       why: 'To create and run your account.',
       basis: CONTRACT,
       retention:
         retention.inactiveAccountDays > 0
-          ? `Until you delete your account. If you do not sign in for ${describeRetentionDays(retention.inactiveAccountDays)} (and have no active session), we delete your account and everything in it automatically. We cannot warn you first unless we hold your email address.`
+          ? `Until you delete your account. If you do not sign in for ${describeRetentionDays(retention.inactiveAccountDays)} (and have no active session), we delete your account and everything in it automatically. We do not hold your email address, so we cannot warn you first.`
           : 'Until you delete your account.',
     },
     {

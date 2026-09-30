@@ -24,6 +24,12 @@ use openidconnect::{
 /// persists -- see the design doc's `users` table section for why nothing
 /// beyond these is stored.
 ///
+/// No email (2026-09-30): this app neither requests the `email` scope nor
+/// reads an `email` claim. Users are identified by `sub` (the primary key)
+/// and labelled by `name`/`preferred_username`; an email address was only
+/// ever used for admin revoke-by-email, which now looks users up by
+/// username instead (`routes::admin`).
+///
 /// `name` and `preferred_username` are not raw single-claim copies: each
 /// is the best of SEVERAL standard `profile`-scope claims, resolved by
 /// `identity_from_claims`. See `RawClaims` for which claims feed which,
@@ -31,18 +37,16 @@ use openidconnect::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct OidcIdentity {
     pub sub: String,
-    pub email: Option<String>,
-    pub email_verified: bool,
     /// The user's real name, if the IdP asserted one in any of the
     /// standard name-shaped `profile` claims (`name`, else
     /// `given_name`/`family_name`).
     pub name: Option<String>,
     /// The user's handle: the `preferred_username` claim, else `nickname`.
-    /// The ONLY non-email identifier besides `name` that reaches us, and
-    /// the reason a user whose IdP has no name on file for them still has
-    /// something to be shown as in a shared group instead of their email
-    /// address (which must never be shown to other members -- see
-    /// `data::users::display_label`).
+    /// The only identifier besides `name` that reaches us, and the reason a
+    /// user whose IdP has no name on file for them still has something to
+    /// be shown as in a shared group. It can itself be email-shaped (an IdP
+    /// may use the email as the username), so it is never shown to other
+    /// members when it is -- see `data::users::display_label`.
     pub preferred_username: Option<String>,
     pub groups: Vec<String>,
 }
@@ -83,8 +87,6 @@ pub struct OidcIdentity {
 #[derive(Debug, Clone)]
 pub struct RawClaims {
     pub sub: String,
-    pub email: Option<String>,
-    pub email_verified: Option<bool>,
     pub name: Option<String>,
     pub given_name: Option<String>,
     pub family_name: Option<String>,
@@ -166,8 +168,6 @@ fn joined_name(given_name: Option<&str>, family_name: Option<&str>) -> Option<St
 }
 
 /// Maps raw claims onto the subset this app persists. A missing/absent
-/// `email_verified` claim defaults to `false` (never trust silence as
-/// verification) -- see design doc Open Question 2. A missing/absent
 /// `groups` claim defaults to an empty vec -- see
 /// docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md
 /// Decision 2.
@@ -192,8 +192,6 @@ pub fn identity_from_claims(claims: RawClaims) -> OidcIdentity {
     let joined = joined_name(claims.given_name.as_deref(), claims.family_name.as_deref());
     OidcIdentity {
         sub: claims.sub,
-        email: claims.email,
-        email_verified: claims.email_verified.unwrap_or(false),
         name: best_candidate([claims.name, joined]),
         preferred_username: best_candidate([claims.preferred_username, claims.nickname]),
         groups: claims.groups.unwrap_or_default(),
@@ -213,8 +211,6 @@ fn raw_claims_from_id_token(
 ) -> RawClaims {
     RawClaims {
         sub: claims.subject().as_str().to_string(),
-        email: claims.email().map(|e| e.as_str().to_string()),
-        email_verified: claims.email_verified(),
         name: localized(claims.name()),
         given_name: localized(claims.given_name()),
         family_name: localized(claims.family_name()),
@@ -257,8 +253,7 @@ fn localized<T: std::ops::Deref<Target = String>>(
 ///
 /// `#[serde(default)]` on `groups`: a missing claim deserializes to
 /// `None`, never a deserialization error -- the same "never trust silence
-/// as something stronger than it is" posture `email_verified`'s own
-/// handling already takes below.
+/// as something stronger than it is" posture.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct AccessGroupClaims {
     #[serde(default)]
@@ -479,7 +474,8 @@ impl OidcClient {
                 CsrfToken::new_random,
                 Nonce::new_random,
             )
-            .add_scope(Scope::new("email".to_string()))
+            // No `email` scope: nothing in this app reads an email address
+            // (see `OidcIdentity`), so it is not asked for.
             .add_scope(Scope::new("profile".to_string()))
             // A dedicated scope, not relying on the built-in `profile`
             // mapping's own group-membership behaviour alone -- see
@@ -541,15 +537,13 @@ impl OidcClient {
 mod tests {
     use super::*;
 
-    fn claims(email_verified: Option<bool>) -> RawClaims {
-        claims_with_groups(email_verified, None)
+    fn claims() -> RawClaims {
+        claims_with_groups(None)
     }
 
-    fn claims_with_groups(email_verified: Option<bool>, groups: Option<Vec<String>>) -> RawClaims {
+    fn claims_with_groups(groups: Option<Vec<String>>) -> RawClaims {
         RawClaims {
             sub: "user-123".to_string(),
-            email: Some("rider@example.com".to_string()),
-            email_verified,
             name: Some("Ada Rider".to_string()),
             given_name: None,
             family_name: None,
@@ -564,8 +558,6 @@ mod tests {
     fn nameless_claims() -> RawClaims {
         RawClaims {
             sub: "user-123".to_string(),
-            email: None,
-            email_verified: None,
             name: None,
             given_name: None,
             family_name: None,
@@ -581,7 +573,7 @@ mod tests {
     /// that an ordinary `name` claim still wins when there is one.
     #[test]
     fn sub_is_unconditional_and_an_ordinary_name_claim_still_wins() {
-        let identity = identity_from_claims(claims(Some(true)));
+        let identity = identity_from_claims(claims());
         assert_eq!(identity.sub, "user-123");
         assert_eq!(identity.name, Some("Ada Rider".to_string()));
     }
@@ -591,17 +583,17 @@ mod tests {
     /// username is read out of.
     #[test]
     fn preferred_username_wins_the_username_slot_when_present() {
-        let identity = identity_from_claims(claims(Some(true)));
+        let identity = identity_from_claims(claims());
         assert_eq!(identity.preferred_username, Some("ada".to_string()));
 
-        let mut raw = claims(Some(true));
+        let mut raw = claims();
         raw.preferred_username = None;
         assert_eq!(identity_from_claims(raw).preferred_username, None);
 
         // ...and with a DIFFERENT non-blank nickname competing for the
         // same slot, so the precedence is actually exercised rather than
         // being true by the other candidate's absence.
-        let mut both = claims(Some(true));
+        let mut both = claims();
         both.nickname = Some("ada-nick".to_string());
         assert_eq!(
             identity_from_claims(both).preferred_username,
@@ -610,37 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn verified_email_is_kept() {
-        let identity = identity_from_claims(claims(Some(true)));
-        assert_eq!(identity.email, Some("rider@example.com".to_string()));
-        assert!(identity.email_verified);
-    }
-
-    #[test]
-    fn unverified_email_claim_still_flows_through_here_unfiltered() {
-        // identity_from_claims itself doesn't drop the email on
-        // email_verified: false -- that gating happens one layer up, in
-        // data::users::upsert_user (Task 5), which is the actual
-        // enforcement point per design doc Open Question 2. This function
-        // only maps and defaults; asserting that split explicitly here
-        // documents where the real decision lives.
-        let identity = identity_from_claims(claims(Some(false)));
-        assert_eq!(identity.email, Some("rider@example.com".to_string()));
-        assert!(!identity.email_verified);
-    }
-
-    #[test]
-    fn missing_email_verified_claim_defaults_to_unverified() {
-        let identity = identity_from_claims(claims(None));
-        assert!(!identity.email_verified);
-    }
-
-    #[test]
     fn groups_claim_is_kept_when_present() {
-        let identity = identity_from_claims(claims_with_groups(
-            Some(true),
-            Some(vec!["mcp-users".to_string(), "mcp-live-boards".to_string()]),
-        ));
+        let identity = identity_from_claims(claims_with_groups(Some(vec![
+            "mcp-users".to_string(),
+            "mcp-live-boards".to_string(),
+        ])));
         assert_eq!(
             identity.groups,
             vec!["mcp-users".to_string(), "mcp-live-boards".to_string()]
@@ -649,7 +615,7 @@ mod tests {
 
     #[test]
     fn missing_groups_claim_defaults_to_empty_vec_not_an_error() {
-        let identity = identity_from_claims(claims(Some(true)));
+        let identity = identity_from_claims(claims());
         assert_eq!(identity.groups, Vec::<String>::new());
     }
 
@@ -891,9 +857,9 @@ mod tests {
     // Claim values below are what Authentik's own shipped `profile` scope
     // mapping evaluates to (goauthentik/authentik
     // `blueprints/system/providers-oauth2.yaml`, version-2026.8), for the
-    // two account shapes this app actually sees. `email_verified: false`
-    // is not a typo either: Authentik's stock `email` scope mapping
-    // hardcodes it.
+    // two account shapes this app actually sees. Some fixtures still carry
+    // `email`/`email_verified` (an IdP may send them regardless of the
+    // scopes asked for): they must parse and be ignored.
     // ---------------------------------------------------------------
 
     /// Everything an ID token needs to parse, minus the claims a given
@@ -1021,7 +987,8 @@ mod tests {
 
     /// A token carrying nothing name-shaped at all: `display_label` says
     /// `None`, and the frontend renders its generic placeholder. Never the
-    /// email, and never the opaque subject.
+    /// email, and never the opaque subject. The `email` claim is present
+    /// and ignored: nothing reads it any more.
     #[test]
     fn a_token_with_no_usable_identifier_yields_no_label_not_an_email() {
         let claims = id_token_claims(serde_json::json!({
@@ -1031,7 +998,7 @@ mod tests {
         let identity = identity_from_claims(raw_claims_from_id_token(&claims));
         assert_eq!(identity.name, None);
         assert_eq!(identity.preferred_username, None);
-        assert_eq!(identity.email, Some("rider@example.com".to_string()));
+        assert!(!format!("{identity:?}").contains("rider@example.com"));
         assert_eq!(
             crate::data::users::display_label(identity.name, identity.preferred_username),
             None

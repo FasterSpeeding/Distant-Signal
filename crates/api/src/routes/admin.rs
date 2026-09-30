@@ -12,8 +12,8 @@
 //! There is no admin UI; call it from a logged-in browser session, e.g. the
 //! devtools console on the site:
 //! `fetch('/api/admin/users/revoke-sessions', {method: 'POST', headers:
-//! {'Content-Type': 'application/json'}, body: JSON.stringify({email:
-//! 'someone@example.com'})})`.
+//! {'Content-Type': 'application/json'}, body: JSON.stringify({username:
+//! 'their-authentik-username'})})`.
 
 use axum::Json;
 use axum::extract::State;
@@ -40,15 +40,21 @@ pub(crate) fn is_admin(groups: &[String], admin_group: &str) -> bool {
     !admin_group.is_empty() && groups.iter().any(|group| group == admin_group)
 }
 
-/// Exactly one of the two names the target user.
+/// Exactly one of `user_id`/`username` names the target user.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RevokeRequest {
-    /// The OIDC subject (`users.id`).
+    /// The OIDC subject (`users.id`, the Authentik user's `sub`).
     user_id: Option<String>,
-    /// The user's verified email, matched case-insensitively. Refused as
-    /// ambiguous if more than one user has it.
-    email: Option<String>,
+    /// The Authentik username (`preferred_username`) stored at the user's
+    /// last sign-in, matched case-insensitively. Refused as ambiguous if
+    /// more than one user has it.
+    username: Option<String>,
+    /// Removed 2026-09-30: this app no longer requests or stores email
+    /// addresses. Still accepted by the parser only so a caller using the
+    /// old shape gets a specific error rather than a bare
+    /// `invalid_request`.
+    email: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Serialize)]
@@ -106,24 +112,29 @@ async fn revoke_user_sessions(
     let Ok(Json(request)) = body else {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     };
+    if request.email.is_some() {
+        return error(StatusCode::BAD_REQUEST, "email_lookup_removed_use_username");
+    }
     let non_blank = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let target = match (non_blank(request.user_id), non_blank(request.email)) {
+    let target = match (non_blank(request.user_id), non_blank(request.username)) {
         (Some(user_id), None) => user_id,
-        (None, Some(email)) => match users::find_user_ids_by_email(&app.database, &email).await {
-            Ok(ids) => match ids.as_slice() {
-                [] => return error(StatusCode::NOT_FOUND, "user_not_found"),
-                [only] => only.clone(),
-                _ => return error(StatusCode::CONFLICT, "email_ambiguous"),
-            },
-            Err(err) => {
-                tracing::error!(error = ?err, "admin revoke: user lookup by email failed");
-                return error(StatusCode::INTERNAL_SERVER_ERROR, "lookup_failed");
+        (None, Some(username)) => {
+            match users::find_user_ids_by_username(&app.database, &username).await {
+                Ok(ids) => match ids.as_slice() {
+                    [] => return error(StatusCode::NOT_FOUND, "user_not_found"),
+                    [only] => only.clone(),
+                    _ => return error(StatusCode::CONFLICT, "username_ambiguous"),
+                },
+                Err(err) => {
+                    tracing::error!(error = ?err, "admin revoke: user lookup by username failed");
+                    return error(StatusCode::INTERNAL_SERVER_ERROR, "lookup_failed");
+                }
             }
-        },
+        }
         _ => {
             return error(
                 StatusCode::BAD_REQUEST,
-                "give_exactly_one_of_userId_or_email",
+                "give_exactly_one_of_userId_or_username",
             );
         }
     };
@@ -288,12 +299,12 @@ mod session_revocation_db_tests {
     async fn seed_user(pool: &PgPool, user_id: &str, groups: &[&str], tokens: &[&str]) {
         let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
         sqlx::query(
-            "INSERT INTO users (id, email, name, groups) VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (id) DO UPDATE SET groups = EXCLUDED.groups, email = EXCLUDED.email, \
-             sessions_invalidated_at = NULL",
+            "INSERT INTO users (id, username, name, groups) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (id) DO UPDATE SET groups = EXCLUDED.groups, \
+             username = EXCLUDED.username, sessions_invalidated_at = NULL",
         )
         .bind(user_id)
-        .bind(format!("{}@example.com", user_id.to_lowercase()))
+        .bind(user_id.to_lowercase())
         .bind(user_id)
         .bind(&groups)
         .execute(pool)
@@ -396,19 +407,48 @@ mod session_revocation_db_tests {
             "the admin's own session is untouched"
         );
 
-        // By email, case-insensitively, after the target logs in again.
+        // By username, case-insensitively, after the target logs in again.
         seed_user(&pool, "TEST-ADMIN-TARGET", &[], &["target-c"]).await;
         let (status, body) = send(
             router.clone(),
             admin_request(
                 "admin-tok",
                 Some(ORIGIN),
-                json!({"email": "TEST-admin-target@EXAMPLE.com"}),
+                json!({"username": "TEST-admin-TARGET"}),
             ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(!session_alive(&pool, "target-c").await);
+
+        // The removed email lookup says so, and revokes nothing.
+        seed_user(&pool, "TEST-ADMIN-TARGET", &[], &["target-d"]).await;
+        let (status, body) = send(
+            router.clone(),
+            admin_request(
+                "admin-tok",
+                Some(ORIGIN),
+                json!({"email": "test-admin-target@example.com"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "email_lookup_removed_use_username");
+        assert!(session_alive(&pool, "target-d").await);
+
+        // Neither, or both, is refused.
+        for body in [
+            json!({}),
+            json!({"userId": "TEST-ADMIN-TARGET", "username": "test-admin-target"}),
+        ] {
+            let (status, resp) = send(
+                router.clone(),
+                admin_request("admin-tok", Some(ORIGIN), body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+            assert_eq!(resp["error"], "give_exactly_one_of_userId_or_username");
+        }
 
         let (status, body) = send(
             router,
