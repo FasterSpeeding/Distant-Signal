@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
+import { byVisibleText } from '@/test/routeText';
 
 // `LoginPromptModal`'s own `LoginButtonLink` calls `useLoginHref()`, which
 // calls `usePathname()`/`useSearchParams()` -- same stub `PinToggle.test.tsx`/
@@ -157,18 +158,18 @@ describe('JourneyLegCandidates', () => {
     );
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText('Train C11052 · BRI → London Paddington')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('Train C11052 · BRI → London Paddington'))).toBeInTheDocument();
   });
 
   it("leads each row with the traveller's own leg times, not the train's route", async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08')).toBeInTheDocument();
-    expect(screen.getByText('dep. BTH 11:02 → arr. SWI 11:38')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('dep. BTH 11:02 → arr. SWI 11:38'))).toBeInTheDocument();
     // The train's own identity and route survive as dimmed secondary
     // text -- useful context, no longer the whole row.
-    expect(screen.getAllByText('Train C11052 · BRI → PAD')).toHaveLength(1);
+    expect(screen.getAllByText(byVisibleText('Train C11052 · BRI → PAD'))).toHaveLength(1);
   });
 
   // Review §2.5/M15 -- the list's own intro line, added independently of
@@ -207,10 +208,10 @@ describe('JourneyLegCandidates', () => {
     // train", indistinguishable in a screen reader's control list.
     expect(await screen.findAllByRole('button', { name: /^Track this train/ })).toHaveLength(2);
     expect(
-      screen.getByRole('button', { name: 'Track this train — dep. BTH 10:32 → arr. SWI 11:08' }),
+      screen.getByRole('button', { name: 'Track this train — dep. BTH 10:32 to arr. SWI 11:08' }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Track this train — dep. BTH 11:02 → arr. SWI 11:38' }),
+      screen.getByRole('button', { name: 'Track this train — dep. BTH 11:02 to arr. SWI 11:38' }),
     ).toBeInTheDocument();
     // Label-in-Name (WCAG 2.5.3): the accessible name still CONTAINS the
     // visible label.
@@ -222,7 +223,7 @@ describe('JourneyLegCandidates', () => {
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const link = await screen.findByRole('link', {
-      name: 'View live status for the dep. BTH 10:32 → arr. SWI 11:08',
+      name: 'View live status for the dep. BTH 10:32 to arr. SWI 11:08',
     });
     expect(link).toHaveAttribute('href', '/train/C11052/2026-09-22');
   });
@@ -277,7 +278,7 @@ describe('JourneyLegCandidates', () => {
     );
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText('dep. BTH 23:40 → arr. SWI 02:15 (next day)')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('dep. BTH 23:40 → arr. SWI 02:15 (next day)'))).toBeInTheDocument();
   });
 
   it('POSTs the picked train and calls onPicked on success', async () => {
@@ -415,9 +416,9 @@ describe('JourneyLegCandidates', () => {
 
       // Row 1 (`operator: null`) keeps its pre-existing exact subtitle --
       // no operator suffix appended.
-      expect(await screen.findByText('Train C11052 · BRI → PAD')).toBeInTheDocument();
+      expect(await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'))).toBeInTheDocument();
       // Row 2 (`operator: 'GW'`) gets the suffix.
-      expect(screen.getByText('Train C11099 · BRI → PAD · GW')).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText('Train C11099 · BRI → PAD · GW'))).toBeInTheDocument();
     });
 
     it('debounces typing into the Operator field, then re-fetches with the uppercased value', async () => {
@@ -428,7 +429,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText('Train C11052 · BRI → PAD');
+        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
         fetchMock.mockClear();
 
         fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
@@ -497,7 +498,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText('Train C11052 · BRI → PAD');
+        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
         expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
 
         fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
@@ -509,8 +510,8 @@ describe('JourneyLegCandidates', () => {
 
         // Row 1 (the unfiltered page 1) is gone, replaced by row 2 (the
         // filtered response) -- not appended alongside it.
-        await screen.findByText('Train C11099 · BRI → PAD · GW');
-        expect(screen.queryByText('Train C11052 · BRI → PAD')).not.toBeInTheDocument();
+        await screen.findByText(byVisibleText('Train C11099 · BRI → PAD · GW'));
+        expect(screen.queryByText(byVisibleText('Train C11052 · BRI → PAD'))).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
 
         const candidateCalls = fetchMock.mock.calls
@@ -541,7 +542,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText('Train C11052 · BRI → PAD');
+        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
 
         const input = screen.getByRole('combobox', { name: 'Operator (optional)' });
         fireEvent.focus(input);
@@ -596,7 +597,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText('Train C11052 · BRI → PAD');
+        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
 
         fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
           target: { value: 'gw' },
@@ -656,7 +657,7 @@ describe('JourneyLegCandidates', () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
       renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-      await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08');
+      await screen.findByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'));
       expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     });
 
@@ -672,12 +673,12 @@ describe('JourneyLegCandidates', () => {
       vi.stubGlobal('fetch', fetchMock);
       renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-      await screen.findByText('dep. BTH 10:32 → arr. SWI 11:08');
+      await screen.findByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'));
       fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-      expect(await screen.findByText('dep. BTH 11:02 → arr. SWI 11:38')).toBeInTheDocument();
+      expect(await screen.findByText(byVisibleText('dep. BTH 11:02 → arr. SWI 11:38'))).toBeInTheDocument();
       expect(
-        screen.getByText('dep. BTH 10:32 → arr. SWI 11:08'),
+        screen.getByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08')),
         'page 1 must still be on screen -- Load more appends, it does not replace',
       ).toBeInTheDocument();
 
@@ -713,7 +714,7 @@ describe('JourneyLegCandidates', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
       expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
-      expect(screen.getByText('dep. BTH 10:32 → arr. SWI 11:08')).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'))).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     });
 
@@ -732,7 +733,7 @@ describe('JourneyLegCandidates', () => {
       fireEvent.click(button);
 
       resolvePageTwo(new Response(JSON.stringify({ results: PAGE_TWO, nextCursor: null }), { status: 200 }));
-      await screen.findByText('dep. BTH 11:02 → arr. SWI 11:38');
+      await screen.findByText(byVisibleText('dep. BTH 11:02 → arr. SWI 11:38'));
 
       const candidateCalls = fetchMock.mock.calls
         .map((call) => String(call[0]))

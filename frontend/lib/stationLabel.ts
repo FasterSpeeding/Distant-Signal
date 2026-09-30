@@ -13,6 +13,20 @@ export function stationLabel(crs: string, name: string | null | undefined): stri
   return name ? `${name} (${crs})` : crs;
 }
 
+/** The arrow between a route's two ends ("KGX → YRK"). Every route string
+ * in this module joins its ends with it, space-padded. Rendered through
+ * `RouteText`/`RouteArrow` (`components/RouteArrow.tsx`), which keep the
+ * arrow on screen but have screen readers say "to" instead of "right
+ * arrow". */
+export const ROUTE_ARROW = '→';
+
+/** A route string with its arrows spelled out as "to" ("KGX to YRK"), for
+ * plain-text contexts that can't hold `RouteText`'s markup: document
+ * titles, `aria-label`s, `Select` option labels. */
+export function spokenRoute(label: string): string {
+  return label.split(` ${ROUTE_ARROW} `).join(' to ');
+}
+
 /** What to render in place of a station when there isn't one to name. A
  * tracked train's `pinOriginCrs` is genuinely `null` for a subscription
  * created by `train_uid` alone, before any schedule data has been matched

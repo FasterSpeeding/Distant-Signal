@@ -4,6 +4,7 @@ import { DeleteJourneyButton } from './DeleteJourneyButton';
 import { JourneyLegCard } from './JourneyLegCard';
 import { JourneyStatusBadge } from './JourneyStatusBadge';
 import { LastUpdated } from './LastUpdated';
+import { RouteText } from './RouteArrow';
 import { SaveAsTemplateButton } from './SaveAsTemplateButton';
 import { ShareJourneyButton } from './ShareJourneyButton';
 import { ShareJourneyLinkButton } from './ShareJourneyLinkButton';
@@ -140,7 +141,9 @@ export function JourneyDetailView({
   return (
     <>
       <Group justify="space-between" align="baseline">
-        <Title order={1}>{journey.customName ?? defaultJourneyTitle(journey)}</Title>
+        <Title order={1}>
+          <RouteText>{journey.customName ?? defaultJourneyTitle(journey)}</RouteText>
+        </Title>
         <Group gap="xs">
           {/* Phase 2's status badge is a pure read -- shown to every viewer,
               owner or shared-group member alike. */}

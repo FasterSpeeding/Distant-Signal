@@ -100,10 +100,12 @@ export const NON_AFFILIATION_STATEMENT =
 
 /** A credit or licence link. `tone="inherit"`: it sits in dimmed (footer)
  * or statement text whose wording is licence text, so it keeps that
- * colour and is marked by its underline (docs/style-guide.md "TextLink"). */
+ * colour and is marked by its underline (docs/style-guide.md "TextLink").
+ * `external`: it opens a new tab, so it carries the `ExternalLinkIcon` and
+ * "(opens in a new tab)" -- after the link text, which stays verbatim. */
 function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <TextLink href={href} target="_blank" rel="noopener noreferrer" underline="always" inline tone="inherit">
+    <TextLink href={href} external underline="always" inline tone="inherit">
       {children}
     </TextLink>
   );

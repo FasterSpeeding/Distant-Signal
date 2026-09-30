@@ -1,5 +1,6 @@
 import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
 import { codeRouteLabel } from '@/lib/stationLabel';
+import { RouteText } from './RouteArrow';
 import type { TripPlanItinerary, TripPlanLeg, TripPlanLegLive } from '@/lib/types';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
@@ -63,7 +64,7 @@ export function ItineraryOption({
             <Stack gap={4}>
               {itinerary.legs.map((leg, index) => (
                 <Text key={index} size="sm">
-                  {legSummary(leg, stationNames)}
+                  <RouteText>{legSummary(leg, stationNames)}</RouteText>
                 </Text>
               ))}
             </Stack>

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { visibleText } from '@/test/routeText';
 import PrivacyPage from './page';
 
 vi.mock('next/navigation', () => ({
@@ -51,5 +52,27 @@ describe('PrivacyPage retention copy', () => {
     render({ RETENTION_STALE_PUSH_SUBSCRIPTION_DAYS: '0', RETENTION_PAST_TRAVEL_DAYS: '0' });
     expect(retentionText('Push notifications')).not.toMatch(/have not signed in/);
     expect(retentionText('Tickets')).not.toMatch(/travel date/);
+  });
+});
+
+describe('PrivacyPage external links', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["Anthropic's terms", 'https://www.anthropic.com/legal'],
+    ['ico.org.uk', 'https://ico.org.uk/make-a-complaint/'],
+  ])('%s opens a new tab and says so, keeping its visible text and inherited colour', (text, href) => {
+    vi.stubEnv('LEGAL_PAGES_PREVIEW', 'true');
+    renderWithMantine(<PrivacyPage />);
+    const link = screen.getByRole('link', { name: `${text} (opens in a new tab)` });
+    expect(link).toHaveAttribute('href', href);
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).toHaveAttribute('data-text-link-tone', 'inherit');
+    expect(link).toHaveAttribute('data-text-link', 'always');
+    expect(visibleText(link)).toBe(text);
+    expect(link.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
   });
 });

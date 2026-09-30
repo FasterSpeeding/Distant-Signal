@@ -4,6 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import JourneyTemplatesPage from './page';
 import * as api from '@/lib/api';
 import type { JourneyTemplateListItem } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -60,13 +61,13 @@ describe('JourneyTemplatesPage', () => {
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute('href', '/journeys/templates/1');
     // The computed route is still shown as a secondary line under a custom name.
-    expect(screen.getByText('London Kings Cross (KGX) → Edinburgh (EDB)')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('London Kings Cross (KGX) → Edinburgh (EDB)'))).toBeInTheDocument();
   });
 
   it('falls back to the computed route as the title when there is no custom name', async () => {
     vi.mocked(api.getMyJourneyTemplates).mockResolvedValue([template({ id: 2, customName: null })]);
     await renderPage();
-    expect(screen.getByRole('link', { name: 'London Kings Cross (KGX) → Edinburgh (EDB)' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'London Kings Cross (KGX) to Edinburgh (EDB)' })).toBeInTheDocument();
   });
 
   it('shows the leg count, singular for one leg', async () => {

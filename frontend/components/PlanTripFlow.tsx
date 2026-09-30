@@ -15,6 +15,7 @@ import {
 } from '@/lib/tripPlan';
 import { getStationNames } from '@/lib/suggestions';
 import { codeRouteLabel } from '@/lib/stationLabel';
+import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
 interface SegmentSelection {
@@ -313,10 +314,12 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
           );
           return (
             <Stack key={segmentIndex} gap="xs">
-              <Text fw={600}>{segmentLabel}</Text>
+              <Text fw={600}>
+                <RouteText>{segmentLabel}</RouteText>
+              </Text>
               {segment.itineraries.length === 0 && (
                 <Alert color="yellow">
-                  No route found for {segmentLabel}.
+                  No route found for <RouteText>{segmentLabel}</RouteText>.
                   {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
                 </Alert>
               )}

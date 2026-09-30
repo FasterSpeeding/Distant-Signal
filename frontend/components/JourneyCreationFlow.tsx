@@ -8,6 +8,7 @@ import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
 import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { routeLabel } from '@/lib/stationLabel';
+import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, JourneyDetail } from '@/lib/types';
 
 /** The `/journeys/new` page's own interactive body -- see that page's doc
@@ -150,7 +151,10 @@ export function JourneyCreationFlow() {
             <Card withBorder key={leg.id}>
               <Group justify="space-between" wrap="wrap">
                 <Text size="sm">
-                  Leg {index + 1}: {routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
+                  Leg {index + 1}:{' '}
+                  <RouteText>
+                    {routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
+                  </RouteText>
                 </Text>
                 <Text size="sm" c="dimmed">
                   {leg.trackedTrainState ? 'Train matched' : 'Not yet matched'}

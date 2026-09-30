@@ -5,6 +5,7 @@ import { LineTrainsResults } from './LineTrainsResults';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import type { LineTrainEntry } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api');
 
@@ -86,10 +87,10 @@ describe('LineTrainsResults', () => {
       }),
     ]);
     renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(/London Waterloo \(WAT\) → Alton \(ALT\)/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) → Alton \(ALT\)/))).toBeInTheDocument();
     expect(screen.getByText(/4m late/)).toBeInTheDocument();
     const link = screen.getByRole('link', {
-      name: 'View live status for the 08:00 · London Waterloo (WAT) → Alton (ALT)',
+      name: 'View live status for the 08:00 · London Waterloo (WAT) to Alton (ALT)',
     });
     expect(link).toHaveAttribute('href', '/train/C12345/2026-09-22');
   });
@@ -120,7 +121,7 @@ describe('LineTrainsResults', () => {
       }),
     ]);
     renderWithMantine(await LineTrainsResults({ id: 'ecml', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(/London Kings Cross \(KGX\) → York \(YRK\)/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/London Kings Cross \(KGX\) → York \(YRK\)/))).toBeInTheDocument();
     expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
   });
 

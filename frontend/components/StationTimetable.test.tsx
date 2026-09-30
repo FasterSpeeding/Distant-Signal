@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { StationTimetable } from './StationTimetable';
+import { byVisibleText } from '@/test/routeText';
 
 /** Builds a `GET /public/trains/search` response body -- same envelope
  * shape `TrainSearchForm.test.tsx::searchBody` builds against the same
@@ -85,8 +86,8 @@ describe('StationTimetable', () => {
 
     fireEvent.click(expand());
 
-    expect(await screen.findByText('08:22 · PAD → RDG → BRI')).toBeInTheDocument();
-    expect(screen.getByText('10:05 · WAT → RDG → EXD')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('10:05 · WAT → RDG → EXD'))).toBeInTheDocument();
     const links = screen.getAllByRole('link', { name: 'View live status' });
     // London's service date, not the host's (UTC) one.
     expect(links[0]).toHaveAttribute('href', '/train/C10001/2026-07-16');
@@ -110,7 +111,7 @@ describe('StationTimetable', () => {
 
     fireEvent.click(expand());
 
-    expect(await screen.findByText('09:00 · ? → RDG → BRI')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('09:00 · ? → RDG → BRI'))).toBeInTheDocument();
   });
 
   it('shows the "no matches today" copy for a 200 with an empty results array', async () => {
@@ -169,7 +170,7 @@ describe('StationTimetable', () => {
     );
     renderWithMantine(<StationTimetable crs="RDG" />);
     fireEvent.click(expand());
-    await screen.findByText('08:22 · PAD → RDG → BRI');
+    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     // The button doesn't just vanish -- the list says it is complete.
     expect(screen.getByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
@@ -210,7 +211,7 @@ describe('StationTimetable', () => {
     expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     // The rows already on screen survive a failed next page.
-    expect(screen.getByText('08:22 · PAD → RDG → BRI')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('08:22 · PAD → RDG → BRI'))).toBeInTheDocument();
   });
 
   it('retrying a failed page really does page on, clearing the error and ending the list', async () => {
@@ -233,7 +234,7 @@ describe('StationTimetable', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText('11:40 · PAD → RDG → BRI')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'))).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
     expect(screen.getByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
   });
@@ -257,7 +258,7 @@ describe('StationTimetable', () => {
     fireEvent.click(expand()); // collapse, aborting the in-flight page
     fireEvent.click(expand()); // re-expand: a fresh first page
 
-    await screen.findByText('08:22 · PAD → RDG → BRI');
+    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
     expect(await screen.findByRole('button', { name: 'Load more' })).toBeEnabled();
   });
 
@@ -277,7 +278,7 @@ describe('StationTimetable', () => {
     fireEvent.click(expand()); // collapse
     fireEvent.click(expand()); // re-expand
 
-    await screen.findByText('08:22 · PAD → RDG → BRI');
+    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
     await waitFor(() => expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument());
   });
 
@@ -309,9 +310,9 @@ describe('StationTimetable', () => {
     fireEvent.click(expand());
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText('11:40 · PAD → RDG → BRI')).toBeInTheDocument();
-    expect(screen.getByText('08:22 · PAD → RDG → BRI')).toBeInTheDocument();
-    expect(screen.getByText('10:05 · WAT → RDG → EXD')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('08:22 · PAD → RDG → BRI'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('10:05 · WAT → RDG → EXD'))).toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       '/api/trains/search?station=RDG&after=CURSOR1',
@@ -329,13 +330,13 @@ describe('StationTimetable', () => {
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
-    await screen.findByText('08:22 · PAD → RDG → BRI');
+    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
 
     fireEvent.click(expand()); // collapse
     fireEvent.click(expand()); // re-expand
 
-    await screen.findByText('11:40 · PAD → RDG → BRI');
-    expect(screen.queryByText('08:22 · PAD → RDG → BRI')).not.toBeInTheDocument();
+    await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'));
+    expect(screen.queryByText(byVisibleText('08:22 · PAD → RDG → BRI'))).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -368,15 +369,15 @@ describe('StationTimetable', () => {
 
     // Resolve the newer request first, then the stale one out of order.
     resolveSecond(new Response(searchBody(PAGE_TWO), { status: 200 }));
-    await screen.findByText('11:40 · PAD → RDG → BRI');
+    await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'));
 
     resolveFirst(new Response(searchBody(PAGE_ONE), { status: 200 }));
     // Give the stale response's promise chain a turn to (not) run its
     // state updates before asserting nothing changed.
-    await waitFor(() => expect(screen.getByText('11:40 · PAD → RDG → BRI')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(byVisibleText('11:40 · PAD → RDG → BRI'))).toBeInTheDocument());
 
-    expect(screen.queryByText('08:22 · PAD → RDG → BRI')).not.toBeInTheDocument();
-    expect(screen.queryByText('10:05 · WAT → RDG → EXD')).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('08:22 · PAD → RDG → BRI'))).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('10:05 · WAT → RDG → EXD'))).not.toBeInTheDocument();
     expect(screen.queryByText('Loading scheduled departures…')).not.toBeInTheDocument();
   });
 

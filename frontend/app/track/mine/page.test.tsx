@@ -5,6 +5,7 @@ import { expectShrinkGuarded, expectNoUnguardedNowrapBadges } from '@/test/shrin
 import MyTrackedTrainsPage from './page';
 import * as api from '@/lib/api';
 import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain, JourneyListItem } from '@/lib/types';
+import { byVisibleText, visibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api');
 // The not-logged-in prompt is AutoOpenLoginPrompt -> LoginPromptModal,
@@ -140,7 +141,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
     expect(screen.queryByText('LNER')).not.toBeInTheDocument();
     expect(screen.queryByText('Tickets not yet attached to a train')).not.toBeInTheDocument();
   });
@@ -149,9 +150,9 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ trackedTrainId: 1 })]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
     expect(screen.getByText(/LNER/)).toBeInTheDocument();
-    expect(screen.getByText(/KGX → EDB/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/KGX → EDB/))).toBeInTheDocument();
     expect(screen.getByText(/50% of your fare/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /See how to claim from the operator/ })).toHaveAttribute(
       'href',
@@ -195,7 +196,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 1 })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 1, trackedTrainId: 999 })]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
     expect(screen.queryByText('LNER')).not.toBeInTheDocument();
   });
 
@@ -281,7 +282,10 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/C21373/2026-08-31');
+    expect(screen.getByRole('link', { name: /WAT to WOK/ })).toHaveAttribute('href', '/train/C21373/2026-08-31');
+    // The route keeps its arrow on screen; only the accessible text says "to".
+    expect(screen.getByText(byVisibleText(/^WAT → WOK, /))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^More actions for WAT to WOK, / })).toBeInTheDocument();
   });
 
   it('pending train: links to the by-id detail route', async () => {
@@ -290,7 +294,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/by-id/1');
+    expect(screen.getByRole('link', { name: /WAT to WOK/ })).toHaveAttribute('href', '/train/by-id/1');
   });
 
   it('renders a delay badge for a resolved, delayed train', async () => {
@@ -312,7 +316,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     // Scoped to this row's own Card -- the reliability digest above it can
     // independently print the same calendar date in its own "most delayed
     // journeys" list, which isn't what this assertion is about.
-    const card = screen.getByRole('link', { name: /WAT → WOK/ }).closest('.mantine-Card-root') as HTMLElement;
+    const card = screen.getByRole('link', { name: /WAT to WOK/ }).closest('.mantine-Card-root') as HTMLElement;
     // Once, inside the default "route, when" heading -- not a second time
     // as its own dimmed line.
     expect(within(card).getAllByText(/31 Aug 2026/)).toHaveLength(1);
@@ -357,14 +361,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/London Waterloo \(WAT\) → Woking \(WOK\)/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) → Woking \(WOK\)/))).toBeInTheDocument();
   });
 
   it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ pinOriginName: null, pinDestinationName: null })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
@@ -428,10 +432,10 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       // The caller's own row is still there...
-      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
       // ...and the shared one now is too, with both halves of its
       // attribution.
-      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/PAD → RDG/))).toBeInTheDocument();
       expect(screen.getByText('from Family')).toBeInTheDocument();
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
     });
@@ -444,7 +448,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       expect(screen.queryByText(/haven't tracked any trains or added any tickets yet/)).not.toBeInTheDocument();
-      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/PAD → RDG/))).toBeInTheDocument();
       expect(screen.getByText('from Family')).toBeInTheDocument();
     });
 
@@ -458,7 +462,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getAllByText(/PAD → RDG/)).toHaveLength(1);
+      expect(screen.getAllByText(byVisibleText(/PAD → RDG/))).toHaveLength(1);
       expect(screen.getByText('from Family')).toBeInTheDocument();
       expect(screen.getByText('from Commuters')).toBeInTheDocument();
     });
@@ -470,7 +474,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
+      expect(screen.getByRole('link', { name: /PAD to RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
     });
 
     it('a shared train with a uid but a not-yet-resolved status is still linked', async () => {
@@ -487,7 +491,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
+      expect(screen.getByRole('link', { name: /PAD to RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
     });
 
     it('a shared train with no uid is not linked at all — the by-id route is owner-scoped', async () => {
@@ -499,8 +503,8 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
-      expect(screen.queryByRole('link', { name: /PAD → RDG/ })).not.toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/PAD → RDG/))).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /PAD to RDG/ })).not.toBeInTheDocument();
       expect(screen.getByText('Pending match')).toBeInTheDocument();
     });
 
@@ -624,7 +628,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       // Same id as the caller's own train, so it's filtered out entirely
       // rather than rendered twice.
-      expect(screen.queryByText(/PAD → RDG/)).not.toBeInTheDocument();
+      expect(screen.queryByText(byVisibleText(/PAD → RDG/))).not.toBeInTheDocument();
       expect(screen.getAllByText(/LNER/)).toHaveLength(1);
     });
 
@@ -635,7 +639,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      const sharedRow = screen.getByText(/PAD → RDG/).closest('.mantine-Card-root');
+      const sharedRow = screen.getByText(byVisibleText(/PAD → RDG/)).closest('.mantine-Card-root');
       expect(sharedRow).not.toBeNull();
       expect(within(sharedRow as HTMLElement).getByText('from Family')).toBeInTheDocument();
       expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
@@ -648,7 +652,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
       expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
     });
 
@@ -663,7 +667,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       expect(screen.getByText('School run')).toBeInTheDocument();
-      expect(screen.queryByText(/PAD → RDG/)).not.toBeInTheDocument();
+      expect(screen.queryByText(byVisibleText(/PAD → RDG/))).not.toBeInTheDocument();
     });
 
     it('puts the caller’s own rows before the shared ones, each half in its endpoint’s order', async () => {
@@ -676,7 +680,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      const rendered = [...document.querySelectorAll('.mantine-Card-root')].map((card) => card.textContent ?? '');
+      const rendered = [...document.querySelectorAll('.mantine-Card-root')].map((card) => visibleText(card));
       const ownIndex = rendered.findIndex((text) => text.includes('WAT → WOK'));
       const firstSharedIndex = rendered.findIndex((text) => text.includes('Shared first'));
       const secondSharedIndex = rendered.findIndex((text) => text.includes('Shared second'));
@@ -692,7 +696,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
       expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
     });
 
@@ -706,7 +710,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       // The digest is "Your reliability" -- someone else's train is not
       // the caller's own punctuality record, so the card renders off the
       // caller's own trains/tickets only.
-      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/PAD → RDG/))).toBeInTheDocument();
       expect(screen.queryByText('Your reliability')).not.toBeInTheDocument();
     });
   });
@@ -742,7 +746,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       expect(screen.getByRole('heading', { name: 'Your journeys' })).toBeInTheDocument();
-      const link = screen.getByRole('link', { name: /KGX → EDB/ });
+      const link = screen.getByRole('link', { name: /KGX to EDB/ });
       expect(link).toHaveAttribute('href', '/journeys/169');
       expect(screen.getByText('Needs a train picked')).toBeInTheDocument();
     });
@@ -766,7 +770,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText(/London Kings Cross \(KGX\) → Edinburgh \(EDB\)/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/London Kings Cross \(KGX\) → Edinburgh \(EDB\)/))).toBeInTheDocument();
       // `formatDate`, not the raw ISO `serviceDate` the wire carries.
       expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
     });
@@ -794,8 +798,8 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       // The journey row is the one that survives; the bare train row for
       // the same subscription is suppressed.
-      expect(screen.getByRole('link', { name: /KGX → EDB/ })).toHaveAttribute('href', '/journeys/169');
-      expect(screen.queryByText(/WAT → WOK/)).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/169');
+      expect(screen.queryByText(byVisibleText(/WAT → WOK/))).not.toBeInTheDocument();
     });
 
     it('still lists tracked trains that belong to no journey', async () => {
@@ -805,7 +809,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
     });
 
     it('survives a failing journeys fetch without losing the rest of the page', async () => {
@@ -815,7 +819,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Your journeys' })).not.toBeInTheDocument();
     });
   });

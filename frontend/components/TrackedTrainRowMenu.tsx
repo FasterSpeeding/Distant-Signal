@@ -3,6 +3,7 @@
 import { useRef } from 'react';
 import { ActionIcon, Menu } from '@mantine/core';
 import { KebabIcon } from './KebabIcon';
+import { spokenRoute } from '@/lib/stationLabel';
 import { RenameTrainButton, type RenameTrainButtonHandle } from './RenameTrainButton';
 import { DeleteTrainButton, type DeleteTrainButtonHandle } from './DeleteTrainButton';
 
@@ -57,7 +58,7 @@ export function TrackedTrainRowMenu({
     <>
       <Menu position="bottom-end" withinPortal>
         <Menu.Target>
-          <ActionIcon variant="subtle" color="gray" aria-label={`More actions for ${displayName}`}>
+          <ActionIcon variant="subtle" color="gray" aria-label={`More actions for ${spokenRoute(displayName)}`}>
             <KebabIcon />
           </ActionIcon>
         </Menu.Target>

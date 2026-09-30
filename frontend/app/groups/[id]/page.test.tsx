@@ -15,6 +15,7 @@ import {
   ApiUnauthorizedError,
 } from '@/lib/api';
 import type { GroupCustomLine, GroupJourney, GroupMember, GroupRole, GroupTrain, LineStatusReport } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -827,7 +828,7 @@ describe('GroupDetailPage', () => {
       await renderAsViewer('user-other', 'member');
 
       expect(screen.getByRole('heading', { name: 'Shared journeys' })).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /Woking \(WOK\) → London Waterloo \(WAT\)/ })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /Woking \(WOK\) to London Waterloo \(WAT\)/ })).toHaveAttribute(
         'href',
         '/journeys/501',
       );
@@ -846,7 +847,7 @@ describe('GroupDetailPage', () => {
       ]);
       await renderAsViewer('user-other', 'member');
 
-      expect(screen.getByText(/Woking \(WOK\) → London Waterloo \(WAT\)/)).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/Woking \(WOK\) → London Waterloo \(WAT\)/))).toBeInTheDocument();
       expect(screen.queryByText(/\+0 more leg/)).not.toBeInTheDocument();
       expect(screen.getByText(/Scotland trip \(\+2 more legs\)/)).toBeInTheDocument();
     });

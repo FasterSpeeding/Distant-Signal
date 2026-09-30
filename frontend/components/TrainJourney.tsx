@@ -4,6 +4,7 @@ import { JourneyProgress } from './JourneyProgress';
 import { JourneyTimeline, isGenuineCallingPoint, type JourneyEndpointNames } from './JourneyTimeline';
 import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
+import { RouteText } from './RouteArrow';
 import type { TrainJourneyState } from '@/lib/types';
 
 /** Renders one train's journey through every state the backend can
@@ -122,7 +123,7 @@ function StatusMessage({
 
   const pinSummary = (
     <Text size="sm" c="dimmed">
-      {trackedTrainDisplayName(state)}
+      <RouteText>{trackedTrainDisplayName(state)}</RouteText>
     </Text>
   );
 

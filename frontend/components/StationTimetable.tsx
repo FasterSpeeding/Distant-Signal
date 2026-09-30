@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Accordion, AccordionControl, AccordionItem, AccordionPanel, Alert, Group, Stack, Text } from '@mantine/core';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
+import { RouteArrow } from './RouteArrow';
 import { TextLink } from './TextLink';
 
 /** Wire shape of `GET /public/trains/search`
@@ -219,7 +220,8 @@ export function StationTimetable({ crs }: { crs: string }) {
         {results.rows.map((row) => (
           <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
             <Text size="sm">
-              {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
+              {row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs} <RouteArrow />{' '}
+              {row.destinationCrs ?? '?'}
             </Text>
             <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>
           </Group>

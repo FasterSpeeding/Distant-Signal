@@ -3,6 +3,7 @@ import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { formatLocalDateTime } from '@/lib/dateFormat';
 import { TicketSummary } from './TicketSummary';
+import { byVisibleText } from '@/test/routeText';
 
 describe('TicketSummary', () => {
   it('renders operator and ticket type', () => {
@@ -42,7 +43,7 @@ describe('TicketSummary', () => {
     );
     expect(screen.getByText("Mum's ticket to Leeds")).toBeInTheDocument();
     expect(screen.queryByText('LNER — Off-Peak Day Single')).not.toBeInTheDocument();
-    expect(screen.getByText('KGX → EDB')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('KGX → EDB'))).toBeInTheDocument();
   });
 
   it('falls back to "Ticket" when operator is null', () => {
@@ -80,7 +81,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.getByText('KGX → EDB')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('KGX → EDB'))).toBeInTheDocument();
   });
 
   it('renders station names in the route when the backend resolved them', () => {
@@ -99,7 +100,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.getByText('London Kings Cross (KGX) → Edinburgh Waverley (EDB)')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('London Kings Cross (KGX) → Edinburgh Waverley (EDB)'))).toBeInTheDocument();
   });
 
   it('renders no route line when both origin and destination are null', () => {
@@ -118,7 +119,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.queryByText(/→/)).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText(/→/))).not.toBeInTheDocument();
   });
 
   it('renders a provenance badge for the ticket source', () => {

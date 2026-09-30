@@ -26,6 +26,7 @@ import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantB
 import { AddJourneyToGroupButton } from '@/components/AddJourneyToGroupButton';
 import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton';
 import { StatusBadge } from '@/components/StatusBadge';
+import { RouteText } from '@/components/RouteArrow';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
@@ -484,7 +485,9 @@ function SharedJourneyRow({
       <StatusRow
         title={
           <Link href={`/journeys/${journey.journeyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <Text fw={500}>{displayName}</Text>
+            <Text fw={500}>
+              <RouteText>{displayName}</RouteText>
+            </Text>
           </Link>
         }
         subtitle={

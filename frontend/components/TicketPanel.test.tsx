@@ -3,6 +3,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TicketPanel } from './TicketPanel';
 import * as api from '@/lib/api';
+import { byVisibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api');
 // TicketPanel's 200-with-tickets and empty-array branches render the real
@@ -81,7 +82,7 @@ describe('TicketPanel', () => {
     });
     renderWithMantine(await TicketPanel({ trackingId: 1 }));
     expect(screen.getByText(/LNER/)).toBeInTheDocument();
-    expect(screen.getByText(/KGX → EDB/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/KGX → EDB/))).toBeInTheDocument();
     expect(screen.getByText(/50% of your fare/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add another ticket' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();

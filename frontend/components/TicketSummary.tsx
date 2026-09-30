@@ -2,6 +2,7 @@ import { Badge, Group, Stack, Text } from '@mantine/core';
 import type { TrackedTrainTicket, TicketListItem, TicketSource } from '@/lib/types';
 import { stationLabel } from '@/lib/stationLabel';
 import { LocalDateTime } from './LocalDateTime';
+import { RouteText } from './RouteArrow';
 
 /** Provenance labels for `TicketSummary`'s badge -- styled after
  * `IssueList.tsx`'s `DATA_QUALITY_LABELS` (`components/IssueList.tsx:38-44`),
@@ -65,7 +66,11 @@ export function TicketSummary({
           </>
         )}
       </Text>
-      {route && <Text size="sm">{route}</Text>}
+      {route && (
+        <Text size="sm">
+          <RouteText>{route}</RouteText>
+        </Text>
+      )}
       <Group gap="xs">
         {/* Explicit gray, same rationale as IssueList.tsx's dataQuality
             badge (components/IssueList.tsx:366-372): without a `color`,
