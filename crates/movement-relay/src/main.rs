@@ -254,6 +254,11 @@ trait LagConnection: Sized + Send + 'static {
     async fn group_lag(&mut self, group: &str) -> anyhow::Result<Option<i64>>;
     /// `XLEN movement-events` -- 0 for a stream that doesn't exist yet.
     async fn stream_len(&mut self) -> anyhow::Result<u64>;
+    /// `XLEN movement-events-deadletter` -- 0 while nothing was ever
+    /// dead-lettered (the stream does not exist).
+    async fn deadletter_len(&mut self) -> anyhow::Result<u64>;
+    /// The raw `INFO persistence` reply (see [`parse_persistence_info`]).
+    async fn persistence_info(&mut self) -> anyhow::Result<String>;
 }
 
 #[async_trait::async_trait]
@@ -275,6 +280,67 @@ impl LagConnection for common::redis_conn::RedisConn {
             .query_async(self)
             .await?)
     }
+
+    async fn deadletter_len(&mut self) -> anyhow::Result<u64> {
+        Ok(redis::cmd("XLEN")
+            .arg(DEADLETTER_STREAM)
+            .query_async(self)
+            .await?)
+    }
+
+    async fn persistence_info(&mut self) -> anyhow::Result<String> {
+        Ok(redis::cmd("INFO")
+            .arg("persistence")
+            .query_async(self)
+            .await?)
+    }
+}
+
+/// movement-feed's shared dead-letter stream (`movement_feed::redis_stream`
+/// names it `<stream>-deadletter`; this crate does not depend on
+/// movement-feed, see `stream_lag_loop`).
+const DEADLETTER_STREAM: &str = "movement-events-deadletter";
+
+/// What `INFO persistence` says about the AOF, the only persistence this
+/// chart's Redis runs (`--appendonly yes`, RDB snapshots off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PersistenceStatus {
+    /// `aof_enabled:1`.
+    aof_enabled: bool,
+    /// `aof_last_write_status:ok`. A failed AOF write or fsync (a full or
+    /// failing disk) makes Redis refuse every write until one succeeds, so
+    /// movement-relay stops publishing.
+    aof_last_write_ok: bool,
+    /// `aof_last_bgrewrite_status:ok`. A failed rewrite leaves the
+    /// incremental AOF growing (Redis retries with a backoff), which is how
+    /// a disk fills.
+    aof_last_bgrewrite_ok: bool,
+}
+
+/// Parses the three [`PersistenceStatus`] fields out of an `INFO
+/// persistence` reply (`key:value` lines, CRLF-separated, `#` section
+/// headers). `None` if any is missing, so a reply this cannot read never
+/// reports a healthy AOF.
+fn parse_persistence_info(info: &str) -> Option<PersistenceStatus> {
+    let mut aof_enabled = None;
+    let mut last_write = None;
+    let mut last_bgrewrite = None;
+    for line in info.lines() {
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        match key {
+            "aof_enabled" => aof_enabled = Some(value == "1"),
+            "aof_last_write_status" => last_write = Some(value == "ok"),
+            "aof_last_bgrewrite_status" => last_bgrewrite = Some(value == "ok"),
+            _ => {}
+        }
+    }
+    Some(PersistenceStatus {
+        aof_enabled: aof_enabled?,
+        aof_last_write_ok: last_write?,
+        aof_last_bgrewrite_ok: last_bgrewrite?,
+    })
 }
 
 /// Per-group `XINFO GROUPS` lag, labelled `group`.
@@ -286,6 +352,19 @@ const STREAM_LENGTH_METRIC: &str = "movement_relay_stream_length";
 /// the cap into the rule (the chart's `templates/prometheusrule.yaml`
 /// divides `movement_relay_stream_lag` by this).
 const STREAM_MAXLEN_METRIC: &str = "movement_relay_stream_maxlen";
+/// `XLEN movement-events-deadletter`, labelled `stream`. Read fresh every
+/// tick, unlike the consumers' own `movement_feed_deadletter_length`,
+/// which is only set when a consumer dead-letters something: that one is
+/// absent after every restart and stays at its last value after an
+/// operator drains the stream, so DistantSignalDeadLetterNearFull reads
+/// this one instead.
+const DEADLETTER_LENGTH_METRIC: &str = "movement_relay_deadletter_length";
+/// `INFO persistence` as 1/0 gauges (see [`PersistenceStatus`]), for the
+/// chart's DistantSignalRedisPersistenceFailing alert. The chart ships no
+/// redis_exporter, so without these nothing in it can see a failing AOF.
+const AOF_ENABLED_METRIC: &str = "redis_aof_enabled";
+const AOF_LAST_WRITE_OK_METRIC: &str = "redis_aof_last_write_ok";
+const AOF_LAST_BGREWRITE_OK_METRIC: &str = "redis_aof_last_bgrewrite_ok";
 
 /// What one `run_lag_tick` observed -- returned rather than only written
 /// to gauges so the tick's behaviour is testable without a metrics
@@ -297,6 +376,11 @@ struct LagSample {
     /// Only the groups that exist and reported a lag, in
     /// `STREAM_LAG_GROUPS` order.
     group_lags: Vec<(&'static str, i64)>,
+    /// `None` when there was no connection this tick or `XLEN` failed.
+    deadletter_length: Option<u64>,
+    /// `None` when there was no connection this tick, `INFO` failed or its
+    /// reply could not be parsed.
+    persistence: Option<PersistenceStatus>,
 }
 
 /// Writes one tick's `LagSample` plus the configured cap to the gauges.
@@ -313,6 +397,22 @@ fn publish_lag_sample(sample: &LagSample, maxlen: u64) {
             "group" => *group
         )
         .set(*lag as f64);
+    }
+    if let Some(len) = sample.deadletter_length {
+        metrics::gauge!(
+            common::metrics::metric_name(DEADLETTER_LENGTH_METRIC),
+            "stream" => DEADLETTER_STREAM
+        )
+        .set(len as f64);
+    }
+    if let Some(status) = sample.persistence {
+        let flag = |ok: bool| if ok { 1.0 } else { 0.0 };
+        metrics::gauge!(common::metrics::metric_name(AOF_ENABLED_METRIC))
+            .set(flag(status.aof_enabled));
+        metrics::gauge!(common::metrics::metric_name(AOF_LAST_WRITE_OK_METRIC))
+            .set(flag(status.aof_last_write_ok));
+        metrics::gauge!(common::metrics::metric_name(AOF_LAST_BGREWRITE_OK_METRIC))
+            .set(flag(status.aof_last_bgrewrite_ok));
     }
 }
 
@@ -336,7 +436,8 @@ fn publish_lag_sample(sample: &LagSample, maxlen: u64) {
 ///
 /// Also exports the stream's current length (`XLEN`) and its configured
 /// cap (`maxlen`) alongside the per-group lag, so lag can be alerted on as
-/// a fraction of the cap.
+/// a fraction of the cap; the dead-letter stream's length; and the AOF's
+/// health from `INFO persistence` (see [`PersistenceStatus`]).
 async fn stream_lag_loop<C: LagConnection>(redis_url: String, interval: Duration, maxlen: u64) {
     let mut conn: Option<C> = None;
     loop {
@@ -380,6 +481,23 @@ async fn run_lag_tick<C: LagConnection>(redis_url: &str, conn: &mut Option<C>) -
             Err(err) => {
                 tracing::warn!(error = ?err, group, "stream_lag_loop: failed to fetch XINFO GROUPS");
             }
+        }
+    }
+    match active.deadletter_len().await {
+        Ok(len) => sample.deadletter_length = Some(len),
+        Err(err) => {
+            tracing::warn!(error = ?err, "stream_lag_loop: failed to fetch the dead-letter XLEN");
+        }
+    }
+    match active.persistence_info().await {
+        Ok(info) => {
+            sample.persistence = parse_persistence_info(&info);
+            if sample.persistence.is_none() {
+                tracing::warn!("stream_lag_loop: INFO persistence reply had no AOF status fields");
+            }
+        }
+        Err(err) => {
+            tracing::warn!(error = ?err, "stream_lag_loop: failed to fetch INFO persistence");
         }
     }
     sample
@@ -777,6 +895,10 @@ mod tests {
         queried: Vec<&'static str>,
         /// `None` makes `stream_len` fail, modelling an `XLEN` error.
         stream_len: Option<u64>,
+        /// `None` makes `deadletter_len` fail.
+        deadletter_len: Option<u64>,
+        /// `None` makes `persistence_info` fail.
+        persistence_info: Option<String>,
     }
 
     // `LagConnection::connect` is an associated function (no `&self`), so it
@@ -807,6 +929,8 @@ mod tests {
                 lag_by_group,
                 queried: Vec::new(),
                 stream_len: Some(282),
+                deadletter_len: Some(3),
+                persistence_info: Some(HEALTHY_INFO_PERSISTENCE.to_string()),
             })
         }
 
@@ -824,6 +948,74 @@ mod tests {
             self.stream_len
                 .ok_or_else(|| anyhow::anyhow!("simulated XLEN failure"))
         }
+
+        async fn deadletter_len(&mut self) -> anyhow::Result<u64> {
+            self.deadletter_len
+                .ok_or_else(|| anyhow::anyhow!("simulated dead-letter XLEN failure"))
+        }
+
+        async fn persistence_info(&mut self) -> anyhow::Result<String> {
+            self.persistence_info
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("simulated INFO failure"))
+        }
+    }
+
+    /// An abridged `INFO persistence` reply, in the field order and CRLF
+    /// line endings redis 7.4.11 sends (taken from production, 2026-09-30).
+    const HEALTHY_INFO_PERSISTENCE: &str = "# Persistence\r\nloading:0\r\n\
+        rdb_last_bgsave_status:ok\r\naof_enabled:1\r\naof_rewrite_in_progress:0\r\n\
+        aof_last_rewrite_time_sec:3\r\naof_last_bgrewrite_status:ok\r\n\
+        aof_rewrites:4\r\naof_last_write_status:ok\r\naof_delayed_fsync:0\r\n";
+
+    const HEALTHY: PersistenceStatus = PersistenceStatus {
+        aof_enabled: true,
+        aof_last_write_ok: true,
+        aof_last_bgrewrite_ok: true,
+    };
+
+    #[test]
+    fn a_healthy_info_persistence_reply_parses_as_healthy() {
+        assert_eq!(
+            parse_persistence_info(HEALTHY_INFO_PERSISTENCE),
+            Some(HEALTHY)
+        );
+    }
+
+    #[test]
+    fn failed_aof_writes_and_rewrites_parse_as_not_ok() {
+        let info = HEALTHY_INFO_PERSISTENCE
+            .replace("aof_last_write_status:ok", "aof_last_write_status:err")
+            .replace(
+                "aof_last_bgrewrite_status:ok",
+                "aof_last_bgrewrite_status:err",
+            );
+        assert_eq!(
+            parse_persistence_info(&info),
+            Some(PersistenceStatus {
+                aof_enabled: true,
+                aof_last_write_ok: false,
+                aof_last_bgrewrite_ok: false,
+            })
+        );
+    }
+
+    #[test]
+    fn aof_off_parses_as_disabled() {
+        let info = HEALTHY_INFO_PERSISTENCE.replace("aof_enabled:1", "aof_enabled:0");
+        assert_eq!(
+            parse_persistence_info(&info).map(|s| s.aof_enabled),
+            Some(false)
+        );
+    }
+
+    /// A reply without the fields (another server, a renamed field) must
+    /// report nothing rather than a healthy AOF.
+    #[test]
+    fn a_reply_missing_a_field_parses_as_unknown_not_healthy() {
+        let info = HEALTHY_INFO_PERSISTENCE.replace("aof_last_write_status:ok\r\n", "");
+        assert_eq!(parse_persistence_info(&info), None);
+        assert_eq!(parse_persistence_info(""), None);
     }
 
     /// Regression test for the Signal Box Audit's "lag metric disables
@@ -903,8 +1095,28 @@ mod tests {
                     ("full-coverage-consumer", 7),
                     ("trust-event-backlog", 9),
                 ],
+                deadletter_length: Some(3),
+                persistence: Some(HEALTHY),
             }
         );
+    }
+
+    /// A failed dead-letter XLEN or INFO costs only its own reading.
+    #[tokio::test]
+    async fn a_failed_deadletter_xlen_or_info_still_reports_the_rest() {
+        CONNECT_FAILURES_REMAINING.with(|c| c.set(0));
+        let mut conn: Option<FakeLagConnection> = None;
+        run_lag_tick("redis://fake", &mut conn).await;
+        let active = conn.as_mut().expect("connected");
+        active.deadletter_len = None;
+        active.persistence_info = None;
+
+        let sample = run_lag_tick("redis://fake", &mut conn).await;
+
+        assert_eq!(sample.deadletter_length, None);
+        assert_eq!(sample.persistence, None);
+        assert_eq!(sample.stream_length, Some(282));
+        assert_eq!(sample.group_lags.len(), 3);
     }
 
     /// An `XLEN` failure must not cost the tick its lag readings.
@@ -950,6 +1162,22 @@ mod tests {
             common::metrics::metric_name(STREAM_MAXLEN_METRIC),
             "distant_signal_movement_relay_stream_maxlen"
         );
+        assert_eq!(
+            common::metrics::metric_name(DEADLETTER_LENGTH_METRIC),
+            "distant_signal_movement_relay_deadletter_length"
+        );
+        assert_eq!(
+            common::metrics::metric_name(AOF_ENABLED_METRIC),
+            "distant_signal_redis_aof_enabled"
+        );
+        assert_eq!(
+            common::metrics::metric_name(AOF_LAST_WRITE_OK_METRIC),
+            "distant_signal_redis_aof_last_write_ok"
+        );
+        assert_eq!(
+            common::metrics::metric_name(AOF_LAST_BGREWRITE_OK_METRIC),
+            "distant_signal_redis_aof_last_bgrewrite_ok"
+        );
     }
 
     /// `publish_lag_sample` must be callable without a recorder installed
@@ -961,6 +1189,8 @@ mod tests {
             &LagSample {
                 stream_length: Some(1),
                 group_lags: vec![("trust-consumer", 1)],
+                deadletter_length: Some(0),
+                persistence: Some(HEALTHY),
             },
             1_048_576,
         );
