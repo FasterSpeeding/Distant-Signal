@@ -3063,7 +3063,9 @@ metrics:
     # movement-events state).
     #
     # DistantSignalMovementLagHigh (warning) / ...Critical (critical): a
-    # consumer group's movement-events lag as a fraction of the stream's
+    # consumer group's movement-events lag plus pending (delivered but
+    # un-ACKed: a consumer whose downstream is failing keeps reading, so its
+    # backlog sits in pending, not lag) as a fraction of the stream's
     # MAXLEN cap (movement-relay's stream_maxlen gauge, falling back to
     # movementRelay.streamMaxLen). Lag never reads 0 (baseline is a few
     # hundred entries), hence ratios rather than `> 0`.

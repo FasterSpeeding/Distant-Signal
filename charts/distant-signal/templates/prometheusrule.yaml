@@ -65,16 +65,29 @@ spec:
         movementRelay.streamMaxLen stands in for it. Once lag reaches the
         cap, unread entries start being trimmed before that group reads
         them (a stream gap).
+
+        "Behind" is lag + pending: a consumer whose downstream is failing
+        keeps reading new entries and leaves each failed batch pending, so
+        its lag stays near 0 while the entries it must retry pile up in its
+        pending list, where MAXLEN trims them just the same. Until a relay
+        exporting stream_pending is running, pending counts as 0.
         */}}
         {{- $ratio := printf `(
-  max by (namespace, group) (distant_signal_movement_relay_stream_lag{namespace="%s"})
+  (
+    max by (namespace, group) (distant_signal_movement_relay_stream_lag{namespace="%s"})
+    + on (namespace, group)
+    (
+      max by (namespace, group) (distant_signal_movement_relay_stream_pending{namespace="%s"})
+      or 0 * max by (namespace, group) (distant_signal_movement_relay_stream_lag{namespace="%s"})
+    )
+  )
   / on (namespace) group_left ()
   (
     max by (namespace) (distant_signal_movement_relay_stream_maxlen{namespace="%s"})
     or on (namespace)
     label_replace(vector(%d), "namespace", "%s", "", "")
   )
-)` $ns $ns (int64 $.Values.movementRelay.streamMaxLen) $ns }}
+)` $ns $ns $ns $ns (int64 $.Values.movementRelay.streamMaxLen) $ns }}
         - alert: DistantSignalMovementLagHigh
           expr: |
             {{- printf "%s > %v" $ratio .warningRatio | nindent 12 }}
@@ -88,7 +101,7 @@ spec:
             summary: "movement-events group {{ "{{ $labels.group }}" }} is {{ "{{ $value | humanizePercentage }}" }} of the stream cap behind"
             description: >-
               Consumer group {{ "{{ $labels.group }}" }} in {{ "{{ $labels.namespace }}" }}
-              has unread movement-events entries amounting to
+              has unread or un-ACKed movement-events entries amounting to
               {{ "{{ $value | humanizePercentage }}" }} of the stream's MAXLEN cap
               (warning above {{ .warningRatio }}). If lag reaches the cap, entries
               are trimmed before this group reads them. Check the consumer's
@@ -107,7 +120,7 @@ spec:
             summary: "movement-events group {{ "{{ $labels.group }}" }} is {{ "{{ $value | humanizePercentage }}" }} of the stream cap behind"
             description: >-
               Consumer group {{ "{{ $labels.group }}" }} in {{ "{{ $labels.namespace }}" }}
-              has unread movement-events entries amounting to
+              has unread or un-ACKed movement-events entries amounting to
               {{ "{{ $value | humanizePercentage }}" }} of the stream's MAXLEN cap
               (critical above {{ .criticalRatio }}). Data loss (a stream gap) is
               close: fix the consumer, or raise movementRelay.streamMaxLen together

@@ -252,6 +252,9 @@ const STREAM_LAG_GROUPS: [&str; 3] = [
 trait LagConnection: Sized + Send + 'static {
     async fn connect(redis_url: &str) -> anyhow::Result<Self>;
     async fn group_lag(&mut self, group: &str) -> anyhow::Result<Option<i64>>;
+    /// The group's `pending` count (`XINFO GROUPS`): entries delivered but
+    /// not yet ACKed. `None` when the group doesn't exist.
+    async fn group_pending(&mut self, group: &str) -> anyhow::Result<Option<i64>>;
     /// `XLEN movement-events` -- 0 for a stream that doesn't exist yet.
     async fn stream_len(&mut self) -> anyhow::Result<u64>;
     /// `XLEN movement-events-deadletter` -- 0 while nothing was ever
@@ -271,7 +274,11 @@ impl LagConnection for common::redis_conn::RedisConn {
     }
 
     async fn group_lag(&mut self, group: &str) -> anyhow::Result<Option<i64>> {
-        group_lag(self, group).await
+        group_info_field(self, group, "lag").await
+    }
+
+    async fn group_pending(&mut self, group: &str) -> anyhow::Result<Option<i64>> {
+        group_info_field(self, group, "pending").await
     }
 
     async fn stream_len(&mut self) -> anyhow::Result<u64> {
@@ -345,6 +352,13 @@ fn parse_persistence_info(info: &str) -> Option<PersistenceStatus> {
 
 /// Per-group `XINFO GROUPS` lag, labelled `group`.
 const STREAM_LAG_METRIC: &str = "movement_relay_stream_lag";
+/// Per-group `XINFO GROUPS` pending count, labelled `group`. `lag` counts
+/// only entries not yet DELIVERED: a consumer whose downstream is failing
+/// keeps reading new entries (each failed batch stays pending, to be
+/// reclaimed), so its lag stays near 0 while the un-ACKed entries it will
+/// have to retry pile up behind it. Those are trimmed by MAXLEN just the
+/// same, so the chart's lag alerts divide `lag + pending` by the cap.
+const STREAM_PENDING_METRIC: &str = "movement_relay_stream_pending";
 /// `XLEN movement-events` -- how full the stream currently is.
 const STREAM_LENGTH_METRIC: &str = "movement_relay_stream_length";
 /// The configured `MAXLEN ~` cap (`--movement-stream-maxlen`). Exported so
@@ -376,6 +390,9 @@ struct LagSample {
     /// Only the groups that exist and reported a lag, in
     /// `STREAM_LAG_GROUPS` order.
     group_lags: Vec<(&'static str, i64)>,
+    /// Each existing group's pending (delivered, un-ACKed) count, in
+    /// `STREAM_LAG_GROUPS` order.
+    group_pending: Vec<(&'static str, i64)>,
     /// `None` when there was no connection this tick or `XLEN` failed.
     deadletter_length: Option<u64>,
     /// `None` when there was no connection this tick, `INFO` failed or its
@@ -397,6 +414,13 @@ fn publish_lag_sample(sample: &LagSample, maxlen: u64) {
             "group" => *group
         )
         .set(*lag as f64);
+    }
+    for (group, pending) in &sample.group_pending {
+        metrics::gauge!(
+            common::metrics::metric_name(STREAM_PENDING_METRIC),
+            "group" => *group
+        )
+        .set(*pending as f64);
     }
     if let Some(len) = sample.deadletter_length {
         metrics::gauge!(
@@ -482,6 +506,13 @@ async fn run_lag_tick<C: LagConnection>(redis_url: &str, conn: &mut Option<C>) -
                 tracing::warn!(error = ?err, group, "stream_lag_loop: failed to fetch XINFO GROUPS");
             }
         }
+        match active.group_pending(group).await {
+            Ok(Some(pending)) => sample.group_pending.push((group, pending)),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(error = ?err, group, "stream_lag_loop: failed to fetch XINFO GROUPS");
+            }
+        }
     }
     match active.deadletter_len().await {
         Ok(len) => sample.deadletter_length = Some(len),
@@ -503,13 +534,15 @@ async fn run_lag_tick<C: LagConnection>(redis_url: &str, conn: &mut Option<C>) -
     sample
 }
 
-/// `XINFO GROUPS movement-events`'s `lag` field for one named group --
-/// same reply-walk shape as `crates/enricher/src/stream.rs::group_lag`,
-/// generalized over group name (this function serves three group names from
-/// one binary; enricher's own copy only ever serves one, `"enricher"`).
-async fn group_lag(
+/// One integer field (`lag`, `pending`) of `XINFO GROUPS movement-events`
+/// for one named group -- same reply-walk shape as
+/// `crates/enricher/src/stream.rs::group_lag`, generalized over group name
+/// (this function serves three group names from one binary; enricher's own
+/// copy only ever serves one, `"enricher"`) and field.
+async fn group_info_field(
     conn: &mut common::redis_conn::RedisConn,
     group: &str,
+    field: &str,
 ) -> anyhow::Result<Option<i64>> {
     let reply: Vec<redis::Value> = redis::cmd("XINFO")
         .arg("GROUPS")
@@ -521,18 +554,18 @@ async fn group_lag(
             continue;
         };
         let mut name: Option<String> = None;
-        let mut lag: Option<i64> = None;
+        let mut value: Option<i64> = None;
         let mut it = fields.into_iter();
         while let (Some(k), Some(v)) = (it.next(), it.next()) {
             let k: String = redis::from_redis_value(&k)?;
-            match k.as_str() {
-                "name" => name = redis::from_redis_value(&v).ok(),
-                "lag" => lag = redis::from_redis_value(&v).ok(),
-                _ => {}
+            if k == "name" {
+                name = redis::from_redis_value(&v).ok();
+            } else if k == field {
+                value = redis::from_redis_value(&v).ok();
             }
         }
         if name.as_deref() == Some(group) {
-            return Ok(lag);
+            return Ok(value);
         }
     }
     Ok(None)
@@ -944,6 +977,11 @@ mod tests {
             Ok(self.lag_by_group.get(group).copied())
         }
 
+        async fn group_pending(&mut self, group: &str) -> anyhow::Result<Option<i64>> {
+            // Ten times the lag, so the two readings are distinguishable.
+            Ok(self.lag_by_group.get(group).map(|lag| lag * 10))
+        }
+
         async fn stream_len(&mut self) -> anyhow::Result<u64> {
             self.stream_len
                 .ok_or_else(|| anyhow::anyhow!("simulated XLEN failure"))
@@ -1095,6 +1133,11 @@ mod tests {
                     ("full-coverage-consumer", 7),
                     ("trust-event-backlog", 9),
                 ],
+                group_pending: vec![
+                    ("trust-consumer", 50),
+                    ("full-coverage-consumer", 70),
+                    ("trust-event-backlog", 90),
+                ],
                 deadletter_length: Some(3),
                 persistence: Some(HEALTHY),
             }
@@ -1163,6 +1206,10 @@ mod tests {
             "distant_signal_movement_relay_stream_maxlen"
         );
         assert_eq!(
+            common::metrics::metric_name(STREAM_PENDING_METRIC),
+            "distant_signal_movement_relay_stream_pending"
+        );
+        assert_eq!(
             common::metrics::metric_name(DEADLETTER_LENGTH_METRIC),
             "distant_signal_movement_relay_deadletter_length"
         );
@@ -1189,6 +1236,7 @@ mod tests {
             &LagSample {
                 stream_length: Some(1),
                 group_lags: vec![("trust-consumer", 1)],
+                group_pending: vec![("trust-consumer", 1)],
                 deadletter_length: Some(0),
                 persistence: Some(HEALTHY),
             },
