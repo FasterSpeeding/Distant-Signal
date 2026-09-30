@@ -19,7 +19,7 @@ describe('AccountPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: false,
       id: null,
-      email: null,
+      username: null,
       name: null,
     });
     renderWithMantine(await AccountPage());
@@ -32,7 +32,7 @@ describe('AccountPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
-      email: null,
+      username: null,
       name: 'Ada',
     });
     renderWithMantine(await AccountPage());
@@ -46,7 +46,7 @@ describe('AccountPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
-      email: null,
+      username: null,
       name: 'Ada',
     });
     renderWithMantine(await AccountPage());

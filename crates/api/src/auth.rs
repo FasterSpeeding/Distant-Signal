@@ -385,8 +385,10 @@ pub fn hash_session_token(token: &str) -> String {
 /// from under it.
 pub struct AuthenticatedUser {
     pub id: String,
-    pub email: Option<String>,
     pub name: Option<String>,
+    /// The `preferred_username` claim as of the last sign-in. Self-view
+    /// only (`GET /auth/session`); never shown to other users from here.
+    pub username: Option<String>,
     pub groups: Vec<String>,
 }
 
@@ -414,8 +416,8 @@ impl FromRequestParts<App> for AuthenticatedUser {
             ))?;
         Ok(AuthenticatedUser {
             id: session.id,
-            email: session.email,
             name: session.name,
+            username: session.username,
             groups: session.groups,
         })
     }
@@ -1041,8 +1043,13 @@ mod route_scoping_tests {
     /// `app.database` at all, so this suite has no business requiring a
     /// live Postgres the way `routes::lines::db_tests` does.
     async fn test_app() -> (MockServer, App, Vec<(&'static str, Method, Vec<String>)>) {
+        test_app_with(test_config()).await
+    }
+
+    async fn test_app_with(
+        config: ServiceArguments,
+    ) -> (MockServer, App, Vec<(&'static str, Method, Vec<String>)>) {
         let (server, verifier) = mock_authentik().await;
-        let config = test_config();
         let internal_oauth_routes = build_internal_oauth_routes(&config);
         let expected_routes = internal_oauth_routes.clone();
 
@@ -1457,6 +1464,45 @@ mod route_scoping_tests {
             send(&router, Method::GET, "/some-unknown-route", Some(&token)).await,
             StatusCode::FORBIDDEN
         );
+    }
+
+    /// The island-of-Ireland groups are empty by default (no such
+    /// Authentik groups exist; the pollers ship disabled). An empty group
+    /// is dropped from its route entry, so the path stays in the table but
+    /// admits nobody -- not even a token whose `groups` claim holds an
+    /// empty string -- while every other route keeps its own group.
+    #[tokio::test]
+    async fn a_blank_group_closes_its_routes_to_every_caller() {
+        let mut config = test_config();
+        config.internal_oauth_group_irish_rail_gtfs = String::new();
+        config.internal_oauth_group_irish_rail_live = String::new();
+        config.internal_oauth_group_nir_stations = "  ".to_string();
+        let (server, app, routes) = test_app_with(config).await;
+        for (path, method, groups) in &routes {
+            if path.starts_with("/island-of-ireland") {
+                assert!(groups.is_empty(), "{method} {path}: {groups:?}");
+            } else {
+                assert!(!groups.is_empty(), "{method} {path}");
+            }
+        }
+
+        let router = test_router(app);
+        for groups in [&[""][..], &["  "][..], &["svc-poller-irish-rail-gtfs"][..]] {
+            let token = token_for(&server.uri(), "svc-under-test", groups);
+            for method in [Method::GET, Method::POST] {
+                assert_eq!(
+                    send(
+                        &router,
+                        method.clone(),
+                        "/island-of-ireland-stations",
+                        Some(&token)
+                    )
+                    .await,
+                    StatusCode::FORBIDDEN,
+                    "{method} with groups {groups:?}"
+                );
+            }
+        }
     }
 
     /// Regression coverage for every OTHER route the fix touched: for

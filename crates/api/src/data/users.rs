@@ -8,20 +8,9 @@ use sqlx::PgPool;
 
 use crate::auth::oidc::OidcIdentity;
 
-/// Only ever `Some` when the ID token asserted `email_verified: true` --
-/// the actual enforcement point for design doc Open Question 2 (see
-/// `crates/api/src/auth/oidc.rs`'s `identity_from_claims` doc comment,
-/// which maps the claim through unfiltered; this is where it's filtered).
-fn verified_email(identity: &OidcIdentity) -> Option<&str> {
-    identity
-        .email_verified
-        .then_some(identity.email.as_deref())
-        .flatten()
-}
-
 /// A claim that is PRESENT but blank (`""`, or whitespace only) carries
 /// exactly as much information as an absent one, and every consumer of
-/// `users.name`/`users.email` in this app treats "absent" as "fall back to
+/// `users.name`/`users.username` in this app treats "absent" as "fall back to
 /// something else" -- so the two have to be made indistinguishable here,
 /// at the boundary, rather than at each of those consumers.
 ///
@@ -243,34 +232,6 @@ mod tests {
         assert!(retain_allowed_groups(&strings(&["a", "b"]), &[]).is_empty());
     }
 
-    fn identity(email_verified: bool) -> OidcIdentity {
-        OidcIdentity {
-            sub: "user-123".to_string(),
-            email: Some("rider@example.com".to_string()),
-            email_verified,
-            name: Some("Ada Rider".to_string()),
-            preferred_username: Some("ada".to_string()),
-            groups: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn verified_email_is_kept() {
-        assert_eq!(verified_email(&identity(true)), Some("rider@example.com"));
-    }
-
-    #[test]
-    fn unverified_email_is_dropped() {
-        assert_eq!(verified_email(&identity(false)), None);
-    }
-
-    #[test]
-    fn no_email_claim_at_all_is_none_regardless_of_verified_flag() {
-        let mut i = identity(true);
-        i.email = None;
-        assert_eq!(verified_email(&i), None);
-    }
-
     #[test]
     fn non_blank_keeps_a_real_value_but_trims_it() {
         assert_eq!(non_blank(Some("Ada Rider")), Some("Ada Rider"));
@@ -467,9 +428,12 @@ mod tests {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct User {
     pub id: String,
-    pub email: Option<String>,
     pub name: Option<String>,
     pub username: Option<String>,
+    /// `true` when [`upsert_user`] INSERTed this row (a first sign-in),
+    /// `false` when it updated an existing one. Feeds the
+    /// `distant_signal_api_users_created_total` signup counter.
+    pub created: bool,
 }
 
 /// LEG-6: the IdP `groups` claim cut down to `allowlist` (see
@@ -486,7 +450,7 @@ pub fn retain_allowed_groups(groups: &[String], allowlist: &[String]) -> Vec<Str
     kept
 }
 
-/// Creates the user on first login, or updates `email`/`name`/`groups`/
+/// Creates the user on first login, or updates `name`/`username`/`groups`/
 /// `last_login_at` on every return visit -- design doc: "upserted, not
 /// just inserted once." `groups` is overwritten wholesale, never merged
 /// with what was already stored -- see
@@ -494,31 +458,37 @@ pub fn retain_allowed_groups(groups: &[String], allowlist: &[String]) -> Vec<Str
 /// Global Constraints: a group removed in Authentik is reflected on the
 /// user's very next login.
 ///
-/// `name`/`username`/`email` are normalized through `non_blank` on the way
-/// in, so a blank claim is stored as SQL `NULL` rather than as an empty
-/// string -- the read side (`display_label`, and the session shape's own
-/// name-else-email fallback) then needs no special case for a value this
-/// app never writes. The read side normalizes too, for rows written before
-/// this normalization existed.
+/// `name`/`username` are normalized through `non_blank` on the way in, so a
+/// blank claim is stored as SQL `NULL` rather than as an empty string --
+/// the read side (`display_label`, and the session shape's own
+/// name-else-username fallback) then needs no special case for a value
+/// this app never writes. The read side normalizes too, for rows written
+/// before this normalization existed.
 ///
 /// `username` (the `preferred_username` claim) is overwritten on every
-/// login for the same reason `name` and `email` are: this table mirrors
-/// what the IdP currently asserts, it is not an independent record.
+/// login for the same reason `name` is: this table mirrors what the IdP
+/// currently asserts, it is not an independent record.
+///
+/// `users.email` is no longer written (2026-09-30: the app stopped
+/// requesting the `email` scope, and nothing reads the column). A row
+/// written before then has its email cleared here at the user's next
+/// sign-in, so the column empties itself out; dropping it is a follow-up.
+///
+/// `created` comes from `xmax = 0`, true only for a row this statement
+/// INSERTed (an `ON CONFLICT DO UPDATE` sets `xmax` to this transaction).
 pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User> {
-    let email = non_blank(verified_email(identity));
     let name = non_blank(identity.name.as_deref());
     let username = non_blank(identity.preferred_username.as_deref());
     let row = sqlx::query_as::<_, User>(
-        "INSERT INTO users (id, email, name, username, groups, created_at, last_login_at) \
-         VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) \
+        "INSERT INTO users (id, name, username, groups, created_at, last_login_at) \
+         VALUES ($1, $2, $3, $4, NOW(), NOW()) \
          ON CONFLICT (id) DO UPDATE SET \
-            email = EXCLUDED.email, name = EXCLUDED.name, \
+            email = NULL, name = EXCLUDED.name, \
             username = EXCLUDED.username, groups = EXCLUDED.groups, \
             last_login_at = NOW() \
-         RETURNING id, email, name, username",
+         RETURNING id, name, username, (xmax = 0) AS created",
     )
     .bind(&identity.sub)
-    .bind(email)
     .bind(name)
     .bind(username)
     .bind(&identity.groups)
@@ -661,8 +631,8 @@ mod session_ttl_days_i32_tests {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionUser {
     pub id: String,
-    pub email: Option<String>,
     pub name: Option<String>,
+    pub username: Option<String>,
     pub groups: Vec<String>,
 }
 
@@ -689,7 +659,7 @@ pub async fn get_session_with_user(
     hashed_token: &str,
 ) -> Result<Option<SessionUser>> {
     let row = sqlx::query_as::<_, SessionUser>(
-        "SELECT u.id, u.email, u.name, u.groups \
+        "SELECT u.id, u.name, u.username, u.groups \
          FROM sessions s JOIN users u ON u.id = s.user_id \
          WHERE s.id = $1 AND s.expires_at > NOW() \
            AND (u.sessions_invalidated_at IS NULL OR s.created_at >= u.sessions_invalidated_at)",
@@ -795,16 +765,20 @@ pub async fn revoke_all_sessions(pool: &PgPool, user_id: &str) -> Result<Option<
     Ok(Some(deleted))
 }
 
-/// The ids of every user whose stored (verified) email matches `email`,
-/// case-insensitively. Lets an admin name a user by email rather than by the
-/// opaque OIDC subject. More than one match is possible (`users.email` is not
-/// unique), which the caller must treat as ambiguous rather than pick one.
+/// The ids of every user whose stored username (the `preferred_username`
+/// claim, as of their last sign-in) matches `username`, case-insensitively.
+/// Lets an admin name a user by their Authentik username rather than by the
+/// opaque OIDC subject. More than one match is possible (`users.username` is
+/// not unique here: it is a snapshot, and an IdP username can be renamed and
+/// reused), which the caller must treat as ambiguous rather than pick one.
 /// Capped at 2 rows: the caller only needs to know "none, one, or several".
-pub async fn find_user_ids_by_email(pool: &PgPool, email: &str) -> Result<Vec<String>> {
+/// A sequential scan of `users` is fine at this app's size and for a rare
+/// admin action.
+pub async fn find_user_ids_by_username(pool: &PgPool, username: &str) -> Result<Vec<String>> {
     let ids = sqlx::query_scalar(
-        "SELECT id FROM users WHERE lower(email) = lower($1) ORDER BY id LIMIT 2",
+        "SELECT id FROM users WHERE lower(username) = lower($1) ORDER BY id LIMIT 2",
     )
-    .bind(email.trim())
+    .bind(username.trim())
     .fetch_all(pool)
     .await?;
     Ok(ids)
@@ -1067,16 +1041,36 @@ mod db_tests {
 
         let mut identity = OidcIdentity {
             sub: "TEST-USER-ROUND-TRIP".to_string(),
-            email: Some("test@example.com".to_string()),
-            email_verified: true,
             name: Some("Test Rider".to_string()),
             preferred_username: Some("test-rider".to_string()),
             groups: Vec::new(),
         };
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(&identity.sub)
+            .execute(&pool)
+            .await
+            .expect("clear a leftover fixture row");
         let user = upsert_user(&pool, &identity).await.expect("upsert user");
         assert_eq!(user.id, "TEST-USER-ROUND-TRIP");
         assert_eq!(user.name.as_deref(), Some("Test Rider"));
         assert_eq!(user.username.as_deref(), Some("test-rider"));
+        assert!(user.created, "the first sign-in creates the row");
+
+        // A return visit is not a new user, and clears an email stored by
+        // a build that still wrote one.
+        sqlx::query("UPDATE users SET email = 'old@example.com' WHERE id = $1")
+            .bind(&identity.sub)
+            .execute(&pool)
+            .await
+            .expect("seed a legacy email");
+        let user = upsert_user(&pool, &identity).await.expect("re-upsert user");
+        assert!(!user.created, "a return visit updates the existing row");
+        let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+            .bind(&identity.sub)
+            .fetch_one(&pool)
+            .await
+            .expect("read email");
+        assert_eq!(email, None);
 
         // A blank `name` claim -- what an IdP with no name on file for the
         // user actually sends -- must be stored as NULL, not as `''`.
@@ -1141,8 +1135,6 @@ mod db_tests {
 
         let identity = OidcIdentity {
             sub: "TEST-USER-L6-RELOGIN".to_string(),
-            email: Some("test@example.com".to_string()),
-            email_verified: true,
             name: Some("Test Rider".to_string()),
             preferred_username: Some("test-rider".to_string()),
             groups: Vec::new(),
@@ -1229,8 +1221,6 @@ mod db_tests {
 
         let identity = OidcIdentity {
             sub: "TEST-USER-SESSION-PRUNE".to_string(),
-            email: Some("test@example.com".to_string()),
-            email_verified: true,
             name: Some("Test Rider".to_string()),
             preferred_username: Some("test-rider".to_string()),
             groups: Vec::new(),
@@ -1306,8 +1296,6 @@ mod db_tests {
 
         let mut identity = OidcIdentity {
             sub: "TEST-USER-GROUPS-OVERWRITE".to_string(),
-            email: Some("test@example.com".to_string()),
-            email_verified: true,
             name: Some("Test Rider".to_string()),
             preferred_username: Some("test-rider".to_string()),
             groups: vec!["mcp-users".to_string(), "mcp-live-boards".to_string()],
@@ -1376,8 +1364,6 @@ mod db_tests {
 
         let identity = OidcIdentity {
             sub: "TEST-USER-SESSION-REVOKE-BEFORE".to_string(),
-            email: Some("test@example.com".to_string()),
-            email_verified: true,
             name: Some("Test Rider".to_string()),
             preferred_username: Some("test-rider".to_string()),
             groups: Vec::new(),
@@ -1444,8 +1430,6 @@ mod db_tests {
 
         let identity = OidcIdentity {
             sub: "TEST-USER-SESSION-REVOKE-AFTER".to_string(),
-            email: Some("test@example.com".to_string()),
-            email_verified: true,
             name: Some("Test Rider".to_string()),
             preferred_username: Some("test-rider".to_string()),
             groups: Vec::new(),
@@ -1507,8 +1491,6 @@ mod db_tests {
 
         let identity = OidcIdentity {
             sub: "TEST-USER-LOGOUT-EVERYWHERE".to_string(),
-            email: Some("test@example.com".to_string()),
-            email_verified: true,
             name: Some("Test Rider".to_string()),
             preferred_username: Some("test-rider".to_string()),
             groups: Vec::new(),
@@ -1583,10 +1565,8 @@ mod db_tests {
 
         let identity = OidcIdentity {
             sub: "TEST-USER-REVOKE-ALL".to_string(),
-            email: Some("Revoke-All@Example.com".to_string()),
-            email_verified: true,
             name: None,
-            preferred_username: None,
+            preferred_username: Some("Revoke-All-User".to_string()),
             groups: Vec::new(),
         };
         let user = upsert_user(&pool, &identity).await.expect("upsert user");
@@ -1598,9 +1578,9 @@ mod db_tests {
             .expect("insert session two");
 
         assert_eq!(
-            find_user_ids_by_email(&pool, "revoke-all@example.com")
+            find_user_ids_by_username(&pool, " revoke-all-user ")
                 .await
-                .expect("lookup by email"),
+                .expect("lookup by username"),
             vec![user.id.clone()]
         );
 

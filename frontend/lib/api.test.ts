@@ -539,7 +539,7 @@ describe('api client', () => {
       'fetch',
       vi.fn(
         async () =>
-          new Response(JSON.stringify({ authenticated: false, id: null, email: null, name: null }), { status: 200 }),
+          new Response(JSON.stringify({ authenticated: false, id: null, username: null, name: null }), { status: 200 }),
       ),
     );
     await getSession();
@@ -691,7 +691,7 @@ describe('api client', () => {
         'fetch',
         vi.fn(
           async () =>
-            new Response(JSON.stringify({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' }), {
+            new Response(JSON.stringify({ authenticated: true, id: 'u1', username: 'a', name: 'A' }), {
               status: 200,
             }),
         ),
@@ -699,7 +699,7 @@ describe('api client', () => {
       await expect(getSessionOrLoggedOut()).resolves.toEqual({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       expect(consoleError).not.toHaveBeenCalled();

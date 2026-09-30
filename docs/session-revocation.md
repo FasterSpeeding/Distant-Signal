@@ -58,19 +58,25 @@ console on the site:
 await fetch('/api/admin/users/revoke-sessions', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: 'someone@example.com' }), // or { userId: '<OIDC sub>' }
+  body: JSON.stringify({ username: 'their-authentik-username' }), // or { userId: '<OIDC sub>' }
 }).then(r => r.json())
 // => { userId: '...', sessionsRevoked: 2 }
 ```
 
+`userId` is the user's Authentik subject (`sub`, stored as `users.id`).
+`username` is their Authentik username (`preferred_username`) as of their
+last sign-in to Distant Signal, matched case-insensitively. Distant Signal
+does not request or store email addresses, so there is no lookup by email;
+a body with an `email` field gets `400 email_lookup_removed_use_username`.
+
 | Status | Meaning |
 | --- | --- |
 | 200 | Revoked; `sessionsRevoked` is the number of rows deleted (0 is fine) |
-| 400 | Body must contain exactly one of `userId` or `email` |
+| 400 | Body must contain exactly one of `userId` or `username` (`give_exactly_one_of_userId_or_username`), or used the removed `email` field |
 | 401 | Caller not logged in |
 | 403 | Cross-site request, caller not in `ADMIN_GROUP`, or `ADMIN_GROUP` unset |
-| 404 | No such user (email matching is case-insensitive, against the verified email) |
-| 409 | More than one user has that email; use `userId` |
+| 404 | No such user (username matching is case-insensitive, against the username stored at their last sign-in) |
+| 409 | More than one user has that username (`username_ambiguous`); use `userId` |
 
 Each revocation is logged at WARN with `audit=true event=admin_session_revoke
 admin_user_id=… target_user_id=… sessions_revoked=…`. A non-admin attempt is

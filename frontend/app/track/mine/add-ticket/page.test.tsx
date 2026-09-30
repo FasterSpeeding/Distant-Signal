@@ -17,7 +17,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 function session(authenticated: boolean) {
-  return { authenticated, id: authenticated ? 'user-1' : null, email: null, name: null };
+  return { authenticated, id: authenticated ? 'user-1' : null, username: null, name: null };
 }
 
 describe('AddTicketPage', () => {

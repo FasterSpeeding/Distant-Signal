@@ -125,7 +125,12 @@ function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrai
 // they care about. The stale cache is real module state, so it is reset too.
 beforeEach(() => {
   __resetStaleCacheForTests();
-  vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+  vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+    authenticated: false,
+    id: null,
+    username: null,
+    name: null,
+  });
   vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
   vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
   vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
@@ -153,7 +158,12 @@ describe('DashboardPage', () => {
   // a link-unfurler bot reading past a nav it never sees) but no longer
   // duplicates the brand name in its text.
   it('titles the anonymous h1 something other than the brand name the nav already carries', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
@@ -162,7 +172,12 @@ describe('DashboardPage', () => {
   });
 
   it('anonymous, all lines good: shows the no-disruption message, not a raw empty state', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
@@ -183,7 +198,12 @@ describe('DashboardPage', () => {
   // reserved, never absent). See NotificationsToggle.test.tsx for the
   // component's own behavior under a stubbed-supported browser.
   it('renders a disabled "Enable notifications" control under jsdom (no Push API support)', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
@@ -191,7 +211,12 @@ describe('DashboardPage', () => {
   });
 
   it('anonymous, a line disrupted: lists it, worst-first', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({
@@ -214,7 +239,12 @@ describe('DashboardPage', () => {
   });
 
   it('anonymous: merged TfL counterpart ids are excluded from the widget', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({
@@ -238,7 +268,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({
@@ -262,7 +292,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
@@ -292,7 +322,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'], pinnedOperators: [] });
@@ -307,7 +337,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({
@@ -328,7 +358,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
@@ -343,7 +373,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
@@ -366,7 +396,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({
@@ -388,7 +418,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({
@@ -407,7 +437,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({
@@ -427,7 +457,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({
@@ -459,7 +489,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
@@ -475,7 +505,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({
@@ -502,7 +532,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({
@@ -520,7 +550,12 @@ describe('DashboardPage', () => {
   });
 
   it('anonymous branch still renders "Right now" identically after the RightNowModule extraction', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({
@@ -676,7 +711,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: 'u1',
-        email: 'a@b.com',
+        username: 'a',
         name: 'A',
       });
       vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
@@ -699,7 +734,12 @@ describe('DashboardPage', () => {
   // "getSessionOrLoggedOut" there); this page only needs to keep trusting
   // whatever `getSessionOrLoggedOut()` resolves to, which this pins.
   it('degrades to the anonymous branch when getSessionOrLoggedOut() resolves logged-out (its own failure-fallback shape), not a crash', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
@@ -725,7 +765,7 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
@@ -850,7 +890,7 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.c',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockRejectedValue(new Error('500'));
@@ -865,7 +905,7 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.c',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
@@ -880,7 +920,7 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.c',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['KGX'], pinnedOperators: [] });
@@ -908,7 +948,7 @@ describe('DashboardPage -- pinned station line-coverage distinction', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.c',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['RAY'], pinnedOperators: [] });
@@ -983,7 +1023,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
     };
   }
 
-  const loggedIn = { authenticated: true as const, id: 'u1', email: 'a@b.com', name: 'A' };
+  const loggedIn = { authenticated: true as const, id: 'u1', username: 'a', name: 'A' };
 
   it('is absent entirely when nothing has been shared with the caller', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(loggedIn);
@@ -995,7 +1035,12 @@ describe('DashboardPage -- Lines shared with you section', () => {
   it('is absent for an anonymous visitor even if the endpoint somehow returned rows', async () => {
     // The anonymous branch returns before this section is ever rendered --
     // a shared custom line is only ever visible to a signed-in member.
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
@@ -1131,7 +1176,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
 // the same public, unauthenticated `getAllOperators()` catalogue fetched
 // unconditionally above (see the fetch's own comment in app/page.tsx).
 describe('DashboardPage -- Your Operators section', () => {
-  const loggedIn = { authenticated: true as const, id: 'u1', email: 'a@b.com', name: 'A' };
+  const loggedIn = { authenticated: true as const, id: 'u1', username: 'a', name: 'A' };
 
   it('renders a pinned operator with a matching getAllOperators entry as a card under "Your Operators"', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(loggedIn);
@@ -1197,7 +1242,12 @@ describe('DashboardPage -- Your Operators section', () => {
   // unconditional, even though the anonymous branch never renders anything
   // pinned-operator-shaped -- pure wasted cost for that visitor.
   it('never fetches the operators catalogue for an anonymous visitor', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     // This mock's call count accumulates across every earlier test in this
     // file (nothing in this suite resets mocks between tests) -- cleared
     // here so this assertion is about THIS render, not the file's history.
@@ -1317,7 +1367,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
-      email: 'a@b.com',
+      username: 'a',
       name: 'A',
     });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
@@ -1639,7 +1689,12 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
   });
 
   it('an anonymous visitor never sees the section, whatever the shared-trains call returns', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     // Defensive: the anonymous branch returns before any of this is read,
     // so even an (impossible) populated response can't leak a shared train

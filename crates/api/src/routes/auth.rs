@@ -15,6 +15,16 @@ use crate::app::{App, Router};
 use crate::auth::{self, AuthenticatedUser, OptionalAuthenticatedUser};
 use crate::data::users;
 
+/// Suffix of `distant_signal_api_users_created_total`: incremented once per
+/// brand-new `users` row, i.e. a first sign-in (`users::User::created`).
+pub(crate) const USERS_CREATED_METRIC: &str = "api_users_created_total";
+
+/// Registers [`USERS_CREATED_METRIC`] at 0 at startup, so an alert's
+/// `increase()` sees the first sign-up after a restart.
+pub fn register_user_metrics() {
+    metrics::counter!(common::metrics::metric_name(USERS_CREATED_METRIC)).increment(0);
+}
+
 pub fn router() -> Router {
     Router::new()
         .route("/auth/login", axum::routing::get(login))
@@ -277,6 +287,11 @@ async fn callback(
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
     };
+    if user.created {
+        // Sign-up is open (Authentik's Discord source self-enrols anyone),
+        // so this is the signal a signup-spike alert watches.
+        metrics::counter!(common::metrics::metric_name(USERS_CREATED_METRIC)).increment(1);
+    }
 
     let session_token = auth::generate_session_token();
     // L6 (2026-09-26 review): the session this browser was already carrying
@@ -558,8 +573,11 @@ async fn backchannel_logout(
 struct SessionResponse {
     authenticated: bool,
     id: Option<String>,
-    email: Option<String>,
     name: Option<String>,
+    /// The user's own username (`preferred_username`), the self-view
+    /// fallback label when `name` is empty. Replaced `email` (2026-09-30),
+    /// which this app no longer requests or stores.
+    username: Option<String>,
     /// Always present, empty when logged out or when the logged-in user
     /// asserted no groups -- never omitted, so a consumer (Task 9's
     /// adapter, in distant-signal-mcp's own separate repository) can
@@ -577,15 +595,15 @@ async fn session(
         Some(u) => Json(SessionResponse {
             authenticated: true,
             id: Some(u.id),
-            email: u.email,
             name: u.name,
+            username: u.username,
             groups: u.groups,
         }),
         None => Json(SessionResponse {
             authenticated: false,
             id: None,
-            email: None,
             name: None,
+            username: None,
             groups: vec![],
         }),
     }
@@ -667,8 +685,8 @@ mod tests {
         let response = SessionResponse {
             authenticated: true,
             id: Some("user-123".to_string()),
-            email: Some("rider@example.com".to_string()),
             name: Some("Ada Rider".to_string()),
+            username: Some("ada".to_string()),
             groups: vec!["mcp-users".to_string(), "mcp-live-boards".to_string()],
         };
         let json = serde_json::to_value(&response).expect("serializes");
@@ -683,8 +701,8 @@ mod tests {
         let response = SessionResponse {
             authenticated: false,
             id: None,
-            email: None,
             name: None,
+            username: None,
             groups: vec![],
         };
         let json = serde_json::to_value(&response).expect("serializes");

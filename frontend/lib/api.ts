@@ -530,7 +530,7 @@ export async function getSession(): Promise<SessionInfo> {
 export const LOGGED_OUT_SESSION: SessionInfo = {
   authenticated: false,
   id: null,
-  email: null,
+  username: null,
   name: null,
 };
 

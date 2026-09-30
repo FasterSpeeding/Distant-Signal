@@ -128,7 +128,7 @@ describe('GroupDetailPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
-      email: null,
+      username: null,
       name: 'Alex',
     });
 
@@ -198,7 +198,7 @@ describe('GroupDetailPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
-      email: null,
+      username: null,
       name: 'Alex',
     });
 
@@ -256,7 +256,12 @@ describe('GroupDetailPage', () => {
         addedByTag: 'd4e5f6',
       },
     ]);
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: null });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      username: null,
+      name: null,
+    });
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
@@ -291,7 +296,7 @@ describe('GroupDetailPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
-      email: null,
+      username: null,
       name: 'Alex',
     });
 
@@ -325,7 +330,7 @@ describe('GroupDetailPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
-      email: null,
+      username: null,
       name: 'Alex',
     });
 
@@ -352,7 +357,7 @@ describe('GroupDetailPage', () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
-      email: null,
+      username: null,
       name: 'Alex',
     });
 
@@ -444,7 +449,7 @@ describe('GroupDetailPage', () => {
       vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: viewer.userId,
-        email: null,
+        username: null,
         name: viewer.displayName,
       });
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
@@ -553,7 +558,7 @@ describe('GroupDetailPage', () => {
       vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: OWNER.userId,
-        email: null,
+        username: null,
         name: OWNER.displayName,
       });
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
@@ -598,7 +603,7 @@ describe('GroupDetailPage', () => {
       vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: OWNER.userId,
-        email: null,
+        username: null,
         name: OWNER.displayName,
       });
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
@@ -678,7 +683,7 @@ describe('GroupDetailPage', () => {
       vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: viewerId,
-        email: null,
+        username: null,
         name: null,
       });
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
@@ -812,7 +817,7 @@ describe('GroupDetailPage', () => {
       vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
         authenticated: true,
         id: viewerId,
-        email: null,
+        username: null,
         name: null,
       });
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));

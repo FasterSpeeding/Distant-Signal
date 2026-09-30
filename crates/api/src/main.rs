@@ -290,6 +290,7 @@ async fn server_main() -> anyhow::Result<()> {
         router = router.layer(metrics_layer);
         spawn_metrics_listener(app.config.metrics_port, metrics_handle);
         data::queries::register_schedule_publish_metrics();
+        routes::auth::register_user_metrics();
     }
 
     // L4 (2026-09-26 review): api-layer Origin check on every
