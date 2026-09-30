@@ -44,7 +44,7 @@ column names what was found, not everything the spec proposed. Where a
 spec's counterpart lives outside this repository (the distant-signal-mcp
 server), only this repository's side was checked.
 
-159 specs: 105 implemented, 1 partly, 6 not implemented, 7 superseded, 40 research / review.
+160 specs: 105 implemented, 1 partly, 7 not implemented, 7 superseded, 40 research / review.
 
 | Spec | Status | Evidence / note |
 |---|---|---|
@@ -207,6 +207,7 @@ server), only this repository's side was checked.
 | [2026-09-23-unlisted-links-design](specs/2026-09-23-unlisted-links-design.md) | implemented | `20260923110000_unlisted_links.sql`, `frontend/app/journeys/shared/[token]/page.tsx` |
 | [2026-09-27-full-coverage-windowed-stats-design](specs/2026-09-27-full-coverage-windowed-stats-design.md) | implemented | `20260927120000_full_coverage_line_window_stats.sql`; all switches off by default |
 | [2026-09-29-trips-plan-arrive-by-avoid-design](specs/2026-09-29-trips-plan-arrive-by-avoid-design.md) | implemented | `crates/trip-planner/src/{reverse,restrictions}.rs`, `plan_trip` in `trip_planning_itinerary.rs` |
+| [2026-09-30-backup-and-observability-gaps-design](specs/2026-09-30-backup-and-observability-gaps-design.md) | not implemented | Design only: pgBackRest PITR, CronJob `timeZone`, cold-archive egress and client-side expiry, persistent Prometheus, Loki + Alloy; Redis, MCP SQLite and schedulefeed judged not to need backups |
 
 ## Plans
 
