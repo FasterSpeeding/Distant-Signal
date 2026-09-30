@@ -2163,8 +2163,8 @@ trustBacklogConsumer:
   # correction, same default, same reasoning).
   trustTimestampCorrectionEnabled: true
   extraEnv: []
-  # Drains a Redis list in bounded batches and POSTs them on. The
-  # backlog itself lives in Redis, not in this process.
+  # Reads the movement-events Redis stream in bounded batches and POSTs
+  # them on. The backlog itself lives in Redis, not in this process.
   #
   # Limit trimmed from 512Mi to 256Mi 2026-09-26: live `kubectl top` on the
   # mine-bringer cluster showed steady-state usage of ~8Mi -- 512Mi was
