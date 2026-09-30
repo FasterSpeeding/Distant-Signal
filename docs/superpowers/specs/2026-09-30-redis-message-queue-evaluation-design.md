@@ -1,8 +1,11 @@
 # Design: Redis message queue evaluation (streams, encryption at rest, persistence)
 
-**Status (2026-09-30): evaluation plus five small changes, implemented on
-this branch (not merged). Every other recommendation below needs the
-user's approval first.**
+**Status (2026-09-30): evaluation plus five small changes, merged into
+the `wt-batch21` batch. The user then decided D1 to D6 (see
+[Decisions](#decisions-2026-09-30)): D2 (R2) and D5 (dead-letter age
+trim) are implemented as follow-up commits; D1 goes to Ranma-Config (exact
+values below); D4 keeps the AOF alerts in the chart; D3 is open; D6 is
+declined.**
 
 This document covers the Redis Streams that carry Distant Signal's work
 between services. It does three things:
@@ -205,18 +208,19 @@ tail, every PEL and every dead letter.
 - Commit: `feat(movement-feed): count consumer groups recreated after
   NOGROUP`.
 
-**W7 (recommendation R2): a consumer that *restarts* after data loss skips
+**W7 (fixed by R2, D2): a consumer that *restarts* after data loss skipped
 entries.**
 `connect_to_stream` creates the group at `$` (`redis_stream.rs:284`). If
 Redis comes back empty and the relay recreates `movement-events` before a
 consumer (re)starts, every entry the relay wrote in between is skipped.
 After an outage the relay is draining a Kafka backlog as fast as it can,
-so that could be minutes of TRUST. The backup design's loss runbook says
-"restart the three consumers". That instruction makes this worse: consumers
+so that could be minutes of TRUST. The backup design's loss runbook said
+"restart the three consumers". That instruction made this worse: consumers
 that are still running already recover at the right position through
-NOGROUP.
+NOGROUP. (Both are fixed: see R2 and the corrected runbook in the backup
+design.)
 
-**W8 (recommendation R3): the dead-letter stream has no age limit.**
+**W8 (fixed by D5): the dead-letter stream had no age limit.**
 It keeps raw TRUST payloads with no age bound (`redis_stream.rs:23-35`).
 The self-imposed 1-day TRUST retention safeguard (`crates/aggregator/src/config.rs:104-123`;
 LEG-17/LEG-27 in the legal review) covers `trust_event_backlog`, but
@@ -385,8 +389,8 @@ These are right for this workload. **No change is recommended to
 | Kernel panic or power loss on the node | Up to about 1–2 s of `XADD`s that Redis had acknowledged. The relay had already committed those Kafka offsets, so the loss is permanent unless Kafka is replayed: about 25–60 TRUST messages. Lost `XACK`s and group positions just cause redelivery (deduplicated by `dedup_key`). | Automatic. `aof-load-truncated` loads a torn tail. | No. It is too small to see, and the gap check cannot see it. |
 | AOF corrupted in the middle (not just a torn tail) | Redis refuses to start and crash-loops. | Manual: run `redis-check-aof --fix` on the incr file (R5 runbook). | `RedisDown` (Ranma) and **PublishFailing** (new) |
 | AOF write fails (disk full or failing) | Nothing yet: Redis refuses writes and the relay holds Kafka. | Free disk space, and Redis resumes by itself. | **RedisPersistenceFailing** and **PublishFailing** (new) |
-| PVC or data lost (node disk replaced, PVC deleted), with the consumers still running | The unread tail (lag, normally about 300 entries, a few seconds), every PEL (normally 0 to 100), all dead letters | Automatic. The relay's next `XADD` recreates the stream, and each consumer gets NOGROUP and recreates its group after its last delivered id. | **GroupRecreated** (new) |
-| The same, but the consumers restart after the relay wrote again | The above, **plus** everything the relay wrote in between (W7) | The groups are created at `$` | GroupRecreated does not fire (no NOGROUP). Only the TRUST day's figures show it. |
+| PVC or data lost (node disk replaced, PVC deleted), with the relay running | The unread tail (lag, normally about 300 entries, a few seconds), every PEL (normally 0 to 100), all dead letters | Automatic. The relay's next `XADD` (`NOMKSTREAM`) finds the stream missing and recreates it with every consumer group at `0` before adding the entry (R2), so running and restarted consumers alike read everything written since. | **GroupRecreated** (fires on the relay's `stream_created_total` or a consumer's NOGROUP) |
+| The same, with everything restarting (a node reboot onto an empty disk) | As above | The relay's startup creates the missing groups at `0` when the stream is missing or empty (R2); a consumer that started first created only its own group, at the tail of an empty stream, which loses nothing. | Not by GroupRecreated: a fresh install looks the same. Pod restarts and the empty stream show it. |
 | The node is lost | Everything on the node, Postgres included | Rebuild the node; Postgres comes back through PITR and the dump | Everything |
 
 Full coverage marks a day partial on its own when the consumer restarts
@@ -404,23 +408,19 @@ The backup design's conclusion holds for the queue:
 - A copy would put raw TRUST, including dead letters, somewhere with a
   7-day retention, which undercuts the 1-day safeguard.
 
-**Change to the backup design's loss runbook:** do **not** restart the
-consumers after Redis loses its data. Running consumers recover through
-NOGROUP at the right position, and a restart creates the groups at `$`
-and skips entries (W7). Restart one only if it has not recovered, which
-shows as an alert that keeps repeating. With R2 in place, restarts become
-safe too. The real replay source is Kafka (an offset reset on the RDM
-group), and it is still unverified.
+**Change to the backup design's loss runbook (made there, 2026-09-30):**
+do **not** restart the consumers after Redis loses its data. Recovery is
+automatic (R2 plus NOGROUP recovery). Before R2, a restart created the
+groups at `$` and skipped entries (W7); with R2 it is safe but unnecessary.
+The real replay source is Kafka (an offset reset on the RDM group), and it
+is still unverified.
 
 ### AOF-health alerts
 
-AOF-health alerts are now in the chart (W5). Ranma-Config should still add
-`redis_aof_last_write_status != 1` and `redis_aof_last_bgrewrite_status
-!= 1` on the exporter, as the backup design planned. Once the chart
-alerts are live in production they are redundant, so either can be
-dropped. **Keeping both double-pages**, which is why I recommend keeping
-the chart's version and skipping the Ranma-Config one (**user decision
-D4**).
+AOF-health alerts are in the chart (W5). **D4: the chart's alerts are
+kept, and Ranma-Config does not add the exporter-based
+`redis_aof_last_*_status` alerts the backup design planned** (both would
+page for the same failure).
 
 ## Recommendations, in priority order
 
@@ -428,12 +428,12 @@ D4**).
 |---|---|---|---|---|---|
 | 1 | W1 to W6: bounded api connection; pending-aware lag alerts; fresh dead-letter length; PublishFailing, RedisPersistenceFailing and GroupRecreated alerts | DS app and chart | Done | Low. New alerts could be noisy: tune them with `metrics.prometheusRule.{relayPublishFailing,redisPersistence,groupRecreated}` | **Implemented on this branch** |
 | R1 | Turn on Redis AUTH in production | Ranma-Config (and the exporter) | 30 min, two deploys | Clients get NOAUTH if the order is wrong (the chart's sequence avoids it). The exporter goes blind if it is not updated. | Needs approval (D1) |
-| R2 | The relay creates the three consumer groups at `0` when `movement-events` does not exist yet, before its first `XADD` after a (re)start | DS app (movement-relay) | Small, with tests against local valkey | Behavioural. The group names are then listed in two crates (already true for the lag gauge). | Needs approval (D2) |
-| R3 | Dead-letter retention: add to `docs/movement-events-deadletter.md` that records are resolved (re-injected or deleted) within 1 day, and optionally alert on the oldest entry's age | DS docs; the optional age gauge in the relay and chart | Small | None | Needs approval (D5) |
-| R4 | After a transient downstream failure, the consumer rereads its own PEL instead of `>` (W9) | DS app (movement-feed) | Medium: it touches every consumer's retry path | Behavioural. It changes ordering and throughput during outages. | Needs approval (D6); low priority now that W2's alert exists |
+| R2 | The relay creates the consumer groups at `0` on a fresh stream: on a `NOMKSTREAM` miss while running, and at startup when the stream is missing or empty | DS app (movement-relay) and chart (`MOVEMENT_CONSUMER_GROUPS`) | Small | Behavioural, but only on a fresh stream; a populated stream is never touched | **Implemented (D2)** |
+| R3 | Dead letters deleted after `movementRelay.deadLetterMaxAgeSecs` (default and hard maximum 24h), with an alert 4h before | DS app (movement-relay), chart and `docs/movement-events-deadletter.md` | Small | A record nobody re-injects within a day is lost, by design | **Implemented (D5)** |
+| R4 | After a transient downstream failure, the consumer rereads its own PEL instead of `>` (W9) | DS app (movement-feed) | Medium: it touches every consumer's retry path | Behavioural. It changes ordering and throughput during outages. | **Declined (D6)**; W2's alert covers it |
 | R5 | Runbook: a Redis crash-loop on a corrupt AOF (`redis-check-aof --fix appendonlydir/<incr>`, after copying the directory aside) | DS docs | Small | None | Can follow with R3 |
 | R6 | At-rest encryption at the node or provider level, justified by Postgres, not Redis | Host and Ranma-Config | Large | Boot-unlock design and a migration | User decision (D3) |
-| R7 | Ranma-Config: drop the duplicate `DistantSignalDeadLetterGrowing` and, if the chart alerts are adopted, skip the planned exporter AOF alerts | Ranma-Config | Tiny | None | D4 |
+| R7 | Ranma-Config: drop the duplicate `DistantSignalDeadLetterGrowing` and skip the planned exporter AOF alerts | Ranma-Config | Tiny | None | D4: skip them |
 
 Not recommended:
 
@@ -444,20 +444,69 @@ Not recommended:
 - app-level payload encryption;
 - backing up Redis.
 
-## Decisions needed from the user
+## Decisions (2026-09-30)
 
-- **D1**: turn on Redis AUTH in production (R1)?
-- **D2**: implement R2 (the relay pre-creates the groups at `0` on a fresh
-  stream)?
-- **D3**: at-rest encryption: check whether the provider encrypts the VM
-  disk. If it does not, is a stolen disk or leaked snapshot in scope,
-  which would justify LUKS for the whole node?
-- **D4**: keep the AOF alerts in the chart (as implemented) and skip the
-  Ranma-Config exporter versions?
-- **D5**: set a 1-day resolution rule for dead letters, plus an optional
-  age alert?
-- **D6**: change the consumers' retry behaviour (R4), or leave it with the
-  alert?
+- **D1, approved:** turn on Redis AUTH in production. It is a Ranma-Config
+  change; the chart already supports it end to end (checked below).
+- **D2, approved and implemented:** the relay creates every consumer group
+  at `0` on a fresh stream (`XGROUP CREATE … 0 MKSTREAM`, `BUSYGROUP`
+  ignored) before publishing. Consumers are unchanged.
+  - While running, it publishes with `XADD … NOMKSTREAM`. A nil reply
+    means the stream is gone: it creates the groups (which creates the
+    stream), publishes, logs a warning and counts
+    `distant_signal_movement_relay_stream_created_total`, which
+    `DistantSignalMovementGroupRecreated` now also watches.
+  - At startup, when the stream is missing or **empty**, it creates any
+    missing group at `0`. A consumer that started first may have created
+    the empty stream with only its own group. A stream that already holds
+    entries is left alone: a group missing from it belongs to a consumer
+    not yet deployed, which must start at the tail.
+  - The groups are `MOVEMENT_CONSUMER_GROUPS`, derived by the chart from
+    each consumer's `movementFeed` (`trust-consumer` and
+    `full-coverage-consumer` only on `redis-stream`; `trust-event-backlog`
+    always), so no group is created that nobody reads.
+- **D3, open:** at-rest encryption. Check whether the provider encrypts
+  the VM disk; if not, decide whether a stolen disk or leaked snapshot is
+  in scope, which would justify LUKS for the whole node.
+- **D4:** keep the AOF alerts in the chart; Ranma-Config skips the
+  exporter-based versions.
+- **D5, approved and implemented:** dead letters older than
+  `movementRelay.deadLetterMaxAgeSecs` are deleted.
+  - Default 86400. The chart render and the binary (clap) both refuse
+    more than 86400 (24h, the TRUST 1-day safeguard) or less than 3600.
+  - movement-relay runs an exact `XTRIM movement-events-deadletter MINID
+    <now − max age>` every lag tick (30s), counts removals in
+    `distant_signal_movement_relay_deadletter_trimmed_total`, and exports
+    `distant_signal_movement_relay_deadletter_oldest_age_seconds`.
+  - `DistantSignalDeadLetterExpiring` (warning) fires when the oldest
+    record is within `warnBeforeTrimSecs` (default 14400, so at 20h) of
+    the limit.
+  - Runbook: `docs/movement-events-deadletter.md`, "Retention".
+- **D6, declined:** the consumers' retry behaviour stays; W2's alert
+  covers it.
+
+### D1: Redis AUTH, end to end
+
+With `redis.auth.enabled: true`, every chart workload that talks to Redis
+gets `REDIS_PASSWORD` from the same `secretKeyRef`. Checked by rendering
+the chart:
+
+- api, enricher, trust-consumer, full-coverage-consumer,
+  trust-backlog-consumer and movement-relay each get the `secretKeyRef`;
+- the Redis container gets it too, with `--requirepass` and
+  `REDISCLI_AUTH` for its probes and `kubectl exec redis-cli`.
+
+Each binary applies it to `REDIS_URL` at startup
+(`common::redis_auth::redis_url_with_password`). That includes
+movement-relay's lag loop, which uses the same authenticated URL.
+
+Nothing else in the chart uses Redis:
+
+- the notifier's push queue is in-process;
+- the pollers, aggregator, frontend and schedulefeed have no `REDIS_URL`.
+
+The **redis_exporter is not chart-managed**. It lives in Ranma-Config's
+`distant-signal-exporters.yaml` and must be given the password there.
 
 ## Deploy notes (Ranma-Config)
 
@@ -471,9 +520,51 @@ Not recommended:
   - `distant_signal_redis_aof_last_write_ok` is 1;
   - `distant_signal_movement_relay_stream_pending{group}` reads about 0;
   - `distant_signal_movement_relay_deadletter_length` reads 0.
-- If R1 is approved: create the Secret, deploy with `redis.auth.enabled:
-  true, requirePass: false`, add `REDIS_PASSWORD` to the redis_exporter
-  Deployment in `distant-signal-exporters.yaml` (as a `secretKeyRef` to the
-  same Secret), and then deploy with `requirePass: true`. INFO, XINFO and
-  XLEN need nothing beyond the default user's `+@all`. If ACLs are ever
-  narrowed, the relay needs `INFO`, `XINFO` and `XLEN` on its user.
+- D2 and D5 need nothing in Ranma-Config: the chart sets
+  `MOVEMENT_CONSUMER_GROUPS` and `DEADLETTER_MAX_AGE_SECS` (86400) on
+  movement-relay. Don't set `movementRelay.deadLetterMaxAgeSecs` above
+  86400; the render fails.
+- **D1, Redis AUTH (Ranma-Config), in this order:**
+  1. **New SealedSecret** in `clusters/mine-bringer/apps/distant-signal.yaml`,
+     next to `distant-signal-archive-s3`:
+     - name: `distant-signal-redis-auth`;
+     - namespace: `distant-signal`;
+     - one key, `redis-password` (printable characters, for example 32
+       random alphanumerics);
+     - same `reconcile.fluxcd.io/watch: Enabled` template label as the
+       others.
+  2. **Values** (the `distant-signal-config` ConfigMap):
+     ```yaml
+     redis:
+       auth:
+         enabled: true
+         requirePass: false        # step 1: clients send the password, the server does not require it yet
+         existingSecret: distant-signal-redis-auth
+         existingSecretKey: redis-password
+     ```
+     Deploy. Only the six client Deployments roll. Check them: no
+     `NOAUTH`/`WRONGPASS` in their logs, and `/healthz` ready.
+  3. **redis_exporter** (`distant-signal-exporters.yaml`): add to its
+     container env
+     ```yaml
+     - name: REDIS_PASSWORD
+       valueFrom:
+         secretKeyRef:
+           name: distant-signal-redis-auth
+           key: redis-password
+     ```
+     and remove the "The DS Redis has no password" comment. Deploy this
+     with step 2 or before step 4. Otherwise `redis_up` drops to 0 and the
+     stream metrics vanish once the server requires a password.
+  4. **Values:** set `requirePass: true` (or delete the line; it is the
+     default). Deploy. Only Redis restarts (Recreate; the AOF load takes
+     about 4s).
+  5. Check:
+     - `redis-cli ACL LIST` (via `kubectl exec`, which authenticates
+       through `REDISCLI_AUTH`) no longer shows `nopass`;
+     - `redis_up` is 1;
+     - `distant_signal_redis_aof_last_write_ok` is 1;
+     - the lag gauges are still moving.
+- INFO, XINFO, XLEN, XTRIM, XRANGE and XGROUP need nothing beyond the
+  default user's `+@all`. If ACLs are ever narrowed, movement-relay needs
+  those on its user.
