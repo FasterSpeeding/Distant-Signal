@@ -22,8 +22,15 @@ The user answered the open questions in the first draft of this document:
     (X2, items 1 and 5);
   - cold-archive expiry (item 3);
   - Loki + Alloy with 7-day retention (item 6).
+- **Log collection scope:** Loki + Alloy collects **all namespaces
+  cluster-wide**, as a shared service in the `logging` namespace. It is not
+  limited to `distant-signal` and `ds-mcp`.
+- **Secrets are rotated, not copied:** the Postgres app password and the
+  schedulefeed SSH host key and push password are sealed as **fresh
+  values**, not copies of the current chart-generated ones. See "Rotating
+  instead of copying" under item 5 for what that involves.
 
-The questions that are still open are listed at the end of this document.
+The one question still open is listed at the end of this document.
 
 ## Context
 
@@ -896,14 +903,32 @@ ones, and the provider's push client rejects the new host key until the
 provider's operators re-confirm it. That dependency is outside our control
 and slow.
 
-**Action:**
+**Action (decided 2026-09-30: rotate to fresh values rather than copy):**
 
 1. Check whether the sealed prod values already set
    `scheduleFeed.sftp.existingSecretHostKey` and an existing password
    Secret.
-2. If they don't, seal both into a Ranma-Config SealedSecret, point the
-   values at it, and keep an offline copy of the host key's fingerprint
-   (X2).
+2. Generate a **new** ed25519 host key and a **new** push password, seal
+   both into a Ranma-Config SealedSecret, point the values at it, and keep
+   an offline copy of the new host key's fingerprint (X2).
+
+**Rotating instead of copying:** fresh values mean nobody reads the current
+secrets out of the cluster. The costs are:
+
+- **SFTP:** the provider's push client rejects the new host key and the old
+  password until its operators accept the new fingerprint and password.
+  Tell the provider first. Switch outside the 22:00–01:30 and 16:00
+  delivery windows. Watch for the next delivery, and CORPUS/schedule
+  freshness in `/public/freshness`. A missed day is covered by the next
+  daily full push.
+- **Postgres:** the running database still has the old password in
+  `pg_authid`. Run `ALTER ROLE distant_signal PASSWORD '<new>'` through
+  `kubectl exec` at the moment the new Secret lands. Reloader restarts the
+  api, aggregator, enricher, notifier and exporter with the new value.
+  Expect a brief reconnect blip. Also update the backup CronJob and the
+  postgres-exporter to read the same sealed Secret. Don't put the password
+  on the command line in shell history: pipe it in through `psql`
+  variables from the unsealed file before shredding it.
 
 **Cost:** none at runtime.
 
@@ -1061,10 +1086,12 @@ revoke audit line with an email address or user id, and OIDC subjects.
    about 25–75 GB of pgBackRest data (item 1's rollout step 1 still
    measures WAL first), and whether the Thoth operator can mint keys
    scoped to a prefix (X4).
-2. **Log namespaces:** whether collection should cover all namespaces or
-   only `distant-signal` and `ds-mcp`. Covering fewer namespaces roughly
-   halves Loki's footprint. The 7-day retention is decided.
 
-Decided on 2026-09-30, and recorded under "Decisions" at the top: Thoth
-is off-host, cold-archive retention is 730 days, pgBackRest was chosen over
-CNPG, and the exec exception was accepted.
+Decided on 2026-09-30, and recorded under "Decisions" at the top:
+
+- Thoth is off-host.
+- Cold-archive retention is 730 days.
+- pgBackRest was chosen over CNPG, and the exec exception was accepted.
+- Logs are collected from all namespaces into a shared `logging` service,
+  kept 7 days.
+- The sealed secrets are rotated to fresh values.
