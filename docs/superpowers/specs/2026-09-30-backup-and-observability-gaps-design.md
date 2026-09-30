@@ -807,16 +807,26 @@ a periodic backup would give back that its persistence doesn't already.
 
 **What to do instead (each is a small change, noted by repo):**
 
-- **Alerts, Ranma-Config:** alert on `redis_aof_last_write_status != 1` and
-  `redis_aof_last_bgrewrite_status != 1` from the existing redis-exporter.
-  These catch the case where persistence has failed silently.
+- **Alerts:** ~~Ranma-Config, from the redis-exporter~~ **superseded
+  (2026-09-30, D4):** the chart itself now alerts on a failed AOF write or
+  rewrite (`DistantSignalRedisPersistenceFailing`, from movement-relay's
+  `INFO persistence` gauges; see
+  `2026-09-30-redis-message-queue-evaluation-design.md`). Ranma-Config
+  should not add exporter-based duplicates.
 - **Loss runbook, DS `docs/movement-events-deadletter.md`:** if Redis state
-  is lost, do the following:
-  1. Restart `trust-consumer`, `full-coverage-consumer` and
-     `trust-backlog-consumer`. They recreate their groups at startup with
-     `XGROUP CREATE … MKSTREAM`.
-  2. Expect the current day to be marked partial in full coverage. That is
-     already the documented behaviour.
+  is lost, do the following. *(Corrected 2026-09-30: this step used to say
+  "restart the three consumers". Don't. A consumer creates its group at
+  the stream's tail when it starts, so a restart skipped every entry the
+  relay had already published into the new stream.)*
+  1. **Do not restart the consumers.** Recovery is automatic: movement-relay
+     recreates `movement-events` with all three groups at its start before
+     its first new entry (D2), and a running consumer whose group vanished
+     recreates it where it left off (`NOGROUP`). Either way
+     `DistantSignalMovementGroupRecreated` fires. Restart a consumer only if
+     it is still failing after that; it is then safe, since its group
+     already exists.
+  2. Treat the current rail day as partial in full coverage. A restart marks
+     it partial by itself; a recovery without a restart does not, so mark it.
   3. Accept that the dead letters are gone.
 - **Replaying from Kafka (unverified):** `movement-relay` commits Kafka
   offsets only after `XADD`. If the RDM topic keeps data longer than the
@@ -830,7 +840,9 @@ a periodic backup would give back that its persistence doesn't already.
   1. Stop `movement-relay`, so Kafka holds its position.
   2. Let the consumers drain until pending is 0.
   3. Swap the server, then restart the consumers so they recreate their
-     groups.
+     groups. (The stream is empty, so creating them at its tail loses
+     nothing, and the relay's startup creates any that are still missing
+     at the start of the stream.)
   4. Start the relay.
 
   This loses only the dead letters. Export them first with `XRANGE` to
