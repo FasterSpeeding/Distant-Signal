@@ -6,6 +6,7 @@ import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { incidentIdFromSource } from '@/lib/incidents';
 import { impactTypeLabel } from '@/lib/impactType';
 import { incidentSourceLabel } from '@/lib/incidentSource';
+import { RouteArrow } from './RouteArrow';
 import { TextLink } from './TextLink';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 
@@ -47,7 +48,7 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
       )}
       {disruption.affectedRoutes.map((route, i) => (
         <Text key={i} size="sm" c="dimmed">
-          {route.from} → {route.to}
+          {route.from} <RouteArrow /> {route.to}
         </Text>
       ))}
       {incidentSourceLabel(disruption.source) && (

@@ -12,6 +12,7 @@ import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
 import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
+import { RouteArrow } from './RouteArrow';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
 
@@ -545,7 +546,7 @@ function TrainLegCard({ leg }: { leg: RenderedTrainLeg }) {
     <Card withBorder padding="sm" radius="md" maw="80%">
       <Stack gap={4}>
         <Text size="sm" fw={500}>
-          {originName} → {destinationName}
+          {originName} <RouteArrow /> {destinationName}
         </Text>
         <Text size="xs" c="dimmed">
           {leg.departure}

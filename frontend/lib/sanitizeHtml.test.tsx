@@ -30,6 +30,51 @@ describe('sanitizeDescription', () => {
     expect(result).toContain('target="_blank"');
     expect(result).toContain('rel="noopener"');
   });
+
+  it('says a link opens in a new tab: aria-hidden icon plus visually hidden text, visible text unchanged', () => {
+    const result = sanitizeDescription('<p>See <a href="https://example.com">More info</a> now</p>');
+    const anchor = parse(result).querySelector('a')!;
+    expect(anchor).toHaveAttribute('target', '_blank');
+    expect(anchor.textContent).toBe('More info (opens in a new tab)');
+    expect(anchor.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
+    expect(anchor.querySelector('[data-visually-hidden]')).toHaveTextContent('(opens in a new tab)');
+    // Visible text: everything except the visually hidden span.
+    const visible = anchor.cloneNode(true) as HTMLElement;
+    visible.querySelector('[data-visually-hidden]')!.remove();
+    expect(visible.textContent?.trim()).toBe('More info');
+  });
+
+  it('draws the same icon as the ExternalLinkIcon component', () => {
+    const fromSanitizer = parse(sanitizeDescription('<a href="https://example.com">x</a>')).querySelector(
+      'svg[data-icon="external-link"]',
+    )!;
+    const { container } = renderWithMantine(<ExternalLinkIcon />);
+    const fromComponent = container.querySelector('svg[data-icon="external-link"]')!;
+    expect(fromSanitizer.innerHTML).toBe(fromComponent.innerHTML);
+  });
+
+  it('marks no inert anchor: a rejected href gets neither target nor the marker', () => {
+    const result = sanitizeDescription('<a href="javascript:alert(1)">Tap</a>');
+    expect(result).not.toContain('href');
+    expect(result).not.toContain('target=');
+    expect(result).not.toContain('data-icon');
+    expect(result).not.toContain('opens in a new tab');
+    expect(result).toContain('Tap');
+  });
+
+  it('only ever adds the marker, never input markup: hostile svg/span/attributes are still stripped', () => {
+    const result = sanitizeDescription(
+      '<a href="https://example.com" onclick="alert(1)" style="x">Info</a>' +
+        '<svg><script>alert(2)</script></svg><span data-visually-hidden>fake</span><img src=x onerror="alert(3)">',
+    );
+    expect(result).not.toMatch(/onclick|onerror|<script|style="x"|<img/i);
+    const container = parse(result);
+    // Exactly one svg and one hidden span: the ones this module built, inside the anchor.
+    expect(container.querySelectorAll('svg')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-visually-hidden]')).toHaveLength(1);
+    expect(container.querySelector('a [data-visually-hidden]')).toHaveTextContent('(opens in a new tab)');
+    expect(result).toContain('fake');
+  });
 });
 
 /** Station accessibility & facilities copy -- see
@@ -144,11 +189,19 @@ describe('sanitizeRichText', () => {
       expect(result).toContain('href="https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx"');
     });
 
-    it('leaves an anchor whose text is genuinely different from its href alone', () => {
+    it('leaves the text of an anchor whose text is genuinely different from its href alone', () => {
       const result = sanitizeRichText('<a href="https://www.apcoa.co.uk">APCOA car park</a>');
-      expect(result).toContain('>APCOA car park<');
+      expect(result).toContain('>APCOA car park ');
       expect(result).not.toContain('title=');
-      expect(result).not.toContain('data-icon');
+      // Still a new-tab link, so still marked as one.
+      const anchor = parse(result).querySelector('a')!;
+      expect(anchor.textContent).toBe('APCOA car park (opens in a new tab)');
+      expect(anchor.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('marks a raw-URL anchor exactly once', () => {
+      const result = sanitizeRichText('<a href="https://example.com/x">https://example.com/x</a>');
+      expect(parse(result).querySelectorAll('[data-visually-hidden]')).toHaveLength(1);
     });
 
     it("draws the same icon as the ExternalLinkIcon component, so the two can't drift apart", () => {

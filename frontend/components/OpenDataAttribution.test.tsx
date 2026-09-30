@@ -12,6 +12,7 @@ import {
   OpenDataAttribution,
   OpenDataAttributionDetails,
 } from './OpenDataAttribution';
+import { visibleText } from '@/test/routeText';
 
 vi.mock('@/lib/legal', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/legal')>();
@@ -43,18 +44,21 @@ describe('OpenDataAttribution', () => {
     // phrase is linked -- the Knowledgebase Stations text appended right
     // after it (see below) carries no link requirement of its own.
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByRole('link', { name: 'powered by NationalRail' });
+    const link = screen.getByRole('link', { name: 'powered by NationalRail (opens in a new tab)' });
     expect(link).toHaveAttribute('href', 'https://www.nationalrail.co.uk');
   });
 
   it('renders credit links as TextLinks that keep the dimmed credit colour, underlined (docs/style-guide.md "TextLink")', () => {
     renderWithMantine(<OpenDataAttribution />);
-    for (const name of ['powered by NationalRail', NRIL_STATEMENT]) {
+    for (const name of ['powered by NationalRail (opens in a new tab)', `${NRIL_STATEMENT} (opens in a new tab)`]) {
       const link = screen.getByRole('link', { name });
       expect(link).toHaveAttribute('data-text-link', 'always');
       expect(link).toHaveAttribute('data-text-link-tone', 'inherit');
       expect(link).toHaveAttribute('target', '_blank');
       expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+      // Says it opens a new tab without touching the licence wording itself.
+      expect(visibleText(link)).toBe(name.replace(' (opens in a new tab)', ''));
+      expect(link.querySelector('svg[data-icon="external-link"]')).toHaveAttribute('aria-hidden', 'true');
     }
   });
 
@@ -73,8 +77,10 @@ describe('OpenDataAttribution', () => {
     // product, so this wording applies, and the operator's 2026-09-27
     // decision treats the RDM terms as permitting current use: final.
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByRole('link', { name: 'powered by NationalRail' });
-    expect(link.parentElement).toHaveTextContent('powered by NationalRail (Train Information Services Ltd)');
+    const link = screen.getByRole('link', { name: 'powered by NationalRail (opens in a new tab)' });
+    expect(visibleText(link.parentElement as Element)).toMatch(
+      'powered by NationalRail (Train Information Services Ltd)',
+    );
   });
 
   it('is a landmark, so it is reachable rather than just visible', () => {
@@ -89,7 +95,7 @@ describe('OpenDataAttribution', () => {
   // stay at `xs`, since they carry no link of their own.
   it('renders the NationalRail attribution line (the one with a link) at sm, not the xs plain-text lines use', () => {
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByRole('link', { name: 'powered by NationalRail' });
+    const link = screen.getByRole('link', { name: 'powered by NationalRail (opens in a new tab)' });
     expect(link.parentElement).toHaveStyle({ '--text-fz': 'var(--mantine-font-size-sm)' });
     expect(screen.getByText('Powered by TfL Open Data')).not.toHaveStyle({
       '--text-fz': 'var(--mantine-font-size-sm)',
@@ -98,7 +104,7 @@ describe('OpenDataAttribution', () => {
 
   it("carries Network Rail's prescribed NRIL statement verbatim, linked to the licence (LEG-19)", () => {
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByRole('link', { name: NRIL_STATEMENT });
+    const link = screen.getByRole('link', { name: `${NRIL_STATEMENT} (opens in a new tab)` });
     expect(link).toHaveAttribute('href', NRIL_LICENCE_URL);
     expect(NRIL_STATEMENT).toBe(
       'Contains Information of Network Rail Infrastructure Limited licensed under the following licence',
@@ -166,43 +172,43 @@ describe('OpenDataAttributionDetails (/attribution)', () => {
 
   it('carries the TfL and National Rail wording verbatim', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
-    expect(statementOf('tfl')).toHaveTextContent(/^Powered by TfL Open Data$/);
-    expect(statementOf('national-rail')).toHaveTextContent(
+    expect(visibleText(statementOf('tfl') as Element)).toMatch(/^Powered by TfL Open Data$/);
+    expect(visibleText(statementOf('national-rail') as Element)).toMatch(
       /^powered by NationalRail \(Train Information Services Ltd\)$/,
     );
   });
 
   it('carries the prescribed NRIL statement, linked to the licence', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
-    const link = within(statementOf('network-rail')).getByRole('link', { name: NRIL_STATEMENT });
+    const link = within(statementOf('network-rail')).getByRole('link', {
+      name: `${NRIL_STATEMENT} (opens in a new tab)`,
+    });
     expect(link).toHaveAttribute('href', NRIL_LICENCE_URL);
   });
 
   it('credits the delay attribution glossary under the OGL', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     const statement = statementOf('network-rail-delay-attribution');
-    expect(statement).toHaveTextContent(/^Contains information of Network Rail Infrastructure Limited/);
-    expect(within(statement).getByRole('link', { name: 'Open Government Licence v3.0' })).toHaveAttribute(
-      'href',
-      OGL_V3_URL,
-    );
+    expect(visibleText(statement as Element)).toMatch(/^Contains information of Network Rail Infrastructure Limited/);
+    expect(
+      within(statement).getByRole('link', { name: 'Open Government Licence v3.0 (opens in a new tab)' }),
+    ).toHaveAttribute('href', OGL_V3_URL);
   });
 
   it('credits the CORPUS location codes under the OGL', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     const statement = statementOf('network-rail-corpus');
-    expect(statement).toHaveTextContent(/^Contains information of Network Rail Infrastructure Limited/);
-    expect(within(statement).getByRole('link', { name: 'Open Government Licence v3.0' })).toHaveAttribute(
-      'href',
-      OGL_V3_URL,
-    );
+    expect(visibleText(statement as Element)).toMatch(/^Contains information of Network Rail Infrastructure Limited/);
+    expect(
+      within(statement).getByRole('link', { name: 'Open Government Licence v3.0 (opens in a new tab)' }),
+    ).toHaveAttribute('href', OGL_V3_URL);
   });
 
   it('credits the CIF timetable as "Source: RSP" with a Rail Delivery Group link', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     const statement = statementOf('rsp-timetable');
-    expect(statement).toHaveTextContent(/^Source: RSP/);
-    expect(within(statement).getByRole('link', { name: 'Rail Delivery Group' })).toHaveAttribute(
+    expect(visibleText(statement as Element)).toMatch(/^Source: RSP/);
+    expect(within(statement).getByRole('link', { name: 'Rail Delivery Group (opens in a new tab)' })).toHaveAttribute(
       'href',
       'https://www.raildeliverygroup.com',
     );
@@ -211,28 +217,32 @@ describe('OpenDataAttributionDetails (/attribution)', () => {
   it("meets CC BY 4.0 for the NTA's Irish Rail GTFS: provider name, licence link and 'as is'", () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     const statement = statementOf('nta-gtfs');
-    expect(within(statement).getByRole('link', { name: 'National Transport Authority' })).toBeInTheDocument();
-    expect(within(statement).getByRole('link', { name: 'CC BY 4.0' })).toHaveAttribute('href', CC_BY_4_URL);
-    expect(statement).toHaveTextContent('provided "as is"');
+    expect(
+      within(statement).getByRole('link', { name: 'National Transport Authority (opens in a new tab)' }),
+    ).toBeInTheDocument();
+    expect(within(statement).getByRole('link', { name: 'CC BY 4.0 (opens in a new tab)' })).toHaveAttribute(
+      'href',
+      CC_BY_4_URL,
+    );
+    expect(visibleText(statement as Element)).toMatch('provided "as is"');
   });
 
   it('uses the OGL v3 statement for Translink data from OpenDataNI', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
     const statement = statementOf('opendatani');
-    expect(statement).toHaveTextContent(
+    expect(visibleText(statement as Element)).toMatch(
       'Contains public sector information licensed under the Open Government Licence v3.0.',
     );
-    expect(within(statement).getByRole('link', { name: 'Open Government Licence v3.0' })).toHaveAttribute(
-      'href',
-      OGL_V3_URL,
-    );
-    expect(statement).toHaveTextContent('Translink data from OpenDataNI');
+    expect(
+      within(statement).getByRole('link', { name: 'Open Government Licence v3.0 (opens in a new tab)' }),
+    ).toHaveAttribute('href', OGL_V3_URL);
+    expect(visibleText(statement as Element)).toMatch('Translink data from OpenDataNI');
   });
 
   it('credits Iarnród Éireann and railwaycodes.org.uk', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
-    expect(statementOf('irish-rail-realtime')).toHaveTextContent('Iarnród Éireann');
-    expect(statementOf('railwaycodes')).toHaveTextContent('railwaycodes.org.uk');
+    expect(visibleText(statementOf('irish-rail-realtime') as Element)).toMatch('Iarnród Éireann');
+    expect(visibleText(statementOf('railwaycodes') as Element)).toMatch('railwaycodes.org.uk');
   });
 
   it('states that the service is unofficial and unaffiliated', () => {

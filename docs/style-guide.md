@@ -188,6 +188,13 @@ list-row titles 500.
   it with the `ExternalLinkIcon` SVG plus visually hidden "(opens in a new
   tab)"; never write "↗" into link text. Decorative text arrows ("← Groups")
   go in `<span aria-hidden="true">`.
+- **Route arrows** (`components/RouteArrow.tsx`): "KGX → YRK" keeps its
+  arrow on screen but reads "KGX to YRK": the arrow is aria-hidden and a
+  `VisuallyHidden` "to" stands in. Render route strings from
+  `lib/stationLabel.ts` through `<RouteText>`, write `<RouteArrow />` in
+  place of a literal "→" in JSX, and use `spokenRoute()` where only plain
+  text fits (`aria-label`, titles). `Select` options take
+  `renderOption` with `RouteText`.
 - **Buttons**: Mantine Button sm, 36px, 14px/600, radius 8. Filled grape
   for the primary action, light for secondary, default for neutral, red
   filled for destructive (text via `autoContrast`). Icon buttons are
@@ -263,6 +270,8 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   title and glyph.
 - Landmarks: `main`, `nav aria-label="Main"`, footer
   `nav aria-label="Site information"`; sections use `aria-labelledby`.
+- New-tab links (`TextLink external`, and every link in sanitized feed
+  HTML) say "(opens in a new tab)" in their accessible name.
 - `VisuallyHidden` repeats tooltip-only information. Icon buttons always
   have `aria-label`; decorative SVGs are `aria-hidden`.
 - Modals and drawers get `aria-label="Close"` from the theme; passing

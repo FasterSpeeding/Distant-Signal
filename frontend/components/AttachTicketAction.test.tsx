@@ -3,6 +3,7 @@ import { act, screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AttachTicketAction } from './AttachTicketAction';
 import type { TrackedTrainListItem } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -59,7 +60,7 @@ describe('AttachTicketAction', () => {
       />,
     );
     fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]);
-    expect(screen.getByText(/London Waterloo \(WAT\) → Woking \(WOK\)/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) → Woking \(WOK\)/))).toBeInTheDocument();
   });
 
   it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', () => {
@@ -91,7 +92,7 @@ describe('AttachTicketAction', () => {
     renderWithMantine(<AttachTicketAction ticketId={5} trains={[train({ id: 1 })]} />);
 
     fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]);
-    const option = await screen.findByText(/WAT → WOK/);
+    const option = await screen.findByText(byVisibleText(/WAT → WOK/));
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
 
@@ -109,7 +110,7 @@ describe('AttachTicketAction', () => {
     renderWithMantine(<AttachTicketAction ticketId={5} trains={[train({ id: 1 })]} />);
 
     fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]);
-    const option = await screen.findByText(/WAT → WOK/);
+    const option = await screen.findByText(byVisibleText(/WAT → WOK/));
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
 

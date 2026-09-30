@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainSearchForm } from './TrainSearchForm';
+import { byVisibleText } from '@/test/routeText';
 
 /** A small, fixed, real-station-shaped dataset backing every autocomplete
  * field in this file (Station/Departing from/Stops at all share the same
@@ -505,8 +506,8 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
-    expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('10:05 · CRE → MAN → WAT'))).toBeInTheDocument();
   });
 
   // Regression: `destinationCrs` used to be the ONLY thing this row could
@@ -540,10 +541,10 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText('08:22 · EUS → MAN → London Waterloo')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → London Waterloo'))).toBeInTheDocument();
     // The second row has no destinationName in this response -- falls back
     // to the bare code exactly as before this field existed.
-    expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('10:05 · CRE → MAN → WAT'))).toBeInTheDocument();
   });
 
   // Regression guard for the results list being hard-clipped at a fixed
@@ -577,7 +578,7 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
-    await screen.findByText('08:22 · EUS → MAN → WAT');
+    await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'));
 
     const list = document.querySelector('[data-train-results]');
     expect(list).not.toBeNull();
@@ -628,16 +629,16 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
-    await screen.findByText('08:22 · EUS → MAN → WAT');
+    await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'));
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
-    await screen.findByText('11:40 · EUS → MAN → WAT');
+    await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'));
 
     // Page 2's rows must land in the SAME in-flow list as page 1's, so the
     // page's own scrollbar reaches them -- under the removed `ScrollArea`
     // each "Load more" appended straight into the clipped region.
     const list = document.querySelector('[data-train-results]') as HTMLElement;
     for (const label of ['08:22 · EUS → MAN → WAT', '10:05 · CRE → MAN → WAT', '11:40 · EUS → MAN → WAT']) {
-      expect(list.contains(screen.getByText(label))).toBe(true);
+      expect(list.contains(screen.getByText(byVisibleText(label)))).toBe(true);
     }
   });
 
@@ -653,7 +654,7 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
-    const summary = await screen.findByText('08:22 · EUS → MAN → WAT');
+    const summary = await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'));
     const row = summary.parentElement as HTMLElement;
 
     // Mantine's `Group` resolves its `wrap` prop into the inline
@@ -691,7 +692,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText('09:00 · ? → MAN → WAT')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('09:00 · ? → MAN → WAT'))).toBeInTheDocument();
   });
 
   it("links each row to the public train page for London's today", async () => {
@@ -811,7 +812,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     // The button doesn't just vanish -- the list says it is complete.
     expect(
@@ -863,7 +864,7 @@ describe('TrainSearchForm', () => {
     expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     // A failed next page must not wipe out the page already on screen, nor
     // escalate to the whole-search error state.
-    expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
     expect(screen.queryByText("Couldn't search for trains right now. Try again.")).not.toBeInTheDocument();
   });
 
@@ -928,12 +929,12 @@ describe('TrainSearchForm', () => {
     await clickSearch();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText('11:40 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toBeInTheDocument();
     expect(
-      screen.getByText('08:22 · EUS → MAN → WAT'),
+      screen.getByText(byVisibleText('08:22 · EUS → MAN → WAT')),
       'page 1 must still be on screen -- Load more appends, it does not replace',
     ).toBeInTheDocument();
-    expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('10:05 · CRE → MAN → WAT'))).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
     // Index 0 is this form's own mount-time auto-search (`initialStation=
@@ -960,10 +961,10 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
-    expect(await screen.findByText('11:40 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText('13:15 · CRE → MAN → WAT')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('13:15 · CRE → MAN → WAT'))).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
     // Index 0 is the mount-time auto-search; index 1 the explicit Search
@@ -973,7 +974,7 @@ describe('TrainSearchForm', () => {
     expect(urls[3], 'the second Load more must use the cursor from the SECOND response').toBe(
       '/api/trains/search?station=MAN&after=CURSOR2',
     );
-    expect(screen.getAllByText('11:40 · EUS → MAN → WAT')).toHaveLength(1);
+    expect(screen.getAllByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toHaveLength(1);
   });
 
   it('keeps the original filters on a Load more request', async () => {
@@ -1013,12 +1014,12 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
-    expect(await screen.findByText('11:40 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toBeInTheDocument();
 
     await clickSearch();
 
-    await waitFor(() => expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument());
-    expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(byVisibleText('11:40 · EUS → MAN → WAT'))).not.toBeInTheDocument());
+    expect(screen.getByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
   });
 
   it('discards a Load more page that lands after a fresh search has already replaced the results', async () => {
@@ -1052,7 +1053,7 @@ describe('TrainSearchForm', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' })); // page 2 of search 1
     await clickSearch(); // search 2
-    await screen.findByText('13:15 · CRE → MAN → WAT');
+    await screen.findByText(byVisibleText('13:15 · CRE → MAN → WAT'));
 
     resolvePageTwo(new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 }));
 
@@ -1061,7 +1062,7 @@ describe('TrainSearchForm', () => {
         screen.getByText("You've reached the end — no more scheduled trains match those filters."),
       ).toBeInTheDocument(),
     );
-    expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('11:40 · EUS → MAN → WAT'))).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
@@ -1200,7 +1201,7 @@ describe('TrainSearchForm', () => {
 
       await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(1));
       expect(searchCallUrls(fetchMock)[0]).toBe('/api/trains/search?station=MAN&origin=EUS&from=09%3A00');
-      expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+      expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
       // The mount effect itself must not touch the URL -- only an explicit
       // Search press does (see the `router.replace` test above).
       expect(replaceMock).not.toHaveBeenCalled();

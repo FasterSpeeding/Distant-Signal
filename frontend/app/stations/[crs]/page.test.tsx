@@ -6,6 +6,7 @@ import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type { LineStatusReport, StationOperatorSampleStats } from '@/lib/types';
+import { visibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -208,7 +209,7 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
 
     const credit = document.querySelector('#stats [data-nre-credit]');
     expect(credit).not.toBeNull();
-    expect(credit).toHaveTextContent('powered by NationalRail (Train Information Services Ltd)');
+    expect(visibleText(credit as Element)).toContain('powered by NationalRail (Train Information Services Ltd)');
     expect(credit?.querySelector('a')).toHaveAttribute('href', 'https://www.nationalrail.co.uk');
   });
 

@@ -24,14 +24,7 @@ export function NationalRailCredit() {
   return (
     <Text size="xs" c="dimmed" data-nre-credit>
       Live departure data{' '}
-      <TextLink
-        href={NATIONAL_RAIL_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        underline="always"
-        inline
-        tone="inherit"
-      >
+      <TextLink href={NATIONAL_RAIL_URL} external underline="always" inline tone="inherit">
         powered by NationalRail
       </TextLink>
       {' (Train Information Services Ltd)'}

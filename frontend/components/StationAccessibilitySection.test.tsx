@@ -356,7 +356,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
         }}
       />,
     );
-    const link = screen.getByRole('link', { name: 'Passenger Assist' });
+    const link = screen.getByRole('link', { name: 'Passenger Assist (opens in a new tab)' });
     expect(link).toHaveAttribute('href', 'https://example.com/assist');
     expect(link).toHaveAttribute('target', '_blank');
     expect(container.textContent).not.toContain('<p>');

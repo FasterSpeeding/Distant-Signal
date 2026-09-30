@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Card, Group, Stack, Text } from '@mantine/core';
 import { TrainJourney } from './TrainJourney';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
+import { RouteText } from './RouteArrow';
 import { TextLink } from './TextLink';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
 import { legRouteAndTime } from '@/lib/journeyLegLabel';
@@ -217,7 +218,9 @@ export function JourneyLegCard({
               <span style={{ color: 'var(--mantine-color-grape-light-color)', flexShrink: 0, marginTop: 2 }}>
                 <AlertIcon />
               </span>
-              <Text fw={700}>{header}</Text>
+              <Text fw={700}>
+                <RouteText>{header}</RouteText>
+              </Text>
             </Group>
             {/* An open leg is just as removable as a matched one -- the
                 backend's `delete_journey_leg` never cared whether the leg
@@ -282,7 +285,7 @@ export function JourneyLegCard({
         <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
           <Stack gap={2}>
             <Text fw={600} size="lg">
-              {title}
+              <RouteText>{title}</RouteText>
             </Text>
             {/* Feature request: "journey view legs [should] have link
                 throughs to the train entries for each leg" -- this was

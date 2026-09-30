@@ -6,6 +6,7 @@ import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
+import { RouteArrow } from './RouteArrow';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
@@ -626,7 +627,7 @@ export function TrainSearchForm({
              * belonging to the row beneath them. */
             <Group key={`${row.uid}-${row.scheduled}`} style={{ rowGap: 4 }}>
               <Text size="sm">
-                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} →{' '}
+                {row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs} <RouteArrow />{' '}
                 {row.destinationName ?? row.destinationCrs ?? '?'}
               </Text>
               <Group gap="sm" wrap="nowrap" style={{ marginInlineStart: 'auto' }}>

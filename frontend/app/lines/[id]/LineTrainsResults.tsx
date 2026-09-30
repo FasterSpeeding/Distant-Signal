@@ -1,7 +1,8 @@
 import { Group, Paper, Stack, Text } from '@mantine/core';
 import { ApiNotFoundError, getLineTrains } from '@/lib/api';
 import type { LineTrainEntry } from '@/lib/types';
-import { routeLabel, UNKNOWN_STATION_LABEL } from '@/lib/stationLabel';
+import { routeLabel, spokenRoute, UNKNOWN_STATION_LABEL } from '@/lib/stationLabel';
+import { RouteText } from '@/components/RouteArrow';
 import { TextLink } from '@/components/TextLink';
 import { StatusRow } from '@/components/StatusRow';
 import { LastUpdated } from '@/components/LastUpdated';
@@ -105,7 +106,7 @@ function TrainRow({ train, date }: { train: LineTrainEntry; date: string }) {
           {scheduledTime}
           {' · '}
           {live ? (
-            routeText
+            <RouteText>{routeText}</RouteText>
           ) : (
             <Text span c="dimmed">
               {routeText}
@@ -134,7 +135,7 @@ function TrainRow({ train, date }: { train: LineTrainEntry; date: string }) {
       trailing={
         <TextLink
           href={`/train/${encodeURIComponent(train.uid)}/${date}`}
-          ariaLabel={`View live status for the ${scheduledTime} · ${routeText}`}
+          ariaLabel={`View live status for the ${scheduledTime} · ${spokenRoute(routeText)}`}
         >
           View live status
         </TextLink>

@@ -3,6 +3,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyCreationFlow } from './JourneyCreationFlow';
 import type { JourneyLegDetail, TripPlanResponse } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 const pushMock = vi.fn();
 const refreshMock = vi.fn();
@@ -290,8 +291,8 @@ describe('JourneyCreationFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText('08:00 EUS → MKC 08:50');
-    await screen.findByText('09:10 MKC → EDB 13:00');
+    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
+    await screen.findByText(byVisibleText('09:10 MKC → EDB 13:00'));
     // Both segments' own single itinerary is the last two radios in DOM
     // order -- everything before them (the entry-mode selector's own two
     // radios, plus `PlanTripForm`'s own Fastest/Compare options control)

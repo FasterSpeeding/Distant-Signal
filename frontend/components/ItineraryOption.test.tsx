@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { ItineraryOption } from './ItineraryOption';
 import type { TripPlanItinerary } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 const trainItinerary: TripPlanItinerary = {
   legs: [
@@ -31,7 +32,7 @@ describe('ItineraryOption', () => {
   it('renders a train leg summary and allows selection', () => {
     const onSelect = vi.fn();
     renderWithMantine(<ItineraryOption itinerary={trainItinerary} selected={false} onSelect={onSelect} />);
-    expect(screen.getByText(/08:00 EUS → MKC 08:50/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/08:00 EUS → MKC 08:50/))).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio'));
     expect(onSelect).toHaveBeenCalled();
   });
@@ -67,7 +68,7 @@ describe('ItineraryOption', () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText(/08:00 EUS → MKC 08:50 · 12 min late/)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/08:00 EUS → MKC 08:50 · 12 min late/))).toBeInTheDocument();
     expect(screen.queryByText('Live data says this route may no longer work')).not.toBeInTheDocument();
     unmount();
 
@@ -107,7 +108,9 @@ describe('ItineraryOption', () => {
     renderWithMantine(
       <ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,
     );
-    expect(screen.getByText('08:00 EUS — London Euston → MKC — Milton Keynes Central 08:50')).toBeInTheDocument();
+    expect(
+      screen.getByText(byVisibleText('08:00 EUS — London Euston → MKC — Milton Keynes Central 08:50')),
+    ).toBeInTheDocument();
   });
 
   it('renders "CODE — Name" for a transfer leg once stationNames resolves a name', () => {
@@ -124,7 +127,7 @@ describe('ItineraryOption', () => {
       />,
     );
     expect(
-      screen.getByText('Walk/transfer (TUBE) EUS — London Euston → KGX — London Kings Cross, 5 min'),
+      screen.getByText(byVisibleText('Walk/transfer (TUBE) EUS — London Euston → KGX — London Kings Cross, 5 min')),
     ).toBeInTheDocument();
   });
 
@@ -136,11 +139,11 @@ describe('ItineraryOption', () => {
     renderWithMantine(
       <ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,
     );
-    expect(screen.getByText('08:00 EUS → MKC 08:50')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('08:00 EUS → MKC 08:50'))).toBeInTheDocument();
   });
 
   it('renders bare codes when stationNames is omitted (default empty map)', () => {
     renderWithMantine(<ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} />);
-    expect(screen.getByText('08:00 EUS → MKC 08:50')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('08:00 EUS → MKC 08:50'))).toBeInTheDocument();
   });
 });

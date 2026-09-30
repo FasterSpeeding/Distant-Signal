@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Box, Group, Stack, Text, type MantineSize } from '@mantine/core';
+import { RouteText } from './RouteArrow';
 
 export type StatusRowProps = {
   /** The row's heading. A plain string (or number) is wrapped in a `Text`
@@ -17,7 +18,9 @@ export type StatusRowProps = {
    * around it, and the caller is responsible for its own weight/clamping
    * (both current composite-title call sites use `fw={500}` too, so the
    * row title's weight reads the same regardless of which path a given
-   * row takes). */
+   * row takes). A string title's route arrows ("KGX → YRK", from
+   * `lib/stationLabel.ts`) render through `RouteText`, so a screen reader
+   * says "to" rather than "right arrow". */
   title: ReactNode;
   /** Optional second line under the title (e.g. "Shared by ..."). When
    * given, title+subtitle are stacked with `gap={4}`, matching every one
@@ -85,7 +88,7 @@ export function StatusRow({
   const titleNode =
     typeof title === 'string' || typeof title === 'number' ? (
       <Text fw={500} lineClamp={titleLineClamp} style={{ minWidth: 0 }} data-status-row-title>
-        {title}
+        {typeof title === 'string' ? <RouteText>{title}</RouteText> : title}
       </Text>
     ) : (
       title

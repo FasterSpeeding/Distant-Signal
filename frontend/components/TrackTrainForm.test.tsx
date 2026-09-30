@@ -6,6 +6,7 @@ import { renderWithMantine } from '@/test/render';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { TrackTrainForm } from './TrackTrainForm';
 import type { GroupSummary } from '@/lib/types';
+import { visibleText } from '@/test/routeText';
 
 /** `useGroupSummaries` now reads from `GroupSummariesProvider`'s context
  * instead of fetching `/api/groups` itself (see `lib/useGroupSummaries.tsx`'s
@@ -1548,8 +1549,10 @@ describe('TrackTrainForm', () => {
 
       const credit = document.querySelector('[data-nre-credit]');
       expect(credit).not.toBeNull();
-      expect(credit).toHaveTextContent('Live departure data powered by NationalRail (Train Information Services Ltd)');
-      expect(screen.getByRole('link', { name: 'powered by NationalRail' })).toHaveAttribute(
+      expect(visibleText(credit as Element)).toBe(
+        'Live departure data powered by NationalRail (Train Information Services Ltd)',
+      );
+      expect(screen.getByRole('link', { name: 'powered by NationalRail (opens in a new tab)' })).toHaveAttribute(
         'href',
         'https://www.nationalrail.co.uk',
       );

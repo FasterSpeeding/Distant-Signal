@@ -12,6 +12,7 @@ import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { CreateJourneyLegFromTicketButton } from '@/components/CreateJourneyLegFromTicketButton';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
+import { RouteText } from '@/components/RouteArrow';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
@@ -284,7 +285,7 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
           title={
             <Link href={`/journeys/${journey.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
               <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
-                {title}
+                <RouteText>{title}</RouteText>
               </Text>
             </Link>
           }
@@ -295,7 +296,7 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
             date are never printed twice on one row. */}
         {journey.customName && (
           <Text size="sm" c="dimmed">
-            {route}, {when}
+            <RouteText>{route}</RouteText>, {when}
           </Text>
         )}
       </Stack>
@@ -459,7 +460,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
   const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
   const heading = (
     <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
-      {displayName}
+      <RouteText>{displayName}</RouteText>
     </Text>
   );
 

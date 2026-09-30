@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { LoadMoreControl } from './LoadMoreControl';
+import { RouteArrow, RouteText } from './RouteArrow';
 import { StatusRow } from './StatusRow';
 import { TextLink } from './TextLink';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -10,6 +11,7 @@ import { LoginPromptModal } from './LoginPromptModal';
 import { searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { spokenRoute } from '@/lib/stationLabel';
 
 // Mirrors `lib/useSuggestions.ts`'s own (non-exported) `DEBOUNCE_MS = 250`
 // constant -- this is a SEPARATE debounce, for the committed filter value
@@ -429,7 +431,7 @@ function CandidateRowView({
       align="flex-start"
       title={
         <Text size="sm" fw={500}>
-          {times}
+          <RouteText>{times}</RouteText>
         </Text>
       }
       subtitle={
@@ -438,9 +440,12 @@ function CandidateRowView({
         // only thing on the row, which was C4.
         <Text size="xs" c="dimmed">
           Train {row.uid}
-          {row.originCrs && row.destinationCrs
-            ? ` · ${row.originCrs} → ${row.destinationName ?? row.destinationCrs}`
-            : ''}
+          {row.originCrs && row.destinationCrs && (
+            <>
+              {' · '}
+              {row.originCrs} <RouteArrow /> {row.destinationName ?? row.destinationCrs}
+            </>
+          )}
           {row.operator !== null ? ` · ${row.operator}` : ''}
         </Text>
       }
@@ -449,7 +454,7 @@ function CandidateRowView({
           <TextLink
             href={`/train/${encodeURIComponent(row.uid)}/${serviceDate}`}
             size="sm"
-            ariaLabel={`View live status for the ${times}`}
+            ariaLabel={`View live status for the ${spokenRoute(times)}`}
           >
             View live status
           </TextLink>
@@ -458,7 +463,7 @@ function CandidateRowView({
             loading={picking === row.uid}
             disabled={picking !== null}
             onClick={onPick}
-            aria-label={`Track this train — ${times}`}
+            aria-label={`Track this train — ${spokenRoute(times)}`}
           >
             Track this train
           </Button>

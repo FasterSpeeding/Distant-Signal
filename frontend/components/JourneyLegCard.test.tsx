@@ -3,6 +3,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyLegCard } from './JourneyLegCard';
 import type { JourneyLegDetail, TrackedTrainState } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 const pushMock = vi.fn();
 const refreshMock = vi.fn();
@@ -150,7 +151,7 @@ describe('JourneyLegCard', () => {
   // the train's headcode, is the card's title.
   it('titles a matched leg by its own route and departure time, not the train headcode', () => {
     renderWithMantine(<JourneyLegCard journeyId={167} leg={baseLeg()} isOwner isOnlyLeg={false} />);
-    expect(screen.getByText('London Kings Cross (KGX) → York (YRK) · 17:00')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('London Kings Cross (KGX) → York (YRK) · 17:00'))).toBeInTheDocument();
   });
 
   it('still shows the headcode, as secondary information', () => {
@@ -280,7 +281,7 @@ describe('JourneyLegCard', () => {
     // 2026-09-22 UX review finding 2.9: "YRK → NCL, 2026-09-22" (a raw ISO
     // date) is gone -- the open leg now uses the same `formatDate` the
     // matched card's own title does ("22 Sept 2026", not "2026-09-22").
-    const title = screen.getByText('YRK → NCL, 22 Sept 2026');
+    const title = screen.getByText(byVisibleText('YRK → NCL, 22 Sept 2026'));
     expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
     // The "needs action" card is tinted in grape, the app's action colour,
     // not blue (reserved for planned/changed arrangements).
@@ -434,8 +435,10 @@ describe('JourneyLegCard (open leg)', () => {
     );
     await settleCandidates();
 
-    expect(screen.getByText('London Kings Cross (KGX) → Edinburgh (EDB), 22 Sept 2026')).toBeInTheDocument();
-    expect(screen.queryByText(/KGX → EDB/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(byVisibleText('London Kings Cross (KGX) → Edinburgh (EDB), 22 Sept 2026')),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText(/KGX → EDB/))).not.toBeInTheDocument();
   });
 
   it('falls back to bare CRS codes when no station name resolved, still using the shared formatter', async () => {
@@ -446,7 +449,7 @@ describe('JourneyLegCard (open leg)', () => {
     renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
-    expect(screen.getByText('KGX → EDB, 22 Sept 2026')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('KGX → EDB, 22 Sept 2026'))).toBeInTheDocument();
   });
 
   it('shows the persisted search window back to the user, and an Edit search link for the owner', async () => {

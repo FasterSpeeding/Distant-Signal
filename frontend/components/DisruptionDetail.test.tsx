@@ -4,6 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import { DisruptionDetail } from './DisruptionDetail';
 import { ENRICHED_INCIDENT_NOTE } from './AiGeneratedBadge';
 import type { Disruption } from '@/lib/types';
+import { byVisibleText } from '@/test/routeText';
 
 const sample: Disruption = {
   category: 'RealTime',
@@ -33,12 +34,12 @@ describe('DisruptionDetail', () => {
 
   it('renders the affected route range', () => {
     renderWithMantine(<DisruptionDetail disruption={sample} />);
-    expect(screen.getByText('WAT → WOK')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
   });
 
   it('renders nothing extra when affectedRoutes is empty', () => {
     renderWithMantine(<DisruptionDetail disruption={{ ...sample, affectedRoutes: [] }} />);
-    expect(screen.queryByText(/→/)).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText(/→/))).not.toBeInTheDocument();
   });
 
   it('renders a human label for the source, not the raw provenance string', () => {

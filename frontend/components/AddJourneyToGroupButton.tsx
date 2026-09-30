@@ -6,6 +6,7 @@ import { Alert, Button, Modal, Select, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { RouteText } from './RouteArrow';
 import type { JourneyListItem } from '@/lib/types';
 
 /** Picker sourced from the user's own `/Journeys/mine` list -- the direct
@@ -110,6 +111,8 @@ export function AddJourneyToGroupButton({
                 j.customName ??
                 (j.originCrs && j.destinationCrs ? `${j.originCrs} → ${j.destinationCrs}` : 'Untitled journey'),
             }))}
+            // Route arrows read as "to" in the list (`RouteText`).
+            renderOption={({ option }) => <RouteText>{option.label}</RouteText>}
             value={selected}
             onChange={setSelected}
           />

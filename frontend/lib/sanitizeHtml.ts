@@ -30,9 +30,15 @@ const ALLOWED_ATTR = ['href'];
  * forced `target="_blank" rel="noopener"` link hardening. Extracted out of
  * `DisruptionDetail.tsx`, where this previously lived file-local — see
  * docs/superpowers/specs/2026-08-31-incident-detail-page-design.md
- * Decision 5. */
+ * Decision 5.
+ *
+ * Every surviving link opens a new tab, so each one also gets the
+ * new-tab marker (`markNewTabLinks`), added to DOMPurify's own DOM output
+ * after sanitizing -- the same order `sanitizeRichText` uses. */
 export function sanitizeDescription(html: string): string {
-  return DOMPurify.sanitize(html, { ALLOWED_TAGS, ALLOWED_ATTR });
+  const body = DOMPurify.sanitize(html, { ALLOWED_TAGS, ALLOWED_ATTR, RETURN_DOM: true }) as unknown as Element;
+  markNewTabLinks(body);
+  return body.innerHTML;
 }
 
 /** The tag inventory the station-accessibility survey actually found —
@@ -107,7 +113,7 @@ function demoteHeadings(root: Element): void {
 /** review §3.5.9: an anchor whose visible text is byte-identical to its own
  * `href` ("https://www.nationalrail.co.uk/stations_destinations/passenger-
  * assist.aspx") reads as noise, not a destination. Rewritten to the
- * hostname plus the external-link marker (`appendExternalLinkMarker`), with
+ * hostname (the new-tab marker follows from `markNewTabLinks`), with
  * the full URL kept reachable via `title` -- exactly the same swap
  * `StationAccessibilitySection.tsx`'s own `link`-kind nodes apply, via the
  * same `new URL(...).hostname` shape, so a raw URL reads the same way
@@ -133,8 +139,16 @@ function rewriteRawUrlLinks(root: Element): void {
     if (hostname === '') return;
     anchor.setAttribute('title', href);
     anchor.textContent = hostname;
-    if (anchor.getAttribute('target') === '_blank') appendExternalLinkMarker(anchor);
   });
+}
+
+/** Adds the new-tab marker (`appendExternalLinkMarker`) to every anchor the
+ * DOMPurify hook above forced into a new tab. Runs on the sanitizer's own
+ * DOM output, last, so it sees final link text (after `rewriteRawUrlLinks`)
+ * and only anchors that kept an `href` -- the hook never sets `target` on
+ * one whose href was rejected, so an inert wrapper gets no marker. */
+function markNewTabLinks(root: Element): void {
+  root.querySelectorAll('a[href][target="_blank"]').forEach(appendExternalLinkMarker);
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -285,5 +299,6 @@ export function sanitizeRichText(html: string): string {
   // around is simpler to reason about than the reverse order).
   linkifyPhoneNumbers(body);
   rewriteRawUrlLinks(body);
+  markNewTabLinks(body);
   return body.innerHTML;
 }
