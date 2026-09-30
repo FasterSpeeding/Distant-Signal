@@ -787,8 +787,13 @@ explicit allows:
   `ingress.api.enabled` — the namespace named by
   `networkPolicy.ingressControllerNamespace`, plus every namespace in
   `networkPolicy.apiExtraIngressNamespaces`, all on `api.service.port`.
+  An extra namespace with an entry in
+  `networkPolicy.apiExtraIngressPodLabels` admits only the pods matching
+  those labels. The default entry narrows `ds-mcp` to the
+  Distant-Signal-MCP's `mcp` pod, so its Redis cannot reach the api.
 - **frontend** ← that same ingress-controller namespace, when
-  `ingress.enabled` and `ingress.frontend.enabled`.
+  `ingress.enabled` and `ingress.frontend.enabled`, and the tunnel
+  connector pods, when `networkPolicy.tunnel.enabled`.
 - **api**: `metrics.port` from the namespace named by
   `networkPolicy.monitoringNamespace` when `metrics.enabled`. This is
   separate from, and does not widen, the `api.service.port` allow above: api
@@ -805,6 +810,25 @@ explicit allows:
   `externalTrafficPolicy: Local`, or a load balancer that preserves it);
   behind source NAT it blocks every push. Also both containers' health ports
   and metrics ports.
+
+**Tunnels (cloudflared).** With no Ingress, a tunnel connector running in
+the cluster publishes the site. `networkPolicy.tunnel.enabled: true` (off by
+default) admits the pods matching `networkPolicy.tunnel.podLabels` in
+`networkPolicy.tunnel.namespace` (default `cloudflared`,
+`app.kubernetes.io/name: cloudflared`) to the frontend only. The api keys its
+rate limits on the `X-Real-IP` header (`api.rateLimit.trustXRealIp`), which
+the frontend's proxy overwrites from `CF-Connecting-IP`. A request sent
+straight from the tunnel to the api keeps whatever `X-Real-IP` its client
+sent, so the client could choose its own rate-limit key. Route public
+hostnames to the frontend. If a hostname really must go straight to the api,
+set `networkPolicy.tunnel.api: true`. The render then fails unless
+`api.rateLimit.trustXRealIp` is false. With that off, every request the
+frontend proxies shares the frontend pod's one bucket, so the per-client
+limits become one site-wide limit.
+
+NetworkPolicies are additive. A cluster-level policy that already lets the
+tunnel reach the api on `api.service.port` still does after this.
+Narrowing the chart's policies cannot remove it.
 
 **Egress is unrestricted by default.** `networkPolicy.egress.enabled: true`
 (off by default) adds egress policies to the notifier, the consumers,
@@ -875,7 +899,11 @@ and app password. Do not add it to any `/private/*` caller group. Then, in
 this chart's values: set `api.internalOauth.groups.mcp` to that group (the
 default is `srv-ds-mcp`), optionally tune `api.rateLimit.mcp`, and, when
 `networkPolicy.enabled`, add the MCP's namespace to
-`networkPolicy.apiExtraIngressNamespaces` (e.g. `[ds-mcp]`); any
+`networkPolicy.apiExtraIngressNamespaces` (e.g. `[ds-mcp]`). The default
+`networkPolicy.apiExtraIngressPodLabels.ds-mcp` then admits only the MCP pod
+(`app.kubernetes.io/name: distant-signal-mcp`,
+`app.kubernetes.io/component: mcp`). Change it if your MCP release sets a
+`nameOverride`, or add an entry for a namespace with a different name. Any
 cluster-level default-deny policy needs the same allowance.
 
 ## Enabling the pollers
@@ -1962,6 +1990,11 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.enabled` | `false` | Render default-deny NetworkPolicies with explicit allows. |
 | `networkPolicy.ingressControllerNamespace` | `ingress-nginx` | Namespace the ingress controller runs in, matched by `kubernetes.io/metadata.name`. |
 | `networkPolicy.apiExtraIngressNamespaces` | `[]` | Extra namespaces allowed to reach `api.service.port` (e.g. `[ds-mcp]` for the Distant-Signal-MCP). |
+| `networkPolicy.apiExtraIngressPodLabels` | `ds-mcp`: `app.kubernetes.io/name: distant-signal-mcp`, `app.kubernetes.io/component: mcp` | Per-namespace pod labels that narrow an `apiExtraIngressNamespaces` entry to the calling pods. A namespace with no entry admits all its pods. Set an entry to `null` to clear it; `{}` merges with the default and does not clear it. |
+| `networkPolicy.tunnel.enabled` | `false` | Admit an in-cluster tunnel connector (e.g. cloudflared) to the frontend. See [NetworkPolicy](#networkpolicy). |
+| `networkPolicy.tunnel.namespace` | `cloudflared` | Namespace the connector runs in, matched by `kubernetes.io/metadata.name`. |
+| `networkPolicy.tunnel.podLabels` | `app.kubernetes.io/name: cloudflared` | Labels selecting the connector pods. Empty admits the whole namespace. |
+| `networkPolicy.tunnel.api` | `false` | Also admit the connector to `api.service.port`, for a hostname routed straight to the api. Requires `api.rateLimit.trustXRealIp: false`. |
 | `networkPolicy.monitoringNamespace` | `monitoring` | Namespace Prometheus runs in, matched by `kubernetes.io/metadata.name`. Allowed to reach each workload's metrics port. Only used when `metrics.enabled` is true. |
 | `networkPolicy.egress.enabled` | `false` | Render egress policies for the notifier, consumers, movement-relay and pollers (see [NetworkPolicy](#networkpolicy)). |
 | `networkPolicy.egress.privateCidrs` | RFC 1918, CGNAT, loopback, link-local, reserved | IPv4 ranges excluded from the public-internet egress allow. |

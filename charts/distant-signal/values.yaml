@@ -3251,8 +3251,47 @@ networkPolicy:
   # -- Extra namespaces allowed to reach api.service.port, matched by
   # `kubernetes.io/metadata.name`. For callers deployed as separate
   # releases, e.g. `[ds-mcp]` for the Distant-Signal-MCP, which calls
-  # api's public routes in-cluster. Empty adds nothing.
+  # api's public routes in-cluster. Empty adds nothing. Narrow an entry to
+  # the calling pods with apiExtraIngressPodLabels below.
   apiExtraIngressNamespaces: []
+  # -- Pod labels narrowing an apiExtraIngressNamespaces entry to the pods
+  # that actually call the api, keyed by namespace name. Only consulted for
+  # namespaces listed in apiExtraIngressNamespaces. A namespace with no
+  # entry here admits every pod in it. The api trusts X-Real-IP for rate
+  # limiting (api.rateLimit.trustXRealIp), so every pod that can reach it
+  # can pick its own rate-limit key: admit only the real caller. The
+  # default matches the Distant-Signal-MCP chart's mcp Deployment
+  # (`app.kubernetes.io/name: distant-signal-mcp`, `component: mcp`); set
+  # its `name` label to your MCP release's nameOverride if you use one. To
+  # admit a whole namespace again, set its entry to null (`ds-mcp: null`);
+  # an empty map `{}` does NOT clear it, because Helm merges maps with the
+  # defaults.
+  apiExtraIngressPodLabels:
+    ds-mcp:
+      app.kubernetes.io/name: distant-signal-mcp
+      app.kubernetes.io/component: mcp
+  # A tunnel connector running in the cluster (e.g. cloudflared) that
+  # publishes the frontend without an Ingress. OFF by default. When
+  # enabled, the pods matching `podLabels` in `namespace` may reach the
+  # frontend on frontend.service.port. They reach the api only with
+  # `api: true`.
+  tunnel:
+    enabled: false
+    # -- Namespace the connector runs in, matched by
+    # `kubernetes.io/metadata.name`.
+    namespace: cloudflared
+    # -- Labels selecting the connector pods in that namespace. Empty
+    # admits every pod in the namespace.
+    podLabels:
+      app.kubernetes.io/name: cloudflared
+    # -- Also admit the connector to api.service.port, for a public
+    # hostname routed straight to the api. Leave false unless such a route
+    # exists: the frontend reaches the api in-cluster either way. A request
+    # arriving straight from the tunnel carries whatever X-Real-IP the
+    # client sent, so it can choose its own rate-limit key. The render
+    # therefore fails unless api.rateLimit.trustXRealIp is false; with that
+    # off, requests the frontend proxies share its pod's bucket.
+    api: false
   # Opt-in egress policies (INF-10, SVC-03 defence in depth) for the
   # notifier, the Kafka/Redis consumers, movement-relay and every poller.
   # OFF by default. Each of those may then reach only DNS (port 53, any
