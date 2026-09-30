@@ -30,7 +30,11 @@
   // which keeps every published version, so the pin keeps building until
   // this bumps it. The chart pins the rebuilt image's digest by hand
   // (`postgresql.pgbackrest.image.tag`), so a bump changes nothing deployed
-  // until that is updated too.
+  // until that is updated too. The same Dockerfile's `ARG TINI_VERSION`
+  // (Debian's tini) is deliberately not tracked: it is a Debian-archive
+  // package pinned to its source version with a `*` for the binNMU suffix,
+  // and the deb datasource would propose exact `+bN` pins that stop
+  // building at the next glibc rebuild (see the Dockerfile).
   "customManagers": [
     {
       "customType": "regex",
