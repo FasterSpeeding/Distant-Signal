@@ -516,15 +516,15 @@ impl ChatbotAccessMode {
 ///   kept (switching back to `group` then takes effect per user at their
 ///   next login, like any other group change);
 /// - `admin_group`, when set (admin session revocation);
-/// - the groups the separate `distant-signal-mcp` adapter reads back from
-///   `GET /public/auth/session` to gate its tools: `mcp-users` and
-///   `mcp-live-boards` by default, overridable as a comma-separated list in
-///   [`STORED_GROUPS_EXTRA_ENV`] (set it to an empty string to keep none).
+/// - any extra groups listed (comma-separated) in [`STORED_GROUPS_EXTRA_ENV`].
+///   None by default: the `distant-signal-mcp` adapter used to read
+///   `mcp-users`/`mcp-live-boards` back from `GET /public/auth/session`, but
+///   since 2026-09-29 it takes groups straight from Authentik, so nothing
+///   here reads them.
 pub const STORED_GROUPS_EXTRA_ENV: &str = "OIDC_STORED_GROUPS_EXTRA";
 
-/// The default for [`STORED_GROUPS_EXTRA_ENV`]: the MCP adapter's two access
-/// groups.
-pub const DEFAULT_STORED_GROUPS_EXTRA: &str = "mcp-users,mcp-live-boards";
+/// The default for [`STORED_GROUPS_EXTRA_ENV`]: no extra groups.
+pub const DEFAULT_STORED_GROUPS_EXTRA: &str = "";
 
 impl ServiceArguments {
     /// The IdP groups a login may store on `users.groups`; see
