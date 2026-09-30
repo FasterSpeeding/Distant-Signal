@@ -723,6 +723,27 @@ startup sequence, partial days, and the metrics to alert on
 (`distant_signal_full_coverage_consumer_startup_complete`,
 `..._day_partial`, `..._stream_gap_detected_total` and more).
 
+## Scheduled jobs and time zones
+
+Every CronJob this chart renders sets `spec.timeZone` explicitly, and CI
+(`.github/workflows/ci.yml`, helm-lint job, "every CronJob sets timeZone")
+fails any render that has a CronJob without one, or with a zone name that
+tzdata doesn't know. Without the field, a schedule is read in the node's
+local zone, which belongs to the host rather than the cluster. On
+mine-bringer the node runs at UTC+2, so a job commented "02:00 UTC" really
+ran at 00:00 UTC.
+
+- Backups and maintenance use `Etc/UTC`, so they have no DST jumps.
+- Jobs tied to the GB rail day use `Europe/London`, and keep their schedules
+  out of 01:00–02:59 local, where DST transitions skip or repeat a run.
+
+Keep backup schedules between 03:00 and 04:15 UTC. The nightly schedule
+ingest takes deliveries between 22:00 and 01:30 and runs whole-day
+publishes, the heaviest WAL and CPU bursts of the day, and 03:00 UTC is
+clear of that window in both GMT and BST. See
+[the backup design](../../docs/superpowers/specs/2026-09-30-backup-and-observability-gaps-design.md),
+item 2.
+
 ## Ingress
 
 Off by default (`ingress.enabled: false`). The production deployment does not

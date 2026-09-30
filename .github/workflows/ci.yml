@@ -1249,3 +1249,57 @@ jobs:
             --set api.sso.redirectUrl=https://app.example.com/callback \
             --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
             > /dev/null
+
+      # Every CronJob the chart renders must set an explicit spec.timeZone
+      # (docs/superpowers/specs/2026-09-30-backup-and-observability-gaps-design.md,
+      # item 2). Without one the schedule is read in the node's local zone,
+      # which the cluster doesn't control: mine-bringer runs at UTC+2, so a
+      # "02:00 UTC" backup really ran at 00:00 UTC. Backups and maintenance
+      # use Etc/UTC; jobs tied to the GB rail day use Europe/London. The
+      # zone must also exist in the runner's tzdata, because the API server
+      # rejects an unknown name. Rendered with every optional feature that
+      # adds a CronJob turned on.
+      - name: helm template (every CronJob sets timeZone)
+        run: |
+          set -euo pipefail
+          base=(
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+          # One "<name> <timeZone>" line per CronJob; "-" when timeZone is unset.
+          cronjobs() {
+            awk 'BEGIN { RS = "\n---\n" }
+              /(^|\n)kind: CronJob\n/ {
+                name = "?"; tz = "-"
+                if (match($0, /\n  name: [^\n]+/)) name = substr($0, RSTART + 9, RLENGTH - 9)
+                if (match($0, /\n  timeZone: [^\n]+/)) tz = substr($0, RSTART + 13, RLENGTH - 13)
+                gsub(/"/, "", tz)
+                print name, tz
+              }'
+          }
+          # Reads a render on stdin; $1 labels the output, $2 is the number
+          # of CronJobs that render must contain.
+          check() {
+            local label="$1" want="$2" found n=0 name tz
+            found=$(cronjobs)
+            while read -r name tz; do
+              [[ -n "${name}" ]] || continue
+              n=$((n + 1))
+              [[ "${tz}" != "-" ]] || fail "${label}: CronJob ${name} has no spec.timeZone"
+              [[ -f "/usr/share/zoneinfo/${tz}" ]] || fail "${label}: CronJob ${name} timeZone ${tz} is not a known zone"
+              echo "${label}: ${name} ${tz}"
+            done <<<"${found}"
+            [[ "${n}" -eq "${want}" ]] || fail "${label}: expected ${want} CronJob(s), found ${n}"
+          }
+          render | check "default values" 0
+          render -f charts/distant-signal/values-example.yaml | check "values-example.yaml" 0
