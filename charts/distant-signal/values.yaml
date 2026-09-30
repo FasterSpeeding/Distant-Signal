@@ -3103,6 +3103,30 @@ metrics:
       window: 1h
       for: 0m
       severity: critical
+    # DistantSignalMovementRelayPublishFailing: movement-relay failed every
+    # XADD over `window` and published nothing (Redis refusing writes: OOM,
+    # a failed AOF write, NOAUTH, or down). TRUST ingestion is stopped and
+    # no lag alert fires, since the stream simply stops growing.
+    relayPublishFailing:
+      enabled: true
+      window: 10m
+      for: 5m
+      severity: critical
+    # DistantSignalRedisPersistenceFailing: Redis's last AOF write or AOF
+    # rewrite failed, or (bundled Redis with redis.persistence.enabled) AOF
+    # is off. Read from movement-relay's INFO persistence gauges.
+    redisPersistence:
+      enabled: true
+      for: 5m
+      severity: critical
+    # DistantSignalMovementGroupRecreated: a consumer found its
+    # movement-events group missing (NOGROUP) within `window` and recreated
+    # it: Redis lost its data, or the group was deleted.
+    groupRecreated:
+      enabled: true
+      window: 1h
+      for: 0m
+      severity: warning
     # DistantSignalEnricherErrors: over `window`, more than errorRatio of an
     # LLM call site's calls failed, with at least minErrors failures.
     enricherErrors:
