@@ -1933,14 +1933,17 @@ now matches every other workload.
 | `metrics.prometheusRule.annotations` | `{}` | Extra annotations on the `PrometheusRule` object. |
 | `metrics.prometheusRule.ruleLabels` | `{}` | Extra labels added to every alert, next to `severity`. |
 | `metrics.prometheusRule.runbookBaseUrl` | GitHub `main` | Prefix for each alert's `runbook_url`; the repo-relative doc path is appended. |
-| `metrics.prometheusRule.<alert>` | see `values.yaml` | Per-alert `enabled`, `for`, `severity` and threshold settings, `for` durations, severities and thresholds for `movementLag`, `movementLagGrowing`, `streamGap`, `deadLetter`, `deadLetterFull`, `enricherErrors`, `componentMemory`, `fullCoverageWindow`, `notifierPushDropped`, `archiveUploadFailures`, `schedulePipeline`, `pollerFailures`, `ldbwsStalestStation` and `ldbwsInvalidCrs`. |
+| `metrics.prometheusRule.<alert>` | see `values.yaml` | Per-alert `enabled`, `for`, `severity` and threshold settings, `for` durations, severities and thresholds for `movementLag`, `movementLagGrowing`, `streamGap`, `deadLetter`, `deadLetterFull`, `enricherErrors`, `componentMemory`, `fullCoverageWindow`, `notifierPushDropped`, `userSignupSpike`, `archiveUploadFailures`, `schedulePipeline`, `pollerFailures`, `ldbwsStalestStation` and `ldbwsInvalidCrs`. |
 
 #### Alerts
 
 Every alert is named `DistantSignal*` and covers only what this chart's own
 metrics can tell (plus per-container memory headroom). Generic signals —
-OOMKilled, restart spikes, pods not ready, pollers failing — belong to the
-cluster's own rules and are deliberately not duplicated here. Every
+OOMKilled, restart spikes, pods not ready — belong to the cluster's own
+rules and are deliberately not duplicated here. The reverse also holds: this
+chart is the source for every `DistantSignal*` alert below, so a cluster's
+own rules should not define an alert with the same name (two copies fire
+twice). Every
 expression is scoped to `namespace="<release namespace>"`, the label the
 `PodMonitor` attaches, so the rules only see series scraped that way (or by
 an equivalent scrape that sets `namespace`). The `movement-events` group is
@@ -1964,6 +1967,7 @@ alert only when `archive.enabled`, and the schedule-pipeline group only when
 | `DistantSignalFullCoverageWindowStatsStalled` | warning | No window rows posted (`full_coverage_consumer_window_rows_posted_total`) over 10m, for 15m. |
 | `DistantSignalComponentMemoryHigh` | warning | A container in this release's pods (`pod=~"<fullname>-.*"`) has a working set (cadvisor) above 80% of its memory limit (kube-state-metrics) for 10m. |
 | `DistantSignalNotifierPushDropped` | warning | The notifier dropped at least 5 decided pushes (`notifier_push_dropped_total{reason}`) within the last 1h. Delivery is at-most-once. |
+| `DistantSignalUserSignupSpike` | warning | api created more than 20 user accounts (`userSignupSpike.metric`, default `ds_api_users_created_total`) within the last 1h. Sign-up is open to any account the IdP admits (in production, any Discord account), so a burst is real growth or scripted sign-ups. Check the newest `users` rows and the IdP's enrolment log; to stop it, restrict enrolment in the IdP, then revoke the unwanted sessions ([session revocation](../../docs/session-revocation.md)). Needs an api build that exports the counter; silent until then. |
 | `DistantSignalArchiveUploadFailures` | warning | At least 3 cold-archive batch uploads or verifications failed (`aggregator_archive_upload_failures_total`) within the last 1h. |
 | `DistantSignalScheduleReferenceNotSeeded` | warning | schedule-reference has not read its last completed publish from api (`schedule_reference_seeded` is 0) for 30m. |
 | `DistantSignalScheduleFeedZipRejected` | warning | schedule-ingest quarantined a delivery zip (`schedule_feed_zip_rejected_total`) within the last 6h. |
@@ -1973,7 +1977,7 @@ alert only when `archive.enabled`, and the schedule-pipeline group only when
 | `DistantSignalSchedulePublishStagedMismatch` | warning | api skipped a final chunk's delete because the staged key count did not match (`api_schedule_publish_staged_mismatch_total{product}`) within the last 6h. |
 | `DistantSignalScheduleReferencePublishRejected` | warning | api answered 400/413/422 to a schedule-reference product (`schedule_reference_publishes_total{outcome="rejected"}`) within the last 6h. |
 | `DistantSignalLinePopulationMissing` | warning | After 06:00 London, some line still has no schedule population for today (`full_coverage_consumer_population_missing_past_deadline_lines` above 0) for 15m. |
-| `DistantSignalPollerFailing` | warning | A poller completed no successful cycle and at least one failed one (`poller_cycle_total{result}`) over the last 2h (SVC-08). Rendered only when a poller (including an island-of-Ireland one) is enabled, in a separate `<fullname>-pollers` PrometheusRule. |
+| `DistantSignalPollerFailing` | warning | A poller completed no successful cycle and at least one failed one (`poller_cycle_total{result}`) over the last 2h, or more than half its cycles over the last 1h failed (`pollerFailures.failureRatio`, `ratioWindow`) (SVC-08). Rendered only when a poller (including an island-of-Ireland one) is enabled, in a separate `<fullname>-pollers` PrometheusRule. |
 | `DistantSignalLdbwsStationStale` | warning | The least recently sampled LDBWS station (`ldbws_stalest_station_age_seconds`) is over 7200s old for 30m: the rotation stopped reaching part of the list (SVC-04). Stations LDBWS rejects as an invalid CRS are excluded. Only when `pollers.ldbws.enabled`. |
 | `DistantSignalLdbwsInvalidCrs` | warning | LDBWS has answered "Invalid crs code supplied" for a sample station (`ldbws_invalid_crs_station{crs}` is 1) for 15m: a `lines/*.toml` typo. The poller re-probes it hourly instead of every cycle. Only when `pollers.ldbws.enabled`. |
 

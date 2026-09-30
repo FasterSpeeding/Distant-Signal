@@ -3042,9 +3042,10 @@ metrics:
     # equivalent scrape that sets a `namespace` label) collects.
     #
     # Scope is deliberately narrow: generic cluster-level alerts (OOMKilled,
-    # restart spikes, pods not ready, pollers failing) belong to the
-    # cluster's own rules (mine-bringer: Ranma-Config's
-    # monitoring-rules.yaml). Every alert here is named `DistantSignal*`.
+    # restart spikes, pods not ready) belong to the cluster's own rules
+    # (mine-bringer: Ranma-Config's monitoring-rules.yaml). Every alert here
+    # is named `DistantSignal*`, and this chart is their source: the
+    # cluster's rules should not redefine any of them.
     enabled: false
     # Extra labels on the PrometheusRule object itself, e.g. whatever the
     # Prometheus CR's ruleSelector matches (`release: kube-prometheus-stack`
@@ -3145,10 +3146,15 @@ metrics:
     # .Values.pollers or the three island-of-Ireland ones) completed no
     # successful cycle and at least one failed one over `window`. Keyed on
     # distant_signal_poller_cycle_total{result}. Rendered in a separate
-    # `<fullname>-pollers` PrometheusRule.
+    # `<fullname>-pollers` PrometheusRule. It also fires when more than
+    # failureRatio of the poller's cycles over ratioWindow failed, so a
+    # mostly-failing poller is caught too; set failureRatio to 0 to drop
+    # that clause.
     pollerFailures:
       enabled: true
       window: 2h
+      failureRatio: 0.5
+      ratioWindow: 1h
       for: 0m
       severity: warning
     # DistantSignalLdbwsStationStale (SVC-04): the least recently sampled
@@ -3179,6 +3185,18 @@ metrics:
       enabled: true
       window: 1h
       minDrops: 5
+      for: 0m
+      severity: warning
+    # DistantSignalUserSignupSpike: more than `threshold` new user accounts
+    # within `window`. Sign-up is open to any account the IdP admits (in
+    # production, any Discord account), so a burst is either real growth or
+    # scripted sign-ups. `metric` is api's counter of created users rows;
+    # it needs the api build that exports it, and never fires without it.
+    userSignupSpike:
+      enabled: true
+      metric: ds_api_users_created_total
+      window: 1h
+      threshold: 20
       for: 0m
       severity: warning
     # DistantSignalArchiveUploadFailures: at least minFailures cold-archive
