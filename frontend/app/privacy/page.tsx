@@ -137,7 +137,7 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       what: 'Encrypted daily copies of our database, which include the data above.',
       why: 'To recover from failures.',
       basis: 'The same basis as the data they contain.',
-      retention: '7 days. Data you delete leaves our backups within 7 days.',
+      retention: 'Up to 14 days. Data you delete can stay in our backups for up to 14 days.',
     },
   ];
 }

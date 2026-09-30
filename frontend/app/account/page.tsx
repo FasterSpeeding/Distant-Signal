@@ -24,7 +24,7 @@ export const metadata: Metadata = {
  * (`GET /api/account/export`, UK GDPR Arts. 15 and 20), and delete the
  * account (`DeleteAccountButton`, Art. 17). The retention sentence mirrors
  * the api's default `PAST_TRAVEL_RETENTION_DAYS` (548 days, 18 months)
- * and the 7-day backup retention; see docs/personal-data-retention.md. */
+ * and the backup retention (up to 14 days); see docs/personal-data-retention.md. */
 export default async function AccountPage() {
   const session = await getSessionOrLoggedOut();
 
@@ -63,7 +63,7 @@ export default async function AccountPage() {
             templates, groups, pins and custom lines are kept until you delete them or your account.
           </Text>
           <Text size="sm">
-            Database backups are encrypted and kept for 7 days, so anything deleted leaves the backups within 7 days.
+            Database backups are encrypted, and anything deleted can stay in them for up to 14 days.
           </Text>
         </Stack>
       </Card>

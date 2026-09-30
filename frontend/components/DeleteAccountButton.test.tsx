@@ -33,13 +33,13 @@ describe('DeleteAccountButton', () => {
     vi.unstubAllGlobals();
   });
 
-  it('explains what is deleted, what happens to groups, and the 7-day backup retention before anything is sent', async () => {
+  it('explains what is deleted, what happens to groups, and the 14-day backup retention before anything is sent', async () => {
     renderWithMantine(<DeleteAccountButton />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete my account' }));
 
     expect(await screen.findByText(/tracked trains, tickets, journeys and journey templates/)).toBeInTheDocument();
     expect(screen.getByText(/Groups carry on for their other members/)).toBeInTheDocument();
-    expect(screen.getByText(/backups are encrypted and kept for 7 days/)).toBeInTheDocument();
+    expect(screen.getByText(/your data can stay in them for up to 14 days/)).toBeInTheDocument();
     expect(screen.getByText(/single sign-on account/)).toBeInTheDocument();
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });

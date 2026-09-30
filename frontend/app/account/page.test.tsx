@@ -42,7 +42,7 @@ describe('AccountPage', () => {
     expect(screen.getByRole('button', { name: 'Delete my account' })).toBeInTheDocument();
   });
 
-  it('states the retention periods, including the 7-day backup window', async () => {
+  it('states the retention periods, including the 14-day backup window', async () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'user-1',
@@ -51,6 +51,6 @@ describe('AccountPage', () => {
     });
     renderWithMantine(await AccountPage());
     expect(screen.getByText(/18 months after the day of travel/)).toBeInTheDocument();
-    expect(screen.getByText(/leaves the backups within 7\s+days/)).toBeInTheDocument();
+    expect(screen.getByText(/can stay in them for up to 14\s+days/)).toBeInTheDocument();
   });
 });

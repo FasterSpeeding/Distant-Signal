@@ -89,10 +89,13 @@ All three are on the api (`crates/api/src/data/config.rs`), and are set in the c
 
 `INACTIVE_ACCOUNT_RETENTION_DAYS` is off by default because the app holds no email addresses, so a user cannot be warned first. Before enabling it (the audit suggests 730), state it in the privacy notice.
 
-The `/account` page says "18 months" and "7 days". If `PAST_TRAVEL_RETENTION_DAYS` or the backup retention changes, update that copy too.
+The `/account` page says "18 months" and "up to 14 days" (backups). If `PAST_TRAVEL_RETENTION_DAYS` or the backup retention changes, update that copy too: the account, account-deleted and privacy pages, and the delete-account dialog.
 
 ## Backups
 
-The daily `pg_dump` is age-encrypted and kept for 7 days (Ranma-Config `distant-signal.yaml`). Deleted or pruned data therefore leaves every backup within 7 days. The account and deletion pages say so.
+Deleted or pruned data can stay in backups for **up to 14 days**. The account, account-deleted and privacy pages and the delete-account dialog say so (decided 2026-09-30).
 
-When the chart's point-in-time recovery is on (`postgresql.pgbackrest.enabled`, off by default; [postgres-pitr.md](postgres-pitr.md)), pgBackRest also keeps WAL and backups in an encrypted repository. `repo.retentionFullType: time` with `retentionFull: 7` keeps whatever is needed to restore to any moment in the last 7 days, which includes the weekly full backup taken before that window. So deleted or pruned data can stay in the repository for up to about 14 days: the 7-day window plus up to 7 days until that older full backup expires. Before enabling it, either update the account and deletion pages to say so, or shorten the window (for example daily full backups).
+- The daily `pg_dump` is age-encrypted and kept for 7 days (Ranma-Config `distant-signal.yaml`).
+- The chart's point-in-time recovery (`postgresql.pgbackrest.enabled`; [postgres-pitr.md](postgres-pitr.md)) keeps WAL and backups in an encrypted pgBackRest repository: a weekly full backup, daily differentials, and `repo.retentionFullType: time` with `retentionFull: 7`. That keeps whatever is needed to restore to any moment in the last 7 days, which includes the weekly full backup taken before that window. So a row deleted just after a full backup stays in the repository until the next-but-one full backup expires it: up to about 14 days.
+
+If either retention changes, keep the 14-day figure (or a shorter one) true, and update the pages above.
