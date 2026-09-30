@@ -94,3 +94,5 @@ The `/account` page says "18 months" and "7 days". If `PAST_TRAVEL_RETENTION_DAY
 ## Backups
 
 The daily `pg_dump` is age-encrypted and kept for 7 days (Ranma-Config `distant-signal.yaml`). Deleted or pruned data therefore leaves every backup within 7 days. The account and deletion pages say so.
+
+When the chart's point-in-time recovery is on (`postgresql.pgbackrest.enabled`, off by default; [postgres-pitr.md](postgres-pitr.md)), pgBackRest also keeps WAL and backups in an encrypted repository. `repo.retentionFullType: time` with `retentionFull: 7` keeps whatever is needed to restore to any moment in the last 7 days, which includes the weekly full backup taken before that window. So deleted or pruned data can stay in the repository for up to about 14 days: the 7-day window plus up to 7 days until that older full backup expires. Before enabling it, either update the account and deletion pages to say so, or shorten the window (for example daily full backups).

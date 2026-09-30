@@ -24,6 +24,25 @@
   //     deliberately does not vendor the `piped` submodule)
   "extends": ["github>FasterSpeeding/Piped//config/renovate.json5"],
 
+  // pgBackRest in docker/postgres-pgbackrest.Dockerfile is pinned to a PGDG
+  // package version (`ARG PGBACKREST_VERSION=...`), which no built-in
+  // manager extracts. The deb datasource reads PGDG's trixie-pgdg index,
+  // which keeps every published version, so the pin keeps building until
+  // this bumps it. The chart pins the rebuilt image's digest by hand
+  // (`postgresql.pgbackrest.image.tag`), so a bump changes nothing deployed
+  // until that is updated too.
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)postgres-pgbackrest\\.Dockerfile$/"],
+      "matchStrings": ["ARG PGBACKREST_VERSION=(?<currentValue>\\S+)"],
+      "depNameTemplate": "pgbackrest",
+      "datasourceTemplate": "deb",
+      "versioningTemplate": "deb",
+      "registryUrlTemplate": "https://apt.postgresql.org/pub/repos/apt?suite=trixie-pgdg&components=main&binaryArch=amd64",
+    },
+  ],
+
   // INF-11: every third-party image is now pinned by digest -- the
   // Dockerfile `FROM image:tag@sha256:...` lines and the chart's
   // `tag: "<version>@sha256:..."` values (postgres, redis, sftpgo,
@@ -114,6 +133,20 @@
   //                   goauthentik/server all extract with their digests,
   //                   and so does every Dockerfile's `# syntax=` pin.
   "packageRules": [
+    {
+      // docker/postgres-pgbackrest.Dockerfile must stay on exactly the
+      // image `postgresql.image.tag` pins (the chart swaps one for the other
+      // over the same data directory), so bump both in one PR.
+      // devAuthentik's dev-only postgres (alpine) in values.yaml joins the
+      // group too; that's harmless.
+      "matchDatasources": ["docker"],
+      "matchDepNames": ["postgres"],
+      "matchFileNames": [
+        "charts/distant-signal/values.yaml",
+        "docker/postgres-pgbackrest.Dockerfile",
+      ],
+      "groupName": "postgres 16",
+    },
     {
       // docker-compose.yml's rail-mcp `${RAIL_MCP_IMAGE:-...}` default is
       // a deliberately invalid placeholder (see the comment there), not a
