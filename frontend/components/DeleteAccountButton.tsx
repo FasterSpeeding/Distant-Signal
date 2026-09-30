@@ -85,9 +85,7 @@ export function DeleteAccountButton() {
             Groups carry on for their other members. If you own a group, it passes to its longest-standing admin (or
             member); a group with no other members is deleted.
           </Text>
-          <Text size="sm">
-            Our database backups are encrypted and kept for 7 days, so your data is gone from them within 7 days too.
-          </Text>
+          <Text size="sm">Our database backups are encrypted, and your data can stay in them for up to 14 days.</Text>
           <Text size="sm">
             You sign in through a separate single sign-on account (or Discord), which this does not delete. Close that
             account there if you want it gone too.

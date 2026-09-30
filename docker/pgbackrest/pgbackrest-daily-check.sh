@@ -14,7 +14,9 @@
 #      reach the repository, so it fails while archiving is broken (Thoth
 #      down, bad credentials, no stanza).
 #   2. `pgbackrest verify` (skipped with --no-verify): reads every backup and
-#      WAL file back from the repository, decrypts it and checks it.
+#      WAL file back from the repository, decrypts it and checks it. The
+#      chart's daily check passes --no-verify and runs verify in its own
+#      weekly CronJob instead.
 #   3. The WAL gap check. When Thoth is down long enough for the spool to
 #      reach archive-push-queue-max, pgBackRest drops WAL instead of letting
 #      pg_wal fill the node's disk, and Postgres still counts the dropped

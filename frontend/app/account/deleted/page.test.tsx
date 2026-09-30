@@ -7,6 +7,6 @@ describe('AccountDeletedPage', () => {
   it('confirms deletion and states the backup window', () => {
     renderWithMantine(<AccountDeletedPage />);
     expect(screen.getByRole('heading', { name: 'Your account has been deleted' })).toBeInTheDocument();
-    expect(screen.getByText(/gone from them within 7 days/)).toBeInTheDocument();
+    expect(screen.getByText(/for up to 14 days, and then it is gone from them/)).toBeInTheDocument();
   });
 });

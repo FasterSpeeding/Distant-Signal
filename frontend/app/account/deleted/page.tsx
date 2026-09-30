@@ -15,7 +15,7 @@ export default function AccountDeletedPage() {
       <Title order={1}>Your account has been deleted</Title>
       <Text>
         Your Distant Signal account and all of its data have been deleted, and you have been logged out everywhere.
-        Encrypted database backups are kept for 7 days, so your data is gone from them within 7 days.
+        Encrypted database backups can keep your data for up to 14 days, and then it is gone from them too.
       </Text>
       <Text>
         Your single sign-on account (or Discord login) is separate and still exists. Close it there if you want it gone
