@@ -15,6 +15,7 @@ The user answered the open questions in the first draft of this document:
   off this host, so risk X1 is resolved.
 - **Cold-archive retention:** 730 days. Expiry ships in dry-run first.
 - **Approved to implement:**
+  - pgBackRest PITR with the `pods/exec` grant, as designed (item 1);
   - the `timeZone` and schedule changes (item 2);
   - the Prometheus and Grafana PVCs (item 4);
   - sealing the Postgres app password and the schedulefeed SFTP secrets
