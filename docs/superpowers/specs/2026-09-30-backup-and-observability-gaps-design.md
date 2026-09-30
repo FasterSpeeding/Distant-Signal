@@ -1,8 +1,28 @@
 # Backup and observability gaps on mine-bringer — design
 
-Status: design only. Nothing here is applied, and no repository other than
-this document's own was edited.
+Status: approved, implementation in progress.
 Date: 2026-09-30.
+
+## Decisions (user, 2026-09-30)
+
+The user answered the open questions in the first draft of this document:
+
+- **PITR:** pgBackRest on the existing StatefulSet (item 1). The narrow
+  `pods/exec` grant for its backup CronJobs is accepted as a documented
+  exception to Ranma-Config's "backup jobs mount no ServiceAccount token"
+  rule.
+- **Thoth is off-host.** The user confirmed that Thoth's objects are stored
+  off this host, so risk X1 is resolved.
+- **Cold-archive retention:** 730 days. Expiry ships in dry-run first.
+- **Approved to implement:**
+  - the `timeZone` and schedule changes (item 2);
+  - the Prometheus and Grafana PVCs (item 4);
+  - sealing the Postgres app password and the schedulefeed SFTP secrets
+    (X2, items 1 and 5);
+  - cold-archive expiry (item 3);
+  - Loki + Alloy with 7-day retention (item 6).
+
+The questions that are still open are listed at the end of this document.
 
 ## Context
 
@@ -59,13 +79,11 @@ changes, estimates the cost, sets out restore and verification steps
 
 These affect several items, so they are listed once here.
 
-- **X1. Is Thoth off-host?** Thoth's front end runs on the same machine as
-  the cluster. Earlier specs describe a remote storage box behind it.
-  **Confirm with the Thoth operator that objects are stored off this host.**
-  If they are not, no backup in this document survives the loss of the
-  host, and gap 2 needs a second, truly off-site target before anything
-  else. Every drill below includes "check the object exists in Thoth's
-  backing store", not just on the endpoint.
+- **X1. Is Thoth off-host? Resolved: yes.** Thoth's front end runs on the
+  same machine as the cluster, which raised the question of whether a
+  backup there survives losing the host. The user confirmed on 2026-09-30
+  that Thoth's objects are stored off this host, so the backups in this
+  document survive a host loss, and no second off-site target is needed.
 - **X2. Keys that exist only on the cluster.** Several secrets that a restore
   needs are either rendered by the chart inside the cluster or sealed with
   the sealed-secrets controller's own key:
@@ -218,15 +236,18 @@ When `enabled` is true, the chart:
 - adds PrometheusRules (next section).
 
 The exec-based CronJob breaks Ranma-Config's "backup pods mount no
-ServiceAccount token" rule (`backup-no-sa-token.yaml`). This is on purpose,
-and the grant is narrow. The alternatives are worse:
+ServiceAccount token" rule (`backup-no-sa-token.yaml`). **The user accepted
+this as a documented exception on 2026-09-30.** It is on purpose, and the
+grant is narrow. The alternatives are worse:
 
 - A `pgbackrest server` TLS sidecar needs certificates and a new container
   hook in the chart.
 - An in-pod scheduler hides the schedule from kube-state-metrics'
   CronJob alerts.
 
-Record the exception in Ranma-Config.
+Record the exception in Ranma-Config, next to `backup-no-sa-token.yaml`:
+which ServiceAccount it is, the one pod name it may exec into, and a link
+to this document.
 
 **Ranma-Config.**
 
@@ -260,7 +281,7 @@ archived.
 | WAL archived | **Re-measure first.** 35 GB/day raw was measured before the current settings. Expect several times less now. Plan on **2–8 GB/day stored** after zstd. | PITR spec measurement; the FPI share |
 | Thoth storage, 7-day window | About 15–60 GB of WAL, plus 1–2 fulls of about 2–3 GB, plus 6 diffs → **about 25–75 GB**. | estimates |
 | Node disk | A spool of a few MB normally. The worst case is capped at `queueMax` (8 GiB) during a Thoth outage. | – |
-| Thoth capacity | **Unknown. Confirm before enabling.** | X1 |
+| Thoth capacity | **Unknown. Confirm before enabling.** | Open question 1 |
 
 ### Rollout
 
@@ -448,8 +469,8 @@ are in place:
 
 - **(a)** a narrow egress NetworkPolicy from the aggregator to Thoth;
 - **(b)** client-side expiry, because Thoth can't do lifecycle rules;
-- **(c)** a decision on how long to keep the archive. The earlier spec
-  suggests 2 years.
+- **(c)** a decision on how long to keep the archive. **Decided: 730 days**
+  (user, 2026-09-30).
 
 Do expiry **inside the aggregator**, behind a new `archive.expiry` block.
 That way it shares the code that knows the key layout, and it exports
@@ -506,7 +527,7 @@ The archiver never deletes, and the chart won't render the archive unless
 archive:
   expiry:
     enabled: false
-    retentionDays: 730        # the policy decision (c)
+    retentionDays: 730        # decided (c)
     minRetentionDays: 90      # hard floor; the chart and binary refuse anything lower
     intervalSecs: 86400
     maxDeletesPerRun: 20000   # circuit breaker
@@ -570,14 +591,14 @@ listing and matching are right (with the candidate count at 0), and be
 switched to live well before the first object comes due. The delete path
 itself is proved in the drill below, against a scratch prefix.
 
-### (c) Retention decision: user
+### (c) Retention: decided, 730 days
 
 The archived rows are TRUST-derived, with `raw_body` stripped. The chart
 already refuses LDBWS-derived tables and `trust_event_backlog`, so RDM's
 300-day ceiling doesn't apply. The project's working assumption is that its
-current RDM use is permitted. **Still, choose `retentionDays` on purpose:**
-2 years as the earlier spec suggested, or longer. Record the decision in
-Ranma-Config's cold-archive spec.
+current RDM use is permitted. **The user chose `retentionDays: 730` on
+2026-09-30, with expiry shipping in `dryRun: true` first.** Record the
+decision in Ranma-Config's cold-archive spec as well.
 
 ### Cost
 
@@ -602,7 +623,7 @@ Ranma-Config's cold-archive spec.
    - Delete the throwaway pod.
 4. **Ranma-Config:** bump the chart, then set:
    - `archive.enabled: true`;
-   - `expiry.enabled: true` with `dryRun: true`, `retentionDays: <decision>`;
+   - `expiry.enabled: true` with `dryRun: true`, `retentionDays: 730`;
    - `ARCHIVE_PROTECTED_PREFIXES`.
 5. Verify, using the cold-archive spec's section 5:
    - `aggregator_archive_rows_total` and `…_objects_total` rise;
@@ -618,8 +639,7 @@ Ranma-Config's cold-archive spec.
 - **Monthly spot check:** pick one archived `service_date`. Read it with
   DuckDB, following `docs/cold-archive.md` ("Reading an archive offline").
   Check that `count(DISTINCT id)` for `trains` matches
-  `aggregator_archive_rows_total` for that period. Also check X1: that the
-  object exists in Thoth's backing store.
+  `aggregator_archive_rows_total` for that period.
 - **Expiry drill (once before going live, then after any change to the
   expiry code):**
   1. Point a second aggregator binary, run locally or as a one-off Job, at a
@@ -1034,16 +1054,16 @@ revoke audit line with an email address or user id, and OIDC subjects.
 | **Ranma-Config** | pgBackRest values, SealedSecret, Thoth egress for Postgres; seal the Postgres password; `timeZone` plus new schedules on all CronJobs, a CI check, and the fixed comments; the aggregator Thoth egress policy; archive enable plus expiry values and protected prefixes; Prometheus `storageSpec`/30d/25GB and Grafana persistence; AOF alerts; the schedulefeed host-key/password SealedSecret; Loki, Alloy, the `logging` namespace, policies and the data source |
 | **Distant-Signal-MCP** | README runbooks only (OAuth Redis loss, timetable rebuild from the DS delivery). No chart change is required. |
 
-## Open questions for the user
+## Open questions
 
-1. **Thoth:** is it off-host (X1), and how much capacity does it have for
-   about 25–75 GB of pgBackRest data? Can the Thoth operator mint keys
-   scoped to a prefix?
-2. **Cold-archive retention:** 730 days, or some other value?
-3. **Accepting pgBackRest over CNPG,** as a reversal of the earlier Stage 2
-   recommendation, on the grounds of encryption and cost.
-4. **The exec exception:** a CronJob that mounts a ServiceAccount token
-   (pods/exec on one pod) for the pgBackRest schedule.
-5. **Log retention:** 7 days, and whether collection should cover all
-   namespaces or only `distant-signal` and `ds-mcp`. Covering fewer
-   namespaces roughly halves Loki's footprint.
+1. **Thoth capacity and scoped keys:** how much capacity Thoth has for
+   about 25–75 GB of pgBackRest data (item 1's rollout step 1 still
+   measures WAL first), and whether the Thoth operator can mint keys
+   scoped to a prefix (X4).
+2. **Log namespaces:** whether collection should cover all namespaces or
+   only `distant-signal` and `ds-mcp`. Covering fewer namespaces roughly
+   halves Loki's footprint. The 7-day retention is decided.
+
+Decided on 2026-09-30, and recorded under "Decisions" at the top: Thoth
+is off-host, cold-archive retention is 730 days, pgBackRest was chosen over
+CNPG, and the exec exception was accepted.
