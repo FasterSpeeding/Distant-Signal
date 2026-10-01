@@ -909,6 +909,47 @@ jobs:
           grep -A1 'name: SCHEDULE_SFTP_PERMISSIONS' <<<"${dep}" | grep -q 'value: "upload"' \
             || fail "scheduleFeed.sftp.permissions must be configurable"
 
+      # Brute-force protection is on by default: SSH commands off, the
+      # defender (never scoring probe connections), the per-host cap and
+      # the per-source rate limiter; the safelist reaches the entrypoint.
+      - name: helm template (sftp defender, rate limit, no SSH commands)
+        run: |
+          set -euo pipefail
+          render() {
+            helm template distant-signal charts/distant-signal \
+              --set trustConsumer.kafka.brokers=kafka.example.com:9094 \
+              --set trustConsumer.kafka.topic=test-topic \
+              --set trustConsumer.kafka.saslMechanism=PLAIN \
+              --set enricher.llm.baseUrl=http://llm.example.com/v1 \
+              --set enricher.llm.model=test-model \
+              --set api.sso.issuerUrl=https://sso.example.com \
+              --set api.sso.clientId=test-client \
+              --set api.sso.clientSecret=test-secret \
+              --set api.sso.redirectUrl=https://app.example.com/callback \
+              --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
+              --set scheduleFeed.enabled=true \
+              --set scheduleFeed.sftp.authMethod=password "$@" \
+              --show-only templates/schedulefeed-deployment.yaml
+          }
+          fail() { echo "::error::$1"; exit 1; }
+          has() { grep -A1 "name: $1\$" <<<"${dep}" | grep -q "value: \"$2\"" || fail "$1 must be \"$2\""; }
+          dep=$(render)
+          has SFTPGO_SFTPD__ENABLED_SSH_COMMANDS ''
+          has SFTPGO_COMMON__DEFENDER__ENABLED true
+          has SFTPGO_COMMON__DEFENDER__SCORE_NO_AUTH 0
+          has SFTPGO_COMMON__DEFENDER__THRESHOLD 8
+          has SFTPGO_COMMON__MAX_PER_HOST_CONNECTIONS 8
+          has SFTPGO_COMMON__RATE_LIMITERS__0__AVERAGE 20
+          has SFTPGO_COMMON__RATE_LIMITERS__0__GENERATE_DEFENDER_EVENTS true
+          if grep -q 'SCHEDULE_SFTP_SAFELIST' <<<"${dep}"; then fail "no safelist by default"; fi
+          dep=$(render --set 'scheduleFeed.sftp.defender.safelist={192.0.2.0/24,198.51.100.7}')
+          has SCHEDULE_SFTP_SAFELIST '192.0.2.0/24 198.51.100.7'
+          dep=$(render --set scheduleFeed.sftp.defender.enabled=false --set scheduleFeed.sftp.rateLimit.average=0)
+          has SFTPGO_COMMON__DEFENDER__ENABLED false
+          if grep -q 'SFTPGO_COMMON__DEFENDER__THRESHOLD\|SFTPGO_COMMON__RATE_LIMITERS' <<<"${dep}"; then
+            fail "a disabled defender and rate limiter must render no settings"
+          fi
+
       # movement-relay is on by default (the three movement consumers read
       # only its stream). Empty movementRelay.kafka.* fields fall back to
       # trustConsumer.kafka.*, including trust-consumer's SASL credential;

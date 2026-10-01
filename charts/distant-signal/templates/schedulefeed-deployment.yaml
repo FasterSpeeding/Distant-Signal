@@ -176,6 +176,67 @@ spec:
             - name: SFTPGO_HTTPD__BINDINGS__0__PORT
               value: "0"
             {{- end }}
+            # SSH commands (md5sum, sha256sum, cd, pwd, scp... in the image's
+            # sftpgo.json) other than the SFTP subsystem itself. None by
+            # default: DTD only uses SFTP, and scp/hash commands are extra
+            # surface (scheduleFeed.sftp.sshCommands).
+            - name: SFTPGO_SFTPD__ENABLED_SSH_COMMANDS
+              value: {{ join "," .Values.scheduleFeed.sftp.sshCommands | quote }}
+            # Brute-force protection: SFTPGo's defender, per-host connection
+            # cap and per-source connection rate limiter (values.yaml
+            # scheduleFeed.sftp.defender/maxPerHostConnections/rateLimit).
+            {{- with .Values.scheduleFeed.sftp.defender }}
+            - name: SFTPGO_COMMON__DEFENDER__ENABLED
+              value: {{ .enabled | quote }}
+            {{- if .enabled }}
+            - name: SFTPGO_COMMON__DEFENDER__DRIVER
+              value: "memory"
+            - name: SFTPGO_COMMON__DEFENDER__BAN_TIME
+              value: {{ .banTime | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__BAN_TIME_INCREMENT
+              value: {{ .banTimeIncrement | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__THRESHOLD
+              value: {{ .threshold | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__SCORE_INVALID
+              value: {{ .scoreInvalid | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__SCORE_VALID
+              value: {{ .scoreValid | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__SCORE_LIMIT_EXCEEDED
+              value: {{ .scoreLimitExceeded | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__SCORE_NO_AUTH
+              value: {{ .scoreNoAuth | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__OBSERVATION_TIME
+              value: {{ .observationTime | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__ENTRIES_SOFT_LIMIT
+              value: {{ .entriesSoftLimit | quote }}
+            - name: SFTPGO_COMMON__DEFENDER__ENTRIES_HARD_LIMIT
+              value: {{ .entriesHardLimit | quote }}
+            {{- end }}
+            {{- with .safelist }}
+            # Read by the sftp-entrypoint script, which loads each entry
+            # into SFTPGo's defender and rate-limiter safe lists.
+            - name: SCHEDULE_SFTP_SAFELIST
+              value: {{ join " " . | quote }}
+            {{- end }}
+            {{- end }}
+            - name: SFTPGO_COMMON__MAX_PER_HOST_CONNECTIONS
+              value: {{ .Values.scheduleFeed.sftp.maxPerHostConnections | quote }}
+            {{- with .Values.scheduleFeed.sftp.rateLimit }}
+            {{- if .average }}
+            - name: SFTPGO_COMMON__RATE_LIMITERS__0__AVERAGE
+              value: {{ .average | quote }}
+            - name: SFTPGO_COMMON__RATE_LIMITERS__0__PERIOD
+              value: {{ .periodMs | quote }}
+            - name: SFTPGO_COMMON__RATE_LIMITERS__0__BURST
+              value: {{ .burst | quote }}
+            - name: SFTPGO_COMMON__RATE_LIMITERS__0__TYPE
+              value: "2"
+            - name: SFTPGO_COMMON__RATE_LIMITERS__0__PROTOCOLS
+              value: "SSH"
+            - name: SFTPGO_COMMON__RATE_LIMITERS__0__GENERATE_DEFENDER_EVENTS
+              value: "true"
+            {{- end }}
+            {{- end }}
             # DTD's push account username/password/home-dir, consumed by
             # the sftp-entrypoint ConfigMap's script (mounted below) via
             # SFTPGo's real --loaddata-from mechanism -- CORRECTED

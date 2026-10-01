@@ -2069,6 +2069,18 @@ Off by default.
 | `scheduleFeed.sftp.permissions` | `[upload, overwrite, list]` | SFTPGo permissions the push account has on its home directory. Least privilege from DTD's observed client behaviour: no download, delete, rename, mkdir, symlink, chmod/chown/chtimes or copy. `overwrite` is needed because DTD replaces `timetable_full.zip` in place daily. `*` is refused. See [docs/schedule-feed-sftp.md](../../docs/schedule-feed-sftp.md). |
 | `scheduleFeed.sftp.maxSessions` | `2` | Simultaneous sessions for the push account. `0` = unlimited. |
 | `scheduleFeed.sftp.maxUploadFileSize` | `536870912` | Largest single upload in bytes (512 MiB, ~6.6x the 77 MB CIF zip). Larger uploads fail and are deleted. `0` = unlimited. |
+| `scheduleFeed.sftp.sshCommands` | `[]` | SSH commands SFTPGo runs besides SFTP (`SFTPGO_SFTPD__ENABLED_SSH_COMMANDS`; the image enables `md5sum`, `sha1sum`, `sha256sum`, `cd`, `pwd`, `scp`). None by default. |
+| `scheduleFeed.sftp.defender.enabled` | `true` | SFTPGo's in-process brute-force defender: bans a source IP whose score reaches `threshold` within `observationTime` minutes. Needs real client IPs (`scheduleFeed.service.externalTrafficPolicy: Local`); behind source NAT a ban locks out every client. Bans are in memory, so a pod restart clears them. |
+| `scheduleFeed.sftp.defender.banTime` / `.banTimeIncrement` | `60` / `100` | Ban length in minutes, and the percentage of it added each time a banned host connects again. |
+| `scheduleFeed.sftp.defender.threshold` | `8` | Score at which a host is banned. |
+| `scheduleFeed.sftp.defender.scoreValid` / `.scoreInvalid` | `2` / `2` | Score per wrong password for an existing account, and per unknown username. An OpenSSH or JSch client with a wrong password scores twice per connection (keyboard-interactive, then password). |
+| `scheduleFeed.sftp.defender.scoreLimitExceeded` | `4` | Score per rejected connection from the rate limiter or the per-host connection cap. |
+| `scheduleFeed.sftp.defender.scoreNoAuth` | `0` | Score per connection that never tried to authenticate (the kubelet's TCP probe, port scanners). Keep 0 unless the probe source is safelisted. |
+| `scheduleFeed.sftp.defender.observationTime` | `30` | Minutes of history a host's score covers. |
+| `scheduleFeed.sftp.defender.entriesSoftLimit` / `.entriesHardLimit` | `500` / `1000` | Hosts kept in memory. |
+| `scheduleFeed.sftp.defender.safelist` | `[]` | IPs/CIDRs never scored, banned or rate-limited (loaded as SFTPGo IP list entries through the push account's loaddata file). |
+| `scheduleFeed.sftp.maxPerHostConnections` | `8` | Simultaneous connections allowed from one source IP; `0` disables the cap. |
+| `scheduleFeed.sftp.rateLimit.average` / `.periodMs` / `.burst` | `20` / `60000` / `10` | Per-source SSH connection rate limit: `average` connections per `periodMs`, bursting to `burst`. `average: 0` disables it. |
 | `scheduleFeed.sftp.destinationFolder` | `incoming` | Folder on the PVC the push account is chrooted to; also schedule-ingest's `WATCH_DIR`. |
 | `scheduleFeed.sftp.folderPath` | `""` | Optional subfolder within `destinationFolder`. |
 | `scheduleFeed.sftp.resources` | requests `25m`/`64Mi`, limit `128Mi` | SFTP container resource requests/limits. |

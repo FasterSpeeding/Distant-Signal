@@ -18,6 +18,9 @@
 #                               (default 2; 0 = unlimited)
 #   SCHEDULE_SFTP_MAX_UPLOAD_FILE_SIZE  largest single upload, in bytes
 #                               (default 0 = unlimited)
+#   SCHEDULE_SFTP_SAFELIST      space-separated IPs/CIDRs the defender never
+#                               scores or bans and the rate limiter never
+#                               limits (default none)
 #
 # Least privilege (2026-10-01): the account can only write files into its
 # home directory. docs/schedule-feed-sftp.md has the evidence behind each
@@ -166,6 +169,28 @@ else
     DENIED_LOGIN_METHODS='"publickey", "publickey+password", "publickey+keyboard-interactive", "TLSCertificate", "TLSCertificate+password"'
 fi
 
+# Defender/rate-limiter safe list (scheduleFeed.sftp.defender.safelist),
+# space-separated IPs/CIDRs. Each becomes two SFTPGo IP list entries for SSH
+# (protocols 1): type 2 (defender) in mode 1 (allow: never scored or banned)
+# and type 3 (rate limiter safe list). Restricted to IP/CIDR characters, so
+# nothing here needs JSON escaping.
+IP_LISTS_JSON=""
+set -f # split on spaces only, never glob
+for cidr in ${SCHEDULE_SFTP_SAFELIST:-}; do
+    case "${cidr}" in
+        *[!0-9A-Fa-f:./]*)
+            echo "sftp-entrypoint: SCHEDULE_SFTP_SAFELIST entry '${cidr}' is not an IP or CIDR; refusing to start" >&2
+            exit 1
+            ;;
+        *) ;; # IP/CIDR characters only: accept
+    esac
+    for list_type in 2 3; do
+        IP_LISTS_JSON="${IP_LISTS_JSON:+${IP_LISTS_JSON},}
+    {\"ipornet\": \"${cidr}\", \"description\": \"scheduleFeed.sftp.defender.safelist\", \"type\": ${list_type}, \"mode\": 1, \"protocols\": 1}"
+    done
+done
+set +f
+
 cat >"${LOADDATA_FILE}" <<EOF
 {
   "version": 17,
@@ -185,6 +210,8 @@ cat >"${LOADDATA_FILE}" <<EOF
       },
       ${AUTH_FIELD}
     }
+  ],
+  "ip_lists": [${IP_LISTS_JSON}
   ]
 }
 EOF

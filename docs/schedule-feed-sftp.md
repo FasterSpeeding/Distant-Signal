@@ -114,6 +114,32 @@ The ingest container does not use SFTP. It reads, moves and deletes files on
 the shared PVC directly (as group 1000 through the pod's `fsGroup`), so none
 of these permissions affect it.
 
+## Brute force and abuse
+
+Server-wide SFTPGo settings, all on by default (`scheduleFeed.sftp.*`):
+
+- **SSH commands off** (`sshCommands: []`). The image enables `md5sum`,
+  `sha1sum`, `sha256sum`, `cd`, `pwd` and `scp`; DTD uses only the SFTP
+  subsystem. Verified: `ssh dtd-push@... sha256sum` and `scp` both get
+  "exec request failed".
+- **Defender** (`defender.*`): a source IP is banned for 60 minutes (longer
+  each time it comes back) once its score reaches 8 in 30 minutes. A wrong
+  password for `dtd-push` scores 2 per attempt, and OpenSSH and JSch each make
+  two attempts per connection, so about two bad connections ban a source.
+  Verified locally: the second wrong-password connection logged
+  `"sender":"defender","event":"banned"`, and the correct password from the
+  same IP was then refused ("connection refused, ip ... is banned").
+  Connections that never authenticate (the kubelet's TCP probe, scanners)
+  score 0. Bans are in memory and a pod restart clears them.
+- **Per-host cap** of 8 simultaneous connections, and a **per-source rate
+  limit** of 20 connections a minute (burst 10); hitting either scores 4.
+- `defender.safelist` exempts given IPs/CIDRs from both. Empty: DTD's
+  addresses are unknown.
+
+The defender needs real client addresses
+(`scheduleFeed.service.externalTrafficPolicy: Local`). Behind source NAT every
+client shares one address, and a ban would lock DTD out too.
+
 ### If DTD's deliveries break
 
 The `ingest` container logs "no .zip delivery observed" after the day's

@@ -164,6 +164,51 @@ class AccountPolicyTest(unittest.TestCase):
         self.assertEqual(run.args[1], "--loaddata-from")
         self.assertEqual(run.args[3:], ["--loaddata-mode", "0", "--loaddata-clean"])
 
+    def test_no_safelist_writes_no_ip_lists(self) -> None:
+        """The default loads no IP list entries."""
+        run = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD})
+        self.assertIsNotNone(run.loaddata)
+        if run.loaddata is not None:
+            self.assertEqual(run.loaddata["ip_lists"], [])
+
+    def test_safelist_becomes_defender_and_rate_limiter_allow_entries(self) -> None:
+        """Each entry is safe from the defender (type 2) and limiter (type 3)."""
+        run = Run(
+            {
+                "SCHEDULE_SFTP_PASSWORD": PASSWORD,
+                "SCHEDULE_SFTP_SAFELIST": "192.0.2.0/24 2001:db8::1",
+            }
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        if run.loaddata is None:
+            self.fail(run.stderr)
+        entries = [
+            (e["ipornet"], e["type"], e["mode"], e["protocols"])
+            for e in run.loaddata["ip_lists"]
+        ]
+        self.assertEqual(
+            entries,
+            [
+                ("192.0.2.0/24", 2, 1, 1),
+                ("192.0.2.0/24", 3, 1, 1),
+                ("2001:db8::1", 2, 1, 1),
+                ("2001:db8::1", 3, 1, 1),
+            ],
+        )
+
+    def test_bad_safelist_entries_refuse_to_start(self) -> None:
+        """Only IP/CIDR characters; a glob or JSON can't get through."""
+        for safelist in ('1.2.3.4"}, {"x', "*", "10.0.0.0/8,10.1.0.0/16"):
+            with self.subTest(safelist=safelist):
+                run = Run(
+                    {
+                        "SCHEDULE_SFTP_PASSWORD": PASSWORD,
+                        "SCHEDULE_SFTP_SAFELIST": safelist,
+                    }
+                )
+                self.assertEqual(run.returncode, 1)
+                self.assertIsNone(run.loaddata)
+
     def test_nothing_secret_reaches_the_output(self) -> None:
         """The script never prints the credential."""
         run = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD})
