@@ -406,27 +406,8 @@ services:
       api:
         condition: service_healthy
     environment:
-      # crates/trust-consumer/src/config.rs: Config. GAP: KAFKA_BROKERS,
-      # KAFKA_TOPIC, and KAFKA_SASL_MECHANISM are unconfirmed against a
-      # live RDM Train Movements catalogue entry -- placeholders until a
-      # real subscription resolves them (see local.env.example and this
-      # plan's Prerequisites).
-      KAFKA_BROKERS: ${KAFKA_BROKERS}
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
-      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-distant-signal-trust-consumer}
-      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
-      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
-      # No `:-PLAIN` fallback, deliberately: config.rs gives this field no
-      # clap default precisely so a wrong guess can't run silently (RDM's
-      # mechanism is still a GAP), and a compose-level default reintroduced
-      # exactly that. Same posture as the Helm chart's `fail` guard on
-      # trustConsumer.kafka.saslMechanism. Verified both ways by running the
-      # binary: with the variable unset clap refuses to start ("the following
-      # required arguments were not provided: --kafka-sasl-mechanism"), and
-      # with it set empty -- what compose passes through for an unset var --
-      # librdkafka refuses at connect ("Invalid value for configuration
-      # property \"sasl.mechanisms\""). Either way it stops, loudly.
-      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
+      # crates/trust-consumer/src/config.rs: Config. No Kafka settings:
+      # movement-relay is the only Kafka client (Deploy C, PL-15a).
       API_INGEST_URL: http://api:8080/private/train-events
       FORWARD_SIGNALS_URL: http://api:8080/private/train-forward-signals
       API_TRACKED_TRAINS_URL: http://api:8080/private/tracked-trains
@@ -442,12 +423,12 @@ services:
       REFERENCE_RELOAD_SECS: ${REFERENCE_RELOAD_SECS:-60}
       RETENTION_DAYS: ${RETENTION_DAYS_TRAIN_EVENTS:-90}
       HEALTH_BIND_URL: 0.0.0.0:8081
-      # Reads the movement-events Redis stream by default, as production does
+      # Reads the movement-events Redis stream, as production does
       # (PL-15a). movement-relay is NOT in depends_on: start it with
       # `docker compose up movement-relay` when you want live events; until
-      # then this consumer just waits on an empty stream. Set
-      # MOVEMENT_FEED_BACKEND=kafka to use the legacy direct connection.
-      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND:-redis-stream}
+      # then this consumer just waits on an empty stream. The legacy
+      # MOVEMENT_FEED_BACKEND=kafka was removed in Deploy C and now fails
+      # startup.
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
@@ -459,12 +440,8 @@ services:
       retries: 5
       start_period: 15s
 
-  # A second, independent Kafka consumer against the SAME RDM Train
-  # Movements feed trust-consumer reads above -- reuses the same
-  # KAFKA_BROKERS/KAFKA_TOPIC/KAFKA_SASL_MECHANISM/KAFKA_SASL_USERNAME/
-  # KAFKA_SASL_PASSWORD env values (same connection, per Decision 1's
-  # "connection vs. group membership" reasoning), with its own
-  # KAFKA_CONSUMER_GROUP. See
+  # A second, independent consumer of the same movement-events stream
+  # trust-consumer reads above, as its own consumer group. See
   # docs/superpowers/plans/2026-09-04-option-b-live-consumer-plan.md.
   full-coverage-consumer:
     build:
@@ -478,14 +455,6 @@ services:
         condition: service_healthy
     environment:
       # crates/full-coverage-consumer/src/config.rs: Config
-      KAFKA_BROKERS: ${KAFKA_BROKERS}
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
-      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP_FULL_COVERAGE:-distant-signal-full-coverage-consumer}
-      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
-      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
-      # Same no-fallback posture as trust-consumer's own KAFKA_SASL_MECHANISM
-      # above, and for the same reason -- RDM's mechanism is still a GAP.
-      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
       SCHEDULE_LINE_POPULATION_URL: http://api:8080/private/schedule-line-population
       FULL_COVERAGE_STATS_URL: http://api:8080/private/full-coverage-stats
       STATION_FULL_COVERAGE_STATS_URL: http://api:8080/private/station-full-coverage-samples
@@ -503,9 +472,6 @@ services:
       # into the image, same pattern as aggregator's own LINES_DIR above.
       LINES_DIR: /app/lines
       HEALTH_BIND_URL: 0.0.0.0:8082
-      # See trust-consumer's own identical comment above; this crate has its
-      # own separate backend toggle.
-      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND_FULL_COVERAGE:-redis-stream}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
@@ -519,10 +485,7 @@ services:
 
   # trust-backlog-consumer: a THIRD, independent consumer group on the
   # same movement-events Redis Stream trust-consumer/full-coverage-consumer
-  # read (as either their own optional MOVEMENT_FEED_BACKEND=redis-stream
-  # path, or -- for this crate -- unconditionally, since it has no legacy
-  # Kafka backend at all, see crates/trust-backlog-consumer/src/config.rs's
-  # own module doc). Retains a short, catalogued-line-scoped backlog of
+  # read. Retains a short, catalogued-line-scoped backlog of
   # real TRUST calling-point events for late-tracking pins. See
   # docs/superpowers/plans/2026-09-05-trust-event-backlog-plan.md.
   trust-backlog-consumer:
@@ -588,16 +551,14 @@ services:
       redis:
         condition: service_started
     environment:
-      # crates/movement-relay/src/config.rs: Config. GAP: same
-      # unconfirmed-against-a-live-RDM-catalogue placeholders as
-      # trust-consumer's own KAFKA_* vars above -- see that service's own
-      # comment. KAFKA_CONSUMER_GROUP has no safe fallback here (unlike
-      # trust-consumer's own KAFKA_CONSUMER_GROUP default) -- the real
-      # RDM-issued group id has no sensible default, see
+      # crates/movement-relay/src/config.rs: Config. The only Kafka client
+      # (Deploy C, PL-15a); see local.env.example for the KAFKA_* values.
+      # KAFKA_CONSUMER_GROUP has no safe fallback -- the real RDM-issued
+      # group id has no sensible default, see
       # crates/movement-relay/src/config.rs's own doc comment.
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_TOPIC: ${KAFKA_TOPIC}
-      KAFKA_CONSUMER_GROUP: ${MOVEMENT_RELAY_KAFKA_CONSUMER_GROUP:?MOVEMENT_RELAY_KAFKA_CONSUMER_GROUP must be set -- this has no safe default, unlike KAFKA_CONSUMER_GROUP above}
+      KAFKA_CONSUMER_GROUP: ${MOVEMENT_RELAY_KAFKA_CONSUMER_GROUP:?MOVEMENT_RELAY_KAFKA_CONSUMER_GROUP must be set -- the RDM-issued group id has no safe default}
       KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
       KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
       KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}

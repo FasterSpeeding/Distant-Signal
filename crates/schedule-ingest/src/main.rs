@@ -39,6 +39,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
+use anyhow::Context;
 use chrono::{DateTime, NaiveTime, Utc};
 use chrono_tz::Europe::London;
 use clap::Parser;
@@ -143,6 +144,7 @@ async fn run() -> anyhow::Result<()> {
     let internal_oauth = config.internal_oauth.token_cache();
     // Registered at 0 so the alert's increase() sees the first rejection.
     metrics::counter!(common::metrics::metric_name(ZIP_REJECTED_METRIC)).increment(0);
+    metrics::counter!(common::metrics::metric_name(INGEST_REJECTED_METRIC)).increment(0);
 
     // PL-6: directories extracted before the completion marker existed are
     // adopted (or left for re-extraction), and scratch directories from an
@@ -276,8 +278,7 @@ async fn run_scan_cycle(
                 .set(pending.delivered_at.timestamp() as f64);
             }
             Err(err) => {
-                tracing::error!(error = ?err, delivered_at = %pending.delivered_at, "retry POST still failing; will retry again next cycle");
-                *pending_post = Some(pending);
+                queue_or_quarantine_failed_post(err, pending, pending_post, rejected_mtime);
             }
         }
     }
@@ -446,8 +447,7 @@ async fn run_scan_cycle(
             // record-keeping problem to retry, not a reason to remove the
             // extracted files. See `pending_post` handling at the top of
             // this function.
-            tracing::error!(error = ?err, delivered_at = %delivered_at, "files extracted to storage but POST to api failed; will retry next cycle");
-            *pending_post = Some(request);
+            queue_or_quarantine_failed_post(err, request, pending_post, rejected_mtime);
         }
     }
 
@@ -461,6 +461,45 @@ async fn run_scan_cycle(
 /// Counts zip deliveries quarantined by the PL-5 extraction caps; the
 /// chart's `DistantSignalScheduleFeedZipRejected` alert reads it.
 const ZIP_REJECTED_METRIC: &str = "schedule_feed_zip_rejected_total";
+
+/// Counts delivery records api refused (400/413/422); the chart's
+/// `DistantSignalScheduleFeedIngestRejected` alert reads it.
+const INGEST_REJECTED_METRIC: &str = "schedule_feed_ingest_rejected_total";
+
+/// What to do with a delivery record whose POST failed (N-2, the R-083
+/// classification schedule-reference already uses): a transient failure
+/// (api down, a timeout, 5xx, 401/403/404/408/429) is queued and retried
+/// every cycle; a data rejection (400/413/422) would be refused the same
+/// way every time, so the delivery is quarantined like a rejected zip
+/// until a new upload replaces it, and counted for the alert.
+fn queue_or_quarantine_failed_post(
+    err: anyhow::Error,
+    request: ScheduleFeedIngestRequest,
+    pending_post: &mut Option<ScheduleFeedIngestRequest>,
+    rejected_mtime: &mut Option<SystemTime>,
+) {
+    match common::ingest::classify_failure(&err) {
+        common::ingest::FailureClass::Rejected => {
+            tracing::error!(
+                error = ?err,
+                delivered_at = %request.delivered_at,
+                "api rejected this delivery's ingest record (400/413/422); NOT retrying it, \
+                 waiting for a new upload"
+            );
+            metrics::counter!(common::metrics::metric_name(INGEST_REJECTED_METRIC)).increment(1);
+            *rejected_mtime = Some(SystemTime::from(request.delivered_at));
+            *pending_post = None;
+        }
+        common::ingest::FailureClass::Transient => {
+            tracing::error!(
+                error = ?err,
+                delivered_at = %request.delivered_at,
+                "files extracted to storage but POST to api failed; will retry next cycle"
+            );
+            *pending_post = Some(request);
+        }
+    }
+}
 
 /// POSTs one completed delivery record to `config.api_ingest_url`.
 ///
@@ -481,7 +520,9 @@ async fn post_ingest(
 ) -> anyhow::Result<()> {
     common::ingest::post_json(client, &config.api_ingest_url, tokens, request)
         .await
-        .map_err(|err| anyhow::anyhow!("schedule feed ingest POST failed: {err}"))?;
+        // `context`, not a fresh `anyhow!`: the `HttpStatusError` underneath
+        // must survive for `classify_failure` (N-2).
+        .context("schedule feed ingest POST failed")?;
     tracing::info!(
         delivered_at = %request.delivered_at,
         files = request.files.len(),
@@ -1110,6 +1151,94 @@ mod tests {
                 health_bind_url: "127.0.0.1:0".to_string(),
                 progress_stall_secs: 1800,
             },
+        }
+    }
+
+    /// N-2: a 400 from api is a data rejection: the delivery is
+    /// quarantined (not queued), and later cycles neither POST it again
+    /// nor re-extract it. A 503 stays queued for retry.
+    #[tokio::test]
+    async fn a_rejected_ingest_post_is_not_retried_every_cycle() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        for (status, rejected) in [(400u16, true), (503, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({"access_token": "t", "expires_in": 3600}),
+                    ),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/schedule-feed-ingests"))
+                .respond_with(ResponseTemplate::new(status).set_body_string("bad"))
+                .mount(&server)
+                .await;
+
+            let watch_dir = tempfile::tempdir().unwrap();
+            let storage_dir = tempfile::tempdir().unwrap();
+            let bytes = delivery::build_test_zip(&[("RJTTF942MCA.txt", b"mca content")]);
+            std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
+
+            let mut config = test_config(watch_dir.path(), storage_dir.path());
+            config.api_ingest_url = format!("{}/schedule-feed-ingests", server.uri());
+            let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+            let internal_oauth = common::oauth_client::OAuthTokenCache::new(
+                common::oauth_client::OAuthCredentials {
+                    token_url: format!("{}/token", server.uri()),
+                    client_id: "test-client".to_string(),
+                    scope: "groups".to_string(),
+                    username: "test-user".to_string(),
+                    password: "test-password".to_string(),
+                },
+            );
+            let mut tracker = StabilityTracker::new();
+            let mut known_stable = HashSet::new();
+            let mut known_stray_files = HashSet::new();
+            let mut last_ingested_mtime = None;
+            let mut pending_post = None;
+            let mut rejected_mtime = None;
+
+            for _ in 0..5 {
+                run_scan_cycle(
+                    &client,
+                    &config,
+                    &Routing::defaults(),
+                    &internal_oauth,
+                    &mut tracker,
+                    &mut known_stable,
+                    &mut known_stray_files,
+                    &mut last_ingested_mtime,
+                    &mut pending_post,
+                    &mut rejected_mtime,
+                    false,
+                )
+                .await
+                .unwrap();
+            }
+
+            let posts = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path() == "/schedule-feed-ingests")
+                .count();
+            assert_eq!(last_ingested_mtime, None, "status {status}");
+            if rejected {
+                assert_eq!(posts, 1, "a 400 is sent once, never retried");
+                assert!(pending_post.is_none());
+                assert!(rejected_mtime.is_some(), "the delivery is quarantined");
+            } else {
+                // Stable on cycle 2, then one queued retry per cycle.
+                assert_eq!(posts, 4, "a 503 is retried every cycle");
+                assert!(pending_post.is_some());
+                assert!(rejected_mtime.is_none());
+            }
         }
     }
 
