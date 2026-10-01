@@ -802,9 +802,11 @@ pub enum JoinOutcome {
 /// [`MAX_MEMBERS_PER_GROUP`] members or the caller already belongs to
 /// [`MAX_GROUPS_PER_USER`] groups -- both checked only for a NEW
 /// membership, so an existing member re-clicking always still succeeds.
-/// The group's row is locked `FOR UPDATE` first (same lock
-/// `remove_member` takes) so two concurrent joins can't both pass the
-/// member-count check on a group that has room for only one.
+/// The group's row is locked `FOR UPDATE` (same lock `remove_member`
+/// takes) so two concurrent joins can't both pass the member-count check
+/// on a group that has room for only one, and the link's validity is
+/// re-checked under that lock so a kick that commits while this call waits
+/// on it (revoking the link) refuses the join instead of being undone.
 pub async fn consume_invite_link(pool: &PgPool, token: &str, user_id: &str) -> Result<JoinOutcome> {
     let mut tx = pool.begin().await?;
     let group_id: Option<String> = sqlx::query_scalar(
@@ -819,10 +821,36 @@ pub async fn consume_invite_link(pool: &PgPool, token: &str, user_id: &str) -> R
         return Ok(JoinOutcome::InvalidLink);
     };
 
-    sqlx::query("SELECT id FROM groups WHERE id = $1 FOR UPDATE")
+    // Lock the group first, THEN re-validate the link under that lock
+    // (2026-10-01 review, L14 residual). The lookup above only finds which
+    // group the token belongs to; it ran before the lock, so a kick
+    // (`remove_member_in_tx`, which takes this same lock, revokes every
+    // active link and deletes the member) could commit while this call
+    // waits here. Without the re-check below the join would then re-insert
+    // the member the kick just removed, through a link the kick revoked.
+    // Under READ COMMITTED each statement takes a fresh snapshot, so this
+    // re-read, run after the lock is granted, sees whatever the lock holder
+    // committed. A group deleted meanwhile (cascading its links) also lands
+    // here, as `InvalidLink` rather than an FK error on the insert.
+    let locked: Option<String> =
+        sqlx::query_scalar("SELECT id FROM groups WHERE id = $1 FOR UPDATE")
+            .bind(&group_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let still_valid: bool = locked.is_some()
+        && sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM group_invite_links \
+             WHERE token_hash = $1 AND group_id = $2 \
+               AND revoked_at IS NULL AND expires_at > NOW())",
+        )
+        .bind(crate::data::unlisted_links::hash_link_token(token))
         .bind(&group_id)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
+    if !still_valid {
+        tx.rollback().await?;
+        return Ok(JoinOutcome::InvalidLink);
+    }
     let already_member: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)",
     )
@@ -3011,6 +3039,91 @@ mod db_tests {
             ],
         )
         .await;
+    }
+
+    /// L14 residual (2026-10-01 review): a join that has already looked up
+    /// its (then valid) link and is waiting on the group lock must be
+    /// refused once a concurrent kick -- holding that lock, revoking the
+    /// link and deleting the member -- commits. Made deterministic the same
+    /// way as `remove_member_serializes_concurrent_calls_via_the_groups_row_lock`:
+    /// the kick runs in a held-open transaction on one connection, so its
+    /// revocation is invisible to the join's first lookup; the join (on a
+    /// second connection) must then block on the lock; only then does the
+    /// kick commit. Before the fix the join re-inserted the kicked member.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                a_join_waiting_on_the_group_lock_is_refused_when_a_concurrent_kick_commits \
+                -- --ignored --test-threads=1`"]
+    async fn a_join_waiting_on_the_group_lock_is_refused_when_a_concurrent_kick_commits() {
+        let pool = connect().await;
+        let owner = "TEST-GROUPS-L14R-OWNER";
+        let kicked = "TEST-GROUPS-L14R-KICKED";
+        seed_user(&pool, owner).await;
+        seed_user(&pool, kicked).await;
+        let group_id = create_group(&pool, "L14 race", owner)
+            .await
+            .expect("create group");
+        let token = rotate_invite_link(&pool, &group_id, owner)
+            .await
+            .expect("rotate")
+            .token
+            .expect("fresh link carries its token");
+        assert!(matches!(
+            consume_invite_link(&pool, &token, kicked)
+                .await
+                .expect("first join"),
+            JoinOutcome::Joined(_)
+        ));
+
+        // Connection 1: the kick, applied but not yet committed. It holds
+        // the groups row lock from here until commit.
+        let mut kick_tx = pool.begin().await.expect("begin kick tx");
+        let outcome = remove_member_in_tx(&mut kick_tx, &group_id, kicked, false)
+            .await
+            .expect("kick");
+        assert_eq!(outcome, RemoveMemberOutcome::Removed { new_owner: None });
+
+        // Connection 2: the kicked member re-clicks the link. Its lookup
+        // still sees the link as valid (the revocation is uncommitted), so
+        // it proceeds to the group lock and must wait there.
+        let pool2 = pool.clone();
+        let token2 = token.clone();
+        let mut join = tokio::spawn(async move {
+            consume_invite_link(&pool2, &token2, "TEST-GROUPS-L14R-KICKED").await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut join)
+                .await
+                .is_err(),
+            "the join must be blocked on the groups row lock the kick holds"
+        );
+
+        kick_tx.commit().await.expect("commit the kick");
+
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(5), join)
+            .await
+            .expect("the join must finish once the lock is released")
+            .expect("join task panicked")
+            .expect("consume_invite_link");
+        assert_eq!(
+            joined,
+            JoinOutcome::InvalidLink,
+            "the link was revoked by the kick that committed while the join waited"
+        );
+        assert_eq!(
+            get_member_role(&pool, &group_id, kicked)
+                .await
+                .expect("query"),
+            None,
+            "the kicked member must not have been re-inserted"
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &[owner, kicked]).await;
     }
 
     #[tokio::test]
