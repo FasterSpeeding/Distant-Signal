@@ -1601,6 +1601,7 @@ mod db_tests {
         // -- see `delete_leg`'s own updated doc comment for the `SELECT ...
         // FOR UPDATE` fix.
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-DELETE-LEG-RACE";
         seed_user(&pool, user_id).await;
         let journey_id = insert_journey(&pool, user_id, None)
@@ -1722,6 +1723,7 @@ mod db_tests {
                 create_journey_with_pin_leg -- --ignored --test-threads=1`"]
     async fn create_journey_with_pin_leg_wraps_a_pin_in_a_one_row_journey() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-PIN").await;
 
         let (journey_id, leg_id, tracking_id) =
@@ -1748,6 +1750,7 @@ mod db_tests {
                 create_journey_with_window_leg -- --ignored --test-threads=1`"]
     async fn create_journey_with_window_leg_creates_an_unmatched_leg() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-WINDOW").await;
 
         let depart_window = common::TimeWindow {
@@ -2009,6 +2012,7 @@ mod db_tests {
                 set_leg_train_subscription -- --ignored --test-threads=1`"]
     async fn set_leg_train_subscription_binds_an_unmatched_leg_and_is_reusable_for_change_train() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-COMMIT").await;
         let (journey_id, leg_id) = create_journey_with_window_leg(
             &pool,
@@ -2118,6 +2122,7 @@ mod db_tests {
         // not deactivate notifications for the OTHER leg still relying on
         // the shared subscription.
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-COMMIT-SHARED").await;
         let (journey_id, leg_id) = create_journey_with_window_leg(
             &pool,
@@ -2233,6 +2238,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn a_disabled_subscription_is_reactivated_by_a_later_unrelated_use() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-M10-REACTIVATE";
         seed_user(&pool, user_id).await;
         let (journey_id, leg_id) = create_journey_with_window_leg(
@@ -2333,6 +2339,7 @@ mod db_tests {
                 set_leg_train_subscription -- --ignored --test-threads=1`"]
     async fn set_leg_train_subscription_a_non_owner_cannot_bind_someone_elses_leg() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-COMMIT-OWNER").await;
         seed_user(&pool, "TEST-JOURNEY-COMMIT-OTHER").await;
         let (journey_id, leg_id) = create_journey_with_window_leg(
@@ -2395,6 +2402,7 @@ mod db_tests {
     // mints a fresh subscription for the caller first.
     async fn set_leg_train_subscription_cannot_bind_someone_elses_subscription() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-IDOR-OWNER").await;
         seed_user(&pool, "TEST-JOURNEY-IDOR-OTHER").await;
         let (journey_id, leg_id) = create_journey_with_window_leg(
@@ -2456,6 +2464,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn create_subscription_and_bind_leg_creates_and_binds_in_one_call() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-CREATE-BIND";
         seed_user(&pool, user_id).await;
         let service_date: NaiveDate = "2026-09-22".parse().unwrap();
@@ -2525,6 +2534,7 @@ mod db_tests {
     // the subscription insert back too, leaving no row behind at all.
     async fn create_subscription_and_bind_leg_never_orphans_a_subscription_when_the_leg_is_gone() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-CREATE-BIND-GONE";
         seed_user(&pool, user_id).await;
         let service_date: NaiveDate = "2026-09-22".parse().unwrap();
@@ -2592,6 +2602,7 @@ mod db_tests {
                 list_journeys_for_user -- --ignored --test-threads=1`"]
     async fn list_journeys_for_user_picks_the_earliest_non_completed_leg() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-LIST-JOURNEYS-MULTI-LEG";
         seed_user(&pool, user_id).await;
 
@@ -2842,6 +2853,7 @@ mod db_tests {
                 add_window_leg_to_journey -- --ignored --test-threads=1`"]
     async fn add_window_leg_to_journey_assigns_incrementing_leg_order() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-ADD-WINDOW";
         seed_user(&pool, user_id).await;
 
@@ -2919,6 +2931,7 @@ mod db_tests {
                 add_known_train_leg_to_journey -- --ignored --test-threads=1`"]
     async fn add_known_train_leg_to_journey_sets_train_subscription_and_manual_mode() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-ADD-KNOWN";
         seed_user(&pool, user_id).await;
         let service_date: NaiveDate = "2026-09-22".parse().unwrap();
@@ -2977,6 +2990,7 @@ mod db_tests {
                 journey_owner_returns_the_owner_or_none -- --ignored --test-threads=1`"]
     async fn journey_owner_returns_the_owner_or_none() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-DB2-39-JOURNEY-OWNER";
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
@@ -3014,6 +3028,7 @@ mod db_tests {
                 list_journeys_for_user_returns_the_newest_journeys_with_legs -- --ignored --test-threads=1`"]
     async fn list_journeys_for_user_returns_the_newest_journeys_with_legs() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-DB2-18-LIST";
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
@@ -3077,6 +3092,7 @@ mod db_tests {
                 concurrent_add_leg_calls_serialise_on_the_journey_row -- --ignored --test-threads=1`"]
     async fn concurrent_add_leg_calls_serialise_on_the_journey_row() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-DB2-17-CONCURRENT-ADD";
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
@@ -3161,6 +3177,7 @@ mod db_tests {
     // must not exist at all once its transaction rolls back.
     async fn add_known_train_leg_to_journey_racing_leg_order_never_orphans_a_subscription() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-ADD-KNOWN-RACE";
         seed_user(&pool, user_id).await;
         let service_date: NaiveDate = "2026-09-22".parse().unwrap();
@@ -3269,6 +3286,7 @@ mod db_tests {
                 --ignored --test-threads=1`"]
     async fn create_journey_with_known_train_leg_overrides_both_ends_when_given() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-KNOWN-OVERRIDE-BOTH";
         seed_user(&pool, user_id).await;
         let service_date: NaiveDate = "2026-09-22".parse().unwrap();
@@ -3315,6 +3333,7 @@ mod db_tests {
     async fn create_journey_with_known_train_leg_overrides_one_end_and_falls_back_to_the_pin_for_the_other()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-KNOWN-OVERRIDE-PARTIAL";
         seed_user(&pool, user_id).await;
         let service_date: NaiveDate = "2026-09-22".parse().unwrap();
@@ -3380,6 +3399,7 @@ mod db_tests {
     async fn create_journey_with_known_train_leg_omitting_both_overrides_reproduces_the_pin_derived_behavior()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-KNOWN-OVERRIDE-NONE";
         seed_user(&pool, user_id).await;
         let service_date: NaiveDate = "2026-09-22".parse().unwrap();
@@ -3433,6 +3453,7 @@ mod db_tests {
                 add_leg_to_journey_a_non_owner_cannot_add_a_leg_to_someone_elses_journey -- --ignored --test-threads=1`"]
     async fn add_leg_to_journey_a_non_owner_cannot_add_a_leg_to_someone_elses_journey() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_id = "TEST-JOURNEY-ADD-LEG-OWNER";
         let other_id = "TEST-JOURNEY-ADD-LEG-OTHER";
         seed_user(&pool, owner_id).await;
@@ -3496,6 +3517,7 @@ mod db_tests {
                 journey_readable_by -- --ignored --test-threads=1`"]
     async fn journey_readable_by_the_owner_can_always_read_their_own_journey_with_no_grant() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-1").await;
         let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-1").await;
 
@@ -3514,6 +3536,7 @@ mod db_tests {
                 journey_readable_by -- --ignored --test-threads=1`"]
     async fn journey_readable_by_a_fellow_group_member_can_read_a_shared_journey() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-2").await;
         seed_user(&pool, "TEST-JOURNEY-READABLE-MEMBER-2").await;
         let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-2").await;
@@ -3569,6 +3592,7 @@ mod db_tests {
                 journey_readable_by -- --ignored --test-threads=1`"]
     async fn journey_readable_by_excludes_a_stranger_in_no_shared_group() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-3").await;
         seed_user(&pool, "TEST-JOURNEY-READABLE-STRANGER-3").await;
         let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-3").await;
@@ -3614,6 +3638,7 @@ mod db_tests {
                 journey_readable_by -- --ignored --test-threads=1`"]
     async fn journey_readable_by_a_former_member_loses_access_once_removed() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-4").await;
         seed_user(&pool, "TEST-JOURNEY-READABLE-MEMBER-4").await;
         let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-4").await;
@@ -3690,6 +3715,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_removes_a_single_leg_journey_and_every_referencing_row() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-DELETE-SINGLE";
         seed_user(&pool, user_id).await;
         let journey_id = insert_journey(&pool, user_id, Some("Cascade test"))
@@ -3799,6 +3825,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_removes_a_multi_leg_journey_in_one_call() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-DELETE-MULTI";
         seed_user(&pool, user_id).await;
         let journey_id = insert_journey(&pool, user_id, None)
@@ -3861,6 +3888,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_a_non_owner_cannot_delete_and_it_survives() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_id = "TEST-JOURNEY-DELETE-OWNER";
         let bystander_id = "TEST-JOURNEY-DELETE-BYSTANDER";
         seed_user(&pool, owner_id).await;
@@ -3892,6 +3920,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_a_nonexistent_journey_returns_false() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let deleted = delete_journey(&pool, 99999999, "TEST-JOURNEY-DELETE-NOBODY")
             .await
             .expect("attempt delete of a nonexistent journey");
@@ -3911,6 +3940,7 @@ mod db_tests {
                 deleting_a_template_occurrence -- --ignored --test-threads=1`"]
     async fn deleting_a_template_occurrence_records_a_skip_day_so_the_sweep_cannot_remint_it() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEY-SKIPDAY-OWNER";
         let bystander_id = "TEST-JOURNEY-SKIPDAY-BYSTANDER";
         seed_user(&pool, user_id).await;

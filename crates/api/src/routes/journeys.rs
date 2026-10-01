@@ -2209,6 +2209,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn seed_session_survives_a_stale_row_left_by_a_panicked_prior_run() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEYS-SEED-SESSION-STALE-ROW-PROBE";
 
         // First "run": seeds the user and session rows, then -- unlike
@@ -2249,6 +2250,7 @@ mod db_tests {
     // them.
     async fn post_journey_rejects_an_overlong_custom_name() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2285,6 +2287,7 @@ mod db_tests {
     // leftover string.
     async fn post_journey_trims_a_whitespace_only_custom_name_to_null() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-BLANK-NAME").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2325,6 +2328,7 @@ mod db_tests {
                 get_leg_candidates -- --ignored --test-threads=1`"]
     async fn get_leg_candidates_a_non_owner_gets_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -2374,6 +2378,7 @@ mod db_tests {
         // `operators` column name -- producing a 200 with every candidate
         // unfiltered instead of a 400 naming the mistake.
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-BAD-PARAM").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2421,6 +2426,7 @@ mod db_tests {
                 post_leg_train -- --ignored --test-threads=1`"]
     async fn post_leg_train_commits_a_first_pick_then_a_change_train_repick() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2480,6 +2486,7 @@ mod db_tests {
                 post_leg_train_rejects_a_malformed_train_uid -- --ignored --test-threads=1`"]
     async fn post_leg_train_rejects_a_malformed_train_uid() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG-BAD-UID").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2537,6 +2544,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn post_journey_known_train_rejects_a_malformed_train_uid() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-BAD-UID").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2583,6 +2591,7 @@ mod db_tests {
                 post_journey_rejects_an_oversized_custom_name -- --ignored --test-threads=1`"]
     async fn post_journey_rejects_an_oversized_custom_name() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2631,6 +2640,7 @@ mod db_tests {
                 change_train_end_to_end -- --ignored --test-threads=1`"]
     async fn change_train_end_to_end_candidates_stay_window_scoped_on_an_already_matched_leg() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CHANGE-TRAIN-E2E").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2822,6 +2832,7 @@ mod db_tests {
                 get_leg_candidates -- --ignored --test-threads=1`"]
     async fn get_leg_candidates_operator_filter_narrows_results_over_http() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-OPERATOR").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2967,6 +2978,7 @@ mod db_tests {
                 post_leg_train -- --ignored --test-threads=1`"]
     async fn post_leg_train_a_leg_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3012,6 +3024,7 @@ mod db_tests {
                 get_journey -- --ignored --test-threads=1`"]
     async fn get_journey_returns_the_matched_legs_tracked_train_state() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3047,6 +3060,7 @@ mod db_tests {
                 get_journey -- --ignored --test-threads=1`"]
     async fn get_journey_a_journey_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3080,6 +3094,7 @@ mod db_tests {
                 get_my_journeys -- --ignored --test-threads=1`"]
     async fn get_my_journeys_lists_every_owned_journey_most_recent_first() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-MY-JOURNEYS").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3135,6 +3150,7 @@ mod db_tests {
                 post_journey_leg -- --ignored --test-threads=1`"]
     async fn post_journey_leg_adds_a_window_leg_and_assigns_the_next_leg_order() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-WINDOW").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3188,6 +3204,7 @@ mod db_tests {
                 post_journey_leg -- --ignored --test-threads=1`"]
     async fn post_journey_leg_a_journey_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3236,6 +3253,7 @@ mod db_tests {
                 post_journey_leg -- --ignored --test-threads=1`"]
     async fn post_journey_leg_a_known_train_leg_is_immediately_matched() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-KNOWN-TRAIN").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3314,6 +3332,7 @@ mod db_tests {
                 get_journey -- --ignored --test-threads=1`"]
     async fn get_journey_reports_leg_skip_as_null_when_unmatched_and_an_object_when_matched() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-LEG-SKIP").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3423,6 +3442,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_journey_a_group_member_can_read_a_shared_journey_the_owner_never_authorized() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-OWNER").await;
         let member_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-MEMBER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3507,6 +3527,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_a_stranger_in_no_shared_group_still_gets_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER-OWNER").await;
         let stranger_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3545,6 +3566,7 @@ mod db_tests {
                 delete_journey_leg -- --ignored --test-threads=1`"]
     async fn delete_journey_leg_a_leg_owned_by_someone_else_is_404_not_403_and_survives() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3593,6 +3615,7 @@ mod db_tests {
                 delete_journey_leg -- --ignored --test-threads=1`"]
     async fn delete_journey_leg_a_nonexistent_leg_is_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-NOTFOUND").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3617,6 +3640,7 @@ mod db_tests {
     async fn delete_journey_leg_the_owner_can_remove_a_no_window_leg_and_the_journey_goes_with_it_when_it_was_the_last_one()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-LAST").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3666,6 +3690,7 @@ mod db_tests {
     async fn delete_journey_leg_removing_one_of_two_legs_leaves_the_journey_and_the_other_leg_intact()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-MULTI").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3727,6 +3752,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_a_journey_owned_by_someone_else_is_404_not_403_and_survives() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3773,6 +3799,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_a_nonexistent_journey_is_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-NOTFOUND").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3792,6 +3819,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_the_owner_can_delete_a_single_leg_journey_in_one_call() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-SINGLE").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3839,6 +3867,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_the_owner_can_delete_a_multi_leg_journey_in_one_call() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-MULTI").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3897,6 +3926,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn create_journey_share_link_then_resolve_it_via_the_public_token_route() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-RESOLVE-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3972,6 +4002,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_journey_by_share_token_never_discloses_shared_group_count() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_id = "TEST-ROUTE-SHARE-SGC-OWNER";
         let owner_token = seed_session(&pool, owner_id).await;
         let router = test_router(test_app(pool.clone()));
@@ -4052,6 +4083,7 @@ mod db_tests {
                 create_journey_share_link_is_404_for_a_non_owner -- --ignored --test-threads=1`"]
     async fn create_journey_share_link_is_404_for_a_non_owner() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -4090,6 +4122,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_by_share_token_is_404_for_an_unknown_token() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let router = test_router(test_app(pool.clone()));
 
         let (status, _) = request(
@@ -4106,6 +4139,7 @@ mod db_tests {
                 get_journey_by_share_token_is_404_after_revoke -- --ignored --test-threads=1`"]
     async fn get_journey_by_share_token_is_404_after_revoke() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-REVOKE-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -4153,6 +4187,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_by_share_token_a_token_viewer_sees_no_owner_actions() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-VIEWER-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -4192,6 +4227,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn regenerating_a_share_link_invalidates_the_old_token() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-REGEN-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -4255,6 +4291,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_embeds_the_active_share_link_for_the_owner_only() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-OWNER").await;
         let member_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-MEMBER").await;
         let router = test_router(test_app(pool.clone()));

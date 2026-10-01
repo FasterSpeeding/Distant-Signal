@@ -127,3 +127,45 @@ impl Drop for FixtureCleanup {
         }
     }
 }
+
+/// The fabricated train UIDs the journeys and train route/data tests create
+/// `trains` rows for (through `find_or_create_train` and the known-train
+/// leg paths), on the service date they use. Those tests cleaned up their
+/// users, journeys and subscriptions but never the `trains` row itself, so
+/// every run left ~30 of them behind (Train Register verification
+/// 2026-10-01, "Newly found" 1).
+///
+/// 2026-09-22 is a real date, so this names each UID rather than clearing
+/// the day. `TEST-TRAIN-...` and `SHARE1`-style UIDs cannot be real (a CIF
+/// UID is a letter and five digits), and the repeated-digit ones
+/// (`A11111`, ...) are fixtures only these tests use.
+const FIXTURE_TRAIN_UIDS_2026_09_22: &[&str] = &[
+    "A11111", "A22222", "A33333", "A44444", "A55555", "A66666", "A77777", "A88888", "A99999",
+    "D11111", "D22222", "D33333", "D44444", "E11111", "E22222", "E33333", "E44444", "SGC001",
+    "SHARE1", "SHARE2", "SHARE3", "SHARE4", "SHARE5", "SHARE6",
+];
+
+/// Deletes the `trains` rows of [`FIXTURE_TRAIN_UIDS_2026_09_22`] (plus any
+/// `TEST-TRAIN-%` row on that day) and the far-future `CTCHG1`/`CTCHG2`
+/// change-train fixtures, now and again on drop. Their subscriptions and
+/// legs go with them (`ON DELETE CASCADE` / `SET NULL`).
+pub(crate) async fn fixture_trains_cleanup(pool: &PgPool) -> FixtureCleanup {
+    let uids = FIXTURE_TRAIN_UIDS_2026_09_22
+        .iter()
+        .map(|uid| format!("'{uid}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    FixtureCleanup::new(
+        pool,
+        [
+            format!(
+                "DELETE FROM trains WHERE service_date = '2026-09-22' \
+                 AND (train_uid IN ({uids}) OR train_uid LIKE 'TEST-TRAIN-%')"
+            ),
+            "DELETE FROM trains WHERE service_date = '2099-04-17' \
+             AND train_uid IN ('CTCHG1', 'CTCHG2')"
+                .to_string(),
+        ],
+    )
+    .await
+}
