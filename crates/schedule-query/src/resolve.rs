@@ -80,7 +80,15 @@ fn assign_day_offsets(calling_points: &mut [CallingPoint]) {
     let mut last_time: Option<NaiveTime> = None;
 
     for cp in calling_points.iter_mut() {
-        let first_time = cp.booked_arrival.or(cp.booked_departure);
+        // A passing point's only time is its pass time (truncated to the
+        // minute, like every booked time compared here): it takes part in
+        // the ordering too, so a pass just after midnight is dated the next
+        // day rather than inheriting the evening's offset (the detailed
+        // working-timetable view showed it a day early).
+        let pass = cp
+            .booked_pass
+            .map(crate::records::HalfMinuteTime::whole_minute);
+        let first_time = cp.booked_arrival.or(cp.booked_departure).or(pass);
         if let (Some(last), Some(first)) = (last_time, first_time)
             && first < last
         {
@@ -95,7 +103,7 @@ fn assign_day_offsets(calling_points: &mut [CallingPoint]) {
             offset = offset.saturating_add(1);
         }
 
-        if let Some(latest) = cp.booked_departure.or(cp.booked_arrival) {
+        if let Some(latest) = cp.booked_departure.or(cp.booked_arrival).or(pass) {
             last_time = Some(latest);
         }
     }
@@ -2606,6 +2614,46 @@ mod tests {
                 calling_point_with_arrival("SHENFLD", CallingPointKind::Terminate, "01:01"),
             ],
         }]
+    }
+
+    /// Design doc §10's known gap: a passing point just after midnight was
+    /// dated the previous evening (it has no arrival or departure, so it
+    /// inherited the offset of the stop before), and the detailed
+    /// working-timetable view showed it a day early. Its pass time now takes
+    /// part, truncated like the booked times: a half-minute pass followed by
+    /// a stop in the same minute is not a second midnight.
+    #[test]
+    fn assign_day_offsets_dates_a_pass_just_after_midnight_on_the_next_day() {
+        let mut pass = calling_point("BOWJ", CallingPointKind::Intermediate);
+        pass.booked_pass = Some(crate::records::HalfMinuteTime::new(
+            NaiveTime::from_hms_opt(0, 1, 0).unwrap(),
+            true,
+        ));
+        let mut points = vec![
+            calling_point_with_departure("LIVST", CallingPointKind::Origin, "23:57"),
+            pass,
+            calling_point_with_both("STFD", CallingPointKind::Intermediate, "00:01", "00:02"),
+            calling_point_with_arrival("SHENFLD", CallingPointKind::Terminate, "00:30"),
+        ];
+        assign_day_offsets(&mut points);
+        let offsets: Vec<u8> = points.iter().map(|cp| cp.day_offset).collect();
+        assert_eq!(offsets, vec![0, 1, 1, 1]);
+
+        // A pass before midnight stays on the evening's date, and the
+        // crossing still lands on the first stop after it.
+        let mut evening_pass = calling_point("BOWJ", CallingPointKind::Intermediate);
+        evening_pass.booked_pass = Some(crate::records::HalfMinuteTime::new(
+            NaiveTime::from_hms_opt(23, 59, 0).unwrap(),
+            false,
+        ));
+        let mut points = vec![
+            calling_point_with_departure("LIVST", CallingPointKind::Origin, "23:57"),
+            evening_pass,
+            calling_point_with_arrival("STFD", CallingPointKind::Terminate, "00:01"),
+        ];
+        assign_day_offsets(&mut points);
+        let offsets: Vec<u8> = points.iter().map(|cp| cp.day_offset).collect();
+        assert_eq!(offsets, vec![0, 0, 1]);
     }
 
     #[test]

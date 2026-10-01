@@ -674,7 +674,8 @@ fn stops_from_calling_points(
     tiploc_to_crs: &HashMap<String, String>,
     service_date: NaiveDate,
 ) -> Vec<JourneyStop> {
-    raw.iter()
+    let mut stops: Vec<JourneyStop> = raw
+        .iter()
         .map(|cp| {
             let key = tiploc_key(&cp.tiploc);
             let resolved = tiploc_to_crs.get(&key);
@@ -693,7 +694,36 @@ fn stops_from_calling_points(
                 .cloned();
             JourneyStop::from_calling_point(cp, crs, service_date)
         })
-        .collect()
+        .collect();
+    date_passes_in_order(&mut stops);
+    stops
+}
+
+/// A passing point has no booked time of its own, so a schedule stored
+/// before `schedule_query::resolve` dated passes by their own time carries
+/// the PREVIOUS call's day offset on a pass just after midnight, which then
+/// read a day early in the detailed working-timetable view. The train never
+/// goes back in time: a pass more than 12 hours before the latest working
+/// time ahead of it is the next day.
+fn date_passes_in_order(stops: &mut [JourneyStop]) {
+    let mut latest: Option<DateTime<Utc>> = None;
+    for stop in stops {
+        let t = &mut stop.timetable;
+        if let (Some(pass), Some(previous)) = (t.working_pass, latest)
+            && previous - pass > Duration::hours(12)
+        {
+            t.working_pass = Some(pass + Duration::days(1));
+        }
+        latest = [
+            t.working_arrival,
+            t.working_departure,
+            t.working_pass,
+            latest,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+    }
 }
 
 /// Fills in each stop's `name` from an already-fetched CRS->name map
@@ -1976,6 +2006,22 @@ mod tests {
         assert_eq!(json["canBoard"], false);
         assert_eq!(json["requestStop"], true);
         assert!(json.get("timetable").is_none(), "flattened onto the stop");
+    }
+
+    /// Design doc §10's known gap: a pass just after midnight, stored with
+    /// the evening's day offset, is dated the next day; one before midnight
+    /// is left alone.
+    #[test]
+    fn a_pass_just_after_midnight_is_dated_the_next_day() {
+        let at = |s: &str| Some(s.parse::<DateTime<Utc>>().unwrap());
+        let mut stops = vec![blank_stop(), blank_stop(), blank_stop(), blank_stop()];
+        stops[0].timetable.working_departure = at("2026-10-01T22:57:00Z");
+        stops[1].timetable.working_pass = at("2026-10-01T22:59:00Z");
+        stops[2].timetable.working_pass = at("2026-09-30T23:01:30Z");
+        stops[3].timetable.working_arrival = at("2026-10-01T23:05:00Z");
+        date_passes_in_order(&mut stops);
+        assert_eq!(stops[1].timetable.working_pass, at("2026-10-01T22:59:00Z"));
+        assert_eq!(stops[2].timetable.working_pass, at("2026-10-01T23:01:30Z"));
     }
 
     #[test]
