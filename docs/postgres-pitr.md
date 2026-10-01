@@ -330,8 +330,9 @@ without `--target`/`--target-action`.
    `ALTER ROLE distant_signal PASSWORD ...` through `kubectl exec ... psql`,
    reading the password from the Secret without echoing it. With
    `postgresql.roles` (docs/postgres-app-role.md) the same goes for the
-   owner, app, exporter and dump roles; with `roles.setupJob.enabled`, the
-   next `helm upgrade` (or Flux resume) resets all four from their Secrets.
+   owner, app, exporter, dump and backup roles; with
+   `roles.setupJob.enabled`, the next `helm upgrade` (or Flux resume) resets
+   all five from their Secrets.
 
 7. **Run the verification queries** (below), then scale the workloads back
    up and resume Flux:

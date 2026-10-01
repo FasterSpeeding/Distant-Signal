@@ -43,9 +43,11 @@ five roles can hold at most 75 + 3 + 3 + 2 + 4 = 87 of the 100 slots, and
 the last 3 are `superuser_reserved_connections`, so an admin can always get
 in.
 
-The backup role has **no password**. pgBackRest runs inside the Postgres
-container and connects over the local socket, which the image trusts; a
-password would only let the role log in over the network. pgBackRest 2.59
+Every role, the backup role included, has a password (defence in depth).
+pgBackRest itself never sends it: it runs inside the Postgres container and
+connects over the local socket, which the image trusts, so the CronJobs set
+no `PGPASSWORD` (that would put the password on the `kubectl exec` command
+line). pgBackRest 2.59
 needs exactly the grants above as a non-superuser (pgBackRest's and EDB's
 non-superuser notes): `pg_read_all_settings` so it can read
 `data_directory` and the archive settings, the four functions, and
@@ -117,10 +119,11 @@ in Ranma-Config like the existing Postgres password. Keys:
 | `postgres-app-password` | `distant_signal_app` |
 | `postgres-exporter-password` | `distant_signal_exporter` |
 | `postgres-dump-password` | `distant_signal_dump` |
+| `postgres-backup-password` | `distant_signal_backup` |
 
 Use letters and digits only (e.g. 32 random alphanumerics): the owner and
 app passwords are spliced into a URL and the chart cannot percent-encode a
-value it never sees. The backup role needs no password.
+value it never sees.
 
 ### 2. Stage A: create the roles and move ownership (no service changes)
 
@@ -142,6 +145,8 @@ postgresql:
       existingSecret: distant-signal-postgres-roles
     dump:
       existingSecret: distant-signal-postgres-roles
+    backup:
+      existingSecret: distant-signal-postgres-roles
 ```
 
 Reconcile. The post-upgrade hook Job `distant-signal-postgres-roles-setup`
@@ -155,6 +160,7 @@ Verify (as `distant_signal` in `psql`):
 -- The five roles, none a superuser, with their limits.
 SELECT rolname, rolsuper, rolconnlimit, rolpassword IS NOT NULL AS has_password
 FROM pg_authid WHERE rolname LIKE 'distant\_signal\_%' ORDER BY 1;
+--   expect rolsuper false and has_password true for all five
 -- Nothing in public is left with the superuser except pg_stat_statements.
 SELECT c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND pg_get_userbyid(c.relowner) = 'distant_signal';

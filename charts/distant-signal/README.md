@@ -1201,7 +1201,10 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.dump.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.roles.dump.existingSecretPasswordKey` | `postgres-dump-password` | Key within `existingSecret` (and in the chart's Secret). |
 | `postgresql.roles.dump.connectionLimit` | `2` | CONNECTION LIMIT (a parallel `pg_dump -j N` needs N + 1). |
-| `postgresql.roles.backup.username` | `distant_signal_backup` | Role name for pgBackRest (EXECUTE on pg_backup_start/stop, pg_switch_wal, pg_create_restore_point; pg_read_all_settings, pg_checkpoint). No password: pgBackRest uses the trusted local socket. |
+| `postgresql.roles.backup.username` | `distant_signal_backup` | Role name for pgBackRest (EXECUTE on pg_backup_start/stop, pg_switch_wal, pg_create_restore_point; pg_read_all_settings, pg_checkpoint). |
+| `postgresql.roles.backup.password` | `""` | Password. Generated (32 alphanumeric chars, kept across upgrades) when empty and no `existingSecret`. Defence in depth: pgBackRest uses the trusted local socket and never sends it. |
+| `postgresql.roles.backup.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.backup.existingSecretPasswordKey` | `postgres-backup-password` | Key within `existingSecret` (and in the chart's Secret). |
 | `postgresql.roles.backup.connectionLimit` | `4` | CONNECTION LIMIT. |
 | `postgresql.roles.backup.database` | `postgres` | Database pgBackRest connects to (its pg1-database default); the function grants are made there and in `auth.database`. |
 | `postgresql.probes.startup.periodSeconds` | `10` | Startup probe period. Liveness starts only after `pg_isready` succeeds, so WAL redo after a reboot is never killed. |

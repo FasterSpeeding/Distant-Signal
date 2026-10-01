@@ -17,10 +17,10 @@
 --
 -- Passwords come from the environment, never the command line (psql's
 -- \getenv): DS_PG_OWNER_PASSWORD, DS_PG_APP_PASSWORD,
--- DS_PG_EXPORTER_PASSWORD, DS_PG_DUMP_PASSWORD. All four are required.
--- The backup role gets NO password: pgBackRest runs inside the Postgres
--- container and connects over the local socket, which the official image
--- trusts, so a password would only let the role log in over the network.
+-- DS_PG_EXPORTER_PASSWORD, DS_PG_DUMP_PASSWORD, DS_PG_BACKUP_PASSWORD. All
+-- five are required. (pgBackRest itself connects over the local socket,
+-- which the official image trusts, so it never sends the backup role's
+-- password; the password is defence in depth for any network login.)
 --
 -- What it does, in the application database, in ONE transaction:
 --   1. Creates or updates the five roles: LOGIN, NOSUPERUSER, NOCREATEDB,
@@ -107,6 +107,7 @@
 \getenv app_password DS_PG_APP_PASSWORD
 \getenv exporter_password DS_PG_EXPORTER_PASSWORD
 \getenv dump_password DS_PG_DUMP_PASSWORD
+\getenv backup_password DS_PG_BACKUP_PASSWORD
 \if :{?owner_password}
 \else
 \set owner_password ''
@@ -122,6 +123,10 @@
 \if :{?dump_password}
 \else
 \set dump_password ''
+\endif
+\if :{?backup_password}
+\else
+\set backup_password ''
 \endif
 
 BEGIN;
@@ -139,6 +144,7 @@ SELECT
     set_config('ds_roles.app_password', :'app_password', true),
     set_config('ds_roles.exporter_password', :'exporter_password', true),
     set_config('ds_roles.dump_password', :'dump_password', true),
+    set_config('ds_roles.backup_password', :'backup_password', true),
     set_config('ds_roles.owner_connection_limit', :'owner_connection_limit', true),
     set_config('ds_roles.app_connection_limit', :'app_connection_limit', true),
     set_config('ds_roles.exporter_connection_limit', :'exporter_connection_limit', true),
@@ -161,8 +167,7 @@ BEGIN
 
     FOR r IN
         SELECT v.kind, current_setting('ds_roles.' || v.kind) AS name,
-               CASE WHEN v.kind = 'backup' THEN NULL
-                    ELSE current_setting('ds_roles.' || v.kind || '_password') END AS password,
+               current_setting('ds_roles.' || v.kind || '_password') AS password,
                current_setting('ds_roles.' || v.kind || '_connection_limit') AS connection_limit
         FROM (VALUES ('owner'), ('app'), ('exporter'), ('dump'), ('backup')) AS v(kind)
     LOOP
@@ -182,7 +187,7 @@ BEGIN
         IF r.connection_limit !~ '^(-1|[0-9]+)$' THEN
             RAISE EXCEPTION 'the % role connection limit % is not a whole number', r.kind, r.connection_limit;
         END IF;
-        IF r.kind <> 'backup' AND r.password = '' THEN
+        IF r.password = '' THEN
             RAISE EXCEPTION 'no password for the % role: set DS_PG_%_PASSWORD', r.kind, upper(r.kind);
         END IF;
 
@@ -193,11 +198,7 @@ BEGIN
             'ALTER ROLE %I WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION '
             'NOBYPASSRLS INHERIT CONNECTION LIMIT %s',
             r.name, r.connection_limit);
-        IF r.password IS NULL THEN
-            EXECUTE format('ALTER ROLE %I PASSWORD NULL', r.name);
-        ELSE
-            EXECUTE format('ALTER ROLE %I PASSWORD %L', r.name, r.password);
-        END IF;
+        EXECUTE format('ALTER ROLE %I PASSWORD %L', r.name, r.password);
     END LOOP;
 
     FOR r IN

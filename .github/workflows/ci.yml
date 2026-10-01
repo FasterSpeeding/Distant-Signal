@@ -1058,10 +1058,16 @@ jobs:
             --show-only templates/networkpolicy.yaml)
           grep -q -- '- postgres-roles$' <<<"${np}" || fail "the setup Job must be allowed into Postgres"
           secret=$(render --set postgresql.roles.setupJob.enabled=true --show-only templates/secret.yaml)
-          for key in owner app exporter dump; do
+          for key in owner app exporter dump backup; do
             grep -q "  postgres-${key}-password: " <<<"${secret}" || fail "chart-generated postgres-${key}-password missing"
           done
-          if grep -q 'postgres-backup-password' <<<"${secret}"; then fail "the backup role must have no password"; fi
+          job=$(render --set postgresql.roles.setupJob.enabled=true \
+            --set postgresql.roles.backup.existingSecret=pg-backup --show-only templates/postgres-roles.yaml)
+          grep -A4 'name: DS_PG_BACKUP_PASSWORD$' <<<"${job}" | grep -q 'name: pg-backup' \
+            || fail "the setup Job must read the backup password from roles.backup.existingSecret"
+          grep -A4 'name: DS_PG_BACKUP_PASSWORD$' <<<"${job}" | grep -q 'key: postgres-backup-password' \
+            || fail "the backup password key must default to postgres-backup-password"
+          if grep -q 'PASSWORD=' <<<"${on}"; then fail "no password may be passed on a command line"; fi
 
           # Flipping roles.enabled on an existing cluster (initScript off) must
           # not touch the Postgres pod, so Postgres does not restart.

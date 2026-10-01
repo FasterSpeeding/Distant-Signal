@@ -160,7 +160,7 @@ postgresql:
   # files/postgres-roles.sql (idempotent), run by `initScript` on a new
   # data directory and by `setupJob` on every install/upgrade.
   #
-  # Each password (not the backup role's) works like `auth.password`:
+  # Each password works like `auth.password`:
   # `password`, else `existingSecret`/`existingSecretPasswordKey`, else
   # generated into the chart's Secret under the default key name. The same
   # percent-encoding caveat applies to the owner's and the app's.
@@ -255,9 +255,16 @@ postgresql:
     backup:
       # -- Role name for pgBackRest (EXECUTE on pg_backup_start/stop,
       # pg_switch_wal, pg_create_restore_point; pg_read_all_settings,
-      # pg_checkpoint). It has NO password: pgBackRest runs in the Postgres
-      # container and uses the local socket, which the image trusts.
+      # pg_checkpoint).
       username: distant_signal_backup
+      # -- Password. Generated when empty (and no `existingSecret`).
+      # Defence in depth: pgBackRest runs in the Postgres container and uses
+      # the local socket, which the image trusts, so it never sends it.
+      password: ""
+      # -- Read the password from this pre-existing Secret instead.
+      existingSecret: ""
+      # -- Key within `existingSecret` (and in the chart's Secret).
+      existingSecretPasswordKey: postgres-backup-password
       # -- CONNECTION LIMIT.
       connectionLimit: 4
       # -- Database pgBackRest connects to (its pg1-database default); the

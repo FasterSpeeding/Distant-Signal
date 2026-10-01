@@ -96,7 +96,7 @@ def main() -> int:
     suffix = secrets.token_hex(4)
     database = f"ds_role_split_{suffix}"
     names = {kind: f"ds_rs_{kind}_{suffix}" for kind in KINDS}
-    passwords = {kind: secrets.token_hex(16) for kind in KINDS if kind != "backup"}
+    passwords = {kind: secrets.token_hex(16) for kind in KINDS}
     owner_url = with_credentials(
         superuser_url, names["owner"], passwords["owner"], database
     )

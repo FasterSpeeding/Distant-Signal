@@ -770,7 +770,7 @@ true
 
 {{/*
 Secret name / key of one role's password. Takes (dict "root" $ "role"
-"owner"|"app"|"exporter"|"dump"). Same three-way shape as auth.password:
+"owner"|"app"|"exporter"|"dump"|"backup"). Same three-way shape as auth.password:
 the role's existingSecret, else the chart's Secret.
 */}}
 {{- define "distant-signal.postgresRoleSecretName" -}}
@@ -816,7 +816,7 @@ psql's \getenv.
 */}}
 {{- define "distant-signal.postgresRolesPasswordEnv" -}}
 {{- $root := . -}}
-{{- range $role := list "owner" "app" "exporter" "dump" }}
+{{- range $role := list "owner" "app" "exporter" "dump" "backup" }}
 - name: {{ printf "DS_PG_%s_PASSWORD" (upper $role) }}
   valueFrom:
     secretKeyRef:
