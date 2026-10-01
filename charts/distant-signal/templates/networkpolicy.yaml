@@ -48,6 +48,11 @@ spec:
                   - aggregator
                   - enricher
                   - notifier
+        {{- with .Values.networkPolicy.postgresClients }}
+        # networkPolicy.postgresClients: workloads outside this chart, e.g.
+        # a postgres-exporter or a pg_dump backup CronJob.
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.postgresql.service.port }}
@@ -108,6 +113,11 @@ spec:
                   - trust-backlog-consumer
                   - full-coverage-consumer
                   - movement-relay
+        {{- with .Values.networkPolicy.redisClients }}
+        # networkPolicy.redisClients: workloads outside this chart, e.g. a
+        # redis-exporter.
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.redis.service.port }}

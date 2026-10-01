@@ -1359,6 +1359,21 @@ jobs:
           got=$(internet_ports_of api "${eg}")
           [[ "${got}" == "443 8443 " ]] || fail "components.api.internetPorts must replace the default (issuer ports still added), got '${got}'"
 
+          # postgresClients/redisClients admit outside workloads (exporters,
+          # the backup CronJob) on the service port only, and are off by default.
+          np=$(render --show-only templates/networkpolicy.yaml)
+          pg=$(policy distant-signal-postgres <<<"${np}")
+          if grep -q 'postgres-exporter' <<<"${pg}"; then fail "postgresClients must be empty by default"; fi
+          np=$(render --set 'networkPolicy.postgresClients[0].podSelector.matchLabels.app\.kubernetes\.io/name=postgres-exporter' \
+            --set 'networkPolicy.redisClients[0].podSelector.matchLabels.app\.kubernetes\.io/name=redis-exporter' \
+            --show-only templates/networkpolicy.yaml)
+          pg=$(policy distant-signal-postgres <<<"${np}")
+          rd=$(policy distant-signal-redis <<<"${np}")
+          grep -A3 'app.kubernetes.io/name: postgres-exporter' <<<"${pg}" | grep -q 'port: 5432' \
+            || fail "postgresClients must be admitted on the Postgres port"
+          grep -A3 'app.kubernetes.io/name: redis-exporter' <<<"${rd}" | grep -q 'port: 6379' \
+            || fail "redisClients must be admitted on the Redis port"
+
           # components.<component>.extraEgress/extraIngress reach that
           # component's policy only, including the frontend's otherwise
           # empty ingress.

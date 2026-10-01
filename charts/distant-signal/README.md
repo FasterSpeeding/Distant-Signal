@@ -850,6 +850,16 @@ explicit allows:
 - **redis** ← api, enricher, trust-consumer, trust-backlog-consumer,
   full-coverage-consumer and movement-relay. Rendered only when
   `redis.enabled`.
+- **postgres/redis ← workloads outside the chart** (off by default):
+  `networkPolicy.postgresClients` and `networkPolicy.redisClients` are lists
+  of NetworkPolicy peers (`podSelector`, `namespaceSelector`) admitted on the
+  service port, e.g. a postgres-exporter, a pg_dump backup CronJob or a
+  redis-exporter. There are two ways to admit them: these values (the chart
+  then owns every way into the database), or a NetworkPolicy kept beside
+  the release (NetworkPolicies are additive, so it keeps working).
+  `networkPolicy.components.postgres.extraIngress` takes whole rules when a
+  client needs another port. The pgBackRest CronJobs need neither: they
+  `kubectl exec` into the Postgres pod through the API server.
 - **api** ← frontend, every enabled poller, the consumers, schedulefeed, and — when `ingress.enabled` and
   `ingress.api.enabled` — the namespace named by
   `networkPolicy.ingressControllerNamespace`, plus every namespace in
@@ -2172,6 +2182,8 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.ingressControllerNamespace` | `ingress-nginx` | Namespace the ingress controller runs in, matched by `kubernetes.io/metadata.name`. |
 | `networkPolicy.apiExtraIngressNamespaces` | `[]` | Extra namespaces allowed to reach `api.service.port` (e.g. `[ds-mcp]` for the Distant-Signal-MCP). |
 | `networkPolicy.apiExtraIngressPodLabels` | `ds-mcp`: `app.kubernetes.io/name: distant-signal-mcp`, `app.kubernetes.io/component: mcp` | Per-namespace pod labels that narrow an `apiExtraIngressNamespaces` entry to the calling pods. A namespace with no entry admits all its pods. Set an entry to `null` to clear it; `{}` merges with the default and does not clear it. |
+| `networkPolicy.postgresClients` | `[]` | Extra NetworkPolicy peers (pod/namespace selectors) admitted to the bundled Postgres, e.g. a postgres-exporter or backup CronJob. See [NetworkPolicy](#networkpolicy). |
+| `networkPolicy.redisClients` | `[]` | Extra NetworkPolicy peers admitted to the bundled Redis, e.g. a redis-exporter. |
 | `networkPolicy.tunnel.enabled` | `false` | Admit an in-cluster tunnel connector (e.g. cloudflared) to the frontend. See [NetworkPolicy](#networkpolicy). |
 | `networkPolicy.tunnel.namespace` | `cloudflared` | Namespace the connector runs in, matched by `kubernetes.io/metadata.name`. |
 | `networkPolicy.tunnel.podLabels` | `app.kubernetes.io/name: cloudflared` | Labels selecting the connector pods. Empty admits the whole namespace. |

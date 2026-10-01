@@ -3617,6 +3617,31 @@ networkPolicy:
     ds-mcp:
       app.kubernetes.io/name: distant-signal-mcp
       app.kubernetes.io/component: mcp
+  # -- Extra NetworkPolicyPeers (podSelector and/or namespaceSelector)
+  # admitted to the bundled Postgres on postgresql.service.port, for
+  # clients this chart does not render: a postgres-exporter, a pg_dump
+  # backup CronJob. Empty (the default) adds nothing. The pgBackRest
+  # CronJobs need no entry: they `kubectl exec` into the Postgres pod
+  # through the API server, not over the pod network. A peer without a
+  # namespaceSelector means this release's namespace. e.g.
+  #   - podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: postgres-exporter
+  #         app.kubernetes.io/instance: distant-signal-postgres
+  #   - podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: distant-signal-postgres-backup
+  # The same can be written as components.postgres.extraIngress (a whole
+  # rule, so it can name other ports), or kept as a policy outside the
+  # chart: policies are additive.
+  postgresClients: []
+  # -- The same for the bundled Redis on redis.service.port, e.g. a
+  # redis-exporter:
+  #   - podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: redis-exporter
+  #         app.kubernetes.io/instance: distant-signal-redis
+  redisClients: []
   # A tunnel connector running in the cluster (e.g. cloudflared) that
   # publishes the frontend without an Ingress. OFF by default. When
   # enabled, the pods matching `podLabels` in `namespace` may reach the
