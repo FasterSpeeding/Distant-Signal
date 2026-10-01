@@ -1634,17 +1634,20 @@ fn process_message(
             let derived = trust_schema::journey::apply_reinstatement(&previous);
             state.set_last_derived(&reinstatement.train_id, derived.clone());
 
-            // No timestamp of any kind in this minimal, confirmed-by-name-
-            // only shape (see `schema::Reinstatement`'s own doc comment), so
-            // the key is just `(train_id, "0005", rail_day)` -- same
-            // no-extra-distinguishing-field shape as `0001`/`0006`/`0007`
-            // already have, per `dedup_key`'s own doc comment.
+            // `reinstatement_timestamp` fills the key's timestamp slot, as
+            // `canx_timestamp` does for a Cancellation: without it, cancel ->
+            // reinstate -> cancel -> reinstate on one day keyed both
+            // reinstatements identically, and `trust_event_backlog`'s global
+            // `ON CONFLICT (dedup_key) DO NOTHING` kept only the first, so a
+            // backlog replay ended "cancelled" (H4 residual, 2026-10-01). A
+            // redelivery carries the same value and still keys the same.
+            // `trust-backlog-consumer` builds the identical key.
             let dedup = trust_schema::dedup::dedup_key(
                 &reinstatement.train_id,
                 "0005",
                 None,
                 None,
-                None,
+                reinstatement.reinstatement_timestamp.as_deref(),
                 // PL-3: the message's own date, so a redelivery across
                 // 02:00 or trust-backlog-consumer's copy keys the same.
                 trust_schema::dedup::event_date(
@@ -1652,6 +1655,25 @@ fn process_message(
                     common::rail_day::current_rail_day(received_at),
                 ),
             );
+
+            // When the reinstatement happened, guarded and corrected exactly
+            // like a Cancellation's `canx_timestamp`, and carried the same
+            // way (in `actual_timestamp`), so a stale redelivered
+            // Cancellation older than this can no longer re-cancel the
+            // train through `upsert_train_movement`'s event-time guard.
+            let reinstated_pair = common::trust_timestamp::parse_trust_epoch_millis_pair(
+                None,
+                reinstatement.reinstatement_timestamp.as_deref(),
+                received_at,
+                state.trust_timestamp_correction_enabled,
+            );
+            if let Some(was_corrected) = reinstated_pair.was_corrected {
+                metrics::counter!(
+                    common::metrics::metric_name("trust_consumer_timestamp_correction_total"),
+                    "outcome" => if was_corrected { "corrected" } else { "raw" }
+                )
+                .increment(1);
+            }
 
             tracked_train_ids
                 .into_iter()
@@ -1666,7 +1688,7 @@ fn process_message(
                     loc_stanox: None,
                     loc_crs: None,
                     planned_timestamp: None,
-                    actual_timestamp: None,
+                    actual_timestamp: reinstated_pair.actual,
                     variation_status: None,
                     raw_body: serde_json::json!({}),
                     status: derived.status.clone(),
@@ -1959,6 +1981,7 @@ mod tests {
             train_id: "221832406".to_string(),
             // 2026-09-27 01:59:30, raw TRUST epoch millis.
             dep_timestamp: Some("1790474370000".to_string()),
+            reinstatement_timestamp: None,
         });
         let reference = reference_with_one_pending(1, "WAT", "2026-09-27T01:00:00Z");
         let mut state = ProcessorState::default();
@@ -1989,6 +2012,57 @@ mod tests {
                 "2026-09-27".parse().unwrap()
             )
         );
+    }
+
+    /// H4 residual (2026-10-01): two reinstatements of one train on one day
+    /// key apart by `reinstatement_timestamp` (the planned `dep_timestamp`
+    /// repeats), with the same key `trust-backlog-consumer` builds, and the
+    /// reinstatement time travels as the event's `actual_timestamp`.
+    #[test]
+    fn repeat_reinstatements_on_one_day_key_apart() {
+        let reinstatement = |at: &str| {
+            TrustMessage::Reinstatement(trust_schema::schema::Reinstatement {
+                train_id: "221832406".to_string(),
+                dep_timestamp: Some("1790836380000".to_string()),
+                reinstatement_timestamp: Some(at.to_string()),
+            })
+        };
+        let reference = reference_with_one_pending(1, "WAT", "2026-09-27T01:00:00Z");
+        let mut state = ProcessorState::default();
+        state.resolved.insert("221832406".to_string(), vec![1]);
+        let received_at: chrono::DateTime<chrono::Utc> = "2026-10-01T09:00:00Z".parse().unwrap();
+        let mut event_for = |message: &TrustMessage| {
+            let mut events = process_message(
+                message,
+                &reference,
+                &mut state,
+                &TEST_STANOX_CRS,
+                received_at,
+            );
+            assert_eq!(events.len(), 1);
+            events.remove(0)
+        };
+        let first = event_for(&reinstatement("1790819000000"));
+        let second = event_for(&reinstatement("1790821000000"));
+        assert_ne!(first.dedup_key, second.dedup_key);
+        assert_eq!(
+            second.dedup_key,
+            event_for(&reinstatement("1790821000000")).dedup_key,
+            "a redelivery keys the same"
+        );
+        assert_eq!(
+            first.dedup_key,
+            trust_schema::dedup::dedup_key(
+                "221832406",
+                "0005",
+                None,
+                None,
+                Some("1790819000000"),
+                "2026-10-01".parse().unwrap()
+            )
+        );
+        assert!(first.actual_timestamp.is_some());
+        assert!(first.actual_timestamp < second.actual_timestamp);
     }
 
     fn reference_with_one_pending(id: i64, crs: &str, scheduled: &str) -> Reference {
