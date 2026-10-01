@@ -605,6 +605,11 @@ jobs:
       - name: Lint scripts
         run: scripts/lint-scripts.sh
 
+      # Stdlib unittest, no extra dependency: e.g. the schedulefeed sftp
+      # entrypoint's account policy (scripts/tests/).
+      - name: Script tests
+        run: python -m unittest discover -s scripts/tests
+
       # Every chart values.yaml key needs a row in the chart README's "Values
       # reference" tables, and every row must name a real key.
       # `scripts/chart-values-doc.py table <section>` drafts missing rows.
@@ -867,6 +872,42 @@ jobs:
           grep -q 'SFTPGO_TELEMETRY__BIND_PORT' <<<"${dep}" || fail "extraEnv must reach the SFTPGo container"
           dep=$(render --set 'scheduleFeed.sftp.hostKeys=null' --show-only templates/schedulefeed-deployment.yaml)
           if grep -q 'SFTPGO_SFTPD__HOST_KEYS' <<<"${dep}"; then fail "an empty hostKeys list must not set HOST_KEYS"; fi
+
+      # The push account's least-privilege policy reaches the entrypoint
+      # (scripts/tests/ checks what the entrypoint does with it), and a
+      # change to the entrypoint script rolls the pod.
+      - name: helm template (sftp push account policy)
+        run: |
+          set -euo pipefail
+          render() {
+            helm template distant-signal charts/distant-signal \
+              --set trustConsumer.kafka.brokers=kafka.example.com:9094 \
+              --set trustConsumer.kafka.topic=test-topic \
+              --set trustConsumer.kafka.saslMechanism=PLAIN \
+              --set enricher.llm.baseUrl=http://llm.example.com/v1 \
+              --set enricher.llm.model=test-model \
+              --set api.sso.issuerUrl=https://sso.example.com \
+              --set api.sso.clientId=test-client \
+              --set api.sso.clientSecret=test-secret \
+              --set api.sso.redirectUrl=https://app.example.com/callback \
+              --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
+              --set scheduleFeed.enabled=true \
+              --set scheduleFeed.sftp.authMethod=password "$@" \
+              --show-only templates/schedulefeed-deployment.yaml
+          }
+          fail() { echo "::error::$1"; exit 1; }
+          dep=$(render)
+          grep -A1 'name: SCHEDULE_SFTP_PERMISSIONS' <<<"${dep}" | grep -q 'value: "upload,overwrite,list"' \
+            || fail "the push account must default to upload,overwrite,list"
+          grep -A1 'name: SCHEDULE_SFTP_MAX_SESSIONS' <<<"${dep}" | grep -q 'value: "2"' \
+            || fail "maxSessions must reach the entrypoint"
+          grep -A1 'name: SCHEDULE_SFTP_MAX_UPLOAD_FILE_SIZE' <<<"${dep}" | grep -q 'value: "536870912"' \
+            || fail "maxUploadFileSize must reach the entrypoint"
+          sum=$(grep 'checksum/sftp-entrypoint:' <<<"${dep}") || fail "the pod must carry the entrypoint checksum"
+          [[ "${sum}" =~ [0-9a-f]{64} ]] || fail "the entrypoint checksum must be a sha256"
+          dep=$(render --set 'scheduleFeed.sftp.permissions={upload}')
+          grep -A1 'name: SCHEDULE_SFTP_PERMISSIONS' <<<"${dep}" | grep -q 'value: "upload"' \
+            || fail "scheduleFeed.sftp.permissions must be configurable"
 
       # movement-relay is on by default (the three movement consumers read
       # only its stream). Empty movementRelay.kafka.* fields fall back to

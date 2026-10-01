@@ -50,6 +50,16 @@ ignore = [
     "CPY001",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"scripts/tests/**" = [
+    # unittest-style tests (stdlib only, no pytest in the lint group) use
+    # self.assert*, which these pytest-oriented rules reject.
+    "PT009",
+    "PT027",
+    # Literal expected values are the point of a test.
+    "PLR2004",
+]
+
 [tool.ruff.format]
 # Defaults (double quotes, spaces, magic trailing comma).
 

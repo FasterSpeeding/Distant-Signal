@@ -2066,6 +2066,9 @@ Off by default.
 | `scheduleFeed.sftp.hostKeys` | `[ssh_host_ecdsa_key, ssh_host_ed25519_key]` | Keys in the host-key Secret that SFTPGo serves (`SFTPGO_SFTPD__HOST_KEYS`), mounted 0440 for the pod's fsGroup. ECDSA covers clients without ed25519 (DTD's JSch 0.1.54). With `existingSecretHostKey`, that Secret must hold every listed key. Empty: SFTPGo generates fresh keys on every start. |
 | `scheduleFeed.sftp.webAdmin.enabled` | `false` | Run SFTPGo's web admin/REST listener. Off, because with no admin account anyone who reaches it can create one. |
 | `scheduleFeed.sftp.extraEnv` | `[]` | Extra env entries for the SFTPGo container (e.g. `SFTPGO_*` telemetry, defender or log settings). |
+| `scheduleFeed.sftp.permissions` | `[upload, overwrite, list]` | SFTPGo permissions the push account has on its home directory. Least privilege from DTD's observed client behaviour: no download, delete, rename, mkdir, symlink, chmod/chown/chtimes or copy. `overwrite` is needed because DTD replaces `timetable_full.zip` in place daily. `*` is refused. See [docs/schedule-feed-sftp.md](../../docs/schedule-feed-sftp.md). |
+| `scheduleFeed.sftp.maxSessions` | `2` | Simultaneous sessions for the push account. `0` = unlimited. |
+| `scheduleFeed.sftp.maxUploadFileSize` | `536870912` | Largest single upload in bytes (512 MiB, ~6.6x the 77 MB CIF zip). Larger uploads fail and are deleted. `0` = unlimited. |
 | `scheduleFeed.sftp.destinationFolder` | `incoming` | Folder on the PVC the push account is chrooted to; also schedule-ingest's `WATCH_DIR`. |
 | `scheduleFeed.sftp.folderPath` | `""` | Optional subfolder within `destinationFolder`. |
 | `scheduleFeed.sftp.resources` | requests `25m`/`64Mi`, limit `128Mi` | SFTP container resource requests/limits. |

@@ -1,0 +1,174 @@
+"""Tests for charts/distant-signal/files/schedule-sftp-entrypoint.sh.
+
+The script writes SFTPGo's --loaddata-from JSON for the push account and
+then execs `sftpgo serve`. Each test runs it under /bin/sh with a stub
+`sftpgo` first on PATH, which saves its arguments and the loaddata file
+(the real SFTPGo deletes it, --loaddata-clean), so the account policy can be
+checked without SFTPGo.
+"""
+
+import json
+import pathlib
+import subprocess
+import tempfile
+import unittest
+from typing import Any
+
+REPO = pathlib.Path(__file__).resolve().parents[2]
+ENTRYPOINT = REPO / "charts/distant-signal/files/schedule-sftp-entrypoint.sh"
+
+STUB = """#!/bin/sh
+printf '%s\\n' "$@" >"${STUB_OUT}/args"
+cp "$3" "${STUB_OUT}/loaddata.json"
+"""
+
+PASSWORD = "Abcdefghijklmnopqrstuvwxyz012345"  # noqa: S105  # a test fixture, 32 characters like the chart's
+
+
+class Run:
+    """One run of the entrypoint: its exit status, stderr and output."""
+
+    def __init__(self, env: dict[str, str]) -> None:
+        """Run the script with `env` added to a minimal environment."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            stub = bin_dir / "sftpgo"
+            stub.write_text(STUB)
+            stub.chmod(0o755)
+            out = root / "out"
+            out.mkdir()
+            boot = root / "boot"
+            boot.mkdir()
+            full_env = {
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+                "STUB_OUT": str(out),
+                "SCHEDULE_SFTP_USERNAME": "dtd-push",
+                "SCHEDULE_SFTP_HOME_DIR": "/data/schedule-feed/incoming",
+                "SCHEDULE_SFTP_LOADDATA_DIR": str(boot),
+                **env,
+            }
+            result = subprocess.run(  # noqa: S603  # fixed argv, the repo's own script
+                ["/bin/sh", str(ENTRYPOINT)],
+                env=full_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.returncode = result.returncode
+            self.stdout = result.stdout
+            self.stderr = result.stderr
+            args = out / "args"
+            self.args = args.read_text().splitlines() if args.exists() else []
+            loaddata = out / "loaddata.json"
+            self.loaddata: dict[str, Any] | None = (
+                json.loads(loaddata.read_text()) if loaddata.exists() else None
+            )
+
+    def user(self) -> dict[str, Any]:
+        """Return the one user in the loaddata file."""
+        if self.loaddata is None:
+            msg = f"no loaddata written; stderr: {self.stderr}"
+            raise AssertionError(msg)
+        users: list[dict[str, Any]] = self.loaddata["users"]
+        if len(users) != 1:
+            msg = f"expected one user, got {len(users)}"
+            raise AssertionError(msg)
+        return users[0]
+
+
+class AccountPolicyTest(unittest.TestCase):
+    """The push account gets least privilege."""
+
+    def test_defaults_are_least_privilege(self) -> None:
+        """Upload, overwrite and list only; two sessions; no size cap."""
+        run = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        user = run.user()
+        self.assertEqual(user["permissions"], {"/": ["upload", "overwrite", "list"]})
+        self.assertEqual(user["max_sessions"], 2)
+        self.assertEqual(user["filters"]["max_upload_file_size"], 0)
+        self.assertEqual(user["filters"]["denied_protocols"], ["FTP", "DAV", "HTTP"])
+        self.assertEqual(user["password"], PASSWORD)
+
+    def test_password_mode_keeps_keyboard_interactive(self) -> None:
+        """DTD's JSch client logs in with keyboard-interactive."""
+        user = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD}).user()
+        denied = user["filters"]["denied_login_methods"]
+        self.assertNotIn("keyboard-interactive", denied)
+        self.assertNotIn("password", denied)
+        self.assertIn("publickey", denied)
+
+    def test_public_key_mode_denies_passwords(self) -> None:
+        """With a public key, no password-based method is allowed."""
+        user = Run({"SCHEDULE_SFTP_PUBLIC_KEY": "ssh-ed25519 AAAA test\n"}).user()
+        denied = user["filters"]["denied_login_methods"]
+        for method in ("password", "password-over-SSH", "keyboard-interactive"):
+            self.assertIn(method, denied)
+        self.assertNotIn("publickey", denied)
+        self.assertEqual(user["public_keys"], ["ssh-ed25519 AAAA test"])
+        self.assertNotIn("password", user)
+
+    def test_configured_policy_is_written(self) -> None:
+        """The chart's values reach the account."""
+        user = Run(
+            {
+                "SCHEDULE_SFTP_PASSWORD": PASSWORD,
+                "SCHEDULE_SFTP_PERMISSIONS": "upload,overwrite",
+                "SCHEDULE_SFTP_MAX_SESSIONS": "1",
+                "SCHEDULE_SFTP_MAX_UPLOAD_FILE_SIZE": "536870912",
+            }
+        ).user()
+        self.assertEqual(user["permissions"], {"/": ["upload", "overwrite"]})
+        self.assertEqual(user["max_sessions"], 1)
+        self.assertEqual(user["filters"]["max_upload_file_size"], 536870912)
+
+    def test_bad_permissions_refuse_to_start(self) -> None:
+        """'*', unknown names, JSON injection and an empty list all fail."""
+        for permissions in ("*", "upload,*", "admin", 'upload"],"x":["', ",", " "):
+            with self.subTest(permissions=permissions):
+                run = Run(
+                    {
+                        "SCHEDULE_SFTP_PASSWORD": PASSWORD,
+                        "SCHEDULE_SFTP_PERMISSIONS": permissions,
+                    }
+                )
+                self.assertEqual(run.returncode, 1)
+                self.assertIsNone(run.loaddata)
+                self.assertIn("SCHEDULE_SFTP_PERMISSIONS", run.stderr)
+
+    def test_bad_limits_refuse_to_start(self) -> None:
+        """Limits must be plain non-negative integers."""
+        for name in (
+            "SCHEDULE_SFTP_MAX_SESSIONS",
+            "SCHEDULE_SFTP_MAX_UPLOAD_FILE_SIZE",
+        ):
+            for value in ("-1", "2x", '1, "x": 1'):
+                with self.subTest(name=name, value=value):
+                    run = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD, name: value})
+                    self.assertEqual(run.returncode, 1)
+                    self.assertIn(name, run.stderr)
+
+    def test_password_is_json_escaped(self) -> None:
+        """A quote or backslash can't break out of the password string."""
+        password = 'abc"def\\ghi", "permissions": {"/": ["*"]}, "x": "yzABCDEFGH'  # noqa: S105  # a test fixture
+        user = Run({"SCHEDULE_SFTP_PASSWORD": password}).user()
+        self.assertEqual(user["password"], password)
+        self.assertEqual(user["permissions"], {"/": ["upload", "overwrite", "list"]})
+
+    def test_sftpgo_updates_the_account_and_deletes_the_file(self) -> None:
+        """Mode 0 (update an existing account) and --loaddata-clean."""
+        run = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD})
+        self.assertEqual(run.args[0], "serve")
+        self.assertEqual(run.args[1], "--loaddata-from")
+        self.assertEqual(run.args[3:], ["--loaddata-mode", "0", "--loaddata-clean"])
+
+    def test_nothing_secret_reaches_the_output(self) -> None:
+        """The script never prints the credential."""
+        run = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD})
+        self.assertNotIn(PASSWORD, run.stdout + run.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

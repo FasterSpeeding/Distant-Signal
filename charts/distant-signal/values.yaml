@@ -2836,6 +2836,30 @@ scheduleFeed:
     # for telemetry, the defender or logging), appended after the chart's
     # own. Same shape as a container `env` list.
     extraEnv: []
+    # -- SFTPGo permissions the push account has on its home directory
+    # (the only directory it can see). Least privilege, from what DTD's
+    # JSch 0.1.54 client was seen to do (docs/schedule-feed-sftp.md):
+    # `upload` to write files; `overwrite` because DTD replaces
+    # timetable_full.zip in place every day (schedule-ingest reads it where
+    # it lands and never removes it); `list` because SFTP stat/lstat need
+    # it, and a client that stats or cds before its put would fail without
+    # it. No download, delete, rename, mkdir, symlink, chmod/chown/chtimes
+    # or copy. Any SFTPGo permission name except "*" is accepted.
+    permissions:
+      - upload
+      - overwrite
+      - list
+    # -- Simultaneous SFTP sessions for the push account (SFTPGo
+    # max_sessions). DTD opens one per delivery; 2 leaves room for a retry
+    # while a stalled session times out. 0 = unlimited.
+    maxSessions: 2
+    # -- Largest single upload the push account may write, in bytes (SFTPGo
+    # filters.max_upload_file_size; an upload past it fails and the partial
+    # file is deleted). The full CIF zip was 77,222,226 bytes on
+    # 2026-09-30 and the CORPUS extract is under 1 MB, so 512 MiB is ~6.6x
+    # the largest real file, and keeps one upload well inside the 5Gi PVC.
+    # 0 = unlimited.
+    maxUploadFileSize: 536870912
     # -- The folder DTD's account lands files in. CORRECTED 2026-09-01
     # (this task): this account's SFTP home/chroot directory is set to
     # EXACTLY /data/schedule-feed/<this value+folderPath> (see

@@ -30,8 +30,11 @@ spec:
     metadata:
       labels:
         {{- include "distant-signal.labels" (dict "root" . "component" "schedulefeed") | nindent 8 }}
-      {{- if or .Values.metrics.enabled .Values.scheduleFeed.podAnnotations }}
       annotations:
+        # The sftp container reads its account policy (permissions, login
+        # methods, limits) from the entrypoint script at start, so a change
+        # to the script must replace the Pod; env changes already do.
+        checksum/sftp-entrypoint: {{ include (print $.Template.BasePath "/schedulefeed-configmap.yaml") . | sha256sum }}
         {{- if .Values.metrics.enabled }}
         # NOTE: this plain-annotation scrape fallback can only advertise
         # one port per Pod, so it still only ever advertises `ingest`'s
@@ -49,7 +52,6 @@ spec:
         {{- with .Values.scheduleFeed.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- end }}
     spec:
       serviceAccountName: {{ include "distant-signal.serviceAccountName" . }}
       automountServiceAccountToken: false
@@ -195,6 +197,15 @@ spec:
             # doesn't need to pre-exist on the PVC.
             - name: SCHEDULE_SFTP_HOME_DIR
               value: {{ printf "/data/schedule-feed/%s" (include "distant-signal.scheduleFeedDestinationPath" .) | quote }}
+            # Least privilege for the push account (scheduleFeed.sftp.
+            # permissions/maxSessions/maxUploadFileSize); the entrypoint
+            # writes them into the account and refuses unknown permissions.
+            - name: SCHEDULE_SFTP_PERMISSIONS
+              value: {{ join "," .Values.scheduleFeed.sftp.permissions | quote }}
+            - name: SCHEDULE_SFTP_MAX_SESSIONS
+              value: {{ .Values.scheduleFeed.sftp.maxSessions | int | quote }}
+            - name: SCHEDULE_SFTP_MAX_UPLOAD_FILE_SIZE
+              value: {{ .Values.scheduleFeed.sftp.maxUploadFileSize | int64 | quote }}
             {{- if eq .Values.scheduleFeed.sftp.authMethod "password" }}
             - name: SCHEDULE_SFTP_PASSWORD
               valueFrom:
