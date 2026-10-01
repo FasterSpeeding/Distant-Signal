@@ -176,7 +176,13 @@ pub fn exit_code(result: anyhow::Result<()>) -> ExitCode {
 
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        let payload = info.payload_as_str().unwrap_or("Box<dyn Any>");
+        // `PanicHookInfo::payload_as_str` is newer than the 1.88 MSRV.
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("Box<dyn Any>");
         let location = info
             .location()
             .map_or_else(|| "<unknown>".to_string(), ToString::to_string);
@@ -226,11 +232,10 @@ where
                 let mut entry = Map::new();
                 entry.insert("name".into(), Value::from(span.name()));
                 let extensions = span.extensions();
-                if let Some(recorded) = extensions.get::<FormattedFields<JsonFields>>() {
-                    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&recorded.fields)
-                    {
-                        entry.extend(map);
-                    }
+                if let Some(recorded) = extensions.get::<FormattedFields<JsonFields>>()
+                    && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&recorded.fields)
+                {
+                    entry.extend(map);
                 }
                 entry
             })
