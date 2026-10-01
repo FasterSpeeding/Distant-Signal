@@ -2734,6 +2734,12 @@ struct PublishKeysSql {
     /// Refreshes the staging table's planner statistics. Run (inside the
     /// final chunk's transaction) right before `delete_missing`; takes no
     /// parameters. See [`finish_publish_part`] for why.
+    ///
+    /// Calls the `analyze_publish_keys` SECURITY DEFINER function
+    /// (migration 20261001140000) rather than a bare `ANALYZE`: on
+    /// Postgres 16 only the owner may ANALYZE a table, and for the
+    /// non-superuser app role a bare `ANALYZE` silently skips the table
+    /// with a WARNING (docs/postgres-app-role.md).
     analyze: &'static str,
     /// `$2` = the publish's staged service dates.
     delete_missing: &'static str,
@@ -2815,7 +2821,7 @@ const DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
             OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
-    analyze: "ANALYZE schedule_destination_departures_publish_keys",
+    analyze: "SELECT analyze_publish_keys('schedule_destination_departures_publish_keys')",
     delete_missing: "DELETE FROM schedule_destination_departures d \
          WHERE d.service_date = ANY($2::date[]) \
            AND NOT EXISTS ( \
@@ -2838,7 +2844,7 @@ const CALLING_POINTS_FULL_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
             OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
-    analyze: "ANALYZE schedule_calling_points_full_publish_keys",
+    analyze: "SELECT analyze_publish_keys('schedule_calling_points_full_publish_keys')",
     delete_missing: "DELETE FROM schedule_calling_points_full c \
          WHERE c.service_date = ANY($2::date[]) \
            AND NOT EXISTS ( \
@@ -11892,6 +11898,85 @@ mod schedule_publish_diff_tests {
             sql.product
         );
         tx.rollback().await.expect("rollback");
+    }
+
+    /// The final chunk's `analyze` really refreshes the staging table's
+    /// statistics for whatever role `DATABASE_URL` connects as -- in
+    /// particular the non-superuser app role of the role split
+    /// (docs/postgres-app-role.md), for which a bare `ANALYZE` only warns
+    /// and skips the table. `pg_class.reltuples` (readable by anyone) only
+    /// moves to the staged row count if the ANALYZE actually ran.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn the_publish_analyze_refreshes_statistics_as_the_connecting_role() {
+        const ROWS: i64 = 3_000;
+        let pool = test_pool().await;
+        for (sql, keys_table) in [
+            (
+                &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL,
+                "schedule_destination_departures_publish_keys",
+            ),
+            (
+                &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL,
+                "schedule_calling_points_full_publish_keys",
+            ),
+        ] {
+            let mut tx = pool.begin().await.expect("begin");
+            // Everything below rolls back: these keys never commit.
+            sqlx::query(&format!("DELETE FROM {keys_table}"))
+                .execute(&mut *tx)
+                .await
+                .expect("empty the staging table inside the transaction");
+            let insert = if keys_table.starts_with("schedule_destination") {
+                format!(
+                    "INSERT INTO {keys_table} \
+                     (publish_id, service_date, destination_crs, scheduled, train_uid, origin_crs) \
+                     SELECT 'test-analyze-role', DATE '2050-01-01', 'Z' || (g % 90 + 10)::text, \
+                            TIME '08:00', 'T' || g::text, 'Y99' \
+                     FROM generate_series(1, $1) g"
+                )
+            } else {
+                format!(
+                    "INSERT INTO {keys_table} (publish_id, service_date, uid, seq) \
+                     SELECT 'test-analyze-role', DATE '2050-01-01', 'T' || g::text, 1 \
+                     FROM generate_series(1, $1) g"
+                )
+            };
+            sqlx::query(&insert)
+                .bind(ROWS)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(|err| panic!("stage keys in {keys_table}: {err}"));
+            sqlx::query(sql.analyze)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(|err| panic!("{}: {err}", sql.analyze));
+            let reltuples: f32 =
+                sqlx::query_scalar("SELECT reltuples FROM pg_class WHERE oid = $1::regclass")
+                    .bind(keys_table)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .expect("reltuples");
+            assert_eq!(
+                reltuples as i64, ROWS,
+                "{}: the staging table's statistics were not refreshed (the ANALYZE was \
+                 skipped for lack of ownership?)",
+                sql.analyze
+            );
+            tx.rollback().await.expect("rollback");
+        }
+
+        // Only the two staging tables, never anything a caller names.
+        let err = sqlx::query("SELECT analyze_publish_keys('users')")
+            .execute(&pool)
+            .await
+            .expect_err("analyze_publish_keys must refuse any other table");
+        assert_eq!(
+            err.as_database_error().and_then(|db| db.code()).as_deref(),
+            Some("22023"),
+            "{err}"
+        );
     }
 
     /// Regression test for the 2026-09-27 production CPU burn: stage a

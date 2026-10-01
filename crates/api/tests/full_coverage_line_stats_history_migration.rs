@@ -65,8 +65,15 @@ async fn apply(conn: &mut sqlx::PgConnection, name: &str) {
 #[ignore = "requires a live database; run with `cargo test -p api --test \
             full_coverage_line_stats_history_migration -- --ignored --test-threads=1`"]
 async fn the_rekey_migrations_apply_to_a_table_that_already_has_rows() {
-    let database_url =
-        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+    // Migrations are DDL: run them as the migration role (the schema owner
+    // with the role split, docs/postgres-app-role.md), not as the DML-only
+    // app role `DATABASE_URL` then is.
+    let database_url = std::env::var("MIGRATION_DATABASE_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test")
+        });
     let schema = format!(
         "fcls_migration_test_{}",
         std::time::SystemTime::now()

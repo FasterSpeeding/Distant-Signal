@@ -16,6 +16,15 @@ pub struct ServiceArguments {
     pub bind_url: String,
     #[arg(short, long, env)]
     pub database_url: String,
+    /// Connection URL for the startup migrations (`api::migrate`) only.
+    /// Unset or empty: the migrations use `database_url`, as before.
+    ///
+    /// Set when the database has separate roles (docs/postgres-app-role.md):
+    /// `database_url` is then the non-superuser app role (DML only) every
+    /// pool uses, and this is the owner role that owns the schema and may
+    /// run DDL. Nothing else in `api` connects with it. Never logged.
+    #[arg(long, env, hide_env_values = true)]
+    pub migration_database_url: Option<String>,
     #[arg(long, env)]
     pub redis_url: String,
 
