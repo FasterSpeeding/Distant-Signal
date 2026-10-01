@@ -110,6 +110,10 @@ concurrency:
   group: containers-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only by default; each job below asks for packages/id-token itself.
+permissions:
+  contents: read
+
 on:
   pull_request:
     branches: [main, master, dev]
