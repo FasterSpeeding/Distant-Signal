@@ -68,6 +68,9 @@ struct CorpusLoadRequest<'a> {
     delivered_at: DateTime<Utc>,
     source_file: &'a str,
     locations: &'a [CorpusLocation],
+    /// The delivered file's size and SHA-256 (`audit.rs`).
+    source_bytes: u64,
+    sha256: &'a str,
 }
 
 /// Why a file can never be loaded. Its bytes cannot change without its
@@ -338,11 +341,12 @@ pub async fn run_corpus_cycle(
     }
 
     let delivered_at = DateTime::<Utc>::from(mtime);
-    let locations = match std::fs::read(watch_dir.join(&name)) {
-        Ok(bytes) if bytes.len() as u64 == len => {
+    let (delivered, locations) = match std::fs::read(watch_dir.join(&name)) {
+        Ok(bytes) if bytes.len() as u64 == len => (
+            crate::audit::DeliveredFile::from_bytes(&name, &bytes),
             decompress(&bytes, args.corpus_max_decompressed_bytes)
-                .and_then(|json| parse_extract(&json, args.corpus_min_rows))
-        }
+                .and_then(|json| parse_extract(&json, args.corpus_min_rows)),
+        ),
         Ok(_) => {
             tracing::info!(file = %name, "CORPUS file changed while being read; retrying next cycle");
             return Ok(());
@@ -356,6 +360,12 @@ pub async fn run_corpus_cycle(
         Ok(locations) => locations,
         Err(rejected) => {
             tracing::error!(file = %name, reason = %rejected, "rejecting CORPUS file; it is not loaded and is moved to the rejected archive");
+            crate::audit::decision(
+                &delivered,
+                delivered_at,
+                crate::audit::Outcome::CorpusRejected,
+                Some(&rejected.0),
+            );
             metrics::counter!(common::metrics::metric_name(REJECTED_METRIC)).increment(1);
             state.handled = Some((name.clone(), mtime, len));
             archive(watch_dir, &name, (mtime, len), &rejected_dir, keep);
@@ -367,6 +377,8 @@ pub async fn run_corpus_cycle(
         delivered_at,
         source_file: &name,
         locations: &locations,
+        source_bytes: delivered.bytes,
+        sha256: &delivered.sha256,
     };
     if let Err(err) =
         common::ingest::post_json(client, &args.corpus_api_url, internal_oauth, &request).await
@@ -375,6 +387,12 @@ pub async fn run_corpus_cycle(
         return Ok(());
     }
     tracing::info!(file = %name, delivered_at = %delivered_at, rows = locations.len(), "loaded CORPUS extract");
+    crate::audit::decision(
+        &delivered,
+        delivered_at,
+        crate::audit::Outcome::Accepted,
+        None,
+    );
     metrics::gauge!(common::metrics::metric_name(LAST_LOAD_METRIC))
         .set(delivered_at.timestamp() as f64);
     metrics::gauge!(common::metrics::metric_name(ROWS_METRIC)).set(locations.len() as f64);
@@ -387,6 +405,17 @@ pub async fn run_corpus_cycle(
     for (old, old_mtime, old_len) in found {
         if state.known_stable.contains(&old) {
             tracing::info!(file = %old, "archiving a CORPUS file superseded by a newer one, without loading it");
+            match crate::audit::DeliveredFile::hash_file(&old, &watch_dir.join(&old)) {
+                Ok(superseded) => crate::audit::decision(
+                    &superseded,
+                    DateTime::<Utc>::from(old_mtime),
+                    crate::audit::Outcome::CorpusRejected,
+                    Some(&format!("superseded by the newer {name}; not loaded")),
+                ),
+                Err(err) => {
+                    tracing::warn!(error = %err, file = %old, "failed to hash a superseded CORPUS file for its audit line");
+                }
+            }
             archive(watch_dir, &old, (old_mtime, old_len), &archive_dir, keep);
         }
     }
@@ -648,11 +677,8 @@ mod tests {
 
         let watch = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
-        std::fs::write(
-            watch.path().join("CORPUSExtract.json.gz"),
-            gzip(FIXTURE.as_bytes()),
-        )
-        .unwrap();
+        let delivered = gzip(FIXTURE.as_bytes());
+        std::fs::write(watch.path().join("CORPUSExtract.json.gz"), &delivered).unwrap();
         std::fs::write(
             watch.path().join("CORPUSExtract.csv.gz"),
             gzip(b"A2,B,0632"),
@@ -662,7 +688,18 @@ mod tests {
         let args = args(format!("{}/private/corpus-locations", server.uri()));
         let tokens = oauth(format!("{}/token", server.uri()));
         let mut state = CorpusState::new();
+        let (guard, logs) = crate::audit::tests::capture_default();
         run(watch.path(), storage.path(), &args, &tokens, &mut state, 4).await;
+        drop(guard);
+
+        // Provenance: the POST and one audit line carry the file's hash.
+        let expected = crate::audit::DeliveredFile::from_bytes("CORPUSExtract.json.gz", &delivered);
+        let audit = logs.audit_lines();
+        assert_eq!(audit.len(), 1, "{audit:?}");
+        assert_eq!(audit[0]["file"], "CORPUSExtract.json.gz");
+        assert_eq!(audit[0]["outcome"], "accepted");
+        assert_eq!(audit[0]["sha256"], expected.sha256.as_str());
+        assert_eq!(audit[0]["bytes"], expected.bytes);
 
         assert_eq!(names(watch.path()), ["CORPUSExtract.csv.gz"]);
         let archived = names(&storage.path().join(ARCHIVE_DIR));
@@ -679,6 +716,8 @@ mod tests {
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&load.body).unwrap();
         assert_eq!(body["source_file"], "CORPUSExtract.json.gz");
+        assert_eq!(body["sha256"], expected.sha256.as_str());
+        assert_eq!(body["source_bytes"], expected.bytes);
         assert_eq!(body["locations"].as_array().unwrap().len(), 8);
         assert_eq!(body["locations"][0]["nlc"], "000700");
         assert_eq!(body["locations"][1]["tiploc"], serde_json::Value::Null);
@@ -718,8 +757,19 @@ mod tests {
         let args = args("http://127.0.0.1:1/private/corpus-locations".to_string());
         let tokens = oauth("http://127.0.0.1:1/token".to_string());
         let mut state = CorpusState::new();
+        let (guard, logs) = crate::audit::tests::capture_default();
         run(watch.path(), storage.path(), &args, &tokens, &mut state, 3).await;
+        drop(guard);
 
+        let audit = logs.audit_lines();
+        assert_eq!(audit.len(), 1, "{audit:?}");
+        assert_eq!(audit[0]["outcome"], "corpus_rejected");
+        assert!(
+            audit[0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("not a CORPUS extract")),
+            "{audit:?}"
+        );
         assert!(names(watch.path()).is_empty());
         let rejected = names(&storage.path().join(ARCHIVE_DIR).join(REJECTED_DIR));
         assert_eq!(rejected.len(), 1);

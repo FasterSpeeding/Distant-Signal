@@ -53,6 +53,35 @@ pub async fn replace_corpus_locations(
     source_file: &str,
     locations: &[CorpusLocation],
 ) -> Result<u64> {
+    replace_corpus_locations_with_provenance(
+        pool,
+        delivered_at,
+        source_file,
+        &DeliveredFileProvenance::default(),
+        locations,
+    )
+    .await
+}
+
+/// The delivered CORPUS file's size and SHA-256 as `schedule-ingest` read
+/// it, recorded in `corpus_deliveries` (migration
+/// `20261001150000_schedule_feed_delivery_sha256.sql`). `None` from an
+/// older `schedule-ingest`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeliveredFileProvenance<'a> {
+    pub bytes: Option<i64>,
+    pub sha256: Option<&'a str>,
+}
+
+/// [`replace_corpus_locations`], also recording the delivered file's
+/// provenance in its `corpus_deliveries` row.
+pub async fn replace_corpus_locations_with_provenance(
+    pool: &PgPool,
+    delivered_at: DateTime<Utc>,
+    source_file: &str,
+    provenance: &DeliveredFileProvenance<'_>,
+    locations: &[CorpusLocation],
+) -> Result<u64> {
     anyhow::ensure!(
         !locations.is_empty(),
         "refusing to replace corpus_locations with an empty delivery"
@@ -100,16 +129,21 @@ pub async fn replace_corpus_locations(
     .await?
     .rows_affected();
     sqlx::query(
-        "INSERT INTO corpus_deliveries (delivered_at, source_file, row_count, loaded_at) \
-         VALUES ($1, $2, $3, now()) \
+        "INSERT INTO corpus_deliveries \
+             (delivered_at, source_file, row_count, loaded_at, source_bytes, sha256) \
+         VALUES ($1, $2, $3, now(), $4, $5) \
          ON CONFLICT (delivered_at) DO UPDATE SET \
              source_file = EXCLUDED.source_file, \
              row_count = EXCLUDED.row_count, \
-             loaded_at = EXCLUDED.loaded_at",
+             loaded_at = EXCLUDED.loaded_at, \
+             source_bytes = EXCLUDED.source_bytes, \
+             sha256 = EXCLUDED.sha256",
     )
     .bind(delivered_at)
     .bind(source_file)
     .bind(row_count)
+    .bind(provenance.bytes)
+    .bind(provenance.sha256)
     .execute(&mut *tx)
     .await?;
     crate::data::corpus_crosswalk::write(&mut tx, delivered_at, crosswalk).await?;
@@ -283,5 +317,41 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(locations, 1);
+    }
+
+    /// The delivered file's size and SHA-256 land in `corpus_deliveries`;
+    /// the provenance-less wrapper leaves them NULL.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs DATABASE_URL (a role that can create databases)"]
+    async fn a_load_records_the_delivered_file_provenance(pool: PgPool) {
+        let at = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
+        let sha = "0f".repeat(32);
+        let rows = [location("559500", Some("CLPHMJN"), Some("CLJ"))];
+        replace_corpus_locations_with_provenance(
+            &pool,
+            at,
+            "CORPUSExtract.json.gz",
+            &DeliveredFileProvenance {
+                bytes: Some(295_957),
+                sha256: Some(&sha),
+            },
+            &rows,
+        )
+        .await
+        .unwrap();
+        let read = || async {
+            let row: (Option<i64>, Option<String>) =
+                sqlx::query_as("SELECT source_bytes, sha256 FROM corpus_deliveries")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            row
+        };
+        assert_eq!(read().await, (Some(295_957), Some(sha.clone())));
+
+        replace_corpus_locations(&pool, at, "CORPUSExtract.json.gz", &rows)
+            .await
+            .unwrap();
+        assert_eq!(read().await, (None, None));
     }
 }

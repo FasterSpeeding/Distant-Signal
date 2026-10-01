@@ -294,6 +294,42 @@ from SFTPGo's startup log after a deploy:
 | `ecdsa-sha2-nistp256` | not yet recorded: the running pod (2026-10-01) still generates throwaway keys; record after the first deploy that serves the preserved ones |
 | `ssh-ed25519` | as above |
 
+## Delivery checks
+
+schedule-ingest (`crates/schedule-ingest`) reads what lands in the push
+account's directory straight off the shared volume.
+
+### Provenance and the audit line
+
+Every delivered file is hashed with SHA-256 as schedule-ingest reads it:
+
+- the CIF zip: `schedule_feed_ingests.source_file`, `source_bytes`,
+  `source_sha256`, and each extracted file's hash in `files[].sha256`
+  (also kept in the delivery directory's `.delivery-complete` marker);
+- the CORPUS file: `corpus_deliveries.source_bytes` and `sha256`.
+
+Rows from before 2026-10-01 have NULLs there. Each decision about a file is
+logged as one line with `target` `schedule_ingest::audit`:
+
+```json
+{"timestamp":"2026-09-30T20:00:35.123456Z","level":"INFO","service":"schedule-ingest","target":"schedule_ingest::audit","message":"delivery decision","file":"timetable_full.zip","bytes":77222226,"sha256":"…","delivered_at":"2026-09-30T19:59:59Z","outcome":"accepted"}
+```
+
+| `outcome` | Meaning | `reason` |
+| --- | --- | --- |
+| `accepted` | extracted (CIF) or loaded (CORPUS) and recorded by api | absent |
+| `quarantined` | a CIF zip that failed a check; not retried until a new upload replaces it. Counts in `schedule_feed_zip_rejected_total` (`DistantSignalScheduleFeedZipRejected`) | the failed check |
+| `rejected_by_api` | api refused the record with 400/413/422 (`DistantSignalScheduleFeedIngestRejected`) | api's error |
+| `corpus_rejected` | a CORPUS file that failed its checks, or an older one superseded unloaded (`DistantSignalCorpusRejected`) | the failed check |
+
+A file whose api POST fails transiently gets its line when the retry
+succeeds. After a restart schedule-ingest re-posts the current zip, which
+logs `accepted` again for the same `sha256`. Query:
+
+```logql
+{namespace="distant-signal", container="ingest"} | json | target = "schedule_ingest::audit"
+```
+
 ## If DTD's deliveries break
 
 The `ingest` container logs "no .zip delivery observed" after the day's

@@ -29,6 +29,7 @@
 //! `api` insert is `ON CONFLICT (delivered_at) DO NOTHING`, so a restart
 //! costs one harmless redundant POST, not a silently swallowed gap.
 
+mod audit;
 mod config;
 mod corpus;
 mod delivery;
@@ -271,6 +272,12 @@ async fn run_scan_cycle(
                     delivered_at = %pending.delivered_at,
                     "retried and succeeded posting a previously-failed ingest record"
                 );
+                audit::decision(
+                    &pending.delivered_file(),
+                    pending.delivered_at,
+                    audit::Outcome::Accepted,
+                    None,
+                );
                 *last_ingested_mtime = Some(SystemTime::from(pending.delivered_at));
                 metrics::gauge!(common::metrics::metric_name(
                     "schedule_feed_last_ingest_delivered_at_seconds"
@@ -386,6 +393,20 @@ async fn run_scan_cycle(
     let dir_name = delivery::delivery_dir_name(zip_mtime);
     let zip_path = config.watch_dir.join(&zip_filename);
 
+    // Provenance: the zip's SHA-256 as read now. A size different from the
+    // stable snapshot's means a new upload has started; wait for it.
+    let delivered = match audit::DeliveredFile::hash_file(&zip_filename, &zip_path) {
+        Ok(delivered) => delivered,
+        Err(err) => {
+            tracing::error!(error = %err, zip = %zip_filename, "failed to read the zip delivery to hash it; retrying next cycle");
+            return Ok(());
+        }
+    };
+    if snapshot.0.get(&zip_filename).map(|&(_, len)| len) != Some(delivered.bytes) {
+        tracing::info!(zip = %zip_filename, "zip delivery changed while being hashed (a new upload?); retrying next cycle");
+        return Ok(());
+    }
+
     // PL-6/PL-13: atomic (temp dir, fsync, marker, rename), and a no-op for
     // a delivery that is already complete on disk.
     let limits = delivery::ExtractLimits {
@@ -399,11 +420,17 @@ async fn run_scan_cycle(
         limits,
     ) {
         Ok((extracted, how)) => {
-            tracing::info!(zip = %zip_filename, dir = %dir_name, outcome = ?how, "delivery directory complete");
+            tracing::info!(zip = %zip_filename, dir = %dir_name, outcome = ?how, sha256 = %delivered.sha256, "delivery directory complete");
             extracted
         }
         Err(err) if delivery::is_rejected(&err) => {
             tracing::error!(error = %err, zip = %zip_filename, "quarantining a zip delivery that can never be extracted; waiting for a new upload");
+            audit::decision(
+                &delivered,
+                delivered_at,
+                audit::Outcome::Quarantined,
+                Some(&err.to_string()),
+            );
             metrics::counter!(common::metrics::metric_name(
                 "schedule_feed_zip_rejected_total"
             ))
@@ -419,13 +446,20 @@ async fn run_scan_cycle(
 
     let files = extracted
         .into_iter()
-        .map(|(name, bytes)| ScheduleFeedFile { name, bytes })
+        .map(|file| ScheduleFeedFile {
+            name: file.name,
+            bytes: file.bytes,
+            sha256: file.sha256,
+        })
         .collect();
 
     let request = ScheduleFeedIngestRequest {
         delivered_at,
         ingested_at: Utc::now(),
         files,
+        source_file: delivered.name.clone(),
+        source_bytes: delivered.bytes,
+        source_sha256: delivered.sha256.clone(),
     };
 
     match post_ingest(client, config, internal_oauth, &request).await {
@@ -435,6 +469,7 @@ async fn run_scan_cycle(
                 dir = %dir_name,
                 "schedule feed delivery extracted to storage and posted to api"
             );
+            audit::decision(&delivered, delivered_at, audit::Outcome::Accepted, None);
             *last_ingested_mtime = Some(zip_mtime);
             metrics::gauge!(common::metrics::metric_name(
                 "schedule_feed_last_ingest_delivered_at_seconds"
@@ -485,6 +520,12 @@ fn queue_or_quarantine_failed_post(
                 delivered_at = %request.delivered_at,
                 "api rejected this delivery's ingest record (400/413/422); NOT retrying it, \
                  waiting for a new upload"
+            );
+            audit::decision(
+                &request.delivered_file(),
+                request.delivered_at,
+                audit::Outcome::RejectedByApi,
+                Some(&format!("{err:#}")),
             );
             metrics::counter!(common::metrics::metric_name(INGEST_REJECTED_METRIC)).increment(1);
             *rejected_mtime = Some(SystemTime::from(request.delivered_at));
@@ -545,17 +586,39 @@ async fn post_ingest(
 /// the `api` side. `ingested_at` is when this process actually processed
 /// it, kept only as separate observability data (see the migration/query
 /// changes for why `delivered_at`, not `ingested_at`, now backs freshness).
+///
+/// `source_*` are the delivered zip's own name, size and SHA-256 (see
+/// `audit.rs`), stored with the record (migration
+/// `20261001150000_schedule_feed_delivery_sha256.sql`).
 #[derive(Debug, Clone, Serialize)]
 struct ScheduleFeedIngestRequest {
     delivered_at: DateTime<Utc>,
     ingested_at: DateTime<Utc>,
     files: Vec<ScheduleFeedFile>,
+    source_file: String,
+    source_bytes: u64,
+    source_sha256: String,
 }
 
+impl ScheduleFeedIngestRequest {
+    /// The delivered zip, for its audit line.
+    fn delivered_file(&self) -> audit::DeliveredFile {
+        audit::DeliveredFile {
+            name: self.source_file.clone(),
+            bytes: self.source_bytes,
+            sha256: self.source_sha256.clone(),
+        }
+    }
+}
+
+/// One extracted file; `sha256` is absent for a delivery re-posted from a
+/// completion marker written before the hashes existed.
 #[derive(Debug, Clone, Serialize)]
 struct ScheduleFeedFile {
     name: String,
     bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
 }
 
 /// Parses `check_times` (comma-separated `HH:MM`) into an ordered (as
@@ -1239,6 +1302,108 @@ mod tests {
                 assert!(pending_post.is_some());
                 assert!(rejected_mtime.is_none());
             }
+        }
+    }
+
+    /// Provenance end to end: the record posted to api carries the zip's
+    /// name, size and SHA-256 and each extracted file's SHA-256, and the
+    /// delivery gets exactly one `accepted` audit line with the same hash.
+    /// A 400 instead gives one `rejected_by_api` line.
+    #[tokio::test]
+    async fn an_accepted_delivery_records_and_logs_its_sha256() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        for (status, outcome) in [(200u16, "accepted"), (400, "rejected_by_api")] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({"access_token": "t", "expires_in": 3600}),
+                    ),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/schedule-feed-ingests"))
+                .respond_with(
+                    ResponseTemplate::new(status).set_body_json(serde_json::json!({"upserted": 1})),
+                )
+                .mount(&server)
+                .await;
+
+            let watch_dir = tempfile::tempdir().unwrap();
+            let storage_dir = tempfile::tempdir().unwrap();
+            let bytes = delivery::build_test_zip(&[("RJTTF942MCA.txt", b"mca content")]);
+            std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
+            let zip_sha = audit::DeliveredFile::from_bytes("", &bytes).sha256;
+
+            let mut config = test_config(watch_dir.path(), storage_dir.path());
+            config.api_ingest_url = format!("{}/schedule-feed-ingests", server.uri());
+            let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+            let internal_oauth = common::oauth_client::OAuthTokenCache::new(
+                common::oauth_client::OAuthCredentials {
+                    token_url: format!("{}/token", server.uri()),
+                    client_id: "test-client".to_string(),
+                    scope: "groups".to_string(),
+                    username: "test-user".to_string(),
+                    password: "test-password".to_string(),
+                },
+            );
+            let mut tracker = StabilityTracker::new();
+            let mut known_stable = HashSet::new();
+            let mut known_stray_files = HashSet::new();
+            let mut last_ingested_mtime = None;
+            let mut pending_post = None;
+            let mut rejected_mtime = None;
+
+            let (guard, logs) = audit::tests::capture_default();
+            for _ in 0..4 {
+                run_scan_cycle(
+                    &client,
+                    &config,
+                    &Routing::defaults(),
+                    &internal_oauth,
+                    &mut tracker,
+                    &mut known_stable,
+                    &mut known_stray_files,
+                    &mut last_ingested_mtime,
+                    &mut pending_post,
+                    &mut rejected_mtime,
+                    false,
+                )
+                .await
+                .unwrap();
+            }
+            drop(guard);
+
+            let audit = logs.audit_lines();
+            assert_eq!(audit.len(), 1, "one decision per delivery: {audit:?}");
+            assert_eq!(audit[0]["outcome"], outcome);
+            assert_eq!(audit[0]["file"], "timetable_full.zip");
+            assert_eq!(audit[0]["bytes"], bytes.len() as u64);
+            assert_eq!(audit[0]["sha256"], zip_sha.as_str());
+            assert_eq!(audit[0].get("reason").is_some(), status != 200);
+
+            let posts: Vec<serde_json::Value> = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path() == "/schedule-feed-ingests")
+                .map(|r| serde_json::from_slice(&r.body).unwrap())
+                .collect();
+            assert_eq!(posts.len(), 1);
+            assert_eq!(posts[0]["source_file"], "timetable_full.zip");
+            assert_eq!(posts[0]["source_bytes"], bytes.len() as u64);
+            assert_eq!(posts[0]["source_sha256"], zip_sha.as_str());
+            assert_eq!(
+                posts[0]["files"][0]["sha256"],
+                audit::DeliveredFile::from_bytes("", b"mca content")
+                    .sha256
+                    .as_str()
+            );
         }
     }
 

@@ -160,6 +160,26 @@ impl std::fmt::Display for RejectedZip {
 
 impl std::error::Error for RejectedZip {}
 
+/// One file of a delivery directory: its name, size, and the SHA-256 of
+/// its contents when this process extracted it (a directory adopted from
+/// before the hashes existed has none).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExtractedFile {
+    pub name: String,
+    pub bytes: u64,
+    pub sha256: Option<String>,
+}
+
+impl ExtractedFile {
+    fn unhashed(name: String, bytes: u64) -> Self {
+        Self {
+            name,
+            bytes,
+            sha256: None,
+        }
+    }
+}
+
 /// Whether `err` is a [`RejectedZip`] (permanent) rather than an IO or
 /// transient failure worth retrying.
 pub fn is_rejected(err: &anyhow::Error) -> bool {
@@ -169,9 +189,9 @@ pub fn is_rejected(err: &anyhow::Error) -> bool {
 /// Extracts every regular-file entry of the zip at `zip_path` directly into
 /// `dest_dir` (created if needed), streaming each entry straight to disk
 /// (the real `RJTTFnnnMCA.txt` entry is ~700MB uncompressed -- this must
-/// never hold a whole entry in memory). Returns each extracted file's name
-/// and byte count, mirroring the shape `ScheduleFeedFile` records already
-/// used (see `main.rs`).
+/// never hold a whole entry in memory). Returns each extracted file's name,
+/// byte count and SHA-256 (hashed as it is written), mirroring the shape
+/// `ScheduleFeedFile` records (see `main.rs`).
 ///
 /// Entry paths are sanitized via `enclosed_name()` (guards against a
 /// zip-slip-style `../` escape) -- a real delivery's entries are all flat
@@ -191,7 +211,7 @@ pub fn extract_zip(
     zip_path: &Path,
     dest_dir: &Path,
     limits: ExtractLimits,
-) -> anyhow::Result<Vec<(String, u64)>> {
+) -> anyhow::Result<Vec<ExtractedFile>> {
     use std::io::Read;
 
     let file = std::fs::File::open(zip_path)?;
@@ -247,8 +267,9 @@ pub fn extract_zip(
 
         let declared = entry.size();
         let out_path = dest_dir.join(&enclosed);
-        let mut out_file = std::fs::File::create(&out_path)?;
-        let bytes = std::io::copy(&mut entry.take(declared.saturating_add(1)), &mut out_file)?;
+        let mut out = crate::audit::HashingWriter::new(std::fs::File::create(&out_path)?);
+        let bytes = std::io::copy(&mut entry.take(declared.saturating_add(1)), &mut out)?;
+        let (out_file, sha256) = out.finish();
         out_file.sync_all()?;
         if bytes != declared {
             return Err(RejectedZip(format!(
@@ -260,7 +281,11 @@ pub fn extract_zip(
             ))
             .into());
         }
-        extracted.push((enclosed.to_string_lossy().into_owned(), bytes));
+        extracted.push(ExtractedFile {
+            name: enclosed.to_string_lossy().into_owned(),
+            bytes,
+            sha256: Some(sha256),
+        });
     }
 
     Ok(extracted)
@@ -298,7 +323,7 @@ pub fn ensure_extracted(
     storage_dir: &Path,
     dir_name: &str,
     limits: ExtractLimits,
-) -> anyhow::Result<(Vec<(String, u64)>, Extraction)> {
+) -> anyhow::Result<(Vec<ExtractedFile>, Extraction)> {
     let final_dir = storage_dir.join(dir_name);
     if let Some(files) = read_marker(&final_dir)? {
         return Ok((files, Extraction::AlreadyComplete));
@@ -355,7 +380,10 @@ const STALE_DIR_PREFIX: &str = ".stale-";
 /// The file list the completion marker in `dir` records, or `None` when
 /// `dir` has no marker (or an unreadable one, which is treated the same:
 /// the delivery is simply extracted again).
-pub fn read_marker(dir: &Path) -> anyhow::Result<Option<Vec<(String, u64)>>> {
+///
+/// Each line is `name<TAB>bytes`, plus `<TAB>sha256` since the hashes were
+/// added (2026-10-01); a marker written before then has no hashes.
+pub fn read_marker(dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFile>>> {
     let contents = match std::fs::read_to_string(dir.join(COMPLETE_MARKER)) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -363,25 +391,35 @@ pub fn read_marker(dir: &Path) -> anyhow::Result<Option<Vec<(String, u64)>>> {
     };
     let mut files = Vec::new();
     for line in contents.lines().filter(|line| !line.is_empty()) {
-        let Some((name, bytes)) = line.split_once('\t') else {
+        let mut parts = line.split('\t');
+        let (Some(name), Some(bytes), sha256, None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
             return Ok(None);
         };
         let Ok(bytes) = bytes.parse() else {
             return Ok(None);
         };
-        files.push((name.to_string(), bytes));
+        files.push(ExtractedFile {
+            name: name.to_string(),
+            bytes,
+            sha256: sha256.map(str::to_string),
+        });
     }
     Ok(Some(files))
 }
 
 /// Writes the completion marker into `dir` atomically (a temp file, fsynced,
 /// then renamed), so the marker itself can never be seen half-written.
-fn write_marker(dir: &Path, files: &[(String, u64)]) -> anyhow::Result<()> {
+fn write_marker(dir: &Path, files: &[ExtractedFile]) -> anyhow::Result<()> {
     let temp = dir.join(format!("{COMPLETE_MARKER}.tmp"));
     {
         let mut out = std::fs::File::create(&temp)?;
-        for (name, bytes) in files {
-            writeln!(out, "{name}\t{bytes}")?;
+        for file in files {
+            match &file.sha256 {
+                Some(sha256) => writeln!(out, "{}\t{}\t{sha256}", file.name, file.bytes)?,
+                None => writeln!(out, "{}\t{}", file.name, file.bytes)?,
+            }
         }
         out.sync_all()?;
     }
@@ -399,7 +437,7 @@ fn fsync_dir(dir: &Path) -> std::io::Result<()> {
 /// The zip's flat regular-file entries with their recorded sizes, when every
 /// one of them exists in `dir` at exactly that size; `None` otherwise (or
 /// for an empty zip).
-fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<(String, u64)>>> {
+fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFile>>> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|err| anyhow::anyhow!("failed to open {zip_path:?} as a zip archive: {err}"))?;
@@ -424,7 +462,10 @@ fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<
         if on_disk != entry.size() {
             return Ok(None);
         }
-        files.push((enclosed.to_string_lossy().into_owned(), on_disk));
+        files.push(ExtractedFile::unhashed(
+            enclosed.to_string_lossy().into_owned(),
+            on_disk,
+        ));
     }
     Ok((!files.is_empty()).then_some(files))
 }
@@ -503,7 +544,7 @@ pub fn adopt_legacy_deliveries(
 
 /// Every regular, non-hidden file in `dir` with its size, when `dir` has
 /// both an `RJTTF*MCA.txt` and an `RJTTF*MSN.txt` (the pre-PL-6 rule).
-fn legacy_files_if_complete(dir: &Path) -> anyhow::Result<Option<Vec<(String, u64)>>> {
+fn legacy_files_if_complete(dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFile>>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -515,12 +556,12 @@ fn legacy_files_if_complete(dir: &Path) -> anyhow::Result<Option<Vec<(String, u6
         if name.starts_with('.') {
             continue;
         }
-        files.push((name, metadata.len()));
+        files.push(ExtractedFile::unhashed(name, metadata.len()));
     }
     let has = |suffix: &str| {
         files
             .iter()
-            .any(|(name, _)| name.starts_with("RJTTF") && name.ends_with(suffix))
+            .any(|f| f.name.starts_with("RJTTF") && f.name.ends_with(suffix))
     };
     if has("MCA.txt") && has("MSN.txt") {
         files.sort();
@@ -715,11 +756,21 @@ mod tests {
         let mut extracted = extract_zip(&zip_path, &dest_dir, ExtractLimits::default()).unwrap();
         extracted.sort();
 
+        let sha =
+            |content: &[u8]| Some(crate::audit::DeliveredFile::from_bytes("", content).sha256);
         assert_eq!(
             extracted,
             vec![
-                ("RJTTF942MCA.txt".to_string(), "mca content".len() as u64),
-                ("RJTTF942MSN.txt".to_string(), "msn content".len() as u64),
+                ExtractedFile {
+                    name: "RJTTF942MCA.txt".to_string(),
+                    bytes: "mca content".len() as u64,
+                    sha256: sha(b"mca content"),
+                },
+                ExtractedFile {
+                    name: "RJTTF942MSN.txt".to_string(),
+                    bytes: "msn content".len() as u64,
+                    sha256: sha(b"msn content"),
+                },
             ]
         );
         assert_eq!(
@@ -919,6 +970,32 @@ mod tests {
             std::fs::read_to_string(final_dir.join("RJTTF942MCA.txt")).unwrap(),
             "mca content"
         );
+    }
+
+    /// A marker from before the hashes (`name<TAB>bytes`) still reads, with
+    /// no hash; a line with too many fields makes the marker unreadable.
+    #[test]
+    fn read_marker_accepts_markers_with_and_without_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = "ab".repeat(32);
+        std::fs::write(
+            dir.path().join(COMPLETE_MARKER),
+            format!("RJTTF975MCA.txt\t724116170\nRJTTF975MSN.txt\t340354\t{sha}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            read_marker(dir.path()).unwrap(),
+            Some(vec![
+                ExtractedFile::unhashed("RJTTF975MCA.txt".to_string(), 724_116_170),
+                ExtractedFile {
+                    name: "RJTTF975MSN.txt".to_string(),
+                    bytes: 340_354,
+                    sha256: Some(sha),
+                },
+            ])
+        );
+        std::fs::write(dir.path().join(COMPLETE_MARKER), "a\t1\tb\tc\n").unwrap();
+        assert_eq!(read_marker(dir.path()).unwrap(), None);
     }
 
     /// PL-13: a delivery already marked complete is never extracted again --
