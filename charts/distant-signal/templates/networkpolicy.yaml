@@ -54,7 +54,7 @@ spec:
 {{- with include "distant-signal.extraIngress" (dict "root" . "component" "postgres") }}
     {{- . | nindent 4 }}
 {{- end }}
-{{- with include "distant-signal.egressSection" (dict "root" . "component" "postgres" "deps" dict "internet" .Values.postgresql.pgbackrest.enabled) }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "postgres" "deps" dict "internet" .Values.postgresql.pgbackrest.enabled "ports" (list .Values.postgresql.pgbackrest.repo.s3.port)) }}
   {{- . | nindent 2 }}
 {{- end }}
 ---
@@ -278,7 +278,7 @@ spec:
 {{- with include "distant-signal.extraIngress" (dict "root" . "component" "api") }}
     {{- . | nindent 4 }}
 {{- end }}
-{{- with include "distant-signal.egressSection" (dict "root" . "component" "api" "deps" (dict "postgres" true "redis" true "idp" true) "internet" true) }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "api" "deps" (dict "postgres" true "redis" true "idp" true) "internet" true "urls" (list .Values.api.sso.issuerUrl .Values.api.internalOauth.issuerUrl)) }}
   {{- . | nindent 2 }}
 {{- end }}
 ---
@@ -352,28 +352,30 @@ networkPolicy.components.<component>.extraEgress.
 {{- end }}
 {{- $callsApi := dict "api" true }}
 {{- $queueWorker := dict "api" true "redis" true }}
+{{- /* Upstreams whose ports the internet rule must allow (internetPorts). */}}
+{{- $token := list .Values.internalOauth.tokenUrl }}
 {{- $workers := list
-  (dict "component" "aggregator" "metricsPort" .Values.metrics.port "healthPorts" (list .Values.workerHealth.port) "egress" (dict "postgres" true) "internet" .Values.archive.enabled)
-  (dict "component" "enricher" "metricsPort" .Values.metrics.port "healthPorts" (list .Values.workerHealth.port) "egress" (dict "postgres" true "redis" true))
+  (dict "component" "aggregator" "metricsPort" .Values.metrics.port "healthPorts" (list .Values.workerHealth.port) "egress" (dict "postgres" true) "internet" .Values.archive.enabled "urls" (list (.Values.archive.s3.endpoint | default "https://s3.amazonaws.com")))
+  (dict "component" "enricher" "metricsPort" .Values.metrics.port "healthPorts" (list .Values.workerHealth.port) "egress" (dict "postgres" true "redis" true) "urls" (list .Values.enricher.llm.baseUrl))
   (dict "component" "notifier" "metricsPort" .Values.metrics.port "healthPorts" (list .Values.workerHealth.port) "egress" (dict "postgres" true))
-  (dict "component" "trust-consumer" "metricsPort" .Values.trustConsumer.metricsPort "healthPorts" (list .Values.trustConsumer.healthPort) "egress" $queueWorker)
-  (dict "component" "trust-backlog-consumer" "metricsPort" .Values.trustBacklogConsumer.metricsPort "healthPorts" (list .Values.trustBacklogConsumer.healthPort) "egress" $queueWorker)
-  (dict "component" "full-coverage-consumer" "metricsPort" .Values.fullCoverageConsumer.metricsPort "healthPorts" (list .Values.fullCoverageConsumer.healthPort) "egress" $queueWorker)
+  (dict "component" "trust-consumer" "metricsPort" .Values.trustConsumer.metricsPort "healthPorts" (list .Values.trustConsumer.healthPort) "egress" $queueWorker "urls" $token "brokers" .Values.trustConsumer.kafka.brokers)
+  (dict "component" "trust-backlog-consumer" "metricsPort" .Values.trustBacklogConsumer.metricsPort "healthPorts" (list .Values.trustBacklogConsumer.healthPort) "egress" $queueWorker "urls" $token)
+  (dict "component" "full-coverage-consumer" "metricsPort" .Values.fullCoverageConsumer.metricsPort "healthPorts" (list .Values.fullCoverageConsumer.healthPort) "egress" $queueWorker "urls" $token "brokers" .Values.trustConsumer.kafka.brokers)
 }}
 {{- if .Values.movementRelay.enabled }}
-{{- $workers = append $workers (dict "component" "movement-relay" "metricsPort" .Values.movementRelay.metricsPort "healthPorts" (list .Values.movementRelay.healthPort) "egress" (dict "redis" true)) }}
+{{- $workers = append $workers (dict "component" "movement-relay" "metricsPort" .Values.movementRelay.metricsPort "healthPorts" (list .Values.movementRelay.healthPort) "egress" (dict "redis" true) "brokers" (include "distant-signal.movementRelayKafkaBrokers" .)) }}
 {{- end }}
 {{- range $enabledPollerNames }}
-{{- $workers = append $workers (dict "component" (printf "poller-%s" .) "metricsPort" $root.Values.metrics.port "healthPorts" (list $root.Values.workerHealth.port) "egress" $callsApi) }}
+{{- $workers = append $workers (dict "component" (printf "poller-%s" .) "metricsPort" $root.Values.metrics.port "healthPorts" (list $root.Values.workerHealth.port) "egress" $callsApi "urls" (list (get $root.Values.pollers .).baseUrl $root.Values.internalOauth.tokenUrl)) }}
 {{- end }}
 {{- if .Values.pollerIrishRailGtfs.enabled }}
-{{- $workers = append $workers (dict "component" "poller-irish-rail-gtfs" "metricsPort" .Values.pollerIrishRailGtfs.metricsPort "healthPorts" (list .Values.workerHealth.port) "egress" $callsApi) }}
+{{- $workers = append $workers (dict "component" "poller-irish-rail-gtfs" "metricsPort" .Values.pollerIrishRailGtfs.metricsPort "healthPorts" (list .Values.workerHealth.port) "egress" $callsApi "urls" (list .Values.pollerIrishRailGtfs.gtfsUrl .Values.internalOauth.tokenUrl)) }}
 {{- end }}
 {{- if .Values.pollerIrishRailLive.enabled }}
-{{- $workers = append $workers (dict "component" "poller-irish-rail-live" "metricsPort" .Values.pollerIrishRailLive.metricsPort "healthPorts" (list .Values.workerHealth.port) "egress" $callsApi) }}
+{{- $workers = append $workers (dict "component" "poller-irish-rail-live" "metricsPort" .Values.pollerIrishRailLive.metricsPort "healthPorts" (list .Values.workerHealth.port) "egress" $callsApi "urls" (list .Values.pollerIrishRailLive.irishRailBaseUrl .Values.internalOauth.tokenUrl)) }}
 {{- end }}
 {{- if .Values.pollerNirStations.enabled }}
-{{- $workers = append $workers (dict "component" "poller-nir-stations" "metricsPort" .Values.pollerNirStations.metricsPort "healthPorts" (list .Values.workerHealth.port) "egress" $callsApi) }}
+{{- $workers = append $workers (dict "component" "poller-nir-stations" "metricsPort" .Values.pollerNirStations.metricsPort "healthPorts" (list .Values.workerHealth.port) "egress" $callsApi "urls" (list .Values.pollerNirStations.stationsCsvUrl .Values.pollerNirStations.haltsCsvUrl .Values.internalOauth.tokenUrl)) }}
 {{- end }}
 {{- range $workers }}
 ---
@@ -444,7 +446,7 @@ spec:
 {{- with include "distant-signal.extraIngress" (dict "root" . "component" "schedulefeed") }}
     {{- . | nindent 4 }}
 {{- end }}
-{{- with include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" (dict "api" true) "internet" true) }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" (dict "api" true) "internet" true "urls" (list .Values.internalOauth.tokenUrl)) }}
   {{- . | nindent 2 }}
 {{- end }}
 {{- end }}

@@ -1066,10 +1066,12 @@ networkPolicy.egress.extraDeniedCidrs (an entry containing ":" is IPv6).
 extraDeniedCidrs is where an operator names the node's own public
 address(es): privateCidrs only covers the reserved ranges, so without it a
 pod could reach the API server, the kubelet and any host-published port
-through the node's public IP. Takes root; renders one `- to: ...` list item.
+through the node's public IP. `ports` (TCP) limits the rule; empty allows
+every port. Takes (dict "root" $root "ports" (list 443)); renders one
+`- to: ...` list item.
 */}}
 {{- define "distant-signal.internetEgressRule" -}}
-{{- $eg := .Values.networkPolicy.egress -}}
+{{- $eg := .root.Values.networkPolicy.egress -}}
 {{- $v4 := list -}}
 {{- $v6 := list -}}
 {{- range ($eg.extraDeniedCidrs | default list) -}}
@@ -1097,6 +1099,69 @@ through the node's public IP. Takes root; renders one `- to: ...` list item.
         except:
           {{- toYaml . | nindent 10 }}
         {{- end }}
+  {{- with .ports }}
+  ports:
+    {{- range . }}
+    - protocol: TCP
+      port: {{ . }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+{{/*
+The TCP port a URL connects to: its explicit port, else 443 for https and
+80 for http, else nothing. Takes the URL string.
+*/}}
+{{- define "distant-signal.urlPort" -}}
+{{- if contains "://" . -}}
+{{- $u := urlParse . -}}
+{{- $m := regexFind ":[0-9]+$" $u.host -}}
+{{- if $m -}}
+{{- trimPrefix ":" $m -}}
+{{- else if eq $u.scheme "https" -}}
+443
+{{- else if eq $u.scheme "http" -}}
+80
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The TCP ports of the public-internet rule for one component, as a JSON list
+of ints, or [] for every port: networkPolicy.components.<component>.internetPorts
+if set, else networkPolicy.egress.internetPorts. A non-empty list also gets
+the ports the component's own upstreams need: `urls` (distant-signal.urlPort),
+`brokers` (a Kafka bootstrap list, host:port,...; 9092 when a port is
+missing) and `ports`. Takes the egressRules dict.
+*/}}
+{{- define "distant-signal.internetPorts" -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- $base := .root.Values.networkPolicy.egress.internetPorts | default list -}}
+{{- if hasKey $cs "internetPorts" -}}
+{{- $base = get $cs "internetPorts" | default list -}}
+{{- end -}}
+{{- $out := list -}}
+{{- if $base -}}
+{{- range $base -}}
+{{- $out = append $out (int .) -}}
+{{- end -}}
+{{- range (.urls | default list) -}}
+{{- with include "distant-signal.urlPort" (toString .) -}}
+{{- $out = append $out (int .) -}}
+{{- end -}}
+{{- end -}}
+{{- range (splitList "," (.brokers | default "" | toString)) -}}
+{{- $b := trim . -}}
+{{- if $b -}}
+{{- $m := regexFind ":[0-9]+$" $b -}}
+{{- $out = append $out (ternary (int (trimPrefix ":" $m)) 9092 (ne $m "")) -}}
+{{- end -}}
+{{- end -}}
+{{- range (.ports | default list) -}}
+{{- $out = append $out (int .) -}}
+{{- end -}}
+{{- end -}}
+{{- $out | uniq | toJson -}}
 {{- end }}
 
 {{/*
@@ -1137,8 +1202,10 @@ true
 The NetworkPolicyEgressRule list for one component (render under
 `egress:`): DNS; the in-cluster services in `deps` (api, redis, postgres;
 api and idp also admit the bundled dev IdP when devAuthentik.enabled); the
-public internet (distant-signal.internetEgressRule) when `internet` is true,
-unless networkPolicy.components.<component>.internet overrides it; then
+public internet (distant-signal.internetEgressRule, on the ports from
+distant-signal.internetPorts, which reads `urls`, `brokers` and `ports`)
+when `internet` is true, unless networkPolicy.components.<component>.internet
+overrides it; then
 networkPolicy.egress.extraRules and networkPolicy.components.<component>.extraEgress.
 Takes (dict "root" $root "component" "api" "deps" (dict "postgres" true)
 "internet" true).
@@ -1195,7 +1262,7 @@ Takes (dict "root" $root "component" "api" "deps" (dict "postgres" true)
       port: {{ $root.Values.postgresql.service.port }}
 {{- end }}
 {{- if $internet }}
-{{ include "distant-signal.internetEgressRule" $root }}
+{{ include "distant-signal.internetEgressRule" (dict "root" $root "ports" (include "distant-signal.internetPorts" . | fromJsonArray)) }}
 {{- end }}
 {{- with $np.egress.extraRules }}
 {{ toYaml . }}
@@ -1287,7 +1354,7 @@ spec:
     {{- end }}
   {{- if $egressOn }}
   egress:
-    {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .egress "internet" (ternary .internet true (hasKey . "internet"))) | nindent 4 }}
+    {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .egress "internet" (ternary .internet true (hasKey . "internet")) "urls" .urls "brokers" .brokers) | nindent 4 }}
   {{- end }}
 {{- end }}
 

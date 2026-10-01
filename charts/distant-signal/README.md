@@ -917,6 +917,15 @@ cluster.
 | postgres | none | only with `postgresql.pgbackrest.enabled` (the repository's S3) |
 | redis | none | no |
 
+The internet rule allows only TCP `networkPolicy.egress.internetPorts`
+(default 443) plus the ports each component's own upstreams use, read from
+its configuration: an explicit port or the scheme's default in its URLs
+(the Irish Rail live feed is `http://`, so port 80), the Kafka brokers'
+ports, and `postgresql.pgbackrest.repo.s3.port`. Web Push services, OIDC and
+the OAuth token endpoint use 443. A self-hosted push service or other
+upstream on another port needs `networkPolicy.components.<component>.internetPorts`;
+`[]` (globally or per component) allows every port.
+
 `networkPolicy.components.<component>` (keyed by the
 `app.kubernetes.io/component` label) tunes one component: `internet`
 adds or drops its public-internet rule, `egress: false` leaves it
@@ -2172,8 +2181,9 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.egress.privateCidrs` | RFC 1918, CGNAT, loopback, link-local, reserved | IPv4 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.privateCidrsV6` | loopback, ULA, link-local, multicast, NAT64/6to4/Teredo | IPv6 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.extraDeniedCidrs` | `[]` | More CIDRs (IPv4 and IPv6 mixed) excluded from the public-internet egress allow, on top of `privateCidrs`/`privateCidrsV6`. Set the nodes' own public addresses here. |
+| `networkPolicy.egress.internetPorts` | `[443]` | TCP ports the public-internet egress rule allows. Each component also gets its own upstreams' ports (from their URLs, the Kafka brokers, the pgBackRest S3 port). `[]` allows every port. |
 | `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every egress policy the chart renders. |
-| `networkPolicy.components` | `{}` | Per-component settings keyed by the `app.kubernetes.io/component` label (`api`, `postgres`, `poller-ldbws`, ...); an unknown key fails the render. Each entry: `egress` (`false` renders no egress policy for it), `internet` (add or drop its public-internet rule), `extraEgress` / `extraIngress` (raw NetworkPolicy rules appended to its policy). See [NetworkPolicy](#networkpolicy). |
+| `networkPolicy.components` | `{}` | Per-component settings keyed by the `app.kubernetes.io/component` label (`api`, `postgres`, `poller-ldbws`, ...); an unknown key fails the render. Each entry: `egress` (`false` renders no egress policy for it), `internet` (add or drop its public-internet rule), `internetPorts` (replaces `egress.internetPorts` for it), `extraEgress` / `extraIngress` (raw NetworkPolicy rules appended to its policy). See [NetworkPolicy](#networkpolicy). |
 | `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. |
 
 ### scheduleFeed: CIF routing and CORPUS

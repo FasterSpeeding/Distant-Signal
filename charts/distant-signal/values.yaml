@@ -3699,6 +3699,16 @@ networkPolicy:
     # the kubelet (10250) and every host-published port. Policies are
     # additive, so no other policy can take that allowance away.
     extraDeniedCidrs: []
+    # -- TCP ports the public-internet rule allows. Each component also
+    # gets the ports its own configured upstreams use, read from their
+    # URLs (an explicit port, else 443 for https and 80 for http: e.g.
+    # pollerIrishRailLive.irishRailBaseUrl is http), the Kafka brokers'
+    # ports (trust-consumer, full-coverage-consumer, movement-relay) and
+    # postgresql.pgbackrest.repo.s3.port. Web Push, OIDC and the OAuth
+    # token endpoint use 443. Override one component with
+    # components.<name>.internetPorts. Empty (`[]`) allows every port.
+    internetPorts:
+      - 443
     # -- Extra NetworkPolicyEgressRule entries appended to every egress
     # policy the chart renders. Prefer components.<name>.extraEgress for
     # something only one component needs, e.g.
@@ -3718,6 +3728,9 @@ networkPolicy:
   #                    # egress.enabled (its egress is then unrestricted
   #                    # by the chart)
   #   internet: true   # add or drop the public-internet rule
+  #   internetPorts: [443]  # replaces egress.internetPorts for this
+  #                    # component (its upstreams' ports are still added;
+  #                    # [] allows every port)
   #   extraEgress: []  # NetworkPolicyEgressRule entries appended to this
   #                    # component's egress policy (with egress.enabled)
   #   extraIngress: [] # NetworkPolicyIngressRule entries appended to this
