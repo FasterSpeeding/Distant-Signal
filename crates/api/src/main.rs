@@ -127,7 +127,7 @@ fn unmatched_route_endpoint_label(_exact_path: &str) -> String {
     "/{unmatched}".to_string()
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
     // `api parse-ticket <pdf|pkpass>`: the ticket-parse child process
     // (M13; see `data::ticket_subprocess`). Checked before anything else so
     // the child never starts a tokio runtime, reads `.env`, or parses the
@@ -135,7 +135,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(code) = data::ticket_subprocess::maybe_run_child() {
         std::process::exit(code);
     }
-    server_main()
+    common::logging::exit_code(server_main())
 }
 
 #[tokio::main]
@@ -145,9 +145,7 @@ async fn server_main() -> anyhow::Result<()> {
     // API-1: tracing FIRST, so nothing logged during `AppState::init` (the
     // INF-5 Postgres wait included), the migrations or a sweep's first tick
     // is dropped.
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("api");
 
     let app = AppState::init().await?;
     // CORPUS_FALLBACK_ENABLED (default off): see `data::corpus_crosswalk`.

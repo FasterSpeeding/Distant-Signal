@@ -26,14 +26,17 @@ use sqlx::postgres::PgPoolOptions;
 const DEFAULT_LINES_DIR: &str = "/app/lines";
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    common::logging::exit_code(run().await)
+}
+
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    common::logging::init_with_filter(
+        "backfill-incident-lines",
+        common::logging::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| common::logging::EnvFilter::new("info")),
+    );
 
     let database_url =
         std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
