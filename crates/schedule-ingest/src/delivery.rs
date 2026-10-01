@@ -596,11 +596,15 @@ fn legacy_files_if_complete(dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFi
 /// still in `watch_dir` against it (see [`recognise_completed`]) instead
 /// of waiting for the zip to look stable and posting it again. Hidden, so
 /// `schedule-reference` and pruning never treat it as a delivery file.
-pub const INGESTED_RECORD: &str = ".delivery-ingested";
+pub(crate) const INGESTED_RECORD: &str = ".delivery-ingested";
 
 /// The zip a delivery directory was extracted from and posted for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IngestedRecord {
+#[expect(
+    clippy::struct_field_names,
+    reason = "the fields describe the source zip, named as in the on-disk record"
+)]
+pub(crate) struct IngestedRecord {
     pub zip_name: String,
     pub zip_bytes: u64,
     pub zip_mtime: SystemTime,
@@ -614,7 +618,7 @@ fn unix_nanos(time: SystemTime) -> Option<u128> {
 }
 
 /// Writes [`INGESTED_RECORD`] into `storage_dir/<dir_name>` atomically.
-pub fn write_ingested_record(
+pub(crate) fn write_ingested_record(
     storage_dir: &Path,
     dir_name: &str,
     record: &IngestedRecord,
@@ -639,7 +643,7 @@ pub fn write_ingested_record(
 
 /// The [`INGESTED_RECORD`] in `dir`, or `None` when it is absent or
 /// unreadable (treated the same: the delivery is not known to be posted).
-pub fn read_ingested_record(dir: &Path) -> anyhow::Result<Option<IngestedRecord>> {
+pub(crate) fn read_ingested_record(dir: &Path) -> anyhow::Result<Option<IngestedRecord>> {
     let contents = match std::fs::read_to_string(dir.join(INGESTED_RECORD)) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -669,7 +673,7 @@ pub fn read_ingested_record(dir: &Path) -> anyhow::Result<Option<IngestedRecord>
 /// What a previous run of this process already did with the zip in
 /// `watch_dir`, as far as `storage_dir` shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Recognised {
+pub(crate) enum Recognised {
     /// Extracted, marked complete, and accepted by api: nothing left to
     /// do. Carries the record that matched.
     Ingested(IngestedRecord),
@@ -699,7 +703,7 @@ pub enum Recognised {
 ///
 /// `Ok(None)` for anything else: a genuinely new or changing zip goes
 /// through the normal stability wait.
-pub fn recognise_completed(
+pub(crate) fn recognise_completed(
     storage_dir: &Path,
     zip_path: &Path,
     zip_mtime: SystemTime,
@@ -1457,8 +1461,7 @@ mod tests {
         let record = IngestedRecord {
             zip_name: "timetable_full.zip".to_string(),
             zip_bytes: 77_000_000,
-            zip_mtime: SystemTime::UNIX_EPOCH
-                + std::time::Duration::new(1_790_000_000, 123_456_789),
+            zip_mtime: SystemTime::UNIX_EPOCH + Duration::new(1_790_000_000, 123_456_789),
             zip_sha256: "ab".repeat(32),
         };
         assert_eq!(read_ingested_record(dir.path()).unwrap(), None);
@@ -1497,7 +1500,7 @@ mod tests {
         // Same second (same directory), different sub-second mtime: the
         // hash decides.
         let skewed = IngestedRecord {
-            zip_mtime: mtime - std::time::Duration::from_nanos(1),
+            zip_mtime: mtime - Duration::from_nanos(1),
             ..record.clone()
         };
         write_ingested_record(storage.path(), dir_name, &skewed).unwrap();
@@ -1517,7 +1520,7 @@ mod tests {
             recognise_completed(
                 storage.path(),
                 &zip_path,
-                mtime + std::time::Duration::from_secs(60),
+                mtime + Duration::from_secs(60),
                 bytes
             )
             .unwrap(),
