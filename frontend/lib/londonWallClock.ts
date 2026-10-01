@@ -55,6 +55,14 @@ export function nowInLondon(): Dayjs {
   return dayjs().tz(LONDON_TZ);
 }
 
+/** London's calendar day today, as `'YYYY-MM-DD'`: the "today" for a
+ * date picker's `minDate`/`maxDate` or today-marker. Mantine's own "today"
+ * (and `new Date()` passed as a bound) is the browser's local day, which
+ * for a visitor ahead of UK time near midnight is already tomorrow. */
+export function londonToday(): string {
+  return nowInLondon().format('YYYY-MM-DD');
+}
+
 /** Parses `value` -- a bare `'YYYY-MM-DD HH:mm:ss'` (or `'...THH:mm:ss'`)
  * string with no zone/offset of its own, the exact shape
  * `components/TrackTrainForm.tsx`'s `DateTimePicker`/"Now" button/live-board

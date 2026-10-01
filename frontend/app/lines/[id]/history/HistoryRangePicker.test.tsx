@@ -1,9 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
-import { screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { renderWithMantine } from '@/test/render';
 import { theme } from '@/lib/theme';
-import { HistoryRangePicker } from './HistoryRangePicker';
+import { HistoryRangePicker, londonTodayDayProps } from './HistoryRangePicker';
 
 const pushMock = vi.hoisted(() => vi.fn());
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }) }));
@@ -161,5 +161,57 @@ describe('HistoryRangePicker', () => {
     expect(pushMock).toHaveBeenCalledWith(
       '/lines/northern/history?from=2026-08-13T23:00:00.000Z&to=2026-08-21T22:59:59.999Z',
     );
+  });
+});
+
+// Mantine's `highlightToday` marks the browser's local day; this page groups
+// history by London day, so the marker must sit on London's today.
+describe("HistoryRangePicker's today marker", () => {
+  const originalTz = process.env.TZ;
+  afterEach(() => {
+    vi.useRealTimers();
+    if (originalTz === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = originalTz;
+    }
+  });
+
+  it('londonTodayDayProps marks only the given day', () => {
+    expect(londonTodayDayProps('2026-08-21', '2026-08-21')).toEqual({
+      'data-today': true,
+      'data-highlight-today': true,
+    });
+    expect(londonTodayDayProps('2026-08-22', '2026-08-21')).toEqual({});
+  });
+
+  it("highlights London's today, not the day a visitor ahead of UK time is already on", async () => {
+    process.env.TZ = 'Asia/Tokyo'; // UTC+9
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // 16:30Z: 17:30 on 21 Aug in London, already 01:30 on 22 Aug in Tokyo.
+    vi.setSystemTime(new Date('2026-08-21T16:30:00.000Z'));
+    renderWithMantine(
+      <HistoryRangePicker
+        basePath="/lines/northern/history"
+        preset={null}
+        from="2026-08-14T12:00:00Z"
+        to="2026-08-21T12:00:00Z"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a date range' }));
+    // By aria-label, not role: the dropdown is still mid-transition when its
+    // day buttons are rendered.
+    const day = (label: string) =>
+      waitFor(() => {
+        const el = document.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+        if (!el) throw new Error(`no day ${label}`);
+        return el;
+      });
+    // Mantine's today style needs both attributes.
+    const londonToday = await day('21 August 2026');
+    expect(londonToday).toHaveAttribute('data-today', 'true');
+    expect(londonToday).toHaveAttribute('data-highlight-today', 'true');
+    // Mantine still tags the browser's day `data-today`, but unhighlighted.
+    expect(await day('22 August 2026')).not.toHaveAttribute('data-highlight-today');
   });
 });

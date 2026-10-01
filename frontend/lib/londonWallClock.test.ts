@@ -3,6 +3,7 @@ import {
   londonCalendarDay,
   londonDayEndIso,
   londonDayStartIso,
+  londonToday,
   londonWallClockToUtc,
   nowInLondon,
 } from './londonWallClock';
@@ -55,6 +56,24 @@ describe('nowInLondon', () => {
     // 23:30Z on 5 Sep is 00:30 on 6 Sep in BST.
     vi.setSystemTime(new Date('2026-09-05T23:30:00.000Z'));
     expect(nowInLondon().format('YYYY-MM-DD')).toBe('2026-09-06');
+  });
+});
+
+describe('londonToday', () => {
+  it("is London's calendar day when the host zone has already rolled over", () => {
+    process.env.TZ = 'Asia/Tokyo'; // UTC+9
+    vi.useFakeTimers();
+    // 16:30Z: 5 Sep in London, already 6 Sep in Tokyo.
+    vi.setSystemTime(new Date('2026-09-05T16:30:00.000Z'));
+    expect(londonToday()).toBe('2026-09-05');
+  });
+
+  it("is London's calendar day when the host zone is still on the previous day", () => {
+    process.env.TZ = 'America/New_York'; // UTC-4 in September
+    vi.useFakeTimers();
+    // 23:30Z: 00:30 on 6 Sep in London, 19:30 on 5 Sep in New York.
+    vi.setSystemTime(new Date('2026-09-05T23:30:00.000Z'));
+    expect(londonToday()).toBe('2026-09-06');
   });
 });
 
