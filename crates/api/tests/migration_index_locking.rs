@@ -137,8 +137,14 @@ const GRANDFATHERED_TABLE_LOCK_HAZARDS: &[(&str, TableLockHazard)] = &[
     ),
 ];
 
+/// Resolved at run time (`common::manifest_dir!`), not baked in with `env!`
+/// (Train Register verification 2026-10-01, N6): with a target dir shared
+/// between worktrees, a reused binary would otherwise check another
+/// worktree's migrations. Not embedded with `sqlx::migrate!` either: that
+/// cannot see a NEW file until something else forces a rebuild, so the guard
+/// would silently skip a just-added migration.
 fn migrations_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations")
+    common::manifest_dir!().join("migrations")
 }
 
 fn migration_files() -> Vec<PathBuf> {

@@ -217,7 +217,7 @@ mod chart_env_wiring_tests {
     /// its `- name: ingest` line to the next container (`reference`), so a
     /// var set only on a sibling container cannot satisfy the check.
     fn ingest_container_block() -> String {
-        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/schedulefeed-deployment.yaml");
         let rendered = std::fs::read_to_string(&chart)
             .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));

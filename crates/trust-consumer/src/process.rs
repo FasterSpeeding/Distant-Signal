@@ -1787,7 +1787,6 @@ fn refine_late_delay_minutes(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::LazyLock;
 
     /// PL-8: every dropped envelope reaches the errors counter with its
@@ -1872,8 +1871,7 @@ mod tests {
     /// `"86031"`) actually translating, same as before this table moved out
     /// of a Rust literal.
     static TEST_STANOX_CRS: LazyLock<StanoxCrsTable> = LazyLock::new(|| {
-        let path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../reference-data/stanox-crs.csv");
+        let path = common::manifest_dir!().join("../../reference-data/stanox-crs.csv");
         StanoxCrsTable::from_file(&path).expect("reference-data/stanox-crs.csv should parse")
     });
 

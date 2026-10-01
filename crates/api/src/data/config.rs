@@ -634,7 +634,7 @@ mod chart_env_wiring_tests {
     /// `api` is the only container in this template, so "to EOF" is the whole
     /// block.
     fn api_container_block() -> String {
-        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/api-deployment.yaml");
         let rendered = std::fs::read_to_string(&chart)
             .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));
@@ -728,8 +728,7 @@ mod chart_env_wiring_tests {
              `api` container in charts/distant-signal/templates/api-deployment.yaml"
         );
         let values = std::fs::read_to_string(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../charts/distant-signal/values.yaml"),
+            common::manifest_dir!().join("../../charts/distant-signal/values.yaml"),
         )
         .expect("read values.yaml");
         assert!(
