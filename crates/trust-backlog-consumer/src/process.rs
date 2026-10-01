@@ -343,7 +343,14 @@ pub fn process_message(
                 .increment(1);
             }
             let delay_minutes = match (planned, actual, movement.variation_status.as_deref()) {
-                (Some(p), Some(a), Some("LATE")) => Some((a - p).num_minutes() as i32),
+                // Guarded like every other TRUST delay (M11 sibling,
+                // 2026-10-01). Nothing reads `trust_event_backlog.delay_minutes`
+                // today -- both replay paths recompute from the stored
+                // timestamps -- but a corrupt pair must not store a delay of
+                // thousands of minutes (or wrap the `i32`).
+                (Some(p), Some(a), Some("LATE")) => {
+                    common::trust_timestamp::plausible_delay_minutes(a, p)
+                }
                 _ => None,
             };
 
@@ -1536,6 +1543,35 @@ mod tests {
             first.dedup_key, second.dedup_key,
             "two distinct same-day cancellations for the same train must not collapse to one row"
         );
+    }
+
+    /// M11 sibling (2026-10-01): the `delay_minutes` written into
+    /// `trust_event_backlog` goes through the same plausibility guard as
+    /// every other TRUST delay. Nothing reads that column today (both
+    /// replay paths recompute the delay from the stored timestamps), but a
+    /// corrupt pair should not store a delay of thousands of minutes.
+    #[test]
+    fn an_implausible_movement_delay_is_not_stored() {
+        let mut corrupt = movement("221832406", "ARRIVAL", Some("87212"), Some("LATE"));
+        // Three days after the planned 2026-08-28T18:32:00Z.
+        corrupt.actual_timestamp = Some("1788201120000".to_string());
+        let mut late = movement("221832406", "DEPARTURE", Some("87212"), Some("LATE"));
+        late.actual_timestamp = Some("1787942220000".to_string());
+        let mut state = ProcessorState::default();
+        let mut delay_of = |movement: trust_schema::schema::Movement| {
+            process_message(
+                &TrustMessage::Movement(movement),
+                &mut state,
+                &stanox_table(),
+                &crs_index_with(&["WAT"]),
+                today(),
+                test_received_at(),
+            )
+            .unwrap()
+            .delay_minutes
+        };
+        assert_eq!(delay_of(corrupt), None);
+        assert_eq!(delay_of(late), Some(5));
     }
 
     /// H4 residual (2026-10-01): cancel -> reinstate -> cancel -> reinstate

@@ -955,8 +955,12 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
         // is incomplete" convention (e.g. the event-type `_ => {}` arm
         // just above, and the no-match-found early `continue` at the top
         // of this loop).
+        //
+        // Guarded like every other TRUST delay (M11 sibling, 2026-10-01): a
+        // corrupt timestamp more than a day out is "delay unknown", not a
+        // delay of thousands of minutes shown to the user.
         stop.delay_minutes = match (event.actual_timestamp, event.planned_timestamp) {
-            (Some(a), Some(p)) => Some((a - p).num_minutes() as i32),
+            (Some(a), Some(p)) => common::trust_timestamp::plausible_delay_minutes(a, p),
             _ => None,
         };
     }
@@ -2531,6 +2535,28 @@ mod tests {
             vec![Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)],
             "each of the six reports belongs to exactly one of the six calls, in order"
         );
+    }
+
+    /// M11 sibling (2026-10-01): a stop's `delay_minutes` goes through the
+    /// same plausibility guard as every other TRUST delay. A corrupt
+    /// `actual_timestamp` days away from its planned time used to show as a
+    /// delay of thousands of minutes (and an `as i32` could wrap).
+    #[test]
+    fn overlay_movement_events_drops_an_implausible_per_stop_delay() {
+        let mut stops = kingston_loop_stops();
+        let mut corrupt = event("KNG", "DEPARTURE", "2026-09-14T06:58:00Z");
+        corrupt.actual_timestamp = Some("2026-09-20T06:58:00Z".parse().unwrap());
+        let mut late = event("CLJ", "ARRIVAL", "2026-09-14T06:36:00Z");
+        late.actual_timestamp = Some("2026-09-14T06:41:00Z".parse().unwrap());
+
+        overlay_movement_events(&mut stops, &[late, corrupt]);
+
+        assert_eq!(stops[2].last_event_type.as_deref(), Some("DEPARTURE"));
+        assert_eq!(
+            stops[2].delay_minutes, None,
+            "six days late is a corrupt timestamp"
+        );
+        assert_eq!(stops[1].delay_minutes, Some(5));
     }
 
     /// The same loop, read end to end: the ORIGIN must show a departure and
