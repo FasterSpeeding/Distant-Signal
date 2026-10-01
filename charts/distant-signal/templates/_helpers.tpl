@@ -1060,6 +1060,46 @@ root; renders a single `- namespaceSelector: ...` list item.
 {{- end }}
 
 {{/*
+The public-internet NetworkPolicyEgressRule: 0.0.0.0/0 and ::/0, each minus
+networkPolicy.egress.privateCidrs(V6) and the matching-family entries of
+networkPolicy.egress.extraDeniedCidrs (an entry containing ":" is IPv6).
+extraDeniedCidrs is where an operator names the node's own public
+address(es): privateCidrs only covers the reserved ranges, so without it a
+pod could reach the API server, the kubelet and any host-published port
+through the node's public IP. Takes root; renders one `- to: ...` list item.
+*/}}
+{{- define "distant-signal.internetEgressRule" -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- $v4 := list -}}
+{{- $v6 := list -}}
+{{- range ($eg.extraDeniedCidrs | default list) -}}
+{{- if not (regexMatch "^[0-9a-fA-F.:]+/[0-9]{1,3}$" .) -}}
+{{- fail (printf "networkPolicy.egress.extraDeniedCidrs: %q is not a CIDR. Write a single address as a /32 (IPv4) or /128 (IPv6)." .) -}}
+{{- end -}}
+{{- if contains ":" . -}}
+{{- $v6 = append $v6 . -}}
+{{- else -}}
+{{- $v4 = append $v4 . -}}
+{{- end -}}
+{{- end -}}
+{{- $except4 := concat ($eg.privateCidrs | default list) $v4 -}}
+{{- $except6 := concat ($eg.privateCidrsV6 | default list) $v6 -}}
+- to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        {{- with $except4 }}
+        except:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+    - ipBlock:
+        cidr: "::/0"
+        {{- with $except6 }}
+        except:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+{{- end }}
+
+{{/*
 NetworkPolicy for one background worker (INF-10). Ingress: the worker's
 /metrics port from networkPolicy.monitoringNamespace (when metrics.enabled),
 and its health port(s) from anywhere, because kubelet probes come from the
@@ -1068,7 +1108,8 @@ worker serves nothing else, so everything else is denied.
 
 Egress (only when networkPolicy.egress.enabled and `egress` is given): DNS,
 the in-cluster services the worker actually calls (flags below), the public
-internet minus networkPolicy.egress.privateCidrs(V6) (RDM/Irish Rail feeds,
+internet minus networkPolicy.egress.privateCidrs(V6) and extraDeniedCidrs
+(distant-signal.internetEgressRule; RDM/Irish Rail feeds,
 Kafka brokers, the OAuth token endpoint, Web Push services), and
 networkPolicy.egress.extraRules.
 Usage:
@@ -1155,19 +1196,7 @@ spec:
         - protocol: TCP
           port: {{ $root.Values.postgresql.service.port }}
     {{- end }}
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            {{- with $np.egress.privateCidrs }}
-            except:
-              {{- toYaml . | nindent 14 }}
-            {{- end }}
-        - ipBlock:
-            cidr: "::/0"
-            {{- with $np.egress.privateCidrsV6 }}
-            except:
-              {{- toYaml . | nindent 14 }}
-            {{- end }}
+    {{- include "distant-signal.internetEgressRule" $root | nindent 4 }}
     {{- with $np.egress.extraRules }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

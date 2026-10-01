@@ -1269,6 +1269,24 @@ jobs:
           notifier=$(policy distant-signal-notifier <<<"${eg}")
           grep -q -- '- Egress' <<<"${notifier}" || fail "notifier must get an egress policy"
           grep -q -- '- 10.0.0.0/8' <<<"${notifier}" || fail "notifier egress must exclude private ranges"
+          # extraDeniedCidrs (the node's own public IPs) joins the internet
+          # rule's except list, sorted by family, without dropping the
+          # privateCidrs defaults; a bare address is rejected.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set 'networkPolicy.egress.extraDeniedCidrs={203.0.113.7/32,2001:db8::7/128}' \
+            --show-only templates/networkpolicy.yaml)
+          notifier=$(policy distant-signal-notifier <<<"${eg}")
+          v4=$(awk '/cidr: 0.0.0.0\/0/{f=1;next} /cidr: "::\/0"/{f=0} f' <<<"${notifier}")
+          v6=$(awk '/cidr: "::\/0"/{f=1;next} f' <<<"${notifier}")
+          grep -q -- '- 203.0.113.7/32' <<<"${v4}" || fail "extraDeniedCidrs must join the IPv4 except list"
+          grep -q -- '- 10.0.0.0/8' <<<"${v4}" || fail "extraDeniedCidrs must not replace privateCidrs"
+          grep -q -- '- 2001:db8::7/128' <<<"${v6}" || fail "an IPv6 extraDeniedCidrs entry must join the IPv6 except list"
+          if grep -q '2001:db8::7' <<<"${v4}"; then fail "an IPv6 entry must not land in the IPv4 except list"; fi
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set networkPolicy.egress.enabled=true --set 'networkPolicy.egress.extraDeniedCidrs={203.0.113.7}' \
+              --show-only templates/networkpolicy.yaml >/dev/null 2>&1; then
+            fail "extraDeniedCidrs must reject an entry without a prefix length"
+          fi
 
           # The api trusts X-Real-IP, so only its real callers may reach
           # api.service.port. An extra namespace is narrowed to the MCP pod by

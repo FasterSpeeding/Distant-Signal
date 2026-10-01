@@ -3683,6 +3683,15 @@ networkPolicy:
       - fc00::/7
       - fe80::/10
       - ff00::/8
+    # -- More addresses excluded from the public-internet allow, on top of
+    # privateCidrs/privateCidrsV6 (so the defaults above need not be
+    # repeated). IPv4 and IPv6 may be mixed: an entry containing ":" goes to
+    # the IPv6 rule. SET THE NODES' OWN PUBLIC ADDRESSES HERE (as /32 and
+    # /128): privateCidrs only names reserved ranges, so a node with a
+    # public IP is otherwise reachable through it -- the API server (6443),
+    # the kubelet (10250) and every host-published port. Policies are
+    # additive, so no other policy can take that allowance away.
+    extraDeniedCidrs: []
     # -- Extra NetworkPolicyEgressRule entries appended to every worker's
     # egress policy, e.g.
     #   - to:
