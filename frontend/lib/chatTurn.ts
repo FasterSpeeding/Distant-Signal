@@ -10,6 +10,7 @@
  * `confirmToolCall`. Tool output is framed as untrusted data. */
 import Anthropic from '@anthropic-ai/sdk';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
+import { ToolError } from '@anthropic-ai/sdk/lib/tools/ToolError';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
@@ -44,11 +45,104 @@ export const SYSTEM_PROMPT =
 const UNTRUSTED_OPEN = '<tool-output>';
 const UNTRUSTED_CLOSE = '</tool-output>';
 
+/** Characters a model could read as part of a marker but that Unicode
+ * normalisation (NFKC) leaves alone: angle-bracket and slash look-alikes,
+ * dash variants, and Cyrillic/Greek/Armenian letters that look like the
+ * Latin ones in "tool output". Keys are already lower-case. */
+const MARKER_CONFUSABLES: Readonly<Record<string, string>> = {
+  '\u2039': '<', // single left-pointing angle quotation mark
+  '\u3008': '<', // left angle bracket (U+2329 NFKC-folds to this)
+  '\u27e8': '<', // mathematical left angle bracket
+  '\u276e': '<', // heavy left-pointing angle quotation mark ornament
+  '\u1438': '<', // Canadian syllabics pa
+  '\u203a': '>',
+  '\u3009': '>',
+  '\u27e9': '>',
+  '\u276f': '>',
+  '\u1433': '>',
+  '\u2044': '/', // fraction slash
+  '\u2215': '/', // division slash
+  '\u29f8': '/', // big solidus
+  '\u2010': '-', // hyphen
+  '\u2011': '-', // non-breaking hyphen
+  '\u2012': '-', // figure dash
+  '\u2013': '-', // en dash
+  '\u2014': '-', // em dash
+  '\u2015': '-', // horizontal bar
+  '\u2212': '-', // minus sign
+  '\u043e': 'o', // Cyrillic o
+  '\u03bf': 'o', // Greek omicron
+  '\u0585': 'o', // Armenian oh
+  '\u0442': 't', // Cyrillic te
+  '\u03c4': 't', // Greek tau
+  '\u0440': 'p', // Cyrillic er
+  '\u03c1': 'p', // Greek rho
+  '\u03c5': 'u', // Greek upsilon
+  '\u057d': 'u', // Armenian seh
+  '\u04cf': 'l', // Cyrillic palochka
+  '\u01c0': 'l', // Latin letter dental click
+};
+
+/** Invisible characters a marker could be padded with that a model would
+ * read straight past: zero-width and other format characters, soft
+ * hyphens, variation selectors and combining marks. */
+const MARKER_IGNORABLE = /[\p{Cf}\p{Mn}\p{Me}]/u;
+
+/** A marker opening (or closing) in folded text. No closing `>` required:
+ * a bare `</tool-output` is already a plausible close to a model. */
+const FOLDED_MARKER = /<\s*\/?\s*tool[\s_.\-]*output/g;
+
+/** Neutralises every `<tool-output>`/`</tool-output>` look-alike in `text`
+ * by replacing its opening bracket with `&lt;`.
+ *
+ * The text is matched in a folded form -- each character NFKC-normalised
+ * (fullwidth `＜／ｔ`, compatibility forms), lower-cased, mapped through
+ * `MARKER_CONFUSABLES`, and invisible characters dropped -- with whitespace,
+ * `_`, `.` and dashes allowed around and between the words. Each folded
+ * character remembers where it came from, so the replacement lands on the
+ * original bracket. Only the bracket changes, so ordinary text passes
+ * through untouched. */
+export function neutraliseToolOutputMarkers(text: string): string {
+  let folded = '';
+  const origin: { index: number; length: number }[] = [];
+  let index = 0;
+  for (const ch of text) {
+    if (!MARKER_IGNORABLE.test(ch)) {
+      for (const f of ch.normalize('NFKC').toLowerCase()) {
+        folded += MARKER_CONFUSABLES[f] ?? f;
+        origin.push({ index, length: ch.length });
+      }
+    }
+    index += ch.length;
+  }
+  const brackets = new Map<number, number>();
+  for (const match of folded.matchAll(FOLDED_MARKER)) {
+    const { index: at, length } = origin[match.index];
+    brackets.set(at, length);
+  }
+  if (brackets.size === 0) return text;
+  let out = '';
+  let last = 0;
+  for (const at of [...brackets.keys()].sort((a, b) => a - b)) {
+    out += `${text.slice(last, at)}&lt;`;
+    last = at + brackets.get(at)!;
+  }
+  return out + text.slice(last);
+}
+
 /** Wraps a tool's text for the model, neutralising any marker the text
  * itself contains so a crafted incident can't close the wrapper early. */
 export function wrapUntrustedToolOutput(text: string): string {
-  const neutralised = text.replace(/<\/?tool-output>/gi, (m) => m.replace('<', '&lt;'));
-  return `${UNTRUSTED_OPEN}\n${neutralised}\n${UNTRUSTED_CLOSE}`;
+  return `${UNTRUSTED_OPEN}\n${neutraliseToolOutputMarkers(text)}\n${UNTRUSTED_CLOSE}`;
+}
+
+/** A failed tool call, as the model sees it: the error text comes from the
+ * MCP server (or the upstream feeds behind it) just like a result does, so
+ * it is framed as untrusted data too. `ToolError` makes the tool runner
+ * send `content` verbatim (with `is_error: true`) rather than its own
+ * unframed `Error: ${message}`. */
+function untrustedToolError(text: string): ToolError {
+  return new ToolError(wrapUntrustedToolOutput(text));
 }
 
 /** DQ12 (FE-6): the distant-signal-mcp tools known to be read-only (every
@@ -119,7 +213,15 @@ export function buildRunnableTools(
         const allowed = confirmToolCall ? await confirmToolCall({ toolName: tool.name, args }) : false;
         if (!allowed) return TOOL_DECLINED_TEXT;
       }
-      const result = await mcpClient.callTool({ name: tool.name, arguments: args });
+      let result: Awaited<ReturnType<typeof mcpClient.callTool>>;
+      try {
+        result = await mcpClient.callTool({ name: tool.name, arguments: args });
+      } catch (err) {
+        // A transport or protocol failure; its message can carry the
+        // server's own response text.
+        const message = err instanceof Error ? err.message : String(err);
+        throw untrustedToolError(`${tool.name} failed: ${message}`);
+      }
       if (result.structuredContent !== undefined) {
         onToolResult({ type: 'tool-result', toolName: tool.name, structuredContent: result.structuredContent });
       }
@@ -129,7 +231,7 @@ export function buildRunnableTools(
         .map((block) => block.text)
         .join('\n');
       if (result.isError) {
-        throw new Error(text || `${tool.name} failed`);
+        throw untrustedToolError(text || `${tool.name} failed`);
       }
       return wrapUntrustedToolOutput(text || '(no output)');
     },
