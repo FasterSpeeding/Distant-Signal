@@ -805,6 +805,63 @@ mod tests {
         assert!(limits.max_entries >= 16);
     }
 
+    /// R-096: an entry whose real inflated size is larger than the size the
+    /// zip declares for it (a zip bomb that lies to slip under the
+    /// declared-size cap) is cut off at `declared + 1` bytes by the `take()`
+    /// and rejected, not written out in full.
+    #[test]
+    fn extract_zip_rejects_an_entry_that_inflates_past_its_declared_size() {
+        const DECLARED: u32 = 10;
+        let real = vec![b'a'; 64 * 1024];
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            writer.start_file("RJTTF942MCA.txt", options).unwrap();
+            std::io::Write::write_all(&mut writer, &real).unwrap();
+            writer.finish().unwrap();
+        }
+        // Rewrite the uncompressed size in the local header (offset 22) and
+        // the central directory header (offset 24) to the lie.
+        let patch = |bytes: &mut Vec<u8>, signature: [u8; 4], offset: usize| {
+            let at = bytes
+                .windows(4)
+                .position(|w| w == signature)
+                .expect("header present");
+            let field = &mut bytes[at + offset..at + offset + 4];
+            assert_eq!(
+                u32::from_le_bytes(field.try_into().unwrap()),
+                real.len() as u32
+            );
+            field.copy_from_slice(&DECLARED.to_le_bytes());
+        };
+        patch(&mut bytes, [0x50, 0x4b, 0x03, 0x04], 22);
+        patch(&mut bytes, [0x50, 0x4b, 0x01, 0x02], 24);
+
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("timetable_full.zip");
+        std::fs::write(&zip_path, &bytes).unwrap();
+        let dest_dir = dir.path().join("out");
+
+        // The declared total (10 bytes) passes the cap check...
+        let limits = ExtractLimits {
+            max_total_bytes: 100,
+            max_entries: 64,
+        };
+        let err = extract_zip(&zip_path, &dest_dir, limits).unwrap_err();
+        assert!(is_rejected(&err), "{err:?}");
+        assert!(
+            err.to_string().contains("inflated to more than 10 bytes"),
+            "{err}"
+        );
+        // ...and the read stopped at declared + 1, not the real 64 KiB.
+        let written = std::fs::metadata(dest_dir.join("RJTTF942MCA.txt"))
+            .unwrap()
+            .len();
+        assert_eq!(written, u64::from(DECLARED) + 1);
+    }
+
     fn fixture_zip(dir: &Path) -> PathBuf {
         let bytes = build_test_zip(&[
             ("RJTTF942MCA.txt", b"mca content"),
