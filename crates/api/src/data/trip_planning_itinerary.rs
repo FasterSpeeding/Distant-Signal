@@ -43,6 +43,10 @@ pub const fn max_rounds(max_changes: u32) -> u32 {
     max_changes + 2
 }
 
+// The train variant is much larger than the transfer one. A response holds a
+// few dozen legs at most and nearly all of them are trains, so boxing it
+// would add an allocation per leg to save nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum PlannedLeg {
