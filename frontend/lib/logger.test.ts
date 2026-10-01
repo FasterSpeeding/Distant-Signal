@@ -124,7 +124,11 @@ describe('createLogger on the server', () => {
 describe('console bridge', () => {
   it('formats console arguments into message and error', () => {
     const err = new Error('boom');
-    expect(consoleCallToLine(['\u001b[31m⨯\u001b[39m', err])).toEqual({ message: '⨯', fields: { error: err } });
+    expect(consoleCallToLine(['\u001b[31m⨯\u001b[39m', err])).toEqual({ message: 'boom', fields: { error: err } });
+    expect(consoleCallToLine(['\u001b[33mrender failed\u001b[39m', err])).toEqual({
+      message: 'render failed',
+      fields: { error: err },
+    });
     expect(consoleCallToLine(['%s took %dms', 'render', 12])).toEqual({ message: 'render took 12ms', fields: {} });
     expect(consoleCallToLine([err])).toEqual({ message: 'boom', fields: { error: err } });
   });

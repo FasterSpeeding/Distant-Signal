@@ -19,13 +19,16 @@ let installed = false;
 
 /** The line one `console.<method>(...args)` call becomes: the first `Error`
  * argument supplies `error`/`stack`, everything else is formatted into
- * `message` as `console` itself would (`util.format`). */
+ * `message` as `console` itself would (`util.format`), with ANSI colour
+ * stripped. */
 export function consoleCallToLine(args: unknown[]): { message: string; fields: LogFields } {
   const error = args.find((arg) => arg instanceof Error);
   const rest = error === undefined ? args : args.filter((arg) => arg !== error);
   let message = rest.length > 0 ? format(...rest) : '';
   message = message.replace(ANSI, '').trim();
-  if (message === '' && error instanceof Error) message = error.message;
+  // Next prints a bare `⨯` before the error it is reporting: use the
+  // error's own message when nothing readable is left.
+  if (!/[\p{L}\p{N}]/u.test(message) && error instanceof Error) message = error.message;
   return { message, fields: error === undefined ? {} : { error } };
 }
 
