@@ -133,6 +133,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 stop_delays_measure_and_forecast_on_public_times -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end fixture: its seed rows are most of the length"
+    )]
     async fn stop_delays_measure_and_forecast_on_public_times() {
         use crate::data::queries;
         let pool = connect().await;
