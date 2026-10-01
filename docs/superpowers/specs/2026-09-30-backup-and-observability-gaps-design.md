@@ -3,6 +3,10 @@
 Status: approved, implementation in progress.
 Date: 2026-09-30.
 
+> Status note (2026-10-01): implemented and live on mine-bringer. The
+> Postgres app password was sealed as its current value, not rotated; see
+> "Sealing the secrets" below.
+
 ## Decisions (user, 2026-09-30)
 
 The user answered the open questions in the first draft of this document:
@@ -25,10 +29,11 @@ The user answered the open questions in the first draft of this document:
 - **Log collection scope:** Loki + Alloy collects **all namespaces
   cluster-wide**, as a shared service in the `logging` namespace. It is not
   limited to `distant-signal` and `ds-mcp`.
-- **Sealing the secrets (corrected 2026-09-30):**
-  - **Postgres app password: rotated.** It is sealed as a **fresh value**,
-    not a copy of the current chart-generated one. See "Rotating the
-    Postgres password" under item 5.
+- **Sealing the secrets (corrected 2026-09-30, again 2026-10-01):**
+  - **Postgres app password: not rotated.** It is sealed as its **current
+    value**, the one the chart generated, so nothing changes in the running
+    database. Rotating it later is an optional step; see "Rotating the
+    Postgres password (optional, future)" under item 5.
   - **SFTP credentials: not rotated.** The schedulefeed SSH host key and
     the `dtd-push` password are sealed as their **current values**,
     because the external DTD push client depends on them. The user seals
@@ -935,9 +940,16 @@ provider coordination is needed. The chart only switches from its
 lookup-preserved Secret to the sealed one, so time the switch outside the
 22:00–01:30 and 16:00 delivery windows anyway.
 
-**Rotating the Postgres password** (this is the only secret that is
-rotated). The running database still has the old password in
-`pg_authid`, so:
+**Sealing the Postgres password (decided 2026-10-01: seal the current
+value, don't rotate).** Seal the chart-generated password as it is, with
+the same `kubectl get secret` into `kubeseal` pipeline, and point
+`postgresql.auth.existingSecret` at the SealedSecret. The value doesn't
+change, so the database, the apps, the backup CronJob and the
+postgres-exporter notice nothing.
+
+**Rotating the Postgres password (optional, future).** Not part of this
+work. If it is ever rotated, the running database still has the old
+password in `pg_authid`, so:
 
 - Run `ALTER ROLE distant_signal PASSWORD …` through `kubectl exec` at the
   moment the new sealed Secret lands.
@@ -1114,5 +1126,7 @@ Decided on 2026-09-30, and recorded under "Decisions" at the top:
 - pgBackRest was chosen over CNPG, and the exec exception was accepted.
 - Logs are collected from all namespaces into a shared `logging` service,
   kept 7 days.
-- The Postgres app password is rotated to a fresh value. The SFTP host
-  key and `dtd-push` password are sealed as their current values.
+- The Postgres app password, the SFTP host key and the `dtd-push`
+  password are all sealed as their current values (the Postgres password
+  decision was corrected on 2026-10-01). Rotating the Postgres password
+  stays an optional future step.
