@@ -1057,10 +1057,9 @@ spec:
         {{- /*
         Second clause (failureRatio, when set): more than failureRatio of the
         cycles over ratioWindow failed, so a poller that still succeeds now
-        and then but mostly fails also fires. This is the condition the
-        cluster's own copy of this alert used (failure rate > 0.5 over 30m,
-        for 30m); a 1h window with no `for` needs a similar hour of mostly
-        failed cycles.
+        and then but mostly fails also fires. Defaults: over 15m, with a
+        10m `for` (2026-10-01: the former 1h window with no `for` fired
+        40-55 minutes after the pollers started failing).
         */}}
         {{- $failures := printf `sum by (namespace, poller) (increase(distant_signal_poller_cycle_total{namespace="%s", result="failure"}[%s]))` $ns .window }}
         {{- $successes := printf `sum by (namespace, poller) (increase(distant_signal_poller_cycle_total{namespace="%s", result="success"}[%s]))` $ns .window }}

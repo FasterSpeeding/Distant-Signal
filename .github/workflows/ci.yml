@@ -1159,7 +1159,7 @@ jobs:
             --set pollers.ldbws.baseUrl=https://ldbws.example.com \
             --show-only templates/prometheusrule.yaml)
           grep -q 'alert: DistantSignalPollerFailing' <<<"${pollers}"
-          # ...including the mostly-failing clause (failure ratio over 1h).
+          # ...including the mostly-failing clause (failure ratio over 15m).
           grep -q '> bool 0.5,$' <<<"${pollers}"
           grep -q 'alert: DistantSignalLdbwsStationStale' <<<"${pollers}"
           grep -q 'alert: DistantSignalLdbwsInvalidCrs' <<<"${pollers}"

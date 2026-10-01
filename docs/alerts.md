@@ -488,7 +488,10 @@ and the consumer's population reload errors.
 `distant_signal:poller_failing:bool` is 1 for a poller: it completed no
 successful cycle and at least one failed one over `pollerFailures.window`, or
 more than `failureRatio` of its cycles over `ratioWindow` failed
-(`poller_cycle_total{result}`). Its product is going stale. Daily pollers
+(`poller_cycle_total{result}`), for `for` (10m). Its product is going
+stale. With the defaults (15m ratio window, 10m `for`) a poller that fails
+every cycle fires after about 18 minutes; the former 1h window with no `for`
+took 40-55 minutes on 2026-10-01. Daily pollers
 (stations, tocs) run one cycle a day, so one failed daily cycle is enough.
 Check the poller's logs: its upstream feed (National Rail, TfL, Irish Rail),
 its credentials or an expired key, and api's `/private` ingest route.

@@ -3566,13 +3566,16 @@ metrics:
     # `<fullname>-pollers` PrometheusRule. It also fires when more than
     # failureRatio of the poller's cycles over ratioWindow failed, so a
     # mostly-failing poller is caught too; set failureRatio to 0 to drop
-    # that clause.
+    # that clause. `for` applies to both clauses. 15m/10m (was 1h with no
+    # `for`): on 2026-10-01 the 1h ratio fired 40-55 minutes after the
+    # pollers started failing; now about 18 minutes for a poller that fails
+    # every cycle, with 10 minutes of `for` to ride out a short blip.
     pollerFailures:
       enabled: true
       window: 2h
       failureRatio: 0.5
-      ratioWindow: 1h
-      for: 0m
+      ratioWindow: 15m
+      for: 10m
       severity: warning
     # DistantSignalLdbwsStationStale (SVC-04): the least recently sampled
     # LDBWS station was last sampled more than `maxAgeSeconds` ago
