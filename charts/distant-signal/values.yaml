@@ -3388,6 +3388,18 @@ metrics:
       for: 3m
       severity: critical
       pgUpSelector: ""
+    # DistantSignalApiDatabaseDown (critical): api's own `SELECT 1` probe
+    # through its request pool (distant_signal_api_db_up, every 15s) has
+    # failed on some replica for `for`. Covers what pg_up cannot see: a
+    # rotated password, an exhausted pool or max_connections, a
+    # NetworkPolicy, an external database. Critical because api is the only
+    # writer for every ingest path: while it cannot query, TRUST, poller
+    # and schedule data stop landing and the queues in front of it only
+    # hold so much.
+    apiDatabaseDown:
+      enabled: true
+      for: 2m
+      severity: critical
     # Needs movementRelay.enabled (all rules in this group read
     # movement-events state).
     #

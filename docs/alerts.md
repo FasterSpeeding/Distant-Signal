@@ -49,10 +49,38 @@ notifier cycles fail, and movement-events lag grows.
    A full volume needs resizing (or WAL that failed to archive cleared, see
    [Postgres PITR](postgres-pitr.md#archiving-is-failing)).
 3. Connections: `max_connections` reached shows as `too many clients` in
-   api's logs while `pg_up` stays 1.
+   api's logs while `pg_up` stays 1 (that is
+   [DistantSignalApiDatabaseDown](#distantsignalapidatabasedown) instead).
 4. Once it is back, watch movement-events lag drain and the consumers'
    error counters stop rising. Kafka and the Redis stream hold the TRUST
    backlog only up to their retention and MAXLEN.
+
+### DistantSignalApiDatabaseDown
+
+api's own probe has failed for `apiDatabaseDown.for`:
+`distant_signal_api_db_up` is 0 on some replica. Every 15s api runs
+`SELECT 1` through its request pool, with a 10s limit; each failure also
+counts in `distant_signal_api_db_probe_failures_total`, and api logs the
+first failure ("api cannot query its database") and the recovery.
+
+While it fires, api answers 5xx on most routes, including the `/private`
+ingest routes the consumers and pollers POST to. Those keep their batches
+pending and retry, so watch movement-events lag.
+
+1. If [DistantSignalPostgresDown](#distantsignalpostgresdown) fires too, the
+   database itself is down: start there.
+2. Otherwise read api's log for the error: `password authentication failed`
+   (the database Secret changed without an api restart), `too many clients`
+   (`max_connections`; see the chart's Postgres connection budget),
+   `pool timed out` (every pooled connection busy: a slow query or a lock),
+   or a connection refused/timed out (NetworkPolicy, DNS, an external
+   database's firewall).
+3. `SELECT state, count(*) FROM pg_stat_activity GROUP BY 1;` shows whether
+   connections are piling up.
+
+Severity is critical because api is the only writer for every ingest path:
+while it cannot query, nothing lands, and the queues in front of it (Kafka
+retention, the Redis stream's MAXLEN) are finite.
 
 ## movement-events
 

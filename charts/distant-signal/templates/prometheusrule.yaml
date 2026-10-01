@@ -51,7 +51,8 @@ so that clause fired on every rollout.
 {{- $signupSpikeOn := ($rule.userSignupSpike).enabled }}
 {{- $archiveExpiryOn := and ($rule.archiveExpiry).enabled .Values.archive.enabled (.Values.archive.expiry).enabled }}
 {{- $postgresDownOn := ($rule.postgresDown).enabled }}
-{{- $healthOn := $postgresDownOn }}
+{{- $apiDbDownOn := ($rule.apiDatabaseDown).enabled }}
+{{- $healthOn := or $postgresDownOn $apiDbDownOn }}
 {{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn $healthOn }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -102,6 +103,30 @@ spec:
             summary: "the Distant Signal database is down"
             description: "pg_up is 0, or the bundled Postgres has no ready replica. api, the consumers and the aggregator cannot read or write."
             runbook_url: {{ printf "%s#distantsignalpostgresdown" $runbook | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with $rule.apiDatabaseDown }}
+        {{- if .enabled }}
+        {{- /*
+        api's own probe (crates/api/src/data/db_health.rs): a `SELECT 1`
+        through its request pool every 15s. Catches what pg_up cannot: a
+        password rotated under api, an exhausted pool or max_connections,
+        a NetworkPolicy, an external database. `min`: any api replica that
+        cannot query counts.
+        */}}
+        - alert: DistantSignalApiDatabaseDown
+          expr: |
+            min by (namespace) (distant_signal_api_db_up{namespace="{{ $ns }}"}) == 0
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "api cannot query its database"
+            description: "api's SELECT 1 probe has failed for {{ .for }}: ingest and most pages fail. See DistantSignalPostgresDown and api's log."
+            runbook_url: {{ printf "%s#distantsignalapidatabasedown" $runbook | quote }}
         {{- end }}
         {{- end }}
     {{- end }}
