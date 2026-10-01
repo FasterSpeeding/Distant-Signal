@@ -153,6 +153,55 @@ where
     Ok(count)
 }
 
+/// How far back `POST /Train/by-uid/{uid}/{date}/track` accepts a
+/// `service_date` (2026-10-01 review). Matches the 7 days
+/// `GET /public/trains/search` lets a user look back
+/// (`routes::trains::SEARCH_WINDOW_BACKWARD_DAYS`), so any train a user
+/// can find there they can still track; well inside both `trains`
+/// retention tiers (14 days untracked, 30 tracked), so the row this
+/// creates is never one `aggregator` prunes straight away.
+pub(crate) const TRACK_BY_UID_MAX_DAYS_BEHIND: i64 = 7;
+
+/// At most this many of a user's subscriptions may be dated in the
+/// recent past (`[today - TRACK_BY_UID_MAX_DAYS_BEHIND, today)`) when they
+/// track another past-dated train by uid (2026-10-01 review).
+/// [`MAX_FUTURE_PINS_PER_USER`] counts only `service_date >= today`, so
+/// before this a past-dated by-uid request had no cap at all and one user
+/// could mint unlimited subscriptions and shared `trains` rows. Same value
+/// and the same accepted count-then-insert race as that cap.
+pub const MAX_RECENT_PAST_PINS_PER_USER: i64 = 100;
+
+/// The count [`MAX_RECENT_PAST_PINS_PER_USER`] is checked against:
+/// `user_id`'s subscriptions with `earliest <= service_date < today`.
+pub async fn count_recent_past_subscriptions_for_user<'c, E>(
+    executor: E,
+    user_id: &str,
+    earliest: chrono::NaiveDate,
+    today: chrono::NaiveDate,
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM train_subscriptions \
+         WHERE user_id = $1 AND service_date >= $2 AND service_date < $3",
+    )
+    .bind(user_id)
+    .bind(earliest)
+    .bind(today)
+    .fetch_one(executor)
+    .await?;
+    Ok(count)
+}
+
+/// The user-facing 400 body for [`MAX_RECENT_PAST_PINS_PER_USER`].
+pub fn recent_past_pin_cap_message() -> String {
+    format!(
+        "You're already tracking {MAX_RECENT_PAST_PINS_PER_USER} trains from the past \
+         {TRACK_BY_UID_MAX_DAYS_BEHIND} days, which is the maximum. Remove some to make room."
+    )
+}
+
 /// Whether `user_id` already tracks the shared train `(train_uid,
 /// service_date)`, so `create_subscription_for_train` would hand back that
 /// subscription rather than insert one. Looked up without creating the

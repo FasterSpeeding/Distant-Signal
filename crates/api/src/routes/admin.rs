@@ -464,6 +464,77 @@ mod session_revocation_db_tests {
         cleanup(&pool, &["TEST-ADMIN-REVOKER", "TEST-ADMIN-TARGET"]).await;
     }
 
+    /// A username shared (case-insensitively -- `users.username` has no
+    /// unique constraint, it is copied from the identity provider) by two
+    /// users is refused with `409 username_ambiguous`, and neither user's
+    /// sessions are touched; the admin must use the `userId` instead.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api session_revocation_db_tests \
+                -- --ignored --test-threads=1`"]
+    async fn an_ambiguous_username_is_refused_with_409_and_revokes_nothing() {
+        let pool = connect().await;
+        seed_user(
+            &pool,
+            "TEST-ADMIN-AMBIG-REVOKER",
+            &[ADMIN_GROUP],
+            &["ambig-admin-tok"],
+        )
+        .await;
+        // `seed_user` stores the lowercased id as the username; give the
+        // second user the same username in a different case.
+        seed_user(&pool, "TEST-ADMIN-AMBIG-A", &[], &["ambig-a"]).await;
+        seed_user(&pool, "TEST-ADMIN-AMBIG-B", &[], &["ambig-b"]).await;
+        sqlx::query(
+            "UPDATE users SET username = 'Test-Admin-Ambig-A' WHERE id = 'TEST-ADMIN-AMBIG-B'",
+        )
+        .execute(&pool)
+        .await
+        .expect("duplicate the username");
+        let router = test_router(test_app(
+            pool.clone(),
+            "https://example.invalid",
+            ADMIN_GROUP,
+        ));
+
+        let (status, body) = send(
+            router.clone(),
+            admin_request(
+                "ambig-admin-tok",
+                Some(ORIGIN),
+                json!({"username": "test-admin-ambig-a"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "username_ambiguous");
+        assert!(session_alive(&pool, "ambig-a").await);
+        assert!(session_alive(&pool, "ambig-b").await);
+
+        // The userId path still works for either of them.
+        let (status, body) = send(
+            router,
+            admin_request(
+                "ambig-admin-tok",
+                Some(ORIGIN),
+                json!({"userId": "TEST-ADMIN-AMBIG-B"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(session_alive(&pool, "ambig-a").await);
+        assert!(!session_alive(&pool, "ambig-b").await);
+
+        cleanup(
+            &pool,
+            &[
+                "TEST-ADMIN-AMBIG-REVOKER",
+                "TEST-ADMIN-AMBIG-A",
+                "TEST-ADMIN-AMBIG-B",
+            ],
+        )
+        .await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api session_revocation_db_tests \
                 -- --ignored --test-threads=1`"]

@@ -1884,6 +1884,7 @@ mod db_tests {
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
+    use crate::data::journeys;
 
     /// Every `ServiceArguments` field filled with an inert placeholder --
     /// this file's routes don't read `config.lines` at all. Copied from
@@ -4342,5 +4343,178 @@ mod db_tests {
         cleanup_group(&pool, &group_id).await;
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-MEMBER").await;
+    }
+
+    /// L10 (2026-09-26 review): `POST /Journeys` refuses a new journey once
+    /// the caller has `MAX_JOURNEYS_PER_USER` hand-created ones, and
+    /// journeys materialized from a template don't count towards it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                post_journey_enforces_the_per_user_hand_created_journey_cap \
+                -- --ignored --test-threads=1`"]
+    async fn post_journey_enforces_the_per_user_hand_created_journey_cap() {
+        let user = "TEST-ROUTE-JOURNEY-CAP";
+        let pool = connect().await;
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let window_leg = serde_json::json!({
+            "leg": {
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": "2026-09-22",
+                "departWindow": { "after": "08:00:00" }
+            }
+        });
+
+        sqlx::query("INSERT INTO journeys (user_id) SELECT $1 FROM generate_series(1, $2::int)")
+            .bind(user)
+            .bind((journeys::MAX_JOURNEYS_PER_USER - 1) as i32)
+            .execute(&pool)
+            .await
+            .expect("seed hand-created journeys up to one below the cap");
+        // Template-materialized journeys are excluded from the count.
+        let template_id: i64 =
+            sqlx::query_scalar("INSERT INTO journey_templates (user_id) VALUES ($1) RETURNING id")
+                .bind(user)
+                .fetch_one(&pool)
+                .await
+                .expect("seed a template");
+        sqlx::query(
+            "INSERT INTO journeys (user_id, source_template_id) \
+             SELECT $1, $2 FROM generate_series(1, 5)",
+        )
+        .bind(user)
+        .bind(template_id)
+        .execute(&pool)
+        .await
+        .expect("seed template-materialized journeys");
+
+        let (status, body) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            window_leg.clone(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the journey landing ON the cap: {body:?}"
+        );
+
+        let (status, body) =
+            post_json(router, "/Journeys".to_string(), Some(&token), window_leg).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(
+            body.as_str().is_some_and(|b| b.contains("maximum")),
+            "{body:?}"
+        );
+        let manual: i64 = journeys::count_manual_journeys_for_user(&pool, user)
+            .await
+            .expect("count");
+        assert_eq!(manual, journeys::MAX_JOURNEYS_PER_USER);
+
+        cleanup_user(&pool, user).await;
+        sqlx::query("DELETE FROM journey_templates WHERE user_id = $1")
+            .bind(user)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// L11 (2026-09-26 review): all three journeys routes that take a
+    /// caller-typed `trainUid` -- `POST /Journeys` (knownTrain),
+    /// `POST /Journeys/{id}/legs` (knownTrain) and
+    /// `POST /Journeys/{id}/legs/{legId}/train` -- uppercase it, so a
+    /// lowercase uid resolves to the same uppercase `trains` row as CIF's
+    /// own and never mints a lowercase one.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                journeys_routes_uppercase_a_caller_typed_train_uid \
+                -- --ignored --test-threads=1`"]
+    async fn journeys_routes_uppercase_a_caller_typed_train_uid() {
+        let user = "TEST-ROUTE-JOURNEY-UID-CASE";
+        let uids = ["JCASE1", "JCASE2", "JCASE3"];
+        let pool = connect().await;
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let date = "2026-09-22";
+
+        // POST /Journeys, knownTrain.
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": " jcase1 ", "serviceDate": date }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        let journey_id = created["journeyId"].as_i64().expect("journeyId");
+
+        // POST /Journeys/{id}/legs, knownTrain.
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({ "mode": "knownTrain", "trainUid": "jCaSe2", "serviceDate": date }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+
+        // POST /Journeys/{id}/legs/{legId}/train, on a window leg.
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": date,
+                "departWindow": { "after": "08:00:00" }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let window_leg_id = body["legId"].as_i64().expect("legId");
+        let (status, body) = post_json(
+            router,
+            format!("/Journeys/{journey_id}/legs/{window_leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": "jcase3", "serviceDate": date }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+
+        let tracked: Vec<String> = sqlx::query_scalar(
+            "SELECT t.train_uid FROM train_subscriptions s JOIN trains t ON t.id = s.trains_id \
+             WHERE s.user_id = $1 ORDER BY t.train_uid",
+        )
+        .bind(user)
+        .fetch_all(&pool)
+        .await
+        .expect("read tracked uids");
+        assert_eq!(tracked, uids.to_vec());
+        let stray: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM trains WHERE UPPER(BTRIM(train_uid)) = ANY($1) \
+             AND train_uid <> ALL($1)",
+        )
+        .bind(uids.to_vec())
+        .fetch_one(&pool)
+        .await
+        .expect("count stray rows");
+        assert_eq!(stray, 0, "no non-uppercase trains row may be minted");
+
+        cleanup_user(&pool, user).await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+            .bind(uids.to_vec())
+            .execute(&pool)
+            .await
+            .ok();
     }
 }
