@@ -3772,6 +3772,7 @@ mod db_tests {
                 loc_stanox: Some("TEST-JRNB-1".to_string()),
                 loc_crs: Some("ZBA".to_string()),
                 planned_timestamp: Some("2026-09-08T08:00:00Z".parse().unwrap()),
+                gbtt_timestamp: None,
                 actual_timestamp: Some(departed),
                 variation_status: Some("LATE".to_string()),
                 raw_body: serde_json::json!({}),
