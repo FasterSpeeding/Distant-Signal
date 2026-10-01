@@ -1340,6 +1340,15 @@ jobs:
           grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "components.frontend.internet=true must add the internet"
           out=$(egress_of enricher "${eg}")
           if grep -q 'cidr: 0.0.0.0/0' <<<"${out}"; then fail "components.enricher.internet=false must drop the internet"; fi
+          # egress.dnsPeers limits every DNS rule to the named resolvers.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set 'networkPolicy.egress.dnsPeers[0].podSelector.matchLabels.k8s-app=kube-dns' \
+            --show-only templates/networkpolicy.yaml)
+          for c in api redis notifier; do
+            out=$(egress_of "${c}" "${eg}")
+            grep -A4 'port: 53$' <<<"${out}" | grep -q 'k8s-app: kube-dns' || fail "${c} DNS egress must use dnsPeers"
+          done
+
           # The internet rule allows egress.internetPorts (443) plus each
           # component's own upstream ports: Kafka brokers, an http:// feed.
           # internet_ports_of <component> <render>: the ports after ::/0.

@@ -1200,7 +1200,7 @@ true
 
 {{/*
 The NetworkPolicyEgressRule list for one component (render under
-`egress:`): DNS; the in-cluster services in `deps` (api, redis, postgres;
+`egress:`): DNS (port 53, to networkPolicy.egress.dnsPeers when set); the in-cluster services in `deps` (api, redis, postgres;
 api and idp also admit the bundled dev IdP when devAuthentik.enabled); the
 public internet (distant-signal.internetEgressRule, on the ports from
 distant-signal.internetPorts, which reads `urls`, `brokers` and `ports`)
@@ -1224,6 +1224,10 @@ Takes (dict "root" $root "component" "api" "deps" (dict "postgres" true)
       port: 53
     - protocol: TCP
       port: 53
+  {{- with $np.egress.dnsPeers }}
+  to:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- if $deps.api }}
 - to:
     - podSelector:
