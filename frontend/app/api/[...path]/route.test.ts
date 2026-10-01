@@ -16,7 +16,7 @@ vi.mock('next/headers', () => ({
   }),
 }));
 
-import { GET, POST, PUT, DELETE, MAX_PROXY_BODY_BYTES } from './route';
+import { GET, HEAD, POST, PUT, DELETE, MAX_PROXY_BODY_BYTES } from './route';
 
 describe('/api/[...path] proxy', () => {
   beforeEach(() => {
@@ -630,6 +630,82 @@ describe('/api/[...path] proxy', () => {
       const req = makeRequest('/api/Train/ticket/1');
       const res = await GET(req, { params: Promise.resolve({ path: ['Train', 'ticket', '1'] }) });
       expect(Array.from(new Uint8Array(await res.arrayBuffer()))).toEqual(Array.from(bytes));
+    });
+  });
+
+  // `curl -I /api/auth/session` used to 502: with no HEAD export Next ran
+  // GET with method HEAD, which attached an empty body, and fetch refuses a
+  // HEAD with a body. HEAD now goes upstream as HEAD, like GET minus the body.
+  describe('HEAD', () => {
+    function headRequest(headers?: Record<string, string>): NextRequest {
+      return makeRequest('/api/auth/session', { method: 'HEAD', headers });
+    }
+    const params = { params: Promise.resolve({ path: ['auth', 'session'] }) };
+
+    it('forwards HEAD upstream as HEAD with no body, through a real Request', async () => {
+      // Build a real Request from the init, as Node's fetch does, so a body
+      // on a HEAD throws here exactly as it did in production.
+      vi.mocked(fetch).mockImplementationOnce(async (input, init) => {
+        const upstream = new Request(input as URL, init);
+        expect(upstream.method).toBe('HEAD');
+        return new Response(null, {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        });
+      });
+      const res = await HEAD(headRequest(), params);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toBe('application/json');
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect((await res.arrayBuffer()).byteLength).toBe(0);
+      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+      expect(calledUrl.toString()).toBe('http://test-api:8080/public/auth/session');
+      expect((init as RequestInit).method).toBe('HEAD');
+      expect((init as RequestInit).body).toBeUndefined();
+    });
+
+    it('relays the upstream status (401 for no session)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401 }));
+      const res = await HEAD(headRequest(), params);
+      expect(res.status).toBe(401);
+    });
+
+    it('applies the same cookie, X-Real-IP and Origin handling as GET', async () => {
+      const res = await HEAD(
+        headRequest({
+          cookie: 'distant_signal_session=abc123; other=x',
+          'cf-connecting-ip': '203.0.113.5',
+          'x-forwarded-for': '198.51.100.77',
+          origin: 'https://evil.example',
+          referer: 'http://localhost:3000/account',
+        }),
+        params,
+      );
+      // Like GET, a HEAD is never refused on Origin; the Origin is relayed.
+      expect(res.status).toBe(200);
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(headers.Cookie).toBe('distant_signal_session=abc123');
+      expect(headers['X-Real-IP']).toBe('203.0.113.5');
+      expect(Object.keys(headers).map((n) => n.toLowerCase())).not.toContain('x-forwarded-for');
+      expect(headers.Origin).toBe('https://evil.example');
+      expect(headers.Referer).toBe('http://localhost:3000/account');
+    });
+
+    it('still 400s a path outside the allowed prefixes', async () => {
+      const res = await HEAD(makeRequest('/api/../secret', { method: 'HEAD' }), {
+        params: Promise.resolve({ path: ['..', 'secret'] }),
+      });
+      expect(res.status).toBe(400);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('returns 502 when the upstream is unreachable', async () => {
+      vi.mocked(fetch).mockRejectedValueOnce(new TypeError('fetch failed'));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = await HEAD(headRequest(), params);
+      expect(res.status).toBe(502);
+      errSpy.mockRestore();
     });
   });
 });

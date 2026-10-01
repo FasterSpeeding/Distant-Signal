@@ -339,7 +339,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     redirect: 'manual',
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   };
-  if (req.method !== 'GET' && req.method !== 'DELETE') {
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
     // arrayBuffer(), not text(): .text() decodes the incoming body as
     // UTF-8 before this function ever sees it, which is LOSSY for
     // non-UTF-8 bytes -- a .pkpass (zip) or PDF's raw bytes are binary and
@@ -436,5 +436,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ path
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
+  return proxy(req, (await params).path);
+}
+
+// HEAD is proxied upstream as HEAD, with the same Origin, cookie and
+// X-Real-IP handling as GET; axum answers HEAD on every GET route with the
+// GET's status and headers and no body. Without this export Next falls back
+// to GET with `req.method` still 'HEAD', which used to read the (empty)
+// request body into `init.body`, and Node's fetch refuses a HEAD with a body,
+// so every HEAD came back 502.
+export async function HEAD(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   return proxy(req, (await params).path);
 }
