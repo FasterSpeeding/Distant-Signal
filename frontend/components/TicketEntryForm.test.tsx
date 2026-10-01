@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TicketEntryForm } from './TicketEntryForm';
 
@@ -17,6 +17,7 @@ describe('TicketEntryForm', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -166,7 +167,15 @@ describe('TicketEntryForm', () => {
     // routes `/api/stations?`/`/api/tocs?` to `[]`.
     mockDefaultResponse(new Response('[]', { status: 200 }));
     openForm();
+    // Fake timers so the test steps over `useSuggestions`' 250 ms debounce
+    // explicitly instead of racing it in real time: a `findBy*` here spent
+    // a quarter of its 1 s budget just waiting out the debounce, and under
+    // CPU load the remaining (slow, role-based) polls didn't fit.
+    vi.useFakeTimers();
     fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), { target: { value: 'zzzzzz' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
 
     // The dropdown's content briefly empties while the placeholder is
     // gated off during the loading window (I2, the 2026-09-17 whole-branch
@@ -174,7 +183,7 @@ describe('TicketEntryForm', () => {
     // floating-ui doesn't recompute real layout for that re-render, so the
     // option must be queried past Testing Library's default visibility
     // filter, same as `StationSearchForm.test.tsx`'s own analogous test.
-    expect(await screen.findByRole('option', { name: 'No matching operators', hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'No matching operators', hidden: true })).toBeInTheDocument();
   });
 
   it('manual submit: on success, saves, collapses, and refreshes the page', async () => {
@@ -407,9 +416,12 @@ describe('TicketEntryForm', () => {
       await waitFor(() => {
         expect(screen.getByRole('tab', { name: '.pkpass', selected: true })).toBeInTheDocument();
       });
-      expect(
-        await screen.findByText("Couldn't read this file. Try filling in the details manually"),
-      ).toBeInTheDocument();
+      // Exactly one copy, and it's on the visible (pkpass) panel -- the
+      // hidden PDF panel must not carry a second copy of a pkpass failure
+      // (it used to, committed later at idle priority, which is what made
+      // a plain `findByText` here intermittently see two matches).
+      const error = await screen.findByText("Couldn't read this file. Try filling in the details manually");
+      expect(screen.getByRole('tabpanel')).toContainElement(error);
     });
   });
 

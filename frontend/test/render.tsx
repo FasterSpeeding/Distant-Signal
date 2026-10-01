@@ -21,10 +21,20 @@ type RenderWithMantineOptions = RenderOptions & {
 // legitimately `return null`, and `@testing-library/react`'s own `render`
 // already accepts `ReactNode` -- narrowing to `ReactElement` here only
 // rejected a value the underlying `render` call handles fine.
+//
+// `env="test"` is Mantine's own test mode (see `useMantineEnv`): every
+// `Transition` (Modal, Popover, Menu, ...) mounts/unmounts synchronously
+// instead of via a rAF -> rAF -> setTimeout chain, and `Tabs`/`Collapse`
+// keep inactive content mounted as plain `display: none` instead of in a
+// hidden React `<Activity>`, which React renders later, at idle priority.
+// Both of those made a test's DOM depend on wall-clock scheduling: under
+// CPU load a modal could still be mid-transition when a `findBy*` gave up,
+// and a hidden tab panel's update could commit either before or after an
+// assertion ran. Production keeps Mantine's default env.
 export function renderWithMantine(ui: ReactNode, options: RenderWithMantineOptions = {}) {
   const { defaultColorScheme, ...renderOptions } = options;
   return render(
-    <MantineProvider theme={theme} defaultColorScheme={defaultColorScheme}>
+    <MantineProvider theme={theme} defaultColorScheme={defaultColorScheme} env="test">
       {ui}
     </MantineProvider>,
     renderOptions,
