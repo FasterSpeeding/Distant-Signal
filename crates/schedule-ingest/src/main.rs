@@ -23,11 +23,17 @@
 //! `last_ingested_mtime` and `known_stable`/`known_stray_files` -- the next
 //! cycle will find the same zip (still present in `watch_dir`, since this
 //! crate reads it in place and never deletes/moves it -- see `delivery.rs`)
-//! and re-POST it. Since PL-13 it does NOT extract it again: the delivery
-//! directory already carries the completion marker (see
-//! `delivery::ensure_extracted`), whose file list is re-posted as is. The
-//! `api` insert is `ON CONFLICT (delivered_at) DO NOTHING`, so a restart
-//! costs one harmless redundant POST, not a silently swallowed gap.
+//! and must not treat it as new. Since PL-13 it never extracts it again:
+//! the delivery directory already carries the completion marker (see
+//! `delivery::ensure_extracted`). And since 2026-10-01 a delivery api
+//! accepted also carries `delivery::INGESTED_RECORD` (the zip's name, size,
+//! exact mtime and SHA-256), so the restarted process recognises the zip on
+//! its first cycle (`delivery::recognise_completed`): no stability wait, no
+//! "stalled upload" ERROR past the final check time, no second POST. A
+//! delivery extracted but not known to be posted (the POST had not yet
+//! succeeded, or the directory predates the record) skips the wait and is
+//! posted once; the `api` insert is `ON CONFLICT (delivered_at) DO
+//! NOTHING`, so that is at worst a harmless redundant POST.
 
 mod audit;
 mod cif_check;
@@ -279,6 +285,7 @@ async fn run_scan_cycle(
                     audit::Outcome::Accepted,
                     None,
                 );
+                record_ingested(&config.storage_dir, &pending);
                 *last_ingested_mtime = Some(SystemTime::from(pending.delivered_at));
                 metrics::gauge!(common::metrics::metric_name(
                     "schedule_feed_last_ingest_delivered_at_seconds"
@@ -347,7 +354,49 @@ async fn run_scan_cycle(
         return Ok(());
     };
 
-    if !known_stable.contains(&zip_filename) {
+    // After a restart nothing in memory says this zip was already handled;
+    // `storage_dir` does (see `delivery::recognise_completed`). Recognising
+    // it here, before the stability gate, means a restart neither waits
+    // `stability_cycles` on a zip that finished uploading long ago (logging
+    // it as a stalled upload past the final check time) nor posts it again.
+    let zip_path = config.watch_dir.join(&zip_filename);
+    let mut extracted_before_restart = false;
+    if *last_ingested_mtime != Some(zip_mtime)
+        && *rejected_mtime != Some(zip_mtime)
+        && pending_post.is_none()
+    {
+        let zip_bytes = snapshot.0.get(&zip_filename).map_or(0, |&(_, len)| len);
+        match delivery::recognise_completed(&config.storage_dir, &zip_path, zip_mtime, zip_bytes) {
+            Ok(Some(delivery::Recognised::Ingested(record))) => {
+                tracing::info!(
+                    zip = %zip_filename,
+                    dir = %delivery::delivery_dir_name(zip_mtime),
+                    sha256 = %record.zip_sha256,
+                    "zip delivery was already extracted and posted before this process started; not waiting or posting again"
+                );
+                *last_ingested_mtime = Some(zip_mtime);
+                metrics::gauge!(common::metrics::metric_name(
+                    "schedule_feed_last_ingest_delivered_at_seconds"
+                ))
+                .set(DateTime::<Utc>::from(zip_mtime).timestamp() as f64);
+                return Ok(());
+            }
+            Ok(Some(delivery::Recognised::Extracted)) => {
+                tracing::info!(
+                    zip = %zip_filename,
+                    dir = %delivery::delivery_dir_name(zip_mtime),
+                    "zip delivery was already extracted before this process started but is not known to be posted; posting it without a stability wait"
+                );
+                extracted_before_restart = true;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(error = ?err, zip = %zip_filename, "could not check whether the zip delivery was already completed; waiting for it to be stable");
+            }
+        }
+    }
+
+    if !extracted_before_restart && !known_stable.contains(&zip_filename) {
         if is_final_check_of_day {
             tracing::error!(
                 zip = %zip_filename,
@@ -392,7 +441,6 @@ async fn run_scan_cycle(
     }
 
     let dir_name = delivery::delivery_dir_name(zip_mtime);
-    let zip_path = config.watch_dir.join(&zip_filename);
 
     // Provenance: the zip's SHA-256 as read now. A size different from the
     // stable snapshot's means a new upload has started; wait for it.
@@ -491,6 +539,7 @@ async fn run_scan_cycle(
                 "schedule feed delivery extracted to storage and posted to api"
             );
             audit::decision(&delivered, delivered_at, audit::Outcome::Accepted, None);
+            record_ingested(&config.storage_dir, &request);
             *last_ingested_mtime = Some(zip_mtime);
             metrics::gauge!(common::metrics::metric_name(
                 "schedule_feed_last_ingest_delivered_at_seconds"
@@ -512,6 +561,24 @@ async fn run_scan_cycle(
     }
 
     Ok(())
+}
+
+/// Notes in the delivery's directory that api accepted it
+/// (`delivery::INGESTED_RECORD`), so a restarted process recognises the zip
+/// at once. Best effort: without it a restart only costs one redundant,
+/// deduplicated POST.
+fn record_ingested(storage_dir: &std::path::Path, request: &ScheduleFeedIngestRequest) {
+    let zip_mtime = SystemTime::from(request.delivered_at);
+    let dir_name = delivery::delivery_dir_name(zip_mtime);
+    let record = delivery::IngestedRecord {
+        zip_name: request.source_file.clone(),
+        zip_bytes: request.source_bytes,
+        zip_mtime,
+        zip_sha256: request.source_sha256.clone(),
+    };
+    if let Err(err) = delivery::write_ingested_record(storage_dir, &dir_name, &record) {
+        tracing::warn!(error = ?err, dir = %dir_name, "failed to record the accepted delivery; a restart will post it once more");
+    }
 }
 
 /// Counts zip deliveries quarantined by the PL-5 extraction caps; the
@@ -1424,6 +1491,236 @@ mod tests {
                     .as_str()
             );
         }
+    }
+
+    /// A mock api accepting every token and ingest request.
+    async fn accepting_api() -> wiremock::MockServer {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"access_token": "t", "expires_in": 3600})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/schedule-feed-ingests"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"upserted": 1})),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn ingest_posts(server: &wiremock::MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/schedule-feed-ingests")
+            .count()
+    }
+
+    /// One process's in-memory scan state, pointed at `server`. A new
+    /// `Process` over the same directories is a pod restart.
+    struct Process {
+        config: Config,
+        client: Client,
+        oauth: common::oauth_client::OAuthTokenCache,
+        tracker: StabilityTracker,
+        known_stable: HashSet<String>,
+        known_stray_files: HashSet<String>,
+        last_ingested_mtime: Option<SystemTime>,
+        pending_post: Option<ScheduleFeedIngestRequest>,
+        rejected_mtime: Option<SystemTime>,
+    }
+
+    impl Process {
+        fn start(
+            watch_dir: &std::path::Path,
+            storage_dir: &std::path::Path,
+            server: &wiremock::MockServer,
+        ) -> Self {
+            let mut config = test_config(watch_dir, storage_dir);
+            config.api_ingest_url = format!("{}/schedule-feed-ingests", server.uri());
+            Self {
+                config,
+                client: Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap(),
+                oauth: common::oauth_client::OAuthTokenCache::new(
+                    common::oauth_client::OAuthCredentials {
+                        token_url: format!("{}/token", server.uri()),
+                        client_id: "test-client".to_string(),
+                        scope: "groups".to_string(),
+                        username: "test-user".to_string(),
+                        password: "test-password".to_string(),
+                    },
+                ),
+                tracker: StabilityTracker::new(),
+                known_stable: HashSet::new(),
+                known_stray_files: HashSet::new(),
+                last_ingested_mtime: None,
+                pending_post: None,
+                rejected_mtime: None,
+            }
+        }
+
+        /// One cycle past the day's final check time (where a zip that is
+        /// not yet stable is logged at ERROR); returns every log line.
+        async fn final_check_cycle(&mut self) -> Vec<serde_json::Value> {
+            let (guard, logs) = audit::tests::capture_default();
+            run_scan_cycle(
+                &self.client,
+                &self.config,
+                &Routing::defaults(),
+                &self.oauth,
+                &mut self.tracker,
+                &mut self.known_stable,
+                &mut self.known_stray_files,
+                &mut self.last_ingested_mtime,
+                &mut self.pending_post,
+                &mut self.rejected_mtime,
+                true,
+            )
+            .await
+            .unwrap();
+            drop(guard);
+            logs.lines()
+        }
+    }
+
+    fn errors(lines: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+        lines
+            .iter()
+            .filter(|line| line["level"] == "ERROR")
+            .collect()
+    }
+
+    /// The 2026-10-01 incident: after a pod restart (past the final check
+    /// time), the zip already extracted and accepted the day before is
+    /// recognised on the first cycle -- no stability wait, no "stalled
+    /// upload" ERROR, and no second POST -- and only once.
+    #[tokio::test]
+    async fn an_already_ingested_zip_is_recognised_at_once_after_a_restart() {
+        let server = accepting_api().await;
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let zip_path = watch_dir.path().join("timetable_full.zip");
+        std::fs::write(&zip_path, real_zip()).unwrap();
+        let zip_mtime = std::fs::metadata(&zip_path).unwrap().modified().unwrap();
+
+        let mut before = Process::start(watch_dir.path(), storage_dir.path(), &server);
+        for _ in 0..2 {
+            before.final_check_cycle().await;
+        }
+        assert_eq!(before.last_ingested_mtime, Some(zip_mtime));
+        assert_eq!(ingest_posts(&server).await, 1);
+        let dir = storage_dir
+            .path()
+            .join(delivery::delivery_dir_name(zip_mtime));
+        assert!(dir.join(delivery::INGESTED_RECORD).is_file());
+
+        let mut after = Process::start(watch_dir.path(), storage_dir.path(), &server);
+        for _ in 0..3 {
+            let lines = after.final_check_cycle().await;
+            assert_eq!(errors(&lines), Vec::<&serde_json::Value>::new());
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| line["message"] != "zip file present but not yet stable"),
+                "{lines:?}"
+            );
+            assert_eq!(after.last_ingested_mtime, Some(zip_mtime));
+        }
+        assert_eq!(ingest_posts(&server).await, 1, "not posted again");
+    }
+
+    /// A delivery extracted before a restart whose POST had not yet
+    /// succeeded (or whose directory predates the ingested record, as in
+    /// production on 2026-10-01): the zip needs no stability wait, but is
+    /// posted -- once -- and then recorded.
+    #[tokio::test]
+    async fn an_extracted_but_unposted_zip_is_posted_without_a_wait_after_a_restart() {
+        let server = accepting_api().await;
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let zip_path = watch_dir.path().join("timetable_full.zip");
+        std::fs::write(&zip_path, real_zip()).unwrap();
+        let zip_mtime = std::fs::metadata(&zip_path).unwrap().modified().unwrap();
+
+        let mut before = Process::start(watch_dir.path(), storage_dir.path(), &server);
+        for _ in 0..2 {
+            before.final_check_cycle().await;
+        }
+        let dir = storage_dir
+            .path()
+            .join(delivery::delivery_dir_name(zip_mtime));
+        std::fs::remove_file(dir.join(delivery::INGESTED_RECORD)).unwrap();
+
+        let mut after = Process::start(watch_dir.path(), storage_dir.path(), &server);
+        let lines = after.final_check_cycle().await;
+        assert_eq!(errors(&lines), Vec::<&serde_json::Value>::new());
+        assert_eq!(after.last_ingested_mtime, Some(zip_mtime));
+        assert_eq!(ingest_posts(&server).await, 2);
+        assert!(dir.join(delivery::INGESTED_RECORD).is_file());
+        after.final_check_cycle().await;
+        assert_eq!(ingest_posts(&server).await, 2);
+    }
+
+    /// The stalled-upload detection still holds after a restart for a
+    /// genuinely new zip (a different mtime from the completed delivery,
+    /// and different bytes): it waits `stability_cycles`, logging the
+    /// ERROR past the final check time, before it is extracted and posted.
+    #[tokio::test]
+    async fn a_new_zip_after_a_restart_still_waits_to_be_stable() {
+        let server = accepting_api().await;
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let zip_path = watch_dir.path().join("timetable_full.zip");
+        std::fs::write(&zip_path, real_zip()).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&zip_path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        let mut before = Process::start(watch_dir.path(), storage_dir.path(), &server);
+        for _ in 0..2 {
+            before.final_check_cycle().await;
+        }
+        assert_eq!(ingest_posts(&server).await, 1);
+
+        // Today's upload replaces it in place, then the pod restarts.
+        std::fs::write(&zip_path, real_zip()).unwrap();
+        let new_mtime = std::fs::metadata(&zip_path).unwrap().modified().unwrap();
+        assert_ne!(
+            delivery::delivery_dir_name(new_mtime),
+            delivery::delivery_dir_name(old)
+        );
+
+        let mut after = Process::start(watch_dir.path(), storage_dir.path(), &server);
+        let lines = after.final_check_cycle().await;
+        let errors = errors(&lines);
+        assert_eq!(errors.len(), 1, "{lines:?}");
+        assert!(
+            errors[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("still not stable"),
+            "{errors:?}"
+        );
+        assert_eq!(after.last_ingested_mtime, None);
+        assert_eq!(ingest_posts(&server).await, 1);
+
+        after.final_check_cycle().await;
+        assert_eq!(after.last_ingested_mtime, Some(new_mtime));
+        assert_eq!(ingest_posts(&server).await, 2);
     }
 
     /// Today's date as the RJTTF banner writes it, so a fixture delivery

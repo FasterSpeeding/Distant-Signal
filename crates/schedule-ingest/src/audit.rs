@@ -188,11 +188,18 @@ pub(crate) mod tests {
     }
 
     impl Capture {
-        /// Every captured line with the audit target, parsed.
-        pub(crate) fn audit_lines(&self) -> Vec<serde_json::Value> {
+        /// Every captured line, parsed.
+        pub(crate) fn lines(&self) -> Vec<serde_json::Value> {
             let text = String::from_utf8(self.0.lock().unwrap().clone()).unwrap();
             text.lines()
                 .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .collect()
+        }
+
+        /// Every captured line with the audit target, parsed.
+        pub(crate) fn audit_lines(&self) -> Vec<serde_json::Value> {
+            self.lines()
+                .into_iter()
                 .filter(|line| line["target"] == "schedule_ingest::audit")
                 .collect()
         }
