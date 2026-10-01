@@ -889,11 +889,18 @@ async fn post_track_by_uid(
     // every real TRUST/CIF event for the same physical train actually
     // targets -- an unattributable row that silently never receives an
     // event.
+    //
+    // 2026-10-01 review: the same length/charset check the journeys routes
+    // already apply to a uid, so this route can't mint `trains` rows keyed
+    // on arbitrary strings.
+    crate::data::journeys::validate_train_uid(&train_uid)
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     let train_uid = train_uid.trim().to_ascii_uppercase();
     // API-6: the same future window as a pin (nothing later is published),
     // and the same per-user cap unless this is a repeat track of a train
     // the user already has.
-    if date > super::london_today() + chrono::Duration::days(train_tracking::PIN_MAX_DAYS_AHEAD) {
+    let today = super::london_today();
+    if date > today + chrono::Duration::days(train_tracking::PIN_MAX_DAYS_AHEAD) {
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
@@ -902,12 +909,43 @@ async fn post_track_by_uid(
             ),
         ));
     }
+    // 2026-10-01 review: and a past window, which this route never had --
+    // see `TRACK_BY_UID_MAX_DAYS_BEHIND`.
+    let earliest = today - chrono::Duration::days(train_tracking::TRACK_BY_UID_MAX_DAYS_BEHIND);
+    if date < earliest {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "That train ran too long ago — trains can be tracked up to {} days after they run.",
+                train_tracking::TRACK_BY_UID_MAX_DAYS_BEHIND
+            ),
+        ));
+    }
     let already_tracked =
         train_tracking::user_tracks_train_uid(&app.database, &user.id, &train_uid, date)
             .await
             .map_err(internal_error("check existing subscription"))?;
     if !already_tracked {
-        enforce_pin_cap(&app, &user.id).await?;
+        if date >= today {
+            enforce_pin_cap(&app, &user.id).await?;
+        } else {
+            // `enforce_pin_cap` counts only today and later, so a
+            // past-dated track gets its own cap over the past window.
+            let recent = train_tracking::count_recent_past_subscriptions_for_user(
+                &app.database,
+                &user.id,
+                earliest,
+                today,
+            )
+            .await
+            .map_err(internal_error("count recent tracked trains"))?;
+            if recent >= train_tracking::MAX_RECENT_PAST_PINS_PER_USER {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    train_tracking::recent_past_pin_cap_message(),
+                ));
+            }
+        }
     }
     let trains_id = crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
         .await
@@ -4764,7 +4802,7 @@ mod db_tests {
         // normal user authentication.
         let (status, body) = post_json(
             router,
-            "/Train/by-uid/TEST-TRACK-BY-UID-NOAUTH/2026-09-07/track".to_string(),
+            "/Train/by-uid/ZTU001/2026-09-07/track".to_string(),
             None,
             serde_json::json!({}),
         )
@@ -4782,12 +4820,12 @@ mod db_tests {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-KNOWN").await;
         let router = test_router(test_app(pool.clone()));
-        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let service_date = super::super::london_today();
         let scheduled_departure = service_date.and_hms_opt(19, 15, 0).unwrap().and_utc();
 
         sqlx::query(
             "INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure) \
-             VALUES ('TEST-TRACK-BY-UID-KNOWN-UID', $1, 'EUS', $2)",
+             VALUES ('ZTU002', $1, 'EUS', $2)",
         )
         .bind(service_date)
         .bind(scheduled_departure)
@@ -4797,7 +4835,7 @@ mod db_tests {
 
         let (status, body) = post_json(
             router,
-            format!("/Train/by-uid/TEST-TRACK-BY-UID-KNOWN-UID/{service_date}/track"),
+            format!("/Train/by-uid/ZTU002/{service_date}/track"),
             Some(&token),
             serde_json::json!({}),
         )
@@ -4845,7 +4883,7 @@ mod db_tests {
         assert_eq!(resolution_status, "pending");
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-KNOWN").await;
-        cleanup_public_train(&pool, "TEST-TRACK-BY-UID-KNOWN-UID").await;
+        cleanup_public_train(&pool, "ZTU002").await;
     }
 
     /// The accepted §1 gap: a bare `train_uid`/`date` with no schedule match
@@ -4861,13 +4899,13 @@ mod db_tests {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-BARE").await;
         let router = test_router(test_app(pool.clone()));
-        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let service_date = super::super::london_today();
 
         // No pre-existing `trains` row at all -- find_or_create_train must
         // create one fresh, with no schedule data to inherit.
         let (status, body) = post_json(
             router,
-            format!("/Train/by-uid/TEST-TRACK-BY-UID-BARE-UID/{service_date}/track"),
+            format!("/Train/by-uid/ZTU003/{service_date}/track"),
             Some(&token),
             serde_json::json!({}),
         )
@@ -4898,7 +4936,7 @@ mod db_tests {
         assert_eq!(pin_scheduled_departure, None);
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-BARE").await;
-        cleanup_public_train(&pool, "TEST-TRACK-BY-UID-BARE-UID").await;
+        cleanup_public_train(&pool, "ZTU003").await;
     }
 
     /// Explicit idempotency check at the HTTP layer, mirroring the
@@ -4920,8 +4958,8 @@ mod db_tests {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-TWICE").await;
         let router = test_router(test_app(pool.clone()));
-        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
-        let uri = format!("/Train/by-uid/TEST-TRACK-BY-UID-TWICE-UID/{service_date}/track");
+        let service_date = super::super::london_today();
+        let uri = format!("/Train/by-uid/ZTU004/{service_date}/track");
 
         let (status1, body1) = post_json(
             router.clone(),
@@ -4958,7 +4996,7 @@ mod db_tests {
         assert_eq!(row_count, 1, "exactly one row must exist after two calls");
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-TWICE").await;
-        cleanup_public_train(&pool, "TEST-TRACK-BY-UID-TWICE-UID").await;
+        cleanup_public_train(&pool, "ZTU004").await;
     }
 
     /// 2026-09-26 review, Low finding 11: CIF's own convention is an
@@ -4978,11 +5016,11 @@ mod db_tests {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-CASE").await;
         let router = test_router(test_app(pool.clone()));
-        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let service_date = super::super::london_today();
 
         let (status1, body1) = post_json(
             router.clone(),
-            format!("/Train/by-uid/testcasec21373/{service_date}/track"),
+            format!("/Train/by-uid/ztu005/{service_date}/track"),
             Some(&token),
             serde_json::json!({}),
         )
@@ -4995,7 +5033,7 @@ mod db_tests {
 
         let (status2, body2) = post_json(
             router,
-            format!("/Train/by-uid/TESTCASEC21373/{service_date}/track"),
+            format!("/Train/by-uid/ZTU005/{service_date}/track"),
             Some(&token),
             serde_json::json!({}),
         )
@@ -5017,7 +5055,7 @@ mod db_tests {
         );
 
         let (uid_row_count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = 'TESTCASEC21373'")
+            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = 'ZTU005'")
                 .fetch_one(&pool)
                 .await
                 .expect("count the uppercase trains row");
@@ -5026,7 +5064,7 @@ mod db_tests {
             "exactly one, uppercase-normalized trains row must exist"
         );
         let (lowercase_row_count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = 'testcasec21373'")
+            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid = 'ztu005'")
                 .fetch_one(&pool)
                 .await
                 .expect("count any stray lowercase trains row");
@@ -5036,7 +5074,7 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-CASE").await;
-        cleanup_public_train(&pool, "TESTCASEC21373").await;
+        cleanup_public_train(&pool, "ZTU005").await;
     }
 
     // --- legacy POST /Train/track: validation unaffected by Task 20's own
@@ -5162,7 +5200,7 @@ mod db_tests {
 
         // One already-tracked shared train, plus enough plain pins to reach
         // the cap.
-        let tracked_uid = "API6CAP";
+        let tracked_uid = "API6CP";
         let (status, body) = post_json(
             router.clone(),
             format!("/Train/by-uid/{tracked_uid}/{today}/track"),
@@ -5202,7 +5240,7 @@ mod db_tests {
 
         let (status, body) = post_json(
             router.clone(),
-            format!("/Train/by-uid/API6NEW/{today}/track"),
+            format!("/Train/by-uid/API6NW/{today}/track"),
             Some(&token),
             serde_json::json!({}),
         )
@@ -5230,7 +5268,7 @@ mod db_tests {
             today + chrono::Duration::days(crate::data::train_tracking::PIN_MAX_DAYS_AHEAD + 1);
         let (status, body) = post_json(
             router,
-            format!("/Train/by-uid/API6FAR/{far}/track"),
+            format!("/Train/by-uid/API6FR/{far}/track"),
             Some(&token),
             serde_json::json!({}),
         )
@@ -5241,13 +5279,101 @@ mod db_tests {
             "beyond the timetable: {body:?}"
         );
         let (far_rows,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid IN ('API6NEW', 'API6FAR')")
+            sqlx::query_as("SELECT COUNT(*) FROM trains WHERE train_uid IN ('API6NW', 'API6FR')")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
         assert_eq!(far_rows, 0, "a rejected track must not mint a trains row");
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// 2026-10-01 review: the by-uid route validates the uid's shape,
+    /// refuses dates before its past window, and caps past-dated tracks
+    /// (which `MAX_FUTURE_PINS_PER_USER` never counted) -- and none of the
+    /// refusals mints a `trains` row.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                track_by_uid_validates_the_uid_bounds_the_past_and_caps_past_dated_tracks \
+                -- --ignored --test-threads=1`"]
+    async fn track_by_uid_validates_the_uid_bounds_the_past_and_caps_past_dated_tracks() {
+        use crate::data::train_tracking::{
+            MAX_RECENT_PAST_PINS_PER_USER, TRACK_BY_UID_MAX_DAYS_BEHIND,
+        };
+        let pool = connect().await;
+        let user_id = "TEST-TRACK-BY-UID-BOUNDS";
+        cleanup_user(&pool, user_id).await;
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+        let today = super::super::london_today();
+        let oldest_allowed = today - chrono::Duration::days(TRACK_BY_UID_MAX_DAYS_BEHIND);
+
+        let track = |uid: &str, date: chrono::NaiveDate| {
+            post_json(
+                router.clone(),
+                format!("/Train/by-uid/{uid}/{date}/track"),
+                Some(&token),
+                serde_json::json!({}),
+            )
+        };
+
+        // Not a 6-character alphanumeric uid.
+        for bad in ["ZTB0001", "ZTB01", "ZTB-01", "ZTB%2001"] {
+            let (status, body) = track(bad, today).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body:?}");
+        }
+
+        // One day before the past window is refused; its first day is not.
+        let (status, body) = track("ZTB002", oldest_allowed - chrono::Duration::days(1)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        let (status, body) = track("ZTB003", oldest_allowed).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+
+        // Fill the past-dated cap (the ZTB003 track above is one of them).
+        sqlx::query(
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             SELECT $1, $2, 'WAT', NOW() - INTERVAL '1 day' FROM generate_series(1, $3)",
+        )
+        .bind(user_id)
+        .bind(today - chrono::Duration::days(1))
+        .bind((MAX_RECENT_PAST_PINS_PER_USER - 1) as i32)
+        .execute(&pool)
+        .await
+        .expect("seed past-dated subscriptions up to the cap");
+
+        let (status, body) = track("ZTB004", today - chrono::Duration::days(2)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "past-dated over the cap: {body:?}"
+        );
+        assert!(
+            body.as_str().is_some_and(|b| b.contains("maximum")),
+            "{body:?}"
+        );
+        // A repeat of a past train already tracked still succeeds at the cap...
+        let (status, body) = track("ZTB003", oldest_allowed).await;
+        assert_eq!(status, StatusCode::OK, "repeat at the cap: {body:?}");
+        // ...and the past cap doesn't spill over onto today's trains.
+        let (status, body) = track("ZTB005", today).await;
+        assert_eq!(status, StatusCode::OK, "today's train: {body:?}");
+
+        let (refused_rows,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM trains WHERE train_uid IN ('ZTB002', 'ZTB004') \
+                OR train_uid LIKE 'ZTB0%' AND length(train_uid) <> 6",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            refused_rows, 0,
+            "a refused track must not mint a trains row"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        for uid in ["ZTB003", "ZTB005"] {
+            cleanup_public_train(&pool, uid).await;
+        }
     }
 
     // --- Fix 2 (review finding C2): NULL pin columns on the two read paths ---
@@ -5271,8 +5397,8 @@ mod db_tests {
         let user_id = "TEST-NULL-PIN-READ-ROUTES";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;
-        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
-        let train_uid = "TEST-NULL-PIN-ROUTES-UID";
+        let service_date = super::super::london_today();
+        let train_uid = "ZTU006";
 
         let (status, body) = post_json(
             test_router(test_app(pool.clone())),
@@ -5370,7 +5496,7 @@ mod db_tests {
         let user_id = "TEST-NR-ENRICH-USER";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;
-        let train_uid = "TEST-NR-ENRICH-UID";
+        let train_uid = "ZTU007";
         let train_id = "TEST-NR-ENRICH-TRAINID";
 
         sqlx::query(
@@ -5599,8 +5725,8 @@ mod db_tests {
         let user_id = "TEST-NR-ENRICH-NOHISTORY";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;
-        let train_uid = "TEST-NR-ENRICH-NOHISTORY-UID";
-        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let train_uid = "ZTU008";
+        let service_date = super::super::london_today();
 
         let (status, body) = post_json(
             test_router(test_app(pool.clone())),
