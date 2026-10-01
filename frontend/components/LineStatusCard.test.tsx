@@ -88,7 +88,7 @@ describe('LineStatusCard', () => {
       ...report,
       lineStatuses: [
         {
-          ...report.lineStatuses[0],
+          ...report.lineStatuses[0]!,
           sampleStats: { total: 20, delayed: 8, cancelled: 2, skipped: 0, avgDelayMinutes: 7.25 },
         },
       ],
@@ -108,7 +108,7 @@ describe('LineStatusCard', () => {
       ...report,
       lineStatuses: [
         {
-          ...report.lineStatuses[0],
+          ...report.lineStatuses[0]!,
           fullCoverageStats: { total: 500, delayed: 10, cancelled: 5, skipped: 0, avgDelayMinutes: 2.0 },
         },
       ],
@@ -122,7 +122,7 @@ describe('LineStatusCard', () => {
   it('clamps a long reason rather than letting it fill the card', () => {
     const wall = 'Station improvement work: '.repeat(40);
     const { container } = renderWithMantine(
-      <LineStatusCard report={{ ...report, lineStatuses: [{ ...report.lineStatuses[0], reason: wall }] }} />,
+      <LineStatusCard report={{ ...report, lineStatuses: [{ ...report.lineStatuses[0]!, reason: wall }] }} />,
     );
     const reason = container.querySelector('[data-card-reason]') as HTMLElement;
     expect(reason.style.getPropertyValue('-webkit-line-clamp')).toBe('3');
@@ -141,7 +141,7 @@ describe('LineStatusCard', () => {
       ...report,
       lineStatuses: [
         {
-          ...report.lineStatuses[0],
+          ...report.lineStatuses[0]!,
           disruption: {
             category: 'RealTime',
             description: 'Signal failure',

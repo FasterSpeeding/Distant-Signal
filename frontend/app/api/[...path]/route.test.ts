@@ -51,7 +51,7 @@ describe('/api/[...path] proxy', () => {
   it('still forwards an existing /public-scoped route unchanged (regression)', async () => {
     const req = makeRequest('/api/preferences');
     await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-    const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/public/preferences');
   });
 
@@ -62,7 +62,7 @@ describe('/api/[...path] proxy', () => {
       body: JSON.stringify({ origin_crs: 'WAT' }),
     });
     await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
-    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/Train/track');
     expect((init as RequestInit).method).toBe('POST');
     expect((init as { headers: Record<string, string> }).headers.Cookie).toBe('distant_signal_session=abc123');
@@ -90,7 +90,7 @@ describe('/api/[...path] proxy', () => {
       },
     });
     await POST(req, { params: Promise.resolve({ path: ['auth', 'logout'] }) });
-    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/public/auth/logout');
     const headers = (init as { headers: Record<string, string> }).headers;
     expect(headers.Origin).toBe('http://localhost:3000');
@@ -100,7 +100,7 @@ describe('/api/[...path] proxy', () => {
   it('omits Origin/Referer from the outbound fetch when the browser sent neither', async () => {
     const req = makeRequest('/api/auth/logout', { method: 'POST' });
     await POST(req, { params: Promise.resolve({ path: ['auth', 'logout'] }) });
-    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
     const headers = (init as { headers: Record<string, string> }).headers;
     expect(headers.Origin).toBeUndefined();
     expect(headers.Referer).toBeUndefined();
@@ -135,7 +135,7 @@ describe('/api/[...path] proxy', () => {
       body: JSON.stringify({ leg: { mode: 'pin' } }),
     });
     await POST(req, { params: Promise.resolve({ path: ['Journeys'] }) });
-    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/Journeys');
     expect((init as RequestInit).method).toBe('POST');
   });
@@ -143,14 +143,14 @@ describe('/api/[...path] proxy', () => {
   it('forwards a GET /api/Journeys/mine to the bare-root backend path', async () => {
     const req = makeRequest('/api/Journeys/mine');
     await GET(req, { params: Promise.resolve({ path: ['Journeys', 'mine'] }) });
-    const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/Journeys/mine');
   });
 
   it('forwards a GET /api/Journeys/1/legs/2/candidates to the bare-root backend path', async () => {
     const req = makeRequest('/api/Journeys/1/legs/2/candidates');
     await GET(req, { params: Promise.resolve({ path: ['Journeys', '1', 'legs', '2', 'candidates'] }) });
-    const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/Journeys/1/legs/2/candidates');
   });
 
@@ -172,7 +172,7 @@ describe('/api/[...path] proxy', () => {
       body: JSON.stringify({ customName: 'Commute', legs: [] }),
     });
     await POST(req, { params: Promise.resolve({ path: ['JourneyTemplates'] }) });
-    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/JourneyTemplates');
     expect((init as RequestInit).method).toBe('POST');
   });
@@ -184,7 +184,7 @@ describe('/api/[...path] proxy', () => {
       body: JSON.stringify({ customName: 'Commute', legs: [] }),
     });
     await PUT(req, { params: Promise.resolve({ path: ['JourneyTemplates', '1'] }) });
-    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/JourneyTemplates/1');
     expect((init as RequestInit).method).toBe('PUT');
   });
@@ -196,7 +196,7 @@ describe('/api/[...path] proxy', () => {
       body: JSON.stringify({ serviceDate: '2026-09-23' }),
     });
     await POST(req, { params: Promise.resolve({ path: ['JourneyTemplates', '1', 'materialize'] }) });
-    const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0]!;
     expect(calledUrl.toString()).toBe('http://test-api:8080/JourneyTemplates/1/materialize');
   });
 
@@ -211,7 +211,7 @@ describe('/api/[...path] proxy', () => {
       body: `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="t.pkpass"\r\n\r\nfake-bytes\r\n--${boundary}--`,
     });
     await POST(req, { params: Promise.resolve({ path: ['Train', '1', 'tickets', 'pkpass'] }) });
-    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
     const forwardedHeaders = (init as { headers: Record<string, string> }).headers;
     expect(forwardedHeaders['Content-Type']).toBe(`multipart/form-data; boundary=${boundary}`);
   });
@@ -228,7 +228,7 @@ describe('/api/[...path] proxy', () => {
       body: rawBytes,
     });
     await POST(req, { params: Promise.resolve({ path: ['Train', '1', 'tickets', 'pkpass'] }) });
-    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
     const forwardedBody = new Uint8Array((init as { body: ArrayBuffer }).body);
     expect(Array.from(forwardedBody)).toEqual(Array.from(rawBytes));
   });
@@ -240,7 +240,7 @@ describe('/api/[...path] proxy', () => {
       body: JSON.stringify(['wcml']),
     });
     await PUT(req, { params: Promise.resolve({ path: ['preferences', 'pinned-lines'] }) });
-    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
     const forwardedHeaders = (init as { headers: Record<string, string> }).headers;
     const forwardedBody = new TextDecoder().decode((init as { body: ArrayBuffer }).body);
     expect(forwardedHeaders['Content-Type']).toBe('application/json');
@@ -285,7 +285,7 @@ describe('/api/[...path] proxy', () => {
         body: JSON.stringify({ confirm: 'delete my account' }),
       });
       await DELETE(req, { params: Promise.resolve({ path: ['account'] }) });
-      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
       expect(calledUrl.toString()).toBe('http://test-api:8080/public/account');
       const forwardedBody = new TextDecoder().decode((init as { body: ArrayBuffer }).body);
       expect(JSON.parse(forwardedBody)).toEqual({ confirm: 'delete my account' });
@@ -294,7 +294,7 @@ describe('/api/[...path] proxy', () => {
     it('still forwards a body-less DELETE without a body', async () => {
       const req = makeRequest('/api/Train/1', { method: 'DELETE', headers: { origin: 'http://localhost:3000' } });
       await DELETE(req, { params: Promise.resolve({ path: ['Train', '1'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       expect((init as { body?: unknown }).body).toBeUndefined();
     });
 
@@ -424,7 +424,7 @@ describe('/api/[...path] proxy', () => {
     it('preserves a decoded "#" in a segment as a literal path character, not a fragment separator', async () => {
       const req = makeRequest('/api/Train/placeholder');
       await GET(req, { params: Promise.resolve({ path: ['Train', 'abc#def'] }) });
-      const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+      const [calledUrl] = vi.mocked(fetch).mock.calls[0]!;
       // Pre-fix, the rejoined `/Train/abc#def` was parsed by `new URL()`
       // with `#def` as a fragment -- dropped entirely off the wire -- so
       // the backend would have received `/Train/abc` instead.
@@ -434,7 +434,7 @@ describe('/api/[...path] proxy', () => {
     it('preserves a decoded "?" in a segment as a literal path character, not a query separator', async () => {
       const req = makeRequest('/api/Train/placeholder');
       await GET(req, { params: Promise.resolve({ path: ['Train', 'abc?evil=1'] }) });
-      const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+      const [calledUrl] = vi.mocked(fetch).mock.calls[0]!;
       // Pre-fix, `?evil=1` would have been parsed as the query string
       // instead of part of the path, resolving to pathname `/Train/abc`
       // with an attacker-controlled query string appended.
@@ -447,7 +447,7 @@ describe('/api/[...path] proxy', () => {
     it('preserves a decoded "/" (from an embedded %2F) in a segment as a literal path character, not a new path separator', async () => {
       const req = makeRequest('/api/Train/placeholder');
       await GET(req, { params: Promise.resolve({ path: ['Train', 'abc/def'] }) });
-      const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+      const [calledUrl] = vi.mocked(fetch).mock.calls[0]!;
       expect(calledUrl.toString()).toBe('http://test-api:8080/Train/abc%2Fdef');
     });
   });
@@ -463,7 +463,7 @@ describe('/api/[...path] proxy', () => {
         headers: { cookie: 'theme=dark; distant_signal_session=abc123; consent=1' },
       });
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       const headers = (init as { headers: Record<string, string> }).headers;
       expect(headers.Cookie).toBe('distant_signal_session=abc123');
     });
@@ -473,7 +473,7 @@ describe('/api/[...path] proxy', () => {
         headers: { cookie: 'distant_signal_login=login-state-123' },
       });
       await GET(req, { params: Promise.resolve({ path: ['auth', 'callback'] }) });
-      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
       expect(calledUrl.toString()).toBe('http://test-api:8080/public/auth/callback?code=abc&state=xyz');
       const headers = (init as { headers: Record<string, string> }).headers;
       expect(headers.Cookie).toBe('distant_signal_login=login-state-123');
@@ -484,7 +484,7 @@ describe('/api/[...path] proxy', () => {
         headers: { cookie: 'distant_signal_session=abc123; distant_signal_login=login-state-123' },
       });
       await GET(req, { params: Promise.resolve({ path: ['auth', 'session'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       const headers = (init as { headers: Record<string, string> }).headers;
       expect(headers.Cookie).toBe('distant_signal_session=abc123; distant_signal_login=login-state-123');
     });
@@ -494,7 +494,7 @@ describe('/api/[...path] proxy', () => {
         headers: { cookie: 'theme=dark; consent=1' },
       });
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       const headers = (init as { headers: Record<string, string> }).headers;
       expect(headers.Cookie).toBeUndefined();
     });
@@ -502,7 +502,7 @@ describe('/api/[...path] proxy', () => {
     it('omits the Cookie header entirely when the browser sent no Cookie header at all', async () => {
       const req = makeRequest('/api/preferences');
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       const headers = (init as { headers: Record<string, string> }).headers;
       expect(headers.Cookie).toBeUndefined();
     });
@@ -515,7 +515,7 @@ describe('/api/[...path] proxy', () => {
     async function outboundHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
       const req = makeRequest('/api/preferences', { headers });
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       return (init as { headers: Record<string, string> }).headers;
     }
 
@@ -559,7 +559,7 @@ describe('/api/[...path] proxy', () => {
     it('passes an abort signal to the upstream fetch', async () => {
       const req = makeRequest('/api/preferences');
       await GET(req, { params: Promise.resolve({ path: ['preferences'] }) });
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
     });
 
@@ -618,7 +618,7 @@ describe('/api/[...path] proxy', () => {
       const req = makeRequest('/api/Train/track', { method: 'POST', body });
       const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
       expect(res.status).toBe(200);
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       expect(((init as RequestInit).body as ArrayBuffer).byteLength).toBe(MAX_PROXY_BODY_BYTES);
     });
 
@@ -658,7 +658,7 @@ describe('/api/[...path] proxy', () => {
       expect(res.headers.get('Content-Type')).toBe('application/json');
       expect(res.headers.get('Cache-Control')).toBe('no-store');
       expect((await res.arrayBuffer()).byteLength).toBe(0);
-      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+      const [calledUrl, init] = vi.mocked(fetch).mock.calls[0]!;
       expect(calledUrl.toString()).toBe('http://test-api:8080/public/auth/session');
       expect((init as RequestInit).method).toBe('HEAD');
       expect((init as RequestInit).body).toBeUndefined();
@@ -683,7 +683,7 @@ describe('/api/[...path] proxy', () => {
       );
       // Like GET, a HEAD is never refused on Origin; the Origin is relayed.
       expect(res.status).toBe(200);
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       const headers = (init as { headers: Record<string, string> }).headers;
       expect(headers.Cookie).toBe('distant_signal_session=abc123');
       expect(headers['X-Real-IP']).toBe('203.0.113.5');
@@ -709,7 +709,7 @@ describe('/api/[...path] proxy', () => {
       });
       const res = await handler(makeRequest('/api/auth/session', { method }), params);
       expect(res.status).toBe(200);
-      const [, init] = vi.mocked(fetch).mock.calls[0];
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
       expect((init as RequestInit).body).toBeUndefined();
       expect(init).not.toHaveProperty('duplex');
     });

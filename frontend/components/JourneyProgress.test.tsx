@@ -853,7 +853,7 @@ describe('JourneyProgress auto-scroll', () => {
     // position: center 500 + 12/2 = 506, against a container center of
     // 20 + 300/2 = 170. Delta 336, on top of a scrollLeft of 40 -> 376.
     const marker = container.querySelectorAll<HTMLElement>('[data-journey-node]')[1];
-    marker.getBoundingClientRect = () => ({ left: 500, width: 12 }) as DOMRect;
+    marker!.getBoundingClientRect = () => ({ left: 500, width: 12 }) as DOMRect;
 
     rerender(
       <MantineProvider theme={theme}>

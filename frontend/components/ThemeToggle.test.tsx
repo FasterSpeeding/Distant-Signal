@@ -57,17 +57,17 @@ describe('ThemeToggle', () => {
     let svgs = container.querySelectorAll('svg');
     expect(svgs.length).toBe(1);
     const sunMoonSvg = svgs[0];
-    expect(sunMoonSvg.querySelector('circle')).toBeInTheDocument(); // sun circle
-    expect(sunMoonSvg.querySelector('path')).toBeInTheDocument(); // moon path
+    expect(sunMoonSvg!.querySelector('circle')).toBeInTheDocument(); // sun circle
+    expect(sunMoonSvg!.querySelector('path')).toBeInTheDocument(); // moon path
 
     fireEvent.click(button); // -> light
     // Light mode: sun icon only (circle + rays)
     svgs = container.querySelectorAll('svg');
     expect(svgs.length).toBe(1);
     const sunSvg = svgs[0];
-    expect(sunSvg.querySelector('circle')).toBeInTheDocument();
+    expect(sunSvg!.querySelector('circle')).toBeInTheDocument();
     // Sun has lines, moon has a path
-    const lines = sunSvg.querySelectorAll('line');
+    const lines = sunSvg!.querySelectorAll('line');
     expect(lines.length).toBeGreaterThan(0);
 
     fireEvent.click(button); // -> dark
@@ -75,7 +75,7 @@ describe('ThemeToggle', () => {
     svgs = container.querySelectorAll('svg');
     expect(svgs.length).toBe(1);
     const moonSvg = svgs[0];
-    expect(moonSvg.querySelector('path')).toBeInTheDocument();
+    expect(moonSvg!.querySelector('path')).toBeInTheDocument();
   });
 
   it('server-rendered output ignores localStorage, avoiding a hydration mismatch', () => {

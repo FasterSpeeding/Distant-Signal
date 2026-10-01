@@ -138,7 +138,7 @@ describe('api client', () => {
 
   it('getLineStatusForMode sends no Cookie header when the visitor has no cookies at all', async () => {
     await getLineStatusForMode('national-rail');
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -169,7 +169,7 @@ describe('api client', () => {
 
   it('getLineStatus sends no Cookie header when the visitor has no cookies at all', async () => {
     await getLineStatus(['wcml'], false);
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -252,7 +252,7 @@ describe('api client', () => {
 
   it('getLineStatusHistory sends no Cookie header when the visitor has no cookies at all', async () => {
     await getLineStatusHistory('wcml', '2026-07-01T00:00:00Z', '2026-07-07T00:00:00Z');
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -444,7 +444,7 @@ describe('api client', () => {
         vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
       );
       await call();
-      const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+      const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
       expect(init.headers).toBeUndefined();
     });
   }
@@ -502,7 +502,7 @@ describe('api client', () => {
       ),
     );
     await getPreferences();
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -742,7 +742,7 @@ describe('api client', () => {
       );
       await expect(getSessionOrLoggedOut()).resolves.toEqual(LOGGED_OUT_SESSION);
       expect(consoleError).toHaveBeenCalledTimes(1);
-      expect(consoleError.mock.calls[0][0]).toMatch(/getSession\(\) failed/);
+      expect(consoleError.mock.calls[0]![0]).toMatch(/getSession\(\) failed/);
     });
 
     // The specific trigger this plan's diagnosis names: a genuine DB error
@@ -802,7 +802,7 @@ describe('api client', () => {
       'http://test-api:8080/public/operators',
       expect.objectContaining({ cache: 'no-store' }),
     );
-    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
     expect((init as RequestInit).headers).toBeUndefined();
   });
 
@@ -812,7 +812,7 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
     );
     await getAllLines();
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -883,7 +883,7 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify(sampleLine), { status: 200 })),
     );
     await getCustomLine('custom-my-commute');
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -938,7 +938,7 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify({ stations: ['WOK', 'WAT'], operators: ['SW'] }), { status: 200 })),
     );
     await getLineDefinition('swr-alton');
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -1095,7 +1095,7 @@ describe('api client', () => {
 
   it('getTrackedTrainById sends no Cookie header when the visitor has no cookies at all', async () => {
     await getTrackedTrainById(42);
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -1114,7 +1114,7 @@ describe('api client', () => {
   it('getPublicTrainByUidAndDate sends no Cookie header even when the visitor has one', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
     await getPublicTrainByUidAndDate('C21373', '2026-08-28');
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -1468,7 +1468,7 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })),
     );
     await getIncident('123');
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 
@@ -1558,7 +1558,7 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
     );
     await getAllLines();
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toEqual({ Cookie: 'distant_signal_session=abc123' });
   });
 
@@ -1569,7 +1569,7 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
     );
     await getAllLines();
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
 });
@@ -1620,7 +1620,7 @@ describe('api client path-segment encoding (traversal regression)', () => {
   });
 
   function fetchedUrl(): string {
-    return vi.mocked(fetch).mock.calls[0][0] as string;
+    return vi.mocked(fetch).mock.calls[0]![0] as string;
   }
 
   // A representative sample across every URL-building shape in the file:
@@ -1749,14 +1749,14 @@ describe('api client X-Real-IP forwarding', () => {
   });
 
   function sentHeaders(): Record<string, string> | undefined {
-    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     return init.headers as Record<string, string> | undefined;
   }
 
   it('sends the visitor CF-Connecting-IP as X-Real-IP on GET /Train/by-uid', async () => {
     incomingRequest.headers = { 'cf-connecting-ip': '203.0.113.5' };
     await getPublicTrainByUidAndDate('C12345', '2026-10-01');
-    expect(vi.mocked(fetch).mock.calls[0][0]).toBe('http://test-api:8080/Train/by-uid/C12345/2026-10-01');
+    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe('http://test-api:8080/Train/by-uid/C12345/2026-10-01');
     expect(sentHeaders()).toEqual({ 'X-Real-IP': '203.0.113.5' });
   });
 

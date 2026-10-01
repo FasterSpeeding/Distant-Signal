@@ -16,7 +16,7 @@ describe('searchNearbyStations', () => {
     const result = await searchNearbyStations(51.3191, -0.561);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
+    const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('/api/stations/nearby?lat=51.319&lon=-0.561');
     expect(init).toEqual({ signal: undefined });
     expect(result).toEqual([{ code: 'WOK', name: 'Woking', distanceKm: 0.4 }]);
@@ -31,7 +31,7 @@ describe('searchNearbyStations', () => {
 
     await searchNearbyStations(0, 0, controller.signal);
 
-    expect(fetchMock.mock.calls[0][1]).toEqual({ signal: controller.signal });
+    expect(fetchMock.mock.calls[0]![1]).toEqual({ signal: controller.signal });
   });
 
   it('throws on a non-2xx response, so a real failure is never mistaken for "nothing found"', async () => {
@@ -130,7 +130,7 @@ describe('roundCoordinate', () => {
     const fetchMock = vi.fn(async (_input: string) => new Response('[]', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     await searchNearbyStations(51.3191234, -0.5612345);
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/stations/nearby?lat=51.319&lon=-0.561');
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/stations/nearby?lat=51.319&lon=-0.561');
     vi.unstubAllGlobals();
   });
 });

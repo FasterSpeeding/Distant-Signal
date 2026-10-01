@@ -8,7 +8,7 @@
  * DQ12 (FE-6): only tools known to be read-only run automatically
  * (`isAutoRunTool`); any other tool waits for the passenger via
  * `confirmToolCall`. Tool output is framed as untrusted data. */
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
 import { ToolError } from '@anthropic-ai/sdk/lib/tools/ToolError';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
@@ -117,7 +117,7 @@ export function neutraliseToolOutputMarkers(text: string): string {
   }
   const brackets = new Map<number, number>();
   for (const match of folded.matchAll(FOLDED_MARKER)) {
-    const { index: at, length } = origin[match.index];
+    const { index: at, length } = origin[match.index]!;
     brackets.set(at, length);
   }
   if (brackets.size === 0) return text;

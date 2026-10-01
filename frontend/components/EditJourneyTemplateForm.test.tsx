@@ -110,8 +110,8 @@ describe('EditJourneyTemplateForm', () => {
 
     const originFields = screen.getAllByLabelText('Origin CRS');
     const destinationFields = screen.getAllByLabelText('Destination CRS');
-    fireEvent.change(originFields[1], { target: { value: 'YRK' } });
-    fireEvent.change(destinationFields[1], { target: { value: 'NCL' } });
+    fireEvent.change(originFields[1]!, { target: { value: 'YRK' } });
+    fireEvent.change(destinationFields[1]!, { target: { value: 'NCL' } });
 
     expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
   });
@@ -225,14 +225,14 @@ describe('EditJourneyTemplateForm', () => {
 
     const originFields = screen.getAllByLabelText('Origin CRS');
     const destinationFields = screen.getAllByLabelText('Destination CRS');
-    fireEvent.change(originFields[1], { target: { value: 'YRK' } });
-    fireEvent.change(destinationFields[1], { target: { value: 'NCL' } });
+    fireEvent.change(originFields[1]!, { target: { value: 'YRK' } });
+    fireEvent.change(destinationFields[1]!, { target: { value: 'NCL' } });
 
     expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]?.body as string);
     expect(body.legs[1]).toEqual({
       originCrs: 'YRK',
       destinationCrs: 'NCL',
@@ -317,10 +317,10 @@ describe('EditJourneyTemplateForm', () => {
     // already-empty field to '' again is a no-op DOM-wise and would never
     // fire a change event to begin with.
     const departFromFields = screen.getAllByLabelText('Earliest departure (optional)') as HTMLInputElement[];
-    setBadInput(departFromFields[0], false);
-    fireEvent.change(departFromFields[0], { target: { value: '08:00' } });
-    setBadInput(departFromFields[0], true);
-    fireEvent.change(departFromFields[0], { target: { value: '' } });
+    setBadInput(departFromFields[0]!, false);
+    fireEvent.change(departFromFields[0]!, { target: { value: '08:00' } });
+    setBadInput(departFromFields[0]!, true);
+    fireEvent.change(departFromFields[0]!, { target: { value: '' } });
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
 
     // Remove leg 1 -- the incomplete block belongs to leg 1's own identity,
@@ -331,7 +331,7 @@ describe('EditJourneyTemplateForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const body = JSON.parse((fetchMock.mock.calls[0][1]?.body as string) ?? '{}');
+    const body = JSON.parse((fetchMock.mock.calls[0]![1]?.body as string) ?? '{}');
     expect(body.legs).toEqual([
       {
         originCrs: 'EDB',
@@ -369,7 +369,7 @@ describe('EditJourneyTemplateForm', () => {
   describe('recurrence controls', () => {
     function sentBody(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
       const call = fetchMock.mock.calls[0];
-      return JSON.parse(call[1]?.body as string);
+      return JSON.parse(call![1]?.body as string);
     }
 
     it('toggling Monday sends daysOfWeek: 1 (bit 0)', async () => {

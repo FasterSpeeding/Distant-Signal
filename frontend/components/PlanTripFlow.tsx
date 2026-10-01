@@ -161,7 +161,7 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
     }
 
     try {
-      const firstLeg = trainLegs[0];
+      const firstLeg = trainLegs[0]!;
       // `firstLeg.originCrs`/`firstLeg.destinationCrs` (from `GET
       // /Trips/plan`) are this leg's real boarding/alighting points, which
       // can legitimately differ from the matched train's own full route --
@@ -207,7 +207,7 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
       const created: CreateJourneyResponse = await createResponse.json();
 
       for (let i = 1; i < trainLegs.length; i += 1) {
-        const leg = trainLegs[i];
+        const leg = trainLegs[i]!;
         // Same real-origin/destination handling as the initial `POST
         // /Journeys` call above -- `leg.originCrs`/`leg.destinationCrs` are
         // this subsequent leg's own real boarding/alighting points, sent as

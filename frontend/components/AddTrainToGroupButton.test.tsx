@@ -67,7 +67,7 @@ describe('AddTrainToGroupButton', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/Train/mine'));
     const [select] = await screen.findAllByLabelText('Tracked train');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     // Note: the dropdown listbox is not scoped with `within(screen.getByRole('dialog'))`
     // here -- Mantine's Combobox dropdown renders in its own portal, as a sibling of the
     // Modal's dialog element in the DOM, not nested inside it (confirmed by running this
@@ -88,7 +88,7 @@ describe('AddTrainToGroupButton', () => {
     renderWithMantine(<AddTrainToGroupButton groupId="grp-1" excludeTrainSubscriptionIds={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add one of my trains' }));
     const [select] = await screen.findAllByLabelText('Tracked train');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText(/Woking/));
     fireEvent.click(screen.getByRole('button', { name: 'Add to group' }));
 
@@ -118,14 +118,14 @@ describe('AddTrainToGroupButton', () => {
     renderWithMantine(<AddTrainToGroupButton groupId="grp-1" excludeTrainSubscriptionIds={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add one of my trains' }));
     let [select] = await screen.findAllByLabelText('Tracked train');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText(/Woking/));
     fireEvent.click(screen.getByRole('button', { name: 'Add to group' }));
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole('button', { name: 'Add one of my trains' }));
     [select] = await screen.findAllByLabelText('Tracked train');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText(/Woking/));
     expect(screen.getByRole('button', { name: 'Add to group' })).not.toBeDisabled();
   });

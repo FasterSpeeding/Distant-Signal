@@ -257,7 +257,7 @@ describe('ChatPanel', () => {
     await screen.findByText(/next train is at 10:15/i);
     const badges = screen.getAllByText('AI-generated');
     expect(badges).toHaveLength(1);
-    expect(badges[0].closest('[data-ai-badge]')).toHaveAccessibleDescription(CHAT_AI_NOTE);
+    expect(badges[0]!.closest('[data-ai-badge]')).toHaveAccessibleDescription(CHAT_AI_NOTE);
     const userBubble = screen.getByText('when is the next train').closest('.mantine-Card-root')!;
     expect(userBubble.querySelector('[data-ai-badge]')).toBeNull();
   });
@@ -276,7 +276,7 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     await vi.waitFor(() => expect(mockRunChatTurn).toHaveBeenCalled());
-    expect(mockRunChatTurn.mock.calls[0][0]).toMatchObject({ mcpUrl: 'https://runtime-mcp.example.com/mcp' });
+    expect(mockRunChatTurn.mock.calls[0]![0]).toMatchObject({ mcpUrl: 'https://runtime-mcp.example.com/mcp' });
   });
 
   // FE-11: each turn's streamed text lands on its own assistant message.

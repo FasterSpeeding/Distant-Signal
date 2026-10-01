@@ -287,7 +287,7 @@ describe('JourneyLegCandidates', () => {
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const buttons = await screen.findAllByRole('button', { name: /^Track this train/ });
-    fireEvent.click(buttons[0]);
+    fireEvent.click(buttons[0]!);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -307,7 +307,7 @@ describe('JourneyLegCandidates', () => {
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     const buttons = await screen.findAllByRole('button', { name: /^Track this train/ });
-    fireEvent.click(buttons[0]);
+    fireEvent.click(buttons[0]!);
 
     expect(await screen.findByText("Couldn't track that train. Try again.")).toBeInTheDocument();
     expect(onPicked).not.toHaveBeenCalled();

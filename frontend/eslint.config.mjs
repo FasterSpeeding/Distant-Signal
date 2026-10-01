@@ -1,3 +1,4 @@
+import comments from '@eslint-community/eslint-plugin-eslint-comments/configs';
 import { defineConfig, globalIgnores } from 'eslint/config';
 import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';
@@ -29,6 +30,16 @@ const eslintConfig = defineConfig([
   // error, so the per-line opt-outs below cannot outlive their reason.
   { linterOptions: { reportUnusedDisableDirectives: 'error' } },
 
+  // Every disable comment names its rules and says why:
+  // `// eslint-disable-next-line rule -- reason`.
+  comments.recommended,
+  {
+    rules: {
+      '@eslint-community/eslint-comments/require-description': 'error',
+      '@eslint-community/eslint-comments/no-unlimited-disable': 'error',
+    },
+  },
+
   {
     // Same file scope eslint-config-next's own rule-bearing config objects
     // use, so the react-hooks/@typescript-eslint plugins they register are
@@ -51,6 +62,8 @@ const eslintConfig = defineConfig([
           argsIgnorePattern: '^_',
           varsIgnorePattern: '^_',
           caughtErrorsIgnorePattern: '^_',
+          // `const { KEY, ...rest } = obj` to omit a key.
+          ignoreRestSiblings: true,
         },
       ],
 
@@ -71,6 +84,28 @@ const eslintConfig = defineConfig([
     },
   },
 
+  // TypeScript: `import type` for type-only imports, which
+  // verbatimModuleSyntax (tsconfig.base.json) keeps as written.
+  {
+    files: ['**/*.{ts,tsx,mts,cts}'],
+    rules: {
+      // disallowTypeAnnotations off: Vitest's `vi.importActual<typeof
+      // import('m')>()` partial-mock idiom and the global (non-module)
+      // types/service-worker.d.ts both need inline `import()` types.
+      '@typescript-eslint/consistent-type-imports': ['error', { disallowTypeAnnotations: false }],
+    },
+  },
+
+  // Deviation from the guide: the app's TypeScript stays on
+  // eslint-config-next's typescript-eslint `recommended` set rather than
+  // strictTypeChecked + stylisticTypeChecked. Measured 2026-10-01 with
+  // typescript-eslint 8.70.0: 1741 findings across app/, components/, lib/
+  // and tests (no-non-null-assertion 483, no-confusing-void-expression 301,
+  // require-await 224, no-unnecessary-type-assertion 103,
+  // non-nullable-type-assertion-style 86, no-empty-function 73, no-unsafe-*
+  // ~170, no-misused-promises 63, ...), about 1170 of them in tests. That is
+  // its own change; until then only the scripts below get the strict presets.
+  //
   // typescript-eslint's strictest type-aware presets for the scripts above,
   // each linted against the tsconfig that type-checks it. JavaScript has no
   // compiler of its own, so these rules (floating promises, unsafe `any`

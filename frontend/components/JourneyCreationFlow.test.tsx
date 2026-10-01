@@ -299,8 +299,8 @@ describe('JourneyCreationFlow', () => {
     // renders first, same convention `PlanTripFlow.test.tsx`'s own tests
     // already rely on.
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 2]);
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 2]!);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     // The regression: the visitor must see WHICH leg failed...

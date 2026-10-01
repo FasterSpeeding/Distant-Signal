@@ -157,7 +157,7 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
     const worst = reports.reduce((acc, report) => {
       const candidate = worstStatus(report);
       return severityRank(candidate.statusSeverity) > severityRank(acc.statusSeverity) ? candidate : acc;
-    }, worstStatus(reports[0]));
+    }, worstStatus(reports[0]!));
     description = `${heading}: ${severityLabel(worst.statusSeverity)} reported.`;
   }
 

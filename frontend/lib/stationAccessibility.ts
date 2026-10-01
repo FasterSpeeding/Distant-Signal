@@ -68,7 +68,7 @@ const ACRONYM_WORDS: Record<string, string> = {
 
 export function humanizeKey(key: string): string {
   if (Object.prototype.hasOwnProperty.call(KEY_LABEL_OVERRIDES, key)) {
-    return KEY_LABEL_OVERRIDES[key];
+    return KEY_LABEL_OVERRIDES[key]!;
   }
   const words = key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -91,7 +91,7 @@ export function humanizeKey(key: string): string {
   // ACRONYM_WORDS' own three declared entries.
   const acronym = (word: string): string | undefined =>
     Object.prototype.hasOwnProperty.call(ACRONYM_WORDS, word) ? ACRONYM_WORDS[word] : undefined;
-  const first = acronym(firstWord) ?? firstWord.charAt(0).toUpperCase() + firstWord.slice(1);
+  const first = acronym(firstWord!) ?? firstWord!.charAt(0).toUpperCase() + firstWord!.slice(1);
   const rest = restWords.map((word) => acronym(word) ?? word);
   return [first, ...rest].join(' ');
 }
@@ -533,12 +533,12 @@ export function formatDays(value: unknown): string {
     let end = start;
     while (
       end + 1 < weekdays.length &&
-      WEEK_ORDER.indexOf(weekdays[end + 1]) === WEEK_ORDER.indexOf(weekdays[end]) + 1
+      WEEK_ORDER.indexOf(weekdays[end + 1]!) === WEEK_ORDER.indexOf(weekdays[end]!) + 1
     ) {
       end += 1;
     }
     parts.push(
-      end > start ? `${WEEK_SHORT[weekdays[start]]}–${WEEK_SHORT[weekdays[end]]}` : WEEK_SHORT[weekdays[start]],
+      end > start ? `${WEEK_SHORT[weekdays[start]!]}–${WEEK_SHORT[weekdays[end]!]}` : WEEK_SHORT[weekdays[start]!]!,
     );
     start = end + 1;
   }
@@ -775,7 +775,7 @@ function renderCollectionItem(item: Record<string, unknown>, depth: number): Col
   // nothing structural to key on -- a lone string sibling is exactly what
   // the bullet branch is for -- and the design names both explicitly.
   if (siblings.length === 1) {
-    const [key, own] = siblings[0];
+    const [key, own] = siblings[0]!;
     if (key === 'crsCode' && typeof own === 'string' && own.trim() !== '') {
       const crs = own.trim();
       return {
@@ -932,7 +932,7 @@ function findSoleCodeLikeKey(node: AccessibilityNode): string | undefined {
   if (node.kind !== 'fields') return undefined;
   const codeLabels = [...CODE_LIKE_FIELDS].map((k) => humanizeKey(k));
   const matches = node.fields.filter((f) => f.label !== undefined && codeLabels.includes(f.label));
-  return matches.length === 1 ? [...CODE_LIKE_FIELDS].find((k) => humanizeKey(k) === matches[0].label) : undefined;
+  return matches.length === 1 ? [...CODE_LIKE_FIELDS].find((k) => humanizeKey(k) === matches[0]!.label) : undefined;
 }
 
 /** §4.9's last resort. `JSON.stringify` itself can throw (a cycle, a

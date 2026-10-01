@@ -116,7 +116,7 @@ function renderTable() {
 
 function rowNames() {
   const rows = screen.getAllByRole('row').slice(1); // skip header row
-  return rows.map((row) => within(row).getAllByRole('link')[0].textContent);
+  return rows.map((row) => within(row).getAllByRole('link')[0]!.textContent);
 }
 
 describe('AllLinesTable', () => {
@@ -422,7 +422,7 @@ describe('AllLinesTable dash tooltip', () => {
     renderDashTable();
     const row = screen.getByText('No Coverage Line').closest('tr')!;
     const [avgDelayDash] = within(row).getAllByText('—');
-    fireEvent.mouseEnter(avgDelayDash);
+    fireEvent.mouseEnter(avgDelayDash!);
     expect(await screen.findByRole('tooltip')).toHaveTextContent('No live departure data received for this line yet.');
   });
 
@@ -430,7 +430,7 @@ describe('AllLinesTable dash tooltip', () => {
     renderDashTable();
     const row = screen.getByText('Below Threshold Line').closest('tr')!;
     const [avgDelayDash] = within(row).getAllByText('—');
-    fireEvent.mouseEnter(avgDelayDash);
+    fireEvent.mouseEnter(avgDelayDash!);
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       'Too few live departures sampled to report a rate right now.',
     );
@@ -440,7 +440,7 @@ describe('AllLinesTable dash tooltip', () => {
     renderDashTable();
     const row = screen.getByText('Tube Line').closest('tr')!;
     const [avgDelayDash] = within(row).getAllByText('—');
-    fireEvent.mouseEnter(avgDelayDash);
+    fireEvent.mouseEnter(avgDelayDash!);
     expect(await screen.findByRole('tooltip')).toHaveTextContent("Not measured by this app — status is TfL's own.");
   });
 });

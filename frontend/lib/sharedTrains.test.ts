@@ -41,7 +41,7 @@ describe('mergeSharedTrains', () => {
       sharedTrain({ trainSubscriptionId: 7, groupId: 'g2', groupName: 'Commuters' }),
     ]);
     expect(merged).toHaveLength(1);
-    expect(merged[0].groupNames).toEqual(['Family', 'Commuters']);
+    expect(merged[0]!.groupNames).toEqual(['Family', 'Commuters']);
   });
 
   it('two different groups that happen to share a name are tagged once, not twice', () => {
@@ -49,7 +49,7 @@ describe('mergeSharedTrains', () => {
       sharedTrain({ trainSubscriptionId: 7, groupId: 'g1', groupName: 'Family' }),
       sharedTrain({ trainSubscriptionId: 7, groupId: 'g2', groupName: 'Family' }),
     ]);
-    expect(merged[0].groupNames).toEqual(['Family']);
+    expect(merged[0]!.groupNames).toEqual(['Family']);
   });
 
   it('drops any row for a train the caller already tracks themselves (belt-and-braces against the backend filter)', () => {
@@ -69,7 +69,7 @@ describe('mergeSharedTrains', () => {
       sharedTrain({ trainSubscriptionId: 7, customName: 'School run', groupName: 'Family' }),
       sharedTrain({ trainSubscriptionId: 7, customName: 'School run', groupName: 'Commuters' }),
     ]);
-    expect(merged[0].train.customName).toBe('School run');
-    expect(merged[0].train.addedByName).toBe('Sam');
+    expect(merged[0]!.train.customName).toBe('School run');
+    expect(merged[0]!.train.addedByName).toBe('Sam');
   });
 });

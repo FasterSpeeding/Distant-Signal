@@ -43,7 +43,7 @@ describe.each<[string, () => ReactElement]>([
     expect(levels.filter((level) => level === 1)).toHaveLength(1);
     levels.forEach((level, i) => {
       if (i > 0)
-        expect(level, `heading ${i} (h${level}) after h${levels[i - 1]}`).toBeLessThanOrEqual(levels[i - 1] + 1);
+        expect(level, `heading ${i} (h${level}) after h${levels[i - 1]}`).toBeLessThanOrEqual(levels[i - 1]! + 1);
     });
   });
 });

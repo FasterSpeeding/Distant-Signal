@@ -83,7 +83,7 @@ function windowSummary(leg: JourneyLegDetail): string | null {
   ].filter((part): part is string => part !== null);
   if (parts.length === 0) return null;
   const [first, ...rest] = parts;
-  const capitalised = first.charAt(0).toUpperCase() + first.slice(1);
+  const capitalised = first!.charAt(0).toUpperCase() + first!.slice(1);
   return [capitalised, ...rest].join(' · ');
 }
 

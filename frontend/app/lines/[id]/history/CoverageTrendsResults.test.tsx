@@ -69,13 +69,13 @@ describe('toCoverageChartPoints', () => {
   it('turns a day below the sparse-data floor into a gap, preserving the resolvedWindows count', () => {
     const stats = [row({ resolvedWindows: SPARSE_DATA_FLOOR_WINDOWS - 1 })];
     const [point] = toCoverageChartPoints(stats);
-    expect(point.delayRate).toBeNull();
-    expect(point.cancellationRate).toBeNull();
-    expect(point.skipRate).toBeNull();
-    expect(point.avgDelayMinutes).toBeNull();
-    expect(point.total).toBe(100); // never nulled, even when sparse
-    expect(point.sampleCycles).toBe(SPARSE_DATA_FLOOR_WINDOWS - 1);
-    expect(point.bucketKey).toBe('2026-08-01');
+    expect(point!.delayRate).toBeNull();
+    expect(point!.cancellationRate).toBeNull();
+    expect(point!.skipRate).toBeNull();
+    expect(point!.avgDelayMinutes).toBeNull();
+    expect(point!.total).toBe(100); // never nulled, even when sparse
+    expect(point!.sampleCycles).toBe(SPARSE_DATA_FLOOR_WINDOWS - 1);
+    expect(point!.bucketKey).toBe('2026-08-01');
   });
 
   it('returns an empty array for an empty input, not a synthetic point', () => {

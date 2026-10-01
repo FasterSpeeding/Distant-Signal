@@ -4,6 +4,7 @@
   // PostCSS configs, and next.config.mjs's own test. The service worker has
   // its own program, tsconfig.sw.json, because it needs the WebWorker lib
   // rather than @types/node.
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2023"],
@@ -13,12 +14,8 @@
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
+    // On here, unlike the app (see tsconfig.base.json).
     "exactOptionalPropertyTypes": true,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },

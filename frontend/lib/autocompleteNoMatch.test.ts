@@ -26,7 +26,7 @@ describe('withNoMatchPlaceholder', () => {
   // be selected, writing the literal message text into the field.
   it('marks the placeholder disabled, so ComboboxOption cannot select it', () => {
     const [placeholder] = withNoMatchPlaceholder([], 'No matching stations', { active: true });
-    expect(placeholder.disabled).toBe(true);
+    expect(placeholder!.disabled).toBe(true);
   });
 
   // I2: `active: false` must return the empty array as-is, never the

@@ -77,7 +77,7 @@ export function countryForMode(modeName: string, table: Record<string, Country> 
   // key a whole bucket off that function). Guarding with `hasOwnProperty`
   // keeps the lookup to the table's own declared entries -- today, and for
   // as long as `MODE_TO_COUNTRY` stays empty, always `Gb`.
-  return Object.prototype.hasOwnProperty.call(table, modeName) ? table[modeName] : 'Gb';
+  return Object.prototype.hasOwnProperty.call(table, modeName) ? table[modeName]! : 'Gb';
 }
 
 /** `countryForMode`, keyed off a `LineStatusReport`/`LineStatusHistoryEntry`

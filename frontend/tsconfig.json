@@ -1,24 +1,28 @@
 {
+  // The Next.js app, its tests and the Playwright specs: the guide's
+  // Next.js / bundler variant on top of tsconfig.base.json.
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": false,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
+    "target": "ES2024",
+    "lib": ["DOM", "DOM.Iterable", "ES2024"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "jsx": "react-jsx",
+    "noEmit": true,
+    "allowJs": false,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    // Only types the code imports (Next's own types pull in @types/node);
+    // no ambient @types/* auto-inclusion.
+    "types": [],
     "incremental": true,
     "plugins": [
       {
         "name": "next"
       }
     ],
-    "baseUrl": ".",
+    // No baseUrl: deprecated in TypeScript 6, and `paths` resolves relative
+    // to this file without it.
     "paths": {
       "@/*": ["./*"]
     }

@@ -56,7 +56,7 @@ async function getServiceWorker(page: Page): Promise<Worker> {
   const context = page.context();
   const existing = context.serviceWorkers();
   if (existing.length > 0) {
-    return existing[0];
+    return existing[0]!;
   }
   return context.waitForEvent('serviceworker');
 }

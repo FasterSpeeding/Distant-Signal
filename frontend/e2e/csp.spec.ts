@@ -71,7 +71,7 @@ test.describe('Content-Security-Policy', () => {
 
   test('each page load gets a fresh nonce', async ({ page }) => {
     const nonce = async () =>
-      (await page.goto('/stations'))?.headers()['content-security-policy'].match(/'nonce-([^']+)'/)?.[1];
+      (await page.goto('/stations'))?.headers()['content-security-policy']!.match(/'nonce-([^']+)'/)?.[1];
     const [a, b] = [await nonce(), await nonce()];
     expect(a).toBeTruthy();
     expect(a).not.toBe(b);

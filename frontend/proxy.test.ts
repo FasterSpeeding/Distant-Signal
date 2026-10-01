@@ -5,7 +5,7 @@ import { proxy, config } from './proxy';
 function nonceOf(csp: string | null): string {
   const m = csp?.match(/'nonce-([^']+)'/);
   if (!m) throw new Error(`no nonce in ${csp}`);
-  return m[1];
+  return m[1]!;
 }
 
 describe('proxy', () => {
@@ -49,7 +49,7 @@ describe('proxy', () => {
 });
 
 describe('proxy matcher', () => {
-  const source = config.matcher[0].source;
+  const source = config.matcher[0]!.source;
   // Next compiles the matcher with path-to-regexp; the source is a single
   // regex group, so an anchored RegExp over it is the same test.
   const re = new RegExp(`^${source}$`);

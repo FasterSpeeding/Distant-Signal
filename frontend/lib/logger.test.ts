@@ -105,8 +105,8 @@ describe('createLogger on the server', () => {
     expect(jsonLoggingActive()).toBe(true);
     createLogger('lib/legal').warn('placeholders unfilled', { missing: ['CONTACT_EMAIL'] });
     expect(written).toHaveLength(1);
-    expect(written[0].endsWith('\n')).toBe(true);
-    const line = parse(written[0].trimEnd());
+    expect(written[0]!.endsWith('\n')).toBe(true);
+    const line = parse(written[0]!.trimEnd());
     expect(line).toMatchObject({ level: 'WARN', service: 'frontend', target: 'lib/legal' });
     expect(Number.isNaN(Date.parse(String(line.timestamp)))).toBe(false);
     expect(String(line.timestamp).endsWith('Z')).toBe(true);

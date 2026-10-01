@@ -64,7 +64,7 @@ describe('AddJourneyToGroupButton', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/mine'));
     const [select] = await screen.findAllByLabelText('Journey');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     expect(await screen.findByText(byVisibleText(/WOK → WAT/))).toBeInTheDocument();
     expect(screen.queryByText(byVisibleText(/CLJ → VIC/))).not.toBeInTheDocument();
     // The option shows the arrow but a screen reader hears "to".
@@ -82,7 +82,7 @@ describe('AddJourneyToGroupButton', () => {
     renderWithMantine(<AddJourneyToGroupButton groupId="grp-1" excludeJourneyIds={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add one of my journeys' }));
     const [select] = await screen.findAllByLabelText('Journey');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText(byVisibleText(/WOK → WAT/)));
     fireEvent.click(screen.getByRole('button', { name: 'Add to group' }));
 
@@ -112,14 +112,14 @@ describe('AddJourneyToGroupButton', () => {
     renderWithMantine(<AddJourneyToGroupButton groupId="grp-1" excludeJourneyIds={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add one of my journeys' }));
     let [select] = await screen.findAllByLabelText('Journey');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText(byVisibleText(/WOK → WAT/)));
     fireEvent.click(screen.getByRole('button', { name: 'Add to group' }));
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole('button', { name: 'Add one of my journeys' }));
     [select] = await screen.findAllByLabelText('Journey');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText(byVisibleText(/WOK → WAT/)));
     expect(screen.getByRole('button', { name: 'Add to group' })).not.toBeDisabled();
   });

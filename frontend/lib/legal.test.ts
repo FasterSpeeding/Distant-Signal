@@ -48,7 +48,7 @@ describe('legal pages flag', () => {
     expect(legalPagesPublished({ LEGAL_PAGES_PUBLISHED: 'true' }, partial)).toBe(false);
     expect(legalPagesPublished({ LEGAL_PAGES_PUBLISHED: 'true' }, partial)).toBe(false);
     expect(console.warn).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(console.warn).mock.calls[0][0]).toContain('CONTACT_EMAIL');
+    expect(vi.mocked(console.warn).mock.calls[0]![0]).toContain('CONTACT_EMAIL');
   });
 
   it('ships with every operator-identity value still a placeholder, so the pages cannot go live by accident', () => {

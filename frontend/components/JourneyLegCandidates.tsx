@@ -203,7 +203,7 @@ export function JourneyLegCandidates({
     // every render (its `reset`/`markNeedsLogin` callbacks aren't
     // memoized), so listing it would re-run this fetch on every render
     // instead of only on a real prop/filter change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- needsLoginState is a fresh object every render (see above)
   }, [journeyId, legId, committedOperator]);
 
   // Mirrors `TrainSearchForm.tsx`'s own `handleLoadMore` almost verbatim:
