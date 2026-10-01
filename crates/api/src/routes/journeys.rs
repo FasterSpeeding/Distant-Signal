@@ -1329,7 +1329,10 @@ async fn build_journey_detail_response(
         .fetch_all(&app.database)
         .await
         .map(|rows| rows.into_iter().collect())
-        .unwrap_or_default()
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = ?err, journey_id, "could not read leg train origins; skipping the origin-skip check");
+            std::collections::HashMap::new()
+        })
     };
 
     let mut board_crs: Vec<String> = Vec::new();
@@ -1355,7 +1358,10 @@ async fn build_journey_detail_response(
     let boards =
         crate::data::queries::latest_station_samples_for_crs_batch(&app.database, &board_crs)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = ?err, journey_id, "could not read departure boards for journey legs; no ETA overlay or skip flags");
+                Default::default()
+            });
 
     // Every leg's ETA overlay, then every leg's stop list in one batched
     // build. Cloned, not removed: two legs could in principle name one
