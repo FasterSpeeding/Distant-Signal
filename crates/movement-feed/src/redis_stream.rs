@@ -311,6 +311,12 @@ impl RedisStreamMovementFeed {
             "group" => group.clone()
         )
         .increment(0);
+        // ...and the long-pending counter, for DistantSignalMovementFeedLongPending.
+        metrics::counter!(
+            common::metrics::metric_name("movement_feed_long_pending_total"),
+            "group" => group.clone()
+        )
+        .increment(0);
 
         Ok(Self {
             conn,

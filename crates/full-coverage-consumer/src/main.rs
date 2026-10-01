@@ -376,6 +376,15 @@ fn init_metrics() {
         "operation" => "post_window_stats"
     )
     .increment(0);
+    // DistantSignalTrustEnvelopeParseDrops (R-097).
+    for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+        metrics::counter!(
+            common::metrics::metric_name("full_coverage_consumer_errors_total"),
+            "operation" => "parse_envelope",
+            "msg_type" => msg_type
+        )
+        .increment(0);
+    }
 }
 
 /// Waits for the first population load, then replays the current rail day

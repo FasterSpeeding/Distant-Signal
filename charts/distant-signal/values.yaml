@@ -3402,6 +3402,26 @@ metrics:
       warnBeforeTrimSecs: 14400
       for: 5m
       severity: warning
+    # DistantSignalMovementFeedLongPending (R-040): a consumer group re-read
+    # entries already delivered more than 240 times
+    # (movement_feed_long_pending_total) more than `threshold` times within
+    # `window`. Such entries are retried forever, never dead-lettered.
+    longPending:
+      enabled: true
+      window: 1h
+      threshold: 0
+      for: 0m
+      severity: warning
+    # DistantSignalTrustEnvelopeParseDrops (R-097): trust-consumer,
+    # full-coverage-consumer or trust-backlog-consumer dropped more than
+    # `threshold` TRUST envelopes of one msg_type within `window` because
+    # their body did not parse (*_errors_total{operation="parse_envelope"}).
+    parseEnvelope:
+      enabled: true
+      window: 1h
+      threshold: 0
+      for: 0m
+      severity: warning
     # DistantSignalEnricherErrors: over `window`, more than errorRatio of an
     # LLM call site's calls failed, with at least minErrors failures.
     enricherErrors:

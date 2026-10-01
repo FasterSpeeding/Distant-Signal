@@ -45,6 +45,16 @@ async fn main() -> anyhow::Result<()> {
         "trust_backlog_consumer_stream_gap_detected_total"
     ))
     .increment(0);
+    // Same for every parse_envelope series, for
+    // DistantSignalTrustEnvelopeParseDrops (R-097).
+    for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+        metrics::counter!(
+            common::metrics::metric_name("trust_backlog_consumer_errors_total"),
+            "operation" => "parse_envelope",
+            "msg_type" => msg_type
+        )
+        .increment(0);
+    }
     let (connection_state, progress) = health_http::spawn_with_progress(
         config.health_bind_url.clone(),
         "connected",

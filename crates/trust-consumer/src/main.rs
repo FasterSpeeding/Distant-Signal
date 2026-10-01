@@ -24,6 +24,21 @@ use feed::MovementFeed;
 use movement_feed::ActiveFeed;
 use movement_feed::redis_stream::RedisStreamMovementFeed;
 
+/// Registers `trust_consumer_errors_total{operation="parse_envelope",msg_type}`
+/// at 0 for every msg_type a dropped envelope can carry, so the
+/// DistantSignalTrustEnvelopeParseDrops alert's `increase()` sees the first
+/// drop too (R-097).
+fn register_parse_envelope_counters() {
+    for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+        metrics::counter!(
+            common::metrics::metric_name("trust_consumer_errors_total"),
+            "operation" => "parse_envelope",
+            "msg_type" => msg_type
+        )
+        .increment(0);
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
@@ -43,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         "trust_consumer_stream_gap_detected_total"
     ))
     .increment(0);
+    register_parse_envelope_counters();
     let (connection_state, progress) = health_http::spawn_with_progress(
         config.health_bind_url.clone(),
         "connected",
@@ -1110,6 +1126,24 @@ mod redis_outage_tests {
     use clap::Parser;
 
     use super::*;
+
+    /// R-097: every parse_envelope series exists at 0 from startup.
+    #[test]
+    fn parse_envelope_counters_are_registered_at_zero() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, register_parse_envelope_counters);
+        let rendered = handle.render();
+        for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+            let series = format!(
+                r#"distant_signal_trust_consumer_errors_total{{operation="parse_envelope",msg_type="{msg_type}"}} 0"#
+            );
+            assert!(
+                rendered.contains(&series),
+                "{series} missing from {rendered}"
+            );
+        }
+    }
 
     /// A local port with nothing listening on it (bound, then released).
     fn closed_local_port() -> u16 {

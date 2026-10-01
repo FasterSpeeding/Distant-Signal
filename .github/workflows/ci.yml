@@ -1091,6 +1091,11 @@ jobs:
             echo "PrometheusRule must not use an 'x unless x offset' new-series clause" >&2; exit 1
           fi
           echo "${names}"
+          # R-040/R-097: stuck entries and TRUST parse drops alert, one
+          # parse-drop clause per consumer.
+          grep -q 'increase(distant_signal_movement_feed_long_pending_total{namespace="[^"]*"}\[1h\])) > 0$' <<<"${rule}"
+          n_parse=$(grep -c '_errors_total{namespace="[^"]*", operation="parse_envelope"}\[1h\])) > 0, "consumer"' <<<"${rule}" || true)
+          [[ "${n_parse}" -eq 3 ]] || { echo "expected 3 parse_envelope clauses, got ${n_parse}" >&2; exit 1; }
           # Open sign-up: a burst of new accounts alerts, and the metric and
           # threshold come from values.
           grep -q 'alert: DistantSignalUserSignupSpike' <<<"${rule}"
