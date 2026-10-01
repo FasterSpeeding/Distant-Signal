@@ -1271,6 +1271,7 @@ jobs:
           )
           pgbackrest=(
             --set postgresql.pgbackrest.enabled=true
+            --set postgresql.pgbackrest.image.repository=registry.example.com/postgres-pgbackrest
             --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0
             --set postgresql.pgbackrest.repo.path=/test/pgbackrest
             --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com
@@ -1656,6 +1657,7 @@ jobs:
           fi
           pgbackrest=(
             --set postgresql.pgbackrest.enabled=true
+            --set postgresql.pgbackrest.image.repository=registry.example.com/postgres-pgbackrest
             --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0
             --set postgresql.pgbackrest.repo.path=/test/pgbackrest
             --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com
@@ -1793,6 +1795,7 @@ jobs:
             --set archive.enabled=true --set archive.s3.bucket=b --set archive.s3.existingSecret=s \
             --set archive.s3.lifecycleConfirmed=true \
             --set postgresql.pgbackrest.enabled=true \
+            --set postgresql.pgbackrest.image.repository=registry.example.com/postgres-pgbackrest \
             --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0 \
             --set postgresql.pgbackrest.repo.path=/test/pgbackrest \
             --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com \
@@ -2000,6 +2003,7 @@ jobs:
           render -f charts/distant-signal/values-example.yaml | check "values-example.yaml" 0
           pgbackrest=(
             --set postgresql.pgbackrest.enabled=true
+            --set postgresql.pgbackrest.image.repository=registry.example.com/postgres-pgbackrest
             --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0
             --set postgresql.pgbackrest.repo.path=/test/pgbackrest
             --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com
@@ -2034,6 +2038,7 @@ jobs:
           )
           on=(
             --set postgresql.pgbackrest.enabled=true
+            --set postgresql.pgbackrest.image.repository=registry.example.com/postgres-pgbackrest
             --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0
             --set postgresql.pgbackrest.repo.path=/test/pgbackrest
             --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com
@@ -2059,7 +2064,7 @@ jobs:
             || fail "postgresql.terminationGracePeriodSeconds must render when set"
 
           pg=$(render "${on[@]}" --show-only templates/postgres-statefulset.yaml)
-          grep -q 'image: "ghcr.io/fasterspeeding/distant-signal/postgres-pgbackrest:pg16.15-pgbackrest2.59.1-tini0.19.0"' <<<"${pg}" \
+          grep -q 'image: "registry.example.com/postgres-pgbackrest:pg16.15-pgbackrest2.59.1-tini0.19.0"' <<<"${pg}" \
             || fail "pgBackRest must swap in the postgres-pgbackrest image"
           # The image's ENTRYPOINT (tini, then docker-entrypoint.sh) keeps
           # the postmaster off PID 1, where an async archive-push worker's
@@ -2135,12 +2140,17 @@ jobs:
           grep -q 'distant_signal:pgbackrest_job_failed:recent{namespace="distant-signal", job_name=~"distant-signal-pgbackrest-(check|verify)-\[0-9\]+"}' <<<"${rule}" \
             || fail "the check alert must match the check and verify CronJobs' Jobs"
 
-          for unset in image.tag repo.path repo.s3.endpoint repo.s3.bucket repo.s3.existingSecret; do
+          for unset in image.repository image.tag repo.path repo.s3.endpoint repo.s3.bucket repo.s3.existingSecret; do
             if helm template distant-signal charts/distant-signal "${base[@]}" "${on[@]}" \
                 --set "postgresql.pgbackrest.${unset}=" >/dev/null 2>&1; then
               fail "pgBackRest rendered without postgresql.pgbackrest.${unset}"
             fi
           done
+          # The chart has no default pgBackRest image: the error must say so.
+          err=$(helm template distant-signal charts/distant-signal "${base[@]}" "${on[@]}" \
+            --set postgresql.pgbackrest.image.repository= 2>&1 >/dev/null || true)
+          grep -q 'postgresql.pgbackrest.image.repository is required' <<<"${err}" \
+            || fail "a missing pgBackRest image repository must fail with a message naming it"
           if helm template distant-signal charts/distant-signal "${base[@]}" "${on[@]}" \
               --set postgresql.pgbackrest.archive.pushTimeoutSecs=0 >/dev/null 2>&1; then
             fail "pgBackRest rendered with archive.pushTimeoutSecs=0"
