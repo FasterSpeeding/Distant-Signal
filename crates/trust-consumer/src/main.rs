@@ -39,6 +39,19 @@ fn register_parse_envelope_counters() {
     }
 }
 
+/// Every `trust_consumer_errors_total` operation that is a failed call to
+/// api (not a data rejection, which is `post_rejected`), registered at 0
+/// and summed by the chart's DistantSignalConsumerApiCallsFailing alert
+/// (2026-10-01: ~23.6k failed tracked-trains reloads raised nothing). The
+/// chart's template lists the same operations; a test below keeps the two
+/// in step.
+const API_CALL_OPERATIONS: &[&str] = &[
+    "reload_tracked_trains",
+    "post_train_events",
+    "reload_stanox_crs",
+    "startup_reference_load",
+];
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     common::logging::exit_code(run().await)
@@ -61,6 +74,10 @@ async fn run() -> anyhow::Result<()> {
     ))
     .increment(0);
     register_parse_envelope_counters();
+    common::metrics::register_operation_counters(
+        "trust_consumer_errors_total",
+        API_CALL_OPERATIONS,
+    );
     let (connection_state, progress) = health_http::spawn_with_progress(
         config.health_bind_url.clone(),
         "connected",
@@ -1143,6 +1160,25 @@ mod redis_outage_tests {
                 "{series} missing from {rendered}"
             );
         }
+    }
+
+    /// The chart's DistantSignalConsumerApiCallsFailing sums exactly
+    /// [`API_CALL_OPERATIONS`] for this consumer.
+    #[test]
+    fn the_chart_alerts_on_every_api_call_operation() {
+        let template = std::fs::read_to_string(
+            common::manifest_dir!()
+                .join("../../charts/distant-signal/templates/prometheusrule.yaml"),
+        )
+        .unwrap();
+        let entry = format!(
+            r#"(list "trust_consumer" "trust-consumer" "{}")"#,
+            API_CALL_OPERATIONS.join("|")
+        );
+        assert!(
+            template.contains(&entry),
+            "the chart template has no {entry}"
+        );
     }
 
     /// A local port with nothing listening on it (bound, then released).

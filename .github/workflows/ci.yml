@@ -1129,6 +1129,10 @@ jobs:
             echo "PostgresDown must not read the bundled StatefulSet with postgresql.enabled=false" >&2; exit 1
           fi
           grep -q 'min by (namespace) (distant_signal_api_db_up{namespace="[^"]*"}) == 0$' <<<"${rule}"
+          # The three consumers' failed api calls (one recorded series each).
+          n_api=$(grep -c 'label_replace(sum by (namespace) (increase(distant_signal_[a-z_]*_errors_total{namespace="[^"]*", operation=~"[a-z_|]*"}\[5m\])), "consumer"' <<<"${rule}" || true)
+          [[ "${n_api}" -eq 3 ]] || { echo "expected 3 consumer api-error clauses, got ${n_api}" >&2; exit 1; }
+          grep -q 'alert: DistantSignalConsumerApiCallsFailing' <<<"${rule}"
           # R-040/R-097: stuck entries and TRUST parse drops alert, one
           # parse-drop clause per consumer.
           grep -q 'increase(distant_signal_movement_feed_long_pending_total{namespace="[^"]*"}\[1h\])) > 0$' <<<"${rule}"

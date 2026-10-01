@@ -52,7 +52,8 @@ so that clause fired on every rollout.
 {{- $archiveExpiryOn := and ($rule.archiveExpiry).enabled .Values.archive.enabled (.Values.archive.expiry).enabled }}
 {{- $postgresDownOn := ($rule.postgresDown).enabled }}
 {{- $apiDbDownOn := ($rule.apiDatabaseDown).enabled }}
-{{- $healthOn := or $postgresDownOn $apiDbDownOn }}
+{{- $consumerApiOn := ($rule.consumerApiErrors).enabled }}
+{{- $healthOn := or $postgresDownOn $apiDbDownOn $consumerApiOn }}
 {{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn $healthOn }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -127,6 +128,42 @@ spec:
             summary: "api cannot query its database"
             description: "api's SELECT 1 probe has failed for {{ .for }}: ingest and most pages fail. See DistantSignalPostgresDown and api's log."
             runbook_url: {{ printf "%s#distantsignalapidatabasedown" $runbook | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with $rule.consumerApiErrors }}
+        {{- if .enabled }}
+        {{- /*
+        2026-10-01: trust-consumer failed GET /private/tracked-trains about
+        23.6k times and trust-backlog-consumer about 2,200 POSTs, with no
+        alert (their *_ready gauges only follow Redis). Each consumer's
+        <consumer>_errors_total operations that are failed calls to api
+        (not data rejections), registered at 0 at startup; each crate's
+        API_CALL_OPERATIONS lists the same operations, and its tests check
+        this list. Summed per consumer (not per operation), so an api outage
+        is at most three alerts in one notification.
+        */}}
+        {{- $consumers := list
+          (list "trust_consumer" "trust-consumer" "reload_tracked_trains|post_train_events|reload_stanox_crs|startup_reference_load")
+          (list "trust_backlog_consumer" "trust-backlog-consumer" "post_batch|post_train_reasons|reload_stanox_crs")
+          (list "full_coverage_consumer" "full-coverage-consumer" "reload_line_population_fetch|post_line_stats|post_station_samples|reload_stanox_crs") }}
+        - record: distant_signal:consumer_api_errors:increase
+          expr: |
+            {{- range $i, $c := $consumers }}
+            {{ if $i }}or {{ end }}label_replace(sum by (namespace) (increase(distant_signal_{{ index $c 0 }}_errors_total{namespace="{{ $ns }}", operation=~"{{ index $c 2 }}"}[{{ $rule.consumerApiErrors.window }}])), "consumer", "{{ index $c 1 }}", "", "")
+            {{- end }}
+        - alert: DistantSignalConsumerApiCallsFailing
+          expr: |
+            distant_signal:consumer_api_errors:increase{namespace="{{ $ns }}"} >= {{ .minErrors }}
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "{{ "{{ $labels.consumer }}" }} keeps failing its calls to api"
+            description: "{{ "{{ $value | humanize }}" }} failed api calls in {{ .window }}, for {{ .for }}: its data is not landing. Check api and the consumer's log."
+            runbook_url: {{ printf "%s#distantsignalconsumerapicallsfailing" $runbook | quote }}
         {{- end }}
         {{- end }}
     {{- end }}

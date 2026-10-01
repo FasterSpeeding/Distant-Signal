@@ -3400,6 +3400,17 @@ metrics:
       enabled: true
       for: 2m
       severity: critical
+    # DistantSignalConsumerApiCallsFailing: trust-consumer,
+    # trust-backlog-consumer or full-coverage-consumer failed at least
+    # minErrors calls to api (POSTs, the tracked-trains / population /
+    # stanox reloads; *_errors_total by operation) within `window`,
+    # continuously for `for`, so a short api blip (a rollout) does not fire.
+    consumerApiErrors:
+      enabled: true
+      window: 5m
+      minErrors: 3
+      for: 10m
+      severity: warning
     # Needs movementRelay.enabled (all rules in this group read
     # movement-events state).
     #

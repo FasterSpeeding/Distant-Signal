@@ -30,6 +30,16 @@ pub fn metric_name(suffix: &str) -> String {
     format!("distant_signal_{suffix}")
 }
 
+/// Registers `<metric_name(metric)>{operation="<op>"}` at 0 for every `op`,
+/// so an alert's `increase()` sees each series' first increment (a counter
+/// that only appears on its first increment has no increase to see).
+pub fn register_operation_counters(metric: &str, operations: &[&str]) {
+    for operation in operations {
+        metrics::counter!(metric_name(metric), "operation" => (*operation).to_string())
+            .increment(0);
+    }
+}
+
 /// Default histogram bucket boundaries applied to every metric recorded
 /// via this module's install functions, covering roughly 50ms to 2
 /// minutes -- wide enough for a poll cycle or an aggregator cycle without
@@ -106,6 +116,23 @@ mod tests {
             metric_name("poller_cycle_total"),
             "distant_signal_poller_cycle_total"
         );
+    }
+
+    #[test]
+    fn operation_counters_are_registered_at_zero() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            register_operation_counters("x_errors_total", &["post_a", "reload_b"]);
+        });
+        let rendered = handle.render();
+        for op in ["post_a", "reload_b"] {
+            let series = format!(r#"distant_signal_x_errors_total{{operation="{op}"}} 0"#);
+            assert!(
+                rendered.contains(&series),
+                "{series} missing from {rendered}"
+            );
+        }
     }
 
     #[test]
