@@ -873,8 +873,9 @@ explicit allows:
   node, which no selector can name. Nothing else.
 - **schedulefeed** (INF-2): SFTP on `scheduleFeed.sftp.port` from any source,
   or only from `scheduleFeed.sftp.allowedCidrs` when set. The allow-list only
-  works when the pod sees the client's real address (Service
-  `externalTrafficPolicy: Local`, or a load balancer that preserves it);
+  works when the pod sees the client's real address
+  (`scheduleFeed.service.externalTrafficPolicy: Local`, or a load balancer
+  that preserves it);
   behind source NAT it blocks every push. Also both containers' health ports
   and metrics ports.
 
@@ -1985,6 +1986,7 @@ Off by default.
 | `scheduleFeed.service.type` | `LoadBalancer` | `LoadBalancer`, or `NodePort` behind an external load balancer. Not an Ingress: SFTP is not HTTP. |
 | `scheduleFeed.service.annotations` | `{}` | Service annotations. |
 | `scheduleFeed.service.nodePort` | `null` | Explicit NodePort for the SFTP port. Empty lets Kubernetes assign one. |
+| `scheduleFeed.service.externalTrafficPolicy` | `""` | `Local` or `Cluster`; empty renders nothing (Kubernetes defaults to `Cluster`). Only valid with type `NodePort` or `LoadBalancer`; anything else fails the render. `Local` keeps DTD's real source IP, which `scheduleFeed.sftp.allowedCidrs` needs, and only routes to nodes with a ready schedulefeed pod (no cost on a single node). |
 | `scheduleFeed.persistence.enabled` | `true` | Attach a PVC for deliveries. |
 | `scheduleFeed.persistence.size` | `5Gi` | Requested volume size. |
 | `scheduleFeed.persistence.storageClass` | `""` | StorageClass name. Empty means the cluster default. |
@@ -2146,7 +2148,7 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.egress.privateCidrs` | RFC 1918, CGNAT, loopback, link-local, reserved | IPv4 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.privateCidrsV6` | loopback, ULA, link-local, multicast, NAT64/6to4/Teredo | IPv6 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every worker's egress policy. |
-| `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. |
+| `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. Needs the real client IP: set `scheduleFeed.service.externalTrafficPolicy: Local`. |
 
 ### scheduleFeed: CIF routing and CORPUS
 
