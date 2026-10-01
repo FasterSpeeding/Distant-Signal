@@ -72,12 +72,8 @@ async fn main() -> anyhow::Result<()> {
     // established pattern for a Redis-Streams backend
     // (`crates/movement-feed/src/active_feed.rs`'s own `ActiveFeed::RedisStream`
     // variant already does this generically -- see that module's doc
-    // comment). `ActiveFeed<K>` is generic over a Kafka backend type `K`
-    // this crate never uses (Task 7's own "Redis-Streams-only" decision);
-    // `RedisStreamMovementFeed` itself trivially satisfies `K: MovementFeed`,
-    // so `ActiveFeed<RedisStreamMovementFeed>` type-checks even though the
-    // `Kafka` variant is never constructed.
-    let mut feed: ActiveFeed<RedisStreamMovementFeed> = ActiveFeed::RedisStream(
+    // comment).
+    let mut feed: ActiveFeed = ActiveFeed::RedisStream(
         // Redis down at startup is waited for (each attempt logged, beating
         // progress so /livez stays 200); afterwards every Redis command is
         // bounded and a failure is retried by this loop. See
