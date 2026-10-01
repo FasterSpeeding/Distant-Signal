@@ -47,6 +47,9 @@ installed (e.g. `mise use -g uv`):
 ```sh
 uv run scripts/lint-scripts.py         # what CI's scripts-lint job runs
 uv run scripts/lint-scripts.py --fix   # apply shfmt/ruff fixes first
+uv run python -m unittest discover -s scripts/tests   # the scripts' tests
+# Before merging a branch that adds migrations (CI's migration-order job):
+uv run scripts/check-migration-order.py "$(git merge-base main HEAD)"
 ```
 
 `uv run` creates `.venv/` and installs the `lint` group on first use. It runs

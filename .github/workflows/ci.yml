@@ -547,6 +547,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The script is stdlib-only; uv provides .python-version's interpreter.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.21"
+          # Nothing to cache: no dependencies are installed.
+          enable-cache: false
+
       - name: Check migration order
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -563,7 +571,7 @@ jobs:
             echo "no usable base commit (new branch or force push); skipping"
             exit 0
           fi
-          bash scripts/check-migration-order.sh "${base}"
+          uv run --locked --no-default-groups scripts/check-migration-order.py "${base}"
 
   # Lint, format-check and type-check the repo's scripts, strict by default:
   #   - every tracked *.sh: shellcheck with every optional check at style
@@ -608,6 +616,11 @@ jobs:
 
       - name: Lint scripts
         run: uv run --no-sync scripts/lint-scripts.py
+
+      # scripts/tests: stdlib unittest, e.g. check-migration-order.py's
+      # behaviour against throwaway git repos.
+      - name: Test scripts
+        run: uv run --no-sync python -m unittest discover -s scripts/tests -v
 
       # Every chart values.yaml key needs a row in the chart README's "Values
       # reference" tables, and every row must name a real key.

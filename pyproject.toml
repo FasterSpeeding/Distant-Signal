@@ -68,6 +68,12 @@ ignore = [
     "CPY001",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"scripts/tests/**" = [
+    "INP001", # test modules found by unittest discovery, not a package
+    "PT009",  # stdlib unittest (no pytest dependency): self.assert* is its API
+]
+
 [tool.ruff.format]
 # Defaults (double quotes, spaces, magic trailing comma).
 
