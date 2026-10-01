@@ -104,7 +104,7 @@ export const viewport: Viewport = {
 // every visitor, logged in or not. That fallback is `getSessionOrLoggedOut()`
 // (`lib/api.ts`), not a bare `.catch()` here: a `getSession()` rejection is
 // never a confirmed "not logged in" (it never 401s -- see that function's
-// own doc comment), so the fallback logs the failure via `console.error`
+// own doc comment), so the fallback logs the failure (`log.error`)
 // before degrading, rather than swallowing it into indistinguishable
 // "logged out" silence the way this used to.
 //

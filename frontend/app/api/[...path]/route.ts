@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { clientIpFromHeaders, REAL_IP_HEADER } from '@/lib/clientIp';
 import { getSiteOrigin } from '@/lib/siteOrigin';
+import { createLogger } from '@/lib/logger';
 
 // Client Components can't read `API_BASE_URL` (server-only env var, not
 // inlined into the browser bundle unless prefixed `NEXT_PUBLIC_`), so
@@ -232,7 +233,7 @@ function upstreamFailure(err: unknown): NextResponse {
   if (isTimeout(err)) {
     return new NextResponse('upstream timed out', { status: 504 });
   }
-  console.error('api proxy: upstream request failed', err);
+  createLogger('app/api/proxy').error('api proxy: upstream request failed', { error: err });
   return new NextResponse('upstream unavailable', { status: 502 });
 }
 

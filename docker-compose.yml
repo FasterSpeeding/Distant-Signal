@@ -120,6 +120,8 @@ services:
       INTERNAL_OAUTH_GROUP_CORPUS: ${INTERNAL_OAUTH_GROUP_CORPUS:-svc-corpus-ingest}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       # All five are required by the binary with no defaults, so they use
       # `:?` (fail at `docker compose` config-resolution time with the
       # message below) rather than passing an unset variable through as an
@@ -190,6 +192,8 @@ services:
       INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_INCIDENTS:?INTERNAL_OAUTH_PASSWORD_INCIDENTS must be set}
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_INCIDENTS:-300}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       API_INGEST_URL: http://api:8080/private/incidents
 
   poller-stations:
@@ -217,6 +221,8 @@ services:
       # shortened via dev.env for local verification of the poll loop.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_STATIONS:-86400}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       API_INGEST_URL: http://api:8080/private/stations
 
   poller-tocs:
@@ -245,6 +251,8 @@ services:
       # shortened via dev.env for local verification of the poll loop.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TOCS:-86400}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       API_INGEST_URL: http://api:8080/private/tocs
 
   poller-ldbws:
@@ -274,6 +282,8 @@ services:
       # given this feed's rate limit is unconfirmed.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_LDBWS:-60}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       API_SAMPLE_STATIONS_URL: http://api:8080/private/sample-stations
       API_INGEST_URL: http://api:8080/private/station-samples
 
@@ -303,6 +313,8 @@ services:
       # conditional requests; 300s mirrors poller-incidents.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TFL:-300}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       API_INGEST_URL: http://api:8080/private/tfl-line-status
 
   aggregator:
@@ -322,6 +334,8 @@ services:
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_AGGREGATOR:-60}
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
 
   notifier:
     build:
@@ -354,6 +368,8 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
 
   enricher:
     build:
@@ -376,6 +392,8 @@ services:
       LLM_MODEL: ${LLM_MODEL}
       SWEEP_INTERVAL_SECS: ${SWEEP_INTERVAL_SECS:-3600}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
 
   trust-consumer:
     build:
@@ -432,6 +450,8 @@ services:
       MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND:-redis-stream}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
       interval: 10s
@@ -488,6 +508,8 @@ services:
       MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND_FULL_COVERAGE:-redis-stream}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/healthz"]
       interval: 10s
@@ -540,6 +562,8 @@ services:
       LINES_DIR: /app/lines
       HEALTH_BIND_URL: 0.0.0.0:8083
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
       interval: 10s
@@ -580,6 +604,8 @@ services:
       REDIS_URL: redis://redis:6379
       HEALTH_BIND_URL: 0.0.0.0:8083
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
       interval: 10s
@@ -757,6 +783,8 @@ services:
       INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_SCHEDULE_INGEST:?INTERNAL_OAUTH_USERNAME_SCHEDULE_INGEST must be set}
       INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST:?INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST must be set}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       API_INGEST_URL: http://api:8080/private/schedule-feed-ingests
       # Network Rail CORPUS loads (crates/schedule-ingest/src/corpus.rs),
       # off unless CORPUS_INGEST_ENABLED=true. The schedule-ingest user
@@ -815,6 +843,8 @@ services:
       INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_SCHEDULE_REFERENCE:?INTERNAL_OAUTH_USERNAME_SCHEDULE_REFERENCE must be set}
       INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_SCHEDULE_REFERENCE:?INTERNAL_OAUTH_PASSWORD_SCHEDULE_REFERENCE must be set}
       RUST_LOG: ${RUST_LOG:-info}
+      # common::logging: json (default) or pretty (dev.env sets pretty).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     # READ-ONLY, unlike schedule-ingest's read-write mount above: this
     # container never writes to the shared volume (see
     # crates/schedule-reference/src/config.rs's own header comment, "Never
@@ -940,6 +970,9 @@ services:
       # frontend/lib/api.ts: baseUrl(). Server-side only — resolved
       # inside the docker-compose network, not exposed to the browser.
       API_BASE_URL: http://api:8080
+      # frontend/lib/logger.ts: JSON server logs (default) or plain
+      # console output (pretty, which dev.env sets).
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       # The MCP service's public URL, for the in-app chat (/chat,
       # /chat/callback, the CSP connect-src) and the /connect-claude
       # instructions page. Only the browser uses it; the frontend makes no

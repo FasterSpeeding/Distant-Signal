@@ -1,4 +1,7 @@
 import { headers } from 'next/headers';
+import { createLogger } from './logger';
+
+const log = createLogger('lib/siteOrigin');
 
 /** Resolves this deployment's own externally-reachable origin (scheme +
  * host, no trailing slash) for building ABSOLUTE URLs server-side --
@@ -78,7 +81,7 @@ export async function getSiteOrigin(): Promise<string> {
   // above); the real fix is setting the env var in the chart.
   if (!warnedMissingSiteUrl) {
     warnedMissingSiteUrl = true;
-    console.warn(
+    log.warn(
       'getSiteOrigin(): NEXT_PUBLIC_SITE_URL is not set -- falling back to the request Host header for ' +
         'share/invite links and same-origin checks. Set NEXT_PUBLIC_SITE_URL in production so these do not ' +
         'depend on a reverse proxy forwarding Host correctly.',
