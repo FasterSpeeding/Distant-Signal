@@ -4442,6 +4442,116 @@ mod db_tests {
             .expect("seed stanox_crs for fallback source test");
     }
 
+    /// The public times, exact working times and direction stored on
+    /// `schedule_calling_points_full` reach the stop, and the planner's
+    /// whole-day read sees the direction flags.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_calling_points_full_public_times_and_direction_reach_the_stop \
+                -- --ignored --test-threads=1`"]
+    async fn schedule_calling_points_full_public_times_and_direction_reach_the_stop() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-10-01".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PUB", service_date)
+                .await
+                .expect("find_or_create_train");
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-PUB'")
+            .execute(&pool)
+            .await
+            .ok();
+        let time = |s: &str| Some(s.parse::<chrono::NaiveTime>().unwrap());
+        let row = |seq: i16, tiploc: &str, kind: &str| {
+            crate::data::queries::ScheduleCallingPointsFullRow {
+                service_date,
+                uid: "TEST-JRN-PUB".to_string(),
+                seq,
+                tiploc: tiploc.to_string(),
+                kind: kind.to_string(),
+                ..Default::default()
+            }
+        };
+        crate::data::queries::upsert_schedule_calling_points_full(
+            &pool,
+            &[
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    booked_departure: time("15:59:00"),
+                    working_departure: time("15:59:30"),
+                    public_departure: time("15:59:00"),
+                    can_board: Some(true),
+                    can_alight: Some(false),
+                    request_stop: Some(false),
+                    ..row(0, "TEST-JRN-PUB-CAR", "origin")
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    working_pass: time("16:30:30"),
+                    can_board: Some(false),
+                    can_alight: Some(false),
+                    request_stop: Some(false),
+                    ..row(1, "TEST-JRN-PUB-JN", "intermediate")
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    booked_arrival: time("17:00:00"),
+                    booked_departure: time("17:02:00"),
+                    working_arrival: time("17:00:30"),
+                    working_departure: time("17:02:00"),
+                    public_arrival: time("17:01:00"),
+                    can_board: Some(false),
+                    can_alight: Some(true),
+                    request_stop: Some(false),
+                    ..row(2, "TEST-JRN-PUB-MTH", "intermediate")
+                },
+                crate::data::queries::ScheduleCallingPointsFullRow {
+                    booked_arrival: time("17:21:00"),
+                    working_arrival: time("17:21:00"),
+                    public_arrival: time("17:21:00"),
+                    can_board: Some(false),
+                    can_alight: Some(true),
+                    request_stop: Some(false),
+                    ..row(3, "TEST-JRN-PUB-GLC", "terminate")
+                },
+            ],
+        )
+        .await
+        .expect("seed schedule_calling_points_full");
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-PUB",
+            service_date,
+            None,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("stops");
+        let at = |s: &str| Some(s.parse::<DateTime<Utc>>().unwrap());
+        assert_eq!(stops.len(), 4);
+        assert_eq!(stops[1].timetable.working_pass, at("2026-10-01T15:30:30Z"));
+        let motherwell = &stops[2].timetable;
+        assert_eq!(motherwell.public_arrival, at("2026-10-01T16:01:00Z"));
+        assert_eq!(motherwell.public_departure, None);
+        assert_eq!(motherwell.working_arrival, at("2026-10-01T16:00:30Z"));
+        assert!(!motherwell.can_board && motherwell.can_alight);
+
+        let by_uid = crate::data::trip_planning::fetch_calling_points_for_date(&pool, service_date)
+            .await
+            .expect("fetch")
+            .expect("rows for the date");
+        let points = &by_uid["TEST-JRN-PUB"];
+        assert!(points[0].can_board && !points[0].can_alight);
+        assert!(!points[2].can_board && points[2].can_alight);
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid = 'TEST-JRN-PUB'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 build_journey_stops_falls_back_to_schedule_calling_points_full \

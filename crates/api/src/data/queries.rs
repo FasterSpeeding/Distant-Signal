@@ -9008,6 +9008,8 @@ mod schedule_destination_departures_query_tests {
                 "destination_arrival": null,
                 "destination_arrival_day_offset": 0,
                 "operator_atoc": null,
+                "public_departure": null,
+                "public_destination_arrival": null,
             }),
             "element shape is exactly what render::calling_point_departure_json reads"
         );
