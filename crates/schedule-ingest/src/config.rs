@@ -21,6 +21,38 @@ pub const DEFAULT_CIF_EXCLUDE_PATTERN: &str = "CORPUSExtract*";
 /// ignored (a stray).
 pub const DEFAULT_CORPUS_FILE_PATTERN: &str = "CORPUSExtract.json.gz";
 
+/// Sanity checks on each extracted CIF delivery before it is accepted
+/// (`cif_check.rs`); a delivery that fails one is quarantined.
+#[derive(Debug, Clone, clap::Args)]
+pub struct CifCheckArgs {
+    /// Quarantine a delivery whose MSN banner `Generated` date is more than
+    /// this many days before the delivery (a replayed old extract). Real
+    /// deliveries are generated the same day. 0 disables.
+    #[arg(long, env, default_value_t = 3)]
+    pub cif_max_generated_age_days: u32,
+
+    /// Quarantine an MCA with fewer schedule (`BS`) records. The real full
+    /// extract has ~505,000. 0 disables.
+    #[arg(long, env, default_value_t = 100_000)]
+    pub cif_min_schedules: u64,
+
+    /// Quarantine a delivery whose schedule (`BS`) or TIPLOC (`TI`) count
+    /// fell by more than this percentage since the last accepted delivery.
+    /// Real day-to-day changes are under 0.3%. 0 disables.
+    #[arg(long, env, default_value_t = 20, value_parser = clap::value_parser!(u32).range(0..=100))]
+    pub cif_max_record_drop_percent: u32,
+}
+
+impl CifCheckArgs {
+    pub fn checks(&self) -> crate::cif_check::CifChecks {
+        crate::cif_check::CifChecks {
+            max_generated_age_days: self.cif_max_generated_age_days,
+            min_schedules: self.cif_min_schedules,
+            max_drop_percent: self.cif_max_record_drop_percent,
+        }
+    }
+}
+
 /// Network Rail CORPUS loading (`corpus.rs`,
 /// docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md).
 #[derive(Debug, Clone, clap::Args)]
@@ -150,6 +182,10 @@ pub struct Config {
     /// about a dozen).
     #[arg(long, env, default_value_t = 64)]
     pub max_zip_entries: usize,
+
+    /// Content checks on each extracted delivery (`CIF_*`).
+    #[command(flatten)]
+    pub cif_checks: CifCheckArgs,
 
     /// How many consecutive polling cycles the delivery zip's mtime and
     /// size must be unchanged before it's treated as stable/complete —

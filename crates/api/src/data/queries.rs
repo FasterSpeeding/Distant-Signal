@@ -1095,17 +1095,34 @@ pub async fn insert_schedule_feed_ingest(
     delivered_at: chrono::DateTime<chrono::Utc>,
     ingested_at: chrono::DateTime<chrono::Utc>,
     files: &serde_json::Value,
+    source: &ScheduleFeedSource<'_>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO schedule_feed_ingests (delivered_at, ingested_at, files) VALUES ($1, $2, $3) \
+        "INSERT INTO schedule_feed_ingests \
+             (delivered_at, ingested_at, files, source_file, source_bytes, source_sha256) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT (delivered_at) DO NOTHING",
     )
     .bind(delivered_at)
     .bind(ingested_at)
     .bind(files)
+    .bind(source.file)
+    .bind(source.bytes)
+    .bind(source.sha256)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// The delivered zip behind a `schedule_feed_ingests` row: its name, size
+/// and SHA-256 as `schedule-ingest` read it (migration
+/// `20261001150000_schedule_feed_delivery_sha256.sql`). Every field is
+/// `None` for a record from a `schedule-ingest` that predates it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScheduleFeedSource<'a> {
+    pub file: Option<&'a str>,
+    pub bytes: Option<i64>,
+    pub sha256: Option<&'a str>,
 }
 
 /// The delivery directory name (`YYYYMMDDTHHMMSSZ`) whose `schedule-reference`
@@ -7523,6 +7540,77 @@ mod schedule_feed_ingest_query_tests {
             .expect("connect to postgres")
     }
 
+    /// The delivered zip's name, size and SHA-256 land in their columns,
+    /// and the per-file hashes stay inside `files`; a malformed hash is
+    /// refused by the column's CHECK.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_feed_insert_records_the_delivered_zip_provenance \
+                -- --ignored --test-threads=1`"]
+    async fn schedule_feed_insert_records_the_delivered_zip_provenance() {
+        use chrono::SubsecRound;
+
+        let pool = test_pool().await;
+        let delivered_at = (chrono::Utc::now() - chrono::Duration::days(400)).trunc_subsecs(0);
+        let sha = "ab".repeat(32);
+        let files =
+            serde_json::json!([{"name": "RJTTF975MCA.txt", "bytes": 3, "sha256": "cd".repeat(32)}]);
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            delivered_at,
+            &files,
+            &ScheduleFeedSource {
+                file: Some("timetable_full.zip"),
+                bytes: Some(77_222_226),
+                sha256: Some(&sha),
+            },
+        )
+        .await
+        .expect("insert with provenance");
+        let row: (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            serde_json::Value,
+        ) = sqlx::query_as(
+            "SELECT source_file, source_bytes, source_sha256, files \
+             FROM schedule_feed_ingests WHERE delivered_at = $1",
+        )
+        .bind(delivered_at)
+        .fetch_one(&pool)
+        .await
+        .expect("read back");
+        assert_eq!(row.0.as_deref(), Some("timetable_full.zip"));
+        assert_eq!(row.1, Some(77_222_226));
+        assert_eq!(row.2.as_deref(), Some(sha.as_str()));
+        assert_eq!(row.3, files);
+
+        let bad_at = delivered_at + chrono::Duration::seconds(1);
+        let err = insert_schedule_feed_ingest(
+            &pool,
+            bad_at,
+            bad_at,
+            &files,
+            &ScheduleFeedSource {
+                sha256: Some("NOT-A-SHA"),
+                ..ScheduleFeedSource::default()
+            },
+        )
+        .await;
+        assert!(
+            err.is_err(),
+            "the CHECK constraint refuses a malformed hash"
+        );
+
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE delivered_at IN ($1, $2)")
+            .bind(delivered_at)
+            .bind(bad_at)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture rows");
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_insert_then_last_fetch_returns_the_delivered_at \
@@ -7543,9 +7631,15 @@ mod schedule_feed_ingest_query_tests {
         let ingested_at = (delivered_at + chrono::Duration::minutes(5)).trunc_subsecs(6);
         let files = serde_json::json!([{"name": "TEST.DAT", "bytes": 123}]);
 
-        insert_schedule_feed_ingest(&pool, delivered_at, ingested_at, &files)
-            .await
-            .expect("insert schedule feed ingest");
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            ingested_at,
+            &files,
+            &ScheduleFeedSource::default(),
+        )
+        .await
+        .expect("insert schedule feed ingest");
 
         let last = last_schedule_feed_fetch(&pool)
             .await
@@ -7578,9 +7672,15 @@ mod schedule_feed_ingest_query_tests {
         let first_ingested_at = delivered_at.trunc_subsecs(6);
         let first_files = serde_json::json!([{"name": "TEST-A.DAT", "bytes": 111}]);
 
-        insert_schedule_feed_ingest(&pool, delivered_at, first_ingested_at, &first_files)
-            .await
-            .expect("insert schedule feed ingest");
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            first_ingested_at,
+            &first_files,
+            &ScheduleFeedSource::default(),
+        )
+        .await
+        .expect("insert schedule feed ingest");
 
         // Same delivered_at (this is the whole point -- a re-POST of an
         // already-recorded delivery, e.g. after schedule-ingest restarts),
@@ -7589,9 +7689,15 @@ mod schedule_feed_ingest_query_tests {
         // upsert.
         let second_ingested_at = (first_ingested_at + chrono::Duration::hours(1)).trunc_subsecs(6);
         let second_files = serde_json::json!([{"name": "TEST-B.DAT", "bytes": 222}]);
-        insert_schedule_feed_ingest(&pool, delivered_at, second_ingested_at, &second_files)
-            .await
-            .expect("re-insert schedule feed ingest with the same delivered_at");
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            second_ingested_at,
+            &second_files,
+            &ScheduleFeedSource::default(),
+        )
+        .await
+        .expect("re-insert schedule feed ingest with the same delivered_at");
 
         let last = last_schedule_feed_fetch(&pool)
             .await

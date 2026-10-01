@@ -91,6 +91,28 @@ All three are on the api (`crates/api/src/data/config.rs`), and are set in the c
 
 The `/account` page says "18 months" and "up to 14 days" (backups). If `PAST_TRAVEL_RETENTION_DAYS` or the backup retention changes, update that copy too: the account, account-deleted and privacy pages, and the delete-account dialog.
 
+## Schedule feed SFTP server logs
+
+The schedulefeed pod's SFTP server (SFTPGo, [schedule-feed-sftp.md](schedule-feed-sftp.md))
+is open to the internet. Its log holds the source IP of every connection, any
+username tried, and what was transferred; IPs are personal data when the
+client is a person. Lawful basis: legitimate interests (securing the one
+public-facing service, and evidencing what the timetable supplier delivered).
+Loki keeps these lines in three tiers (Ranma-Config `logging.yaml`, Alloy's
+`audit` stream label and Loki's `retention_stream`, per Ranma's
+`docs/specs/sftp-audit-observability.md`):
+
+| Lines | Retention | Why |
+|---|---|---|
+| Connections that never authenticate (scanners, the kubelet's probe), and everything else in the container's log | 7 days (Loki's default) | No reason to keep strangers' addresses |
+| Failed logins with a username, and defender bans (`audit="sftp-security"`) | 90 days | Long enough to see slow brute force and investigate an incident reported weeks later |
+| Successful logins, uploads and file commands, and schedule-ingest's `schedule_ingest::audit` decision lines (`audit="sftp-delivery"`) | 400 days | A year of deliveries plus a month for an annual supplier review or a dispute; in practice only the supplier's own addresses |
+
+The schedule-ingest decision line and the `schedule_feed_ingests` /
+`corpus_deliveries` rows hold file names, sizes and hashes only, no personal
+data. The privacy page's "Connections to our file-transfer server" entry
+states the three periods; keep it in step if they change.
+
 ## Backups
 
 Deleted or pruned data can stay in backups for **up to 14 days**. The account, account-deleted and privacy pages and the delete-account dialog say so (decided 2026-09-30).

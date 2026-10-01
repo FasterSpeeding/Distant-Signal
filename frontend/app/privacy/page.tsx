@@ -133,6 +133,14 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       retention: `Server logs are rotated within days. Our sign-in service keeps its event logs for ${LEGAL_CONFIG.SSO_LOG_RETENTION}. Cloudflare keeps its logs under its own policy.`,
     },
     {
+      title: 'Connections to our file-transfer server',
+      what: 'Our timetable supplier sends us files over a file-transfer (SFTP) server open to the internet. For every connection to it we log the IP address, the time, any username tried and what was transferred.',
+      why: 'To secure that server against break-in attempts, and to show which files we received from our supplier and when.',
+      basis: LEGITIMATE_INTERESTS,
+      retention:
+        '7 days for connections that never try to sign in, 90 days for failed sign-ins and blocked addresses, and 400 days for successful sign-ins and file transfers (in practice, only our supplier’s).',
+    },
+    {
       title: 'Backups',
       what: 'Encrypted daily copies of our database, which include the data above.',
       why: 'To recover from failures.',
