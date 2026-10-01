@@ -1,7 +1,8 @@
 name: Dependency vulnerability scan
 
-# Independent supply-chain vulnerability scan for Cargo.lock (workspace-wide)
-# and frontend/package-lock.json, distinct from what Renovate already does
+# Independent supply-chain vulnerability scan for Cargo.lock (workspace-wide),
+# frontend/package-lock.json and uv.lock (the scripts' lint tools), distinct
+# from what Renovate already does
 # (renovate.json5's osvVulnerabilityAlerts/vulnerabilityAlerts only opens a
 # version-bump PR when Renovate itself already knows to touch a dependency --
 # see docs/specs/dependency-security-scanning-investigation.md in the
@@ -16,7 +17,8 @@ name: Dependency vulnerability scan
 # google/osv-scanner v2.6.0 (confirmed live: `curl -sL
 # https://api.github.com/repos/google/osv-scanner/releases/tags/v2.6.0`,
 # published 2026-09-14) directly supports both lockfile formats used in this
-# repo (Cargo.lock, package-lock.json) in one invocation:
+# repo (Cargo.lock, package-lock.json, and uv.lock: its uv.lock extractor
+# found all 13 locked packages when checked on 2026-10-01) in one invocation:
 # `osv-scanner scan source -r .`. The binary + checksum below are pinned to
 # that exact release rather than resolved via `latest` or a floating tag.
 #
@@ -121,7 +123,7 @@ jobs:
           echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
 
-      - name: Scan Cargo.lock + frontend/package-lock.json (OSV-Scanner)
+      - name: Scan Cargo.lock + frontend/package-lock.json + uv.lock (OSV-Scanner)
         id: scan
         run: |
           set +e
