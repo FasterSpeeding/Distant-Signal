@@ -825,10 +825,10 @@ spec:
             summary: "schedule-ingest rejected a delivery zip"
             description: >-
               schedule-ingest in {{ "{{ $labels.namespace }}" }} refused to
-              extract the uploaded CIF delivery zip (over MAX_EXTRACTED_BYTES
-              or MAX_ZIP_ENTRIES, or an entry larger than it declares). The
+              accept the uploaded CIF delivery zip (over the extraction caps,
+              or failing a CIF content check: docs/schedule-feed-sftp.md). The
               timetable is not refreshed until a new upload replaces it. The
-              ingest container's error log names the reason.
+              schedule_ingest::audit log line names the reason.
         {{- /*
         N-2: api refused schedule-ingest's delivery record (400/413/422).
         The delivery is quarantined until a new upload, not retried.

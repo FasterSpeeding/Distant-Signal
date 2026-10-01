@@ -30,6 +30,7 @@
 //! costs one harmless redundant POST, not a silently swallowed gap.
 
 mod audit;
+mod cif_check;
 mod config;
 mod corpus;
 mod delivery;
@@ -413,11 +414,31 @@ async fn run_scan_cycle(
         max_total_bytes: config.max_extracted_bytes,
         max_entries: config.max_zip_entries,
     };
+    // The CIF content checks (`cif_check.rs`): run on the extracted files
+    // before the delivery is marked complete, against the last accepted
+    // delivery; a failure quarantines it like an over-cap zip.
+    let checks = config.cif_checks.checks();
+    let check = |extracted: &std::path::Path| -> anyhow::Result<()> {
+        let stats = cif_check::inspect(extracted)?;
+        let previous = cif_check::previous_stats(&config.storage_dir, &dir_name);
+        cif_check::check(&stats, previous.as_ref(), delivered_at, &checks)?;
+        tracing::info!(
+            zip = %zip_filename,
+            generated = %stats.generated,
+            sequence = ?stats.sequence,
+            schedules = stats.schedules,
+            tiplocs = stats.tiplocs,
+            previous_schedules = ?previous.as_ref().map(|p| p.schedules),
+            "CIF delivery passed its checks"
+        );
+        cif_check::write_stats(extracted, &stats)
+    };
     let extracted = match delivery::ensure_extracted(
         &zip_path,
         &config.storage_dir,
         &dir_name,
         limits,
+        check,
     ) {
         Ok((extracted, how)) => {
             tracing::info!(zip = %zip_filename, dir = %dir_name, outcome = ?how, sha256 = %delivered.sha256, "delivery directory complete");
@@ -920,10 +941,7 @@ mod tests {
         let watch_dir = tempfile::tempdir().unwrap();
         let storage_dir = tempfile::tempdir().unwrap();
 
-        let bytes = delivery::build_test_zip(&[
-            ("RJTTF942MCA.txt", b"mca content"),
-            ("RJTTF942MSN.txt", b"msn content"),
-        ]);
+        let bytes = real_zip();
         std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
 
         let config = test_config(watch_dir.path(), storage_dir.path());
@@ -972,12 +990,12 @@ mod tests {
 
         let delivery_dir = storage_dir.path().join(&entries[0]);
         assert_eq!(
-            std::fs::read_to_string(delivery_dir.join("RJTTF942MCA.txt")).unwrap(),
-            "mca content"
+            std::fs::read_to_string(delivery_dir.join("RJTTF975MCA.txt")).unwrap(),
+            cif_check::tests::MCA
         );
         assert_eq!(
-            std::fs::read_to_string(delivery_dir.join("RJTTF942MSN.txt")).unwrap(),
-            "msn content"
+            std::fs::read_to_string(delivery_dir.join("RJTTF975MSN.txt")).unwrap(),
+            cif_check::tests::delivery_files(Some(&today()))[1].1
         );
     }
 
@@ -988,7 +1006,7 @@ mod tests {
     async fn newer_corpus_named_files_never_displace_the_cif_zip() {
         let watch_dir = tempfile::tempdir().unwrap();
         let storage_dir = tempfile::tempdir().unwrap();
-        let cif = delivery::build_test_zip(&[("RJTTF942MCA.txt", b"mca content")]);
+        let cif = real_zip();
         std::fs::write(watch_dir.path().join("timetable_full.zip"), &cif).unwrap();
         std::thread::sleep(Duration::from_millis(20));
         let corpus_zip = delivery::build_test_zip(&[("CORPUSExtract.json", b"{}")]);
@@ -1029,8 +1047,8 @@ mod tests {
             .collect();
         assert_eq!(dirs.len(), 1);
         assert_eq!(
-            std::fs::read_to_string(dirs[0].join("RJTTF942MCA.txt")).unwrap(),
-            "mca content"
+            std::fs::read_to_string(dirs[0].join("RJTTF975MCA.txt")).unwrap(),
+            cif_check::tests::MCA
         );
         assert!(!dirs[0].join("CORPUSExtract.json").exists());
         let mut stray: Vec<&str> = known_stray_files.iter().map(String::as_str).collect();
@@ -1052,10 +1070,7 @@ mod tests {
     async fn an_oversized_zip_is_quarantined_not_retried_every_cycle() {
         let watch_dir = tempfile::tempdir().unwrap();
         let storage_dir = tempfile::tempdir().unwrap();
-        let bytes = delivery::build_test_zip(&[
-            ("RJTTF942MCA.txt", b"mca content"),
-            ("RJTTF942MSN.txt", b"msn content"),
-        ]);
+        let bytes = real_zip();
         let zip_path = watch_dir.path().join("timetable_full.zip");
         std::fs::write(&zip_path, &bytes).unwrap();
 
@@ -1104,10 +1119,7 @@ mod tests {
     async fn a_failing_post_does_not_re_extract_the_delivery_every_cycle() {
         let watch_dir = tempfile::tempdir().unwrap();
         let storage_dir = tempfile::tempdir().unwrap();
-        let bytes = delivery::build_test_zip(&[
-            ("RJTTF942MCA.txt", b"mca content"),
-            ("RJTTF942MSN.txt", b"msn content"),
-        ]);
+        let bytes = real_zip();
         std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
 
         let config = test_config(watch_dir.path(), storage_dir.path());
@@ -1145,7 +1157,7 @@ mod tests {
                 // First extraction (stability_cycles = 2): mark the file so a
                 // re-extraction would be visible.
                 assert_eq!(dirs.len(), 1);
-                std::fs::write(dirs[0].join("RJTTF942MCA.txt"), b"sentinel").unwrap();
+                std::fs::write(dirs[0].join("RJTTF975MCA.txt"), b"sentinel").unwrap();
                 marker_stamp = Some(
                     std::fs::metadata(dirs[0].join(common::schedule_delivery::COMPLETE_MARKER))
                         .unwrap()
@@ -1163,7 +1175,7 @@ mod tests {
             .collect();
         assert_eq!(dirs.len(), 1, "no scratch directories left behind");
         assert_eq!(
-            std::fs::read_to_string(dirs[0].join("RJTTF942MCA.txt")).unwrap(),
+            std::fs::read_to_string(dirs[0].join("RJTTF975MCA.txt")).unwrap(),
             "sentinel",
             "the delivery was not extracted again"
         );
@@ -1195,6 +1207,13 @@ mod tests {
             retention_keep_deliveries: 2,
             max_extracted_bytes: 4 * 1024 * 1024 * 1024,
             max_zip_entries: 64,
+            // The real-shaped fixture has 2 schedules: everything but the
+            // minimum is at its default.
+            cif_checks: config::CifCheckArgs {
+                cif_max_generated_age_days: 3,
+                cif_min_schedules: 1,
+                cif_max_record_drop_percent: 20,
+            },
             stability_cycles: 2,
             // Deliberately an address nothing listens on -- these tests
             // only exercise up to the POST attempt, not a real server.
@@ -1244,7 +1263,7 @@ mod tests {
 
             let watch_dir = tempfile::tempdir().unwrap();
             let storage_dir = tempfile::tempdir().unwrap();
-            let bytes = delivery::build_test_zip(&[("RJTTF942MCA.txt", b"mca content")]);
+            let bytes = real_zip();
             std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
 
             let mut config = test_config(watch_dir.path(), storage_dir.path());
@@ -1335,7 +1354,7 @@ mod tests {
 
             let watch_dir = tempfile::tempdir().unwrap();
             let storage_dir = tempfile::tempdir().unwrap();
-            let bytes = delivery::build_test_zip(&[("RJTTF942MCA.txt", b"mca content")]);
+            let bytes = real_zip();
             std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
             let zip_sha = audit::DeliveredFile::from_bytes("", &bytes).sha256;
 
@@ -1400,11 +1419,146 @@ mod tests {
             assert_eq!(posts[0]["source_sha256"], zip_sha.as_str());
             assert_eq!(
                 posts[0]["files"][0]["sha256"],
-                audit::DeliveredFile::from_bytes("", b"mca content")
+                audit::DeliveredFile::from_bytes("", cif_check::tests::MCA.as_bytes())
                     .sha256
                     .as_str()
             );
         }
+    }
+
+    /// Today's date as the RJTTF banner writes it, so a fixture delivery
+    /// written now passes the Generated-date check.
+    fn today() -> String {
+        Utc::now().format("%d/%m/%Y").to_string()
+    }
+
+    /// The real-shaped CIF delivery (tests/fixtures/cif_delivery_excerpt),
+    /// generated today.
+    fn real_zip() -> Vec<u8> {
+        cif_check::tests::delivery_zip(&today())
+    }
+
+    /// Runs `cycles` scan cycles against `watch_dir`/`storage_dir` with no
+    /// api listening; returns the quarantined mtime and the audit lines.
+    async fn run_cycles(
+        watch_dir: &std::path::Path,
+        storage_dir: &std::path::Path,
+        cycles: usize,
+    ) -> (Option<SystemTime>, Vec<serde_json::Value>) {
+        let config = test_config(watch_dir, storage_dir);
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let internal_oauth = test_oauth();
+        let mut tracker = StabilityTracker::new();
+        let mut known_stable = HashSet::new();
+        let mut known_stray_files = HashSet::new();
+        let mut last_ingested_mtime = None;
+        let mut pending_post = None;
+        let mut rejected_mtime = None;
+        let (guard, logs) = audit::tests::capture_default();
+        for _ in 0..cycles {
+            run_scan_cycle(
+                &client,
+                &config,
+                &Routing::defaults(),
+                &internal_oauth,
+                &mut tracker,
+                &mut known_stable,
+                &mut known_stray_files,
+                &mut last_ingested_mtime,
+                &mut pending_post,
+                &mut rejected_mtime,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        drop(guard);
+        assert!(
+            rejected_mtime.is_none() || pending_post.is_none(),
+            "a quarantined delivery is never also queued"
+        );
+        (rejected_mtime, logs.audit_lines())
+    }
+
+    /// A zip that is not a complete full CIF extract (here: the MCA cut
+    /// short, no ZZ trailer) is quarantined before it is marked complete:
+    /// nothing reaches storage_dir, one `quarantined` audit line gives the
+    /// reason, and later cycles do not retry it.
+    #[tokio::test]
+    async fn a_cif_that_fails_its_checks_is_quarantined_with_an_audit_line() {
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let truncated: String = cif_check::tests::MCA
+            .lines()
+            .take(9)
+            .map(|line| format!("{line}\r\n"))
+            .collect();
+        let mut files = cif_check::tests::delivery_files(Some(&today()));
+        files[0].1 = truncated;
+        let entries: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(name, text)| (*name, text.as_bytes()))
+            .collect();
+        let bytes = delivery::build_test_zip(&entries);
+        let zip_path = watch_dir.path().join("timetable_full.zip");
+        std::fs::write(&zip_path, &bytes).unwrap();
+
+        let (rejected_mtime, audit) = run_cycles(watch_dir.path(), storage_dir.path(), 5).await;
+
+        assert_eq!(
+            rejected_mtime,
+            Some(std::fs::metadata(&zip_path).unwrap().modified().unwrap())
+        );
+        assert_eq!(std::fs::read_dir(storage_dir.path()).unwrap().count(), 0);
+        assert_eq!(audit.len(), 1, "{audit:?}");
+        assert_eq!(audit[0]["outcome"], "quarantined");
+        assert_eq!(
+            audit[0]["sha256"],
+            audit::DeliveredFile::from_bytes("", &bytes).sha256.as_str()
+        );
+        let reason = audit[0]["reason"].as_str().unwrap();
+        assert!(reason.contains("ZZ"), "{reason}");
+    }
+
+    /// Compared with the last accepted delivery: a delivery whose schedule
+    /// count collapsed is quarantined, and the previous one stays the
+    /// newest complete delivery for schedule-reference.
+    #[tokio::test]
+    async fn a_delivery_much_smaller_than_the_last_accepted_one_is_quarantined() {
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let previous = storage_dir.path().join("20200101T000000Z");
+        std::fs::create_dir(&previous).unwrap();
+        std::fs::write(
+            previous.join(common::schedule_delivery::COMPLETE_MARKER),
+            "",
+        )
+        .unwrap();
+        cif_check::write_stats(
+            &previous,
+            &cif_check::CifStats {
+                generated: chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+                sequence: Some(974),
+                schedules: 505_342,
+                tiplocs: 12_096,
+            },
+        )
+        .unwrap();
+        std::fs::write(watch_dir.path().join("timetable_full.zip"), real_zip()).unwrap();
+
+        let (rejected_mtime, audit) = run_cycles(watch_dir.path(), storage_dir.path(), 3).await;
+
+        assert!(rejected_mtime.is_some());
+        assert_eq!(audit.len(), 1, "{audit:?}");
+        assert_eq!(audit[0]["outcome"], "quarantined");
+        let reason = audit[0]["reason"].as_str().unwrap();
+        assert!(reason.contains("fell from 505342 to 2"), "{reason}");
+        let mut dirs: Vec<String> = std::fs::read_dir(storage_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        dirs.sort();
+        assert_eq!(dirs, ["20200101T000000Z"]);
     }
 
     fn test_oauth() -> common::oauth_client::OAuthTokenCache {

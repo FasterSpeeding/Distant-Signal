@@ -3043,6 +3043,23 @@ scheduleFeed:
     # CORPUSExtract.json.gz (CORPUS) and CORPUSExtract.csv.gz (SMART berth
     # data); a zip of either must never be published as the timetable.
     cifExcludePattern: "CORPUSExtract*"
+    # -- Content checks on each extracted CIF delivery before it is marked
+    # complete (crates/schedule-ingest/src/cif_check.rs). Always on: the MCA
+    # must be a full CIF extract (an HD header with update indicator F,
+    # known record types, one ZZ trailer) and the MSN must carry a
+    # Generated date. A failure quarantines the delivery with the reason
+    # (DistantSignalScheduleFeedZipRejected) and the previous timetable
+    # stays in service. 0 disables each threshold below.
+    cifChecks:
+      # -- Days the MSN Generated date may trail the delivery (a replayed
+      # old extract). Real deliveries are generated the same day.
+      maxGeneratedAgeDays: 3
+      # -- Fewest schedule (BS) records an MCA may have; the real full
+      # extract has ~505,000.
+      minSchedules: 100000
+      # -- Largest drop, in percent, of the BS or TI record count since the
+      # last accepted delivery. Real day-to-day changes are under 0.3%.
+      maxRecordDropPercent: 20
   # -- Network Rail CORPUS location reference data, pushed by RDM to the SAME
   # SFTP account and landing folder as the CIF feed and loaded by the
   # `ingest` container into api's corpus_locations table (whole-table

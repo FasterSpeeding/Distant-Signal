@@ -313,7 +313,9 @@ pub enum Extraction {
 /// 2. Present but unmarked (written by a version before PL-6) and every
 ///    zip entry is on disk at exactly its recorded size: marks it complete.
 /// 3. Otherwise extracts into `storage_dir/.tmp-<dir_name>` (a stale one
-///    from a crash is removed first), fsyncs every file, writes the marker,
+///    from a crash is removed first), runs `check` on the extracted
+///    directory (an `Err` -- a [`RejectedZip`] for a permanent problem --
+///    removes it and is returned), fsyncs every file, writes the marker,
 ///    fsyncs the directory, and renames it into place. A pre-existing
 ///    unmarked (so incomplete) final directory is first renamed aside and
 ///    removed after the swap. `storage_dir` is on one volume, so each rename
@@ -323,6 +325,7 @@ pub fn ensure_extracted(
     storage_dir: &Path,
     dir_name: &str,
     limits: ExtractLimits,
+    check: impl FnOnce(&Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<(Vec<ExtractedFile>, Extraction)> {
     let final_dir = storage_dir.join(dir_name);
     if let Some(files) = read_marker(&final_dir)? {
@@ -340,7 +343,12 @@ pub fn ensure_extracted(
     if temp_dir.exists() {
         std::fs::remove_dir_all(&temp_dir)?;
     }
-    let files = match extract_zip(zip_path, &temp_dir, limits) {
+    // The content checks (`cif_check.rs`) run on the extracted files before
+    // the marker exists, so a delivery that fails them is never visible to
+    // `schedule-reference`.
+    let files = match extract_zip(zip_path, &temp_dir, limits)
+        .and_then(|files| check(&temp_dir).map(|()| files))
+    {
         Ok(files) => files,
         Err(err) => {
             // Free the space now: a partial (or rejected, oversized)
@@ -843,10 +851,57 @@ mod tests {
             max_total_bytes: 1,
             max_entries: 64,
         };
-        let err =
-            ensure_extracted(&zip_path, storage.path(), "20260903T172830Z", limits).unwrap_err();
+        let err = ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            limits,
+            |_| Ok(()),
+        )
+        .unwrap_err();
         assert!(is_rejected(&err));
         assert!(names_in(storage.path()).is_empty());
+    }
+
+    /// The content check sees the extracted files before the marker, and a
+    /// failure leaves no directory (so schedule-reference never sees it);
+    /// files it adds (the CIF stats) end up in the delivery.
+    #[test]
+    fn ensure_extracted_runs_the_check_before_marking_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = fixture_zip(dir.path());
+        let storage = tempfile::tempdir().unwrap();
+        let err = ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            ExtractLimits::default(),
+            |extracted| {
+                assert!(extracted.join("RJTTF942MCA.txt").is_file());
+                assert!(!extracted.join(COMPLETE_MARKER).exists());
+                Err(RejectedZip("not CIF".to_string()).into())
+            },
+        )
+        .unwrap_err();
+        assert!(is_rejected(&err));
+        assert_eq!(err.to_string(), "zip delivery rejected: not CIF");
+        assert!(names_in(storage.path()).is_empty());
+
+        let (_, how) = ensure_extracted(
+            &zip_path,
+            storage.path(),
+            "20260903T172830Z",
+            ExtractLimits::default(),
+            |extracted| Ok(std::fs::write(extracted.join(".cif-stats.json"), "{}")?),
+        )
+        .unwrap();
+        assert_eq!(how, Extraction::Extracted);
+        assert!(
+            storage
+                .path()
+                .join("20260903T172830Z/.cif-stats.json")
+                .is_file()
+        );
     }
 
     #[test]
@@ -945,6 +1000,7 @@ mod tests {
             storage.path(),
             "20260903T172830Z",
             ExtractLimits::default(),
+            |_| Ok(()),
         )
         .unwrap();
         files.sort();
@@ -1010,6 +1066,7 @@ mod tests {
             storage.path(),
             "20260903T172830Z",
             ExtractLimits::default(),
+            |_| Ok(()),
         )
         .unwrap();
         let mca = storage.path().join("20260903T172830Z/RJTTF942MCA.txt");
@@ -1021,6 +1078,7 @@ mod tests {
                 storage.path(),
                 "20260903T172830Z",
                 ExtractLimits::default(),
+                |_| Ok(()),
             )
             .unwrap();
             assert_eq!(how, Extraction::AlreadyComplete);
@@ -1046,6 +1104,7 @@ mod tests {
             storage.path(),
             "20260903T172830Z",
             ExtractLimits::default(),
+            |_| Ok(()),
         )
         .unwrap();
 
@@ -1077,6 +1136,7 @@ mod tests {
             storage.path(),
             "20260903T172830Z",
             ExtractLimits::default(),
+            |_| Ok(()),
         )
         .unwrap();
 
@@ -1103,6 +1163,7 @@ mod tests {
             storage.path(),
             "20260903T172830Z",
             ExtractLimits::default(),
+            |_| Ok(()),
         )
         .unwrap();
 

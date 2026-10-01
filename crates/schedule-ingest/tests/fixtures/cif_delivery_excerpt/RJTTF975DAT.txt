@@ -1,0 +1,8 @@
+/!! Start of file                                                               
+/!! Content type:  DAT                                                          
+/!! Sequence:      975                                                          
+/!! Generated:     30/09/2026                                                   
+/!! Exporter:      RjEhrTTT                                                     
+RJTTF975MCA.txt                                                                 
+RJTTF975MSN.txt                                                                 
+/!! End of file (2 records) (30/09/2026)                                        

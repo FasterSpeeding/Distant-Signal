@@ -393,6 +393,14 @@ spec:
               value: {{ .Values.scheduleFeed.ingest.cifFilePattern | quote }}
             - name: CIF_EXCLUDE_PATTERN
               value: {{ .Values.scheduleFeed.ingest.cifExcludePattern | quote }}
+            # Content checks on each CIF delivery before it is accepted
+            # (scheduleFeed.ingest.cifChecks, crates/schedule-ingest/src/cif_check.rs).
+            - name: CIF_MAX_GENERATED_AGE_DAYS
+              value: {{ .Values.scheduleFeed.ingest.cifChecks.maxGeneratedAgeDays | int | quote }}
+            - name: CIF_MIN_SCHEDULES
+              value: {{ .Values.scheduleFeed.ingest.cifChecks.minSchedules | int64 | quote }}
+            - name: CIF_MAX_RECORD_DROP_PERCENT
+              value: {{ .Values.scheduleFeed.ingest.cifChecks.maxRecordDropPercent | int | quote }}
             - name: CORPUS_INGEST_ENABLED
               value: {{ .Values.scheduleFeed.corpus.enabled | quote }}
             - name: CORPUS_FILE_PATTERN

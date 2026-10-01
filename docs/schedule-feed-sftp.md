@@ -297,7 +297,46 @@ from SFTPGo's startup log after a deploy:
 ## Delivery checks
 
 schedule-ingest (`crates/schedule-ingest`) reads what lands in the push
-account's directory straight off the shared volume.
+account's directory straight off the shared volume. Anyone with the password
+can upload, so nothing is trusted because it arrived.
+
+### CIF checks
+
+Before a delivery is marked complete (so before schedule-reference can
+publish from it), schedule-ingest checks it. A failure quarantines the
+delivery: an `error` log line and a `quarantined` audit line give the reason,
+`schedule_feed_zip_rejected_total` counts it
+(`DistantSignalScheduleFeedZipRejected`), the extraction is deleted, and the
+previous timetable stays in service until a new upload replaces the zip.
+
+| Check | Where | Real deliveries (2026-09-28 to 09-30) |
+| --- | --- | --- |
+| Zip: at most 64 entries and 4 GiB uncompressed; each entry inflates to its declared size; no nested or escaping paths | `delivery.rs` (PL-5, before this work) | ~12 entries, ~730 MB |
+| Exactly one `RJTTF*MCA.txt` and one `RJTTF*MSN.txt` | `cif_check.rs` | `RJTTF97xMCA.txt`, `RJTTF97xMSN.txt` |
+| MCA starts with an `HD` record whose update indicator (column 47) is `F` (full extract), has no other `HD`, and ends with exactly one `ZZ` (not truncated) | `cif_check.rs` | all three |
+| Every MCA record type is a CIF one (`HD TI TA TD AA BS BX TN LO LI CR LT LN ZZ`) | `cif_check.rs` | `HD TI AA BS BX LO LI CR LT ZZ` |
+| The MSN banner has `/!! Generated: dd/mm/yyyy`, at most one day after the delivery date and at most `cifChecks.maxGeneratedAgeDays` (3) before it | `cif_check.rs` | generated the delivery day |
+| `Generated` is not older than the last accepted delivery's | `cif_check.rs` | 28/09, 29/09, 30/09 |
+| At least `cifChecks.minSchedules` (100,000) `BS` records | `cif_check.rs` | 504,182 to 505,342 |
+| `BS` and `TI` counts fell by at most `cifChecks.maxRecordDropPercent` (20%) since the last accepted delivery | `cif_check.rs` | changes under 0.3% (`TI` 12,095 to 12,096) |
+
+The `HD` record's own dates are not checked: they are a fixed 2011 dataset
+identity (`TPS.UCFCATE.PD110719`, user dates `190711`–`300912`) carried in
+every real extract, so a check on them would reject every delivery. The
+counts of the last accepted delivery are saved as `.cif-stats.json` in its
+directory; for a delivery accepted before that file existed, its MCA is read
+once to rebuild it. The checks run on the real-shaped excerpt in
+`crates/schedule-ingest/tests/fixtures/cif_delivery_excerpt/` (records copied
+from the 2026-09-30 delivery, CRLF, 80 columns).
+
+To accept a legitimate delivery a check refuses (for example, a genuine large
+timetable change), set that threshold to `0` in
+`scheduleFeed.ingest.cifChecks`; the pod restarts and re-reads the zip.
+Restore it afterwards.
+
+CORPUS keeps its own checks (`corpus.rs`): gzip, a size cap on
+decompression, the `TIPLOCDATA` JSON shape, every row with an NLC, and at
+least `scheduleFeed.corpus.minRows` (10,000) rows.
 
 ### Provenance and the audit line
 
