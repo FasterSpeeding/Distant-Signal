@@ -28,6 +28,10 @@ use schedule_query::{
 use crate::csa::{JourneyLeg, TrainLeg, TransferLeg};
 use crate::restrictions::{self, Restrictions};
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a journey has a handful of legs and rounds"
+)]
 fn train_leg_count(legs: &[JourneyLeg]) -> u32 {
     legs.iter()
         .filter(|leg| matches!(leg, JourneyLeg::Train(_)))
@@ -191,7 +195,10 @@ fn ready_source_at(
 /// `relax_fixed_links_in_round` safe (every link has strictly positive
 /// `minutes`, and there are finitely many CRS codes, so this always
 /// terminates -- same reasoning as `csa::Scan::relax`'s own doc comment).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 fn relax_in_round(
     round: &mut RoundState,
     touched: &mut HashSet<String>,
@@ -224,6 +231,10 @@ fn relax_in_round(
     );
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
+)]
 fn relax_fixed_links_in_round(
     round: &mut RoundState,
     touched: &mut HashSet<String>,
@@ -275,7 +286,10 @@ fn relax_fixed_links_in_round(
 /// the returned Pareto set -- see the `_reports_no_improvement` test below,
 /// which is what `raptor_search`'s early-termination `break` actually
 /// relies on being true.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 fn run_one_round<'c>(
     previous: &RoundState,
     connections: impl IntoIterator<Item = &'c Connection>,
@@ -297,31 +311,30 @@ fn run_one_round<'c>(
             reachable_trip.remove(&connection.uid);
             continue;
         }
-        let ride = match reachable_trip.get(&connection.uid) {
-            Some(&ride) => ride,
-            None => {
-                // No fresh boarding at a set-down-only stop.
-                if !connection.can_board {
-                    continue;
-                }
-                let Some(source) = ready_source_at(
-                    &previous.arrival,
-                    origin,
-                    departure_min,
-                    interchange,
-                    restrictions,
-                    &connection.from_tiploc,
-                ) else {
-                    continue;
-                };
-                if source.time > connection.departure_min {
-                    continue;
-                }
-                current.boardings.push((connection.clone(), source.from));
-                let ride = current.boardings.len() - 1;
-                reachable_trip.insert(connection.uid.clone(), ride);
-                ride
+        let ride = if let Some(&ride) = reachable_trip.get(&connection.uid) {
+            ride
+        } else {
+            // No fresh boarding at a set-down-only stop.
+            if !connection.can_board {
+                continue;
             }
+            let Some(source) = ready_source_at(
+                &previous.arrival,
+                origin,
+                departure_min,
+                interchange,
+                restrictions,
+                &connection.from_tiploc,
+            ) else {
+                continue;
+            };
+            if source.time > connection.departure_min {
+                continue;
+            }
+            current.boardings.push((connection.clone(), source.from));
+            let ride = current.boardings.len() - 1;
+            reachable_trip.insert(connection.uid.clone(), ride);
+            ride
         };
         // No arrival at a pick-up-only stop; the ride carries on.
         if connection.can_alight {
@@ -342,14 +355,14 @@ fn run_one_round<'c>(
     (current, improved)
 }
 
-pub fn raptor_search(options: RaptorOptions) -> Vec<RaptorJourney> {
+pub fn raptor_search(options: RaptorOptions<'_>) -> Vec<RaptorJourney> {
     raptor_search_with_overlay(options, None)
 }
 
 /// [`raptor_search`] over the base array with `overlay`'s trains replaced
 /// -- see [`crate::overlay`].
 pub fn raptor_search_with_overlay(
-    options: RaptorOptions,
+    options: RaptorOptions<'_>,
     overlay: Option<&crate::overlay::ConnectionOverlay>,
 ) -> Vec<RaptorJourney> {
     raptor_search_restricted(options, overlay, None)
@@ -357,8 +370,14 @@ pub fn raptor_search_with_overlay(
 
 /// [`raptor_search_with_overlay`] honouring `restrictions` -- see
 /// [`crate::restrictions`].
+#[expect(
+    clippy::expect_used,
+    clippy::needless_pass_by_value,
+    clippy::similar_names,
+    reason = "the invariant is established just above; the expect message names it; public planner API takes its options and overlay by value; the similar names are distinct domain terms"
+)]
 pub fn raptor_search_restricted(
-    options: RaptorOptions,
+    options: RaptorOptions<'_>,
     overlay: Option<&crate::overlay::ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
 ) -> Vec<RaptorJourney> {
@@ -438,7 +457,7 @@ fn build_pareto_set(
         let Some(best_tiploc) = best_tiploc else {
             continue;
         };
-        if !(best_arrival < running_best) {
+        if best_arrival >= running_best {
             continue;
         }
 
@@ -470,6 +489,10 @@ fn build_pareto_set(
 /// to the origin -- a `'train'` step also steps back one round (that
 /// boarding's readiness was computed from round `k-1`'s frozen arrivals); a
 /// `'link'` step stays within the same round (a walk is never a change).
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
+)]
 fn reconstruct_legs(
     end_tiploc: &str,
     start_round: usize,
@@ -516,7 +539,7 @@ fn reconstruct_legs(
                     departure_min: boarded.departure_min,
                     arrival_min: connection.arrival_min,
                 }));
-                stop = source.clone();
+                stop.clone_from(source);
                 // The boarding read the labels of the round before the one
                 // it was made in.
                 round_index = ridden_round - 1;

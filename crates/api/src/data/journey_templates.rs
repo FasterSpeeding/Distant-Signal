@@ -316,6 +316,11 @@ async fn insert_template_leg(
 /// an empty array with 400 before this is ever called (see Task 3's own
 /// validation step), so [`materialize_template`] can safely assume every
 /// stored template has at least one leg.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "a template has a handful of legs"
+)]
 pub async fn create_template(
     pool: &PgPool,
     user_id: &str,
@@ -439,7 +444,12 @@ pub async fn list_templates_for_user(
 /// [`validate_template_recurrence`] -- this function trusts its caller and
 /// otherwise relies on the table's own CHECK constraints (Task 1's
 /// migration) as a last-resort guard.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; a template has a handful of legs"
+)]
 pub async fn replace_template(
     pool: &PgPool,
     template_id: i64,
@@ -529,7 +539,7 @@ pub struct MaterializedJourney {
 /// = NULL`, `service_date = service_date` (the caller's target date, not
 /// "today" -- there is no implicit "today" default anywhere in this
 /// function, matching this codebase's established "every leg-creation
-/// wire type requires an explicit service_date" convention). The
+/// wire type requires an explicit `service_date`" convention). The
 /// template's own `default_match_mode`/`auto_commit_rule` are READ (via
 /// [`get_owned_template`]) but never inspected for this decision -- Phase
 /// B's materialization is unconditionally manual-pick, regardless of what
@@ -908,6 +918,10 @@ mod validate_template_recurrence_tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    reason = "test code: fixtures sit next to their use"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;

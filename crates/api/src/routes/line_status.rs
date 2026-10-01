@@ -1,6 +1,6 @@
 //! The four TfL-shaped read endpoints: `/Line/Mode/{modes}/Status`,
 //! `/Line/{ids}/Status`, `/StopPoint/{crs}/Disruption`,
-//! `/Line/{id}/Status/{from}/to/{to}`. Unauthenticated, matching TfL's own
+//! `/Line/{id}/Status/{from}/to/{to}`. Unauthenticated, matching `TfL`'s own
 //! public API — including its URL scheme: `main.rs` merges this crate's
 //! `router()` directly onto the top-level router (unprefixed), not
 //! nested under `/public` like `routes::public_router()`'s other routes,
@@ -96,8 +96,8 @@ fn to_report(row: queries::LineStatusRow) -> LineStatusReport {
     }
 }
 
-/// TfL line ids whose statuses should be fetched to overlay onto `rows` --
-/// one per row that has a TfL counterpart per `common::tfl_line_id_for_nr`.
+/// `TfL` line ids whose statuses should be fetched to overlay onto `rows` --
+/// one per row that has a `TfL` counterpart per `common::tfl_line_id_for_nr`.
 /// Pure so it's testable without a database.
 fn tfl_ids_to_overlay(rows: &[queries::LineStatusRow]) -> Vec<String> {
     rows.iter()
@@ -106,8 +106,8 @@ fn tfl_ids_to_overlay(rows: &[queries::LineStatusRow]) -> Vec<String> {
         .collect()
 }
 
-/// The TfL counterpart's statuses for one NR row, if it has one and that
-/// row was actually found in `tfl_rows` (it may not be, if the TfL feed
+/// The `TfL` counterpart's statuses for one NR row, if it has one and that
+/// row was actually found in `tfl_rows` (it may not be, if the `TfL` feed
 /// dropped the line since the last poll -- see
 /// `queries::upsert_tfl_line_status`'s prune). Pure so it's testable
 /// without a database.
@@ -155,6 +155,10 @@ fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
 /// (`routes::incidents::get_incident`'s `currentlyAffectsLines`). This
 /// function stays as the `LineStatusRow`-shaped entry point its three
 /// callers here already use; its behaviour is unchanged.
+#[expect(
+    clippy::ref_option,
+    reason = "callers hold the Option by reference in a struct field"
+)]
 async fn filter_private_custom_rows(
     pool: &sqlx::PgPool,
     rows: Vec<queries::LineStatusRow>,
@@ -174,7 +178,7 @@ async fn filter_private_custom_rows(
 /// five are written by `crates/poller-tfl` via `/private/tfl-line-status`.
 ///
 /// The list is closed rather than "anything in the database" so that a
-/// typo, or a real TfL mode this app deliberately does not ingest (`bus`,
+/// typo, or a real `TfL` mode this app deliberately does not ingest (`bus`,
 /// `river-bus`, `cable-car`), gets a 400 that names the problem instead of
 /// an empty array that reads as "no disruption anywhere".
 const SUPPORTED_MODES: [&str; 6] = [
@@ -186,8 +190,8 @@ const SUPPORTED_MODES: [&str; 6] = [
     "tram",
 ];
 
-/// Splits and validates TfL's comma-separated `{modes}` path segment.
-/// Comma-separated modes are TfL's own contract for this URL — mimicking it
+/// Splits and validates `TfL`'s comma-separated `{modes}` path segment.
+/// Comma-separated modes are `TfL`'s own contract for this URL — mimicking it
 /// is the whole point of these four endpoints — and it lets the frontend
 /// fetch every displayed line in one request rather than six.
 fn parse_modes(raw: &str) -> Result<Vec<String>, String> {
@@ -369,7 +373,7 @@ async fn get_stop_point_disruption(
 
     let disruptions: Vec<Value> = rows
         .into_iter()
-        .flat_map(|row| {
+        .filter_map(|row| {
             let computed_at = row.computed_at;
             let statuses: Vec<LineStatus> = row
                 .statuses
@@ -413,6 +417,10 @@ async fn get_stop_point_disruption(
 /// refusal is indistinguishable from "no such line" and cannot be used to
 /// confirm a private line exists. `None` means "carry on and query."
 /// Callers write `if let Some(empty) = ... { return Ok(empty); }`.
+#[expect(
+    clippy::ref_option,
+    reason = "callers hold the Option by reference in a struct field"
+)]
 async fn empty_if_unreadable(
     pool: &sqlx::PgPool,
     id: &str,
@@ -467,8 +475,13 @@ async fn get_line_status_history(
 /// Derives the four rate/average fields from one stored rollup row,
 /// guarding every division against a zero denominator -- a day CAN have
 /// total: 0 if every contributing cycle itself had total: 0 (rare given
-/// min_sample_size, not impossible). Pure so it's unit-testable without a
+/// `min_sample_size`, not impossible). Pure so it's unit-testable without a
 /// database.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::needless_pass_by_value,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact; callers hand over values they no longer need"
+)]
 pub(crate) fn daily_stats_to_json(row: queries::DailyStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
@@ -526,6 +539,11 @@ async fn get_line_daily_stats(
 /// `day`. Originally `hourly_stats_to_json` emitting `hourStart`; renamed
 /// alongside the table/route when the bucket size was halved -- see git
 /// history for the hourly-era version.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::needless_pass_by_value,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact; callers hand over values they no longer need"
+)]
 pub(crate) fn half_hourly_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
@@ -583,6 +601,11 @@ async fn get_line_half_hourly_stats(
 /// -- they share this one function the same way they share
 /// `queries::sub_daily_stats_for_range` itself (Decision 2 of
 /// docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md).
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::needless_pass_by_value,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact; callers hand over values they no longer need"
+)]
 pub(crate) fn sub_daily_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
@@ -655,6 +678,11 @@ async fn get_line_six_hourly_stats(
 /// rate-derivation logic, `resolvedWindows` in place of `sampleCycles`.
 /// See docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
 /// Decision 4.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::needless_pass_by_value,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact; callers hand over values they no longer need"
+)]
 fn daily_coverage_stats_to_json(row: queries::DailyCoverageStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
@@ -712,6 +740,11 @@ async fn get_line_daily_coverage_stats(
 /// Half-hourly sibling of `daily_coverage_stats_to_json`, `halfHourStart`
 /// in place of `day` -- mirrors `half_hourly_stats_to_json`'s own
 /// relationship to `daily_stats_to_json`.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::needless_pass_by_value,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact; callers hand over values they no longer need"
+)]
 fn half_hourly_coverage_stats_to_json(row: queries::HalfHourlyCoverageStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
@@ -829,6 +862,10 @@ pub(crate) fn half_hourly_retention(app: &App) -> chrono::Duration {
     chrono::Duration::hours(app.config.half_hourly_stats_retention_hours)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "line status query failed");
     (
@@ -838,6 +875,10 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "test code: exact expected values are the point"
+)]
 mod tests {
     use super::*;
 
@@ -1161,6 +1202,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a zero denominator must yield exactly 0.0"
+    )]
     fn daily_stats_to_json_zero_total_and_running_count_never_produces_nan_or_infinity() {
         let row = daily_stats_row(0, 0, 0, 0, 0, 0.0);
         let json = daily_stats_to_json(row);
@@ -1571,6 +1616,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a zero denominator must yield exactly 0.0"
+    )]
     fn daily_coverage_stats_to_json_zero_total_and_running_count_never_produces_nan_or_infinity() {
         let row = daily_coverage_stats_row(0, 0, 0, 0, 0, 0.0);
         let json = daily_coverage_stats_to_json(row);
@@ -1732,6 +1781,7 @@ mod db_tests {
     use axum::http::{Request, StatusCode, header};
     use serde_json::Value;
     use sqlx::PgPool;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     use crate::app::{App, AppState};
@@ -1824,7 +1874,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
-            schedule_crs_line_index: std::collections::HashMap::new(),
+            schedule_crs_line_index: HashMap::new(),
         })
     }
 
@@ -1955,7 +2005,7 @@ mod db_tests {
             sample_stations: vec![],
             match_keywords: vec![],
             excluded_keywords: vec![],
-            severity_overrides: Default::default(),
+            severity_overrides: HashMap::default(),
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,

@@ -313,7 +313,7 @@ fn tiploc_key(raw_tiploc: &str) -> String {
 /// was "reached" is still answered by `actual_arrival`/`actual_departure`
 /// alone, exactly as before this type existed.
 ///
-/// Plain PascalCase variant names on the wire, no `rename_all` override --
+/// Plain `PascalCase` variant names on the wire, no `rename_all` override --
 /// matching `schedule_query::CallingPointKind`'s own convention, the field
 /// this one sits right next to on every `JourneyStop`
 /// (`frontend/lib/types.ts`'s `JourneyStopKind` mirrors it the same way).
@@ -505,7 +505,7 @@ impl JourneyStop {
         // can't just be `service_date` unconditionally: a real overnight
         // service's post-midnight calling points are really the NEXT
         // calendar day.
-        let calling_point_date = service_date + Duration::days(cp.day_offset as i64);
+        let calling_point_date = service_date + Duration::days(i64::from(cp.day_offset));
         // The departure's own day: a stop that dwells across midnight
         // (arrive 23:55, depart 00:02) departs the day after its stored
         // `day_offset`, which is its arrival's (R-043).
@@ -791,7 +791,10 @@ fn raw_calling_point_from_full_row(
 /// is then overlaid with this train's row on its station's current Darwin
 /// departure board, where `poller-ldbws` samples that station and exactly
 /// one row is this train, by `stop_board::apply_station_sample_board`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub async fn build_journey_stops(
     pool: &PgPool,
     trains_id: i64,
@@ -849,6 +852,10 @@ pub struct JourneyStopsRequest<'a> {
 /// parse, or its fallback read fails) is that train's own `Err`, so one bad
 /// leg still can't blank the others; a failure of a shared read is the
 /// outer `Err`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn build_journey_stops_batch(
     pool: &PgPool,
     requests: &[JourneyStopsRequest<'_>],
@@ -1044,8 +1051,8 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
         let Some(event) = assignment[index].map(|event_index| &events[event_index]) else {
             continue;
         };
-        stop.last_event_type = event.event_type.clone();
-        stop.variation_status = event.variation_status.clone();
+        stop.last_event_type.clone_from(&event.event_type);
+        stop.variation_status.clone_from(&event.variation_status);
 
         match event.event_type.as_deref() {
             Some("ARRIVAL") => {
@@ -1376,6 +1383,10 @@ const DEFAULT_REVISIT_GAP: Duration = Duration::minutes(30);
 /// to the earlier call rather than the later one -- there is nothing in the
 /// data to say the train skipped ahead. Any other reported stop resolves
 /// it, because the cursor has already moved past the earlier call by then.
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
 fn assign_events_to_stops(
     stops: &[JourneyStop],
     events: &[queries::MovementEventRow],
@@ -1508,6 +1519,10 @@ fn revisit_gap(stops: &[JourneyStop], crs_calls: &[usize]) -> Duration {
 /// joins the LAST visit -- keeping the old "latest reported event wins"
 /// behaviour for it rather than inventing a position for it. Reports that
 /// are all untimed therefore form a single visit.
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
 fn split_into_visits(
     events: &[queries::MovementEventRow],
     report_indices: &[usize],
@@ -1652,7 +1667,7 @@ pub fn apply_delay_estimates(stops: &mut [JourneyStop], current_delay_minutes: O
     let Some(delay_minutes) = current_delay_minutes else {
         return;
     };
-    let delay = Duration::minutes(delay_minutes as i64);
+    let delay = Duration::minutes(i64::from(delay_minutes));
     for stop in stops.iter_mut() {
         if stop.actual_arrival.is_none() {
             stop.estimated_arrival = stop.scheduled_arrival.map(|t| t + delay);
@@ -1799,7 +1814,7 @@ pub(crate) mod test_support {
             live_status: None,
             late_minutes: None,
             board: None,
-            timetable: Default::default(),
+            timetable: StopTimetable::default(),
         }
     }
 }
@@ -1833,7 +1848,7 @@ mod tests {
             live_status: None,
             late_minutes: None,
             board: None,
-            timetable: Default::default(),
+            timetable: StopTimetable::default(),
         }
     }
 
@@ -1848,7 +1863,7 @@ mod tests {
             booked_departure: "08:01:00".parse().ok(),
             day_offset: 0,
             platform: None,
-            timetable: Default::default(),
+            timetable: RawTimetable::default(),
         }
     }
 
@@ -2361,7 +2376,7 @@ mod tests {
             booked_departure: None,
             day_offset: 0,
             platform: None,
-            timetable: Default::default(),
+            timetable: RawTimetable::default(),
         };
 
         let stops = stops_from_calling_points(&[cp], &tiploc_to_crs, service_date);
@@ -2443,7 +2458,7 @@ mod tests {
                 booked_departure: None,
                 day_offset: 0,
                 platform: None,
-                timetable: Default::default(),
+                timetable: RawTimetable::default(),
             };
             assert!(!is_unresolved_booked_stop(&cp, None));
         }
@@ -3882,6 +3897,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -3901,13 +3920,13 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_from_calling_points_json_resolves_tiploc_to_crs_and_kind() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-CP", service_date)
                 .await
                 .expect("find_or_create_train");
 
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 common::StanoxCrsRecord {
@@ -3999,7 +4018,7 @@ mod db_tests {
                 build_journey_stops_batch_matches_the_per_train_build -- --ignored --test-threads=1`"]
     async fn build_journey_stops_batch_matches_the_per_train_build() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let train = |uid: &'static str| {
             let pool = pool.clone();
             async move {
@@ -4014,7 +4033,7 @@ mod db_tests {
             train("TEST-JRNB-C").await,
             train("TEST-JRNB-D").await,
         );
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 ("TEST-JRNB-1", "ZBA", "TEST-JRNB-X"),
@@ -4220,7 +4239,7 @@ mod db_tests {
             change_time_minutes: None,
         })
         .collect();
-        crate::data::queries::upsert_stanox_crs(&pool, &records)
+        queries::upsert_stanox_crs(&pool, &records)
             .await
             .expect("seed stanox_crs");
 
@@ -4374,7 +4393,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_resolves_a_space_padded_sub_seven_char_tiploc() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-14".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-14".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PAD", service_date)
                 .await
@@ -4385,7 +4404,7 @@ mod db_tests {
             .await
             .ok();
 
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 common::StanoxCrsRecord {
@@ -4482,24 +4501,20 @@ mod db_tests {
     /// setup. TIPLOCs are just the given CRS prefixed with `tiploc_prefix`
     /// so each test's own fixture rows stay visually paired with their
     /// resolved CRS.
-    async fn seed_fallback_stanox_crs(
-        pool: &sqlx::PgPool,
-        tiploc_prefix: &str,
-        crs_codes: &[&str],
-    ) {
+    async fn seed_fallback_stanox_crs(pool: &PgPool, tiploc_prefix: &str, crs_codes: &[&str]) {
         let records: Vec<common::StanoxCrsRecord> = crs_codes
             .iter()
             .enumerate()
             .map(|(i, crs)| common::StanoxCrsRecord {
                 stanox: format!("{tiploc_prefix}-{i}"),
-                crs: crs.to_string(),
+                crs: (*crs).to_string(),
                 tiploc: format!("{tiploc_prefix}-{crs}"),
-                station_name: crs.to_string(),
+                station_name: (*crs).to_string(),
                 source_sequence: 1,
                 change_time_minutes: None,
             })
             .collect();
-        crate::data::queries::upsert_stanox_crs(pool, &records)
+        queries::upsert_stanox_crs(pool, &records)
             .await
             .expect("seed stanox_crs for fallback source test");
     }
@@ -4513,7 +4528,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn schedule_calling_points_full_public_times_and_direction_reach_the_stop() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-10-01".parse().unwrap();
+        let service_date: NaiveDate = "2026-10-01".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PUB", service_date)
                 .await
@@ -4523,20 +4538,18 @@ mod db_tests {
             .await
             .ok();
         let time = |s: &str| Some(s.parse::<chrono::NaiveTime>().unwrap());
-        let row = |seq: i16, tiploc: &str, kind: &str| {
-            crate::data::queries::ScheduleCallingPointsFullRow {
-                service_date,
-                uid: "TEST-JRN-PUB".to_string(),
-                seq,
-                tiploc: tiploc.to_string(),
-                kind: kind.to_string(),
-                ..Default::default()
-            }
+        let row = |seq: i16, tiploc: &str, kind: &str| queries::ScheduleCallingPointsFullRow {
+            service_date,
+            uid: "TEST-JRN-PUB".to_string(),
+            seq,
+            tiploc: tiploc.to_string(),
+            kind: kind.to_string(),
+            ..Default::default()
         };
-        crate::data::queries::upsert_schedule_calling_points_full(
+        queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     booked_departure: time("15:59:00"),
                     working_departure: time("15:59:30"),
                     public_departure: time("15:59:00"),
@@ -4545,14 +4558,14 @@ mod db_tests {
                     request_stop: Some(false),
                     ..row(0, "TEST-JRN-PUB-CAR", "origin")
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     working_pass: time("16:30:30"),
                     can_board: Some(false),
                     can_alight: Some(false),
                     request_stop: Some(false),
                     ..row(1, "TEST-JRN-PUB-JN", "intermediate")
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     booked_arrival: time("17:00:00"),
                     booked_departure: time("17:02:00"),
                     working_arrival: time("17:00:30"),
@@ -4563,7 +4576,7 @@ mod db_tests {
                     request_stop: Some(false),
                     ..row(2, "TEST-JRN-PUB-MTH", "intermediate")
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     booked_arrival: time("17:21:00"),
                     working_arrival: time("17:21:00"),
                     public_arrival: time("17:21:00"),
@@ -4620,7 +4633,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_falls_back_to_schedule_calling_points_full() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-FB", service_date)
                 .await
@@ -4631,10 +4644,10 @@ mod db_tests {
             .ok();
         seed_fallback_stanox_crs(&pool, "TEST-JRN-FB", &["RDG", "SLO", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_calling_points_full(
+        queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-FB".to_string(),
                     seq: 0,
@@ -4646,7 +4659,7 @@ mod db_tests {
                     platform: Some("4".to_string()),
                     ..Default::default()
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-FB".to_string(),
                     seq: 1,
@@ -4658,7 +4671,7 @@ mod db_tests {
                     platform: None,
                     ..Default::default()
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-FB".to_string(),
                     seq: 2,
@@ -4753,7 +4766,7 @@ mod db_tests {
         // `terminate` row IS populated, and the resulting stop must pick it
         // up.
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-FBA", service_date)
                 .await
@@ -4764,10 +4777,10 @@ mod db_tests {
             .ok();
         seed_fallback_stanox_crs(&pool, "TEST-JRN-FBA", &["RDG", "SLO", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_calling_points_full(
+        queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-FBA".to_string(),
                     seq: 0,
@@ -4779,7 +4792,7 @@ mod db_tests {
                     platform: None,
                     ..Default::default()
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-FBA".to_string(),
                     seq: 1,
@@ -4791,7 +4804,7 @@ mod db_tests {
                     platform: None,
                     ..Default::default()
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-FBA".to_string(),
                     seq: 2,
@@ -4856,7 +4869,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_returns_none_when_neither_source_has_anything() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NONE", service_date)
                 .await
@@ -4895,7 +4908,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_overlays_a_departure_event_with_correct_delay_sign() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-OV", service_date)
                 .await
@@ -4906,10 +4919,10 @@ mod db_tests {
             .ok();
         seed_fallback_stanox_crs(&pool, "TEST-JRN-OV", &["RDG", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_calling_points_full(
+        queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-OV".to_string(),
                     seq: 0,
@@ -4921,7 +4934,7 @@ mod db_tests {
                     platform: None,
                     ..Default::default()
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-OV".to_string(),
                     seq: 1,
@@ -5028,13 +5041,13 @@ mod db_tests {
     async fn build_journey_stops_overlays_an_arrival_event_pairing_arrival_with_arrival_not_departure()
      {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-ARR", service_date)
                 .await
                 .expect("find_or_create_train");
 
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 common::StanoxCrsRecord {
@@ -5152,7 +5165,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_overlays_a_pass_event_setting_both_actual_times() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PASS", service_date)
                 .await
@@ -5163,10 +5176,10 @@ mod db_tests {
             .ok();
         seed_fallback_stanox_crs(&pool, "TEST-JRN-PASS", &["RDG", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_calling_points_full(
+        queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-PASS".to_string(),
                     seq: 0,
@@ -5178,7 +5191,7 @@ mod db_tests {
                     platform: None,
                     ..Default::default()
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-PASS".to_string(),
                     seq: 1,
@@ -5271,7 +5284,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_silently_drops_an_event_whose_loc_crs_matches_no_stop() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOMATCH", service_date)
                 .await
@@ -5282,10 +5295,10 @@ mod db_tests {
             .ok();
         seed_fallback_stanox_crs(&pool, "TEST-JRN-NOMATCH", &["RDG", "WAT"]).await;
 
-        crate::data::queries::upsert_schedule_calling_points_full(
+        queries::upsert_schedule_calling_points_full(
             &pool,
             &[
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-NOMATCH".to_string(),
                     seq: 0,
@@ -5297,7 +5310,7 @@ mod db_tests {
                     platform: None,
                     ..Default::default()
                 },
-                crate::data::queries::ScheduleCallingPointsFullRow {
+                queries::ScheduleCallingPointsFullRow {
                     service_date,
                     uid: "TEST-JRN-NOMATCH".to_string(),
                     seq: 1,
@@ -5405,13 +5418,13 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_delay_uses_events_own_planned_timestamp_not_cif_schedule() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-SKEW", service_date)
                 .await
                 .expect("find_or_create_train");
 
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 common::StanoxCrsRecord {
@@ -5543,13 +5556,13 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_delay_unaffected_when_trust_and_cif_timestamps_agree() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOSKEW", service_date)
                 .await
                 .expect("find_or_create_train");
 
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 common::StanoxCrsRecord {
@@ -5667,13 +5680,13 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_delay_is_none_when_events_own_planned_timestamp_is_missing() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOPLAN", service_date)
                 .await
                 .expect("find_or_create_train");
 
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 common::StanoxCrsRecord {
@@ -5786,13 +5799,13 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn build_journey_stops_estimates_only_the_unreported_stop_from_the_current_delay() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-08".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-JRN-EST", service_date)
                 .await
                 .expect("find_or_create_train");
 
-        crate::data::queries::upsert_stanox_crs(
+        queries::upsert_stanox_crs(
             &pool,
             &[
                 common::StanoxCrsRecord {

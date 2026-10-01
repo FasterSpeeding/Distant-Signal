@@ -207,7 +207,7 @@ async fn the_cpu_limit_kills_a_spinning_child_before_the_wall_clock_timeout() {
     match parser.run(ChildMode::TestSpin, Vec::new()).await {
         // SIGXCPU (24) at the soft limit.
         Err(ParseFailure::ChildDied { status, .. }) => {
-            assert!(status.contains("signal"), "{status}")
+            assert!(status.contains("signal"), "{status}");
         }
         other => panic!("{other:?}"),
     }

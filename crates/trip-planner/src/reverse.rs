@@ -141,7 +141,7 @@ impl<'a> Reverse<'a> {
 
     /// Round 0: standing at the destination (last stage) by the deadline,
     /// and every stop a walk from which reaches it in time.
-    fn initial_labels(&self, options: &ArriveByOptions) -> Labels {
+    fn initial_labels(&self, options: &ArriveByOptions<'_>) -> Labels {
         let mut labels = Labels::new(self.stages());
         for tiploc in options.to_tiplocs {
             self.set_arrival(
@@ -158,6 +158,10 @@ impl<'a> Reverse<'a> {
     /// `stage`, as late as `time`. Propagates backwards over every fixed
     /// link into it, and -- at a waypoint -- to the stage before it (being
     /// there at stage `s + 1` is being there at stage `s`, then calling).
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
+    )]
     fn set_arrival(&self, labels: &mut Labels, stage: usize, tiploc: &str, time: u32) {
         let tiploc = normalize_tiploc(tiploc);
         if !restrictions::allows_interchange(self.restrictions, tiploc) {
@@ -331,7 +335,7 @@ fn base_by(base: &[Connection], deadline: u32) -> &[Connection] {
 /// The latest departure from the origin that reaches the destination by
 /// `options.arrive_by_min`, any number of changes. `None` when none does.
 pub fn latest_departure(
-    options: &ArriveByOptions,
+    options: &ArriveByOptions<'_>,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
 ) -> Option<u32> {
@@ -346,7 +350,7 @@ pub fn latest_departure(
 /// deadline using at most `k` trains (`k - 1` changes), for `k` in
 /// `1..=max_rounds`. Non-decreasing; `None` until some round reaches it.
 pub fn latest_departures_by_trips(
-    options: &ArriveByOptions,
+    options: &ArriveByOptions<'_>,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
     max_rounds: u32,
@@ -395,8 +399,12 @@ fn latest_by_bisection<T>(deadline: u32, probe: impl Fn(u32) -> Option<T>) -> Op
 /// latest-departing journey arriving by `options.arrive_by_min` (and, among
 /// those departing then, the earliest-arriving one). `None` when no journey
 /// arrives in time.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "public planner API takes its options and overlay by value"
+)]
 pub fn scan_connections_arrive_by(
-    options: ArriveByOptions,
+    options: ArriveByOptions<'_>,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
 ) -> Option<Journey> {
@@ -426,8 +434,12 @@ pub fn scan_connections_arrive_by(
 /// strictly improves on fewer trains', the journey departing then (built by
 /// a forward RAPTOR search capped at `k` trains). Fewest changes first.
 /// `latest` is [`latest_departures_by_trips`]'s output, or a prefix of it.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a journey has a handful of legs and rounds"
+)]
 pub fn raptor_arrive_by_from_latest(
-    options: &ArriveByOptions,
+    options: &ArriveByOptions<'_>,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
     latest: &[Option<u32>],
@@ -474,7 +486,7 @@ pub fn raptor_arrive_by_from_latest(
 /// latest-departing journey calling at every waypoint in order and arriving
 /// by the deadline (see [`crate::staged`]).
 pub fn staged_arrive_by(
-    options: &ArriveByOptions,
+    options: &ArriveByOptions<'_>,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
 ) -> Option<StagedJourney> {
@@ -497,8 +509,12 @@ pub fn staged_arrive_by(
 
 /// [`raptor_arrive_by_from_latest`] through `options.waypoints`, trains
 /// (and so changes) counted over the whole journey.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a journey has a handful of legs and rounds"
+)]
 pub fn staged_raptor_arrive_by_from_latest(
-    options: &ArriveByOptions,
+    options: &ArriveByOptions<'_>,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
     latest: &[Option<u32>],
@@ -536,8 +552,12 @@ pub fn staged_raptor_arrive_by_from_latest(
 }
 
 /// [`latest_departures_by_trips`] then [`raptor_arrive_by_from_latest`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "public planner API takes its options and overlay by value"
+)]
 pub fn raptor_arrive_by(
-    options: ArriveByOptions,
+    options: ArriveByOptions<'_>,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
     max_rounds: u32,
@@ -547,6 +567,11 @@ pub fn raptor_arrive_by(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; scenario tests read top to bottom"
+)]
 mod tests {
     use super::*;
     use crate::JourneyLeg;
@@ -579,7 +604,7 @@ mod tests {
         InterchangeData {
             change_time_by_tiploc: change_times
                 .iter()
-                .map(|(t, m)| (t.to_string(), *m))
+                .map(|(t, m)| ((*t).to_string(), *m))
                 .collect(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),
@@ -815,8 +840,8 @@ mod tests {
         let mut seed: u64 = 0x5eed;
         let mut next = |n: u64| {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) % n
         };
         let (mut found, mut total) = (0, 0);

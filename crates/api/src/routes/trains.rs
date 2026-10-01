@@ -290,6 +290,10 @@ struct TrainResolveParams {
     kind: Option<String>,
 }
 
+#[expect(
+    clippy::ref_option,
+    reason = "callers hold the Option by reference in a struct field"
+)]
 fn non_empty(raw: &Option<String>) -> Option<&str> {
     raw.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
@@ -520,6 +524,10 @@ pub(crate) fn decode_cursor(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn get_trains_search(
     State(app): State<App>,
     Query(params): Query<TrainSearchParams>,
@@ -673,6 +681,10 @@ async fn get_trains_search(
     })))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "train search query failed");
     (
@@ -899,7 +911,7 @@ mod db_tests {
     }
 
     async fn get(pool: &PgPool, uri: &str) -> (StatusCode, String) {
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -2021,7 +2033,10 @@ mod db_tests {
 
     /// One departure row. `arrivals` is `(calling_point_arrival,
     /// destination_arrival)`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test fixture: one positional argument per column it seeds"
+    )]
     async fn seed_resolve_row(
         pool: &PgPool,
         service_date: chrono::NaiveDate,
@@ -2462,7 +2477,7 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         let href = resolved(&body)["href"].as_str().unwrap().to_string();
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(crate::routes::train::router())
             .with_state(test_app(pool.clone()));
         let response = router

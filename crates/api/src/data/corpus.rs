@@ -108,13 +108,13 @@ pub async fn replace_corpus_locations_with_provenance(
         .execute(&mut *tx)
         .await?;
     let inserted = sqlx::query(
-        r#"
+        r"
         INSERT INTO corpus_locations
             (nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16, delivered_at, source_file)
         SELECT nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16, $8, $9
         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
             AS i(nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16)
-        "#,
+        ",
     )
     .bind(&nlc)
     .bind(&stanox)
@@ -187,6 +187,10 @@ pub const LAST_DELIVERY_METRIC: &str = "api_corpus_last_delivered_at_seconds";
 
 /// Reads the newest delivery and, if there is one, sets
 /// [`LAST_DELIVERY_METRIC`]. Returns what it read.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "metric gauges take f64, and these counts and timestamps stay far below 2^52"
+)]
 pub async fn refresh_last_delivery_metric(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
     let latest = last_corpus_delivery(pool).await?;
     if let Some(delivered_at) = latest {
@@ -202,6 +206,10 @@ pub async fn refresh_last_delivery_metric(pool: &PgPool) -> Result<Option<DateTi
 /// hold a real extract (see `crate::test_support`'s module doc). Needs a
 /// `DATABASE_URL` whose role may create databases.
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    reason = "test code: fixtures sit next to their use"
+)]
 mod db_tests {
     use chrono::TimeZone;
 

@@ -15,6 +15,10 @@ pub const BUCKET: chrono::Duration = chrono::Duration::minutes(15);
 
 /// `computed_at` truncated to its 15-minute bucket. Computed here, never
 /// taken from the wire.
+#[expect(
+    clippy::expect_used,
+    reason = "a constant or range-checked time is always valid"
+)]
 pub fn bucket_start(computed_at: DateTime<Utc>) -> DateTime<Utc> {
     computed_at
         .duration_trunc(BUCKET)
@@ -68,6 +72,10 @@ fn int(value: u32) -> i32 {
 /// `computed_at` is OLDER than the one already stored for its bucket is
 /// ignored, so a replayed or late POST can never move a bucket backwards.
 /// Returns the number of rows written.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "stats_version is a small constant"
+)]
 pub async fn upsert_full_coverage_window_stats(
     pool: &PgPool,
     rows: &[FullCoverageWindowStatsRow],
@@ -77,7 +85,7 @@ pub async fn upsert_full_coverage_window_stats(
     for row in rows {
         let c = &row.counts;
         let result = sqlx::query(
-            r#"
+            r"
             INSERT INTO full_coverage_line_window_stats
                 (line_id, window_kind, bucket_start, service_date, window_start, window_end,
                  computed_at, total, on_time, delayed, cancelled_explicit, cancelled_presumed,
@@ -106,7 +114,7 @@ pub async fn upsert_full_coverage_window_stats(
                 stats_version      = EXCLUDED.stats_version,
                 updated_at         = EXCLUDED.updated_at
             WHERE EXCLUDED.computed_at >= full_coverage_line_window_stats.computed_at
-            "#,
+            ",
         )
         .bind(&row.line_id)
         .bind(row.window_kind.as_str())
@@ -158,6 +166,10 @@ const WINDOW_COLUMNS: &str = "line_id, window_kind, bucket_start, service_date, 
     skipped, pending, unobserved, avg_delay_minutes, relevance, presumed_enabled, partial, \
     feed_stale, stats_version";
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "clamped to >= 0 first; the columns hold small counts and versions"
+)]
 fn stored_window(row: &sqlx::postgres::PgRow) -> Result<StoredWindow> {
     let uint = |name: &str| -> Result<u32> { Ok(row.try_get::<i32, _>(name)?.max(0) as u32) };
     let kind: String = row.try_get("window_kind")?;
@@ -285,28 +297,25 @@ pub async fn closed_day_rows_for_range(
     from: NaiveDate,
     to: NaiveDate,
 ) -> Result<Vec<common::FullCoverageLineStatsRow>> {
-    match line_id {
-        Some(line_id) => {
-            crate::data::queries::full_coverage_line_stats_for_range(pool, line_id, from, to).await
+    if let Some(line_id) = line_id {
+        crate::data::queries::full_coverage_line_stats_for_range(pool, line_id, from, to).await
+    } else {
+        let lines: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT line_id FROM full_coverage_line_stats
+             WHERE service_date BETWEEN $1 AND $2 ORDER BY line_id",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(pool)
+        .await?;
+        let mut rows = Vec::new();
+        for line in lines {
+            rows.extend(
+                crate::data::queries::full_coverage_line_stats_for_range(pool, &line, from, to)
+                    .await?,
+            );
         }
-        None => {
-            let lines: Vec<String> = sqlx::query_scalar(
-                "SELECT DISTINCT line_id FROM full_coverage_line_stats
-                 WHERE service_date BETWEEN $1 AND $2 ORDER BY line_id",
-            )
-            .bind(from)
-            .bind(to)
-            .fetch_all(pool)
-            .await?;
-            let mut rows = Vec::new();
-            for line in lines {
-                rows.extend(
-                    crate::data::queries::full_coverage_line_stats_for_range(pool, &line, from, to)
-                        .await?,
-                );
-            }
-            Ok(rows)
-        }
+        Ok(rows)
     }
 }
 

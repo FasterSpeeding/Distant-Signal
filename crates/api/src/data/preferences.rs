@@ -301,7 +301,7 @@ mod db_tests {
         .await
         .expect("seed fixture user");
 
-        let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let owned = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
         let lines = owned(&[
             "zzz-test-line",
             "aaa-test-line",

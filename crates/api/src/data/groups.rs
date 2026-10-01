@@ -310,7 +310,7 @@ struct GroupMemberRow {
 /// current member, and a joined-via-link member has no other relationship
 /// with the rest of the group -- shipping their verified email to everyone
 /// (as a field of its own, OR quietly as the `displayName` fallback for a
-/// member whose IdP sent no name) leaks more than the feature needs. The
+/// member whose `IdP` sent no name) leaks more than the feature needs. The
 /// fallback is their `username` instead. `None` means "neither on file",
 /// which the frontend renders as its own generic "A member" placeholder.
 /// Same rule, same helper (`users::MemberDisplay`), as
@@ -322,7 +322,7 @@ pub struct GroupMember {
     pub display_name: Option<String>,
     /// Set when -- and only when -- `display_name` is `None`: six hex
     /// characters the frontend appends to its own placeholder, so a group
-    /// whose IdP gives this app no showable name for anybody (Entra ID,
+    /// whose `IdP` gives this app no showable name for anybody (Entra ID,
     /// where `preferred_username` is the email-shaped UPN) renders "A
     /// member (#a1b2c3)" per member instead of the same "A member" on
     /// every single row. Derived from `user_id`, which this struct already
@@ -1122,7 +1122,7 @@ pub struct GroupTrain {
     pub added_by: String,
     pub added_by_name: Option<String>,
     /// Set only when `added_by_name` is `None`, and appended by the
-    /// frontend to its "a member" placeholder so two sharers whose IdP
+    /// frontend to its "a member" placeholder so two sharers whose `IdP`
     /// gives this app no showable name are still told apart. Same
     /// contract, same derivation, as `GroupMember.display_tag`.
     pub added_by_tag: Option<String>,
@@ -1788,7 +1788,7 @@ pub struct GroupCustomLine {
     pub granted_by: String,
     pub granted_by_name: Option<String>,
     /// Same contract, same derivation, as `GroupTrain.added_by_tag`: set
-    /// only when there is no showable name, so a group whose IdP can name
+    /// only when there is no showable name, so a group whose `IdP` can name
     /// nobody still tells its members' shares apart.
     pub granted_by_tag: Option<String>,
 }
@@ -2003,6 +2003,10 @@ pub async fn groups_shared_with_line(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts of small known test values"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -4958,7 +4962,7 @@ mod custom_line_grant_wire_shape_tests {
     }
 
     /// The tag appears exactly when the label doesn't -- same contract
-    /// `GroupTrain`/`GroupMember` already hold, so a group whose IdP can
+    /// `GroupTrain`/`GroupMember` already hold, so a group whose `IdP` can
     /// name nobody still tells one member's shared line from another's
     /// without revealing anything about either person.
     #[test]
@@ -5464,7 +5468,7 @@ mod display_name_collapse_tests {
     /// assertions below run with the tag populated (these rows are exactly
     /// the placeholder path) and so cover it too.
     /// Neither query selects `users.email` any more, AND an email arriving
-    /// through the fields they DO select -- an IdP that puts an address in
+    /// through the fields they DO select -- an `IdP` that puts an address in
     /// `name` or `preferred_username`, which is legal and common -- is
     /// declined by `users::display_label` rather than rendered. What the
     /// group sees instead is the frontend's generic placeholder.

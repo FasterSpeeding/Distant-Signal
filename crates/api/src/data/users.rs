@@ -63,6 +63,10 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
 /// `None` -- nothing usable on file -- is the signal for the frontend to
 /// render its own generic placeholder ("A member" / "a member") instead,
 /// distinguished between users by `MemberDisplay`'s tag.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers hand over values they no longer need"
+)]
 pub fn display_label(name: Option<String>, username: Option<String>) -> Option<String> {
     shareable(name.as_deref())
         .or_else(|| shareable(username.as_deref()))
@@ -72,7 +76,7 @@ pub fn display_label(name: Option<String>, username: Option<String>) -> Option<S
 /// `non_blank`, plus: not an email address.
 ///
 /// Not selecting `users.email` is only half of "never show one member's
-/// email to the others" -- the other half is that an IdP is perfectly
+/// email to the others" -- the other half is that an `IdP` is perfectly
 /// entitled to put an email address in the claims we DO show. Authentik
 /// can be configured with a user's email as their username, and plenty of
 /// directories set the `name` attribute to the email for accounts created
@@ -91,7 +95,7 @@ pub fn display_label(name: Option<String>, username: Option<String>) -> Option<S
 /// value this function then silently declines.
 ///
 /// This stays the enforcement point regardless. The boundary only reorders
-/// candidates; when every claim the IdP sent is email-shaped it still
+/// candidates; when every claim the `IdP` sent is email-shaped it still
 /// stores one, and this is what refuses to render it.
 ///
 /// Note what that means on some deployments. On Entra ID / Azure AD,
@@ -106,7 +110,7 @@ fn shareable(value: Option<&str>) -> Option<&str> {
 
 /// Domain separation for `anonymous_tag`, so the digest this app renders
 /// can never coincide with some other digest of the same user id computed
-/// for an unrelated purpose (a cache key, an ETag) and turn one into an
+/// for an unrelated purpose (a cache key, an `ETag`) and turn one into an
 /// oracle for the other.
 const ANONYMOUS_TAG_DOMAIN: &str = "network-rail-status/member-display-tag/v1:";
 
@@ -157,6 +161,10 @@ const ANONYMOUS_TAG_DOMAIN: &str = "network-rail-status/member-display-tag/v1:";
 /// rather than a correctness fix, but is not free either: the tag is also
 /// what a member recognises another member by across visits, so changing
 /// the derivation renames everybody at once.
+#[expect(
+    clippy::format_collect,
+    reason = "short strings off the hot path; format! reads clearer"
+)]
 fn anonymous_tag(user_id: &str) -> String {
     use sha2::{Digest, Sha256};
 
@@ -203,7 +211,7 @@ mod tests {
     use super::*;
 
     fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|v| v.to_string()).collect()
+        values.iter().map(ToString::to_string).collect()
     }
 
     /// LEG-6: groups outside the allow-list are never stored.
@@ -285,7 +293,7 @@ mod tests {
     }
 
     /// The other half of "never show one member's email to the rest of the
-    /// group": not selecting `users.email` doesn't help if the IdP put an
+    /// group": not selecting `users.email` doesn't help if the `IdP` put an
     /// email address in the `name` or `preferred_username` claim instead,
     /// which plenty of directories do.
     #[test]
@@ -327,7 +335,7 @@ mod tests {
         assert_eq!(by_username.tag, None);
     }
 
-    /// The bug this exists for. On an IdP where the username claim IS the
+    /// The bug this exists for. On an `IdP` where the username claim IS the
     /// user's email by design (Entra ID's `preferred_username` is the UPN),
     /// every member's name AND username are email-shaped, every label is
     /// declined, and every row used to render as the same "A member" --
@@ -430,13 +438,13 @@ pub struct User {
     pub id: String,
     pub name: Option<String>,
     pub username: Option<String>,
-    /// `true` when [`upsert_user`] INSERTed this row (a first sign-in),
+    /// `true` when [`upsert_user`] `INSERTed` this row (a first sign-in),
     /// `false` when it updated an existing one. Feeds the
     /// `distant_signal_api_users_created_total` signup counter.
     pub created: bool,
 }
 
-/// LEG-6: the IdP `groups` claim cut down to `allowlist` (see
+/// LEG-6: the `IdP` `groups` claim cut down to `allowlist` (see
 /// `data::config::ServiceArguments::stored_group_allowlist`), in claim
 /// order, each group once. Applied before [`upsert_user`] stores the
 /// groups, so a group nothing reads is never written.
@@ -466,7 +474,7 @@ pub fn retain_allowed_groups(groups: &[String], allowlist: &[String]) -> Vec<Str
 /// before this normalization existed.
 ///
 /// `username` (the `preferred_username` claim) is overwritten on every
-/// login for the same reason `name` is: this table mirrors what the IdP
+/// login for the same reason `name` is: this table mirrors what the `IdP`
 /// currently asserts, it is not an independent record.
 ///
 /// `users.email` is no longer written (2026-09-30: the app stopped
@@ -475,7 +483,7 @@ pub fn retain_allowed_groups(groups: &[String], allowlist: &[String]) -> Vec<Str
 /// sign-in, so the column empties itself out; dropping it is a follow-up.
 ///
 /// `created` comes from `xmax = 0`, true only for a row this statement
-/// INSERTed (an `ON CONFLICT DO UPDATE` sets `xmax` to this transaction).
+/// `INSERTed` (an `ON CONFLICT DO UPDATE` sets `xmax` to this transaction).
 pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User> {
     let name = non_blank(identity.name.as_deref());
     let username = non_blank(identity.preferred_username.as_deref());
@@ -501,7 +509,7 @@ pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User>
 /// only use for it is silent ID-token renewal before local session expiry
 /// ("Expiry and refresh"), and nothing in this plan implements that -- the
 /// column is written by no other path and read by none at all. Storing a
-/// live IdP credential server-side with zero present consumer is pure
+/// live `IdP` credential server-side with zero present consumer is pure
 /// added blast radius on a database leak, and the design doc's own Open
 /// Question 5 already flags that this schema would hold it in plaintext
 /// with no column-encryption precedent anywhere in the repo.
@@ -769,7 +777,7 @@ pub async fn revoke_all_sessions(pool: &PgPool, user_id: &str) -> Result<Option<
 /// claim, as of their last sign-in) matches `username`, case-insensitively.
 /// Lets an admin name a user by their Authentik username rather than by the
 /// opaque OIDC subject. More than one match is possible (`users.username` is
-/// not unique here: it is a snapshot, and an IdP username can be renamed and
+/// not unique here: it is a snapshot, and an `IdP` username can be renamed and
 /// reused), which the caller must treat as ambiguous rather than pick one.
 /// Capped at 2 rows: the caller only needs to know "none, one, or several".
 /// A sequential scan of `users` is fine at this app's size and for a rare
@@ -835,7 +843,7 @@ pub async fn prune_expired_sessions(pool: &PgPool) -> Result<u64> {
 /// here:
 ///
 /// 1. `pkce_verifier` and `nonce` are not compared for equality by this
-///    app at all -- `pkce_verifier` is sent VERBATIM to the IdP's token
+///    app at all -- `pkce_verifier` is sent VERBATIM to the `IdP`'s token
 ///    endpoint in the code exchange (`app.oidc.exchange_code`, PKCE's own
 ///    RFC 7636 mechanism requires the raw `code_verifier`, not a digest of
 ///    it), and `nonce` is handed to `openidconnect`'s own ID-token verifier

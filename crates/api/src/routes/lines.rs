@@ -152,7 +152,7 @@ fn resolve_schedule_date(
 /// The response body is `schedule_line_population.population` relayed
 /// completely unprocessed: `api` has no dependency on the `schedule-query`
 /// crate (the crate that defines `LinePopulationEntry`/`CallingPoint`) at
-/// all, so its JSON keys are that crate's own snake_case field names
+/// all, so its JSON keys are that crate's own `snake_case` field names
 /// (`uid`, `calling_points`, `booked_arrival`, `booked_departure`,
 /// `is_half_minute_arrival`, `is_half_minute_departure`, `tiploc`, `kind`),
 /// NOT this crate's usual camelCase convention.
@@ -179,19 +179,23 @@ fn resolve_schedule_date(
 ///    the future (exactly the failure mode `schedule_departure_json`
 ///    already accepts for its own narrow 3-field case) -- for the
 ///    "complete, unprocessed CIF stopping pattern" this route promises,
-///    silently losing new fields is worse than a documented snake_case
+///    silently losing new fields is worse than a documented `snake_case`
 ///    wart. A raw pass-through survives schema growth in `schedule-query`
 ///    with zero changes needed here, which is the actual, durable version
 ///    of Decision 3's "avoid coupling `api` to `schedule-query`'s shape"
 ///    reasoning -- true whether or not the field names get renamed on the
 ///    way out.
 ///
-/// So: raw pass-through, snake_case, matching this plan's own Global
-/// Constraints (`GET /public/stanox-crs` is also snake_case, for its own,
+/// So: raw pass-through, `snake_case`, matching this plan's own Global
+/// Constraints (`GET /public/stanox-crs` is also `snake_case`, for its own,
 /// different reason -- see `routes::stanox_crs`).
 /// Thin `routes::lines` adapter over
 /// [`custom_lines::caller_may_read_line_id`], mapping its error the way
 /// this module's handlers do.
+#[expect(
+    clippy::ref_option,
+    reason = "callers hold the Option by reference in a struct field"
+)]
 async fn readable_line_id(
     app: &App,
     id: &str,
@@ -202,6 +206,10 @@ async fn readable_line_id(
         .map_err(internal_error)
 }
 
+#[expect(
+    clippy::items_after_statements,
+    reason = "a local type or import sits next to its only use"
+)]
 async fn get_line_schedule(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -580,9 +588,9 @@ async fn list_lines(
     ))
 }
 
-/// Whether a TfL line's summary should be omitted from `/public/lines`
+/// Whether a `TfL` line's summary should be omitted from `/public/lines`
 /// because an NR/Darwin-sourced line already covers the same railway and is
-/// shown in its place, carrying this TfL line's status as a secondary field
+/// shown in its place, carrying this `TfL` line's status as a secondary field
 /// on its detail view instead (`crates/api/src/routes/line_status.rs::get_line_status`).
 /// See `docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md`
 /// Area 1.
@@ -590,10 +598,10 @@ fn is_merged_into_nr_line(tfl_line_id: &str) -> bool {
     common::nr_line_id_for_tfl(tfl_line_id).is_some()
 }
 
-/// Suffixes a TfL line's raw name for the `/public/lines` list, so it's
+/// Suffixes a `TfL` line's raw name for the `/public/lines` list, so it's
 /// distinguishable from any same-named National Rail catalogue line (e.g.
-/// `lines/northern.toml`'s "Northern" vs TfL's own "Northern" line, or
-/// `lines/elizabeth-line.toml`'s "Elizabeth line" vs TfL's "Elizabeth
+/// `lines/northern.toml`'s "Northern" vs `TfL`'s own "Northern" line, or
+/// `lines/elizabeth-line.toml`'s "Elizabeth line" vs `TfL`'s "Elizabeth
 /// line"). The All Lines table has no Category/Operators column, so two
 /// identical-looking rows would otherwise be indistinguishable without
 /// filtering by operator.
@@ -966,6 +974,10 @@ async fn delete_line(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "custom line operation failed");
     (
@@ -1043,6 +1055,10 @@ mod custom_line_detail_wire_shape_tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    reason = "test code: fixtures sit next to their use"
+)]
 mod tests {
     use super::*;
 
@@ -1242,11 +1258,17 @@ mod tests {
 /// is the first and, so far, only file that needs them — promote them
 /// only once a second file actually duplicates this setup.
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    clippy::too_many_lines,
+    reason = "test code: fixtures sit next to their use; scenario tests read top to bottom"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use serde_json::{Value, json};
     use sqlx::PgPool;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     use super::{LINES_PRIVATE_CACHE_CONTROL, LINES_PUBLIC_CACHE_CONTROL};
@@ -1337,7 +1359,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
-            schedule_crs_line_index: std::collections::HashMap::new(),
+            schedule_crs_line_index: HashMap::new(),
         })
     }
 
@@ -2157,7 +2179,7 @@ mod db_tests {
             sample_stations: vec![],
             match_keywords: vec![],
             excluded_keywords: vec![],
-            severity_overrides: Default::default(),
+            severity_overrides: HashMap::default(),
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
@@ -2206,7 +2228,7 @@ mod db_tests {
             sample_stations: vec![],
             match_keywords: vec![],
             excluded_keywords: vec![],
-            severity_overrides: Default::default(),
+            severity_overrides: HashMap::default(),
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
@@ -2898,8 +2920,7 @@ mod db_tests {
         let s = |v: &str| Some(v.to_string());
         let as_value = |text: &Option<String>| -> Value {
             text.as_deref()
-                .map(|t| serde_json::from_str(t).unwrap())
-                .unwrap_or(Value::Null)
+                .map_or(Value::Null, |t| serde_json::from_str(t).unwrap())
         };
         // (uid, string uid, calling points, first tiploc, last tiploc)
         type Projected = (Value, Option<String>, Value, Option<String>, Option<String>);

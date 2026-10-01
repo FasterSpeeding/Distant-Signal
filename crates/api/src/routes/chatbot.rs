@@ -172,7 +172,7 @@ mod db_tests {
     /// now checks directly, replacing the former `chatbot_allowed_users`
     /// allowlist row this helper used to also insert.
     async fn seed_session(pool: &PgPool, user_id: &str, groups: &[&str]) -> String {
-        let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
+        let groups: Vec<String> = groups.iter().map(ToString::to_string).collect();
         sqlx::query(
             "INSERT INTO users (id, email, name, groups) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (id) DO UPDATE SET groups = EXCLUDED.groups",

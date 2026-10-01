@@ -1,6 +1,6 @@
 //! Internal-auth gate for `private_router()`.
 //!
-//! Bearer-token OAuth2 client-credentials auth (RFC 6750/6749 §4.4),
+//! Bearer-token `OAuth2` client-credentials auth (RFC 6750/6749 §4.4),
 //! delegated to Authentik. `require_internal_oauth` parses the
 //! `Authorization: Bearer` header, verifies it against Authentik's JWKS
 //! (`internal_oauth::ServiceTokenVerifier`, local, no per-request network
@@ -36,7 +36,7 @@ use crate::app::App;
 use crate::data::config::ChatbotAccessMode;
 
 /// `axum::middleware::from_fn_with_state` handler enforcing internal-service
-/// OAuth2 auth. Applied only to `private_router()` -- `public_router()`
+/// `OAuth2` auth. Applied only to `private_router()` -- `public_router()`
 /// never sees this.
 ///
 /// Status codes: a missing/malformed/expired/signature-invalid/wrong-
@@ -65,9 +65,8 @@ pub async fn require_internal_oauth(
         return Err(StatusCode::UNAUTHORIZED);
     };
 
-    let claims = match app.internal_oauth_verifier.verify(&token).await {
-        Ok(claims) => claims,
-        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    let Ok(claims) = app.internal_oauth_verifier.verify(&token).await else {
+        return Err(StatusCode::UNAUTHORIZED);
     };
 
     // Two-phase lookup, deliberately not a single `.find()` keyed on
@@ -201,7 +200,7 @@ pub fn validate_return_to(raw: &str) -> Option<String> {
     // Header-injection guard, and a defense against browsers that strip
     // or reinterpret stray control characters (tabs, NULs) during URL
     // normalization in ways this function shouldn't have to model.
-    if raw.chars().any(|c| c.is_control()) {
+    if raw.chars().any(char::is_control) {
         return None;
     }
     // Some browsers normalize a leading `/\` (or backslashes generally)
@@ -267,16 +266,15 @@ pub fn expected_browser_origin(sso_redirect_url: &str) -> Option<String> {
 /// NOT applied to `GET /auth/callback` -- see that handler's own doc
 /// comment in `routes::auth` for why a same-origin check does not fit that
 /// route's shape at all (the whole point of a callback is that the browser
-/// arrives there via a cross-origin redirect FROM the IdP, so `Referer`
-/// legitimately names the IdP's own origin, never this app's).
+/// arrives there via a cross-origin redirect FROM the `IdP`, so `Referer`
+/// legitimately names the `IdP`'s own origin, never this app's).
 pub fn is_same_origin(origin: Option<&str>, referer: Option<&str>, expected_origin: &str) -> bool {
     if let Some(origin) = origin {
         return origin == expected_origin;
     }
     if let Some(referer) = referer {
         return openidconnect::url::Url::parse(referer)
-            .map(|url| url.origin().ascii_serialization() == expected_origin)
-            .unwrap_or(false);
+            .is_ok_and(|url| url.origin().ascii_serialization() == expected_origin);
     }
     false
 }
@@ -393,25 +391,23 @@ pub struct AuthenticatedUser {
 }
 
 impl FromRequestParts<App> for AuthenticatedUser {
-    type Rejection = (axum::http::StatusCode, String);
+    type Rejection = (StatusCode, String);
 
     async fn from_request_parts(parts: &mut Parts, app: &App) -> Result<Self, Self::Rejection> {
-        let token = parse_cookie(&parts.headers, SESSION_COOKIE_NAME).ok_or((
-            axum::http::StatusCode::UNAUTHORIZED,
-            "no session".to_string(),
-        ))?;
+        let token = parse_cookie(&parts.headers, SESSION_COOKIE_NAME)
+            .ok_or((StatusCode::UNAUTHORIZED, "no session".to_string()))?;
         let hashed = hash_session_token(&token);
         let session = crate::data::users::get_session_with_user(&app.database, &hashed)
             .await
             .map_err(|err| {
                 tracing::error!(error = ?err, "session lookup failed");
                 (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::INTERNAL_SERVER_ERROR,
                     "session lookup failed".to_string(),
                 )
             })?
             .ok_or((
-                axum::http::StatusCode::UNAUTHORIZED,
+                StatusCode::UNAUTHORIZED,
                 "session expired or unknown".to_string(),
             ))?;
         Ok(AuthenticatedUser {
@@ -445,12 +441,12 @@ impl FromRequestParts<App> for AuthenticatedUser {
 pub struct OptionalAuthenticatedUser(pub Option<AuthenticatedUser>);
 
 impl FromRequestParts<App> for OptionalAuthenticatedUser {
-    type Rejection = (axum::http::StatusCode, String);
+    type Rejection = (StatusCode, String);
 
     async fn from_request_parts(parts: &mut Parts, app: &App) -> Result<Self, Self::Rejection> {
         match AuthenticatedUser::from_request_parts(parts, app).await {
             Ok(user) => Ok(OptionalAuthenticatedUser(Some(user))),
-            Err((axum::http::StatusCode::UNAUTHORIZED, _)) => Ok(OptionalAuthenticatedUser(None)),
+            Err((StatusCode::UNAUTHORIZED, _)) => Ok(OptionalAuthenticatedUser(None)),
             Err(err) => Err(err),
         }
     }
@@ -506,7 +502,7 @@ fn has_chatbot_access(groups: &[String], mode: ChatbotAccessMode, required_group
 }
 
 impl FromRequestParts<App> for ChatbotAuthorizedUser {
-    type Rejection = (axum::http::StatusCode, axum::Json<serde_json::Value>);
+    type Rejection = (StatusCode, axum::Json<serde_json::Value>);
 
     async fn from_request_parts(parts: &mut Parts, app: &App) -> Result<Self, Self::Rejection> {
         let user = AuthenticatedUser::from_request_parts(parts, app)
@@ -518,7 +514,7 @@ impl FromRequestParts<App> for ChatbotAuthorizedUser {
             &app.config.chatbot_access_group,
         ) {
             return Err((
-                axum::http::StatusCode::FORBIDDEN,
+                StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({ "error": "chatbot_not_available" })),
             ));
         }
@@ -603,7 +599,7 @@ mod internal_oauth_middleware_tests {
 
     #[test]
     fn bearer_token_extracts_the_token_from_a_well_formed_header() {
-        let mut headers = axum::http::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
             "Bearer abc.def.ghi".parse().unwrap(),
@@ -613,7 +609,7 @@ mod internal_oauth_middleware_tests {
 
     #[test]
     fn bearer_token_returns_none_without_the_bearer_prefix() {
-        let mut headers = axum::http::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
             "abc.def.ghi".parse().unwrap(),
@@ -623,7 +619,7 @@ mod internal_oauth_middleware_tests {
 
     #[test]
     fn bearer_token_returns_none_with_no_authorization_header_at_all() {
-        let headers = axum::http::HeaderMap::new();
+        let headers = HeaderMap::new();
         assert_eq!(bearer_token(&headers), None);
     }
 
@@ -668,7 +664,7 @@ mod tests {
 
     #[test]
     fn parse_cookie_finds_a_single_named_cookie() {
-        let mut headers = axum::http::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::COOKIE,
             "distant_signal_session=abc123".parse().unwrap(),
@@ -681,7 +677,7 @@ mod tests {
 
     #[test]
     fn parse_cookie_finds_one_among_several() {
-        let mut headers = axum::http::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::COOKIE,
             "theme=dark; distant_signal_session=abc123; other=x"
@@ -696,14 +692,14 @@ mod tests {
 
     #[test]
     fn parse_cookie_returns_none_when_absent() {
-        let mut headers = axum::http::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::COOKIE, "theme=dark".parse().unwrap());
         assert_eq!(parse_cookie(&headers, "distant_signal_session"), None);
     }
 
     #[test]
     fn parse_cookie_returns_none_with_no_cookie_header_at_all() {
-        let headers = axum::http::HeaderMap::new();
+        let headers = HeaderMap::new();
         assert_eq!(parse_cookie(&headers, "distant_signal_session"), None);
     }
 
@@ -956,6 +952,10 @@ mod tests {
 /// here is a lazily-parsed, never-connected pool -- see `test_app`'s own
 /// doc comment).
 #[cfg(test)]
+#[expect(
+    clippy::similar_names,
+    reason = "test code: paired test values share names"
+)]
 mod route_scoping_tests {
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode, header};
@@ -1099,7 +1099,7 @@ mod route_scoping_tests {
     }
 
     fn token_for(issuer: &str, sub: &str, groups: &[&str]) -> String {
-        let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
+        let groups: Vec<String> = groups.iter().map(ToString::to_string).collect();
         sign_token(&valid_claims(issuer, |c| {
             c["sub"] = json!(sub);
             c["groups"] = json!(groups);
@@ -1591,7 +1591,7 @@ mod optional_authenticated_user_tests {
                 redirect_url: "https://example.invalid/callback".to_string(),
             })
             .expect("construct placeholder oidc client"),
-            internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
+            internal_oauth_verifier: internal_oauth::ServiceTokenVerifier::new(
                 "https://example.invalid".to_string(),
                 "test-internal-oauth-client".to_string(),
             )
@@ -1640,7 +1640,7 @@ mod optional_authenticated_user_tests {
                 "a DB error during session lookup must propagate as an error, not collapse \
                  into Ok(None)"
             ),
-            Err(err) => assert_eq!(err.0, axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+            Err(err) => assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR),
         }
     }
 }

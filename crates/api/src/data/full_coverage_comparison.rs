@@ -139,6 +139,10 @@ pub struct DailyRates {
     pub avg_delay_minutes: f64,
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact"
+)]
 fn rate(numerator: i64, denominator: i64) -> f64 {
     if denominator == 0 {
         0.0
@@ -147,6 +151,10 @@ fn rate(numerator: i64, denominator: i64) -> f64 {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact"
+)]
 fn avg_delay(delay_minutes_sum: f64, running_count: i64) -> f64 {
     if running_count == 0 {
         0.0
@@ -431,6 +439,10 @@ pub async fn find_pass_events_for_line_best_effort(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "test code: exact expected values are the point"
+)]
 mod tests {
     use super::*;
 
@@ -581,6 +593,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "test code: exact expected values are the point"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;

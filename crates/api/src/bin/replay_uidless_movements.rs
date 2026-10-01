@@ -14,6 +14,11 @@
 //! changes nothing. Logic:
 //! `api::data::trust_event_backlog::replay_uidless_backlog`.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "one-off CLI tool: stdout is its output"
+)]
+
 use sqlx::postgres::PgPoolOptions;
 
 /// Rows per `ingest_shared_movements_batch` call (about the size of the

@@ -29,7 +29,7 @@ pub const DEFAULT_MAX_CHANGES: u32 = 2;
 /// `plan_journey` query through `/Trips/plan`. Bounded rather than open
 /// because every extra change is one more full RAPTOR sweep over the day's
 /// connections graph per segment in `options` mode -- see
-/// `routes::trips::get_trip_plan`'s own DoS notes for the worst-case
+/// `routes::trips::get_trip_plan`'s own `DoS` notes for the worst-case
 /// arithmetic.
 pub const MAX_CHANGES_LIMIT: u32 = 4;
 
@@ -46,7 +46,10 @@ pub const fn max_rounds(max_changes: u32) -> u32 {
 // The train variant is much larger than the transfer one. A response holds a
 // few dozen legs at most and nearly all of them are trains, so boxing it
 // would add an allocation per leg to save nothing.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "nearly every leg is a train, so boxing would add an allocation per leg; see above"
+)]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum PlannedLeg {
@@ -221,6 +224,11 @@ fn crs_for_tiploc(interchange: &InterchangeData, tiploc: &str) -> Option<String>
         .cloned()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    reason = "minute and day-offset values are bounded by a service day or two; a constant or range-checked time is always valid"
+)]
 fn minutes_to_clock(total_minutes: u32) -> (NaiveTime, u8) {
     let clock = total_minutes % 1440;
     let day_offset = (total_minutes / 1440) as u8;
@@ -279,6 +287,10 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a journey has a handful of legs and rounds"
+)]
 fn train_leg_count(legs: &[JourneyLeg]) -> u32 {
     legs.iter()
         .filter(|leg| matches!(leg, JourneyLeg::Train(_)))
@@ -307,7 +319,10 @@ fn train_leg_count(legs: &[JourneyLeg]) -> u32 {
 /// outcome from an error, see this plan's Review Focus) -- or
 /// `Err(message)` for a caller-facing validation problem (an unresolvable
 /// CRS).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub fn plan_segment(
     connections: &[schedule_query::Connection],
     interchange: &InterchangeData,
@@ -372,7 +387,10 @@ fn resolve_segment_tiplocs(
 /// can become ready after midnight, and the day's connections graph already
 /// carries a late service's post-midnight calls at `1440 + ...` (see
 /// `schedule_query::Connection::departure_min`).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub fn plan_segment_from_min(
     connections: &[schedule_query::Connection],
     interchange: &InterchangeData,
@@ -664,14 +682,12 @@ const WAYPOINT_FALLBACK_CHANGE_MINUTES: u32 = 5;
 /// The minimum change time a waypoint chain charges at `tiploc` -- the same
 /// figure the CSA/RAPTOR searches charge for an ordinary change there.
 fn waypoint_change_minutes(interchange: &InterchangeData, tiploc: Option<&str>) -> u32 {
-    tiploc
-        .map(
-            |tiploc| match schedule_query::minimum_change_time(interchange, tiploc) {
-                schedule_query::ChangeTime::Finite(minutes) => minutes,
-                schedule_query::ChangeTime::NoInterchange => WAYPOINT_FALLBACK_CHANGE_MINUTES,
-            },
-        )
-        .unwrap_or(WAYPOINT_FALLBACK_CHANGE_MINUTES)
+    tiploc.map_or(WAYPOINT_FALLBACK_CHANGE_MINUTES, |tiploc| {
+        match schedule_query::minimum_change_time(interchange, tiploc) {
+            schedule_query::ChangeTime::Finite(minutes) => minutes,
+            schedule_query::ChangeTime::NoInterchange => WAYPOINT_FALLBACK_CHANGE_MINUTES,
+        }
+    })
 }
 
 /// When the traveller can leave the waypoint `itinerary` arrives at: its
@@ -740,7 +756,10 @@ pub fn chain_deadline_min(
 /// `depart_after_min: None`.
 ///
 /// [`plan_trip`] is the general form (arrive-by, avoid lists).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub fn plan_via_waypoints(
     connections: &[schedule_query::Connection],
     interchange: &InterchangeData,
@@ -768,7 +787,10 @@ pub fn plan_via_waypoints(
 
 /// [`plan_via_waypoints`] over the day graph with `overlay`'s trains
 /// replaced (the `/Trips/plan` live overlay, `data::trip_plan_live`).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub fn plan_via_waypoints_with_overlay(
     connections: &[schedule_query::Connection],
     interchange: &InterchangeData,
@@ -975,6 +997,10 @@ pub struct TripPlanInput<'a> {
 /// Every segment's CRS codes are validated before any search, so a bad
 /// code is a 400 naming the first segment that has one. A waypoint equal to
 /// the origin, the destination or the waypoint before it is a 400 too.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
     if input.waypoints.is_empty() {
         return plan_chained(input);
@@ -1012,7 +1038,7 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
     }
 
     let last = tiplocs.len() - 1;
-    let options = trip_planner::ArriveByOptions {
+    let options = ArriveByOptions {
         connections: search.connections,
         interchange,
         from_tiplocs: &tiplocs[0],
@@ -1119,9 +1145,8 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
             let departure = part
                 .legs
                 .first()
-                .map(leg_departure_min)
-                .unwrap_or(previous_arrival);
-            let arrival = part.legs.last().map(leg_arrival_min).unwrap_or(departure);
+                .map_or(previous_arrival, leg_departure_min);
+            let arrival = part.legs.last().map_or(departure, leg_arrival_min);
             previous_arrival = arrival;
             let changes = train_leg_count(&part.legs).saturating_sub(1);
             let mut itinerary = PlannedItinerary::from_legs(
@@ -1232,6 +1257,10 @@ fn waypoint_deadline_min(
 /// chained planner ([`plan_chained`]). The segment it cannot plan keeps its
 /// own reason; every other segment names that one. If every segment plans
 /// on its own, the whole-journey change cap is what failed (`options`).
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
 fn explain_infeasible_joint_plan(
     input: &TripPlanInput<'_>,
     segments: &mut [SegmentResult],
@@ -1319,6 +1348,10 @@ pub struct JourneySummary {
 
 /// The journeys of an aligned plan (see [`plan_trip`]). Empty when the
 /// segments' itinerary counts differ (a plan from the chained planner).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a journey has a handful of legs and rounds"
+)]
 pub fn journey_summaries(
     segments: &[SegmentResult],
     interchange: &InterchangeData,
@@ -1479,6 +1512,10 @@ const END_OF_SERVICE_DAYS_MIN: u32 = 4 * 1440;
 /// finds something -- narrowed here to the single list whose removal is
 /// enough, when there is one. Only then is the time (or the route itself)
 /// blamed. Costs a few extra CSA searches, and only for an empty segment.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 fn explain_empty_segment(
     input: &TripPlanInput<'_>,
     segments: &[SegmentResult],
@@ -1679,15 +1716,15 @@ mod tests {
         };
         for (crs, tiploc) in crs_to_tiplocs {
             data.tiploc_to_crs
-                .insert(tiploc.to_string(), crs.to_string());
+                .insert((*tiploc).to_string(), (*crs).to_string());
             data.crs_to_tiplocs
-                .entry(crs.to_string())
+                .entry((*crs).to_string())
                 .or_default()
-                .push(tiploc.to_string());
+                .push((*tiploc).to_string());
         }
         for (tiploc, change_time) in change_times {
             data.change_time_by_tiploc
-                .insert(tiploc.to_string(), *change_time);
+                .insert((*tiploc).to_string(), *change_time);
         }
         data
     }
@@ -2280,7 +2317,7 @@ mod tests {
     ) -> Vec<SegmentResult> {
         let restrictions = build_restrictions(connections, interchange, passes, avoid)
             .expect("the avoid lists are valid");
-        let waypoints: Vec<String> = waypoints.iter().map(|w| w.to_string()).collect();
+        let waypoints: Vec<String> = waypoints.iter().map(ToString::to_string).collect();
         plan_trip(&TripPlanInput {
             search: SegmentSearch {
                 connections,
@@ -2386,9 +2423,9 @@ mod tests {
         let ic = stations();
         let connections = crewe_network();
         let lists = |avoid: &[&str], stop: &[&str], change: &[&str]| AvoidLists {
-            avoid: avoid.iter().map(|c| c.to_string()).collect(),
-            avoid_stop: stop.iter().map(|c| c.to_string()).collect(),
-            avoid_change: change.iter().map(|c| c.to_string()).collect(),
+            avoid: avoid.iter().map(ToString::to_string).collect(),
+            avoid_stop: stop.iter().map(ToString::to_string).collect(),
+            avoid_change: change.iter().map(ToString::to_string).collect(),
         };
         let first_uids = |segments: &[SegmentResult]| -> Vec<String> {
             train_uids(&segments[0].itineraries[0])
@@ -2682,7 +2719,7 @@ mod tests {
         max_changes: u32,
     ) -> Result<Vec<SegmentResult>, String> {
         let interchange = stations();
-        let waypoints: Vec<String> = waypoints.iter().map(|w| w.to_string()).collect();
+        let waypoints: Vec<String> = waypoints.iter().map(ToString::to_string).collect();
         plan_trip(&TripPlanInput {
             search: SegmentSearch {
                 connections,

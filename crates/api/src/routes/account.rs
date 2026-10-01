@@ -54,6 +54,10 @@ fn is_same_origin_request(headers: &HeaderMap, expected_origin: Option<&str>) ->
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "cookie and filename header values are built from header-safe ASCII"
+)]
 async fn delete_account(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -103,6 +107,10 @@ async fn delete_account(
     response
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "cookie and filename header values are built from header-safe ASCII"
+)]
 async fn export_account(State(app): State<App>, user: AuthenticatedUser) -> Response {
     let export = match account::export_account(&app.database, &user.id).await {
         Ok(Some(export)) => export,
@@ -416,6 +424,10 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
+    #[allow(
+        clippy::similar_names,
+        reason = "only rustc 1.88's clippy flags these names, so #[expect] can't be used"
+    )]
     async fn export_route_returns_an_attachment_for_the_caller_only() {
         let pool = connect().await;
         let user = "acct-route-export";

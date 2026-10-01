@@ -4,7 +4,7 @@
 //! hand it to the matching upsert query.
 //!
 //! `/tfl-line-status` is the odd one out: its batch is already-computed
-//! line status from TfL rather than raw upstream data, so its upsert
+//! line status from `TfL` rather than raw upstream data, so its upsert
 //! targets `line_status`/`line_status_history` directly (see
 //! `queries::upsert_tfl_line_status`).
 //!
@@ -251,7 +251,7 @@ async fn post_tocs(
 }
 
 /// Unlike the other four ingest routes, this one writes the aggregator's
-/// output table directly. That is not a shortcut: TfL publishes finished
+/// output table directly. That is not a shortcut: `TfL` publishes finished
 /// line status, so there is nothing for the aggregator to infer from
 /// incidents or departure boards, and routing it through that crate would
 /// mean inventing a second input table for data that is already in its
@@ -283,7 +283,7 @@ async fn post_tfl_line_status(
 /// * **Any other failure is a 500** with nothing committed -- a connection
 ///   error, pool timeout, serialization failure, deadlock, lock or
 ///   statement timeout. Previously every per-event error was logged and
-///   swallowed behind a 200, the consumer ACKed, and a transient error lost
+///   swallowed behind a 200, the consumer `ACKed`, and a transient error lost
 ///   the event permanently. Now the consumer keeps the batch and retries;
 ///   every write is idempotent by `dedup_key`.
 async fn post_train_events(
@@ -416,38 +416,36 @@ async fn post_trust_event_backlog(
     for (&index, result) in accepted.iter().zip(shared_movement_results) {
         let Err(err) = result else { continue };
         let event = &events[index];
-        match crate::data::trust_event_backlog::classify_anyhow_data_error(&err) {
-            Some(data_error) => {
-                tracing::warn!(
-                    index,
-                    error = ?err,
-                    train_id = %event.train_id,
-                    event = ?event,
-                    "shared movement write rejected this backlog event for a data error"
-                );
-                metrics::counter!(
-                    common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
-                    "class" => "data"
-                )
-                .increment(1);
-                let mut row = data_error.into_rejected_row(index, &event.dedup_key);
-                row.message = format!("shared movement write: {}", row.message);
-                rejected.push(row);
-            }
-            None => {
-                tracing::error!(
-                    index,
-                    error = ?err,
-                    train_id = %event.train_id,
-                    "shared movement write failed transiently; failing the batch so it is retried"
-                );
-                metrics::counter!(
-                    common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
-                    "class" => "transient"
-                )
-                .increment(1);
-                transient.get_or_insert(err);
-            }
+        if let Some(data_error) = crate::data::trust_event_backlog::classify_anyhow_data_error(&err)
+        {
+            tracing::warn!(
+                index,
+                error = ?err,
+                train_id = %event.train_id,
+                event = ?event,
+                "shared movement write rejected this backlog event for a data error"
+            );
+            metrics::counter!(
+                common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
+                "class" => "data"
+            )
+            .increment(1);
+            let mut row = data_error.into_rejected_row(index, &event.dedup_key);
+            row.message = format!("shared movement write: {}", row.message);
+            rejected.push(row);
+        } else {
+            tracing::error!(
+                index,
+                error = ?err,
+                train_id = %event.train_id,
+                "shared movement write failed transiently; failing the batch so it is retried"
+            );
+            metrics::counter!(
+                common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
+                "class" => "transient"
+            )
+            .increment(1);
+            transient.get_or_insert(err);
         }
     }
     if let Some(err) = transient {
@@ -810,7 +808,7 @@ struct SchedulePopulationParams {
     service_date: chrono::NaiveDate,
 }
 
-/// `population` is a `Box<RawValue>`, not a `serde_json::Value`: serde_json
+/// `population` is a `Box<RawValue>`, not a `serde_json::Value`: `serde_json`
 /// still validates that it is well-formed JSON while scanning the body (so
 /// a malformed body gets exactly the same `Json` extractor rejection as
 /// before), but keeps it as one contiguous string instead of building a
@@ -1277,6 +1275,10 @@ fn schedule_publish_error(err: anyhow::Error) -> (StatusCode, String) {
     internal_error(err)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "ingestion upsert failed");
     (
@@ -1286,6 +1288,11 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    clippy::too_many_lines,
+    reason = "test code: fixtures sit next to their use; scenario tests read top to bottom"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::Request;
@@ -1437,7 +1444,7 @@ mod db_tests {
         delete_fixture(&pool, "ZFA", "ZA").await;
 
         let resolved_at = chrono::Utc::now();
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -1461,7 +1468,7 @@ mod db_tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json, serde_json::json!({"upserted": 1}));
 
-        let stats: serde_json::Value = sqlx::query_scalar(
+        let stats: Value = sqlx::query_scalar(
             "SELECT stats FROM station_full_coverage_samples WHERE crs = 'ZFA' AND operator = 'ZA'",
         )
         .fetch_one(&pool)
@@ -1484,7 +1491,7 @@ mod db_tests {
         let pool = connect().await;
         delete_fixture(&pool, "ZFB", "ZB").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
 
@@ -1539,7 +1546,7 @@ mod db_tests {
             "row should be updated in place, not duplicated"
         );
 
-        let stats: serde_json::Value = sqlx::query_scalar(
+        let stats: Value = sqlx::query_scalar(
             "SELECT stats FROM station_full_coverage_samples WHERE crs = 'ZFB' AND operator = 'ZB'",
         )
         .fetch_one(&pool)
@@ -1572,7 +1579,7 @@ mod db_tests {
         .await
         .expect("seed fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -1617,7 +1624,7 @@ mod db_tests {
         // destructive TRUNCATE against a real deployment's table.
         let pool = connect().await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -1694,7 +1701,7 @@ mod db_tests {
         .await
         .expect("seed second population");
 
-        let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
+        let rows: Vec<(Value,)> = sqlx::query_as(
             "SELECT population FROM schedule_line_population WHERE line_id = $1 AND service_date = $2",
         )
         .bind(FIXTURE_LINE_ID)
@@ -1805,7 +1812,7 @@ mod db_tests {
         let pool = connect().await;
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
 
@@ -1843,7 +1850,7 @@ mod db_tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
             json,
             serde_json::json!([{"uid": "C11052", "calling_points": []}])
@@ -1885,7 +1892,7 @@ mod db_tests {
     /// the real `/private/*` routes (axum's own 2 MB default would 413 the
     /// multi-MB fixture).
     fn population_router(pool: &PgPool) -> axum::Router {
-        crate::app::Router::new()
+        Router::new()
             .merge(router())
             .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
             .with_state(test_app(pool.clone()))
@@ -1951,7 +1958,7 @@ mod db_tests {
     }
 
     /// The memory fix must not change what is stored or served: a
-    /// multi-MB population POSTed through the `RawValue`/`$3::jsonb` path
+    /// multi-MB population `POSTed` through the `RawValue`/`$3::jsonb` path
     /// is jsonb-equal to the same population bound the OLD way (as a
     /// `serde_json::Value`), the GET body parses back to the identical
     /// value, and re-POSTing the GET body verbatim is a no-op.
@@ -2511,7 +2518,7 @@ mod db_tests {
             .await
             .ok();
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
 
@@ -2624,7 +2631,7 @@ mod db_tests {
         let pool = connect().await;
         delete_network_departures_fixture(&pool, "ZQV").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -2648,7 +2655,7 @@ mod db_tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json, serde_json::json!({"upserted": 1}));
 
-        let departures: serde_json::Value = sqlx::query_scalar(
+        let departures: Value = sqlx::query_scalar(
             "SELECT departures FROM schedule_network_departures WHERE crs = 'ZQV' AND service_date = '2026-09-04'",
         )
         .fetch_one(&pool)
@@ -2687,7 +2694,7 @@ mod db_tests {
         .await
         .expect("seed second row");
 
-        let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
+        let rows: Vec<(Value,)> = sqlx::query_as(
             "SELECT departures FROM schedule_network_departures WHERE crs = 'ZQW' AND service_date = '2026-09-04'",
         )
         .fetch_all(&pool)
@@ -2731,7 +2738,7 @@ mod db_tests {
         // with `data::queries`' `fixture_date_feb(1)`).
         let _day = destination_departures_day(&pool, "2099-09-01").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         // Flat: one JSON object per DEPARTURE, exactly as
@@ -2777,7 +2784,7 @@ mod db_tests {
         let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+        let json: Value = serde_json::from_slice(&response_body).unwrap();
         assert_eq!(json["upserted"], 2);
 
         // destination_crs, scheduled, train_uid, origin_crs, true_origin_crs,
@@ -2835,7 +2842,7 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("pre-clean");
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let row = |msg_type: &str, dedup_key: &str| {
@@ -2901,7 +2908,7 @@ mod db_tests {
         .await
         .expect("find_or_create_train");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
 
@@ -3041,7 +3048,7 @@ mod db_tests {
         cleanup_train_events_fixture(&pool, user_id, &[uid]).await;
         let subscription_id = seed_train_events_subscription(&pool, user_id, "2099-03-01").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
 
@@ -3128,7 +3135,7 @@ mod db_tests {
     /// DB2-2: a TRANSIENT failure (a real lock timeout, SQLSTATE 55P03) is a
     /// 500 with nothing committed -- including the events before it in the
     /// batch -- so trust-consumer keeps the batch and retries it, instead of
-    /// ACKing a 200 and losing the event for good. Once the lock is gone the
+    /// `ACKing` a 200 and losing the event for good. Once the lock is gone the
     /// very same batch goes through.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
@@ -3166,7 +3173,7 @@ mod db_tests {
             .unwrap();
 
         let short_timeout_pool = connect_with_short_lock_timeout().await;
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(short_timeout_pool.clone()));
         let (status, _) = post_json_to(router.clone(), "/train-events", &events).await;
@@ -3237,7 +3244,7 @@ mod db_tests {
         let pool = connect().await;
         let uids = ["TEST-PL7-GOOD", "TEST-PL7-BAD"];
         cleanup_backlog_fixture(&pool, &uids).await;
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let body = json!([
@@ -3293,7 +3300,7 @@ mod db_tests {
             .await
             .unwrap();
         let short_timeout_pool = connect_with_short_lock_timeout().await;
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(short_timeout_pool.clone()));
         let (status, _) = post_json_to(router.clone(), "/trust-event-backlog", &body).await;
@@ -3351,7 +3358,7 @@ mod db_tests {
                 "day_offset": 0
             })
         };
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let post = |query: &'static str, body: Value| {
@@ -3453,7 +3460,7 @@ mod db_tests {
             .execute(&pool)
             .await
             .unwrap();
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let body = json!([{

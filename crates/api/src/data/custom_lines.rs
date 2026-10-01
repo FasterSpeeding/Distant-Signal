@@ -115,7 +115,7 @@ pub async fn list_custom_lines(pool: &PgPool) -> Result<Vec<CustomLine>> {
 /// (including catalogue-line ids, which are never rows in this table). The
 /// second element of the tuple is the row's `user_id`. It's still typed
 /// `Option<String>` at the Rust level, but since migration
-/// 20260901120000_custom_lines_owner_not_null.sql the database itself
+/// `20260901120000_custom_lines_owner_not_null.sql` the database itself
 /// guarantees it's always `Some` -- the transient NULL-owner window opened
 /// by `20260828100000_add_ownership.sql` is closed. `get_line` (the only
 /// caller that needs it) uses this to gate ownership; `get_line_definition`
@@ -186,8 +186,8 @@ pub async fn count_custom_lines_for_user(pool: &PgPool, user_id: &str) -> Result
 /// then have one fail on the `PRIMARY KEY` constraint.
 ///
 /// Also pins the newly created line, in the same transaction as the
-/// insert — mirrors [`delete_custom_line`]'s existing "custom_lines row +
-/// pinned_lines row together" pattern. A custom line only exists because
+/// insert — mirrors [`delete_custom_line`]'s existing "`custom_lines` row +
+/// `pinned_lines` row together" pattern. A custom line only exists because
 /// this instance's user made it, so the alternative (created but not
 /// pinned, invisible on the home page until the user remembers to pin it
 /// themselves) serves no one. The pin insert tolerates a conflict
@@ -212,12 +212,12 @@ pub async fn insert_custom_line(
     loop {
         let mut tx = pool.begin().await?;
         let inserted: Option<String> = sqlx::query_scalar(
-            r#"
+            r"
             INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
             ON CONFLICT (id) DO NOTHING
             RETURNING id
-            "#,
+            ",
         )
         .bind(&id)
         .bind(&new.name)
@@ -269,11 +269,11 @@ pub async fn update_custom_line(
 ) -> Result<Option<CustomLine>> {
     let new = new.normalized();
     let result = sqlx::query(
-        r#"
+        r"
         UPDATE custom_lines
         SET name = $2, operators = $3, stations = $4, headcode_prefixes = $5, destination_crs_filter = $6
         WHERE id = $1 AND user_id = $7
-        "#,
+        ",
     )
     .bind(id)
     .bind(&new.name)
@@ -552,6 +552,11 @@ mod tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "test code: paired test values share names; scenario tests read top to bottom"
+)]
 mod db_tests {
     use super::*;
 
@@ -562,7 +567,7 @@ mod db_tests {
         use sqlx::PgPool;
         use sqlx::postgres::PgPoolOptions;
 
-        pub async fn connect() -> PgPool {
+        pub(super) async fn connect() -> PgPool {
             let database_url =
                 std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
             PgPoolOptions::new()
@@ -571,7 +576,7 @@ mod db_tests {
                 .expect("connect to postgres")
         }
 
-        pub async fn seed_user(pool: &PgPool, id: &str) {
+        pub(super) async fn seed_user(pool: &PgPool, id: &str) {
             sqlx::query(
                 "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) \
                  ON CONFLICT (id) DO NOTHING",
@@ -584,13 +589,13 @@ mod db_tests {
             .expect("seed fixture user");
         }
 
-        pub async fn seed_group(pool: &PgPool, name: &str, owner_id: &str) -> String {
+        pub(super) async fn seed_group(pool: &PgPool, name: &str, owner_id: &str) -> String {
             crate::data::groups::create_group(pool, name, owner_id)
                 .await
                 .expect("seed fixture group")
         }
 
-        pub async fn seed_membership(pool: &PgPool, group_id: &str, user_id: &str) {
+        pub(super) async fn seed_membership(pool: &PgPool, group_id: &str, user_id: &str) {
             sqlx::query(
                 "INSERT INTO group_members (group_id, user_id, role, joined_at) \
                  VALUES ($1, $2, 'member', NOW()) ON CONFLICT DO NOTHING",
@@ -602,7 +607,7 @@ mod db_tests {
             .expect("seed fixture membership");
         }
 
-        pub async fn grant(pool: &PgPool, group_id: &str, line_id: &str, granted_by: &str) {
+        pub(super) async fn grant(pool: &PgPool, group_id: &str, line_id: &str, granted_by: &str) {
             sqlx::query(
                 "INSERT INTO custom_line_group_grants (group_id, line_id, granted_by) \
                  VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
@@ -619,7 +624,7 @@ mod db_tests {
         /// `groups.created_by` and `custom_line_group_grants.granted_by`
         /// both reference `users(id)` with no cascade, so users must go
         /// last.
-        pub async fn cleanup(pool: &PgPool, group_ids: &[&str], user_ids: &[&str]) {
+        pub(super) async fn cleanup(pool: &PgPool, group_ids: &[&str], user_ids: &[&str]) {
             for id in group_ids {
                 sqlx::query("DELETE FROM groups WHERE id = $1")
                     .bind(id)
@@ -646,7 +651,7 @@ mod db_tests {
             }
         }
 
-        pub fn new_line(name: &str) -> super::NewCustomLine {
+        pub(super) fn new_line(name: &str) -> super::NewCustomLine {
             super::NewCustomLine {
                 name: name.to_string(),
                 operators: vec!["SW".to_string()],

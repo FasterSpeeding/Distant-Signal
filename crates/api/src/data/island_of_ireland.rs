@@ -50,7 +50,7 @@ pub async fn upsert_stations(pool: &PgPool, stations: &[IslandOfIrelandStation])
 
     let mut tx = pool.begin().await?;
     sqlx::query(
-        r#"
+        r"
         INSERT INTO island_of_ireland_stations (id, name, network, latitude, longitude, fetched_at)
         SELECT id, name, network, latitude, longitude, NOW()
         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::float8[], $5::float8[])
@@ -65,7 +65,7 @@ pub async fn upsert_stations(pool: &PgPool, stations: &[IslandOfIrelandStation])
                island_of_ireland_stations.latitude, island_of_ireland_stations.longitude)
               IS DISTINCT FROM
               (EXCLUDED.name, EXCLUDED.network, EXCLUDED.latitude, EXCLUDED.longitude)
-        "#,
+        ",
     )
     .bind(&ids)
     .bind(&names)
@@ -96,7 +96,7 @@ pub async fn upsert_lines(pool: &PgPool, lines: &[IslandOfIrelandLineDefinition]
 
     let mut tx = pool.begin().await?;
     sqlx::query(
-        r#"
+        r"
         INSERT INTO island_of_ireland_lines (id, name, network, stations, fetched_at)
         SELECT id, name, network, stations, NOW()
         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[])
@@ -110,7 +110,7 @@ pub async fn upsert_lines(pool: &PgPool, lines: &[IslandOfIrelandLineDefinition]
                island_of_ireland_lines.stations)
               IS DISTINCT FROM
               (EXCLUDED.name, EXCLUDED.network, EXCLUDED.stations)
-        "#,
+        ",
     )
     .bind(&ids)
     .bind(&names)
@@ -262,7 +262,7 @@ pub async fn upsert_station_samples(
         .collect::<Result<_, _>>()?;
 
     sqlx::query(
-        r#"
+        r"
         INSERT INTO island_of_ireland_station_samples (station_id, network, polled_at, departures)
         SELECT station_id, network, polled_at, departures
         FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::jsonb[])
@@ -280,7 +280,7 @@ pub async fn upsert_station_samples(
                island_of_ireland_station_samples.departures)
               IS DISTINCT FROM
               (EXCLUDED.network, EXCLUDED.polled_at, EXCLUDED.departures)
-        "#,
+        ",
     )
     .bind(&ids)
     .bind(&networks)
@@ -527,7 +527,7 @@ mod db_tests {
             id: "ZLINE2".to_string(),
             name: "Zest Loop".to_string(),
             network: IslandOfIrelandNetwork::NorthernIreland,
-            stations: stations.iter().map(|s| s.to_string()).collect(),
+            stations: stations.iter().map(ToString::to_string).collect(),
         };
         upsert_lines(&pool, &[line(&["ZA", "ZB"])]).await.unwrap();
         let before = xmin(&pool, "island_of_ireland_lines", "ZLINE2").await;

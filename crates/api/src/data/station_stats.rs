@@ -111,6 +111,10 @@ fn looks_like_atoc_code(operator: &str) -> bool {
 /// are). A row that fails the check is skipped for this aggregation only;
 /// it stays untouched in `full_coverage_rows` itself and everywhere else
 /// that consumes it.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "collection lengths stay far below i64::MAX"
+)]
 pub fn compute_station_operator_stats(
     sample: &StationSample,
     defaults: &Defaults,
@@ -152,18 +156,18 @@ pub fn compute_station_operator_stats(
                 SampleAvailability::Available(stats)
             };
 
-            let full_coverage_availability = if !full_coverage_enabled_for(
+            let full_coverage_availability = if full_coverage_enabled_for(
                 &sample.crs,
                 operator,
                 lines,
                 full_coverage_enabled_default,
             ) {
-                FullCoverageAvailability::NotEnabled
-            } else {
                 match full_coverage_rows.iter().find(|r| r.operator == operator) {
                     Some(row) => FullCoverageAvailability::Available(row.stats.clone()),
                     None => FullCoverageAvailability::Pending,
                 }
+            } else {
+                FullCoverageAvailability::NotEnabled
             };
             // Reuses the existing accessor (lib.rs:858-863) rather than
             // re-deriving the same match a second time.
@@ -182,6 +186,7 @@ pub fn compute_station_operator_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn departure(
         operator: &str,
@@ -332,11 +337,11 @@ mod tests {
             name: id.to_string(),
             mode: "national-rail".to_string(),
             category: "main-line".to_string(),
-            operators: operators.iter().map(|s| s.to_string()).collect(),
+            operators: operators.iter().map(ToString::to_string).collect(),
             stations: stations
                 .iter()
                 .map(|crs| common::Station {
-                    crs: crs.to_string(),
+                    crs: (*crs).to_string(),
                     tiploc: None,
                     role: "minor".to_string(),
                     segment: None,
@@ -345,7 +350,7 @@ mod tests {
             sample_stations: vec![],
             match_keywords: vec![],
             excluded_keywords: vec![],
-            severity_overrides: Default::default(),
+            severity_overrides: HashMap::default(),
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled,
@@ -355,7 +360,7 @@ mod tests {
     fn full_coverage_row(
         crs: &str,
         operator: &str,
-        stats: common::SampleStats,
+        stats: SampleStats,
     ) -> StationFullCoverageSample {
         StationFullCoverageSample {
             crs: crs.to_string(),
@@ -365,8 +370,8 @@ mod tests {
         }
     }
 
-    fn sample_stats(total: usize) -> common::SampleStats {
-        common::SampleStats {
+    fn sample_stats(total: usize) -> SampleStats {
+        SampleStats {
             total,
             delayed: 0,
             cancelled: 0,

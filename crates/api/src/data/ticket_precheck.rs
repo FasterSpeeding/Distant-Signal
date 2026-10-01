@@ -119,6 +119,10 @@ const PDF_TRAILER_WINDOW: usize = 1024;
 /// encryption, compression method, total declared uncompressed size,
 /// per-entry compression ratio, nested archives, path depth, and a
 /// `pass.json` at the root no larger than the parser will read).
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub fn precheck_pkpass(bytes: &[u8]) -> Result<(), Rejection> {
     if bytes.len() > MAX_PKPASS_UPLOAD_BYTES {
         return Err(Rejection::TooLarge(format!(
@@ -323,11 +327,19 @@ pub fn precheck_pdf(bytes: &[u8]) -> Result<(), Rejection> {
 }
 
 /// `%PDF-1.0` ... `%PDF-1.7` and `%PDF-2.0`, anchored at the start.
+#[expect(
+    clippy::expect_used,
+    reason = "a constant regex literal, compiled by the tests"
+)]
 static PDF_VERSION: LazyLock<regex::bytes::Regex> =
     LazyLock::new(|| regex::bytes::Regex::new(r"\A%PDF-(?:1\.[0-7]|2\.0)").expect("valid regex"));
 
 /// An indirect object header, `<num> <gen> obj`, with PDF whitespace
 /// between the tokens. `(?-u)` so `\b` and the classes are byte-oriented.
+#[expect(
+    clippy::expect_used,
+    reason = "a constant regex literal, compiled by the tests"
+)]
 static PDF_OBJECT_HEADER: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
     regex::bytes::Regex::new(
         r"(?-u)(?:^|[^0-9])[0-9]{1,10}[ \t\r\n\x0c\x00]+[0-9]{1,5}[ \t\r\n\x0c\x00]+obj\b",
@@ -336,6 +348,10 @@ static PDF_OBJECT_HEADER: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
 });
 
 /// A page dictionary's `/Type /Page` (not `/Pages`).
+#[expect(
+    clippy::expect_used,
+    reason = "a constant regex literal, compiled by the tests"
+)]
 static PDF_PAGE_TYPE: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
     regex::bytes::Regex::new(r"(?-u)/Type[ \t\r\n\x0c\x00]*/Page(?:[^A-Za-z0-9]|$)")
         .expect("valid regex")
@@ -378,6 +394,7 @@ pub mod fixtures {
     use std::io::Write;
 
     /// A `.pkpass` containing `files` (name, contents), deflated.
+    #[expect(clippy::expect_used, reason = "test fixture builder writing to memory")]
     pub fn zip_with(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();
         {
@@ -421,6 +438,10 @@ pub mod fixtures {
     /// A one-page PDF 1.4 whose content stream draws each line of `lines`
     /// in Helvetica, with a correct xref table, so `pdf_extract` reads the
     /// text back.
+    #[expect(
+        clippy::format_push_string,
+        reason = "short strings off the hot path; format! reads clearer"
+    )]
     pub fn pdf_with_text(lines: &[&str]) -> Vec<u8> {
         let mut content = String::from("BT /F1 12 Tf 72 720 Td 14 TL\n");
         for line in lines {
@@ -480,6 +501,10 @@ pub mod fixtures {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts of small known test values"
+)]
 mod tests {
     use super::fixtures::*;
     use super::*;

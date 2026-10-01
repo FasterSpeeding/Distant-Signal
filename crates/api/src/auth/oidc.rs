@@ -37,14 +37,14 @@ use openidconnect::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct OidcIdentity {
     pub sub: String,
-    /// The user's real name, if the IdP asserted one in any of the
+    /// The user's real name, if the `IdP` asserted one in any of the
     /// standard name-shaped `profile` claims (`name`, else
     /// `given_name`/`family_name`).
     pub name: Option<String>,
     /// The user's handle: the `preferred_username` claim, else `nickname`.
     /// The only identifier besides `name` that reaches us, and the reason a
-    /// user whose IdP has no name on file for them still has something to
-    /// be shown as in a shared group. It can itself be email-shaped (an IdP
+    /// user whose `IdP` has no name on file for them still has something to
+    /// be shown as in a shared group. It can itself be email-shaped (an `IdP`
     /// may use the email as the username), so it is never shown to other
     /// members when it is -- see `data::users::display_label`.
     pub preferred_username: Option<String>,
@@ -96,7 +96,7 @@ pub struct RawClaims {
 }
 
 /// Blank-or-absent are the same thing for every claim this app reads: an
-/// IdP with nothing on file for a field often sends `""` rather than
+/// `IdP` with nothing on file for a field often sends `""` rather than
 /// omitting the claim (Authentik's `profile` mapping returns `User.name`
 /// verbatim, and that column defaults to the empty string -- whereas
 /// `family_name`, which has no such fallback, is dropped from the token
@@ -119,7 +119,7 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
 /// boundary could promote a value the display layer then silently drops.
 ///
 /// `@` is a deliberately blunt test -- see `data::users::shareable`'s own
-/// doc comment for the privacy reasoning and for what it costs on IdPs
+/// doc comment for the privacy reasoning and for what it costs on `IdPs`
 /// whose `preferred_username` is a UPN.
 pub fn looks_like_email_address(value: &str) -> bool {
     value.contains('@')
@@ -182,11 +182,11 @@ fn joined_name(given_name: Option<&str>, family_name: Option<&str>) -> Option<St
 /// - `preferred_username`: the `preferred_username` claim, else `nickname`.
 ///
 /// `nickname` ranks as a USERNAME, not a name, on purpose. OIDC Core calls
-/// it a "casual name", but Authentik -- this app's IdP -- emits
+/// it a "casual name", but Authentik -- this app's `IdP` -- emits
 /// `request.user.username` for it verbatim, identical to
 /// `preferred_username`. Treating it as a name would write a login handle
 /// into `users.name`, where the rest of the app reads "a real name"; as a
-/// username fallback it is free insurance for an IdP (or a custom Authentik
+/// username fallback it is free insurance for an `IdP` (or a custom Authentik
 /// scope mapping) that emits one and not the other, and a no-op otherwise.
 pub fn identity_from_claims(claims: RawClaims) -> OidcIdentity {
     let joined = joined_name(claims.given_name.as_deref(), claims.family_name.as_deref());
@@ -534,6 +534,10 @@ impl OidcClient {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "test code: helpers take owned fixtures"
+)]
 mod tests {
     use super::*;
 

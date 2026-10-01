@@ -225,6 +225,10 @@ async fn get_station_schedule_departures(
     ))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "station departures query failed");
     (
@@ -276,7 +280,7 @@ mod tests {
 /// `test_app` helper for constructing a real `App` around a live pool
 /// without needing every other part of `AppState::init` (OIDC discovery,
 /// etc). Uses `ZQT`/`ZQU` fixture CRS codes -- deliberately not `ZQQ`/
-/// `ZQR`/`ZQS`, which `station_stats.rs`'s own db_tests already claims in
+/// `ZQR`/`ZQS`, which `station_stats.rs`'s own `db_tests` already claims in
 /// the same reserved `Z…` fixture namespace, since both files' tests may
 /// run against the same test database.
 #[cfg(test)]
@@ -398,7 +402,7 @@ mod db_tests {
         let pool = connect().await;
         delete_fixture(&pool, "ZQT").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -435,7 +439,7 @@ mod db_tests {
         .await
         .expect("seed empty-departures fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -489,7 +493,7 @@ mod db_tests {
         .await
         .expect("seed two-departure fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -564,7 +568,7 @@ mod db_tests {
         .expect("seed fixture row");
 
         let get = |uri: &'static str| {
-            let router: axum::Router = crate::app::Router::new()
+            let router: axum::Router = Router::new()
                 .merge(router())
                 .with_state(test_app(pool.clone()));
             async move {
@@ -670,7 +674,7 @@ mod db_tests {
         .await
         .expect("seed platform fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -716,7 +720,7 @@ mod db_tests {
         let pool = connect().await;
         delete_schedule_departures_fixture(&pool, "ZQX").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -756,7 +760,7 @@ mod db_tests {
         .await
         .expect("seed a stale fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -816,7 +820,7 @@ mod db_tests {
         .await
         .expect("seed a bare-UTC-dated fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -856,7 +860,7 @@ mod db_tests {
         .await
         .expect("seed empty-departures fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -900,7 +904,7 @@ mod db_tests {
         .await
         .expect("seed two-departure fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -962,7 +966,7 @@ mod db_tests {
         .await
         .expect("seed day-offset fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router

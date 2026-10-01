@@ -147,15 +147,16 @@ async fn run() -> anyhow::Result<()> {
             .await,
         partial: None,
     };
-    match &state.last_processed_delivery {
-        Some(delivery) => tracing::info!(
+    if let Some(delivery) = &state.last_processed_delivery {
+        tracing::info!(
             delivery = %delivery,
             "seeded last_processed_delivery from this service's OWN persisted publish-completion \
              marker; will not redundantly republish this delivery after a restart"
-        ),
-        None => tracing::info!(
+        );
+    } else {
+        tracing::info!(
             "no completed schedule-reference publish cycle recorded by api yet; will process the next delivery poll_once finds (first-run behavior)"
-        ),
+        );
     }
 
     loop {
@@ -426,19 +427,19 @@ mod telemetry {
     /// product publish attempt that [`super::CycleOutcome`] recorded (after
     /// in-cycle retries). `product` is the product's kind, never its date or
     /// line, so the label set stays small.
-    pub const PUBLISHES_METRIC: &str = "schedule_reference_publishes_total";
+    pub(crate) const PUBLISHES_METRIC: &str = "schedule_reference_publishes_total";
     /// Unix seconds of the delivery (its directory's timestamp name) whose
     /// every product last published, seeded at startup from `api`'s durable
     /// marker. A healthy pipeline moves it forward about once a day.
-    pub const LAST_PUBLISHED_DELIVERY_METRIC: &str =
+    pub(crate) const LAST_PUBLISHED_DELIVERY_METRIC: &str =
         "schedule_reference_last_published_delivery_timestamp_seconds";
 
-    pub const PUBLISHED: &str = "published";
-    pub const RETRYABLE: &str = "retryable";
-    pub const PERMANENT: &str = "permanent";
+    pub(crate) const PUBLISHED: &str = "published";
+    pub(crate) const RETRYABLE: &str = "retryable";
+    pub(crate) const PERMANENT: &str = "permanent";
     /// `api` refused the data itself (400/413/422): permanent for this
     /// delivery (DQ6/SCHED-1).
-    pub const REJECTED: &str = "rejected";
+    pub(crate) const REJECTED: &str = "rejected";
     const OUTCOMES: [&str; 4] = [PUBLISHED, RETRYABLE, PERMANENT, REJECTED];
 
     /// Every `product` label value [`product_kind`] can return.
@@ -456,7 +457,7 @@ mod telemetry {
 
     /// The label for a product key: its kind, the part before any `/`
     /// (a date, a line) or ` (` (a note on why it failed).
-    pub fn product_kind(key: &str) -> &'static str {
+    pub(crate) fn product_kind(key: &str) -> &'static str {
         if key.starts_with("all CIF-derived") {
             return "all_cif_derived";
         }
@@ -468,7 +469,7 @@ mod telemetry {
             .unwrap_or("other")
     }
 
-    pub fn record(product: &str, outcome: &'static str) {
+    pub(crate) fn record(product: &str, outcome: &'static str) {
         metrics::counter!(
             common::metrics::metric_name(PUBLISHES_METRIC),
             "product" => product_kind(product),
@@ -479,7 +480,7 @@ mod telemetry {
 
     /// Registers every `(product, outcome)` series at 0, so an alert's
     /// `increase()` sees the first failure of a kind.
-    pub fn register() {
+    pub(crate) fn register() {
         for product in PRODUCT_KINDS {
             for outcome in OUTCOMES {
                 metrics::counter!(
@@ -494,22 +495,25 @@ mod telemetry {
 
     /// A delivery directory name (`YYYYMMDDTHHMMSSZ`, schedule-ingest's
     /// `delivery_dir_name`) as Unix seconds.
-    pub fn delivery_timestamp(dir_name: &str) -> Option<i64> {
+    pub(crate) fn delivery_timestamp(dir_name: &str) -> Option<i64> {
         chrono::NaiveDateTime::parse_from_str(dir_name, "%Y%m%dT%H%M%SZ")
             .ok()
             .map(|at| at.and_utc().timestamp())
     }
 
-    pub fn set_last_published_delivery(dir_name: &str) {
-        match delivery_timestamp(dir_name) {
-            Some(at) => {
-                metrics::gauge!(common::metrics::metric_name(LAST_PUBLISHED_DELIVERY_METRIC))
-                    .set(at as f64)
-            }
-            None => tracing::warn!(
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "metric gauges take f64, and these counts and timestamps stay far below 2^52"
+    )]
+    pub(crate) fn set_last_published_delivery(dir_name: &str) {
+        if let Some(at) = delivery_timestamp(dir_name) {
+            metrics::gauge!(common::metrics::metric_name(LAST_PUBLISHED_DELIVERY_METRIC))
+                .set(at as f64);
+        } else {
+            tracing::warn!(
                 delivery = dir_name,
                 "delivery directory name is not a timestamp; last-published gauge not updated"
-            ),
+            );
         }
     }
 }
@@ -519,23 +523,23 @@ mod telemetry {
 /// per-line population its line and date, because each of those is its own
 /// independent publish: one date failing says nothing about the others.
 mod product {
-    pub const STANOX_CRS: &str = "stanox_crs";
-    pub const TIPLOC_CRS: &str = "tiploc_crs";
-    pub const FIXED_LINKS: &str = "fixed_links";
+    pub(crate) const STANOX_CRS: &str = "stanox_crs";
+    pub(crate) const TIPLOC_CRS: &str = "tiploc_crs";
+    pub(crate) const FIXED_LINKS: &str = "fixed_links";
 
-    pub fn line_population(line_id: &str, date: chrono::NaiveDate) -> String {
+    pub(crate) fn line_population(line_id: &str, date: chrono::NaiveDate) -> String {
         format!("schedule_line_population/{line_id}/{date}")
     }
 
-    pub fn network_departures(date: chrono::NaiveDate) -> String {
+    pub(crate) fn network_departures(date: chrono::NaiveDate) -> String {
         format!("schedule_network_departures/{date}")
     }
 
-    pub fn destination_departures(date: chrono::NaiveDate) -> String {
+    pub(crate) fn destination_departures(date: chrono::NaiveDate) -> String {
         format!("schedule_destination_departures/{date}")
     }
 
-    pub fn calling_points_full(date: chrono::NaiveDate) -> String {
+    pub(crate) fn calling_points_full(date: chrono::NaiveDate) -> String {
         format!("schedule_calling_points_full/{date}")
     }
 }
@@ -634,6 +638,10 @@ async fn publish_with_retry(
 /// derives from that delivery, and only then advances
 /// `last_processed_delivery` -- see [`CycleOutcome`] for why "only then" is
 /// load-bearing and which failures hold it back.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn poll_once(
     client: &Client,
     config: &Config,
@@ -976,7 +984,7 @@ async fn publish_fixed_links(
 /// `schedule_reference_seeded` gauge: 0 from process start until the seed
 /// returns, then 1 (PL-15e of the 2026-09-27 pipelines review). The seed
 /// wait is `progress.idle`, so the liveness endpoint is healthy throughout
-/// it; without this gauge "never managed to seed" (api or the IdP down for
+/// it; without this gauge "never managed to seed" (api or the `IdP` down for
 /// hours) looked exactly like "idle between deliveries".
 async fn seed_and_report(
     client: &Client,
@@ -1040,7 +1048,7 @@ const SEEDED_METRIC: &str = "schedule_reference_seeded";
 /// **A failed GET is retried until it succeeds, never read as "first run"
 /// (2026-09-26).** Any failure to get an answer -- DNS, a refused connection,
 /// the OAuth token fetch, a 5xx, an undecodable body -- used to fall back to
-/// `None` too. After that day's node reboot the IdP was unresolvable and then
+/// `None` too. After that day's node reboot the `IdP` was unresolvable and then
 /// answering 502 for about a minute, so this GET failed, the process took
 /// "couldn't ask" for "nothing published yet", and republished in full a
 /// delivery it had finished hours earlier. "Couldn't fetch" says nothing
@@ -1103,10 +1111,14 @@ async fn seed_last_processed_delivery(
 const DESTINATION_DEPARTURES_FORWARD_DAYS: i64 = 7;
 
 /// Forward publish window for `schedule_calling_points_full` -- same value
-/// as DESTINATION_DEPARTURES_FORWARD_DAYS (both are whole-network,
+/// as `DESTINATION_DEPARTURES_FORWARD_DAYS` (both are whole-network,
 /// full-day products published on the same cycle for the same reason: a
 /// trip-planning query needs the query date, which may be up to a week
 /// ahead, immediately queryable without waiting for a same-day publish).
+#[allow(
+    dead_code,
+    reason = "rustc 1.88 doesn't count the const assert below as a use; newer rustc does"
+)]
 const TRIP_PLANNING_FORWARD_DAYS: i64 = 7;
 
 /// Enforced at COMPILE time, not merely asserted at runtime (a
@@ -1419,7 +1431,11 @@ async fn publish_cif_derived_products(
 /// hide which of them each publish actually reads. The eighth argument is
 /// `outcome`, the per-cycle failure ledger the 2026-09-25 retry fix threads
 /// through every publish -- see [`CycleOutcome`].
-#[allow(clippy::needless_borrow, clippy::too_many_arguments)]
+#[expect(
+    clippy::needless_borrow,
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; see the doc comment"
+)]
 async fn publish_schedule_line_population(
     client: &Client,
     config: &Config,
@@ -1783,7 +1799,10 @@ fn schedule_destination_departures_row_iter(
 ///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom, but it is
 ///    sent in [`PUBLISH_CHUNK_ROWS`]-row chunks anyway, as one diff publish
 ///    -- see [`post_date_scoped_rows_in_chunks`] for the chunk contract.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 async fn publish_schedule_destination_departures(
     client: &Client,
     config: &Config,
@@ -1896,6 +1915,11 @@ fn schedule_calling_points_full_rows(
 /// [`schedule_calling_points_full_rows`], lazily -- one schedule is resolved
 /// at a time, as the publish pulls rows into a chunk (see
 /// [`post_date_scoped_row_stream`]).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "a schedule has at most a few hundred calling points"
+)]
 fn schedule_calling_points_full_row_iter(
     index: &schedule_query::ScheduleIndex,
     date: chrono::NaiveDate,
@@ -2087,7 +2111,7 @@ fn london_local_date_now() -> chrono::NaiveDate {
 /// longer looks at the TOML `tiploc` field at all (previously: "a line with
 /// at least one `tiploc`-bearing station"). That field is hand-curated,
 /// optional, and largely absent -- 39 of 109 `lines/*.toml` files have it
-/// set on precisely zero stations (all of ScotRail, Southeastern,
+/// set on precisely zero stations (all of `ScotRail`, Southeastern,
 /// Merseyrail, London Overground, Heathrow Express, and others) -- so
 /// gating a whole line's publish on it silently dropped
 /// `schedule_line_population` for those lines entirely, even though the
@@ -2191,11 +2215,11 @@ async fn post_date_scoped_rows_in_chunks(
 ///
 /// **Why (2026-09-26 production OOM).** Each per-date publish used to build
 /// EVERY row for the date as a `serde_json::Value` (~2KB apiece once every
-/// key is its own heap `String` in its own map) before POSTing the first
+/// key is its own heap `String` in its own map) before `POSTing` the first
 /// chunk -- several hundred MB per date for
 /// `schedule_destination_departures`, on top of the resident
 /// `ScheduleIndex`, and the exact point production's `reference` container
-/// was OOMKilled. Built lazily, at most one [`PUBLISH_CHUNK_ROWS`] chunk of
+/// was `OOMKilled`. Built lazily, at most one [`PUBLISH_CHUNK_ROWS`] chunk of
 /// rows exists at a time.
 ///
 /// `total_rows` on the last chunk is the running count, which is exact:
@@ -2352,6 +2376,10 @@ fn first_chunk_url(url: &str, first_chunk: bool) -> String {
 /// [`first_chunk_url`] plus the diff protocol's `publish_id`, and on the
 /// final chunk (`final_total_rows: Some(total)`) `last_chunk=true` and
 /// `total_rows`.
+#[expect(
+    clippy::format_push_string,
+    reason = "short strings off the hot path; format! reads clearer"
+)]
 fn diff_chunk_url(
     url: &str,
     publish_id: &str,
@@ -2400,7 +2428,7 @@ fn embedded_sequence_number(mca_path: &std::path::Path) -> Option<i32> {
 mod poll_interval_tests {
     use super::*;
 
-    /// Regression for the "L1 -- MissedTickBehavior::Burst still default"
+    /// Regression for the "L1 -- `MissedTickBehavior::Burst` still default"
     /// finding: this poller's own interval must opt into `Delay`, not
     /// leave `Burst` as the default, so an overrun cycle doesn't fire a
     /// burst of back-to-back catch-up cycles.
@@ -2415,6 +2443,11 @@ mod poll_interval_tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; scenario tests read top to bottom"
+)]
 mod poll_once_tests {
     use super::*;
 
@@ -2501,7 +2534,7 @@ mod poll_once_tests {
         for (crs, tiploc) in pairs {
             map.entry(crs.to_uppercase())
                 .or_default()
-                .push(tiploc.to_string());
+                .push((*tiploc).to_string());
         }
         map
     }
@@ -3861,10 +3894,8 @@ LTWVRMPTN 2211 22113     TF";
 
     /// Millisecond-scale backoff so retry tests do not wait out the
     /// production schedule.
-    pub(super) const FAST_BACKOFF: common::backoff::Backoff = common::backoff::Backoff::new(
-        std::time::Duration::from_millis(1),
-        std::time::Duration::from_millis(5),
-    );
+    pub(super) const FAST_BACKOFF: common::backoff::Backoff =
+        common::backoff::Backoff::new(Duration::from_millis(1), Duration::from_millis(5));
 
     /// Mounts a token-issuing mock onto `server` and returns a token cache
     /// pointed at it -- mirrors `common::poller_loop::tests::token_cache`
@@ -4171,7 +4202,7 @@ LTWVRMPTN 2211 22113     TF";
     }
 
     /// The same, when it is the OAuth token fetch that fails first (the
-    /// production shape: DNS for the IdP, then 502s) -- and when the api's
+    /// production shape: DNS for the `IdP`, then 502s) -- and when the api's
     /// eventual answer is a genuine "nothing completed yet", THAT is still
     /// first-run behavior.
     #[tokio::test]
@@ -4236,7 +4267,7 @@ LTWVRMPTN 2211 22113     TF";
             format!("http://127.0.0.1:{port}/private/schedule-reference-publishes");
 
         let result = tokio::time::timeout(
-            std::time::Duration::from_millis(300),
+            Duration::from_millis(300),
             seed_last_processed_delivery(&client, &config, &tokens),
         )
         .await;
@@ -4347,7 +4378,7 @@ mod poll_once_retry_tests {
     #[tokio::test]
     async fn a_failing_late_publish_leaves_the_delivery_unprocessed_so_the_next_cycle_retries_it() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         // Mounted BEFORE the catch-all 200s, so this route's 500 wins.
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path(
@@ -4360,7 +4391,7 @@ mod poll_once_retry_tests {
 
         let storage = tempfile::tempdir().unwrap();
         write_fixture_delivery(storage.path(), "20260925T180000Z");
-        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config_for_server(&server.uri());
         config.storage_dir = storage.path().to_path_buf();
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
@@ -4393,12 +4424,12 @@ mod poll_once_retry_tests {
     #[tokio::test]
     async fn a_fully_successful_cycle_advances_the_marker_and_records_the_durable_completion() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
         let storage = tempfile::tempdir().unwrap();
         write_fixture_delivery(storage.path(), "20260925T180000Z");
-        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config_for_server(&server.uri());
         config.storage_dir = storage.path().to_path_buf();
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
@@ -4438,7 +4469,7 @@ mod poll_once_retry_tests {
     #[tokio::test]
     async fn a_permanently_failing_product_does_not_trap_the_delivery_in_a_retry_loop() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
         let storage = tempfile::tempdir().unwrap();
@@ -4451,7 +4482,7 @@ mod poll_once_retry_tests {
             "not an ALF record at all\n",
         )
         .unwrap();
-        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config_for_server(&server.uri());
         config.storage_dir = storage.path().to_path_buf();
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
@@ -4483,9 +4514,14 @@ mod poll_once_retry_tests {
 /// the cycle, and one that keeps failing is the ONLY thing the next cycle
 /// republishes.
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts of small known test values"
+)]
 mod per_product_retry_tests {
     use super::poll_once_retry_tests::{mount_all_publishes_ok, posts_to, write_fixture_delivery};
     use super::*;
+    use std::collections::HashSet;
 
     const DELIVERY: &str = "20260926T200045Z";
 
@@ -4497,10 +4533,10 @@ mod per_product_retry_tests {
         Client,
         tempfile::TempDir,
     ) {
-        let tokens = super::poll_once_tests::mock_token_cache(server).await;
+        let tokens = poll_once_tests::mock_token_cache(server).await;
         let storage = tempfile::tempdir().unwrap();
         write_fixture_delivery(storage.path(), DELIVERY);
-        let mut config = super::poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config_for_server(&server.uri());
         config.storage_dir = storage.path().to_path_buf();
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         (tokens, config, client, storage)
@@ -4561,7 +4597,7 @@ mod per_product_retry_tests {
             (DESTINATION_DEPARTURES_FORWARD_DAYS + 2) as usize,
             "one POST per date, plus the one retried"
         );
-        let distinct: std::collections::HashSet<&String> = ids.iter().collect();
+        let distinct: HashSet<&String> = ids.iter().collect();
         assert_eq!(
             distinct.len(),
             ids.len(),
@@ -4602,7 +4638,7 @@ mod per_product_retry_tests {
 
         // `api`/the IdP recover.
         server.reset().await;
-        let _ = super::poll_once_tests::mock_token_cache(&server).await;
+        let _ = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
         poll_once(&client, &config, &mut state, &tokens)
@@ -4651,7 +4687,7 @@ mod per_product_retry_tests {
         assert_eq!(state.last_processed_delivery, None);
 
         server.reset().await;
-        let _ = super::poll_once_tests::mock_token_cache(&server).await;
+        let _ = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
         poll_once(&client, &config, &mut state, &tokens)
@@ -4775,7 +4811,7 @@ mod per_product_retry_tests {
         assert_eq!(state.last_processed_delivery, None);
 
         server.reset().await;
-        let _ = super::poll_once_tests::mock_token_cache(&server).await;
+        let _ = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
         poll_once(&client, &config, &mut state, &tokens)
@@ -4870,7 +4906,7 @@ mod per_product_retry_tests {
             partial: Some(PartialDelivery {
                 delivery: DELIVERY.to_string(),
                 published: [product::STANOX_CRS.to_string()].into_iter().collect(),
-                rejected: Default::default(),
+                rejected: HashSet::default(),
             }),
         };
         poll_once(&client, &config, &mut state, &tokens)
@@ -4951,7 +4987,7 @@ mod chunked_publish_tests {
     #[tokio::test]
     async fn only_the_first_chunk_of_a_date_is_allowed_to_clear_that_date() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/private/chunked"))
             .respond_with(wiremock::ResponseTemplate::new(200))
@@ -5047,7 +5083,7 @@ mod chunked_publish_tests {
     #[tokio::test]
     async fn a_publish_that_fits_in_one_chunk_is_still_exactly_one_replacing_post() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/private/chunked"))
             .respond_with(wiremock::ResponseTemplate::new(200))
@@ -5076,7 +5112,7 @@ mod chunked_publish_tests {
     #[tokio::test]
     async fn an_empty_publish_is_one_post_and_never_silently_skipped() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/private/chunked"))
             .respond_with(wiremock::ResponseTemplate::new(200))
@@ -5106,7 +5142,7 @@ mod chunked_publish_tests {
     #[tokio::test]
     async fn an_empty_publish_is_refused_when_the_whole_window_is_empty() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let url = format!("{}/private/chunked", server.uri());
 
@@ -5136,7 +5172,7 @@ mod chunked_publish_tests {
     #[tokio::test]
     async fn a_failing_chunk_is_an_error_that_names_the_chunk() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/private/chunked"))
             .respond_with(wiremock::ResponseTemplate::new(413))
@@ -5185,13 +5221,13 @@ mod final_chunk_retry_tests {
 
     /// Publishes 3 rows (one chunk, so it is also the final chunk) with
     /// `final_response` as `api`'s answer to it, under the production retry
-    /// wrapper; returns the result and how many final chunks were POSTed.
+    /// wrapper; returns the result and how many final chunks were `POSTed`.
     async fn publish_against(
         final_response: wiremock::ResponseTemplate,
         final_chunk_timeout: Duration,
     ) -> (anyhow::Result<()>, usize) {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/private/chunked"))
             .and(wiremock::matchers::query_param("last_chunk", "true"))
@@ -5265,7 +5301,7 @@ mod final_chunk_retry_tests {
     #[tokio::test]
     async fn the_final_chunk_uses_its_own_longer_timeout() {
         let server = wiremock::MockServer::start().await;
-        let tokens = super::poll_once_tests::mock_token_cache(&server).await;
+        let tokens = poll_once_tests::mock_token_cache(&server).await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/private/chunked"))
             .respond_with(

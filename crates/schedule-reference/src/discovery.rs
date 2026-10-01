@@ -6,7 +6,7 @@ use common::schedule_delivery::COMPLETE_MARKER;
 /// `RJTTF*MCA.txt`-shaped and a `RJTTF*MSN.txt`-shaped file directly inside
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompleteDelivery {
+pub(crate) struct CompleteDelivery {
     /// The delivery directory's own name -- a timestamp-derived string
     /// (see `schedule-ingest`'s `delivery::delivery_dir_name`), used as
     /// this delivery's identity for dedup purposes (see `main.rs`'s
@@ -58,7 +58,9 @@ pub struct CompleteDelivery {
 /// `None` if `storage_dir` doesn't exist yet, or no subdirectory is
 /// complete -- not an error, matching `schedule-ingest::scan::scan_incoming`'s
 /// own "not-yet-existing is empty, not an error" posture.
-pub fn latest_complete_delivery(storage_dir: &Path) -> anyhow::Result<Option<CompleteDelivery>> {
+pub(crate) fn latest_complete_delivery(
+    storage_dir: &Path,
+) -> anyhow::Result<Option<CompleteDelivery>> {
     let read_dir = match std::fs::read_dir(storage_dir) {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),

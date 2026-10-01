@@ -25,7 +25,7 @@ use crate::data::{queries, reference};
 /// `frontend/app/lines/AllLinesTable.tsx`'s own
 /// `TFL_ADJACENT_OPERATORS`/`expandOperatorForFiltering` exactly
 /// (one-directional: a London Overground ("LO") or Elizabeth line ("XR")
-/// catalogue line ALSO counts toward "TfL"'s rollup, but requesting "LO" or
+/// catalogue line ALSO counts toward "`TfL`"'s rollup, but requesting "LO" or
 /// "XR" on their own still means just that code). Necessarily a separate
 /// Rust-side copy of that frontend array -- see this plan's Judgment
 /// Call 2 for why no shared constant exists to pull this from instead.
@@ -122,7 +122,7 @@ pub async fn all_operator_rollups(
 /// Whether one row's `operators` list should fold into the synthetic
 /// `"TfL"` rollup built by [`all_operator_rollups`]: literally `"TfL"`
 /// itself, or any of [`TFL_ADJACENT_OPERATORS`] (a London Overground /
-/// Elizabeth line catalogue row that ALSO counts toward "TfL"'s rollup --
+/// Elizabeth line catalogue row that ALSO counts toward "`TfL`"'s rollup --
 /// see that constant's own doc comment for the one-directional reasoning).
 ///
 /// Extracted as a plain, synchronous function -- unlike
@@ -160,7 +160,7 @@ pub async fn operator_rollup(
 /// Fetches every `line_status` row for the "public" line universe this
 /// module rolls operators up over: the static catalogue
 /// (`app.config.lines`) plus TfL-ingested lines that have no NR catalogue
-/// counterpart. A merged TfL row (e.g. `tfl-elizabeth`) is excluded here so
+/// counterpart. A merged `TfL` row (e.g. `tfl-elizabeth`) is excluded here so
 /// it is never double-counted alongside its catalogue counterpart, which
 /// already carries the real ATOC-style code (`elizabeth-line`'s own
 /// `operators: ["XR"]`) -- see `common::nr_line_id_for_tfl`, the same
@@ -182,12 +182,12 @@ async fn public_line_status_rows(
     queries::line_status_for_ids(pool, &ids).await
 }
 
-/// Whether a TfL line id has no NR catalogue counterpart it should be
+/// Whether a `TfL` line id has no NR catalogue counterpart it should be
 /// merged into instead -- the same exclusion [`public_line_status_rows`]'s
 /// own doc comment describes, and the inverse of
 /// `routes::lines::is_merged_into_nr_line`, which applies the identical
 /// check on `/public/lines` for the same reason (never double-count a
-/// merged TfL line alongside its NR catalogue counterpart).
+/// merged `TfL` line alongside its NR catalogue counterpart).
 ///
 /// Extracted as a plain, synchronous wrapper around
 /// `common::nr_line_id_for_tfl` -- the second of this module's two novel
@@ -230,7 +230,7 @@ fn build_rollup(
             // are numerically high but genuinely severe).
             if common::severity_rank(status.severity) >= common::severity_rank(worst_severity) {
                 worst_severity = status.severity;
-                reason = status.reason.clone();
+                reason.clone_from(&status.reason);
                 worst_line_id = Some(row.id.clone());
                 worst_line_name = Some(row.name.clone());
             }
@@ -308,7 +308,7 @@ mod build_rollup_tests {
             id: id.to_string(),
             name: id.to_string(),
             mode_name: "national-rail".to_string(),
-            operators: operators.iter().map(|s| s.to_string()).collect(),
+            operators: operators.iter().map(ToString::to_string).collect(),
             statuses,
             computed_at: Utc::now(),
         }
@@ -471,7 +471,7 @@ mod tfl_rollup_matching_tests {
     use super::*;
 
     fn ops(codes: &[&str]) -> Vec<String> {
-        codes.iter().map(|s| s.to_string()).collect()
+        codes.iter().map(ToString::to_string).collect()
     }
 
     #[test]

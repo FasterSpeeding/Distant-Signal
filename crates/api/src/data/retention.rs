@@ -227,6 +227,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
 mod db_tests {
     use super::*;
     use crate::data::account::db_tests::{cleanup, connect, seed_every_feature, seed_user};

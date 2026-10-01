@@ -67,6 +67,10 @@ fn captured_return_to(raw: Option<&str>) -> Option<String> {
     raw.and_then(auth::validate_return_to)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "cookie and filename header values are built from header-safe ASCII"
+)]
 async fn login(
     State(app): State<App>,
     headers: axum::http::HeaderMap,
@@ -169,7 +173,7 @@ fn post_login_target(stored_return_to: Option<&str>, fallback: &str) -> String {
 /// Deliberately carries NO `Origin`/`Referer` check, unlike `login` and
 /// `logout` in this same module (2026-09-25 Low-severity auth-core
 /// review). The whole point of this route is that the browser arrives
-/// here via a cross-origin, top-level GET redirect FROM the IdP
+/// here via a cross-origin, top-level GET redirect FROM the `IdP`
 /// (Authentik) -- a legitimate callback's `Referer` therefore names
 /// Authentik's own origin, never this app's, and `Origin` is essentially
 /// never sent on a top-level GET navigation at all. A same-origin check
@@ -180,10 +184,15 @@ fn post_login_target(stored_return_to: Option<&str>, fallback: &str) -> String {
 /// must match `csrf_state`, a random value bound to the `login_state_id`
 /// stored server-side and named only by the `HttpOnly`/`SameSite=Lax`
 /// login-state cookie set by `login` above (see the `stored.csrf_state !=
-/// state` check below) -- functionally the OAuth2 spec's own standard
+/// state` check below) -- functionally the `OAuth2` spec's own standard
 /// answer to this exact CSRF concern, and strictly harder to forge than an
 /// `Origin` header (which some HTTP clients let a caller set arbitrarily)
 /// would add on top of it.
+#[expect(
+    clippy::expect_used,
+    clippy::too_many_lines,
+    reason = "cookie and filename header values are built from header-safe ASCII; long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn callback(
     State(app): State<App>,
     headers: axum::http::HeaderMap,
@@ -251,7 +260,7 @@ async fn callback(
             tracing::error!(error = ?err, "login state consumption failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
-    };
+    }
 
     let exchange_result = app
         .oidc
@@ -387,6 +396,10 @@ async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Respo
 /// logged out while the session stayed valid for the rest of its TTL to
 /// anyone holding the token. A failure is a 500 with the cookie left in
 /// place, so the user still sees they're logged in and can retry.
+#[expect(
+    clippy::expect_used,
+    reason = "cookie and filename header values are built from header-safe ASCII"
+)]
 fn logout_response(deleted: anyhow::Result<()>, secure: bool) -> Response {
     if let Err(err) = deleted {
         tracing::error!(
@@ -424,6 +437,10 @@ fn logout_response(deleted: anyhow::Result<()>, secure: bool) -> Response {
 /// Same strict Origin/Referer CSRF guard as `logout` above, and for the
 /// same reason: a state-changing `POST` acting on the caller's own
 /// account, backed by nothing but `SameSite=Lax` otherwise.
+#[expect(
+    clippy::expect_used,
+    reason = "cookie and filename header values are built from header-safe ASCII"
+)]
 async fn revoke_other_sessions(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -494,7 +511,7 @@ fn backchannel_response(status: StatusCode, error: Option<&str>) -> Response {
     response
 }
 
-/// OpenID Connect Back-Channel Logout 1.0 receiver (M14, 2026-09-27).
+/// `OpenID` Connect Back-Channel Logout 1.0 receiver (M14, 2026-09-27).
 /// Authentik POSTs `logout_token=<signed JWT>` here
 /// (`application/x-www-form-urlencoded`) when an Authentik session that
 /// logged in to this app ends: the user logs out, an admin deletes the

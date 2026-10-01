@@ -39,14 +39,14 @@ pub struct AppState {
     /// dimension) previously let EITHER caller's token authorize BOTH
     /// methods on this route -- trust-consumer's read-only token could
     /// `POST` (corrupt the reference table), and schedule-reference's
-    /// write token could `GET` (found in the internal-service OAuth2
+    /// write token could `GET` (found in the internal-service `OAuth2`
     /// security review). Every other route in this table happens to have
     /// exactly one caller today, so its entry (or entries, for a caller
     /// that legitimately uses both `GET` and `POST` on the same path)
     /// carries only that caller's group regardless -- see
     /// `build_internal_oauth_routes`.
     pub internal_oauth_routes: Vec<(&'static str, axum::http::Method, Vec<String>)>,
-    /// CRS -> candidate line_ids, built once here from `config.lines`
+    /// CRS -> candidate `line_ids`, built once here from `config.lines`
     /// (Decision 2 of
     /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md).
     /// Consulted by `routes::train::post_track` and the periodic
@@ -87,6 +87,10 @@ pub(crate) fn build_internal_oauth_routes(
     routes
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 fn internal_oauth_route_table(
     config: &ServiceArguments,
 ) -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
@@ -455,7 +459,7 @@ pub fn with_dead_client_detection(options: PgConnectOptions) -> PgConnectOptions
 }
 
 /// Startup guard (2026-09-25 Low-severity auth-core review): the
-/// user-facing SSO client and the internal-service OAuth2 client must
+/// user-facing SSO client and the internal-service `OAuth2` client must
 /// never be configured with the SAME `client_id` -- see the call site in
 /// `AppState::init` for the full rationale. Factored out as its own free
 /// function (rather than an inline `ensure!` in `init`) purely so this one
@@ -521,6 +525,10 @@ pub(crate) fn ensure_mcp_group_grants_no_private_route(
 /// the field's contents -- this exists only so `#[derive(Debug)]`-adjacent
 /// tooling (e.g. `{:?}` in a panic message) doesn't itself panic or leak
 /// secrets, not to make `AppState` genuinely inspectable.
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "deliberately prints placeholders and omits clients and secrets; see above"
+)]
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
@@ -539,6 +547,10 @@ pub type App = Arc<AppState>;
 pub type Router = axum::Router<App>;
 
 impl AppState {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "long but linear; splitting it would scatter its shared state across helpers"
+    )]
     pub async fn init() -> Result<App> {
         let config = ServiceArguments::parse();
 

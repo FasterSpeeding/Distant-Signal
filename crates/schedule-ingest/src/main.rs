@@ -9,7 +9,7 @@
 //! for the correction that reshaped this crate around the real delivery's
 //! actual outer shape: one zip, no manifest, no sequence number -- see
 //! `delivery.rs` for the replacement detection/dedup/extraction logic. This
-//! service never dials out itself -- a sibling SFTPGo container receives the
+//! service never dials out itself -- a sibling `SFTPGo` container receives the
 //! push and writes into `watch_dir`; this crate only reads what lands there
 //! (see `config.rs`).
 //!
@@ -89,6 +89,10 @@ async fn main() -> std::process::ExitCode {
     common::logging::exit_code(run().await)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "parse_check_times guarantees a non-empty list"
+)]
 async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
@@ -244,7 +248,12 @@ async fn run() -> anyhow::Result<()> {
 /// itself unreadable); every "not ready yet" / "already ingested" outcome
 /// is handled internally via logging and an early `Ok(())`, so a single bad
 /// cycle never crashes the process.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; metric gauges take f64, and these counts and timestamps stay far below 2^52; long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn run_scan_cycle(
     client: &Client,
     config: &Config,
@@ -528,6 +537,10 @@ const INGEST_REJECTED_METRIC: &str = "schedule_feed_ingest_rejected_total";
 /// every cycle; a data rejection (400/413/422) would be refused the same
 /// way every time, so the delivery is quarantined like a rejected zip
 /// until a new upload replaces it, and counted for the alert.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers hand over values they no longer need"
+)]
 fn queue_or_quarantine_failed_post(
     err: anyhow::Error,
     request: ScheduleFeedIngestRequest,
@@ -596,7 +609,7 @@ async fn post_ingest(
 /// Mirrors `crates/api/src/routes/ingest.rs`'s private
 /// `ScheduleFeedIngestRequest`/`ScheduleFeedFile` structs field-for-field
 /// (names, types, and JSON casing -- neither struct carries a
-/// `#[serde(rename_all = ...)]`, so plain snake_case field names already
+/// `#[serde(rename_all = ...)]`, so plain `snake_case` field names already
 /// match on the wire). Those types are private to the `api` crate, so this
 /// crate can't import them -- it only needs to produce matching JSON, not
 /// share a Rust type. If either crate's shape drifts, this comment is the
@@ -759,10 +772,14 @@ fn prune_old_deliveries(storage_dir: &std::path::Path, keep: u32) -> anyhow::Res
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::format_collect,
+    reason = "test code: test string building is not hot"
+)]
 mod tests {
     use super::*;
 
-    /// Regression for the "L1 -- MissedTickBehavior::Burst still default"
+    /// Regression for the "L1 -- `MissedTickBehavior::Burst` still default"
     /// finding: this scan loop's own interval must opt into `Delay`, not
     /// leave `Burst` as the default, so an overrun cycle doesn't fire a
     /// burst of back-to-back catch-up scans.
@@ -1064,7 +1081,7 @@ mod tests {
     }
 
     /// PL-5: a zip over the extraction caps is quarantined: nothing is
-    /// written to storage_dir, no POST is queued, and later cycles do not
+    /// written to `storage_dir`, no POST is queued, and later cycles do not
     /// try it again until a new upload (a new mtime) replaces it.
     #[tokio::test]
     async fn an_oversized_zip_is_quarantined_not_retried_every_cycle() {
@@ -1432,7 +1449,7 @@ mod tests {
         Utc::now().format("%d/%m/%Y").to_string()
     }
 
-    /// The real-shaped CIF delivery (tests/fixtures/cif_delivery_excerpt),
+    /// The real-shaped CIF delivery (`tests/fixtures/cif_delivery_excerpt`),
     /// generated today.
     fn real_zip() -> Vec<u8> {
         cif_check::tests::delivery_zip(&today())
@@ -1482,7 +1499,7 @@ mod tests {
 
     /// A zip that is not a complete full CIF extract (here: the MCA cut
     /// short, no ZZ trailer) is quarantined before it is marked complete:
-    /// nothing reaches storage_dir, one `quarantined` audit line gives the
+    /// nothing reaches `storage_dir`, one `quarantined` audit line gives the
     /// reason, and later cycles do not retry it.
     #[tokio::test]
     async fn a_cif_that_fails_its_checks_is_quarantined_with_an_audit_line() {

@@ -1,6 +1,6 @@
 //! Directory scanning and mtime/size stability tracking for `watch_dir`.
 //!
-//! `watch_dir` is written into by a sibling SFTPGo container as DTD pushes
+//! `watch_dir` is written into by a sibling `SFTPGo` container as DTD pushes
 //! a delivery — unlike a *pull* design's remote directory listing (which
 //! only ever sees a file DTD has already finished writing), a push
 //! receiver can observe a file mid-write. [`StabilityTracker`] mitigates
@@ -22,20 +22,20 @@ use std::time::SystemTime;
 /// One directory listing of `watch_dir`, keyed by filename, each with its
 /// current `(mtime, len)`. Cheap to build every polling cycle.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DirSnapshot(pub HashMap<String, (SystemTime, u64)>);
+pub(crate) struct DirSnapshot(pub HashMap<String, (SystemTime, u64)>);
 
 /// Lists `watch_dir` and stats every regular file in it.
 ///
 /// Subdirectories are skipped. An empty, or not-yet-existing, directory
 /// yields an empty [`DirSnapshot`], not an error — `watch_dir` is nested
-/// inside whatever home/virtual-folder directory the sibling SFTPGo
+/// inside whatever home/virtual-folder directory the sibling `SFTPGo`
 /// container's DTD account is (eventually) provisioned with, and nothing
 /// guarantees that path exists before the first real delivery lands (or
 /// before that provisioning is even wired up) -- see this module's own doc
 /// comment. A genuinely unreadable existing directory (wrong permissions,
 /// not a directory at all) still surfaces as `Err`, since that is not the
 /// same "nothing has arrived yet" case.
-pub fn scan_incoming(watch_dir: &Path) -> anyhow::Result<DirSnapshot> {
+pub(crate) fn scan_incoming(watch_dir: &Path) -> anyhow::Result<DirSnapshot> {
     let mut entries = HashMap::new();
 
     let read_dir = match std::fs::read_dir(watch_dir) {
@@ -67,12 +67,12 @@ pub fn scan_incoming(watch_dir: &Path) -> anyhow::Result<DirSnapshot> {
 /// A file only becomes a completeness candidate once it has been stable
 /// for `required_cycles` consecutive polls.
 #[derive(Debug, Default)]
-pub struct StabilityTracker {
+pub(crate) struct StabilityTracker {
     stable_since: HashMap<String, ((SystemTime, u64), u32)>,
 }
 
 impl StabilityTracker {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             stable_since: HashMap::new(),
         }
@@ -87,7 +87,7 @@ impl StabilityTracker {
     /// are dropped from internal tracking entirely, not just skipped — if
     /// such a filename reappears in a later snapshot it starts counting
     /// from zero again.
-    pub fn observe(&mut self, snapshot: &DirSnapshot, required_cycles: u32) -> Vec<String> {
+    pub(crate) fn observe(&mut self, snapshot: &DirSnapshot, required_cycles: u32) -> Vec<String> {
         // Drop tracking for anything that vanished since the last
         // snapshot, so a reappearing file starts fresh rather than
         // resuming a stale count.
@@ -242,10 +242,10 @@ mod tests {
     }
 
     /// Regression test: `watch_dir` not existing at all (e.g. a fresh
-    /// deployment where nothing has created it yet, or SFTPGo's account
+    /// deployment where nothing has created it yet, or `SFTPGo`'s account
     /// provisioning hasn't run) must not error every cycle -- confirmed
     /// against a real crash loop this exact gap caused
-    /// ("ERROR schedule_ingest: scan cycle failed unexpectedly ... error=No
+    /// ("ERROR `schedule_ingest`: scan cycle failed unexpectedly ... error=No
     /// such file or directory (os error 2)").
     #[test]
     fn scan_incoming_on_nonexistent_directory_returns_empty_snapshot_not_an_error() {

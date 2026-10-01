@@ -154,7 +154,10 @@ where
 /// all-NULL-bounds cases apart -- see
 /// `20260925090000_journey_legs_window_searched.sql`'s own header comment.
 /// Same generic-executor reasoning as [`insert_journey`].
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 async fn insert_leg<'c, E>(
     executor: E,
     journey_id: i64,
@@ -749,7 +752,10 @@ pub fn validate_train_uid(train_uid: &str) -> Result<(), String> {
 /// function does no validation of its own, matching this codebase's
 /// established "route validates, data layer writes" split (e.g.
 /// `train_tracking::rename_tracked_train`'s own doc comment).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub async fn create_journey_with_window_leg(
     pool: &PgPool,
     user_id: &str,
@@ -802,7 +808,10 @@ pub async fn create_journey_with_window_leg(
 /// success -- an `'unmatched'`
 /// leg with no `train_subscription_id`, exactly like a window-mode
 /// journey's own first leg.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub async fn add_window_leg_to_journey(
     pool: &PgPool,
     journey_id: i64,
@@ -1306,7 +1315,7 @@ pub struct JourneyListItem {
     /// journey up, which can be weeks earlier). A list row cannot name
     /// which journey it is without it; `/track/mine`'s tracked-train rows
     /// beside it have printed a real service date since they shipped.
-    pub service_date: chrono::NaiveDate,
+    pub service_date: NaiveDate,
     /// Resolved display names for `origin_crs`/`destination_crs`, via the
     /// same `LEFT JOIN stations ... ON s.crs = UPPER(...)` mechanism
     /// `train_tracking::list_tracked_trains_for_user` already uses (see
@@ -1494,6 +1503,14 @@ pub async fn list_legs_for_journey(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::items_after_statements,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; fixtures sit next to their use; scenario tests read top to bottom"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -1753,7 +1770,7 @@ mod db_tests {
         let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_user(&pool, "TEST-JOURNEY-WINDOW").await;
 
-        let depart_window = common::TimeWindow {
+        let depart_window = TimeWindow {
             after: Some("08:00:00".parse().unwrap()),
             before: Some("10:00:00".parse().unwrap()),
         };
@@ -1765,7 +1782,7 @@ mod db_tests {
             "RDG",
             "2026-09-22".parse().unwrap(),
             depart_window,
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create journey with window leg");
@@ -1784,26 +1801,18 @@ mod db_tests {
 
     #[test]
     fn validate_window_leg_rejects_an_all_blank_window() {
-        let err = validate_window_leg(
-            "WAT",
-            "RDG",
-            &common::TimeWindow::default(),
-            &common::TimeWindow::default(),
-        )
-        .unwrap_err();
+        let err = validate_window_leg("WAT", "RDG", &TimeWindow::default(), &TimeWindow::default())
+            .unwrap_err();
         assert!(!err.is_empty());
     }
 
     #[test]
     fn validate_window_leg_accepts_one_bound_set() {
-        let depart_window = common::TimeWindow {
+        let depart_window = TimeWindow {
             after: Some("08:00:00".parse().unwrap()),
             before: None,
         };
-        assert!(
-            validate_window_leg("WAT", "RDG", &depart_window, &common::TimeWindow::default())
-                .is_ok()
-        );
+        assert!(validate_window_leg("WAT", "RDG", &depart_window, &TimeWindow::default()).is_ok());
     }
 
     #[test]
@@ -1814,15 +1823,15 @@ mod db_tests {
     // single 3-byte character is rejected, and that it's rejected for the
     // right reason (not merely coincidentally too short/long).
     fn validate_window_leg_rejects_a_three_byte_non_ascii_character_as_origin() {
-        let depart_window = common::TimeWindow {
+        let depart_window = TimeWindow {
             after: Some("08:00:00".parse().unwrap()),
             before: None,
         };
         // "€" (U+20AC) encodes to exactly 3 UTF-8 bytes but is one
         // character -- the exact shape of value a byte-length check would
         // have wrongly accepted.
-        let err = validate_window_leg("€", "RDG", &depart_window, &common::TimeWindow::default())
-            .unwrap_err();
+        let err =
+            validate_window_leg("€", "RDG", &depart_window, &TimeWindow::default()).unwrap_err();
         assert!(err.contains("origin"));
     }
 
@@ -1830,14 +1839,11 @@ mod db_tests {
     fn validate_window_leg_accepts_lowercase_crs() {
         // Case-insensitive, matching `routes::trains::normalize_crs`'s own
         // posture (normalization to uppercase happens downstream).
-        let depart_window = common::TimeWindow {
+        let depart_window = TimeWindow {
             after: Some("08:00:00".parse().unwrap()),
             before: None,
         };
-        assert!(
-            validate_window_leg("wat", "rdg", &depart_window, &common::TimeWindow::default())
-                .is_ok()
-        );
+        assert!(validate_window_leg("wat", "rdg", &depart_window, &TimeWindow::default()).is_ok());
     }
 
     #[test]
@@ -1845,23 +1851,23 @@ mod db_tests {
     // (`after` later than `before`) used to be accepted outright and
     // would silently never match any real calling point once persisted.
     fn validate_window_leg_rejects_a_backwards_depart_window() {
-        let depart_window = common::TimeWindow {
+        let depart_window = TimeWindow {
             after: Some("10:00:00".parse().unwrap()),
             before: Some("08:00:00".parse().unwrap()),
         };
-        let err = validate_window_leg("WAT", "RDG", &depart_window, &common::TimeWindow::default())
-            .unwrap_err();
+        let err =
+            validate_window_leg("WAT", "RDG", &depart_window, &TimeWindow::default()).unwrap_err();
         assert!(!err.is_empty());
     }
 
     #[test]
     fn validate_window_leg_rejects_a_backwards_arrive_window() {
-        let arrive_window = common::TimeWindow {
+        let arrive_window = TimeWindow {
             after: Some("10:00:00".parse().unwrap()),
             before: Some("08:00:00".parse().unwrap()),
         };
-        let err = validate_window_leg("WAT", "RDG", &common::TimeWindow::default(), &arrive_window)
-            .unwrap_err();
+        let err =
+            validate_window_leg("WAT", "RDG", &TimeWindow::default(), &arrive_window).unwrap_err();
         assert!(!err.is_empty());
     }
 
@@ -1870,33 +1876,20 @@ mod db_tests {
         // A zero-width window (an exact single minute) is unusual but not
         // backwards -- only `after > before` is rejected, not `after ==
         // before`.
-        let depart_window = common::TimeWindow {
+        let depart_window = TimeWindow {
             after: Some("08:00:00".parse().unwrap()),
             before: Some("08:00:00".parse().unwrap()),
         };
-        assert!(
-            validate_window_leg("WAT", "RDG", &depart_window, &common::TimeWindow::default())
-                .is_ok()
-        );
+        assert!(validate_window_leg("WAT", "RDG", &depart_window, &TimeWindow::default()).is_ok());
     }
 
     #[test]
     fn validate_window_leg_messages_carry_no_internal_field_names() {
         let messages = [
-            validate_window_leg(
-                "W",
-                "RDG",
-                &common::TimeWindow::default(),
-                &common::TimeWindow::default(),
-            )
-            .unwrap_err(),
-            validate_window_leg(
-                "WAT",
-                "RDG",
-                &common::TimeWindow::default(),
-                &common::TimeWindow::default(),
-            )
-            .unwrap_err(),
+            validate_window_leg("W", "RDG", &TimeWindow::default(), &TimeWindow::default())
+                .unwrap_err(),
+            validate_window_leg("WAT", "RDG", &TimeWindow::default(), &TimeWindow::default())
+                .unwrap_err(),
         ];
         for message in messages {
             assert!(!message.is_empty());
@@ -2021,11 +2014,11 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create window leg");
@@ -2114,6 +2107,10 @@ mod db_tests {
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 set_leg_train_subscription -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "test binding kept for readability of the fixture"
+    )]
     async fn set_leg_train_subscription_does_not_deactivate_a_still_shared_old_subscription() {
         // The old subscription being replaced can legitimately still be
         // referenced by a DIFFERENT leg -- `create_subscription_for_train`
@@ -2131,11 +2128,11 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create first window leg");
@@ -2146,11 +2143,11 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("09:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create second window leg (separate journey)");
@@ -2248,16 +2245,16 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create window leg");
 
-        let service_date: chrono::NaiveDate = "2026-09-22".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
         let first_trains_id =
             crate::data::trains::find_or_create_train(&pool, "TEST-M10-UID-FIRST", service_date)
                 .await
@@ -2349,11 +2346,11 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create window leg");
@@ -2412,11 +2409,11 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create window leg");
@@ -2476,11 +2473,11 @@ mod db_tests {
             "WAT",
             "RDG",
             service_date,
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create window leg");
@@ -2546,11 +2543,11 @@ mod db_tests {
             "WAT",
             "RDG",
             service_date,
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create window leg");
@@ -2616,7 +2613,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
-        .bind(format!("TEST-TRAIN-{}-1", user_id))
+        .bind(format!("TEST-TRAIN-{user_id}-1"))
         .bind("2026-09-22".parse::<NaiveDate>().unwrap())
         .execute(&pool)
         .await
@@ -2624,7 +2621,7 @@ mod db_tests {
 
         let trains_id_1: i64 =
             sqlx::query_scalar("SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2")
-                .bind(format!("TEST-TRAIN-{}-1", user_id))
+                .bind(format!("TEST-TRAIN-{user_id}-1"))
                 .bind("2026-09-22".parse::<NaiveDate>().unwrap())
                 .fetch_one(&pool)
                 .await
@@ -2755,7 +2752,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
-        .bind(format!("TEST-TRAIN-{}-2", user_id))
+        .bind(format!("TEST-TRAIN-{user_id}-2"))
         .bind("2026-09-22".parse::<NaiveDate>().unwrap())
         .execute(&pool)
         .await
@@ -2763,7 +2760,7 @@ mod db_tests {
 
         let trains_id_2: i64 =
             sqlx::query_scalar("SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2")
-                .bind(format!("TEST-TRAIN-{}-2", user_id))
+                .bind(format!("TEST-TRAIN-{user_id}-2"))
                 .bind("2026-09-22".parse::<NaiveDate>().unwrap())
                 .fetch_one(&pool)
                 .await
@@ -2864,17 +2861,17 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create initial window leg");
         assert_eq!(leg_order_of(&pool, first_leg_id).await, 1);
 
-        let depart_window = common::TimeWindow {
+        let depart_window = TimeWindow {
             after: Some("12:00:00".parse().unwrap()),
             before: Some("14:00:00".parse().unwrap()),
         };
@@ -2886,7 +2883,7 @@ mod db_tests {
             "EDB",
             "2026-09-22".parse().unwrap(),
             depart_window,
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("add second window leg")
@@ -2910,11 +2907,11 @@ mod db_tests {
             "EDB",
             "GLG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("16:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("add third window leg")
@@ -2943,11 +2940,11 @@ mod db_tests {
             "WAT",
             "RDG",
             service_date,
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create initial window leg");
@@ -3001,8 +2998,8 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow::default(),
-            common::TimeWindow::default(),
+            TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create journey");
@@ -3104,8 +3101,8 @@ mod db_tests {
             "WAT",
             "RDG",
             service_date,
-            common::TimeWindow::default(),
-            common::TimeWindow::default(),
+            TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create journey");
@@ -3122,8 +3119,8 @@ mod db_tests {
                     "RDG",
                     "OXF",
                     service_date,
-                    common::TimeWindow::default(),
-                    common::TimeWindow::default(),
+                    TimeWindow::default(),
+                    TimeWindow::default(),
                 )
                 .await
             });
@@ -3189,11 +3186,11 @@ mod db_tests {
             "WAT",
             "RDG",
             service_date,
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create initial window leg");
@@ -3466,11 +3463,11 @@ mod db_tests {
             "WAT",
             "RDG",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("08:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("create window leg for owner");
@@ -3482,11 +3479,11 @@ mod db_tests {
             "RDG",
             "EDB",
             "2026-09-22".parse().unwrap(),
-            common::TimeWindow {
+            TimeWindow {
                 after: Some("12:00:00".parse().unwrap()),
                 before: None,
             },
-            common::TimeWindow::default(),
+            TimeWindow::default(),
         )
         .await
         .expect("attempt add window leg as non-owner");
@@ -3921,7 +3918,7 @@ mod db_tests {
     async fn delete_journey_a_nonexistent_journey_returns_false() {
         let pool = connect().await;
         let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
-        let deleted = delete_journey(&pool, 99999999, "TEST-JOURNEY-DELETE-NOBODY")
+        let deleted = delete_journey(&pool, 99_999_999, "TEST-JOURNEY-DELETE-NOBODY")
             .await
             .expect("attempt delete of a nonexistent journey");
         assert!(!deleted);
@@ -3945,7 +3942,7 @@ mod db_tests {
         let bystander_id = "TEST-JOURNEY-SKIPDAY-BYSTANDER";
         seed_user(&pool, user_id).await;
         seed_user(&pool, bystander_id).await;
-        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-25".parse().unwrap();
 
         let template_id: i64 = sqlx::query_scalar(
             "INSERT INTO journey_templates (user_id, custom_name, default_match_mode) \
@@ -3960,7 +3957,7 @@ mod db_tests {
             pool: &PgPool,
             user_id: &str,
             template_id: i64,
-            service_date: chrono::NaiveDate,
+            service_date: NaiveDate,
             legs: i32,
         ) -> i64 {
             let journey_id: i64 = sqlx::query_scalar(
@@ -3997,7 +3994,7 @@ mod db_tests {
             journey_id
         }
 
-        async fn tombstones(pool: &PgPool, template_id: i64) -> Vec<chrono::NaiveDate> {
+        async fn tombstones(pool: &PgPool, template_id: i64) -> Vec<NaiveDate> {
             sqlx::query_scalar(
                 "SELECT service_date FROM journey_template_skipped_dates \
                  WHERE template_id = $1 ORDER BY service_date",
@@ -4036,7 +4033,7 @@ mod db_tests {
 
         // 3. Removing the LAST leg also removes the occurrence, so it must
         //    tombstone too -- for a different date, proving the scoping.
-        let other_date: chrono::NaiveDate = "2026-09-26".parse().unwrap();
+        let other_date: NaiveDate = "2026-09-26".parse().unwrap();
         let single_leg_journey = seed_occurrence(&pool, user_id, template_id, other_date, 1).await;
         let leg_id: i64 = sqlx::query_scalar("SELECT id FROM journey_legs WHERE journey_id = $1")
             .bind(single_leg_journey)
@@ -4056,7 +4053,7 @@ mod db_tests {
         // 4. Removing ONE leg of a two-leg occurrence leaves the occurrence
         //    standing, so there is nothing to suppress -- the sweep's own
         //    "already has a leg on this date" guard still sees it.
-        let third_date: chrono::NaiveDate = "2026-09-27".parse().unwrap();
+        let third_date: NaiveDate = "2026-09-27".parse().unwrap();
         let two_leg_journey = seed_occurrence(&pool, user_id, template_id, third_date, 2).await;
         let first_leg_id: i64 = sqlx::query_scalar(
             "SELECT id FROM journey_legs WHERE journey_id = $1 ORDER BY leg_order LIMIT 1",

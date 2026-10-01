@@ -150,6 +150,11 @@ pub fn service_instant(date: NaiveDate, minute: u32) -> Option<DateTime<Utc>> {
     crate::data::eta_blend::london_to_utc(naive)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    reason = "minute and day-offset values are bounded by a service day or two; a constant or range-checked time is always valid"
+)]
 fn minutes_to_clock(total_minutes: u32) -> (NaiveTime, u8) {
     (
         NaiveTime::from_num_seconds_from_midnight_opt((total_minutes % 1440) * 60, 0)
@@ -158,6 +163,10 @@ fn minutes_to_clock(total_minutes: u32) -> (NaiveTime, u8) {
     )
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "clamped to >= 0; delays in minutes are far below i32::MAX"
+)]
 fn delay_between(scheduled: DateTime<Utc>, observed: DateTime<Utc>) -> i32 {
     (observed - scheduled).num_minutes().max(0) as i32
 }
@@ -240,6 +249,10 @@ pub struct TrainLiveInput<'a> {
 ///   reported it at a later call (it ran on);
 /// - a `0006` change of origin at one of the calls removes the calls before
 ///   it, unless TRUST reported the train before it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
     let date = input.date;
     let mut live = TrainLive {
@@ -458,6 +471,10 @@ struct ChainCall {
 /// their live times. Delays propagate forward from the last call with a
 /// known delay, never backward; a call before any known delay keeps its
 /// timetable time. Live times are made monotone along the train.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to >= 0 first, and minute values fit easily"
+)]
 pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint> {
     let mut calls: Vec<ChainCall> = Vec::new();
     for connection in chain {
@@ -571,6 +588,10 @@ pub fn adjusted_connections(uid: &str, points: &[ChainPoint]) -> Option<Vec<Conn
 
 /// Every train's timetabled connections, for the UIDs in `uids`, in day
 /// order -- one pass over the day array.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn chains_for(
     connections: &[Connection],
     uids: &HashSet<String>,
@@ -592,6 +613,10 @@ pub fn chains_for(
 
 /// The overlay for every train in `lives` whose profile changes its
 /// connections, and how many timetabled connections it withdraws.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn build_overlay(
     chains: &HashMap<String, Vec<Connection>>,
     lives: &HashMap<String, TrainLive>,
@@ -756,6 +781,10 @@ pub fn plan_invalidated(segments: &[SegmentResult], interchange: &InterchangeDat
 /// Whether any of `seeds` (trains booked to leave the origin before
 /// `depart_after_min`) now leaves one of `origin_tiplocs` at or after it on
 /// live times -- a late train that has become catchable, worth a re-plan.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn seed_became_catchable(
     seeds: &[String],
     chains: &HashMap<String, Vec<Connection>>,
@@ -790,6 +819,11 @@ fn change_minutes(interchange: &InterchangeData, tiploc: &str) -> u32 {
 /// times where the search saw live ones, sets `interchangeFeasible` and each
 /// itinerary's `liveFeasible` -- `false` for a cancelled leg, an impossible
 /// change, or (arrive-by) a live arrival after the segment's `arriveBy`.
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::too_many_lines,
+    reason = "the value is clamped to >= 0 first, and minute values fit easily; long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
     for segment in segments.iter_mut() {
         for itinerary in &mut segment.itineraries {

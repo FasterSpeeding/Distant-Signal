@@ -118,19 +118,16 @@ pub async fn upsert_reasons(
 }
 
 async fn upsert_one(pool: &PgPool, reason: &common::TrainReasonMessage) -> anyhow::Result<bool> {
-    let trains_id = match reason.train_uid.as_deref() {
-        Some(uid) => {
-            Some(crate::data::trains::find_or_create_train(pool, uid, reason.service_date).await?)
-        }
-        None => {
-            let row: Option<(i64,)> =
-                sqlx::query_as("SELECT id FROM trains WHERE train_id = $1 AND service_date = $2")
-                    .bind(&reason.train_id)
-                    .bind(reason.service_date)
-                    .fetch_optional(pool)
-                    .await?;
-            row.map(|(id,)| id)
-        }
+    let trains_id = if let Some(uid) = reason.train_uid.as_deref() {
+        Some(crate::data::trains::find_or_create_train(pool, uid, reason.service_date).await?)
+    } else {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM trains WHERE train_id = $1 AND service_date = $2")
+                .bind(&reason.train_id)
+                .bind(reason.service_date)
+                .fetch_optional(pool)
+                .await?;
+        row.map(|(id,)| id)
     };
     let Some(trains_id) = trains_id else {
         return Ok(false);
@@ -330,8 +327,13 @@ async fn fetch_one(pool: &PgPool, trains_id: Option<i64>) -> Option<StoredReason
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
 mod tests {
     use super::*;
+    use crate::data::journey::StopTimetable;
 
     #[test]
     fn the_bundled_glossary_parses_and_maps_known_codes() {
@@ -514,7 +516,7 @@ mod tests {
             live_status: None,
             late_minutes: None,
             board: None,
-            timetable: Default::default(),
+            timetable: StopTimetable::default(),
         }
     }
 

@@ -180,7 +180,7 @@ async fn list_all_tocs(
 /// `json!()` reshaping is needed because every value forwarded is already
 /// the RDM feed's own camelCase JSON, untouched -- unlike
 /// `station_stats.rs`, there is no nested `common` struct being embedded
-/// that could hit the camelCase/snake_case pitfall
+/// that could hit the `camelCase/snake_case` pitfall
 /// `crates/api/src/routes/incidents.rs` documents.
 ///
 /// `404` and `200 {}` are deliberately different answers: the former means
@@ -202,6 +202,10 @@ async fn get_station_accessibility(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "reference read failed");
     (
@@ -357,6 +361,10 @@ mod tests {
 /// nearby-station fixtures sit in the southern oceans, far from any real
 /// station, so a table full of real stations can never outrank them.
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts of small known test values"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::Request;
@@ -461,7 +469,7 @@ mod db_tests {
     }
 
     async fn get(pool: &PgPool, uri: &str) -> (StatusCode, String) {
-        let app: axum::Router = crate::app::Router::new()
+        let app: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = app

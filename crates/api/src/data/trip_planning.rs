@@ -23,7 +23,10 @@ struct CallingPointRow {
     // Selected only so the query text documents what `ORDER BY uid, seq`
     // orders by; the ordering itself is done in SQL, not by reading this
     // field back in Rust.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "selected only so the query documents its ORDER BY; see above"
+    )]
     seq: i16,
     tiploc: String,
     booked_arrival: Option<chrono::NaiveTime>,
@@ -44,6 +47,11 @@ struct CallingPointRow {
 /// maps this to a 404, same "no CIF-derived schedule data has been
 /// published for this leg's service date" convention
 /// `search_journey_leg_candidates` already establishes.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to >= 0 first, and minute values fit easily"
+)]
 pub async fn fetch_calling_points_for_date(
     pool: &PgPool,
     date: NaiveDate,
@@ -87,6 +95,11 @@ pub async fn fetch_calling_points_for_date(
 /// what `routes::trips::get_trip_plan` does, per the 2026-09-25 review's High
 /// 4a finding. Takes its input by value for the same reason: `spawn_blocking`
 /// requires `'static`, so the map cannot be borrowed across the hop.
+#[expect(
+    clippy::implicit_hasher,
+    clippy::needless_pass_by_value,
+    reason = "callers always use the default hasher; public planner API takes its options and overlay by value"
+)]
 pub fn build_connections(
     by_uid: HashMap<String, Vec<CallingPointForConnections>>,
 ) -> Vec<Connection> {
@@ -101,6 +114,11 @@ pub fn build_connections(
 /// connections run through which TIPLOCs without calling), for
 /// `/Trips/plan`'s pass-through `avoid`. The index holds one `u32` per
 /// untimed calling-point row (about 190k on a 2026-09 weekday, under 1 MB).
+#[expect(
+    clippy::implicit_hasher,
+    clippy::needless_pass_by_value,
+    reason = "callers always use the default hasher; public planner API takes its options and overlay by value"
+)]
 pub fn build_connections_with_passes(
     by_uid: HashMap<String, Vec<CallingPointForConnections>>,
 ) -> (Vec<Connection>, schedule_query::PassIndex) {
@@ -300,6 +318,10 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "a poisoned lock means another thread already panicked"
+    )]
     fn lookup(&self, date: NaiveDate, marker: Option<DateTime<Utc>>) -> Option<Arc<T>> {
         let now = Instant::now();
         let mut entries = self.entries.lock().expect("graph cache lock poisoned");
@@ -312,6 +334,10 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
         Some(entry.value.clone())
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "a poisoned lock means another thread already panicked"
+    )]
     fn insert(&self, date: NaiveDate, marker: Option<DateTime<Utc>>, value: Arc<T>) {
         let now = Instant::now();
         let mut entries = self.entries.lock().expect("graph cache lock poisoned");
@@ -348,7 +374,7 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
     ) -> Result<Option<(Arc<T>, CacheOutcome)>>
     where
         F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<Option<T>>> + Send + 'static,
+        Fut: Future<Output = Result<Option<T>>> + Send + 'static,
     {
         if self.capacity == 0 {
             return Ok(build()
@@ -386,6 +412,11 @@ impl<T: Send + Sync + 'static> GraphCache<T> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::unnecessary_wraps,
+    reason = "test code: casts of small known test values; fakes mirror the signatures they stand in for"
+)]
 mod graph_cache_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -547,7 +578,7 @@ mod db_tests {
                 build_connections_for_date -- --ignored --test-threads=1`"]
     async fn build_connections_for_date_returns_none_when_nothing_is_published() {
         let pool = connect().await;
-        let far_future = chrono::NaiveDate::from_ymd_opt(2099, 1, 1).unwrap();
+        let far_future = NaiveDate::from_ymd_opt(2099, 1, 1).unwrap();
         let result = build_connections_for_date(&pool, far_future)
             .await
             .expect("query succeeds");
@@ -559,7 +590,7 @@ mod db_tests {
                 build_connections_for_date -- --ignored --test-threads=1`"]
     async fn build_connections_for_date_builds_a_real_connection_from_seeded_rows() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
@@ -657,7 +688,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn a_padded_tiploc_from_calling_points_full_still_matches_bare_stanox_crs_change_time() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
 
         // A padded TIPLOC, exactly as a real CIF schedule-body TIPLOC field
         // carries it (see `schedule_query::tiploc`'s own doc comment) -- 7

@@ -40,7 +40,7 @@ use crate::pattern::Routing;
 use crate::scan::{DirSnapshot, StabilityTracker, scan_incoming};
 
 /// Counts rejected CORPUS files; `DistantSignalCorpusRejected` reads it.
-pub const REJECTED_METRIC: &str = "schedule_feed_corpus_rejected_total";
+pub(crate) const REJECTED_METRIC: &str = "schedule_feed_corpus_rejected_total";
 const LAST_LOAD_METRIC: &str = "schedule_feed_corpus_last_load_delivered_at_seconds";
 const ROWS_METRIC: &str = "schedule_feed_corpus_rows";
 
@@ -52,7 +52,7 @@ const REJECTED_DIR: &str = "rejected";
 /// One normalised CORPUS location. Mirrors api's
 /// `data::corpus::CorpusLocation` field for field (JSON names included).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CorpusLocation {
+pub(crate) struct CorpusLocation {
     pub nlc: String,
     pub stanox: Option<String>,
     pub tiploc: Option<String>,
@@ -76,7 +76,7 @@ struct CorpusLoadRequest<'a> {
 /// Why a file can never be loaded. Its bytes cannot change without its
 /// `(mtime, size)` changing, so it is moved aside rather than retried.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rejected(pub String);
+pub(crate) struct Rejected(pub String);
 
 impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -87,7 +87,7 @@ impl std::fmt::Display for Rejected {
 /// Process-lifetime state of the CORPUS pipeline. Nothing here needs to
 /// survive a restart (see the module doc).
 #[derive(Debug, Default)]
-pub struct CorpusState {
+pub(crate) struct CorpusState {
     tracker: StabilityTracker,
     known_stable: HashSet<String>,
     /// The last file this process loaded or rejected, as `(name, mtime,
@@ -98,19 +98,19 @@ pub struct CorpusState {
 }
 
 impl CorpusState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 }
 
 /// Registers the metrics at 0 so the alert's `increase()` sees the first
 /// rejection.
-pub fn register_metrics() {
+pub(crate) fn register_metrics() {
     metrics::counter!(common::metrics::metric_name(REJECTED_METRIC)).increment(0);
 }
 
 /// Gunzips `compressed`, refusing more than `max_bytes` of output.
-pub fn decompress(compressed: &[u8], max_bytes: u64) -> Result<Vec<u8>, Rejected> {
+pub(crate) fn decompress(compressed: &[u8], max_bytes: u64) -> Result<Vec<u8>, Rejected> {
     if !compressed.starts_with(&[0x1f, 0x8b]) {
         return Err(Rejected("not a gzip file".to_string()));
     }
@@ -156,6 +156,10 @@ struct RawRow {
 
 /// A string or number as trimmed text; `None` for null or blank. Anything
 /// else (an array, an object, a boolean) is not CORPUS.
+#[allow(
+    clippy::similar_names,
+    reason = "only rustc 1.88's clippy flags these names, so #[expect] can't be used"
+)]
 fn text(value: &serde_json::Value, field: &str, row: usize) -> Result<Option<String>, Rejected> {
     let raw = match value {
         serde_json::Value::Null => return Ok(None),
@@ -181,7 +185,7 @@ fn pad_digits(code: String, width: usize) -> String {
 }
 
 /// Parses and normalises one CORPUS extract's JSON.
-pub fn parse_extract(json: &[u8], min_rows: usize) -> Result<Vec<CorpusLocation>, Rejected> {
+pub(crate) fn parse_extract(json: &[u8], min_rows: usize) -> Result<Vec<CorpusLocation>, Rejected> {
     let extract: Extract = serde_json::from_slice(json).map_err(|err| {
         Rejected(format!(
             "not a CORPUS extract (expected JSON with a TIPLOCDATA array): {err}"
@@ -286,13 +290,13 @@ fn prune_archive(dir: &Path, keep: u32) -> std::io::Result<()> {
 fn archive(watch_dir: &Path, name: &str, stat: (SystemTime, u64), dest_dir: &Path, keep: u32) {
     match move_if_unchanged(watch_dir, name, stat, dest_dir) {
         Ok(true) => {
-            tracing::info!(file = %name, dest = %dest_dir.display(), "moved CORPUS file out of watch_dir")
+            tracing::info!(file = %name, dest = %dest_dir.display(), "moved CORPUS file out of watch_dir");
         }
         Ok(false) => {
-            tracing::info!(file = %name, "CORPUS file changed since it was read (a new upload?); left in watch_dir")
+            tracing::info!(file = %name, "CORPUS file changed since it was read (a new upload?); left in watch_dir");
         }
         Err(err) => {
-            tracing::error!(error = %err, file = %name, "failed to move CORPUS file out of watch_dir; retrying next cycle")
+            tracing::error!(error = %err, file = %name, "failed to move CORPUS file out of watch_dir; retrying next cycle");
         }
     }
     if let Err(err) = prune_archive(dest_dir, keep) {
@@ -303,8 +307,12 @@ fn archive(watch_dir: &Path, name: &str, stat: (SystemTime, u64), dest_dir: &Pat
 /// One poll interval of the CORPUS pipeline (see the module doc). Returns
 /// `Err` only when `watch_dir` itself cannot be read; every per-file
 /// problem is logged and handled.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_corpus_cycle(
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; metric gauges take f64, and these counts and timestamps stay far below 2^52"
+)]
+pub(crate) async fn run_corpus_cycle(
     client: &Client,
     watch_dir: &Path,
     storage_dir: &Path,
@@ -612,7 +620,7 @@ mod tests {
         })
     }
 
-    /// Runs `cycles` CORPUS cycles (stability_cycles = 2).
+    /// Runs `cycles` CORPUS cycles (`stability_cycles` = 2).
     async fn run(
         watch: &Path,
         storage: &Path,
@@ -649,7 +657,7 @@ mod tests {
         names
     }
 
-    /// The whole path against a mock api: the stable extract is POSTed
+    /// The whole path against a mock api: the stable extract is `POSTed`
     /// once with normalised rows, then moved out of `watch_dir` into the
     /// archive; the SMART `.csv.gz` sharing its name is never touched.
     #[tokio::test]
@@ -742,7 +750,7 @@ mod tests {
         assert!(names(storage.path()).is_empty());
     }
 
-    /// An extract that is not CORPUS is never POSTed: it is moved to the
+    /// An extract that is not CORPUS is never `POSTed`: it is moved to the
     /// rejected archive (no api is listening here, so a POST attempt would
     /// have left the file in place instead).
     #[tokio::test]

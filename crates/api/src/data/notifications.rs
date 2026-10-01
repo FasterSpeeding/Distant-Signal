@@ -51,7 +51,7 @@ pub enum PushSubscriptionUpsert {
 /// `endpoint` is already a globally unique per-device-registration URL, so
 /// a conflict here can only mean "this caller already has a row for this
 /// exact endpoint" (the ordinary re-subscribe/refresh case, which this
-/// still updates in place) or "someone else's endpoint got POSTed by this
+/// still updates in place) or "someone else's endpoint got `POSTed` by this
 /// caller" (2026-09 security review finding: previously handled by
 /// blindly reassigning `user_id` to the new caller, silently taking over
 /// another user's subscription -- their notifications would go dark, and
@@ -119,6 +119,11 @@ async fn evict_push_subscriptions_over_cap(pool: &PgPool, user_id: &str) -> Resu
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "test code: casts of small known test values"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;

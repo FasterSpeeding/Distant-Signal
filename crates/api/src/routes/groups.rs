@@ -1149,6 +1149,11 @@ mod tests {
 /// shared test-support module is a separate, deliberate decision rather
 /// than something to do while adding a file's first route tests.
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; scenario tests read top to bottom"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};

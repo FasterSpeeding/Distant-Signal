@@ -127,6 +127,10 @@ fn matches_filters(c: &ResolveCandidate, request: &ResolveRequest) -> bool {
             .is_none_or(|o| c.operator_atoc.as_deref() == Some(o))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
 fn single_or_ambiguous(keys: Vec<(String, NaiveDate)>, matched_on: MatchedOn) -> ResolveOutcome {
     match keys.len() {
         0 => ResolveOutcome::NotFound,

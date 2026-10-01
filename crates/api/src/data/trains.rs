@@ -118,11 +118,14 @@ pub async fn find_or_create_trains_batch(
 
 /// Same idempotent shape as [`find_or_create_train`], but also mirrors a
 /// successful schedule match's own result onto the shared row (Step A's
-/// "attempt_schedule_match... mirror their result onto the shared trains
+/// "`attempt_schedule_match`... mirror their result onto the shared trains
 /// row too"). `COALESCE`d against the existing value on every schedule
 /// column so a second subscriber's independent match against the same
 /// physical train never clobbers data an earlier one already wrote.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 pub async fn find_or_create_train_with_schedule_match(
     pool: &PgPool,
     train_uid: &str,
@@ -244,6 +247,10 @@ pub async fn bind_subscription_unless_other_train(
 /// possible `trains_train_id_service_date` unique-index collision must roll
 /// back together with `flip_legacy_resolution`'s `resolution_status`
 /// write, not land (or fail) on its own.
+#[expect(
+    clippy::similar_names,
+    reason = "the similar names are distinct domain terms"
+)]
 pub async fn mark_train_resolved<'c, E>(
     executor: E,
     trains_id: i64,
@@ -278,6 +285,10 @@ where
 /// LAST one in event order, matching what a sequential loop of
 /// [`mark_train_resolved`] calls would leave behind (each call plainly
 /// overwrites `train_id`, so only the final call's value survives).
+#[expect(
+    clippy::similar_names,
+    reason = "the similar names are distinct domain terms"
+)]
 pub async fn mark_trains_resolved_batch(
     pool: &PgPool,
     pairs: &[(i64, String)],
@@ -624,6 +635,10 @@ pub async fn get_public_train_states_for_line(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::similar_names,
+    reason = "test code: paired test values share names"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -642,7 +657,7 @@ mod db_tests {
                 find_or_create_train_returns_the_same_id_on_a_repeat_call -- --ignored --test-threads=1`"]
     async fn find_or_create_train_returns_the_same_id_on_a_repeat_call() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let first = find_or_create_train(&pool, "TEST-TRAINS-UID-1", service_date)
             .await
@@ -667,7 +682,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn find_or_create_trains_batch_dedups_and_resolves_every_distinct_pair() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         // Seed one of the two identities up front, so this also proves the
         // batched call resolves a PRE-EXISTING row via its ON CONFLICT
@@ -706,7 +721,7 @@ mod db_tests {
                 mark_trains_resolved_batch_sets_train_id_for_every_pair -- --ignored --test-threads=1`"]
     async fn mark_trains_resolved_batch_sets_train_id_for_every_pair() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let id_1 = find_or_create_train(&pool, "TEST-TRAINS-BATCH-RESOLVE-1", service_date)
             .await
             .expect("find_or_create_train");
@@ -753,7 +768,7 @@ mod db_tests {
                 mark_train_resolved_sets_train_id_and_resolved_at -- --ignored --test-threads=1`"]
     async fn mark_train_resolved_sets_train_id_and_resolved_at() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id = find_or_create_train(&pool, "TEST-TRAINS-UID-2", service_date)
             .await
             .expect("find_or_create_train");
@@ -762,7 +777,7 @@ mod db_tests {
             .await
             .expect("mark_train_resolved");
 
-        let (train_id, resolved_at): (Option<String>, Option<chrono::DateTime<chrono::Utc>>) =
+        let (train_id, resolved_at): (Option<String>, Option<DateTime<Utc>>) =
             sqlx::query_as("SELECT train_id, resolved_at FROM trains WHERE id = $1")
                 .bind(trains_id)
                 .fetch_one(&pool)
@@ -783,9 +798,8 @@ mod db_tests {
                 find_or_create_train_with_schedule_match_never_clobbers_an_earlier_match -- --ignored --test-threads=1`"]
     async fn find_or_create_train_with_schedule_match_never_clobbers_an_earlier_match() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        let scheduled_departure: chrono::DateTime<chrono::Utc> =
-            "2026-09-06T12:00:00Z".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
+        let scheduled_departure: DateTime<Utc> = "2026-09-06T12:00:00Z".parse().unwrap();
         let calling_points = serde_json::json!(["PAD", "RDG"]);
 
         let first_id = find_or_create_train_with_schedule_match(
@@ -865,9 +879,8 @@ mod db_tests {
                 get_public_train_state_reads_the_shared_row_and_its_current_state -- --ignored --test-threads=1`"]
     async fn get_public_train_state_reads_the_shared_row_and_its_current_state() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        let scheduled_departure: chrono::DateTime<chrono::Utc> =
-            "2026-09-06T12:00:00Z".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
+        let scheduled_departure: DateTime<Utc> = "2026-09-06T12:00:00Z".parse().unwrap();
         let calling_points = serde_json::json!(["EUS", "MKC"]);
 
         let trains_id = find_or_create_train_with_schedule_match(
@@ -932,7 +945,7 @@ mod db_tests {
                 get_public_train_state_reads_the_cif_headcode_not_the_trust_train_id -- --ignored --test-threads=1`"]
     async fn get_public_train_state_reads_the_cif_headcode_not_the_trust_train_id() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-07".parse().unwrap();
         let uid = "TEST-PUBLIC-HEADCODE-UID";
         let trains_id = find_or_create_train(&pool, uid, service_date)
             .await
@@ -1000,9 +1013,8 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_public_train_states_for_line_returns_only_existing_rows_for_the_requested_uids() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-09".parse().unwrap();
-        let scheduled_departure: chrono::DateTime<chrono::Utc> =
-            "2026-09-09T08:00:00Z".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-09".parse().unwrap();
+        let scheduled_departure: DateTime<Utc> = "2026-09-09T08:00:00Z".parse().unwrap();
         let calling_points = serde_json::json!(["EUS", "BHM"]);
 
         // One resolved train (has both schedule match and live state)...
@@ -1072,7 +1084,7 @@ mod db_tests {
                 get_public_train_states_for_line_returns_empty_for_an_empty_uid_list -- --ignored --test-threads=1`"]
     async fn get_public_train_states_for_line_returns_empty_for_an_empty_uid_list() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-09".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-09".parse().unwrap();
 
         let states = get_public_train_states_for_line(&pool, &[], service_date)
             .await
@@ -1103,7 +1115,7 @@ mod db_tests {
                 is_known_scheduled_train_is_true_for_a_published_row -- --ignored --test-threads=1`"]
     async fn is_known_scheduled_train_is_true_for_a_published_row() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         sqlx::query(
             "INSERT INTO schedule_destination_departures \
@@ -1153,7 +1165,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn two_trains_rows_cannot_share_a_train_id_and_service_date_once_resolved() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-25".parse().unwrap();
 
         let first_id = find_or_create_train(&pool, "TEST-TRAINS-UNIQUE-UID-1", service_date)
             .await
@@ -1209,7 +1221,7 @@ mod db_tests {
                 multiple_null_train_id_rows_for_the_same_service_date_are_allowed -- --ignored --test-threads=1`"]
     async fn multiple_null_train_id_rows_for_the_same_service_date_are_allowed() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-25".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-25".parse().unwrap();
 
         let first_id = find_or_create_train(&pool, "TEST-TRAINS-NULL-UID-1", service_date)
             .await

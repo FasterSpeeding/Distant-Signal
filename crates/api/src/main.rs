@@ -1,5 +1,6 @@
 use anyhow::Context;
 use axum_prometheus::PrometheusMetricLayerBuilder;
+use axum_prometheus::metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -139,6 +140,10 @@ fn main() -> std::process::ExitCode {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn server_main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
@@ -391,10 +396,10 @@ async fn server_main() -> anyhow::Result<()> {
 /// migration starts nothing.
 async fn run_startup<M, S, B, BF>(migrate: M, spawn_background: S, serve: B) -> anyhow::Result<()>
 where
-    M: std::future::Future<Output = anyhow::Result<()>>,
+    M: Future<Output = anyhow::Result<()>>,
     S: FnOnce(),
     B: FnOnce() -> BF,
-    BF: std::future::Future<Output = anyhow::Result<()>>,
+    BF: Future<Output = anyhow::Result<()>>,
 {
     migrate.await?;
     spawn_background();
@@ -443,10 +448,7 @@ fn spawn_background_loops(app: &App) {
 /// listener: a bind failure here logs and returns rather than taking down
 /// the whole process -- `/metrics` is a scrape target, not something the
 /// rest of `api` depends on to function.
-fn spawn_metrics_listener(
-    port: u16,
-    metrics_handle: axum_prometheus::metrics_exporter_prometheus::PrometheusHandle,
-) {
+fn spawn_metrics_listener(port: u16, metrics_handle: PrometheusHandle) {
     tokio::spawn(async move {
         let metrics_router = axum::Router::new().route(
             "/metrics",
@@ -707,7 +709,7 @@ mod run_startup_tests {
 mod sweep_interval_tests {
     use super::sweep_interval;
 
-    /// Regression for the "L1 -- MissedTickBehavior::Burst still default"
+    /// Regression for the "L1 -- `MissedTickBehavior::Burst` still default"
     /// finding: every sweep loop above shares this one interval builder, so
     /// asserting it here covers all four (`schedule_match_sweep_loop`,
     /// `reconciliation_sweep_loop`, `backlog_match_sweep_loop`,

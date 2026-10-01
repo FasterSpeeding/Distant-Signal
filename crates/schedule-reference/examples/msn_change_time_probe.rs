@@ -19,6 +19,9 @@
 //! repository): mostly single-digit values, a clear mode around 5, and a small number
 //! (order of ten, not hundreds) of 98/99 outliers. A range producing
 //! double-digit values across most stations, or a huge spread, is wrong.
+
+#![expect(clippy::print_stdout, reason = "example program: stdout is its output")]
+
 use std::collections::BTreeMap;
 
 fn main() -> anyhow::Result<()> {

@@ -187,6 +187,10 @@ mod tests {
 /// Authentik JWKS for the latter. Same oneshot pattern as
 /// `routes::chatbot::db_tests`.
 #[cfg(test)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "test code: helpers take owned fixtures"
+)]
 mod session_revocation_db_tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -298,7 +302,7 @@ mod session_revocation_db_tests {
     /// Seeds a user with `groups` and one live session per entry of
     /// `tokens`, returning nothing; the raw tokens are the cookie values.
     async fn seed_user(pool: &PgPool, user_id: &str, groups: &[&str], tokens: &[&str]) {
-        let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
+        let groups: Vec<String> = groups.iter().map(ToString::to_string).collect();
         sqlx::query(
             "INSERT INTO users (id, username, name, groups) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (id) DO UPDATE SET groups = EXCLUDED.groups, \

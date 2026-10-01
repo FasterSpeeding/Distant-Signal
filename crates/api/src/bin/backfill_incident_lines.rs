@@ -17,6 +17,11 @@
 //! operational runbook is `docs/incident-affected-lines-backfill.md`. This
 //! file is deliberately nothing but wiring.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "one-off CLI tool: stdout is its output"
+)]
+
 use common::matcher::LineMatcher;
 use sqlx::postgres::PgPoolOptions;
 

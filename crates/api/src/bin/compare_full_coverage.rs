@@ -33,6 +33,13 @@
 //! This file is deliberately nothing but argument parsing and
 //! human-readable formatting.
 
+#![expect(
+    clippy::expect_used,
+    clippy::print_stdout,
+    clippy::too_many_lines,
+    reason = "operator CLI tool: a panic with a message is the right failure; stdout is its output; report printing reads top to bottom"
+)]
+
 use chrono::{Duration, Utc};
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
@@ -63,8 +70,8 @@ struct Args {
     /// and would-escalate-only.
     #[arg(long, default_value_t = common::full_coverage_window::FULL_COVERAGE_WINDOW_DEFAULT_MIN_ESCALATION_RANK)]
     min_rank: u8,
-    /// With `--windows`: also write escalations.csv, ldbws_pairs.csv and
-    /// line_volumes.csv to this directory.
+    /// With `--windows`: also write escalations.csv, `ldbws_pairs.csv` and
+    /// `line_volumes.csv` to this directory.
     #[arg(long)]
     csv: Option<std::path::PathBuf>,
     /// How many trailing days (ending today) to compare. Ignored if
@@ -153,11 +160,10 @@ async fn run() -> anyhow::Result<()> {
 fn severity_threshold_for(line_id: &str, lines_dir: &str) -> f64 {
     let defaults = common::Defaults::default();
     match common::config::parse_lines(lines_dir) {
-        Ok(lines) => match lines.iter().find(|l| l.id == line_id) {
-            Some(line) => {
+        Ok(lines) => {
+            if let Some(line) = lines.iter().find(|l| l.id == line_id) {
                 common::thresholds_for(&defaults, &line.severity_overrides).reduced_service_pct
-            }
-            None => {
+            } else {
                 tracing::warn!(
                     line_id,
                     lines_dir,
@@ -165,7 +171,7 @@ fn severity_threshold_for(line_id: &str, lines_dir: &str) -> f64 {
                 );
                 defaults.reduced_service_pct
             }
-        },
+        }
         Err(err) => {
             tracing::warn!(
                 error = ?err,
@@ -239,9 +245,9 @@ fn print_report(report: &ComparisonReport, severity_threshold: f64) {
     let mut insufficient = 0usize;
     for day in &report.days {
         let (sample_str, coverage_str) = (
-            day.sample
-                .as_ref()
-                .map(|r| {
+            day.sample.as_ref().map_or_else(
+                || "no LDBWS-sample data".to_string(),
+                |r| {
                     format!(
                         "cancelled={:.1}% delayed={:.1}% skipped={:.1}% ({} cycles)",
                         r.cancelled_rate * 100.0,
@@ -249,11 +255,11 @@ fn print_report(report: &ComparisonReport, severity_threshold: f64) {
                         r.skipped_rate * 100.0,
                         r.cycles
                     )
-                })
-                .unwrap_or_else(|| "no LDBWS-sample data".to_string()),
-            day.coverage
-                .as_ref()
-                .map(|r| {
+                },
+            ),
+            day.coverage.as_ref().map_or_else(
+                || "no full-coverage data".to_string(),
+                |r| {
                     format!(
                         "cancelled={:.1}% delayed={:.1}% skipped={:.1}% ({} resolved windows)",
                         r.cancelled_rate * 100.0,
@@ -261,8 +267,8 @@ fn print_report(report: &ComparisonReport, severity_threshold: f64) {
                         r.skipped_rate * 100.0,
                         r.cycles
                     )
-                })
-                .unwrap_or_else(|| "no full-coverage data".to_string()),
+                },
+            ),
         );
         println!("{}:", day.day);
         println!("  LDBWS sample:   {sample_str}");
@@ -401,7 +407,11 @@ mod windows_report {
         format!("{:.1}%", v * 100.0)
     }
 
-    pub async fn run(
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "counts stay far below 2^52, so the f64 ratio is exact"
+    )]
+    pub(crate) async fn run(
         pool: &sqlx::PgPool,
         args: &Args,
         from: NaiveDate,

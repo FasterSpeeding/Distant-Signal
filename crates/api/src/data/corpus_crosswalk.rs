@@ -394,6 +394,10 @@ mod tests {
 /// (`#[sqlx::test]`), because a CORPUS load replaces whole tables. Needs a
 /// `DATABASE_URL` whose role may create databases.
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    reason = "test code: fixtures sit next to their use"
+)]
 mod db_tests {
     use chrono::TimeZone;
 

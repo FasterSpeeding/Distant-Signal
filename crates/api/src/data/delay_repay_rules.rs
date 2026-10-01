@@ -57,8 +57,8 @@ pub const ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate,
 /// 15-29 minute band at all -- confirmed against each operator's own live
 /// page as of 2026-08-29:
 ///   - LNER: 30+ minutes (delayrepay.lner.co.uk)
-///   - CrossCountry: 30+ minutes (delayrepay.crosscountrytrains.co.uk)
-///   - ScotRail: 30+ minutes (scotrail.co.uk/plan-your-journey/our-delay-repay-guarantee)
+///   - `CrossCountry`: 30+ minutes (delayrepay.crosscountrytrains.co.uk)
+///   - `ScotRail`: 30+ minutes (scotrail.co.uk/plan-your-journey/our-delay-repay-guarantee)
 ///     Matched case-insensitively as a substring of the ticket's free-text
 ///     `operator` field (not a hard ATOC-code catalogue -- see this plan's
 ///     Global Constraints and the design doc's Open Question 6, which this
@@ -73,11 +73,11 @@ pub const ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate,
 /// e-ticket's own retailer template prints) is not guaranteed to spell an
 /// operator's name the same way this table originally did. Two confirmed
 /// real-world misses:
-///   - `"Cross Country"` (a space-separated rendering CrossCountry's own
+///   - `"Cross Country"` (a space-separated rendering `CrossCountry`'s own
 ///     branding and third-party retailers both use interchangeably with
 ///     the no-space `"CrossCountry"`) does not contain `"crosscountry"` as
 ///     a substring at all, so it fell through to the DR15 branch --
-///     understating a legitimate CrossCountry claim's compensation band.
+///     understating a legitimate `CrossCountry` claim's compensation band.
 ///   - `"London North Eastern Railway"` (LNER's full legal/trading name,
 ///     which some retailers print in full rather than the `"LNER"`
 ///     initialism) does not contain `"lner"` either, same understating
@@ -179,8 +179,7 @@ pub fn claim_url_for(operator: &str) -> &'static str {
     CLAIM_URLS
         .iter()
         .find(|(op, _)| operator_lower.contains(op))
-        .map(|(_, url)| *url)
-        .unwrap_or(GENERIC_CLAIM_URL)
+        .map_or(GENERIC_CLAIM_URL, |(_, url)| *url)
 }
 
 #[cfg(test)]
@@ -256,7 +255,7 @@ mod tests {
 
     /// Low finding #5's own regression test (2026-09-25 review): a
     /// space-separated "Cross Country" spelling must still be recognized as
-    /// the DR30 CrossCountry -- before this fix, `"cross country"` did not
+    /// the DR30 `CrossCountry` -- before this fix, `"cross country"` did not
     /// contain the no-space `"crosscountry"` substring, so it silently fell
     /// through to the DR15 branch and understated compensation.
     #[test]
@@ -310,6 +309,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::const_is_empty,
+        reason = "only rustc 1.88's clippy flags this; the test pins a constant's contract"
+    )]
     fn route_disclaimer_is_distinct_from_the_per_estimate_disclaimer_and_non_empty() {
         // Two different strings by design -- see ROUTE_DISCLAIMER's own doc
         // comment and components/DelayRepayEstimate.tsx's doc comment for

@@ -1,6 +1,6 @@
 //! `/public/freshness`: how fresh the six data sources feeding the status
 //! API are (stations reference data, TOC reference data, the raw incidents
-//! feed, the TfL line-status feed, the CIF SCHEDULE feed pushed by
+//! feed, the `TfL` line-status feed, the CIF SCHEDULE feed pushed by
 //! `schedule-ingest`, and the Network Rail CORPUS extract that
 //! `schedule-ingest` loads through `/private/corpus-locations`). Unauthenticated, read-only — same `public_router()`
 //! pattern as `reference.rs`. Reads the same values as the `last_*_fetch`
@@ -29,7 +29,7 @@ pub struct DataFreshness {
     pub stations: Option<DateTime<Utc>>,
     pub tocs: Option<DateTime<Utc>>,
     pub incidents: Option<DateTime<Utc>>,
-    /// When TfL line status last landed. Unlike its three siblings this is
+    /// When `TfL` line status last landed. Unlike its three siblings this is
     /// not a poller-fed raw table but the `computed_at` of the TfL-owned
     /// `line_status` rows themselves — for this source, ingest and
     /// computation are the same event.
@@ -63,6 +63,10 @@ async fn get_freshness(
     }))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "data freshness query failed");
     (
@@ -216,7 +220,7 @@ mod db_tests {
     }
 
     async fn get_freshness_json(pool: &PgPool) -> serde_json::Value {
-        let app: axum::Router = crate::app::Router::new()
+        let app: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = app

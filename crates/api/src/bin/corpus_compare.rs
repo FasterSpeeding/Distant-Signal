@@ -23,6 +23,11 @@
 //! Never writes. Exits 0 with a note when no CORPUS has been loaded (after
 //! one `COUNT(*)`), non-zero only on a database error.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "operator CLI tool: stdout is its output"
+)]
+
 use chrono::NaiveDate;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;

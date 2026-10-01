@@ -20,6 +20,11 @@
 //! (`ensure_ready_for_contract_migration`) is checking the very same
 //! conditions this binary clears.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "one-off CLI tool: stdout is its output"
+)]
+
 use sqlx::postgres::PgPoolOptions;
 
 #[tokio::main]
