@@ -281,6 +281,86 @@ mod db_tests {
         cleanup_user(&pool, "TEST-NOTIF-SUB-USER-A2").await;
         cleanup_user(&pool, "TEST-NOTIF-SUB-USER-B2").await;
     }
+
+    /// L10 (2026-09-26 review): saving a subscription past
+    /// `MAX_PUSH_SUBSCRIPTIONS_PER_USER` evicts the least-recently-seen
+    /// rows instead of refusing, so the device just saved always survives;
+    /// a re-subscribe of an old endpoint refreshes its `last_seen_at` and so
+    /// protects it from eviction.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                upsert_evicts_the_least_recently_seen_subscriptions_over_the_cap \
+                -- --ignored --test-threads=1`"]
+    async fn upsert_evicts_the_least_recently_seen_subscriptions_over_the_cap() {
+        const USER: &str = "TEST-NOTIF-SUB-CAP";
+        let pool = connect().await;
+        cleanup_user(&pool, USER).await;
+        seed_user(&pool, USER).await;
+
+        // Exactly at the cap, endpoint i last seen i minutes ago (so ep-1
+        // is the most recent and ep-20 the stalest).
+        sqlx::query(
+            "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, last_seen_at) \
+             SELECT $1, 'https://push.example/cap-' || i, 'p', 'a', \
+                    NOW() - make_interval(mins => i) \
+             FROM generate_series(1, $2::int) i",
+        )
+        .bind(USER)
+        .bind(MAX_PUSH_SUBSCRIPTIONS_PER_USER as i32)
+        .execute(&pool)
+        .await
+        .expect("seed subscriptions up to the cap");
+
+        let endpoints = || async {
+            let rows: Vec<String> = sqlx::query_scalar(
+                "SELECT endpoint FROM push_subscriptions WHERE user_id = $1 ORDER BY endpoint",
+            )
+            .bind(USER)
+            .fetch_all(&pool)
+            .await
+            .expect("list endpoints");
+            rows
+        };
+
+        // Re-subscribing the stalest endpoint is an update, not a new row:
+        // nothing is evicted and it becomes the most recently seen.
+        let refreshed = format!("https://push.example/cap-{MAX_PUSH_SUBSCRIPTIONS_PER_USER}");
+        assert_eq!(
+            upsert_push_subscription(&pool, USER, &refreshed, "p2", "a2")
+                .await
+                .expect("refresh"),
+            PushSubscriptionUpsert::Saved
+        );
+        assert_eq!(
+            endpoints().await.len() as i64,
+            MAX_PUSH_SUBSCRIPTIONS_PER_USER
+        );
+
+        // A brand-new device: saved, and the now-stalest (cap-19) evicted.
+        assert_eq!(
+            upsert_push_subscription(&pool, USER, "https://push.example/cap-new", "p", "a")
+                .await
+                .expect("new device"),
+            PushSubscriptionUpsert::Saved
+        );
+        let after = endpoints().await;
+        assert_eq!(after.len() as i64, MAX_PUSH_SUBSCRIPTIONS_PER_USER);
+        assert!(after.contains(&"https://push.example/cap-new".to_string()));
+        assert!(
+            after.contains(&refreshed),
+            "a refreshed endpoint must survive"
+        );
+        let evicted = format!(
+            "https://push.example/cap-{}",
+            MAX_PUSH_SUBSCRIPTIONS_PER_USER - 1
+        );
+        assert!(
+            !after.contains(&evicted),
+            "the least-recently-seen row is evicted"
+        );
+
+        cleanup_user(&pool, USER).await;
+    }
 }
 
 #[cfg(test)]

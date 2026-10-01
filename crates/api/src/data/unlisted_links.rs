@@ -617,4 +617,125 @@ mod db_tests {
             .ok();
         cleanup(&pool, "widget", &["TEST-UNLISTED-LINKS-OWNER-6"]).await;
     }
+
+    /// L10 (2026-09-26 review): `prune_dead_links` deletes share and invite
+    /// links revoked or expired more than `DEAD_LINK_RETENTION` (30 days)
+    /// ago from both tables, and keeps live links and ones that died more
+    /// recently than that.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                prune_dead_links_deletes_only_links_dead_for_longer_than_the_retention \
+                -- --ignored --test-threads=1`"]
+    async fn prune_dead_links_deletes_only_links_dead_for_longer_than_the_retention() {
+        const USER: &str = "TEST-UNLISTED-LINKS-PRUNE";
+        const TYPE: &str = "widget-prune";
+        const GROUP: &str = "test-unlisted-links-prune-group";
+        let pool = connect().await;
+        cleanup(&pool, TYPE, &[]).await;
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(GROUP)
+            .execute(&pool)
+            .await
+            .ok();
+        seed_user(&pool, USER).await;
+        sqlx::query("INSERT INTO groups (id, name) VALUES ($1, 'Prune')")
+            .bind(GROUP)
+            .execute(&pool)
+            .await
+            .expect("seed group");
+
+        // (label, revoked days ago, expires in days; negative = in the past)
+        let cases: [(&str, Option<i32>, Option<i32>); 6] = [
+            ("revoked-31d", Some(31), Some(7)),
+            ("expired-31d", None, Some(-31)),
+            ("revoked-29d", Some(29), Some(7)),
+            ("expired-29d", None, Some(-29)),
+            ("live", None, Some(7)),
+            ("live-no-expiry", None, None),
+        ];
+        for (label, revoked_days_ago, expires_in_days) in cases {
+            sqlx::query(
+                "INSERT INTO unlisted_links \
+                    (token_hash, resource_type, resource_id, created_by, revoked_at, expires_at) \
+                 VALUES ($1, $2, $1, $3, NOW() - make_interval(days => $4), \
+                         NOW() + make_interval(days => $5))",
+            )
+            .bind(format!("prune-{label}"))
+            .bind(TYPE)
+            .bind(USER)
+            .bind(revoked_days_ago)
+            .bind(expires_in_days)
+            .execute(&pool)
+            .await
+            .expect("seed unlisted link");
+            // group_invite_links.expires_at is NOT NULL.
+            if let Some(expires_in_days) = expires_in_days {
+                sqlx::query(
+                    "INSERT INTO group_invite_links \
+                        (token_hash, group_id, created_by, revoked_at, expires_at) \
+                     VALUES ($1, $2, $3, NOW() - make_interval(days => $4), \
+                             NOW() + make_interval(days => $5))",
+                )
+                .bind(format!("prune-invite-{label}"))
+                .bind(GROUP)
+                .bind(USER)
+                .bind(revoked_days_ago)
+                .bind(expires_in_days)
+                .execute(&pool)
+                .await
+                .expect("seed invite link");
+            }
+        }
+
+        let pruned = prune_dead_links(&pool).await.expect("prune");
+        assert!(
+            pruned >= 4,
+            "at least our four dead-for-31-days rows: {pruned}"
+        );
+
+        let mut unlisted: Vec<String> = sqlx::query_scalar(
+            "SELECT token_hash FROM unlisted_links WHERE resource_type = $1 ORDER BY 1",
+        )
+        .bind(TYPE)
+        .fetch_all(&pool)
+        .await
+        .expect("remaining unlisted links");
+        unlisted.sort();
+        assert_eq!(
+            unlisted,
+            [
+                "prune-expired-29d",
+                "prune-live",
+                "prune-live-no-expiry",
+                "prune-revoked-29d"
+            ]
+        );
+        let invites: Vec<String> = sqlx::query_scalar(
+            "SELECT token_hash FROM group_invite_links WHERE group_id = $1 ORDER BY 1",
+        )
+        .bind(GROUP)
+        .fetch_all(&pool)
+        .await
+        .expect("remaining invite links");
+        assert_eq!(
+            invites,
+            [
+                "prune-invite-expired-29d",
+                "prune-invite-live",
+                "prune-invite-revoked-29d"
+            ]
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(GROUP)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM group_invite_links WHERE created_by = $1")
+            .bind(USER)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, TYPE, &[USER]).await;
+    }
 }

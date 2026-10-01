@@ -1438,4 +1438,66 @@ mod db_tests {
         cleanup_user(&pool, owner_id).await;
         cleanup_user(&pool, bystander_id).await;
     }
+
+    /// L10 (2026-09-26 review): `POST /JourneyTemplates` refuses a new
+    /// template once the caller already has
+    /// `MAX_JOURNEY_TEMPLATES_PER_USER`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                post_journey_template_enforces_the_per_user_template_cap \
+                -- --ignored --test-threads=1`"]
+    async fn post_journey_template_enforces_the_per_user_template_cap() {
+        use crate::data::journey_templates::MAX_JOURNEY_TEMPLATES_PER_USER;
+        let pool = connect().await;
+        let user_id = "TEST-ROUTE-TEMPLATE-CAP";
+        cleanup_user(&pool, user_id).await;
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+        let body = serde_json::json!({
+            "mode": "manual",
+            "legs": [
+                {"originCrs": "WAT", "destinationCrs": "RDG",
+                 "departWindow": {"after": "08:00:00"}}
+            ]
+        });
+
+        sqlx::query(
+            "INSERT INTO journey_templates (user_id) SELECT $1 FROM generate_series(1, $2::int)",
+        )
+        .bind(user_id)
+        .bind((MAX_JOURNEY_TEMPLATES_PER_USER - 1) as i32)
+        .execute(&pool)
+        .await
+        .expect("seed templates up to one below the cap");
+
+        let (status, created) = post_json(
+            router.clone(),
+            "/JourneyTemplates".to_string(),
+            Some(&token),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the template landing ON the cap: {created:?}"
+        );
+
+        let (status, refused) =
+            post_json(router, "/JourneyTemplates".to_string(), Some(&token), body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused:?}");
+        assert!(
+            refused.as_str().is_some_and(|b| b.contains("maximum")),
+            "{refused:?}"
+        );
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM journey_templates WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count templates");
+        assert_eq!(count, MAX_JOURNEY_TEMPLATES_PER_USER);
+
+        cleanup_user(&pool, user_id).await;
+    }
 }
