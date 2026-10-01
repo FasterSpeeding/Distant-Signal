@@ -106,7 +106,13 @@ export function TicketEntryForm({
   const [autoFilled, setAutoFilled] = useState<Set<string>>(new Set());
 
   const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  // Tagged with the upload kind that failed so only THAT tab's
+  // `UploadPanel` renders it. Both upload panels share this one state, and
+  // Mantine's `Tabs` keeps inactive panels mounted (as a hidden React
+  // `<Activity>`), so an untagged message was rendered into the hidden
+  // panel too -- a second, invisible copy of the same alert that React
+  // commits later, at idle priority, than the visible one.
+  const [uploadError, setUploadError] = useState<{ kind: 'pkpass' | 'pdf'; message: string } | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -213,7 +219,10 @@ export function TicketEntryForm({
         return;
       }
       if (response.status === 400) {
-        setUploadError("That doesn't look like a valid upload — try again or fill in the form manually");
+        setUploadError({
+          kind,
+          message: "That doesn't look like a valid upload — try again or fill in the form manually",
+        });
         return;
       }
       if (response.status === 422 || response.status === 415) {
@@ -222,32 +231,35 @@ export function TicketEntryForm({
         // PDF, not a .pkpass; upload it as a PDF e-ticket instead" (415,
         // the api's magic-byte check) -- safe to surface directly per
         // Decision 2's table.
-        setUploadError(await response.text());
+        setUploadError({ kind, message: await response.text() });
         return;
       }
       if (response.status === 503) {
-        setUploadError(
-          'Too many tickets are being read right now — try again in a moment, or fill in the details manually',
-        );
+        setUploadError({
+          kind,
+          message: 'Too many tickets are being read right now — try again in a moment, or fill in the details manually',
+        });
         return;
       }
       if (response.status === 504) {
-        setUploadError(
-          'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually',
-        );
+        setUploadError({
+          kind,
+          message: 'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually',
+        });
         return;
       }
       if (response.status === 413) {
         // The api caps PDFs at 4 MiB and .pkpass files at 8 MiB
         // (`ticket_precheck`).
-        setUploadError(
-          `That file is too large (${kind === 'pdf' ? '4' : '8'} MB limit). Try filling in the details manually`,
-        );
+        setUploadError({
+          kind,
+          message: `That file is too large (${kind === 'pdf' ? '4' : '8'} MB limit). Try filling in the details manually`,
+        });
         return;
       }
-      setUploadError("Couldn't read this file. Try filling in the details manually");
+      setUploadError({ kind, message: "Couldn't read this file. Try filling in the details manually" });
     } catch {
-      setUploadError("Couldn't read this file. Try filling in the details manually");
+      setUploadError({ kind, message: "Couldn't read this file. Try filling in the details manually" });
     } finally {
       setUploading(false);
     }
@@ -506,7 +518,7 @@ export function TicketEntryForm({
             kind="pkpass"
             accept={['.pkpass']}
             uploading={uploading}
-            error={uploadError}
+            error={uploadError?.kind === 'pkpass' ? uploadError.message : null}
             onFile={handleUpload}
             onFallback={() => setTab('manual')}
           />
@@ -517,7 +529,7 @@ export function TicketEntryForm({
             kind="pdf"
             accept={PDF_MIME_TYPE}
             uploading={uploading}
-            error={uploadError}
+            error={uploadError?.kind === 'pdf' ? uploadError.message : null}
             onFile={handleUpload}
             onFallback={() => setTab('manual')}
           />

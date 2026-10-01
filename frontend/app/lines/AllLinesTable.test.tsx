@@ -336,7 +336,7 @@ describe('AllLinesTable "NO DATA" status badge', () => {
     // root, with no further nesting).
     const badgeRoot = within(row).getByText('NO DATA').closest('.mantine-Badge-root')!;
     fireEvent.mouseEnter(badgeRoot);
-    expect(await screen.findByText('No status has been computed for this line yet.')).toBeInTheDocument();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('No status has been computed for this line yet.');
   });
 
   it('gives a defined sort position to "NO DATA" rows -- below every real severity -- rather than pinning them to one end regardless of direction', () => {
@@ -403,6 +403,10 @@ describe('AllLinesTable dash tooltip', () => {
     }),
   ];
 
+  // Each hover assertion targets `role="tooltip"`, not the copy itself: the
+  // same reason copy is also always rendered as a `hiddenFrom="sm"` line
+  // under the row's name, so a bare `findByText` matched that line before
+  // the tooltip ever opened and never tested the hover at all.
   function renderDashTable() {
     return renderWithMantine(<AllLinesTable lines={dashLines} reports={dashReports} pinnedLineIds={[]} tocs={[]} />);
   }
@@ -419,7 +423,7 @@ describe('AllLinesTable dash tooltip', () => {
     const row = screen.getByText('No Coverage Line').closest('tr')!;
     const [avgDelayDash] = within(row).getAllByText('—');
     fireEvent.mouseEnter(avgDelayDash);
-    expect(await screen.findByText('No live departure data received for this line yet.')).toBeInTheDocument();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('No live departure data received for this line yet.');
   });
 
   it('shows the below-threshold reason on hover for a line with thin coverage', async () => {
@@ -427,7 +431,9 @@ describe('AllLinesTable dash tooltip', () => {
     const row = screen.getByText('Below Threshold Line').closest('tr')!;
     const [avgDelayDash] = within(row).getAllByText('—');
     fireEvent.mouseEnter(avgDelayDash);
-    expect(await screen.findByText('Too few live departures sampled to report a rate right now.')).toBeInTheDocument();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Too few live departures sampled to report a rate right now.',
+    );
   });
 
   it('shows the TfL copy on hover, not the below-threshold copy, even though sampleAvailability says below-threshold', async () => {
@@ -435,7 +441,7 @@ describe('AllLinesTable dash tooltip', () => {
     const row = screen.getByText('Tube Line').closest('tr')!;
     const [avgDelayDash] = within(row).getAllByText('—');
     fireEvent.mouseEnter(avgDelayDash);
-    expect(await screen.findByText("Not measured by this app — status is TfL's own.")).toBeInTheDocument();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent("Not measured by this app — status is TfL's own.");
   });
 });
 
