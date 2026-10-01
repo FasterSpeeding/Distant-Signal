@@ -6604,6 +6604,9 @@ pub struct MovementEventRow {
     pub planned_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     pub actual_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     pub variation_status: Option<String>,
+    /// TRUST's public-timetable time for the movement; `None` for a pass,
+    /// a backlog-matched movement, or one stored before the column was.
+    pub gbtt_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// EVERY retained movement event for one train, oldest-`received_at` first
@@ -6637,7 +6640,7 @@ pub async fn movement_events_for_train(
 ) -> Result<Vec<MovementEventRow>> {
     let rows = sqlx::query_as::<_, MovementEventRow>(
         "SELECT UPPER(loc_crs) AS loc_crs, event_type, \
-                planned_timestamp, actual_timestamp, variation_status \
+                planned_timestamp, actual_timestamp, variation_status, gbtt_timestamp \
          FROM train_movement_events \
          WHERE trains_id = $1 AND loc_crs IS NOT NULL \
          ORDER BY received_at ASC, id ASC",
