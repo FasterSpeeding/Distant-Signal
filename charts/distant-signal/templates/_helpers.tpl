@@ -1297,10 +1297,33 @@ egress:
 {{- end }}
 
 {{/*
+The ingress rule for a workload's health (kubelet probe) ports, per
+networkPolicy.healthIngress: from any source (the default), from
+healthIngress.from when set, or nothing at all when healthIngress.enabled
+is false. Takes (dict "root" $root "ports" (list 8090)); renders one list
+item or nothing.
+*/}}
+{{- define "distant-signal.healthIngressRule" -}}
+{{- $h := .root.Values.networkPolicy.healthIngress | default dict -}}
+{{- if ne (toString $h.enabled) "false" -}}
+- ports:
+    {{- range .ports }}
+    - protocol: TCP
+      port: {{ . }}
+    {{- end }}
+  {{- with $h.from }}
+  from:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end -}}
+{{- end }}
+
+{{/*
 NetworkPolicy for one background worker (INF-10). Ingress: the worker's
 /metrics port from networkPolicy.monitoringNamespace (when metrics.enabled),
-and its health port(s) from anywhere, because kubelet probes come from the
-node, which no pod or namespace selector can name (INF-9's side note). A
+and its health port(s) per networkPolicy.healthIngress (by default from
+anywhere, because kubelet probes come from the node, which no pod or
+namespace selector can name: INF-9's side note). A
 worker serves nothing else, so everything else is denied.
 
 Egress (only when networkPolicy.egress.enabled and `egress` is given): DNS,
@@ -1344,11 +1367,7 @@ spec:
         - protocol: TCP
           port: {{ .metricsPort }}
     {{- end }}
-    - ports:
-        {{- range .healthPorts }}
-        - protocol: TCP
-          port: {{ . }}
-        {{- end }}
+    {{- include "distant-signal.healthIngressRule" (dict "root" $root "ports" .healthPorts) | nindent 4 }}
     {{- with include "distant-signal.extraIngress" (dict "root" $root "component" .component) }}
     {{- . | nindent 4 }}
     {{- end }}

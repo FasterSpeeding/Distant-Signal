@@ -3581,8 +3581,8 @@ metrics:
 #
 # Ingress: every workload gets a default-deny policy plus the allows it
 # needs (INF-10: the background workers get their metrics port from
-# monitoringNamespace and their health ports from anywhere, since kubelet
-# probes come from the node).
+# monitoringNamespace and their health ports per healthIngress below,
+# since kubelet probes come from the node).
 #
 # Egress is unrestricted unless networkPolicy.egress.enabled (below).
 networkPolicy:
@@ -3617,6 +3617,27 @@ networkPolicy:
     ds-mcp:
       app.kubernetes.io/name: distant-signal-mcp
       app.kubernetes.io/component: mcp
+  # Ingress to the background workers' and schedulefeed's health ports
+  # (kubelet liveness/readiness probes). By default any source may connect,
+  # because the probes come from the node, which no pod or namespace
+  # selector can name. Most CNIs never apply NetworkPolicy to traffic from
+  # a pod's own node: kube-router accepts it outright (k3s's default
+  # policy controller; its pod chains start with a `--src-type LOCAL`
+  # ACCEPT), and Calico and Cilium allow host-to-local-pod traffic by
+  # default. On such a CNI the rule only matters to other pods.
+  healthIngress:
+    # -- Render the health-port rule. false drops it, which closes the
+    # ports to every pod while probes keep working on a CNI that exempts
+    # node-local traffic (see above). Check that on yours first: a CNI
+    # that does filter it would fail every probe and restart the pods.
+    enabled: true
+    # -- NetworkPolicyPeers allowed to reach the health ports. Empty (the
+    # default) allows any source. To keep them reachable from the nodes
+    # only, list the nodes' addresses as ipBlocks: the node IPs and, on
+    # flannel/kube-router, each node's pod-CIDR gateway (e.g.
+    # 10.42.0.1/32), which is the source address of probe traffic.
+    #   - ipBlock: {cidr: 10.42.0.1/32}
+    from: []
   # -- Extra NetworkPolicyPeers (podSelector and/or namespaceSelector)
   # admitted to the bundled Postgres on postgresql.service.port, for
   # clients this chart does not render: a postgres-exporter, a pg_dump

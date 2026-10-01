@@ -880,7 +880,13 @@ explicit allows:
   poller including the three island-of-Ireland ones; INF-10): their own
   metrics port from the monitoring namespace (when `metrics.enabled`), and
   their health port(s) from any source, because kubelet probes come from the
-  node, which no selector can name. Nothing else.
+  node, which no selector can name. Nothing else. `networkPolicy.healthIngress`
+  scopes the health ports: `from` lists the allowed peers (e.g. the nodes'
+  addresses as ipBlocks), and `enabled: false` drops the rule. kube-router
+  (k3s's policy controller) accepts all traffic from a pod's own node before
+  any policy applies, and Calico and Cilium allow it by default, so probes
+  keep working there either way. Check your CNI before dropping it: one that
+  filters node traffic would fail every probe.
 - **schedulefeed** (INF-2): SFTP on `scheduleFeed.sftp.port` from any source,
   or only from `scheduleFeed.sftp.allowedCidrs` when set. The allow-list only
   works when the pod sees the client's real address (Service
@@ -2182,6 +2188,8 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.ingressControllerNamespace` | `ingress-nginx` | Namespace the ingress controller runs in, matched by `kubernetes.io/metadata.name`. |
 | `networkPolicy.apiExtraIngressNamespaces` | `[]` | Extra namespaces allowed to reach `api.service.port` (e.g. `[ds-mcp]` for the Distant-Signal-MCP). |
 | `networkPolicy.apiExtraIngressPodLabels` | `ds-mcp`: `app.kubernetes.io/name: distant-signal-mcp`, `app.kubernetes.io/component: mcp` | Per-namespace pod labels that narrow an `apiExtraIngressNamespaces` entry to the calling pods. A namespace with no entry admits all its pods. Set an entry to `null` to clear it; `{}` merges with the default and does not clear it. |
+| `networkPolicy.healthIngress.enabled` | `true` | Render the rule admitting the workers' and schedulefeed's health (probe) ports. `false` closes them to every pod; probes still work on CNIs that exempt node-local traffic (kube-router, Calico and Cilium by default). |
+| `networkPolicy.healthIngress.from` | `[]` | NetworkPolicy peers allowed to reach the health ports, e.g. the nodes' addresses as ipBlocks. Empty allows any source. |
 | `networkPolicy.postgresClients` | `[]` | Extra NetworkPolicy peers (pod/namespace selectors) admitted to the bundled Postgres, e.g. a postgres-exporter or backup CronJob. See [NetworkPolicy](#networkpolicy). |
 | `networkPolicy.redisClients` | `[]` | Extra NetworkPolicy peers admitted to the bundled Redis, e.g. a redis-exporter. |
 | `networkPolicy.tunnel.enabled` | `false` | Admit an in-cluster tunnel connector (e.g. cloudflared) to the frontend. See [NetworkPolicy](#networkpolicy). |

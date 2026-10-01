@@ -433,12 +433,9 @@ spec:
         {{- end }}
       {{- end }}
     # Kubelet probes (the ingest and reference /livez and /healthz ports)
-    # come from the node, which no selector can name.
-    - ports:
-        - protocol: TCP
-          port: {{ .Values.workerHealth.port }}
-        - protocol: TCP
-          port: {{ .Values.scheduleFeed.reference.healthPort }}
+    # come from the node, which no selector can name
+    # (networkPolicy.healthIngress).
+    {{- include "distant-signal.healthIngressRule" (dict "root" . "ports" (list .Values.workerHealth.port .Values.scheduleFeed.reference.healthPort)) | nindent 4 }}
   {{- if .Values.metrics.enabled }}
     # The ingest container's /metrics (metrics.port) and the reference
     # container's (scheduleFeed.reference.metricsPort), scoped to the

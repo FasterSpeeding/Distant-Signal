@@ -1359,6 +1359,23 @@ jobs:
           got=$(internet_ports_of api "${eg}")
           [[ "${got}" == "443 8443 " ]] || fail "components.api.internetPorts must replace the default (issuer ports still added), got '${got}'"
 
+          # networkPolicy.healthIngress scopes the probe ports (default: any
+          # source, checked above), or drops the rule.
+          np=$(render --set 'networkPolicy.healthIngress.from[0].ipBlock.cidr=10.42.0.1/32' \
+            --show-only templates/networkpolicy.yaml)
+          for c in notifier:8090 schedulefeed:8091; do
+            p=$(policy "distant-signal-${c%%:*}" <<<"${np}")
+            grep -A5 "port: ${c##*:}\$" <<<"${p}" | grep -q 'cidr: 10.42.0.1/32' \
+              || fail "healthIngress.from must scope ${c%%:*}'s health port"
+          done
+          np=$(render --set networkPolicy.healthIngress.enabled=false --show-only templates/networkpolicy.yaml)
+          for c in notifier:8090 schedulefeed:8091; do
+            p=$(policy "distant-signal-${c%%:*}" <<<"${np}")
+            if grep -q "port: ${c##*:}\$" <<<"${p}"; then fail "healthIngress.enabled=false must drop ${c%%:*}'s health port rule"; fi
+          done
+          p=$(policy distant-signal-schedulefeed <<<"${np}")
+          grep -q 'port: 2022' <<<"${p}" || fail "healthIngress.enabled=false must keep SFTP"
+
           # postgresClients/redisClients admit outside workloads (exporters,
           # the backup CronJob) on the service port only, and are off by default.
           np=$(render --show-only templates/networkpolicy.yaml)
