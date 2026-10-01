@@ -6,6 +6,7 @@ import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
 import { WarningIcon } from './WarningIcon';
+import { stopDisplayTime } from '@/lib/stopTimes';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
 /** The one place an Origin/Terminate node's diameter is defined --
@@ -550,7 +551,7 @@ function JourneyProgressNode({
   // Same departure-first precedence as `JourneyTimeline.tsx`'s own
   // `scheduled` (see `journeyStopLabel`'s doc comment) -- this tooltip
   // shows the exact same time that stop's row shows in the table below.
-  const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
+  const scheduled = stopDisplayTime(stop);
   const isMarker = state === 'marker';
 
   const circle = (

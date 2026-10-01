@@ -12,6 +12,7 @@ import {
 } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { PlatformBadge } from './PlatformBadge';
+import { isPassingPoint, stopDirectionLabels, stopDisplayTime } from '@/lib/stopTimes';
 import type { JourneyStop } from '@/lib/types';
 
 /** The tracked pin's origin/destination display names (Task 3.6.2) --
@@ -200,6 +201,10 @@ export function JourneyTimeline({
  * so the two views can never disagree about which stops exist, or about
  * their indices/counts/positions. */
 export function isGenuineCallingPoint(stop: JourneyStop): boolean {
+  // A passing point at a station (the train runs through Watford Junction
+  // without stopping) has a CRS but no stop times: it belongs only in the
+  // detailed working-timetable view (`WorkingTimetable.tsx`).
+  if (isPassingPoint(stop)) return false;
   return stop.crs !== null || stop.scheduledArrival !== null || stop.scheduledDeparture !== null;
 }
 
@@ -325,7 +330,10 @@ function JourneyStopRow({
   // agree on the same stop; this one is additive, not a replacement.
   const isSkippedOnLeg =
     stop.crs !== null && (skippedCrs ?? []).some((crs) => crs.toUpperCase() === stop.crs?.toUpperCase());
-  const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
+  // The PUBLIC time first (what the station screens show), falling back to
+  // the working time only for a schedule stored before public times were.
+  const scheduled = stopDisplayTime(stop);
+  const directionLabels = stopDirectionLabels(stop);
   const actual = stop.actualDeparture ?? stop.actualArrival;
   // A booked calling point the train did NOT call at today -- computed
   // server-side (`crates/api/src/data/journey.rs`'s `apply_stop_status`)
@@ -375,6 +383,13 @@ function JourneyStopRow({
               Skipped
             </Badge>
           )}
+          {/* "Set down only" / "Pick up only" / "Request stop": text, not
+              colour, carries the meaning. */}
+          {directionLabels.map((directionLabel) => (
+            <Badge key={directionLabel} color="gray" variant="light" size="sm" tt="none">
+              {directionLabel}
+            </Badge>
+          ))}
         </Group>
         {isLegDestination && (
           <Text size="sm" c="grape" fw={500}>

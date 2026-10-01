@@ -18,7 +18,11 @@ function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string
   const destinationName = leg.destinationCrs ? stationNames.get(leg.destinationCrs) : undefined;
   const route = codeRouteLabel(leg.originCrs, originName, leg.destinationCrs, destinationName);
   if (leg.kind === 'train') {
-    return `${leg.scheduledDeparture.slice(0, 5)} ${route} ${leg.scheduledArrival.slice(0, 5)}${liveNote(leg.live)}`;
+    // Public (timetable) times first; the working times only for a response
+    // without them.
+    const departure = (leg.publicDeparture ?? leg.scheduledDeparture).slice(0, 5);
+    const arrival = (leg.publicArrival ?? leg.scheduledArrival).slice(0, 5);
+    return `${departure} ${route} ${arrival}${liveNote(leg.live)}`;
   }
   return `Walk/transfer (${leg.mode}) ${route}, ${leg.minutes} min`;
 }

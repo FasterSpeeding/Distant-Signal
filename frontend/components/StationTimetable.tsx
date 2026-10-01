@@ -19,6 +19,10 @@ import { TextLink } from './TextLink';
 interface TrainSearchRow {
   uid: string;
   scheduled: string;
+  /** The public (timetable) departure, shown in place of `scheduled` (the
+   * working-timetable time, kept as WTT for one release). `null`/absent
+   * until the next schedule publish. */
+  publicDeparture?: string | null;
   stationCrs: string;
   originCrs: string | null;
   destinationCrs: string | null;
@@ -220,8 +224,8 @@ export function StationTimetable({ crs }: { crs: string }) {
         {results.rows.map((row) => (
           <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
             <Text size="sm">
-              {row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs} <RouteArrow />{' '}
-              {row.destinationCrs ?? '?'}
+              {row.publicDeparture ?? row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs}{' '}
+              <RouteArrow /> {row.destinationCrs ?? '?'}
             </Text>
             <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>
           </Group>
