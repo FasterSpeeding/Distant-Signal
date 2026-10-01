@@ -440,6 +440,30 @@ measures lateness against them.
    times can only be stored from now on, because past raw bodies were not
    kept.
 
+## 9. Decisions
+
+The user answered §8 on 2026-10-01:
+
+1. **API: additive.** Add `publicArrival`/`publicDeparture`,
+   `workingArrival`/`workingDeparture` and `canBoard`/`canAlight`/
+   `requestStop` per stop now. `scheduled*` keeps its WTT meaning for one
+   release, documented as deprecated-soon, and is then switched to public
+   or removed.
+2. **`delayMinutes` switches to the public basis** at the user's own stop.
+   This changes the meaning of the 15-minute notification threshold. The
+   WTT delay is kept internally, for matching only.
+3. **Delay Repay before arrival: provisional.** Before the train reaches
+   the ticket's destination, show a band from the current public-time delay
+   projected to the destination, clearly labelled provisional. It becomes
+   final once the train has arrived at the destination. Measure against the
+   public arrival at the ticket's `destination_crs`, and add the 120-minute
+   band.
+4. **A detailed WTT view is wanted**, as an optional view on the train page
+   (half-minutes and passing points).
+5. **Request stops are flagged to users.**
+6. **No backfill of public delays.** Public-time delay history starts now;
+   TRUST raw bodies were not stored.
+
 ## Appendix: method
 
 - **The extract.** The production extract
