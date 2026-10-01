@@ -2059,6 +2059,8 @@ Off by default.
 | `scheduleFeed.sftp.authMethod` | `""` | `password` or `public-key`. No default: enabling without it fails the render. |
 | `scheduleFeed.sftp.password` | `""` | Push account password (`authMethod: password`). Generated and preserved across upgrades when empty; NOTES.txt shows how to read it back. |
 | `scheduleFeed.sftp.publicKey` | `""` | The feed provider's public key (`authMethod: public-key`). |
+| `scheduleFeed.sftp.passwordPolicy.minLength` | `24` | Minimum push account password length. A `password` in values is checked at render time; one from `existingSecret` by the sftp entrypoint at start (only the length is logged). The generated default is 32 random alphanumerics (~190 bits). |
+| `scheduleFeed.sftp.passwordPolicy.enforce` | `true` | At start, refuse to run with a shorter password (`true`) or only log a warning (`false`). |
 | `scheduleFeed.sftp.existingSecret` | `""` | Read the SFTP credentials from this pre-existing Secret instead. |
 | `scheduleFeed.sftp.existingSecretPasswordKey` | `schedule-sftp-password` | Key for the push account password. |
 | `scheduleFeed.sftp.existingSecretPublicKeyKey` | `schedule-sftp-dtd-public-key` | Key for the provider's public key. |

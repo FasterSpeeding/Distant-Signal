@@ -114,6 +114,25 @@ The ingest container does not use SFTP. It reads, moves and deletes files on
 the shared PVC directly (as group 1000 through the pod's `fsGroup`), so none
 of these permissions affect it.
 
+## Password strength
+
+DTD can't pin our host key, so the `dtd-push` password is the whole defence.
+
+- The chart generates it as `randAlphaNum 32` when neither
+  `scheduleFeed.sftp.password` nor `existingSecret` is set: 32 characters
+  from 62, log2(62^32) ≈ 190.5 bits, far beyond online guessing even
+  without the defender. It's kept across upgrades.
+- `scheduleFeed.sftp.passwordPolicy.minLength` (24) is checked at render time
+  for a password set in values; the error gives the length, not the value.
+- A password from `existingSecret` (production's sealed secret) can't be seen
+  at render time, so the sftp entrypoint checks its length at start. With
+  `passwordPolicy.enforce: true` (the default) a shorter password stops the
+  container; with `false` it logs a warning and starts. Either way only the
+  length is printed.
+- Length is the only automated check. A 24-character password is strong only
+  if it is random: generate it, for example with `openssl rand -base64 24`
+  (32 characters, 192 bits), never by hand.
+
 ## Brute force and abuse
 
 Server-wide SFTPGo settings, all on by default (`scheduleFeed.sftp.*`):

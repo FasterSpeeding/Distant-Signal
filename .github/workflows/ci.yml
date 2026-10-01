@@ -908,6 +908,21 @@ jobs:
           dep=$(render --set 'scheduleFeed.sftp.permissions={upload}')
           grep -A1 'name: SCHEDULE_SFTP_PERMISSIONS' <<<"${dep}" | grep -q 'value: "upload"' \
             || fail "scheduleFeed.sftp.permissions must be configurable"
+          # Password strength: the entrypoint gets the policy, and a short
+          # password in values fails the render (with its length, not value).
+          grep -A1 'name: SCHEDULE_SFTP_PASSWORD_MIN_LENGTH' <<<"${dep}" | grep -q 'value: "24"' \
+            || fail "the password minimum must reach the entrypoint"
+          grep -A1 'name: SCHEDULE_SFTP_PASSWORD_POLICY' <<<"${dep}" | grep -q 'value: "enforce"' \
+            || fail "the password policy must default to enforce"
+          set +e
+          out=$(render --set scheduleFeed.sftp.password=tooShort-2026 2>&1)
+          status=$?
+          set -e
+          [[ "${status}" -ne 0 ]] || fail "a short scheduleFeed.sftp.password must fail the render"
+          grep -q '13 characters' <<<"${out}" || fail "the render error must give the length"
+          if grep -q 'tooShort-2026' <<<"${out}"; then fail "the render error must not print the password"; fi
+          # A 24-character one renders (set -e fails the step otherwise).
+          render --set scheduleFeed.sftp.password=abcdefghijklmnopqrstuvwx >/dev/null
 
       # Brute-force protection is on by default: SSH commands off, the
       # defender (never scoring probe connections), the per-host cap and

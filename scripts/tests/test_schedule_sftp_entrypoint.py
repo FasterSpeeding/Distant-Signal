@@ -209,6 +209,56 @@ class AccountPolicyTest(unittest.TestCase):
                 self.assertEqual(run.returncode, 1)
                 self.assertIsNone(run.loaddata)
 
+    def test_short_password_refuses_to_start_without_printing_it(self) -> None:
+        """Under 24 characters fails by default; only the length is shown."""
+        short = "Sh0rtButNotTiny-123"  # a test fixture, 19 characters
+        run = Run({"SCHEDULE_SFTP_PASSWORD": short})
+        self.assertEqual(run.returncode, 1)
+        self.assertIsNone(run.loaddata)
+        self.assertIn("19 characters", run.stderr)
+        self.assertNotIn(short, run.stdout + run.stderr)
+
+    def test_short_password_only_warns_when_not_enforced(self) -> None:
+        """passwordPolicy.enforce=false starts, with a warning."""
+        short = "Sh0rtButNotTiny-123"  # a test fixture
+        run = Run(
+            {
+                "SCHEDULE_SFTP_PASSWORD": short,
+                "SCHEDULE_SFTP_PASSWORD_POLICY": "warn",
+            }
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("WARNING", run.stderr)
+        self.assertNotIn(short, run.stdout + run.stderr)
+        self.assertEqual(run.user()["password"], short)
+
+    def test_password_length_boundary(self) -> None:
+        """Exactly the minimum passes; one less fails; the minimum is settable."""
+        self.assertEqual(Run({"SCHEDULE_SFTP_PASSWORD": "x" * 24}).returncode, 0)
+        self.assertEqual(Run({"SCHEDULE_SFTP_PASSWORD": "x" * 23}).returncode, 1)
+        run = Run(
+            {
+                "SCHEDULE_SFTP_PASSWORD": PASSWORD,
+                "SCHEDULE_SFTP_PASSWORD_MIN_LENGTH": "40",
+            }
+        )
+        self.assertEqual(run.returncode, 1)
+
+    def test_bad_password_policy_settings_refuse_to_start(self) -> None:
+        """An unknown policy or a non-numeric minimum fails closed."""
+        for env in (
+            {"SCHEDULE_SFTP_PASSWORD_POLICY": "ignore"},
+            {"SCHEDULE_SFTP_PASSWORD_MIN_LENGTH": "24x"},
+        ):
+            with self.subTest(env=env):
+                run = Run({"SCHEDULE_SFTP_PASSWORD": "short", **env})
+                self.assertEqual(run.returncode, 1)
+
+    def test_public_key_mode_skips_the_password_check(self) -> None:
+        """No password, no length check."""
+        run = Run({"SCHEDULE_SFTP_PUBLIC_KEY": "ssh-ed25519 AAAA test"})
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_nothing_secret_reaches_the_output(self) -> None:
         """The script never prints the credential."""
         run = Run({"SCHEDULE_SFTP_PASSWORD": PASSWORD})

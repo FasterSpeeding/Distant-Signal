@@ -306,6 +306,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "distant-signal.scheduleFeedDtdPasswordSecretName" . }}
                   key: {{ include "distant-signal.scheduleFeedDtdPasswordSecretKey" . }}
+            # The entrypoint checks the password's length at start
+            # (scheduleFeed.sftp.passwordPolicy): a password from
+            # existingSecret can't be checked at render time.
+            - name: SCHEDULE_SFTP_PASSWORD_MIN_LENGTH
+              value: {{ .Values.scheduleFeed.sftp.passwordPolicy.minLength | int | quote }}
+            - name: SCHEDULE_SFTP_PASSWORD_POLICY
+              value: {{ ternary "enforce" "warn" .Values.scheduleFeed.sftp.passwordPolicy.enforce | quote }}
             {{- else }}
             - name: SCHEDULE_SFTP_PUBLIC_KEY
               valueFrom:

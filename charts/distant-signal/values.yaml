@@ -2808,6 +2808,15 @@ scheduleFeed:
     # -- DTD's public key, used when authMethod=public-key AND DTD's push
     # configuration turns out to support supplying one (unconfirmed).
     publicKey: ""
+    # -- Minimum length for the push account password (authMethod:
+    # password). A `password` set above is checked at render time; one from
+    # existingSecret (e.g. a sealed secret) is checked by the sftp
+    # entrypoint at start, which refuses to start (`enforce: true`) or only
+    # logs a warning (`enforce: false`). Only the length is ever logged. The
+    # generated default is 32 random alphanumerics, log2(62^32) ~ 190 bits.
+    passwordPolicy:
+      minLength: 24
+      enforce: true
     existingSecret: ""
     existingSecretPasswordKey: schedule-sftp-password
     existingSecretPublicKeyKey: schedule-sftp-dtd-public-key

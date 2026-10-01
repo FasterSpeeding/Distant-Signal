@@ -18,6 +18,10 @@
 #                               (default 2; 0 = unlimited)
 #   SCHEDULE_SFTP_MAX_UPLOAD_FILE_SIZE  largest single upload, in bytes
 #                               (default 0 = unlimited)
+#   SCHEDULE_SFTP_PASSWORD_MIN_LENGTH  shortest acceptable password
+#                               (default 24)
+#   SCHEDULE_SFTP_PASSWORD_POLICY  "enforce" (default: refuse to start with
+#                               a shorter password) or "warn"
 #   SCHEDULE_SFTP_SAFELIST      space-separated IPs/CIDRs the defender never
 #                               scores or bans and the rate limiter never
 #                               limits (default none)
@@ -114,6 +118,34 @@ if [ -n "${SCHEDULE_SFTP_PUBLIC_KEY:-}" ]; then
 else
     : "${SCHEDULE_SFTP_PASSWORD:?SCHEDULE_SFTP_PASSWORD must be set when SCHEDULE_SFTP_PUBLIC_KEY is not}"
     reject_control_chars SCHEDULE_SFTP_PASSWORD "${SCHEDULE_SFTP_PASSWORD}"
+    # Password strength. The account is internet-facing and DTD can't pin
+    # our host key, so the password is the whole defence. The chart's
+    # generated one is 32 random alphanumerics (~190 bits); a value from
+    # existingSecret (a sealed secret) can't be checked at render time, so
+    # it is checked here. Only the length is reported, never the value.
+    min_length="${SCHEDULE_SFTP_PASSWORD_MIN_LENGTH:-24}"
+    case "${min_length}" in
+        '' | *[!0-9]*)
+            echo "sftp-entrypoint: SCHEDULE_SFTP_PASSWORD_MIN_LENGTH must be a non-negative integer; refusing to start" >&2
+            exit 1
+            ;;
+        *) ;; # digits only: accept
+    esac
+    if [ "${#SCHEDULE_SFTP_PASSWORD}" -lt "${min_length}" ]; then
+        case "${SCHEDULE_SFTP_PASSWORD_POLICY:-enforce}" in
+            warn)
+                echo "sftp-entrypoint: WARNING: the push account password is ${#SCHEDULE_SFTP_PASSWORD} characters, under the minimum of ${min_length}; rotate it" >&2
+                ;;
+            enforce)
+                echo "sftp-entrypoint: the push account password is ${#SCHEDULE_SFTP_PASSWORD} characters, under the minimum of ${min_length}; refusing to start (rotate it, or set scheduleFeed.sftp.passwordPolicy.enforce=false to only warn)" >&2
+                exit 1
+                ;;
+            *)
+                echo "sftp-entrypoint: SCHEDULE_SFTP_PASSWORD_POLICY must be enforce or warn; refusing to start" >&2
+                exit 1
+                ;;
+        esac
+    fi
     AUTH_FIELD="\"password\": \"$(json_escape "${SCHEDULE_SFTP_PASSWORD}")\""
 fi
 USERNAME_JSON="$(json_escape "${SCHEDULE_SFTP_USERNAME}")"
