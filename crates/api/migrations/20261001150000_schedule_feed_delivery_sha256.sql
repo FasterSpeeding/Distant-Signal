@@ -13,15 +13,30 @@ SET LOCAL lock_timeout = '5s';
 --
 -- All nullable: rows from before this migration have no hash, and an older
 -- schedule-ingest still posts without one. The CHECKs keep whatever is
--- stored a lowercase hex SHA-256. Both tables hold one row per delivery
--- (a few hundred rows), so validating the constraints is instant.
+-- written a lowercase hex SHA-256 and a non-negative size. They are added
+-- NOT VALID, so adding them scans nothing under this migration's lock
+-- (crates/api/tests/migration_index_locking.rs); they are enforced on every
+-- new and updated row all the same. The only existing rows are NULL in the
+-- new columns, which a CHECK accepts, so there is nothing to validate.
 -- -------------------------------------------------------------------------
 
 ALTER TABLE schedule_feed_ingests
     ADD COLUMN source_file TEXT,
-    ADD COLUMN source_bytes BIGINT CHECK (source_bytes >= 0),
-    ADD COLUMN source_sha256 TEXT CHECK (source_sha256 ~ '^[0-9a-f]{64}$');
+    ADD COLUMN source_bytes BIGINT,
+    ADD COLUMN source_sha256 TEXT;
+
+ALTER TABLE schedule_feed_ingests
+    ADD CONSTRAINT schedule_feed_ingests_source_bytes_check
+        CHECK (source_bytes >= 0) NOT VALID,
+    ADD CONSTRAINT schedule_feed_ingests_source_sha256_check
+        CHECK (source_sha256 ~ '^[0-9a-f]{64}$') NOT VALID;
 
 ALTER TABLE corpus_deliveries
-    ADD COLUMN source_bytes BIGINT CHECK (source_bytes >= 0),
-    ADD COLUMN sha256 TEXT CHECK (sha256 ~ '^[0-9a-f]{64}$');
+    ADD COLUMN source_bytes BIGINT,
+    ADD COLUMN sha256 TEXT;
+
+ALTER TABLE corpus_deliveries
+    ADD CONSTRAINT corpus_deliveries_source_bytes_check
+        CHECK (source_bytes >= 0) NOT VALID,
+    ADD CONSTRAINT corpus_deliveries_sha256_check
+        CHECK (sha256 ~ '^[0-9a-f]{64}$') NOT VALID;
