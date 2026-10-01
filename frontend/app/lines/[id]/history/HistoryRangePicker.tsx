@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { DatePickerInput } from '@mantine/dates';
 import { Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import type { RangePreset } from '@/lib/history';
-import { londonCalendarDay, londonDayEndIso, londonDayStartIso } from '@/lib/londonWallClock';
+import { londonCalendarDay, londonDayEndIso, londonDayStartIso, londonToday } from '@/lib/londonWallClock';
 
 /** The one selector state this control's `SegmentedControl` actually needs
  * -- a `RangePreset` plus a fourth option with no `lib/history.ts`
@@ -19,6 +19,21 @@ type Selection = RangePreset | 'custom';
  * London-evening bound doesn't display as the next UTC day. */
 function toCalendarDay(iso: string): string {
   return londonCalendarDay(iso);
+}
+
+/** Day props that highlight London's today, `today`, as Mantine's
+ * `highlightToday` would, but without its choice of day: Mantine sets
+ * `data-today` on the browser's local day, which for a visitor ahead of UK
+ * time near midnight is already tomorrow. Its today style needs both
+ * `data-today` and `data-highlight-today`, so with `highlightToday` off and
+ * both set here only on London's today, only that day is highlighted.
+ * (Overriding `data-today` alone can't clear it: Mantine drops `undefined`
+ * props and its types refuse `null`.) Exported for the test. */
+export function londonTodayDayProps(
+  day: string,
+  today: string,
+): { 'data-today'?: true; 'data-highlight-today'?: true } {
+  return day === today ? { 'data-today': true, 'data-highlight-today': true } : {};
 }
 
 /** `preset`/`from`/`to` come from the page, which resolved them out of the
@@ -52,6 +67,7 @@ export function HistoryRangePicker({
 }) {
   const router = useRouter();
   const periodLabelId = useId();
+  const today = londonToday();
   const [value, setValue] = useState<[string | null, string | null]>([toCalendarDay(from), toCalendarDay(to)]);
   // Mirrors `value`'s own resync rationale below: a `RangePreset` prop can
   // change (a preset click navigates, then the page re-renders this same
@@ -169,8 +185,10 @@ export function HistoryRangePicker({
               value={value}
               onChange={setValue}
               // The calendar gave no anchor for "where am I" — today rendered
-              // exactly like every other day.
-              highlightToday
+              // exactly like every other day. Not Mantine's own
+              // `highlightToday`, which marks the browser's local day: see
+              // `londonTodayDayProps`.
+              getDayProps={(day) => londonTodayDayProps(day, today)}
             />
             <Button onClick={handleSearch} disabled={!bothEndsPicked}>
               Show history

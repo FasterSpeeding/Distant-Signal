@@ -1,4 +1,4 @@
-import { screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
@@ -130,6 +130,54 @@ describe('PlanTripForm', () => {
       fireEvent.change(screen.getByLabelText('Depart after (optional)'), { target: { value: '' } });
       fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
       expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ departAfter: undefined }));
+    });
+  });
+
+  // The date picker's minDate was `new Date()`, the browser's local day. A
+  // visitor ahead of UK time near midnight is already on tomorrow, so
+  // London's today -- the very day `date` defaults to -- was disabled.
+  describe("the date picker's earliest day is London's today, not the browser's", () => {
+    const originalTz = process.env.TZ;
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      if (originalTz === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = originalTz;
+      }
+    });
+
+    // By aria-label, not role: the dropdown is still mid-transition (not yet
+    // "visible" to a role query) when its day buttons are rendered.
+    function dayButton(label: string): Promise<HTMLElement> {
+      return waitFor(() => {
+        const day = document.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+        if (!day) throw new Error(`no day ${label}`);
+        return day;
+      });
+    }
+
+    it("lets a visitor ahead of UK time (Tokyo) pick London's today", async () => {
+      process.env.TZ = 'Asia/Tokyo'; // UTC+9
+      // 16:30Z: 17:30 on 5 Sep in London, already 01:30 on 6 Sep in Tokyo.
+      vi.setSystemTime(new Date('2026-09-05T16:30:00.000Z'));
+      renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
+      fireEvent.focus(screen.getByLabelText('Date'));
+      expect(await dayButton('5 September 2026')).not.toBeDisabled();
+      expect(await dayButton('4 September 2026')).toBeDisabled();
+    });
+
+    it("does not offer London's yesterday to a visitor behind UK time", async () => {
+      process.env.TZ = 'Etc/GMT+2'; // POSIX sign convention: this is UTC-2
+      // 23:30Z: 00:30 on 6 Sep in London, still 21:30 on 5 Sep at UTC-2.
+      vi.setSystemTime(new Date('2026-09-05T23:30:00.000Z'));
+      renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
+      fireEvent.focus(screen.getByLabelText('Date'));
+      expect(await dayButton('6 September 2026')).not.toBeDisabled();
+      expect(await dayButton('5 September 2026')).toBeDisabled();
     });
   });
 });

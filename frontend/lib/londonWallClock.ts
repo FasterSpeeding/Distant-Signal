@@ -55,6 +55,14 @@ export function nowInLondon(): Dayjs {
   return dayjs().tz(LONDON_TZ);
 }
 
+/** London's calendar day today, as `'YYYY-MM-DD'`: the "today" for a
+ * date picker's `minDate`/`maxDate` or today-marker. Mantine's own "today"
+ * (and `new Date()` passed as a bound) is the browser's local day, which
+ * for a visitor ahead of UK time near midnight is already tomorrow. */
+export function londonToday(): string {
+  return nowInLondon().format('YYYY-MM-DD');
+}
+
 /** Parses `value` -- a bare `'YYYY-MM-DD HH:mm:ss'` (or `'...THH:mm:ss'`)
  * string with no zone/offset of its own, the exact shape
  * `components/TrackTrainForm.tsx`'s `DateTimePicker`/"Now" button/live-board
@@ -70,15 +78,34 @@ export function londonWallClockToUtc(value: string): Date {
 /** The first instant of London calendar day `dateOnly` (`'YYYY-MM-DD'`), as
  * an ISO string. FE-5: `new Date('YYYY-MM-DD')` is UTC midnight, which in
  * BST is 01:00 London -- the wrong day boundary for a product that groups
- * everything by London day (`lib/dateFormat.ts`'s `londonDayKey`). */
+ * everything by London day (`lib/dateFormat.ts`'s `londonDayKey`).
+ *
+ * Parses London's `00:00:00` directly rather than calling `.startOf('day')`
+ * on a zoned dayjs (R-085): dayjs's timezone plugin does `startOf`/`endOf`
+ * through the HOST zone, so on a clock-change day (e.g. 2026-03-29,
+ * 2026-10-25) a browser in America/* got a bound an hour off --
+ * `2026-03-28T23:00Z` instead of `2026-03-29T00:00Z`. Parsing a wall-clock
+ * string in London (`dayjs.tz(string, zone)`) is host-independent. */
 export function londonDayStartIso(dateOnly: string): string {
-  return dayjs.tz(dateOnly, LONDON_TZ).startOf('day').toDate().toISOString();
+  return londonMidnight(dateOnly).toISOString();
 }
 
 /** The last millisecond of London calendar day `dateOnly`, as an ISO
- * string -- the inclusive upper bound matching `londonDayStartIso`. */
+ * string -- the inclusive upper bound matching `londonDayStartIso`: the next
+ * London midnight minus 1 ms, so a 23- or 25-hour clock-change day is
+ * covered exactly (not `.endOf('day')`, for the reason above). */
 export function londonDayEndIso(dateOnly: string): string {
-  return dayjs.tz(dateOnly, LONDON_TZ).endOf('day').toDate().toISOString();
+  // The next calendar date, by UTC arithmetic: UTC has no clock changes, so
+  // this is the same date whatever the host zone.
+  const next = dayjs.utc(dateOnly).add(1, 'day').format('YYYY-MM-DD');
+  return new Date(londonMidnight(next).getTime() - 1).toISOString();
+}
+
+/** London's 00:00 at the start of `dateOnly`. London's clocks change at
+ * 01:00 UTC, never at midnight, so this wall-clock time always exists and
+ * is never ambiguous. */
+function londonMidnight(dateOnly: string): Date {
+  return dayjs.tz(`${dateOnly} 00:00:00`, LONDON_TZ).toDate();
 }
 
 /** The London calendar day (`'YYYY-MM-DD'`) an ISO instant falls on, or

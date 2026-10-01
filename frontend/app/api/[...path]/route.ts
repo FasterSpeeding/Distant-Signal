@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isIP } from 'node:net';
+import { clientIpFromHeaders, REAL_IP_HEADER } from '@/lib/clientIp';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 
 // Client Components can't read `API_BASE_URL` (server-only env var, not
@@ -176,19 +176,16 @@ export const MAX_PROXY_BODY_BYTES = 8 * 1024 * 1024;
  * request open until undici's own 300 s header timeout. */
 export const UPSTREAM_TIMEOUT_MS = 30_000;
 
-/** The client IP to send upstream as `X-Real-IP` (FE-8), or null.
- *
- * Only `CF-Connecting-IP` is trusted: in production the frontend is reached
- * only through the Cloudflare tunnel, which sets it. There is no other
- * trustworthy source -- Next 16 exposes no socket peer address to route
- * handlers (`request.ip` is gone), and the `X-Forwarded-For` it passes in
- * is the client's own whenever the client sent one. With no trustworthy
- * value the header is omitted and the api falls back to its own peer
- * address. A value that isn't a literal IP is ignored. */
+/** The methods whose request body is forwarded upstream. DELETE is handled
+ * separately (only a non-empty body is forwarded); GET, HEAD and anything
+ * else never carry one. */
+const METHODS_WITH_BODY: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH']);
+
+/** The client IP to send upstream as `X-Real-IP` (FE-8), or null. The rule
+ * (trust only a literal-IP `CF-Connecting-IP`) lives in `lib/clientIp.ts`,
+ * shared with `lib/api.ts`'s server-render fetches. */
 export function clientIpForUpstream(req: NextRequest): string | null {
-  const cf = req.headers.get('cf-connecting-ip')?.trim();
-  if (cf && isIP(cf) !== 0) return cf;
-  return null;
+  return clientIpFromHeaders(req.headers);
 }
 
 /** Reads a request body, refusing one larger than `MAX_PROXY_BODY_BYTES`
@@ -303,7 +300,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   // api; `clientIpForUpstream` supplies the one trustworthy value, if any.
   const realIp = clientIpForUpstream(req);
   if (realIp) {
-    headers['X-Real-IP'] = realIp;
+    headers[REAL_IP_HEADER] = realIp;
   }
   // Forward the browser's own Origin/Referer through verbatim -- api's
   // own strict same-origin check on POST /auth/logout (2026-09-25
@@ -339,7 +336,13 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     redirect: 'manual',
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   };
-  if (req.method !== 'GET' && req.method !== 'DELETE') {
+  // A body (and so any `duplex`, which this proxy never sets: the body is
+  // always a buffered ArrayBuffer) is attached only for the methods below,
+  // an allowlist rather than "everything but GET": fetch throws "Request
+  // with GET/HEAD method cannot have body" otherwise, which is how a HEAD
+  // reaching the GET handler used to 502 (the HEAD export now handles it,
+  // and any other method this proxy is ever handed goes body-less too).
+  if (METHODS_WITH_BODY.has(req.method)) {
     // arrayBuffer(), not text(): .text() decodes the incoming body as
     // UTF-8 before this function ever sees it, which is LOSSY for
     // non-UTF-8 bytes -- a .pkpass (zip) or PDF's raw bytes are binary and
@@ -436,5 +439,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ path
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
+  return proxy(req, (await params).path);
+}
+
+// HEAD is proxied upstream as HEAD, with the same Origin, cookie and
+// X-Real-IP handling as GET; axum answers HEAD on every GET route with the
+// GET's status and headers and no body. Without this export Next falls back
+// to GET with `req.method` still 'HEAD', which used to read the (empty)
+// request body into `init.body`, and Node's fetch refuses a HEAD with a body,
+// so every HEAD came back 502.
+export async function HEAD(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   return proxy(req, (await params).path);
 }

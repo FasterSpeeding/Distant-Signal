@@ -3,6 +3,7 @@ import {
   londonCalendarDay,
   londonDayEndIso,
   londonDayStartIso,
+  londonToday,
   londonWallClockToUtc,
   nowInLondon,
 } from './londonWallClock';
@@ -58,6 +59,24 @@ describe('nowInLondon', () => {
   });
 });
 
+describe('londonToday', () => {
+  it("is London's calendar day when the host zone has already rolled over", () => {
+    process.env.TZ = 'Asia/Tokyo'; // UTC+9
+    vi.useFakeTimers();
+    // 16:30Z: 5 Sep in London, already 6 Sep in Tokyo.
+    vi.setSystemTime(new Date('2026-09-05T16:30:00.000Z'));
+    expect(londonToday()).toBe('2026-09-05');
+  });
+
+  it("is London's calendar day when the host zone is still on the previous day", () => {
+    process.env.TZ = 'America/New_York'; // UTC-4 in September
+    vi.useFakeTimers();
+    // 23:30Z: 00:30 on 6 Sep in London, 19:30 on 5 Sep in New York.
+    vi.setSystemTime(new Date('2026-09-05T23:30:00.000Z'));
+    expect(londonToday()).toBe('2026-09-06');
+  });
+});
+
 // FE-5: date-only filters are London days, not UTC days.
 describe('London day bounds', () => {
   it('starts and ends a BST day at London midnight', () => {
@@ -82,6 +101,43 @@ describe('London day bounds', () => {
     expect(londonDayStartIso('2026-05-10')).toBe('2026-05-09T23:00:00.000Z');
     expect(londonCalendarDay('2026-05-09T23:30:00Z')).toBe('2026-05-10');
   });
+
+  // R-085: `.startOf('day')`/`.endOf('day')` on a zoned dayjs went through
+  // the host zone, so on the clock-change days (and the days either side)
+  // an America/* browser got bounds an hour off.
+  describe.each(['America/Los_Angeles', 'America/New_York', 'Asia/Tokyo', 'Europe/London', 'UTC'])(
+    'clock-change days with the host zone %s',
+    (tz) => {
+      it.each([
+        // [day, start, end]
+        ['2026-03-28', '2026-03-28T00:00:00.000Z', '2026-03-28T23:59:59.999Z'],
+        ['2026-03-29', '2026-03-29T00:00:00.000Z', '2026-03-29T22:59:59.999Z'], // 23 hours
+        ['2026-03-30', '2026-03-29T23:00:00.000Z', '2026-03-30T22:59:59.999Z'],
+        ['2026-10-24', '2026-10-23T23:00:00.000Z', '2026-10-24T22:59:59.999Z'],
+        ['2026-10-25', '2026-10-24T23:00:00.000Z', '2026-10-25T23:59:59.999Z'], // 25 hours
+        ['2026-10-26', '2026-10-26T00:00:00.000Z', '2026-10-26T23:59:59.999Z'],
+      ])('bounds %s', (day, start, end) => {
+        process.env.TZ = tz;
+        expect(londonDayStartIso(day)).toBe(start);
+        expect(londonDayEndIso(day)).toBe(end);
+        // And back: each bound falls on its own London day.
+        expect(londonCalendarDay(start)).toBe(day);
+        expect(londonCalendarDay(end)).toBe(day);
+      });
+
+      it('maps instants either side of the London midnights to the right day', () => {
+        process.env.TZ = tz;
+        expect(londonCalendarDay('2026-03-28T23:59:59.999Z')).toBe('2026-03-28');
+        expect(londonCalendarDay('2026-03-29T00:00:00.000Z')).toBe('2026-03-29');
+        expect(londonCalendarDay('2026-03-29T22:59:59.999Z')).toBe('2026-03-29');
+        expect(londonCalendarDay('2026-03-29T23:00:00.000Z')).toBe('2026-03-30');
+        expect(londonCalendarDay('2026-10-24T22:59:59.999Z')).toBe('2026-10-24');
+        expect(londonCalendarDay('2026-10-24T23:00:00.000Z')).toBe('2026-10-25');
+        expect(londonCalendarDay('2026-10-25T23:59:59.999Z')).toBe('2026-10-25');
+        expect(londonCalendarDay('2026-10-26T00:00:00.000Z')).toBe('2026-10-26');
+      });
+    },
+  );
 
   it('maps an instant to its London calendar day, round-tripping the bounds', () => {
     expect(londonCalendarDay('2026-05-09T23:00:00.000Z')).toBe('2026-05-10');

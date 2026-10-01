@@ -1,4 +1,5 @@
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
+import { clientIpFromHeaders, REAL_IP_HEADER } from './clientIp';
 import type {
   LineStatusReport,
   LineStatusHistoryEntry,
@@ -119,10 +120,42 @@ function withTimeout(init: RequestInit | undefined, timeoutMs: number): RequestI
   return { ...init, signal };
 }
 
+/** The visitor's IP for the api's per-IP rate limiter, read from the
+ * browser request this render is serving (`lib/clientIp.ts`, the same
+ * literal-IP `CF-Connecting-IP` rule as the `/api/*` proxy), or null.
+ *
+ * Without it every server-render fetch reached the api with no
+ * `X-Real-IP`, so the limiter keyed it on the frontend pod's address and
+ * every visitor shared one bucket: it warned about exactly that for `GET
+ * /Train/by-uid/{uid}/{date}` (the `/train/[uid]/[date]` page), one of its
+ * limited classes.
+ *
+ * Null outside a request scope (`headers()` throws there). Every caller in
+ * this module runs while rendering a browser request today; a call with no
+ * request behind it has no client to attribute it to, so it goes without
+ * the header and the api keys it on the frontend pod, which is the right
+ * bucket for traffic the frontend itself originates. */
+async function requestClientIp(): Promise<string | null> {
+  let incoming: Pick<Headers, 'get'>;
+  try {
+    incoming = await headers();
+  } catch {
+    return null;
+  }
+  return clientIpFromHeaders(incoming);
+}
+
 /** Every `fetch` in this module goes through here, so none of them is
- * unbounded -- see `API_FETCH_TIMEOUT_MS`. */
-function apiFetch(url: string, init?: RequestInit, timeoutMs: number = API_FETCH_TIMEOUT_MS): Promise<Response> {
-  return fetch(url, withTimeout(init, timeoutMs));
+ * unbounded -- see `API_FETCH_TIMEOUT_MS` -- and each carries the visitor's
+ * `X-Real-IP` (`requestClientIp`). The header is merged into `init.headers`
+ * only when there is an IP, so a call with no other headers still sends
+ * none. Every caller passes `headers` as a plain object (`cookieForwardInit`). */
+async function apiFetch(url: string, init?: RequestInit, timeoutMs: number = API_FETCH_TIMEOUT_MS): Promise<Response> {
+  const ip = await requestClientIp();
+  const withIp: RequestInit | undefined = ip
+    ? { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), [REAL_IP_HEADER]: ip } }
+    : init;
+  return fetch(url, withTimeout(withIp, timeoutMs));
 }
 
 async function fetchJson<T>(url: string, init: RequestInit, timeoutMs: number = API_FETCH_TIMEOUT_MS): Promise<T> {
