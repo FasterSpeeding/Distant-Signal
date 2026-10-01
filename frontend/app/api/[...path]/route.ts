@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isIP } from 'node:net';
+import { clientIpFromHeaders, REAL_IP_HEADER } from '@/lib/clientIp';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 
 // Client Components can't read `API_BASE_URL` (server-only env var, not
@@ -181,19 +181,11 @@ export const UPSTREAM_TIMEOUT_MS = 30_000;
  * else never carry one. */
 const METHODS_WITH_BODY: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH']);
 
-/** The client IP to send upstream as `X-Real-IP` (FE-8), or null.
- *
- * Only `CF-Connecting-IP` is trusted: in production the frontend is reached
- * only through the Cloudflare tunnel, which sets it. There is no other
- * trustworthy source -- Next 16 exposes no socket peer address to route
- * handlers (`request.ip` is gone), and the `X-Forwarded-For` it passes in
- * is the client's own whenever the client sent one. With no trustworthy
- * value the header is omitted and the api falls back to its own peer
- * address. A value that isn't a literal IP is ignored. */
+/** The client IP to send upstream as `X-Real-IP` (FE-8), or null. The rule
+ * (trust only a literal-IP `CF-Connecting-IP`) lives in `lib/clientIp.ts`,
+ * shared with `lib/api.ts`'s server-render fetches. */
 export function clientIpForUpstream(req: NextRequest): string | null {
-  const cf = req.headers.get('cf-connecting-ip')?.trim();
-  if (cf && isIP(cf) !== 0) return cf;
-  return null;
+  return clientIpFromHeaders(req.headers);
 }
 
 /** Reads a request body, refusing one larger than `MAX_PROXY_BODY_BYTES`
@@ -308,7 +300,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   // api; `clientIpForUpstream` supplies the one trustworthy value, if any.
   const realIp = clientIpForUpstream(req);
   if (realIp) {
-    headers['X-Real-IP'] = realIp;
+    headers[REAL_IP_HEADER] = realIp;
   }
   // Forward the browser's own Origin/Referer through verbatim -- api's
   // own strict same-origin check on POST /auth/logout (2026-09-25

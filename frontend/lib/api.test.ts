@@ -70,6 +70,9 @@ function parseIncomingCookie(name: string): string | undefined {
   }
   return undefined;
 }
+// The incoming request's other headers, for `apiFetch`'s X-Real-IP. `null`
+// makes `headers()` throw, as it does outside a request scope.
+const incomingRequest: { headers: Record<string, string> | null } = { headers: {} };
 vi.mock('next/headers', () => ({
   cookies: async () => ({
     toString: () => incomingCookies.header,
@@ -78,6 +81,10 @@ vi.mock('next/headers', () => ({
       return value === undefined ? undefined : { name, value };
     },
   }),
+  headers: async () => {
+    if (incomingRequest.headers === null) throw new Error('`headers` was called outside a request scope');
+    return new Headers(incomingRequest.headers);
+  },
 }));
 
 const sampleReport = {
@@ -1716,5 +1723,76 @@ describe('api client path-segment encoding (traversal regression)', () => {
   it('getLineStatus keeps the comma separator meaningful while encoding each id', async () => {
     await getLineStatus(['wcml', PAYLOAD], true);
     expect(fetchedUrl()).toBe(`${BASE}/Line/wcml,${ENCODED}/Status?detail=true`);
+  });
+});
+
+// The api's rate limiter keys on X-Real-IP. Server-render fetches used to
+// send none, so the limiter fell back to the frontend pod's address and put
+// every visitor of /train/[uid]/[date] (GET /Train/by-uid, a limited class)
+// in one bucket. They now carry the visitor's CF-Connecting-IP, the same
+// rule as the /api/* proxy.
+describe('api client X-Real-IP forwarding', () => {
+  beforeEach(() => {
+    incomingCookies.header = '';
+    incomingRequest.headers = {};
+    vi.stubEnv('API_BASE_URL', 'http://test-api:8080');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    incomingRequest.headers = {};
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function sentHeaders(): Record<string, string> | undefined {
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    return init.headers as Record<string, string> | undefined;
+  }
+
+  it('sends the visitor CF-Connecting-IP as X-Real-IP on GET /Train/by-uid', async () => {
+    incomingRequest.headers = { 'cf-connecting-ip': '203.0.113.5' };
+    await getPublicTrainByUidAndDate('C12345', '2026-10-01');
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe('http://test-api:8080/Train/by-uid/C12345/2026-10-01');
+    expect(sentHeaders()).toEqual({ 'X-Real-IP': '203.0.113.5' });
+  });
+
+  it('merges X-Real-IP with the forwarded session cookie', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    incomingRequest.headers = { 'cf-connecting-ip': '2001:db8::1' };
+    await getPreferences();
+    expect(sentHeaders()).toEqual({ Cookie: 'distant_signal_session=abc123', 'X-Real-IP': '2001:db8::1' });
+  });
+
+  it("never relays the visitor's own X-Real-IP or X-Forwarded-For", async () => {
+    incomingRequest.headers = {
+      'cf-connecting-ip': '203.0.113.5',
+      'x-real-ip': '198.51.100.66',
+      'x-forwarded-for': '198.51.100.77',
+    };
+    await getDataFreshness();
+    expect(sentHeaders()).toEqual({ 'X-Real-IP': '203.0.113.5' });
+  });
+
+  it('sends no header when there is no CF-Connecting-IP, even if the client supplied its own', async () => {
+    incomingRequest.headers = { 'x-real-ip': '198.51.100.66', 'x-forwarded-for': '198.51.100.77' };
+    await getPublicTrainByUidAndDate('C12345', '2026-10-01');
+    expect(sentHeaders()).toBeUndefined();
+  });
+
+  it('ignores a CF-Connecting-IP that is not a literal IP address', async () => {
+    incomingRequest.headers = { 'cf-connecting-ip': 'not-an-ip' };
+    await getPublicTrainByUidAndDate('C12345', '2026-10-01');
+    expect(sentHeaders()).toBeUndefined();
+  });
+
+  it('sends no header, and still fetches, outside a request scope', async () => {
+    incomingRequest.headers = null;
+    await getPublicTrainByUidAndDate('C12345', '2026-10-01');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sentHeaders()).toBeUndefined();
   });
 });
