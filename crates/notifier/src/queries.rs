@@ -1437,6 +1437,7 @@ pub(crate) async fn schedule_candidates_for_leg(
          FROM schedule_destination_departures main \
          WHERE main.service_date = $1 \
            AND main.origin_crs = $2 \
+           AND main.can_board IS NOT FALSE \
            AND ($3::time IS NULL OR main.scheduled >= $3) \
            AND ($4::time IS NULL OR main.scheduled <= $4) \
            AND ( \
@@ -1445,6 +1446,7 @@ pub(crate) async fn schedule_candidates_for_leg(
                      SELECT 1 FROM schedule_destination_departures stop \
                      WHERE stop.service_date = $1 AND stop.train_uid = main.train_uid \
                        AND stop.origin_crs = $5 \
+                       AND stop.can_alight IS NOT FALSE \
                        AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled) \
                  ) \
            ) \
@@ -1459,6 +1461,7 @@ pub(crate) async fn schedule_candidates_for_leg(
                      SELECT 1 FROM schedule_destination_departures stop \
                      WHERE stop.service_date = $1 AND stop.train_uid = main.train_uid \
                        AND stop.origin_crs = $5 \
+                       AND stop.can_alight IS NOT FALSE \
                        AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled) \
                        AND ($6::time IS NULL OR stop.calling_point_arrival >= $6) \
                        AND ($7::time IS NULL OR stop.calling_point_arrival <= $7) \

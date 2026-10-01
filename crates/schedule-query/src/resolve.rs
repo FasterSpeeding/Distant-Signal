@@ -590,11 +590,16 @@ pub fn departures_by_destination_crs(
             if is_before(departure_day_offset, departure, now) {
                 continue;
             }
-            // Same "a booked departure is not a boardable departure" filter as
-            // `departures_by_crs` above -- this product backs
-            // `GET /public/trains/search`, where every row is offered to a
-            // user as a train they can catch FROM `origin_crs`.
-            if !cp.is_public_pickup() {
+            // A boardable call, or a set-down-only one (design doc §10,
+            // "Journeys leg search"): the latter is published, flagged
+            // `can_board: false`, so a journey leg can END there. Every
+            // reader offering a row as a train to catch FROM `origin_crs`
+            // (`GET /public/trains/search`, the leg searches) filters on
+            // `can_board`, so the old "a booked departure is not a boardable
+            // departure" rule still holds for them.
+            let can_board = cp.is_public_pickup();
+            let can_alight = cp.can_alight();
+            if !can_board && !can_alight {
                 continue;
             }
             let Some(origin_crs) = tiploc_to_crs.get(normalize_tiploc(&cp.tiploc)) else {
@@ -623,6 +628,8 @@ pub fn departures_by_destination_crs(
                     public_departure: cp.public_departure,
                     public_calling_point_arrival: cp.public_arrival,
                     public_destination_arrival,
+                    can_board,
+                    can_alight,
                 });
         }
     }
@@ -1233,11 +1240,12 @@ mod tests {
         );
     }
 
-    /// The same filter on the whole-network search product, which backs
-    /// `GET /public/trains/search` -- every row there is offered to a user as a
-    /// train they can catch FROM `origin_crs`.
+    /// The same rule on the whole-network search product, which backs
+    /// `GET /public/trains/search` and the journey leg search: a row offered
+    /// as a train to catch FROM `origin_crs` must be boardable. A
+    /// set-down-only call is still published, flagged, so a leg can end there.
     #[test]
-    fn departures_by_destination_crs_excludes_a_set_down_only_calling_point() {
+    fn departures_by_destination_crs_flags_a_set_down_only_calling_point_unboardable() {
         let raw = vec![RawSchedule {
             basic: basic(
                 "C11052",
@@ -1269,15 +1277,66 @@ mod tests {
         let by_destination =
             departures_by_destination_crs(&index, date, NaiveTime::MIN, &tiploc_to_crs);
 
-        let origins: Vec<&str> = by_destination["CRE"]
+        // Published (so a journey leg can END at Carlisle), but flagged:
+        // only the genuinely boardable calling point may be offered as an
+        // origin, and every such reader filters on `can_board`.
+        let rows: Vec<(&str, bool, bool)> = by_destination["CRE"]
             .iter()
-            .map(|d| d.origin_crs.as_str())
+            .map(|d| (d.origin_crs.as_str(), d.can_board, d.can_alight))
             .collect();
-        assert_eq!(
-            origins,
-            vec!["EUS"],
-            "only the genuinely boardable calling point may be offered as an origin"
-        );
+        assert_eq!(rows, vec![("EUS", true, false), ("CAR", false, true)]);
+    }
+
+    /// A pick-up-only (`U`) call stays boardable and is flagged
+    /// unalightable; a not-advertised (`N`) call is neither, and is not
+    /// published.
+    #[test]
+    fn departures_by_destination_crs_flags_pick_up_only_and_drops_not_advertised() {
+        let raw = vec![RawSchedule {
+            basic: basic(
+                "C01355",
+                StpIndicator::Permanent,
+                "2026-05-18",
+                "2026-12-11",
+                WEEKDAYS,
+            ),
+            calling_points: vec![
+                calling_point_with_departure_and_activity(
+                    "EUSTON ",
+                    CallingPointKind::Origin,
+                    "20:16",
+                    "TB",
+                ),
+                calling_point_with_departure_and_activity(
+                    "WATFDJ ",
+                    CallingPointKind::Intermediate,
+                    "20:31",
+                    "U",
+                ),
+                calling_point_with_departure_and_activity(
+                    "BLTCHLY",
+                    CallingPointKind::Intermediate,
+                    "20:45",
+                    "N",
+                ),
+                calling_point_with_arrival("MKNSCEN", CallingPointKind::Terminate, "20:50"),
+            ],
+        }];
+        let index = ScheduleIndex::build(raw);
+        let date = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+        let tiploc_to_crs = tiploc_map(&[
+            ("EUSTON", "EUS"),
+            ("WATFDJ", "WFJ"),
+            ("BLTCHLY", "BLY"),
+            ("MKNSCEN", "MKC"),
+        ]);
+        let by_destination =
+            departures_by_destination_crs(&index, date, NaiveTime::MIN, &tiploc_to_crs);
+        let rows: Vec<(&str, bool, bool)> = by_destination["MKC"]
+            .iter()
+            .map(|d| (d.origin_crs.as_str(), d.can_board, d.can_alight))
+            .collect();
+        assert_eq!(rows, vec![("EUS", true, false), ("WFJ", true, false)]);
     }
 
     /// The fail-open property at the consumer level: a calling point with NO

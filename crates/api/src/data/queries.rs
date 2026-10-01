@@ -2598,6 +2598,14 @@ pub struct ScheduleDestinationDeparturesRow {
     pub public_calling_point_arrival: Option<chrono::NaiveTime>,
     #[serde(default)]
     pub public_destination_arrival: Option<chrono::NaiveTime>,
+    /// Passenger direction at this row's call (migration
+    /// `20261001170000`): `can_board` is `false` on a set-down-only row,
+    /// `can_alight` on a pick-up-only one. `None` from a publisher that
+    /// predates them (stored NULL, read as `true`).
+    #[serde(default)]
+    pub can_board: Option<bool>,
+    #[serde(default)]
+    pub can_alight: Option<bool>,
 }
 
 /// An opaque-to-the-caller position in one station's ordered results: the
@@ -3185,6 +3193,8 @@ pub async fn upsert_schedule_destination_departures_publish_part(
         .collect();
     let public_destination_arrival: Vec<Option<chrono::NaiveTime>> =
         rows.iter().map(|r| r.public_destination_arrival).collect();
+    let can_board: Vec<Option<bool>> = rows.iter().map(|r| r.can_board).collect();
+    let can_alight: Vec<Option<bool>> = rows.iter().map(|r| r.can_alight).collect();
 
     let mut distinct_dates = service_dates.clone();
     distinct_dates.sort_unstable();
@@ -3219,14 +3229,14 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures AS d \
             (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, \
-             public_departure, public_calling_point_arrival, public_destination_arrival) \
+             public_departure, public_calling_point_arrival, public_destination_arrival, can_board, can_alight) \
          SELECT DISTINCT ON (service_date, destination_crs, scheduled, train_uid, origin_crs) \
                 service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, \
-                public_departure, public_calling_point_arrival, public_destination_arrival \
+                public_departure, public_calling_point_arrival, public_destination_arrival, can_board, can_alight \
          FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[], $13::text[], \
-                     $14::time[], $15::time[], $16::time[]) \
+                     $14::time[], $15::time[], $16::time[], $17::boolean[], $18::boolean[]) \
               WITH ORDINALITY AS t(service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, \
-                                   public_departure, public_calling_point_arrival, public_destination_arrival, ord) \
+                                   public_departure, public_calling_point_arrival, public_destination_arrival, can_board, can_alight, ord) \
          ORDER BY service_date, destination_crs, scheduled, train_uid, origin_crs, ord \
          ON CONFLICT (service_date, destination_crs, scheduled, train_uid, origin_crs) DO UPDATE SET \
             day_offset = EXCLUDED.day_offset, \
@@ -3239,12 +3249,14 @@ pub async fn upsert_schedule_destination_departures_publish_part(
             rsid = EXCLUDED.rsid, \
             public_departure = EXCLUDED.public_departure, \
             public_calling_point_arrival = EXCLUDED.public_calling_point_arrival, \
-            public_destination_arrival = EXCLUDED.public_destination_arrival \
+            public_destination_arrival = EXCLUDED.public_destination_arrival, \
+            can_board = EXCLUDED.can_board, \
+            can_alight = EXCLUDED.can_alight \
          WHERE (d.day_offset, d.true_origin_crs, d.calling_point_arrival, d.destination_arrival, d.destination_arrival_day_offset, d.operator_atoc, d.headcode, d.rsid, \
-                d.public_departure, d.public_calling_point_arrival, d.public_destination_arrival) \
+                d.public_departure, d.public_calling_point_arrival, d.public_destination_arrival, d.can_board, d.can_alight) \
                IS DISTINCT FROM \
                (EXCLUDED.day_offset, EXCLUDED.true_origin_crs, EXCLUDED.calling_point_arrival, EXCLUDED.destination_arrival, EXCLUDED.destination_arrival_day_offset, EXCLUDED.operator_atoc, EXCLUDED.headcode, EXCLUDED.rsid, \
-                EXCLUDED.public_departure, EXCLUDED.public_calling_point_arrival, EXCLUDED.public_destination_arrival)",
+                EXCLUDED.public_departure, EXCLUDED.public_calling_point_arrival, EXCLUDED.public_destination_arrival, EXCLUDED.can_board, EXCLUDED.can_alight)",
     )
     .bind(&service_dates)
     .bind(&destination_crs)
@@ -3262,6 +3274,8 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     .bind(&public_departure)
     .bind(&public_calling_point_arrival)
     .bind(&public_destination_arrival)
+    .bind(&can_board)
+    .bind(&can_alight)
     .execute(&mut *tx)
     .await?;
 
@@ -3940,6 +3954,9 @@ pub async fn search_schedule_calling_point_departures(
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
+              -- A set-down-only row is somewhere to get off, never a train
+              -- to catch (migration 20261001170000; NULL = older row).
+              AND main.can_board IS NOT FALSE
               AND main.scheduled >= $3
               AND ($4::text IS NULL OR main.true_origin_crs = $4)
               AND ($6::time IS NULL OR main.scheduled <= $6)
@@ -3954,6 +3971,7 @@ pub async fn search_schedule_calling_point_departures(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
+                          AND stop.can_alight IS NOT FALSE
                           -- A call at the calling point `stops_at` named --
                           -- same station this result row is anchored at, or
                           -- a different one -- counts only if it comes
@@ -3981,6 +3999,7 @@ pub async fn search_schedule_calling_point_departures(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
+                          AND stop.can_alight IS NOT FALSE
                           AND (stop.day_offset, stop.scheduled)
                               > (main.day_offset, main.scheduled)
                           AND ($7::time IS NULL OR stop.calling_point_arrival >= $7)
@@ -4187,6 +4206,9 @@ pub async fn search_journey_leg_candidates(
         Option<String>,
         Option<chrono::NaiveTime>,
         Option<i16>,
+        Option<chrono::NaiveTime>,
+        Option<chrono::NaiveTime>,
+        Option<chrono::NaiveTime>,
     )> = sqlx::query_as(
         r"
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
@@ -4217,6 +4239,7 @@ pub async fn search_journey_leg_candidates(
                               WHERE stop.service_date = $1
                                 AND stop.train_uid = main.train_uid
                                 AND stop.origin_crs = $5
+                                AND stop.can_alight IS NOT FALSE
                                 AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
                               ORDER BY stop.day_offset, stop.scheduled
                               LIMIT 1)
@@ -4227,13 +4250,34 @@ pub async fn search_journey_leg_candidates(
                               WHERE stop.service_date = $1
                                 AND stop.train_uid = main.train_uid
                                 AND stop.origin_crs = $5
+                                AND stop.can_alight IS NOT FALSE
                                 AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
                               ORDER BY stop.day_offset, stop.scheduled
                               LIMIT 1)
-                   END AS leg_destination_arrival_day_offset
+                   END AS leg_destination_arrival_day_offset,
+                   -- The public (GBTT) times the traveller is shown: the
+                   -- departure at the leg's origin, the terminus arrival,
+                   -- and the arrival at the leg's own destination (the same
+                   -- two branches as `leg_destination_arrival`; NULL when
+                   -- the call has no public arrival, e.g. a row published
+                   -- before the column).
+                   main.public_departure, main.public_destination_arrival,
+                   CASE WHEN main.destination_crs = $5 THEN main.public_destination_arrival
+                        ELSE (SELECT stop.public_calling_point_arrival
+                              FROM schedule_destination_departures stop
+                              WHERE stop.service_date = $1
+                                AND stop.train_uid = main.train_uid
+                                AND stop.origin_crs = $5
+                                AND stop.can_alight IS NOT FALSE
+                                AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
+                              ORDER BY stop.day_offset, stop.scheduled
+                              LIMIT 1)
+                   END AS leg_public_destination_arrival
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
+              -- Boarding at a set-down-only call is never offered.
+              AND main.can_board IS NOT FALSE
               AND ($3::time IS NULL OR main.scheduled >= $3)
               AND ($4::time IS NULL OR main.scheduled <= $4)
               AND (
@@ -4244,6 +4288,10 @@ pub async fn search_journey_leg_candidates(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
+                          -- The leg may END at a set-down-only call
+                          -- (published since 20261001170000), never at a
+                          -- pick-up-only one.
+                          AND stop.can_alight IS NOT FALSE
                           -- Unconditional, unlike
                           -- search_schedule_calling_point_departures'
                           -- same-station-only ordering check -- a journey
@@ -4266,6 +4314,7 @@ pub async fn search_journey_leg_candidates(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
+                          AND stop.can_alight IS NOT FALSE
                           AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
                           AND ($6::time IS NULL OR stop.calling_point_arrival >= $6)
                           AND ($7::time IS NULL OR stop.calling_point_arrival <= $7)
@@ -4312,12 +4361,12 @@ pub async fn search_journey_leg_candidates(
     let next_cursor = if has_more {
         page_rows
             .last()
-            .map(
-                |(train_uid, _, _, scheduled, _, _, _, _, _)| CallingPointDepartureCursor {
+            .map(|(train_uid, _, _, scheduled, _, _, _, _, _, _, _, _)| {
+                CallingPointDepartureCursor {
                     scheduled: *scheduled,
                     train_uid: train_uid.clone(),
-                },
-            )
+                }
+            })
     } else {
         None
     };
@@ -4335,6 +4384,9 @@ pub async fn search_journey_leg_candidates(
                 operator_atoc,
                 leg_destination_arrival,
                 leg_destination_arrival_day_offset,
+                public_departure,
+                public_destination_arrival,
+                leg_public_destination_arrival,
             )| {
                 serde_json::json!({
                     "uid": train_uid,
@@ -4358,6 +4410,11 @@ pub async fn search_journey_leg_candidates(
                     // rather than a guessed one.
                     "leg_destination_arrival": leg_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                     "leg_destination_arrival_day_offset": leg_destination_arrival_day_offset,
+                    // Public (GBTT) times, as `/public/trains/search` rows
+                    // carry them, plus the one at the leg's destination.
+                    "public_departure": public_departure.map(|t| t.format("%H:%M:%S").to_string()),
+                    "public_destination_arrival": public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
+                    "leg_public_destination_arrival": leg_public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                 })
             },
         )
@@ -10776,6 +10833,120 @@ mod schedule_destination_departures_query_tests {
             .map(|d| d["uid"].as_str().unwrap())
             .collect();
         assert_eq!(uids, vec!["T00004"]);
+
+        delete_day(&pool, date).await;
+    }
+
+    /// Design doc §10, "Journeys leg search": a leg may END at a
+    /// set-down-only call (Avanti 9S65 at Motherwell, published flagged
+    /// `can_board: false` since migration 20261001170000), never at a
+    /// pick-up-only one, and never BOARD at a set-down-only one. The
+    /// candidates carry the public times.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_journey_leg_candidates -- --ignored --test-threads=1`"]
+    async fn search_journey_leg_candidates_ends_at_set_down_only_never_at_pick_up_only() {
+        let pool = test_pool().await;
+        let date = fixture_date_feb(21);
+        delete_day(&pool, date).await;
+
+        let mut origin = row(
+            date,
+            "GLC",
+            time(15, 40),
+            "T00005",
+            "EUS",
+            None,
+            Some(time(18, 0)),
+        );
+        origin.public_departure = Some(time(15, 39));
+        origin.public_destination_arrival = Some(time(18, 1));
+        origin.can_board = Some(true);
+        origin.can_alight = Some(false);
+        let mut set_down_only = row_with_calling_point_arrival(
+            date,
+            "GLC",
+            time(17, 2),
+            "T00005",
+            "MTH",
+            None,
+            Some(time(18, 0)),
+            Some(time(17, 0)),
+        );
+        set_down_only.public_calling_point_arrival = Some(time(17, 1));
+        set_down_only.can_board = Some(false);
+        set_down_only.can_alight = Some(true);
+        let other_origin = row(
+            date,
+            "GLC",
+            time(16, 0),
+            "T00006",
+            "EUS",
+            None,
+            Some(time(18, 30)),
+        );
+        let mut pick_up_only = row_with_calling_point_arrival(
+            date,
+            "GLC",
+            time(17, 20),
+            "T00006",
+            "MTH",
+            None,
+            Some(time(18, 30)),
+            Some(time(17, 19)),
+        );
+        pick_up_only.can_board = Some(true);
+        pick_up_only.can_alight = Some(false);
+        upsert_schedule_destination_departures(
+            &pool,
+            &[origin, set_down_only, other_origin, pick_up_only],
+        )
+        .await
+        .expect("seed fixture rows");
+
+        let page = search_journey_leg_candidates(
+            &pool, "EUS", "MTH", date, None, None, None, None, None, None, 50,
+        )
+        .await
+        .expect("search candidates")
+        .expect("service date is published");
+        let found: Vec<(&str, Option<&str>, Option<&str>, Option<&str>)> = page
+            .departures
+            .iter()
+            .map(|d| {
+                (
+                    d["uid"].as_str().unwrap(),
+                    d["public_departure"].as_str(),
+                    d["leg_destination_arrival"].as_str(),
+                    d["leg_public_destination_arrival"].as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![(
+                "T00005",
+                Some("15:39:00"),
+                Some("17:00:00"),
+                Some("17:01:00")
+            )],
+            "the set-down-only end is found with its public arrival; the pick-up-only one is not"
+        );
+
+        // Boarding at the set-down-only call is never offered; the
+        // pick-up-only one is.
+        let page = search_journey_leg_candidates(
+            &pool, "MTH", "GLC", date, None, None, None, None, None, None, 50,
+        )
+        .await
+        .expect("search candidates")
+        .expect("service date is published");
+        let uids: Vec<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(uids, vec!["T00006"]);
 
         delete_day(&pool, date).await;
     }

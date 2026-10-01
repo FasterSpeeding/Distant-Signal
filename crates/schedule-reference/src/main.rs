@@ -1756,6 +1756,8 @@ fn schedule_destination_departures_row_iter(
                     "public_departure": d.public_departure,
                     "public_calling_point_arrival": d.public_calling_point_arrival,
                     "public_destination_arrival": d.public_destination_arrival,
+                    "can_board": d.can_board,
+                    "can_alight": d.can_alight,
                 })
             })
         })
@@ -3092,6 +3094,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
@@ -3108,6 +3112,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
@@ -3128,6 +3134,8 @@ mod poll_once_tests {
                 public_departure: None,
                 public_calling_point_arrival: None,
                 public_destination_arrival: None,
+                can_board: true,
+                can_alight: true,
             }],
         );
 
@@ -3162,8 +3170,10 @@ mod poll_once_tests {
                 "public_departure": null,
                 "public_calling_point_arrival": null,
                 "public_destination_arrival": null,
+                "can_board": true,
+                "can_alight": true,
             }),
-            "exactly sixteen keys, named exactly as the table's columns are, \
+            "exactly eighteen keys, named exactly as the table's columns are, \
              with a Some(\"SR\") operator_atoc, a Some(\"1S00\") headcode \
              and a Some(\"SR408800\") rsid round-tripping to JSON strings"
         );
@@ -3224,6 +3234,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C11052".to_string(),
@@ -3240,6 +3252,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
@@ -3287,6 +3301,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C99999".to_string(),
@@ -3303,6 +3319,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
@@ -3352,6 +3370,8 @@ mod poll_once_tests {
                 public_departure: None,
                 public_calling_point_arrival: None,
                 public_destination_arrival: None,
+                can_board: true,
+                can_alight: true,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -3394,6 +3414,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
@@ -3410,6 +3432,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
