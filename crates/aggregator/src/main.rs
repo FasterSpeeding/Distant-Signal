@@ -181,6 +181,7 @@ struct RetentionSettings {
     untracked_trains_retention_days: i64,
     schedule_destination_departures_retention_days: i64,
     schedule_derived_products_retention_days: i64,
+    schedule_line_population_retention_days: i64,
     full_coverage_line_stats_retention_days: i64,
     full_coverage_window_stats_retention_days: i64,
 }
@@ -198,6 +199,7 @@ impl RetentionSettings {
                 .schedule_destination_departures_retention_days,
             schedule_derived_products_retention_days: config
                 .schedule_derived_products_retention_days,
+            schedule_line_population_retention_days: config.schedule_line_population_retention_days,
             full_coverage_line_stats_retention_days: config.full_coverage_line_stats_retention_days,
             full_coverage_window_stats_retention_days: config
                 .full_coverage_window
@@ -255,6 +257,7 @@ async fn run_retention_pass(
         settings.untracked_trains_retention_days,
         settings.schedule_destination_departures_retention_days,
         settings.schedule_derived_products_retention_days,
+        settings.schedule_line_population_retention_days,
         settings.full_coverage_line_stats_retention_days,
         archiver,
     )
@@ -686,6 +689,7 @@ async fn run_retention(
     untracked_trains_retention_days: i64,
     schedule_destination_departures_retention_days: i64,
     schedule_derived_products_retention_days: i64,
+    schedule_line_population_retention_days: i64,
     full_coverage_line_stats_retention_days: i64,
     archiver: Option<&archive::Archiver>,
 ) -> anyhow::Result<()> {
@@ -803,7 +807,7 @@ async fn run_retention(
     .increment(schedule_network_departures_pruned);
 
     let schedule_line_population_pruned =
-        queries::prune_schedule_line_population(pool, schedule_derived_products_retention_days)
+        queries::prune_schedule_line_population(pool, schedule_line_population_retention_days)
             .await?;
     metrics::counter!(common::metrics::metric_name(
         "aggregator_schedule_line_population_rows_pruned_total"
