@@ -464,6 +464,64 @@ The user answered §8 on 2026-10-01:
 6. **No backfill of public delays.** Public-time delay history starts now;
    TRUST raw bodies were not stored.
 
+## 10. Phase 1 implementation (2026-10-01)
+
+Implemented: P3 (store public times), P2 (direction-aware stops), the
+additive API fields, the frontend display and labels, and the detailed WTT
+view (P9).
+
+- **Storage.** Migrations `20261001120000` (`schedule_calling_points_full`:
+  `public_arrival`, `public_departure`, `working_arrival`,
+  `working_departure`, `working_pass`, `can_board`, `can_alight`,
+  `request_stop`), `20261001120100` (`schedule_destination_departures`:
+  `public_departure`, `public_calling_point_arrival`,
+  `public_destination_arrival`) and `20261001120200`
+  (`train_movement_events.gbtt_timestamp`). All nullable, catalog-only.
+  The schedule tables refill on the next schedule-reference publish; the
+  `schedule_network_departures` JSON carries `public_departure`;
+  `trains.calling_points` carries the same fields for newly matched
+  trains. The CIF pass time (`LI` `20..25`) is now decoded.
+- **Direction.** `D` stops are published (`can_board = false`); only `OP`
+  and `N` stops stay out. CSA, RAPTOR, the staged (waypoint) searches, the
+  arrive-by backward scan and the live overlay never board where
+  `!can_board` and never alight where `!can_alight`, but ride through.
+  The `known_wrong_*` tests now assert the correct behaviour.
+- **API.** `JourneyStop`: `publicArrival`, `publicDeparture`,
+  `workingArrival`, `workingDeparture`, `workingPass`, `canBoard`,
+  `canAlight`, `requestStop`. Schedule-departure board rows:
+  `publicDeparture`. `/public/trains/search` rows: `publicDeparture`,
+  `publicDestinationArrival`. Trip-plan train legs: `publicDeparture`,
+  `publicArrival`, `publicDepartureDayOffset`, `publicArrivalDayOffset`.
+  `scheduled*` keep their WTT meaning for one release.
+- **Frontend.** Public times are shown first on boards, the train page and
+  trip plans; intermediate stops are labelled "Set down only", "Pick up
+  only" and "Request stop"; train pages have a collapsed "Detailed
+  (working timetable)" view with `½` and passing points.
+
+**Left for phase 2, and the seams for it:**
+
+- **P5, `delayMinutes` on public.** `train_movement_events.gbtt_timestamp`
+  (TRUST's own public time) and `JourneyStop.publicArrival`/
+  `publicDeparture` are the baselines; `journey.rs`'s
+  `overlay_movement_events` still diffs against WTT. The notifier's 15-min
+  threshold changes meaning with it. `trust_event_backlog` does not carry
+  `gbtt_timestamp` yet, so a backlog-matched movement stores NULL.
+- **P1, Delay Repay.** Read `schedule_calling_points_full.public_arrival`
+  at the ticket's `destination_crs` (and `gbtt_timestamp` once there);
+  provisional band before arrival, final after; add the 120-minute band.
+- **P6, plan on public minutes.** `schedule_query::Connection` carries
+  only the WTT minutes and the direction flags; add public minutes there
+  (from `CallingPointForConnections`, fed by
+  `trip_planning::fetch_calling_points_for_date`) and change MCT on them.
+  Until then the planner searches on WTT and `trip_leg_details` attaches
+  the public times after the search.
+- **Live overlay arithmetic** (`trip_plan_live.rs`) still diffs TRUST
+  actual against the CIF WTT minute.
+- **P7, MCP mapping** of `public*`/`working*`/`can*`.
+- **Journeys leg search.** `schedule_destination_departures` still lists
+  only boardable departures, so a journey leg cannot yet END at a `D`
+  stop; the leg-candidate search does not carry public times yet.
+
 ## Appendix: method
 
 - **The extract.** The production extract
