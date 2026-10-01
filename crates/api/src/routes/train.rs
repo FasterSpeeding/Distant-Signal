@@ -2459,6 +2459,7 @@ mod db_tests {
                 standalone_ticket -- --ignored --test-threads=1`"]
     async fn post_standalone_ticket_no_session_is_401() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let router = test_router(test_app(pool.clone()));
 
         let (status, body) = post_json(
@@ -2479,6 +2480,7 @@ mod db_tests {
                 standalone_ticket -- --ignored --test-threads=1`"]
     async fn post_standalone_ticket_creates_an_unattached_ticket_visible_on_the_mine_list() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-STANDALONE-TICKET").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2531,6 +2533,7 @@ mod db_tests {
     async fn post_attach_ticket_the_owner_can_attach_their_own_standalone_ticket_to_their_own_train()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ATTACH-OWNER").await;
         let router = test_router(test_app(pool.clone()));
         let tracking_id = seed_tracked_train(
@@ -2594,6 +2597,7 @@ mod db_tests {
                 attach_ticket -- --ignored --test-threads=1`"]
     async fn post_attach_ticket_a_tracked_train_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let ticket_owner_token = seed_session(&pool, "TEST-ATTACH-TICKET-OWNER").await;
         seed_session(&pool, "TEST-ATTACH-TRAIN-OWNER").await;
         let router = test_router(test_app(pool.clone()));
@@ -2640,6 +2644,7 @@ mod db_tests {
                 attach_ticket -- --ignored --test-threads=1`"]
     async fn post_attach_ticket_an_already_attached_ticket_is_409() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ATTACH-CONFLICT").await;
         let router = test_router(test_app(pool.clone()));
         let tracking_id = seed_tracked_train(
@@ -2695,6 +2700,7 @@ mod db_tests {
                 post_tracked_train_name -- --ignored --test-threads=1`"]
     async fn post_tracked_train_name_the_owner_can_rename_and_clear() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-OWNER").await;
         let router = test_router(test_app(pool.clone()));
         let tracking_id = seed_tracked_train(
@@ -2737,6 +2743,7 @@ mod db_tests {
                 post_tracked_train_name -- --ignored --test-threads=1`"]
     async fn post_tracked_train_name_a_tracked_train_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-BYSTANDER").await;
         seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-REAL-OWNER").await;
         let router = test_router(test_app(pool.clone()));
@@ -2771,6 +2778,7 @@ mod db_tests {
                 post_tracked_train_name -- --ignored --test-threads=1`"]
     async fn post_tracked_train_name_a_too_long_name_is_400() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-TOOLONG").await;
         let router = test_router(test_app(pool.clone()));
         let tracking_id = seed_tracked_train(
@@ -2803,6 +2811,7 @@ mod db_tests {
                 post_ticket_name -- --ignored --test-threads=1`"]
     async fn post_ticket_name_the_owner_can_rename_a_standalone_ticket() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-RENAME-TICKET-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2842,6 +2851,7 @@ mod db_tests {
                 post_track_schedule_matches -- --ignored --test-threads=1`"]
     async fn post_track_schedule_matches_a_pin_whose_train_a_live_movement_would_have_missed() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-SCHEDULE-MATCH").await;
 
         sqlx::query(
@@ -2933,6 +2943,7 @@ mod db_tests {
                 post_track_with_no_candidate_line_stays_pending -- --ignored --test-threads=1`"]
     async fn post_track_with_no_candidate_line_stays_pending() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-SCHEDULE-NO-MATCH").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2965,6 +2976,7 @@ mod db_tests {
                 get_by_tracking_id -- --ignored --test-threads=1`"]
     async fn get_by_tracking_id_no_session_is_401() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-TRACKID-401-OWNER").await;
         let tracking_id = seed_tracked_train(
             &pool,
@@ -2989,6 +3001,7 @@ mod db_tests {
                 get_by_tracking_id -- --ignored --test-threads=1`"]
     async fn get_by_tracking_id_a_non_owner_session_gets_the_same_404_as_unknown() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-TRACKID-OWNER").await;
         let other_token = seed_session(&pool, "TEST-TRACKID-OTHER").await;
         let tracking_id = seed_tracked_train(
@@ -3019,6 +3032,7 @@ mod db_tests {
                 get_by_tracking_id -- --ignored --test-threads=1`"]
     async fn get_by_tracking_id_a_nonexistent_id_is_404_with_the_unchanged_message() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TRACKID-NOTFOUND").await;
 
         let router = test_router(test_app(pool.clone()));
@@ -3039,6 +3053,7 @@ mod db_tests {
                 get_by_tracking_id -- --ignored --test-threads=1`"]
     async fn get_by_tracking_id_the_owner_gets_full_state_with_the_darwin_overlay_applied() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-TRACKID-REAL-OWNER").await;
         let service_date: chrono::NaiveDate = "2026-08-29".parse().unwrap();
         let tracking_id = seed_tracked_train(
@@ -3088,6 +3103,7 @@ mod db_tests {
                 get_by_tracking_id_includes_journey_stops -- --ignored --test-threads=1`"]
     async fn get_by_tracking_id_includes_journey_stops_once_a_schedule_match_exists() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JS-ROUTE-OWNER";
         let token = seed_session(&pool, user_id).await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
@@ -3194,6 +3210,7 @@ mod db_tests {
                 delete_tracked_train -- --ignored --test-threads=1`"]
     async fn delete_tracked_train_no_session_is_401() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-DELETE-401-OWNER").await;
         let tracking_id = seed_tracked_train(
             &pool,
@@ -3219,6 +3236,7 @@ mod db_tests {
     async fn delete_tracked_train_a_non_owner_session_gets_the_same_404_as_unknown_and_the_row_survives()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-DELETE-OWNER").await;
         let other_token = seed_session(&pool, "TEST-DELETE-OTHER").await;
         let tracking_id = seed_tracked_train(
@@ -3258,6 +3276,7 @@ mod db_tests {
                 delete_tracked_train -- --ignored --test-threads=1`"]
     async fn delete_tracked_train_a_nonexistent_id_is_404_with_the_unchanged_message() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-DELETE-NOTFOUND").await;
 
         let router = test_router(test_app(pool.clone()));
@@ -3278,6 +3297,7 @@ mod db_tests {
                 delete_tracked_train -- --ignored --test-threads=1`"]
     async fn delete_tracked_train_the_owner_can_delete_it() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-DELETE-REAL-OWNER").await;
         let tracking_id = seed_tracked_train(
             &pool,
@@ -3331,6 +3351,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn delete_tracked_train_resets_a_bound_journey_legs_match_mode() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-DELETE-L13-JOURNEY-LEG";
         let owner_token = seed_session(&pool, user_id).await;
         let tracking_id = seed_tracked_train(
@@ -3449,6 +3470,7 @@ mod db_tests {
                 delete_ticket -- --ignored --test-threads=1`"]
     async fn delete_ticket_no_session_is_401() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-TICKET-DELETE-401-OWNER").await;
         let ticket_id = seed_ticket(&pool, "TEST-TICKET-DELETE-401-OWNER", None).await;
 
@@ -3467,6 +3489,7 @@ mod db_tests {
                 delete_ticket -- --ignored --test-threads=1`"]
     async fn delete_ticket_a_non_owner_session_gets_the_same_404_as_unknown_and_the_row_survives() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-TICKET-DELETE-OWNER").await;
         let other_token = seed_session(&pool, "TEST-TICKET-DELETE-OTHER").await;
         let ticket_id = seed_ticket(&pool, "TEST-TICKET-DELETE-OWNER", None).await;
@@ -3499,6 +3522,7 @@ mod db_tests {
                 delete_ticket -- --ignored --test-threads=1`"]
     async fn delete_ticket_a_nonexistent_id_is_404_with_the_unchanged_message() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TICKET-DELETE-NOTFOUND").await;
 
         let router = test_router(test_app(pool.clone()));
@@ -3516,6 +3540,7 @@ mod db_tests {
                 delete_ticket -- --ignored --test-threads=1`"]
     async fn delete_ticket_the_owner_can_delete_a_standalone_ticket() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
         // tracking_id: None -- confirms this route applies uniformly to a
         // STANDALONE ticket, not just an attached one.
@@ -3547,6 +3572,7 @@ mod db_tests {
                 delete_ticket -- --ignored --test-threads=1`"]
     async fn delete_ticket_a_deleted_ticket_disappears_from_every_other_ticket_reading_route() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TICKET-DELETE-CASCADE-READS").await;
         let tracking_id = seed_tracked_train(
             &pool,
@@ -3626,6 +3652,7 @@ mod db_tests {
                 journey_leg_proposal -- --ignored --test-threads=1`"]
     async fn get_ticket_journey_leg_proposal_no_session_is_401() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-PROPOSAL-401-OWNER").await;
         let ticket_id = seed_ticket(&pool, "TEST-PROPOSAL-401-OWNER", None).await;
 
@@ -3649,6 +3676,7 @@ mod db_tests {
                 journey_leg_proposal -- --ignored --test-threads=1`"]
     async fn get_ticket_journey_leg_proposal_a_non_owner_session_gets_the_same_404_as_unknown() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-PROPOSAL-404-OWNER").await;
         let owner_ticket_id = seed_ticket(&pool, "TEST-PROPOSAL-404-OWNER", None).await;
         let other_token = seed_session(&pool, "TEST-PROPOSAL-404-OTHER").await;
@@ -3674,6 +3702,7 @@ mod db_tests {
                 journey_leg_proposal -- --ignored --test-threads=1`"]
     async fn get_ticket_journey_leg_proposal_an_unknown_ticket_id_is_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-PROPOSAL-404-UNKNOWN").await;
 
         let router = test_router(test_app(pool.clone()));
@@ -3697,6 +3726,7 @@ mod db_tests {
     async fn get_ticket_journey_leg_proposal_a_ticket_with_a_departure_date_proposes_stations_and_a_window()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-PROPOSAL-200-WITH-DATE").await;
         let ticket_id = seed_ticket_with_departure_date(
             &pool,
@@ -3733,6 +3763,7 @@ mod db_tests {
     async fn get_ticket_journey_leg_proposal_a_ticket_with_no_departure_date_proposes_stations_only()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-PROPOSAL-200-NO-DATE").await;
         // `seed_ticket` (unlike `seed_ticket_with_departure_date`) leaves
         // `current_departure_date: None` -- the ordinary case for every
@@ -3814,6 +3845,7 @@ mod db_tests {
                 get_by_uid_and_date_is_public_and_unscoped -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_is_public_and_unscoped() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id = seed_public_train(&pool, "TEST-PUBLIC-BY-UID", service_date).await;
 
@@ -3867,6 +3899,7 @@ mod db_tests {
                 get_by_uid_and_date_carries_the_operator -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_carries_the_operator() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         // Dates of their own, and one per train: `seed_public_train` gives
         // every fixture the same TRUST `train_id`, which is unique per day.
         let service_date: chrono::NaiveDate = "2026-09-16".parse().unwrap();
@@ -3951,6 +3984,7 @@ mod db_tests {
                 get_by_uid_and_date_carries_cancellation_reasons -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_carries_cancellation_reasons() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         // One date per train: `seed_public_train` reuses one TRUST train_id.
         let cases = [
             ("TEST-RSN-CODED", "2026-09-18", "cancelled", "TG"),
@@ -4036,6 +4070,7 @@ mod db_tests {
         // this call path at all -- any authenticated (or anonymous) caller
         // sees the same public row.
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-UIDDATE-OWNER").await;
         let other_token = seed_session(&pool, "TEST-UIDDATE-OTHER").await;
         let service_date: chrono::NaiveDate = "2026-08-29".parse().unwrap();
@@ -4061,6 +4096,7 @@ mod db_tests {
                 get_by_uid_and_date_an_unknown_pair_is_404 -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_an_unknown_pair_is_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
 
         let router = test_router(test_app(pool.clone()));
         // No session cookie at all -- must still 404, not 401: an unknown
@@ -4095,6 +4131,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_creates_the_shared_row_for_a_search_visible_train() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         let train_uid = "TEST-SEARCH-VISIBLE-UID";
 
@@ -4269,6 +4306,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_serves_each_stops_ldbws_board_match() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let train_uid = "TEST-STOP-BOARD";
         let london = |at: chrono::DateTime<chrono::Utc>| {
             at.with_timezone(&chrono_tz::Europe::London).naive_local()
@@ -4456,6 +4494,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_schedule_matches_a_previously_untracked_row_with_live_data() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         let train_uid = "TEST-PUBLIC-SCHEDMATCH-UID";
 
@@ -4589,6 +4628,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_negative_caches_a_failed_schedule_match() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         let train_uid = "TEST-PUBLIC-NOMATCH-UID";
 
@@ -4723,6 +4763,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_by_uid_and_date_never_exposes_another_users_custom_name() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         seed_session(&pool, "TEST-UIDDATE-PRIVACY-OWNER").await;
         let other_token = seed_session(&pool, "TEST-UIDDATE-PRIVACY-OTHER").await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
@@ -4795,6 +4836,7 @@ mod db_tests {
                 post_track_by_uid_no_session_is_401 -- --ignored --test-threads=1`"]
     async fn post_track_by_uid_no_session_is_401() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let router = test_router(test_app(pool));
 
         // No session cookie at all -- unlike GET /Train/by-uid/{uid}/{date}
@@ -4818,6 +4860,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn post_track_by_uid_creates_a_subscription_that_inherits_known_schedule_data() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-KNOWN").await;
         let router = test_router(test_app(pool.clone()));
         let service_date = super::super::london_today();
@@ -4897,6 +4940,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn post_track_by_uid_allows_a_bare_uid_with_no_schedule_data() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-BARE").await;
         let router = test_router(test_app(pool.clone()));
         let service_date = super::super::london_today();
@@ -4956,6 +5000,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn post_track_by_uid_called_twice_returns_the_same_subscription() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-TWICE").await;
         let router = test_router(test_app(pool.clone()));
         let service_date = super::super::london_today();
@@ -5014,6 +5059,7 @@ mod db_tests {
                 post_track_by_uid_normalizes_the_uids_case -- --ignored --test-threads=1`"]
     async fn post_track_by_uid_normalizes_the_uids_case() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-CASE").await;
         let router = test_router(test_app(pool.clone()));
         let service_date = super::super::london_today();
@@ -5097,6 +5143,7 @@ mod db_tests {
     async fn post_track_still_rejects_a_pin_missing_required_fields_after_nullable_pin_columns_migration()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-LEGACY-VALIDATION-STILL-ENFORCED").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -5165,6 +5212,7 @@ mod db_tests {
                 public_enrichment_distinguishes_a_miss_from_a_failure -- --ignored --test-threads=1`"]
     async fn public_enrichment_distinguishes_a_miss_from_a_failure() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let date: chrono::NaiveDate = "2026-09-22".parse().unwrap();
         let app = test_app(pool.clone());
         let outcome = super::enrich_public_train_schedule(&app, "DB2NOSCHED", date).await;
@@ -5192,6 +5240,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn track_routes_enforce_the_upcoming_pin_cap_and_future_window() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-API6-PIN-CAP";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;
@@ -5394,6 +5443,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn null_pin_subscription_is_readable_on_both_read_routes() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-NULL-PIN-READ-ROUTES";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;
@@ -5493,6 +5543,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn post_track_by_uid_backfills_schedule_and_movement_data_from_the_backlog() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-NR-ENRICH-USER";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;
@@ -5722,6 +5773,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn post_track_by_uid_with_no_backlog_history_still_succeeds() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-NR-ENRICH-NOHISTORY";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;

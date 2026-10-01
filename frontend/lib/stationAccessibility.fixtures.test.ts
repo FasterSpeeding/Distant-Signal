@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import {
   ACCESSIBILITY_CATEGORIES,
   dedupeAcrossSection,
@@ -8,11 +8,7 @@ import {
   renderAccessibilityValue,
   type AccessibilityNode,
 } from './stationAccessibility';
-import {
-  ACCESSIBILITY_FIXTURE_CRS,
-  loadAccessibilityFixture,
-  loadAllAccessibilityFixtures,
-} from '@/test/fixtures/accessibility';
+import { ACCESSIBILITY_FIXTURE_CRS, loadAllAccessibilityFixtures } from '@/test/fixtures/accessibility';
 import type { StationAccessibilityData } from './types';
 
 /** The survey the design is built on, run as a test suite.
@@ -25,8 +21,60 @@ import type { StationAccessibilityData } from './types';
 
 const ALL_KEYS = ACCESSIBILITY_CATEGORIES.flatMap((category) => category.keys);
 
+// R-093 / FE-13: rendering all 31 payloads (~700 KB, every string through
+// the sanitizer) takes a few seconds, and a dozen tests below used to
+// re-read, re-parse and re-render all of them, each against vitest's 5 s
+// per-test timeout. Under load several of them timed out. The fixtures are
+// now parsed once, `renderAccessibilityValue` is pure (the same value and
+// key always give an equal tree, and nothing here mutates one), so its
+// results are memoised by value identity, and `beforeAll` renders every
+// station once up front. The tests then only walk cached trees.
+const FIXTURES = loadAllAccessibilityFixtures();
+
+function allFixtures(): { crs: string; data: StationAccessibilityData }[] {
+  return FIXTURES;
+}
+
+function fixture(crs: string): StationAccessibilityData {
+  const found = FIXTURES.find((entry) => entry.crs === crs);
+  if (!found) throw new Error(`no accessibility fixture for ${crs}`);
+  return found.data;
+}
+
+const renderCache = new Map<unknown, Map<string | undefined, AccessibilityNode>>();
+
+function render(value: unknown, topKey?: string): AccessibilityNode {
+  // Primitives would collide by value, which is harmless (same input, same
+  // output), so one Map serves both.
+  let byKey = renderCache.get(value);
+  if (!byKey) {
+    byKey = new Map();
+    renderCache.set(value, byKey);
+  }
+  let node = byKey.get(topKey);
+  if (!node) {
+    node = renderAccessibilityValue(value, topKey);
+    byKey.set(topKey, node);
+  }
+  return node;
+}
+
+// The one-off warm-up is the slow part, so it gets the time a cold render
+// of the whole set needs on a loaded CI runner (it took up to ~5 s per pass
+// under load in the R-093 report). 60 s is an upper bound, not an
+// expectation.
+beforeAll(() => {
+  for (const { data } of FIXTURES) {
+    for (const key of ALL_KEYS) {
+      if (!hasRenderableValue(data[key])) continue;
+      render(data[key]);
+      render(data[key], key);
+    }
+  }
+}, 60_000);
+
 function nodesFor(data: StationAccessibilityData): AccessibilityNode[] {
-  return ALL_KEYS.filter((key) => hasRenderableValue(data[key])).map((key) => renderAccessibilityValue(data[key]));
+  return ALL_KEYS.filter((key) => hasRenderableValue(data[key])).map((key) => render(data[key]));
 }
 
 /** Every node in a rendered tree, the root included. */
@@ -74,9 +122,7 @@ function valuesAt(value: unknown, segments: string[]): unknown[] {
 
 function everyValueAt(path: string): { crs: string; value: unknown }[] {
   const segments = path.split('.');
-  return loadAllAccessibilityFixtures().flatMap(({ crs, data }) =>
-    valuesAt(data, segments).map((value) => ({ crs, value })),
-  );
+  return allFixtures().flatMap(({ crs, data }) => valuesAt(data, segments).map((value) => ({ crs, value })));
 }
 
 describe('the 31-station fixture set', () => {
@@ -117,7 +163,7 @@ describe('the 31-station fixture set', () => {
   });
 
   it('carries eleven or twelve allowlisted keys per station, and nothing outside the allowlist', () => {
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       const keys = Object.keys(data);
       expect(keys.length, crs).toBeGreaterThanOrEqual(11);
       // `dropOffPickUp` is absent at 6/31 (§1.3) -- the only root-level
@@ -146,7 +192,7 @@ describe('the 31-station fixture set', () => {
     }
 
     const offenders: { crs: string; value: string }[] = [];
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       const strings = findAllStrings(data);
       for (const str of strings) {
         if (rscRefPattern.test(str)) {
@@ -165,10 +211,10 @@ describe('the 31-station fixture set', () => {
 describe('the raw fallback', () => {
   it('fires on nothing at all across 366 real key-renders', () => {
     const offenders: string[] = [];
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       for (const key of ALL_KEYS) {
         if (!hasRenderableValue(data[key])) continue;
-        const raws = walk(renderAccessibilityValue(data[key])).filter((node) => node.kind === 'raw');
+        const raws = walk(render(data[key])).filter((node) => node.kind === 'raw');
         if (raws.length > 0) offenders.push(`${crs}.${key}`);
       }
     }
@@ -179,18 +225,18 @@ describe('the raw fallback', () => {
     // The guarantee the fallback exists for has not been deleted along with
     // the 96.2% -- see §4.9 on why a renderer that blanked instead would be
     // the worse regression.
-    expect(renderAccessibilityValue(new Date()).kind).toBe('raw');
+    expect(render(new Date()).kind).toBe('raw');
   });
 
   it('renders every station to something, never to a blank section', () => {
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       const rendered = nodesFor(data).filter((node) => !isEmptyNode(node));
       expect(rendered.length, crs).toBeGreaterThan(0);
     }
   });
 
   it('never throws on any real payload', () => {
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       expect(() => nodesFor(data), crs).not.toThrow();
     }
   });
@@ -207,7 +253,7 @@ describe('the depth bound, measured from the fixtures', () => {
 
   it('leaves exactly one level of margin over the deepest real chain', () => {
     let observed = -1;
-    for (const { data } of loadAllAccessibilityFixtures()) {
+    for (const { data } of allFixtures()) {
       for (const key of ALL_KEYS) {
         if (!hasRenderableValue(data[key])) continue;
         observed = Math.max(observed, deepest(data[key], 0));
@@ -221,8 +267,8 @@ describe('the depth bound, measured from the fixtures', () => {
   });
 
   it('reaches the innermost value of that chain -- a car park opening period', () => {
-    const edb = loadAccessibilityFixture('EDB');
-    const rendered = JSON.stringify(walk(renderAccessibilityValue(edb.carParks)));
+    const edb = fixture('EDB');
+    const rendered = JSON.stringify(walk(render(edb.carParks)));
     expect(rendered).toMatch(/\d\d:\d\d–\d\d:\d\d/);
   });
 
@@ -251,7 +297,7 @@ describe('the depth bound, measured from the fixtures', () => {
         Object.values(value).forEach((child) => findOpeningTimes(child, depth + 1));
       }
     };
-    for (const { data } of loadAllAccessibilityFixtures()) {
+    for (const { data } of allFixtures()) {
       for (const key of ALL_KEYS) {
         if (hasRenderableValue(data[key])) findOpeningTimes(data[key], 0);
       }
@@ -284,7 +330,7 @@ describe('real payloads land on the pattern the survey says they do', () => {
   function kindsAt(path: string): Set<string> {
     return new Set(
       everyValueAt(path)
-        .map(({ value }) => renderAccessibilityValue(value))
+        .map(({ value }) => render(value))
         .filter((node) => !isEmptyNode(node))
         .map((node) => node.kind),
     );
@@ -346,10 +392,10 @@ describe('real payloads land on the pattern the survey says they do', () => {
 
   it('routes all twelve top-level keys to a pattern, never to the dump', () => {
     const kinds = new Set<string>();
-    for (const { data } of loadAllAccessibilityFixtures()) {
+    for (const { data } of allFixtures()) {
       for (const key of ALL_KEYS) {
         if (!hasRenderableValue(data[key])) continue;
-        kinds.add(renderAccessibilityValue(data[key]).kind);
+        kinds.add(render(data[key]).kind);
       }
     }
     // `facility` (lifts, dropOffPickUp) and `fields` (the other ten
@@ -362,7 +408,7 @@ describe('Pattern B, over every real entry', () => {
   it('never emits an unrecognised day token or an untrimmed time', () => {
     const allowed = new Set(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Public Holidays']);
     let entries = 0;
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       for (const node of allNodes(data)) {
         if (node.kind !== 'openingTimes') continue;
         for (const entry of node.entries) {
@@ -382,7 +428,7 @@ describe('Pattern B, over every real entry', () => {
   });
 
   it("finds LLE's self-contradicting 24-hour entries and shows both facts", () => {
-    const lle = loadAccessibilityFixture('LLE');
+    const lle = fixture('LLE');
     const conflicting = allNodes(lle).flatMap((node) =>
       node.kind === 'openingTimes' ? node.entries.filter((entry) => entry.hours.includes('source also lists')) : [],
     );
@@ -393,7 +439,7 @@ describe('Pattern B, over every real entry', () => {
 
 describe('sanitization, over every real string', () => {
   it('leaves no executable markup anywhere in any rendered tree', () => {
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       for (const node of allNodes(data)) {
         if (node.kind !== 'richText') continue;
         expect(node.html, crs).not.toMatch(/<script/i);
@@ -409,7 +455,7 @@ describe('sanitization, over every real string', () => {
     let https = 0;
     let http = 0;
     let mailto = 0;
-    for (const { data } of loadAllAccessibilityFixtures()) {
+    for (const { data } of allFixtures()) {
       for (const node of allNodes(data)) {
         if (node.kind !== 'richText') continue;
         https += (node.html.match(/href="https:/g) ?? []).length;
@@ -423,7 +469,7 @@ describe('sanitization, over every real string', () => {
   });
 
   it("demotes MAN's three note-level h2s rather than dropping their emphasis", () => {
-    const man = loadAccessibilityFixture('MAN');
+    const man = fixture('MAN');
     const demoted = allNodes(man).filter((node) => node.kind === 'richText' && node.html.includes('<p><strong>'));
     expect(demoted.length).toBeGreaterThan(0);
   });
@@ -482,7 +528,7 @@ describe('dedupeAcrossSection does not drop distinctly-labelled boolean facts (r
     };
     for (const key of keys) {
       if (!hasRenderableValue(data[key])) continue;
-      const rendered = renderAccessibilityValue(data[key], key);
+      const rendered = render(data[key], key);
       visit(seen ? dedupeAcrossSection(rendered, seen) : rendered, undefined);
     }
     return facts;
@@ -490,7 +536,7 @@ describe('dedupeAcrossSection does not drop distinctly-labelled boolean facts (r
 
   it("keeps every distinctly-labelled boolean fact a group's fixture data carries, across all 31 stations", () => {
     const offenders: string[] = [];
-    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+    for (const { crs, data } of allFixtures()) {
       for (const category of ACCESSIBILITY_CATEGORIES) {
         const before = booleanFactsIn(data, category.keys);
         const seen = new Set<string>();
@@ -510,7 +556,7 @@ describe('dedupeAcrossSection does not drop distinctly-labelled boolean facts (r
     // boolean facts (different keys, different labels) both rendering to
     // the identical bare `{kind:'text', text:'Yes'}` leaf. Neither may
     // disappear just because the other rendered first.
-    const bsk = loadAccessibilityFixture('BSK');
+    const bsk = fixture('BSK');
     const seen = new Set<string>();
     for (const category of ACCESSIBILITY_CATEGORIES) {
       const before = booleanFactsIn(bsk, category.keys);
