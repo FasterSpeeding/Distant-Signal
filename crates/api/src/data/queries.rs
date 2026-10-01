@@ -3622,7 +3622,7 @@ pub struct ScheduleCallingPointFullRowForTrain {
     pub platform: Option<String>,
     /// Public times, exact working times and direction -- see
     /// `ScheduleCallingPointsFullRow`. NULL on a row published before
-    /// migration `20261001120000` until the next publish.
+    /// migration `20261001160000` until the next publish.
     pub public_arrival: Option<chrono::NaiveTime>,
     pub public_departure: Option<chrono::NaiveTime>,
     pub working_arrival: Option<chrono::NaiveTime>,

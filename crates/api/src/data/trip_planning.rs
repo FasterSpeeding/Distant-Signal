@@ -29,7 +29,7 @@ struct CallingPointRow {
     booked_arrival: Option<chrono::NaiveTime>,
     booked_departure: Option<chrono::NaiveTime>,
     day_offset: i16,
-    /// NULL on a row published before migration `20261001120000`: read as
+    /// NULL on a row published before migration `20261001160000`: read as
     /// `true`, the behaviour before direction was published (a
     /// set-down-only stop was then simply absent).
     can_board: Option<bool>,

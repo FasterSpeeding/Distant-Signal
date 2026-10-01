@@ -470,12 +470,12 @@ Implemented: P3 (store public times), P2 (direction-aware stops), the
 additive API fields, the frontend display and labels, and the detailed WTT
 view (P9).
 
-- **Storage.** Migrations `20261001120000` (`schedule_calling_points_full`:
+- **Storage.** Migrations `20261001160000` (`schedule_calling_points_full`:
   `public_arrival`, `public_departure`, `working_arrival`,
   `working_departure`, `working_pass`, `can_board`, `can_alight`,
-  `request_stop`), `20261001120100` (`schedule_destination_departures`:
+  `request_stop`), `20261001160100` (`schedule_destination_departures`:
   `public_departure`, `public_calling_point_arrival`,
-  `public_destination_arrival`) and `20261001120200`
+  `public_destination_arrival`) and `20261001160200`
   (`train_movement_events.gbtt_timestamp`). All nullable, catalog-only.
   The schedule tables refill on the next schedule-reference publish; the
   `schedule_network_departures` JSON carries `public_departure`;

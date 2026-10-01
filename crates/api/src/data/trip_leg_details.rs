@@ -32,7 +32,7 @@ pub struct LegCallingPointRow {
     pub day_offset: i16,
     pub platform: Option<String>,
     /// The call's public (GBTT) times, NULL on a row published before
-    /// migration `20261001120000`.
+    /// migration `20261001160000`.
     pub public_arrival: Option<NaiveTime>,
     pub public_departure: Option<NaiveTime>,
 }
