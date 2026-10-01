@@ -1114,6 +1114,20 @@ jobs:
             echo "PrometheusRule must not use an 'x unless x offset' new-series clause" >&2; exit 1
           fi
           echo "${names}"
+          # 2026-10-01 outage: a critical DistantSignalPostgresDown on pg_up
+          # or, with the bundled Postgres, its StatefulSet's ready replicas.
+          grep -q 'max by (namespace) (pg_up{namespace="[^"]*"}) == 0$' <<<"${rule}"
+          grep -q 'kube_statefulset_status_replicas_ready{namespace="[^"]*", statefulset="distant-signal-postgres"}) < 1$' <<<"${rule}"
+          external_pg=$(helm template distant-signal charts/distant-signal "${base[@]}" \
+            --set metrics.prometheusRule.enabled=true \
+            --set postgresql.enabled=false \
+            --set externalDatabase.url=postgres://u:p@db.example.com/ds \
+            --set metrics.prometheusRule.postgresDown.pgUpSelector='job="pg"' \
+            --show-only templates/prometheusrule.yaml)
+          grep -q 'pg_up{namespace="[^"]*", job="pg"}' <<<"${external_pg}"
+          if grep -q 'kube_statefulset_status_replicas_ready' <<<"${external_pg}"; then
+            echo "PostgresDown must not read the bundled StatefulSet with postgresql.enabled=false" >&2; exit 1
+          fi
           # R-040/R-097: stuck entries and TRUST parse drops alert, one
           # parse-drop clause per consumer.
           grep -q 'increase(distant_signal_movement_feed_long_pending_total{namespace="[^"]*"}\[1h\])) > 0$' <<<"${rule}"

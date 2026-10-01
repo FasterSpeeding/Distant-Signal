@@ -3377,6 +3377,17 @@ metrics:
       archiveStallWindow: 15m
       archiverSelector: ""
       severity: warning
+    # DistantSignalPostgresDown (critical): the database is down, for
+    # `for`: postgres_exporter's pg_up is 0, or (with postgresql.enabled)
+    # the bundled Postgres StatefulSet has no ready replica
+    # (kube-state-metrics). The exporter is not part of this chart:
+    # `pgUpSelector` adds label matchers for its pg_up series, next to
+    # namespace="<release namespace>". Runbook: docs/alerts.md.
+    postgresDown:
+      enabled: true
+      for: 3m
+      severity: critical
+      pgUpSelector: ""
     # Needs movementRelay.enabled (all rules in this group read
     # movement-events state).
     #

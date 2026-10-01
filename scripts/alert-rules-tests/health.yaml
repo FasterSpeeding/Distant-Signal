@@ -1,0 +1,46 @@
+# promtool unit tests for the distant-signal.health group (see
+# recorded-alerts.yaml's header for how rules.yaml is rendered).
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  # pg_up drops to 0 at 5m: fires after `for: 3m`.
+  - interval: 1m
+    input_series:
+      - series: 'pg_up{namespace="distant-signal", pod="distant-signal-postgres-exporter-1"}'
+        values: '1x5 0x15'
+      - series: 'kube_statefulset_status_replicas_ready{namespace="distant-signal", statefulset="distant-signal-postgres"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: DistantSignalPostgresDown
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: DistantSignalPostgresDown
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: distant-signal}
+            exp_annotations:
+              summary: the Distant Signal database is down
+              description: "pg_up is 0, or the bundled Postgres has no ready replica. api, the consumers and the aggregator cannot read or write."
+              runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalpostgresdown
+  # The bundled StatefulSet loses its ready replica while the exporter is
+  # gone too (no pg_up at all); another namespace's pg_up is ignored.
+  - interval: 1m
+    input_series:
+      - series: 'kube_statefulset_status_replicas_ready{namespace="distant-signal", statefulset="distant-signal-postgres"}'
+        values: '1x5 0x15'
+      - series: 'kube_statefulset_status_replicas_ready{namespace="distant-signal", statefulset="other-postgres"}'
+        values: '0x20'
+      - series: 'pg_up{namespace="elsewhere", pod="exporter"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DistantSignalPostgresDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DistantSignalPostgresDown
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: distant-signal}
+            exp_annotations:
+              summary: the Distant Signal database is down
+              description: "pg_up is 0, or the bundled Postgres has no ready replica. api, the consumers and the aggregator cannot read or write."
+              runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalpostgresdown

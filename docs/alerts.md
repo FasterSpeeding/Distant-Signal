@@ -30,6 +30,30 @@ tests in `scripts/alert-rules-tests/`.
 
 Metric names below omit the `distant_signal_` prefix.
 
+## health
+
+### DistantSignalPostgresDown
+
+The Distant Signal database is down: postgres_exporter's `pg_up` is 0, or the
+bundled Postgres StatefulSet (`<release>-postgres`) has no ready replica. On
+2026-10-01 it was down for six hours (10:16-16:10 UTC) with only a warning
+about the exporter. Every writer stops: api answers 5xx on its `/private`
+ingest routes, the consumers keep their batches pending, the aggregator and
+notifier cycles fail, and movement-events lag grows.
+
+1. `kubectl -n distant-signal get pod distant-signal-postgres-0` and
+   `kubectl logs distant-signal-postgres-0 -c postgres --previous`: crash
+   loop, OOM, `could not write` / `No space left on device`, or a failed
+   recovery.
+2. Disk: `kubectl -n distant-signal exec distant-signal-postgres-0 -c postgres -- df -h /var/lib/postgresql/data`.
+   A full volume needs resizing (or WAL that failed to archive cleared, see
+   [Postgres PITR](postgres-pitr.md#archiving-is-failing)).
+3. Connections: `max_connections` reached shows as `too many clients` in
+   api's logs while `pg_up` stays 1.
+4. Once it is back, watch movement-events lag drain and the consumers'
+   error counters stop rising. Kafka and the Redis stream hold the TRUST
+   backlog only up to their retention and MAXLEN.
+
 ## movement-events
 
 ### DistantSignalMovementLagHigh

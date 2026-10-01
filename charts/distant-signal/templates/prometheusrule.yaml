@@ -50,7 +50,9 @@ so that clause fired on every rollout.
 {{- $archiveAlertOn := and ($rule.archiveUploadFailures).enabled .Values.archive.enabled }}
 {{- $signupSpikeOn := ($rule.userSignupSpike).enabled }}
 {{- $archiveExpiryOn := and ($rule.archiveExpiry).enabled .Values.archive.enabled (.Values.archive.expiry).enabled }}
-{{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn }}
+{{- $postgresDownOn := ($rule.postgresDown).enabled }}
+{{- $healthOn := $postgresDownOn }}
+{{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn $healthOn }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -66,6 +68,43 @@ metadata:
   {{- end }}
 spec:
   groups:{{ if not $anyOn }} []{{ end }}
+    {{- if $healthOn }}
+    - name: distant-signal.health
+      rules:
+        {{- with $rule.postgresDown }}
+        {{- if .enabled }}
+        {{- /*
+        2026-10-01: Postgres was down for six hours and the only alert was
+        the cluster's PostgresExporterDown (a warning, blaming the
+        exporter). Two sources, either enough: postgres_exporter's pg_up
+        (the exporter is not part of this chart; pgUpSelector narrows its
+        series), and, for the bundled Postgres, the StatefulSet's ready
+        replicas from kube-state-metrics, which still answers while the
+        exporter is down too.
+        */}}
+        {{- $pgUp := printf "namespace=%q" $ns }}
+        {{- with .pgUpSelector }}
+        {{- $pgUp = printf "%s, %s" $pgUp . }}
+        {{- end }}
+        - alert: DistantSignalPostgresDown
+          expr: |
+            max by (namespace) (pg_up{ {{- $pgUp -}} }) == 0
+            {{- if $.Values.postgresql.enabled }}
+            or max by (namespace) (kube_statefulset_status_replicas_ready{namespace="{{ $ns }}", statefulset="{{ include "distant-signal.postgresFullname" $ }}"}) < 1
+            {{- end }}
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "the Distant Signal database is down"
+            description: "pg_up is 0, or the bundled Postgres has no ready replica. api, the consumers and the aggregator cannot read or write."
+            runbook_url: {{ printf "%s#distantsignalpostgresdown" $runbook | quote }}
+        {{- end }}
+        {{- end }}
+    {{- end }}
     {{- if $movementOn }}
     - name: distant-signal.movement-events
       rules:
