@@ -2173,7 +2173,7 @@ now matches every other workload.
 | `metrics.prometheusRule.labels` | `{}` | Extra labels on the `PrometheusRule` object — whatever your Prometheus's `ruleSelector` matches (e.g. `release: kube-prometheus-stack`). |
 | `metrics.prometheusRule.annotations` | `{}` | Extra annotations on the `PrometheusRule` object. |
 | `metrics.prometheusRule.ruleLabels` | `{}` | Extra labels added to every alert, next to `severity`. |
-| `metrics.prometheusRule.runbookBaseUrl` | GitHub `main` | Prefix for each alert's `runbook_url`; the repo-relative doc path is appended. |
+| `metrics.prometheusRule.runbookBaseUrl` | GitHub `main` | Prefix for each alert's `runbook_url`; `/docs/alerts.md#<alert name, lowercased>` is appended. |
 | `metrics.prometheusRule.<alert>` | see `values.yaml` | Per-alert `enabled`, `for`, `severity` and threshold settings, `for` durations, severities and thresholds for `movementLag`, `movementLagGrowing`, `streamGap`, `deadLetter`, `deadLetterFull`, `relayPublishFailing`, `redisPersistence`, `groupRecreated`, `deadLetterExpiring`, `longPending`, `parseEnvelope`, `enricherErrors`, `componentMemory`, `fullCoverageWindow`, `notifierPushDropped`, `userSignupSpike`, `archiveUploadFailures`, `archiveExpiry`, `schedulePipeline`, `pollerFailures`, `ldbwsStalestStation` and `ldbwsInvalidCrs`. |
 
 #### Alerts
@@ -2193,6 +2193,13 @@ group only when `fullCoverageConsumer.windowedStats.enabled`, the archive
 alert only when `archive.enabled`, the archive-expiry group only when
 `archive.expiry.enabled` too, and the schedule-pipeline group only when
 `scheduleFeed.enabled`.
+
+Each alert carries a one-line `summary`, a short `description` and a
+`runbook_url` into [docs/alerts.md](../../docs/alerts.md), which holds the
+explanation and what to do. Expressions longer than about 300 characters are
+recording rules (`distant_signal:*`) in the same group, so the alert's
+`generatorURL` stays short. Both keep a 3-alert notification under ntfy's
+4,096-byte limit; `scripts/check-alert-payloads.py` checks it in CI.
 
 | Alert | Severity | Fires when (defaults) |
 |---|---|---|

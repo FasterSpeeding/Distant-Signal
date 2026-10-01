@@ -612,6 +612,21 @@ jobs:
       - name: chart values reference is complete
         run: python scripts/chart-values-doc.py check
 
+      # Every alert's summary, description, expr and estimated 3-alert
+      # webhook JSON stay under ntfy's 4,096-byte limit (the 2026-10-01
+      # outage's undelivered alerts), every alert has its docs/alerts.md
+      # runbook section, and the rendered rules pass `promtool check rules`
+      # and the unit tests in scripts/alert-rules-tests/. Here rather than
+      # in helm-lint: it needs the pinned PyYAML above. The script downloads
+      # promtool and verifies its checksum.
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.2.3
+
+      - name: alert payload sizes and promtool tests
+        run: python scripts/check-alert-payloads.py --report --download-promtool "${RUNNER_TEMP}/promtool"
+
   # Custom: no reusable Piped/Piped-actions workflow covers Helm at all.
   # `helm lint` + `helm template` against both the chart's own defaults and
   # values-example.yaml (which turns on the optional pollers/devAuthentik
@@ -1102,7 +1117,7 @@ jobs:
           # R-040/R-097: stuck entries and TRUST parse drops alert, one
           # parse-drop clause per consumer.
           grep -q 'increase(distant_signal_movement_feed_long_pending_total{namespace="[^"]*"}\[1h\])) > 0$' <<<"${rule}"
-          n_parse=$(grep -c '_errors_total{namespace="[^"]*", operation="parse_envelope"}\[1h\])) > 0, "consumer"' <<<"${rule}" || true)
+          n_parse=$(grep -c '_errors_total{namespace="[^"]*", operation="parse_envelope"}\[1h\])), "consumer"' <<<"${rule}" || true)
           [[ "${n_parse}" -eq 3 ]] || { echo "expected 3 parse_envelope clauses, got ${n_parse}" >&2; exit 1; }
           # Open sign-up: a burst of new accounts alerts, and the metric and
           # threshold come from values.
@@ -1123,7 +1138,7 @@ jobs:
             --show-only templates/prometheusrule.yaml)
           grep -q 'alert: DistantSignalPollerFailing' <<<"${pollers}"
           # ...including the mostly-failing clause (failure ratio over 1h).
-          grep -q '^ *> 0.5$' <<<"${pollers}"
+          grep -q '> bool 0.5,$' <<<"${pollers}"
           grep -q 'alert: DistantSignalLdbwsStationStale' <<<"${pollers}"
           grep -q 'alert: DistantSignalLdbwsInvalidCrs' <<<"${pollers}"
           grep -q 'max by (namespace, crs) (distant_signal_ldbws_invalid_crs_station{' <<<"${pollers}"
@@ -1728,7 +1743,9 @@ jobs:
           n_alerts=$(grep -c . <<<"${names}" || true)
           [[ "${n_alerts}" -eq 6 ]] || fail "expected 6 pgBackRest alerts, got: ${names}"
           if bad=$(grep -v '^DistantSignal' <<<"${names}"); then fail "alert names must start with DistantSignal: ${bad}"; fi
-          grep -q 'kube_job_failed{namespace="distant-signal", job_name=~"distant-signal-pgbackrest-(check|verify)-\[0-9\]+", condition="true"}' <<<"${rule}" \
+          grep -q 'kube_job_failed{namespace="distant-signal", job_name=~"distant-signal-pgbackrest-(check|verify|full|diff)-\[0-9\]+", condition="true"}' <<<"${rule}" \
+            || fail "the recorded failed-Job series must match every pgBackRest CronJob's Jobs"
+          grep -q 'distant_signal:pgbackrest_job_failed:recent{namespace="distant-signal", job_name=~"distant-signal-pgbackrest-(check|verify)-\[0-9\]+"}' <<<"${rule}" \
             || fail "the check alert must match the check and verify CronJobs' Jobs"
 
           for unset in image.tag repo.path repo.s3.endpoint repo.s3.bucket repo.s3.existingSecret; do
