@@ -1087,6 +1087,7 @@ struct GroupTrainRow {
     train_uid: Option<String>,
     status: Option<String>,
     delay_minutes: Option<i32>,
+    trains_id: Option<i64>,
     custom_name: Option<String>,
     added_by: String,
     added_by_name: Option<String>,
@@ -1117,7 +1118,17 @@ pub struct GroupTrain {
     pub resolution_status: String,
     pub train_uid: Option<String>,
     pub status: Option<String>,
+    /// The delay at the sharer's own stop (their pin destination), against
+    /// the public timetable; see `TrackedTrainState::delay_minutes`.
     pub delay_minutes: Option<i32>,
+    /// See `TrackedTrainState::delay_basis`.
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// See `TrackedTrainState::delay_provisional`.
+    pub delay_provisional: bool,
+    #[serde(skip_serializing)]
+    pub trains_id: Option<i64>,
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
     pub custom_name: Option<String>,
     pub added_by: String,
     pub added_by_name: Option<String>,
@@ -1126,6 +1137,23 @@ pub struct GroupTrain {
     /// gives this app no showable name are still told apart. Same
     /// contract, same derivation, as `GroupMember.display_tag`.
     pub added_by_tag: Option<String>,
+}
+
+impl crate::data::stop_delay::PublicDelayFields for GroupTrain {
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            self.trains_id,
+            self.train_uid.as_deref(),
+            self.service_date,
+            self.pin_destination_crs.as_deref(),
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
 }
 
 impl From<GroupTrainRow> for GroupTrain {
@@ -1144,6 +1172,10 @@ impl From<GroupTrainRow> for GroupTrain {
             train_uid: row.train_uid,
             status: row.status,
             delay_minutes: row.delay_minutes,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: row.trains_id,
+            working_delay_minutes: row.delay_minutes,
             custom_name: row.custom_name,
             added_by: row.added_by,
             // The sharer's `users.name`, else their `users.username` --
@@ -1180,6 +1212,7 @@ struct GroupJourneyRow {
     train_uid: Option<String>,
     status: Option<String>,
     delay_minutes: Option<i32>,
+    trains_id: Option<i64>,
     added_by: String,
     added_by_name: Option<String>,
     added_by_username: Option<String>,
@@ -1212,11 +1245,38 @@ pub struct GroupJourney {
     pub resolution_status: Option<String>,
     pub train_uid: Option<String>,
     pub status: Option<String>,
+    /// The delay at the sharer's own stop (their pin destination), against
+    /// the public timetable; see `TrackedTrainState::delay_minutes`.
     pub delay_minutes: Option<i32>,
+    /// See `TrackedTrainState::delay_basis`.
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// See `TrackedTrainState::delay_provisional`.
+    pub delay_provisional: bool,
+    #[serde(skip_serializing)]
+    pub trains_id: Option<i64>,
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
     pub added_by: String,
     pub added_by_name: Option<String>,
     /// Same contract as `GroupTrain.added_by_tag`.
     pub added_by_tag: Option<String>,
+}
+
+impl crate::data::stop_delay::PublicDelayFields for GroupJourney {
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            self.trains_id,
+            self.train_uid.as_deref(),
+            self.service_date,
+            self.pin_destination_crs.as_deref(),
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
 }
 
 impl From<GroupJourneyRow> for GroupJourney {
@@ -1237,6 +1297,10 @@ impl From<GroupJourneyRow> for GroupJourney {
             train_uid: row.train_uid,
             status: row.status,
             delay_minutes: row.delay_minutes,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: row.trains_id,
+            working_delay_minutes: row.delay_minutes,
             added_by: row.added_by,
             added_by_name: added_by.label,
             added_by_tag: added_by.tag,
@@ -1262,7 +1326,7 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
-                tr.train_uid, cs.status, cs.delay_minutes, ts.custom_name, \
+                tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, ts.custom_name, \
                 gt.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_trains gt \
          JOIN train_subscriptions ts ON ts.id = gt.train_subscription_id \
@@ -1280,7 +1344,9 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
     .fetch_all(pool)
     .await?;
     // Newest `MAX_GROUP_LIST_ITEMS` fetched, returned oldest-first as before.
-    Ok(rows.into_iter().rev().map(GroupTrain::from).collect())
+    let mut items: Vec<GroupTrain> = rows.into_iter().rev().map(GroupTrain::from).collect();
+    crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    Ok(items)
 }
 
 /// Every journey shared into `group_id`, oldest-shared first. No
@@ -1316,7 +1382,7 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, jl.service_date, ts.resolution_status, \
-                tr.train_uid, cs.status, cs.delay_minutes, \
+                tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_journeys gj \
          JOIN journeys j ON j.id = gj.journey_id \
@@ -1336,7 +1402,9 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
     .bind(MAX_GROUP_LIST_ITEMS)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().rev().map(GroupJourney::from).collect())
+    let mut items: Vec<GroupJourney> = rows.into_iter().rev().map(GroupJourney::from).collect();
+    crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    Ok(items)
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1354,6 +1422,7 @@ struct SharedTrainRow {
     train_uid: Option<String>,
     status: Option<String>,
     delay_minutes: Option<i32>,
+    trains_id: Option<i64>,
     custom_name: Option<String>,
     added_by: String,
     added_by_name: Option<String>,
@@ -1387,12 +1456,39 @@ pub struct SharedTrain {
     pub resolution_status: String,
     pub train_uid: Option<String>,
     pub status: Option<String>,
+    /// The delay at the sharer's own stop (their pin destination), against
+    /// the public timetable; see `TrackedTrainState::delay_minutes`.
     pub delay_minutes: Option<i32>,
+    /// See `TrackedTrainState::delay_basis`.
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// See `TrackedTrainState::delay_provisional`.
+    pub delay_provisional: bool,
+    #[serde(skip_serializing)]
+    pub trains_id: Option<i64>,
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
     pub custom_name: Option<String>,
     pub added_by: String,
     pub added_by_name: Option<String>,
     /// Same contract as `GroupTrain.added_by_tag`.
     pub added_by_tag: Option<String>,
+}
+
+impl crate::data::stop_delay::PublicDelayFields for SharedTrain {
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            self.trains_id,
+            self.train_uid.as_deref(),
+            self.service_date,
+            self.pin_destination_crs.as_deref(),
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
 }
 
 impl From<SharedTrainRow> for SharedTrain {
@@ -1413,6 +1509,10 @@ impl From<SharedTrainRow> for SharedTrain {
             train_uid: row.train_uid,
             status: row.status,
             delay_minutes: row.delay_minutes,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: row.trains_id,
+            working_delay_minutes: row.delay_minutes,
             custom_name: row.custom_name,
             added_by: row.added_by,
             // Same "name, else username, else nothing -- and never an
@@ -1483,7 +1583,7 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
-                tr.train_uid, cs.status, cs.delay_minutes, ts.custom_name, \
+                tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, ts.custom_name, \
                 gt.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_members me \
          JOIN groups g ON g.id = me.group_id \
@@ -1502,7 +1602,9 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
     .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(SharedTrain::from).collect())
+    let mut items: Vec<SharedTrain> = rows.into_iter().map(SharedTrain::from).collect();
+    crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    Ok(items)
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1522,6 +1624,7 @@ struct SharedJourneyRow {
     train_uid: Option<String>,
     status: Option<String>,
     delay_minutes: Option<i32>,
+    trains_id: Option<i64>,
     added_by: String,
     added_by_name: Option<String>,
     added_by_username: Option<String>,
@@ -1550,10 +1653,37 @@ pub struct SharedJourney {
     pub resolution_status: Option<String>,
     pub train_uid: Option<String>,
     pub status: Option<String>,
+    /// The delay at the sharer's own stop (their pin destination), against
+    /// the public timetable; see `TrackedTrainState::delay_minutes`.
     pub delay_minutes: Option<i32>,
+    /// See `TrackedTrainState::delay_basis`.
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// See `TrackedTrainState::delay_provisional`.
+    pub delay_provisional: bool,
+    #[serde(skip_serializing)]
+    pub trains_id: Option<i64>,
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
     pub added_by: String,
     pub added_by_name: Option<String>,
     pub added_by_tag: Option<String>,
+}
+
+impl crate::data::stop_delay::PublicDelayFields for SharedJourney {
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            self.trains_id,
+            self.train_uid.as_deref(),
+            self.service_date,
+            self.pin_destination_crs.as_deref(),
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
 }
 
 impl From<SharedJourneyRow> for SharedJourney {
@@ -1576,6 +1706,10 @@ impl From<SharedJourneyRow> for SharedJourney {
             train_uid: row.train_uid,
             status: row.status,
             delay_minutes: row.delay_minutes,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: row.trains_id,
+            working_delay_minutes: row.delay_minutes,
             added_by: row.added_by,
             added_by_name: added_by.label,
             added_by_tag: added_by.tag,
@@ -1605,7 +1739,7 @@ pub async fn list_shared_journeys_for_user(
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, jl.service_date, ts.resolution_status, \
-                tr.train_uid, cs.status, cs.delay_minutes, \
+                tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_members me \
          JOIN groups g ON g.id = me.group_id \
@@ -1627,7 +1761,9 @@ pub async fn list_shared_journeys_for_user(
     .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(SharedJourney::from).collect())
+    let mut items: Vec<SharedJourney> = rows.into_iter().map(SharedJourney::from).collect();
+    crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    Ok(items)
 }
 
 // ---------------------------------------------------------------------------
@@ -5011,6 +5147,10 @@ mod group_train_wire_shape_tests {
             train_uid: None,
             status: None,
             delay_minutes: None,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: None,
+            working_delay_minutes: None,
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
@@ -5031,7 +5171,9 @@ mod group_train_wire_shape_tests {
                 "addedByName",
                 "addedByTag",
                 "customName",
+                "delayBasis",
                 "delayMinutes",
+                "delayProvisional",
                 "pinDestinationCrs",
                 "pinDestinationName",
                 "pinOriginCrs",
@@ -5066,6 +5208,10 @@ mod shared_train_wire_shape_tests {
             train_uid: None,
             status: None,
             delay_minutes: None,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: None,
+            working_delay_minutes: None,
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
@@ -5097,7 +5243,9 @@ mod shared_train_wire_shape_tests {
                 "addedByName",
                 "addedByTag",
                 "customName",
+                "delayBasis",
                 "delayMinutes",
+                "delayProvisional",
                 "groupId",
                 "groupName",
                 "pinDestinationCrs",
@@ -5136,6 +5284,7 @@ mod shared_train_wire_shape_tests {
             train_uid: None,
             status: None,
             delay_minutes: None,
+            trains_id: None,
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: name.map(str::to_string),
@@ -5241,6 +5390,7 @@ mod display_name_collapse_tests {
             train_uid: None,
             status: None,
             delay_minutes: None,
+            trains_id: None,
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: name.map(str::to_string),
@@ -5263,6 +5413,7 @@ mod display_name_collapse_tests {
             train_uid: None,
             status: None,
             delay_minutes: None,
+            trains_id: None,
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: name.map(str::to_string),

@@ -400,6 +400,10 @@ pub struct JourneyStop {
     pub name: Option<String>,
     pub tiploc: Option<String>,
     pub kind: Option<schedule_query::CallingPointKind>,
+    /// The WORKING-timetable time, truncated to the minute. Deprecated on
+    /// the wire (docs/api-changelog.md): kept for one release, then switched
+    /// to the public time or removed. Read `publicArrival`/`publicDeparture`
+    /// (or `workingArrival`/`workingDeparture`) instead.
     pub scheduled_arrival: Option<DateTime<Utc>>,
     pub scheduled_departure: Option<DateTime<Utc>>,
     pub actual_arrival: Option<DateTime<Utc>>,
@@ -415,10 +419,24 @@ pub struct JourneyStop {
     pub estimated_departure: Option<DateTime<Utc>>,
     pub last_event_type: Option<String>,
     pub variation_status: Option<String>,
+    /// How late the train was at this stop, in whole minutes (negative is
+    /// early), measured against the PUBLIC timetable on the side the stop's
+    /// latest TRUST report was for (an arrival against the public arrival,
+    /// a departure against the public departure). `delay_basis` says which
+    /// public time was used, or that none was known and the working
+    /// timetable was used instead; see `common::public_delay` (design doc
+    /// §9 decision 2, §11). `None` until the train reports here.
+    ///
     /// See `apply_stop_status`'s own doc comment for the one exception:
     /// cleared to `None` for a [`StopStatus::Skipped`] stop even when a
     /// TRUST `PASS` event supplied a value here first.
     pub delay_minutes: Option<i32>,
+    /// The baseline `delay_minutes` was measured against: `public` (TRUST's
+    /// own public time), `publicSchedule` (the CIF public time, when TRUST
+    /// sent none, e.g. a movement matched from the backlog) or `working`
+    /// (no public time in that direction: a pass, or the departure of a
+    /// set-down-only stop). `None` exactly when `delay_minutes` is.
+    pub delay_basis: Option<common::public_delay::DelayBasis>,
     /// See [`StopStatus`]'s own doc comment. Computed by `apply_stop_status`,
     /// after the live movement overlay -- always `StopStatus::Unknown` on a
     /// freshly-built stop, same "None/default until the relevant pass runs"
@@ -541,6 +559,7 @@ impl JourneyStop {
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
+            delay_basis: None,
             // Overwritten by `apply_stop_status`, later in
             // `build_journey_stops` -- see that field's own doc comment.
             stop_status: StopStatus::Unknown,
@@ -659,7 +678,8 @@ fn stops_from_calling_points(
     tiploc_to_crs: &HashMap<String, String>,
     service_date: NaiveDate,
 ) -> Vec<JourneyStop> {
-    raw.iter()
+    let mut stops: Vec<JourneyStop> = raw
+        .iter()
         .map(|cp| {
             let key = tiploc_key(&cp.tiploc);
             let resolved = tiploc_to_crs.get(&key);
@@ -678,7 +698,36 @@ fn stops_from_calling_points(
                 .cloned();
             JourneyStop::from_calling_point(cp, crs, service_date)
         })
-        .collect()
+        .collect();
+    date_passes_in_order(&mut stops);
+    stops
+}
+
+/// A passing point has no booked time of its own, so a schedule stored
+/// before `schedule_query::resolve` dated passes by their own time carries
+/// the PREVIOUS call's day offset on a pass just after midnight, which then
+/// read a day early in the detailed working-timetable view. The train never
+/// goes back in time: a pass more than 12 hours before the latest working
+/// time ahead of it is the next day.
+fn date_passes_in_order(stops: &mut [JourneyStop]) {
+    let mut latest: Option<DateTime<Utc>> = None;
+    for stop in stops {
+        let t = &mut stop.timetable;
+        if let (Some(pass), Some(previous)) = (t.working_pass, latest)
+            && previous - pass > Duration::hours(12)
+        {
+            t.working_pass = Some(pass + Duration::days(1));
+        }
+        latest = [
+            t.working_arrival,
+            t.working_departure,
+            t.working_pass,
+            latest,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+    }
 }
 
 /// Fills in each stop's `name` from an already-fetched CRS->name map
@@ -1021,7 +1070,7 @@ async fn movement_events_for_trains(
     }
     let rows = sqlx::query_as::<_, Row>(
         "SELECT trains_id, UPPER(loc_crs) AS loc_crs, event_type, \
-                planned_timestamp, actual_timestamp, variation_status \
+                planned_timestamp, actual_timestamp, variation_status, gbtt_timestamp \
          FROM train_movement_events \
          WHERE trains_id = ANY($1) AND loc_crs IS NOT NULL \
          ORDER BY trains_id, received_at ASC, id ASC",
@@ -1102,49 +1151,63 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
             _ => {}
         }
 
-        // Delay is diffed from THIS movement event's own two fields --
-        // `actual_timestamp` and `planned_timestamp`, both off the SAME
-        // `train_movement_events` row -- rather than against
-        // `stop.scheduled_arrival`/`scheduled_departure`, which (once a CIF
-        // schedule source has populated them, via `from_calling_point` or
-        // the fallback branch above) come from a completely different
-        // pipeline: the CIF timetable, correctly BST-converted via
+        // Delay is measured from THIS movement event's own TRUST fields --
+        // `actual_timestamp` against its own `gbtt_timestamp` (the public
+        // time) or `planned_timestamp` (the working time), all off the SAME
+        // `train_movement_events` row -- never against
+        // `stop.scheduled_arrival`/`scheduled_departure` or the
+        // `timetable.public_*` instants, which come from a completely
+        // different pipeline: the CIF timetable, correctly BST-converted via
         // `chrono_tz`/`london_to_utc`. The real TRUST `TRAIN_MVT_ALL_TOC`
-        // feed has been observed delivering `planned_timestamp` AND
-        // `actual_timestamp` both skewed by the same amount vs true UTC
-        // (an upstream feed issue, outside this codebase -- this repo's own
-        // epoch-millis parsing in `trust-consumer` is unaffected). Diffing
-        // TRUST's own two fields against EACH OTHER cancels that skew out,
-        // exactly as `trust-consumer`'s own top-level `delay_minutes`
-        // already does (`crates/trust-consumer/src/process.rs:708`:
-        // `derived.delay_minutes = Some((a - p).num_minutes() as i32)`) --
-        // positive means late. Diffing TRUST's `actual` against the
-        // CIF-derived scheduled time instead mixes two independent
-        // timestamp bases and, under that skew, manufactures a bogus ~1
-        // hour "late" even when the train is genuinely on time per TRUST's
-        // own self-consistent numbers (see this fix's own regression
-        // tests). Because both fields come off the one event row, there's
-        // no ARRIVAL-vs-DEPARTURE pairing ambiguity to resolve here (unlike
-        // the DISPLAYED `actual_arrival`/`actual_departure` /
-        // `scheduled_arrival`/`scheduled_departure` above, which do need
-        // that pairing).
+        // feed has been observed delivering its timestamps all skewed by the
+        // same amount vs true UTC (an upstream feed issue, outside this
+        // codebase; see `common::trust_timestamp`). Diffing TRUST's own
+        // fields against EACH OTHER cancels that skew out, exactly as
+        // `trust-consumer`'s own top-level `delay_minutes` does -- positive
+        // means late. Diffing TRUST's `actual` against a CIF-derived time
+        // instead mixes two independent timestamp bases and, under that
+        // skew, manufactures a bogus ~1 hour "late" (see this fix's own
+        // regression tests).
         //
-        // If this event has no `planned_timestamp` (some TRUST messages
-        // omit it), `delay_minutes` is `None` -- "delay unknown" -- rather
-        // than falling back to the CIF-derived scheduled time, which would
-        // silently reintroduce the exact cross-basis bug this is fixing.
-        // This matches this function's established "don't guess when data
-        // is incomplete" convention (e.g. the event-type `_ => {}` arm
-        // just above, and the no-match-found early `continue` at the top
-        // of this loop).
+        // The baseline is the PUBLIC time (design doc §9 decision 2): TRUST's
+        // `gbtt_timestamp` when it sent one, else `planned_timestamp` moved
+        // by the schedule's own `public - working` gap at this call (both
+        // halves CIF, so still no cross-basis diff), else the working time
+        // itself -- `common::public_delay::reported_delay_with_gap`, which
+        // also records which one was used in `delay_basis`.
+        //
+        // If this event has neither a public nor a `planned_timestamp`
+        // (some TRUST messages omit it), `delay_minutes` is `None` -- "delay
+        // unknown" -- rather than falling back to a CIF-derived time, which
+        // would silently reintroduce the cross-basis bug above.
         //
         // Guarded like every other TRUST delay (M11 sibling, 2026-10-01): a
         // corrupt timestamp more than a day out is "delay unknown", not a
         // delay of thousands of minutes shown to the user.
-        stop.delay_minutes = match (event.actual_timestamp, event.planned_timestamp) {
-            (Some(a), Some(p)) => common::trust_timestamp::plausible_delay_minutes(a, p),
+        let public_gap = match event.event_type.as_deref() {
+            Some("ARRIVAL") => stop
+                .timetable
+                .public_arrival
+                .zip(stop.timetable.working_arrival),
+            Some("DEPARTURE") => stop
+                .timetable
+                .public_departure
+                .zip(stop.timetable.working_departure),
             _ => None,
-        };
+        }
+        .map(|(public, working)| public - working);
+        let measured = event.actual_timestamp.and_then(|actual| {
+            common::public_delay::reported_delay_with_gap(
+                common::public_delay::Reported {
+                    actual,
+                    planned: event.planned_timestamp,
+                    gbtt: event.gbtt_timestamp,
+                },
+                public_gap,
+            )
+        });
+        stop.delay_minutes = measured.map(|d| d.minutes);
+        stop.delay_basis = measured.map(|d| d.basis);
     }
 }
 
@@ -1224,6 +1287,7 @@ fn apply_stop_status(stops: &mut [JourneyStop], skipped_stations: &[String]) {
 
         if stop.stop_status == StopStatus::Skipped {
             stop.delay_minutes = None;
+            stop.delay_basis = None;
         }
     }
 }
@@ -1804,6 +1868,7 @@ pub(crate) mod test_support {
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
+            delay_basis: None,
             stop_status: StopStatus::Unknown,
             skip_source: None,
             platform: None,
@@ -1838,6 +1903,7 @@ mod tests {
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
+            delay_basis: None,
             stop_status: StopStatus::Unknown,
             skip_source: None,
             platform: None,
@@ -1944,6 +2010,22 @@ mod tests {
         assert_eq!(json["canBoard"], false);
         assert_eq!(json["requestStop"], true);
         assert!(json.get("timetable").is_none(), "flattened onto the stop");
+    }
+
+    /// Design doc §10's known gap: a pass just after midnight, stored with
+    /// the evening's day offset, is dated the next day; one before midnight
+    /// is left alone.
+    #[test]
+    fn a_pass_just_after_midnight_is_dated_the_next_day() {
+        let at = |s: &str| Some(s.parse::<DateTime<Utc>>().unwrap());
+        let mut stops = vec![blank_stop(), blank_stop(), blank_stop(), blank_stop()];
+        stops[0].timetable.working_departure = at("2026-10-01T22:57:00Z");
+        stops[1].timetable.working_pass = at("2026-10-01T22:59:00Z");
+        stops[2].timetable.working_pass = at("2026-09-30T23:01:30Z");
+        stops[3].timetable.working_arrival = at("2026-10-01T23:05:00Z");
+        date_passes_in_order(&mut stops);
+        assert_eq!(stops[1].timetable.working_pass, at("2026-10-01T22:59:00Z"));
+        assert_eq!(stops[2].timetable.working_pass, at("2026-10-01T23:01:30Z"));
     }
 
     #[test]
@@ -2768,6 +2850,7 @@ mod tests {
             planned_timestamp: Some(at.parse().unwrap()),
             actual_timestamp: Some(at.parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
+            gbtt_timestamp: None,
         }
     }
 
@@ -3491,6 +3574,7 @@ mod tests {
             planned_timestamp: None,
             actual_timestamp: None,
             variation_status: None,
+            gbtt_timestamp: None,
         };
         let events = vec![event("RDG", "ARRIVAL", "2026-09-14T09:15:00Z"), untimed];
 
@@ -3645,6 +3729,7 @@ mod tests {
             planned_timestamp: None,
             actual_timestamp: None,
             variation_status: None,
+            gbtt_timestamp: None,
         };
         let events = vec![
             untimed_clj,
@@ -3766,6 +3851,7 @@ mod tests {
                 planned_timestamp: None,
                 actual_timestamp: None,
                 variation_status: None,
+                gbtt_timestamp: None,
             },
         ];
 

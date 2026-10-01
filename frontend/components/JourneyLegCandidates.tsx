@@ -60,6 +60,12 @@ interface CandidateRow {
   /** How many days past the service date `legDestinationArrival` falls --
    * `0` for the overwhelming majority, non-zero for an overnight leg. */
   legDestinationArrivalDayOffset: number;
+  /** The PUBLIC (passenger timetable) departure at the leg's origin and
+   * arrival at its destination, `"HH:MM"`: what the leg shows, falling back
+   * to `scheduled`/`legDestinationArrival` (working timetable) when `null`.
+   * Optional: absent from an older backend. */
+  publicDeparture?: string | null;
+  legPublicDestinationArrival?: string | null;
   /** The train's operating ATOC code (e.g. `"SW"`), added to
    * `render::calling_point_departure_json`'s `"operator"` key by the
    * 2026-09-24 journey-leg-operator-filter plan. `null` for a CIF-sourced
@@ -384,13 +390,14 @@ export function JourneyLegCandidates({
  * terminus arrival -- when the schedule has no time for the leg's
  * destination. */
 function legTimes(row: CandidateRow): string {
-  const departure = `dep. ${row.legOriginCrs} ${row.scheduled}`;
-  if (!row.legDestinationArrival) return departure;
+  const departure = `dep. ${row.legOriginCrs} ${row.publicDeparture ?? row.scheduled}`;
+  const arrival = row.legPublicDestinationArrival ?? row.legDestinationArrival;
+  if (!arrival) return departure;
   // A non-zero day offset is rare but real (an overnight leg). Saying so
   // is cheaper than letting "dep. 23:40 → arr. 02:15" read as a
   // four-hours-backwards journey.
   const nextDay = row.legDestinationArrivalDayOffset > 0 ? ' (next day)' : '';
-  return `${departure} → arr. ${row.legDestinationCrs} ${row.legDestinationArrival}${nextDay}`;
+  return `${departure} → arr. ${row.legDestinationCrs} ${arrival}${nextDay}`;
 }
 
 /** One candidate, shaped like the `/trains` search-result row the design

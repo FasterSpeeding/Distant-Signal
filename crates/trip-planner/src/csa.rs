@@ -27,8 +27,13 @@ pub struct TrainLeg {
     pub uid: String,
     pub from_tiploc: String,
     pub to_tiploc: String,
+    /// Public times (see `schedule_query::Connection::departure_min`).
     pub departure_min: u32,
     pub arrival_min: u32,
+    /// The same two times on the working timetable
+    /// (`schedule_query::Connection::working_departure_min`).
+    pub working_departure_min: u32,
+    pub working_arrival_min: u32,
 }
 
 /// One fixed-link hop of a [`Journey`] -- a walk, tube, bus or ferry ride
@@ -451,6 +456,8 @@ fn reconstruct_legs(end_tiploc: &str, scan: &Scan<'_>) -> Vec<JourneyLeg> {
                     to_tiploc: connection.to_tiploc.clone(),
                     departure_min: boarded.departure_min,
                     arrival_min: connection.arrival_min,
+                    working_departure_min: boarded.working_departure_min,
+                    working_arrival_min: connection.working_arrival_min,
                 }));
                 stop.clone_from(source);
             }
@@ -473,6 +480,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            working_departure_min: dep,
+            working_arrival_min: arr,
             can_board: true,
             can_alight: true,
         }

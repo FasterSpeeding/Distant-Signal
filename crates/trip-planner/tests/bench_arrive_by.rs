@@ -79,6 +79,8 @@ fn network() -> (Vec<Connection>, InterchangeData) {
                         to_tiploc: tiploc(pair[1]),
                         departure_min: time,
                         arrival_min: time + run,
+                        working_departure_min: time,
+                        working_arrival_min: time + run,
                         can_board: true,
                         can_alight: true,
                     });

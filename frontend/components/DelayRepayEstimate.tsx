@@ -37,8 +37,8 @@ export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateR
       {/* LEG-14: say how current the rules are and where the delay figure
           comes from. */}
       <Text size="xs" c="dimmed">
-        Rules last checked: {DELAY_REPAY_RULES_CHECKED_ON}. Delays are based on public running data and may differ from
-        the operator&apos;s own records.
+        Rules last checked: {DELAY_REPAY_RULES_CHECKED_ON}. Delays are measured against the public timetable arrival at
+        your destination, from public running data, and may differ from the operator&apos;s own records.
       </Text>
       <Text size="sm">This app never submits a claim on your behalf.</Text>
       {/* The only place in this feature that opens a new tab -- every
@@ -50,15 +50,35 @@ export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateR
   );
 }
 
+/** Before the train reaches the ticket's destination the delay (and any
+ * band) is a projection from its current delay to the public timetable
+ * arrival there, and says so; it becomes final once the train arrives
+ * (design doc §9 decision 3). */
+function ProvisionalNote({ response }: { response: DelayRepayEstimateResponse }) {
+  if (!response.provisional || response.delayMinutes === null) return null;
+  const where = response.measuredAtCrs ?? 'your destination';
+  return (
+    <Text size="sm" fw={500}>
+      Provisional: the train hasn&apos;t reached {where} yet, so this uses its current delay projected to the timetabled
+      arrival there. It will change, and becomes final once the train arrives.
+    </Text>
+  );
+}
+
 function EstimateSummary({ response }: { response: DelayRepayEstimateResponse }) {
   const { estimate, delayMinutes } = response;
 
   if (estimate) {
+    const fare = estimate.fareBasis === 'return' ? 'your return fare' : 'your fare';
+    const title = estimate.provisional ? 'Provisional Delay Repay estimate' : 'Estimated Delay Repay eligibility';
     return (
-      <Alert color="grape" title="Estimated Delay Repay eligibility" variant="light">
-        Estimated compensation: {estimate.percentage}% of your fare ({estimate.scheme}, {estimate.bandMinutes}+ minute
-        delay). This is an estimate, not a guarantee.
-      </Alert>
+      <>
+        <Alert color="grape" title={title} variant="light">
+          Estimated compensation: {estimate.percentage}% of {fare} ({estimate.scheme}, {estimate.bandMinutes}+ minute
+          delay). This is an estimate, not a guarantee.
+        </Alert>
+        <ProvisionalNote response={response} />
+      </>
     );
   }
 
@@ -68,11 +88,14 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
     // from "some other reason didn't clear a band" -- this copy must not
     // assert a specific one of the three the response doesn't support.
     return (
-      <Text size="sm">
-        Based on the recorded delay ({delayMinutes} minutes), this operator&apos;s Delay Repay rules may not give a
-        payout at that length — but rules vary and this estimate can be wrong, so it&apos;s still worth checking
-        directly.
-      </Text>
+      <>
+        <Text size="sm">
+          Based on the recorded delay ({delayMinutes} minutes), this operator&apos;s Delay Repay rules may not give a
+          payout at that length — but rules vary and this estimate can be wrong, so it&apos;s still worth checking
+          directly.
+        </Text>
+        <ProvisionalNote response={response} />
+      </>
     );
   }
 

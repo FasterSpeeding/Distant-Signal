@@ -170,7 +170,20 @@ struct RenameResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DelayRepayEstimateResponse {
+    /// The delay against the PUBLIC arrival at `measured_at_crs` (the
+    /// ticket's destination), design doc §9 decision 3: measured once the
+    /// train has arrived there, projected before then (`provisional`).
     delay_minutes: Option<i32>,
+    /// `true` while the train has not arrived at `measured_at_crs` yet, so
+    /// `delay_minutes` (and `estimate`) are a projection that will change.
+    provisional: bool,
+    /// What `delay_minutes` was measured against; see
+    /// `common::public_delay::DelayBasis`. `None` exactly when
+    /// `delay_minutes` is.
+    delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// Where the delay was measured: the ticket's destination, else the
+    /// tracked train's pin destination, else the train's terminus.
+    measured_at_crs: Option<String>,
     estimate: Option<delay_repay_rules::DelayRepayEstimate>,
     // Always populated, independent of whether `estimate` is `Some` --
     // this route must never leave a caller with a bare percentage and no
@@ -446,7 +459,50 @@ async fn get_delay_repay_estimate(
             "no tracked train with that id".to_string(),
         ))?;
 
-    Ok(Json(build_delay_repay_response(&ticket, &state)))
+    let measured_at_crs = delay_repay_destination(&ticket, &state);
+    let target = crate::data::stop_delay::target(
+        state.trains_id,
+        state.train_uid.as_deref(),
+        state.service_date,
+        measured_at_crs.as_deref(),
+        state.working_delay_minutes,
+    )
+    // No stop to measure at means no measurement, never the delay at
+    // wherever the train happens to be.
+    .filter(|target| target.stop_crs.is_some());
+    let delay = match target {
+        Some(target) => crate::data::stop_delay::stop_delays(&app.database, &[target])
+            .await
+            .map_err(internal_error("read the delay at the ticket's destination"))?
+            .pop()
+            .flatten(),
+        None => None,
+    };
+
+    Ok(Json(build_delay_repay_response(
+        &ticket,
+        delay,
+        measured_at_crs,
+    )))
+}
+
+/// Where Delay Repay is measured: the ticket's own destination (what the
+/// operator pays on), else the tracked train's pin destination, else the
+/// train's terminus.
+fn delay_repay_destination(
+    ticket: &train_tracking::TrackedTrainTicket,
+    state: &train_tracking::TrackedTrainState,
+) -> Option<String> {
+    [
+        ticket.destination_crs.as_deref(),
+        state.pin_destination_crs.as_deref(),
+        state.schedule_destination_crs.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|crs| !crs.is_empty())
+    .map(str::to_uppercase)
 }
 
 /// Pure response assembly for `get_delay_repay_estimate`, extracted out of
@@ -454,23 +510,24 @@ async fn get_delay_repay_estimate(
 /// deliberately given no I/O capability of any kind, consistent with this
 /// whole feature's "the estimator's own call sites stay provably
 /// read-only/pure" posture (see `delay_repay_rules`'s module doc).
+/// `delay` is the delay against the public arrival at `measured_at_crs`.
 fn build_delay_repay_response(
     ticket: &train_tracking::TrackedTrainTicket,
-    state: &train_tracking::TrackedTrainState,
+    delay: Option<crate::data::stop_delay::StopDelay>,
+    measured_at_crs: Option<String>,
 ) -> DelayRepayEstimateResponse {
-    let estimate = match (ticket.operator.as_deref(), state.delay_minutes) {
-        (Some(operator), Some(delay_minutes)) => {
-            delay_repay_rules::estimate_delay_repay(operator, delay_minutes)
-        }
-        _ => None,
-    };
+    let estimate = delay_repay_rules::estimate_for(ticket.operator.as_deref(), delay);
     let claim_url = ticket.operator.as_deref().map_or(
         delay_repay_rules::GENERIC_CLAIM_URL,
         delay_repay_rules::claim_url_for,
     );
+    let (delay_minutes, delay_basis, provisional) = crate::data::stop_delay::split(delay);
 
     DelayRepayEstimateResponse {
-        delay_minutes: state.delay_minutes,
+        delay_minutes,
+        provisional,
+        delay_basis,
+        measured_at_crs: delay.and(measured_at_crs),
         estimate,
         claim_url: claim_url.to_string(),
         disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
@@ -1441,7 +1498,7 @@ pub(crate) async fn attach_journey_stops_batch(
                     train_uid: state.train_uid.as_deref().expect("filtered above"),
                     service_date: state.service_date,
                     calling_points_json: state.schedule_calling_points.as_ref(),
-                    current_delay_minutes: state.delay_minutes,
+                    current_delay_minutes: state.working_delay_minutes,
                     skipped_stations: &state.schedule_skipped_stations,
                     platform: state.schedule_platform.as_deref(),
                     planned_platform: state.schedule_planned_platform.as_deref(),
@@ -1522,7 +1579,7 @@ async fn attach_journey_stops_public(
         &state.train_uid,
         state.service_date,
         state.calling_points.as_ref(),
-        state.delay_minutes,
+        state.working_delay_minutes,
         &state.skipped_stations,
         state.platform.as_deref(),
         state.planned_platform.as_deref(),
@@ -1851,6 +1908,9 @@ mod tests {
             last_reported_location: Some("York".to_string()),
             last_event_type: Some("DEPARTURE".to_string()),
             delay_minutes,
+            delay_basis: None,
+            delay_provisional: false,
+            working_delay_minutes: delay_minutes,
             next_calling_point: Some("Newcastle".to_string()),
             eta_next: Some(fixed_instant()),
             eta_source: Some("darwin-estimated".to_string()),
@@ -1921,23 +1981,101 @@ mod tests {
 
     #[test]
     fn dr30_operator_with_a_qualifying_delay_gets_a_specific_estimate_and_claim_url() {
-        let response = build_delay_repay_response(&ticket(Some("LNER")), &state(Some(45)));
+        let response = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            Some(arrived(45)),
+            Some("EDB".into()),
+        );
 
         let estimate = response
             .estimate
             .expect("LNER + 45 minutes should clear the DR30 30-minute band");
         assert_eq!(estimate.scheme, "DR30");
         assert_eq!(estimate.percentage, 50);
+        assert!(!estimate.provisional);
         assert_eq!(
             response.claim_url,
             "https://delayrepay.lner.co.uk/delayrepayV2/"
         );
         assert_eq!(response.delay_minutes, Some(45));
+        assert!(!response.provisional);
+        assert_eq!(response.measured_at_crs.as_deref(), Some("EDB"));
+    }
+
+    fn arrived(minutes: i32) -> crate::data::stop_delay::StopDelay {
+        crate::data::stop_delay::StopDelay {
+            minutes,
+            basis: crate::data::stop_delay::DelayBasis::Public,
+            provisional: false,
+        }
+    }
+
+    /// Design doc §9 decision 3: before the train reaches the destination
+    /// the band is provisional, and says so; once it has, it is final.
+    #[test]
+    fn a_projected_delay_gives_a_provisional_estimate_and_an_arrival_a_final_one() {
+        let projected = Some(crate::data::stop_delay::StopDelay {
+            minutes: 16,
+            basis: crate::data::stop_delay::DelayBasis::PublicSchedule,
+            provisional: true,
+        });
+        let response = build_delay_repay_response(
+            &ticket(Some("Southeastern")),
+            projected,
+            Some("ASH".into()),
+        );
+        assert!(response.provisional);
+        let estimate = response.estimate.unwrap();
+        assert!(estimate.provisional);
+        assert_eq!(estimate.band_minutes, 15);
+        assert_eq!(
+            estimate.disclaimer,
+            delay_repay_rules::PROVISIONAL_DISCLAIMER
+        );
+        assert_eq!(
+            response.delay_basis,
+            Some(crate::data::stop_delay::DelayBasis::PublicSchedule)
+        );
+
+        let response = build_delay_repay_response(
+            &ticket(Some("Southeastern")),
+            Some(arrived(14)),
+            Some("ASH".into()),
+        );
+        assert!(!response.provisional);
+        assert_eq!(
+            response.estimate, None,
+            "14 minutes is under DR15's first band"
+        );
+        assert_eq!(response.delay_minutes, Some(14));
+    }
+
+    #[test]
+    fn the_destination_is_the_tickets_then_the_pins_then_the_terminus() {
+        let mut ticket = ticket(Some("LNER"));
+        let mut state = state(None);
+        state.schedule_destination_crs = Some("ABD".to_string());
+        ticket.destination_crs = Some(" ncl ".to_string());
+        assert_eq!(
+            delay_repay_destination(&ticket, &state).as_deref(),
+            Some("NCL")
+        );
+        ticket.destination_crs = None;
+        assert_eq!(
+            delay_repay_destination(&ticket, &state).as_deref(),
+            Some("EDB")
+        );
+        state.pin_destination_crs = None;
+        assert_eq!(
+            delay_repay_destination(&ticket, &state).as_deref(),
+            Some("ABD")
+        );
     }
 
     #[test]
     fn no_operator_on_the_ticket_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
-        let response = build_delay_repay_response(&ticket(None), &state(Some(45)));
+        let response =
+            build_delay_repay_response(&ticket(None), Some(arrived(45)), Some("EDB".into()));
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
@@ -2029,7 +2167,7 @@ mod tests {
     fn an_unresolved_delay_yields_no_estimate_but_claim_url_and_disclaimer_are_still_populated() {
         // Safety property #3: a caller must never see a bare/absent
         // caveat, even when the train hasn't resolved/reported a delay yet.
-        let response = build_delay_repay_response(&ticket(Some("LNER")), &state(None));
+        let response = build_delay_repay_response(&ticket(Some("LNER")), None, Some("EDB".into()));
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.delay_minutes, None);

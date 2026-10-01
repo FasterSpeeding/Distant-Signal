@@ -1698,6 +1698,17 @@ fn leg_candidate_json(
             "legDestinationArrivalDayOffset".to_string(),
             serde_json::Value::from(day_offset),
         );
+        // The PUBLIC arrival at the leg's destination (`publicDeparture`
+        // comes from the shared renderer). `null` when the call has none,
+        // e.g. until the next schedule publish.
+        let public_arrival = row
+            .get("leg_public_destination_arrival")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.chars().take(5).collect::<String>());
+        object.insert(
+            "legPublicDestinationArrival".to_string(),
+            public_arrival.map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
     }
     json
 }

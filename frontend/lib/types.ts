@@ -522,6 +522,13 @@ export interface ScheduleCallingPoint {
 
 export type JourneyStopKind = 'Origin' | 'Intermediate' | 'Terminate';
 
+/** What a delay was measured against
+ * (docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md §11):
+ * `public` is TRUST's own public-timetable time, `publicSchedule` the public
+ * time from the timetable when TRUST sent none, `working` the working
+ * timetable when there is no public time in that direction. */
+export type DelayBasis = 'public' | 'publicSchedule' | 'working';
+
 /** `crates/api/src/data/journey.rs`'s `StopStatus`, plain PascalCase on the
  * wire (no `rename_all`) -- same convention as `JourneyStopKind` just
  * above, the field this one sits next to on every `JourneyStop`.
@@ -601,10 +608,13 @@ export interface JourneyStop {
   estimatedDeparture: string | null; // RFC3339
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
   variationStatus: string | null;
-  // `null` for a `stopStatus: 'Skipped'` stop -- see
-  // `crates/api/src/data/journey.rs`'s `apply_stop_status` for why a
-  // skipped stop's own delay figure is suppressed rather than shown.
+  // Against the PUBLIC timetable at this stop (`delayBasis` says which public
+  // time, or `working` when there is none). `null` for a `stopStatus:
+  // 'Skipped'` stop -- see `crates/api/src/data/journey.rs`'s
+  // `apply_stop_status` for why a skipped stop's own delay figure is
+  // suppressed rather than shown.
   delayMinutes: number | null;
+  delayBasis?: DelayBasis | null;
   stopStatus: StopStatus;
   skipSource: SkipSource | null;
   // The CURRENT (live/expected) Darwin platform for this stop. Darwin/
@@ -753,7 +763,17 @@ export interface TrainJourneyState {
   status: JourneyStatus | null;
   lastReportedLocation: string | null;
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
+  /** Against the PUBLIC timetable at the passenger's own stop (a tracked
+   * train's pin destination; on the public train page, the latest call the
+   * train reported at). */
   delayMinutes: number | null;
+  /** What `delayMinutes` was measured against: `public` (TRUST's own public
+   * time), `publicSchedule` (the timetable's public time) or `working` (no
+   * public time known). Optional: absent from an older backend. */
+  delayBasis?: DelayBasis | null;
+  /** `true` while `delayMinutes` is a forecast (the train has not reached
+   * the stop it is measured at yet). */
+  delayProvisional?: boolean;
   nextCallingPoint: string | null;
   etaNext: string | null; // RFC3339
   etaSource: EtaSource | null;
@@ -834,7 +854,17 @@ export interface PublicTrainState {
   status: JourneyStatus | null;
   lastReportedLocation: string | null;
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
+  /** Against the PUBLIC timetable at the passenger's own stop (a tracked
+   * train's pin destination; on the public train page, the latest call the
+   * train reported at). */
   delayMinutes: number | null;
+  /** What `delayMinutes` was measured against: `public` (TRUST's own public
+   * time), `publicSchedule` (the timetable's public time) or `working` (no
+   * public time known). Optional: absent from an older backend. */
+  delayBasis?: DelayBasis | null;
+  /** `true` while `delayMinutes` is a forecast (the train has not reached
+   * the stop it is measured at yet). */
+  delayProvisional?: boolean;
   nextCallingPoint: string | null;
   etaNext: string | null; // RFC3339
   etaSource: EtaSource | null;
@@ -890,6 +920,13 @@ export interface TrackedTrainListItem {
   trainUid: string | null;
   status: JourneyStatus | null;
   delayMinutes: number | null;
+  /** What `delayMinutes` was measured against: `public` (TRUST's own public
+   * time), `publicSchedule` (the timetable's public time) or `working` (no
+   * public time known). Optional: absent from an older backend. */
+  delayBasis?: DelayBasis | null;
+  /** `true` while `delayMinutes` is a forecast (the train has not reached
+   * the stop it is measured at yet). */
+  delayProvisional?: boolean;
   trackedAt: string; // RFC3339 -- list ordering key
   // See `TrackedTrainState.customName`'s comment -- same contract.
   customName: string | null;
@@ -933,6 +970,13 @@ export interface JourneyListItem {
   resolutionStatus: string | null;
   status: string | null;
   delayMinutes: number | null;
+  /** What `delayMinutes` was measured against: `public` (TRUST's own public
+   * time), `publicSchedule` (the timetable's public time) or `working` (no
+   * public time known). Optional: absent from an older backend. */
+  delayBasis?: DelayBasis | null;
+  /** `true` while `delayMinutes` is a forecast (the train has not reached
+   * the stop it is measured at yet). */
+  delayProvisional?: boolean;
 }
 
 /** `GET /Journeys/{id}`'s per-leg `legSkip` field
@@ -1507,8 +1551,16 @@ export interface PartialTicket {
  * one. */
 export interface DelayRepayEstimate {
   scheme: 'DR15' | 'DR30';
+  /** 15, 30, 60 or 120. */
   bandMinutes: number;
   percentage: number;
+  /** Which fare `percentage` is of: the single fare below 120 minutes, the
+   * return fare in the 120-minute band. Optional: absent from an older
+   * backend (read as `single`). */
+  fareBasis?: 'single' | 'return';
+  /** `true` while the train has not reached the ticket's destination: the
+   * band is a projection and `disclaimer` says so. */
+  provisional?: boolean;
   disclaimer: string;
 }
 
@@ -1522,7 +1574,13 @@ export interface DelayRepayEstimate {
  * `components/DelayRepayEstimate.tsx` for how this is rendered honestly
  * without inventing a reason the API doesn't give. */
 export interface DelayRepayEstimateResponse {
+  /** Against the PUBLIC arrival at `measuredAtCrs` (the ticket's
+   * destination): final once the train has arrived there, projected before
+   * (`provisional`). */
   delayMinutes: number | null;
+  provisional?: boolean;
+  delayBasis?: DelayBasis | null;
+  measuredAtCrs?: string | null;
   estimate: DelayRepayEstimate | null;
   claimUrl: string;
   disclaimer: string;
@@ -1564,7 +1622,11 @@ export interface TicketListItem {
   resolutionStatus: ResolutionStatus | null;
   trainUid: string | null;
   status: JourneyStatus | null;
+  /** See `DelayRepayEstimateResponse.delayMinutes`. */
   delayMinutes: number | null;
+  provisional?: boolean;
+  delayBasis?: DelayBasis | null;
+  measuredAtCrs?: string | null;
   estimate: DelayRepayEstimate | null;
   claimUrl: string;
   disclaimer: string;
@@ -1718,6 +1780,13 @@ export interface GroupTrain {
   trainUid: string | null;
   status: string | null;
   delayMinutes: number | null;
+  /** What `delayMinutes` was measured against: `public` (TRUST's own public
+   * time), `publicSchedule` (the timetable's public time) or `working` (no
+   * public time known). Optional: absent from an older backend. */
+  delayBasis?: DelayBasis | null;
+  /** `true` while `delayMinutes` is a forecast (the train has not reached
+   * the stop it is measured at yet). */
+  delayProvisional?: boolean;
   customName: string | null;
   addedBy: string;
   /** Same contract as `GroupMember.displayName`: the sharer's own name, or
@@ -1802,6 +1871,13 @@ export interface GroupJourney {
   trainUid: string | null;
   status: string | null;
   delayMinutes: number | null;
+  /** What `delayMinutes` was measured against: `public` (TRUST's own public
+   * time), `publicSchedule` (the timetable's public time) or `working` (no
+   * public time known). Optional: absent from an older backend. */
+  delayBasis?: DelayBasis | null;
+  /** `true` while `delayMinutes` is a forecast (the train has not reached
+   * the stop it is measured at yet). */
+  delayProvisional?: boolean;
   addedBy: string;
   /** Same contract as `GroupMember.displayName`: the sharer's own name, or
    * `null` -- never their email address. */
@@ -1882,7 +1958,17 @@ export interface LineTrainLiveStatus {
   status: JourneyStatus | null;
   lastReportedLocation: string | null;
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
+  /** Against the PUBLIC timetable at the passenger's own stop (a tracked
+   * train's pin destination; on the public train page, the latest call the
+   * train reported at). */
   delayMinutes: number | null;
+  /** What `delayMinutes` was measured against: `public` (TRUST's own public
+   * time), `publicSchedule` (the timetable's public time) or `working` (no
+   * public time known). Optional: absent from an older backend. */
+  delayBasis?: DelayBasis | null;
+  /** `true` while `delayMinutes` is a forecast (the train has not reached
+   * the stop it is measured at yet). */
+  delayProvisional?: boolean;
   nextCallingPoint: string | null;
   etaNext: string | null; // RFC3339
   etaSource: EtaSource | null;

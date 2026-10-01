@@ -1873,7 +1873,24 @@ pub struct TrackedTrainState {
     pub status: Option<String>,
     pub last_reported_location: Option<String>,
     pub last_event_type: Option<String>,
+    /// The delay at the passenger's own stop, against the PUBLIC timetable
+    /// (`data::stop_delay`, design doc §9 decision 2): the pin destination, measured once the train has reported there and forecast before then. `None` until
+    /// known.
     pub delay_minutes: Option<i32>,
+    /// What `delay_minutes` was measured against (`public`, `publicSchedule`
+    /// or `working`, see `common::public_delay::DelayBasis`); `None` exactly
+    /// when `delay_minutes` is.
+    #[sqlx(skip)]
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// `true` while `delay_minutes` is a forecast (the train has not reported
+    /// at that stop yet).
+    #[sqlx(skip)]
+    pub delay_provisional: bool,
+    /// TRUST's running delay against the working timetable
+    /// (`train_current_state.delay_minutes`), internal: the input to the
+    /// per-stop estimates and to the forecast above. Never serialized.
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
     pub next_calling_point: Option<String>,
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
@@ -2013,7 +2030,8 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            tr.platform AS schedule_platform, tr.planned_platform AS schedule_planned_platform, \
            tr.id AS trains_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
-           cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
+           cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
+           cs.next_calling_point, cs.eta_next, cs.eta_source, \
            tt.custom_name, \
            (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
                AS shared_group_count \
@@ -2058,7 +2076,27 @@ pub struct TrackedTrainListItem {
     pub resolution_status: String,
     pub train_uid: Option<String>,
     pub status: Option<String>,
+    /// The delay at the passenger's own stop, against the PUBLIC timetable
+    /// (`data::stop_delay`, design doc §9 decision 2): see `TrackedTrainState::delay_minutes`. `None` until
+    /// known.
     pub delay_minutes: Option<i32>,
+    /// What `delay_minutes` was measured against (`public`, `publicSchedule`
+    /// or `working`, see `common::public_delay::DelayBasis`); `None` exactly
+    /// when `delay_minutes` is.
+    #[sqlx(skip)]
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// `true` while `delay_minutes` is a forecast (the train has not reported
+    /// at that stop yet).
+    #[sqlx(skip)]
+    pub delay_provisional: bool,
+    /// TRUST's running delay against the working timetable
+    /// (`train_current_state.delay_minutes`), internal: the input to the
+    /// per-stop estimates and to the forecast above. Never serialized.
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
+    /// The shared `trains` row, internal: what the delay is read for.
+    #[serde(skip_serializing)]
+    pub trains_id: Option<i64>,
     pub tracked_at: DateTime<Utc>,
     pub custom_name: Option<String>,
     /// See `TrackedTrainState::shared_group_count`'s doc comment -- same
@@ -2066,6 +2104,40 @@ pub struct TrackedTrainListItem {
     /// `/train/[uid]/[date]`'s tracking overlay, which reads this list
     /// rather than `GET /Train/{trackingId}`, warn on delete too).
     pub shared_group_count: i64,
+}
+
+impl crate::data::stop_delay::PublicDelayFields for TrackedTrainState {
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            self.trains_id,
+            self.train_uid.as_deref(),
+            self.service_date,
+            self.pin_destination_crs.as_deref(),
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
+}
+
+impl crate::data::stop_delay::PublicDelayFields for TrackedTrainListItem {
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            self.trains_id,
+            self.train_uid.as_deref(),
+            self.service_date,
+            self.pin_destination_crs.as_deref(),
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
 }
 
 /// A user's own tracked trains, most-recently-tracked first (`tracked_at
@@ -2099,7 +2171,8 @@ pub async fn list_tracked_trains_for_user(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 tt.pin_scheduled_departure, tt.resolution_status, tr.train_uid, \
-                cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name, \
+                cs.status, cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
+                tr.id AS trains_id, tt.tracked_at, tt.custom_name, \
                 (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
                     AS shared_group_count \
          FROM train_subscriptions tt \
@@ -2115,6 +2188,8 @@ pub async fn list_tracked_trains_for_user(
     .bind(MINE_LIST_LIMIT)
     .fetch_all(pool)
     .await?;
+    let mut rows = rows;
+    crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     Ok(rows)
 }
 
@@ -2128,7 +2203,9 @@ pub async fn get_by_tracking_id(
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    Ok(row)
+    let mut rows: Vec<TrackedTrainState> = row.into_iter().collect();
+    crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    Ok(rows.pop())
 }
 
 /// [`get_by_tracking_id`] for many ids in one query, keyed by id. An id with
@@ -2148,6 +2225,8 @@ pub async fn get_by_tracking_ids(
     .bind(ids)
     .fetch_all(pool)
     .await?;
+    let mut rows = rows;
+    crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     Ok(rows.into_iter().map(|row| (row.id, row)).collect())
 }
 
@@ -2708,8 +2787,36 @@ struct TicketListRow {
     resolution_status: Option<String>,
     train_uid: Option<String>,
     status: Option<String>,
+    /// `train_current_state.delay_minutes`: TRUST's running delay against
+    /// the working timetable, the input to the projection below.
     delay_minutes: Option<i32>,
     custom_name: Option<String>,
+    trains_id: Option<i64>,
+    /// The train's terminus, the last fallback for where Delay Repay is
+    /// measured (see [`TicketListRow::measured_at_crs`]).
+    schedule_destination_crs: Option<String>,
+    /// The delay against the public arrival at [`TicketListRow::measured_at_crs`],
+    /// filled in by `list_tickets_for_user` after the read.
+    #[sqlx(skip)]
+    destination_delay: Option<crate::data::stop_delay::StopDelay>,
+}
+
+impl TicketListRow {
+    /// Where this ticket's Delay Repay is measured: its own destination,
+    /// else the tracked train's pin destination, else the train's terminus
+    /// (the same order as `routes::train`'s `delay_repay_destination`).
+    fn measured_at_crs(&self) -> Option<String> {
+        [
+            self.destination_crs.as_deref(),
+            self.pin_destination_crs.as_deref(),
+            self.schedule_destination_crs.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|crs| !crs.is_empty())
+        .map(str::to_uppercase)
+    }
 }
 
 /// A user's own tickets, across every tracked train they have -- the
@@ -2758,7 +2865,15 @@ pub struct TicketListItem {
     pub resolution_status: Option<String>,
     pub train_uid: Option<String>,
     pub status: Option<String>,
+    /// The delay against the PUBLIC arrival at `measured_at_crs`, exactly
+    /// as `GET .../delay-repay`'s own `delayMinutes` (design doc §9
+    /// decision 3): measured once the train has arrived, projected before
+    /// (`provisional`).
     pub delay_minutes: Option<i32>,
+    /// See `DelayRepayEstimateResponse::provisional` (`routes::train`).
+    pub provisional: bool,
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    pub measured_at_crs: Option<String>,
     pub estimate: Option<delay_repay_rules::DelayRepayEstimate>,
     pub claim_url: String,
     pub disclaimer: &'static str,
@@ -2770,16 +2885,14 @@ pub struct TicketListItem {
 /// computed estimates for the same `(ticket, tracked train)` pair can
 /// never disagree.
 fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
-    let estimate = match (row.operator.as_deref(), row.delay_minutes) {
-        (Some(operator), Some(delay_minutes)) => {
-            delay_repay_rules::estimate_delay_repay(operator, delay_minutes)
-        }
-        _ => None,
-    };
+    let estimate = delay_repay_rules::estimate_for(row.operator.as_deref(), row.destination_delay);
     let claim_url = row.operator.as_deref().map_or(
         delay_repay_rules::GENERIC_CLAIM_URL,
         delay_repay_rules::claim_url_for,
     );
+    let measured_at_crs = row.destination_delay.and(row.measured_at_crs());
+    let (delay_minutes, delay_basis, provisional) =
+        crate::data::stop_delay::split(row.destination_delay);
 
     TicketListItem {
         id: row.id,
@@ -2799,7 +2912,10 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
         resolution_status: row.resolution_status,
         train_uid: row.train_uid,
         status: row.status,
-        delay_minutes: row.delay_minutes,
+        delay_minutes,
+        provisional,
+        delay_basis,
+        measured_at_crs,
         estimate,
         claim_url: claim_url.to_string(),
         disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
@@ -2849,7 +2965,8 @@ pub async fn list_tickets_for_user(
                 t.source, t.created_at, \
                 tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, tt.pin_scheduled_departure, \
                 tt.resolution_status, tr.train_uid, \
-                cs.status, cs.delay_minutes, t.custom_name \
+                cs.status, cs.delay_minutes, t.custom_name, \
+                tt.trains_id, tr.destination_crs AS schedule_destination_crs \
          FROM tracked_train_tickets t \
          LEFT JOIN train_subscriptions tt ON tt.id = t.tracked_train_id \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
@@ -2864,6 +2981,32 @@ pub async fn list_tickets_for_user(
     .bind(MINE_TICKETS_LIMIT)
     .fetch_all(pool)
     .await?;
+    let mut rows = rows;
+    // One batched read for every attached ticket's destination delay; a
+    // standalone ticket (no train) has no target and keeps `None`.
+    let mut positions = Vec::new();
+    let mut targets = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let target = row.service_date.and_then(|service_date| {
+            crate::data::stop_delay::target(
+                row.trains_id,
+                row.train_uid.as_deref(),
+                service_date,
+                row.measured_at_crs().as_deref(),
+                row.delay_minutes,
+            )
+        });
+        if let Some(target) = target.filter(|target| target.stop_crs.is_some()) {
+            positions.push(index);
+            targets.push(target);
+        }
+    }
+    if !targets.is_empty() {
+        let delays = crate::data::stop_delay::stop_delays(pool, &targets).await?;
+        for (index, delay) in positions.into_iter().zip(delays) {
+            rows[index].destination_delay = delay;
+        }
+    }
     Ok(rows.into_iter().map(build_ticket_list_item).collect())
 }
 
@@ -2892,6 +3035,13 @@ mod ticket_list_tests {
             status: Some("late".to_string()),
             delay_minutes,
             custom_name: None,
+            trains_id: Some(1),
+            schedule_destination_crs: Some("ABD".to_string()),
+            destination_delay: delay_minutes.map(|minutes| crate::data::stop_delay::StopDelay {
+                minutes,
+                basis: crate::data::stop_delay::DelayBasis::Public,
+                provisional: false,
+            }),
         }
     }
 
@@ -2921,6 +3071,9 @@ mod ticket_list_tests {
             status: None,
             delay_minutes: None,
             custom_name: None,
+            trains_id: None,
+            schedule_destination_crs: None,
+            destination_delay: None,
         }
     }
 
@@ -2942,6 +3095,22 @@ mod ticket_list_tests {
             "https://delayrepay.lner.co.uk/delayrepayV2/"
         );
         assert_eq!(item.delay_minutes, Some(45));
+    }
+
+    #[test]
+    fn a_projected_destination_delay_is_provisional_and_names_where_it_was_measured() {
+        let mut row = row(Some("Southeastern"), None);
+        row.destination_delay = Some(crate::data::stop_delay::StopDelay {
+            minutes: 30,
+            basis: crate::data::stop_delay::DelayBasis::PublicSchedule,
+            provisional: true,
+        });
+        let item = build_ticket_list_item(row);
+        assert_eq!(item.delay_minutes, Some(30));
+        assert!(item.provisional);
+        assert_eq!(item.measured_at_crs.as_deref(), Some("EDB"));
+        let estimate = item.estimate.unwrap();
+        assert_eq!((estimate.band_minutes, estimate.provisional), (30, true));
     }
 
     #[test]

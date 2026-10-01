@@ -156,6 +156,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: 0,
             arrival_min: 1,
+            working_departure_min: 0,
+            working_arrival_min: 1,
             can_board: true,
             can_alight: true,
         }
@@ -218,6 +220,8 @@ mod tests {
         Connection {
             departure_min: dep,
             arrival_min: arr,
+            working_departure_min: dep,
+            working_arrival_min: arr,
             can_board: true,
             can_alight: true,
             ..conn(uid, from, to)

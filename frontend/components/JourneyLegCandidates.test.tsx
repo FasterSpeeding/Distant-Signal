@@ -281,6 +281,32 @@ describe('JourneyLegCandidates', () => {
     expect(await screen.findByText(byVisibleText('dep. BTH 23:40 → arr. SWI 02:15 (next day)'))).toBeInTheDocument();
   });
 
+  it('shows the public (passenger timetable) times when the backend sends them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        candidates: () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  ...CANDIDATES_FIXTURE.results[0],
+                  // Working 10:32 / 11:08, public 10:31 / 11:09.
+                  publicDeparture: '10:31',
+                  legPublicDestinationArrival: '11:09',
+                },
+              ],
+              nextCursor: null,
+            }),
+            { status: 200 },
+          ),
+      }),
+    );
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
+
+    expect(await screen.findByText(byVisibleText('dep. BTH 10:31 → arr. SWI 11:09'))).toBeInTheDocument();
+  });
+
   it('POSTs the picked train and calls onPicked on success', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);

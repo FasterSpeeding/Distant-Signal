@@ -1756,6 +1756,8 @@ fn schedule_destination_departures_row_iter(
                     "public_departure": d.public_departure,
                     "public_calling_point_arrival": d.public_calling_point_arrival,
                     "public_destination_arrival": d.public_destination_arrival,
+                    "can_board": d.can_board,
+                    "can_alight": d.can_alight,
                 })
             })
         })
@@ -3092,6 +3094,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
@@ -3108,6 +3112,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
@@ -3128,6 +3134,8 @@ mod poll_once_tests {
                 public_departure: None,
                 public_calling_point_arrival: None,
                 public_destination_arrival: None,
+                can_board: true,
+                can_alight: true,
             }],
         );
 
@@ -3162,8 +3170,10 @@ mod poll_once_tests {
                 "public_departure": null,
                 "public_calling_point_arrival": null,
                 "public_destination_arrival": null,
+                "can_board": true,
+                "can_alight": true,
             }),
-            "exactly sixteen keys, named exactly as the table's columns are, \
+            "exactly eighteen keys, named exactly as the table's columns are, \
              with a Some(\"SR\") operator_atoc, a Some(\"1S00\") headcode \
              and a Some(\"SR408800\") rsid round-tripping to JSON strings"
         );
@@ -3224,6 +3234,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C11052".to_string(),
@@ -3240,6 +3252,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
@@ -3287,6 +3301,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C99999".to_string(),
@@ -3303,6 +3319,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
@@ -3352,6 +3370,8 @@ mod poll_once_tests {
                 public_departure: None,
                 public_calling_point_arrival: None,
                 public_destination_arrival: None,
+                can_board: true,
+                can_alight: true,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -3394,6 +3414,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
@@ -3410,6 +3432,8 @@ mod poll_once_tests {
                     public_departure: None,
                     public_calling_point_arrival: None,
                     public_destination_arrival: None,
+                    can_board: true,
+                    can_alight: true,
                 },
             ],
         );
@@ -3664,6 +3688,8 @@ LTWVRMPTN 2211 22113     TF";
                         day_offset: row["day_offset"].as_u64().unwrap() as u8,
                         can_board: row["can_board"].as_bool().unwrap(),
                         can_alight: row["can_alight"].as_bool().unwrap(),
+                        public_arrival: time(&row["public_arrival"]),
+                        public_departure: time(&row["public_departure"]),
                     });
             }
             schedule_query::build_connections(
@@ -3746,13 +3772,12 @@ LTWVRMPTN 2211 22113     TF";
         fn the_planner_alights_at_a_set_down_only_stop() {
             let rows = schedule_calling_points_full_rows(&index(), date());
             let connections = connections(&rows);
-            // Carlisle -> Motherwell on 9S65 is a valid journey (public
-            // 16:02 -> 17:01; the planner still searches on WTT, 16:02 ->
-            // 17:00 truncated -- planning on public times is P6).
+            // Carlisle -> Motherwell on 9S65 is a valid journey, planned on
+            // the public times 16:02 -> 17:01 (P6), not the WTT 17:00H.
             let journey = plan(&connections, "CARLILE", "MOTHRWL")
                 .expect("a set-down-only stop is somewhere to alight");
             assert_eq!(journey.departure_min, 16 * 60 + 2);
-            assert_eq!(journey.arrival_min, 17 * 60);
+            assert_eq!(journey.arrival_min, 17 * 60 + 1);
         }
 
         #[test]
@@ -3778,11 +3803,10 @@ LTWVRMPTN 2211 22113     TF";
             let rows = schedule_calling_points_full_rows(&index(), date());
             let journey = plan(&connections(&rows), "WATFDJ", "MKNSCEN").unwrap();
             assert_eq!(journey.departure_min, 20 * 60 + 31);
-            // The planner still searches on the WTT arrival 20:50H truncated
-            // to 20:50 (P6 moves it to public); the published row carries
-            // the PUBLIC arrival, 20:51, which is what users are shown, and
-            // the exact working arrival with its half-minute.
-            assert_eq!(journey.arrival_min, 20 * 60 + 50);
+            // The planner searches on the PUBLIC arrival, 20:51 (design doc
+            // §10, P6), not the WTT 20:50H truncated to 20:50; the published
+            // row carries both, the working one with its half-minute.
+            assert_eq!(journey.arrival_min, 20 * 60 + 51);
             let milton_keynes = rows_for(&rows, "C01355")
                 .into_iter()
                 .find(|r| r["tiploc"] == "MKNSCEN")

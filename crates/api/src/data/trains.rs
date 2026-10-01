@@ -441,7 +441,24 @@ pub struct PublicTrainState {
     pub status: Option<String>,
     pub last_reported_location: Option<String>,
     pub last_event_type: Option<String>,
+    /// The delay at the passenger's own stop, against the PUBLIC timetable
+    /// (`data::stop_delay`, design doc §9 decision 2): a public train page has no stop of the passenger's own, so this is the delay at the latest call the train reported at, else (nothing reported at a call yet) TRUST's running delay with `delay_basis: working`. `None` until
+    /// known.
     pub delay_minutes: Option<i32>,
+    /// What `delay_minutes` was measured against (`public`, `publicSchedule`
+    /// or `working`, see `common::public_delay::DelayBasis`); `None` exactly
+    /// when `delay_minutes` is.
+    #[sqlx(skip)]
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// `true` while `delay_minutes` is a forecast (the train has not reported
+    /// at that stop yet).
+    #[sqlx(skip)]
+    pub delay_provisional: bool,
+    /// TRUST's running delay against the working timetable
+    /// (`train_current_state.delay_minutes`), internal: the input to the
+    /// per-stop estimates and to the forecast above. Never serialized.
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
     pub next_calling_point: Option<String>,
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
@@ -571,6 +588,7 @@ pub async fn get_public_train_state(
                   WHERE sdd.train_uid = tr.train_uid AND sdd.service_date = tr.service_date) AS headcode, \
                 tr.skipped_stations, tr.platform, tr.planned_platform, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
+                cs.delay_minutes AS working_delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
          LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
@@ -582,7 +600,9 @@ pub async fn get_public_train_state(
     .bind(service_date)
     .fetch_optional(pool)
     .await?;
-    Ok(row)
+    let mut rows: Vec<PublicTrainState> = row.into_iter().collect();
+    crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    Ok(rows.pop())
 }
 
 /// Batched sibling of [`get_public_train_state`] -- one query covering
@@ -620,6 +640,7 @@ pub async fn get_public_train_states_for_line(
                   WHERE sdd.train_uid = tr.train_uid AND sdd.service_date = tr.service_date) AS headcode, \
                 tr.skipped_stations, tr.platform, tr.planned_platform, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
+                cs.delay_minutes AS working_delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
          LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
@@ -631,7 +652,27 @@ pub async fn get_public_train_states_for_line(
     .bind(service_date)
     .fetch_all(pool)
     .await?;
+    let mut rows = rows;
+    crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     Ok(rows)
+}
+
+impl crate::data::stop_delay::PublicDelayFields for PublicTrainState {
+    /// No stop of the passenger's own: the latest call.
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            Some(self.trains_id),
+            Some(&self.train_uid),
+            self.service_date,
+            None,
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
 }
 
 #[cfg(test)]

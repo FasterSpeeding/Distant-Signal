@@ -1330,7 +1330,47 @@ pub struct JourneyListItem {
     pub train_subscription_id: Option<i64>,
     pub resolution_status: Option<String>,
     pub status: Option<String>,
+    /// The delay at the passenger's own stop, against the PUBLIC timetable
+    /// (`data::stop_delay`, design doc §9 decision 2): the current leg's destination. `None` until
+    /// known.
     pub delay_minutes: Option<i32>,
+    /// What `delay_minutes` was measured against (`public`, `publicSchedule`
+    /// or `working`, see `common::public_delay::DelayBasis`); `None` exactly
+    /// when `delay_minutes` is.
+    #[sqlx(skip)]
+    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
+    /// `true` while `delay_minutes` is a forecast (the train has not reported
+    /// at that stop yet).
+    #[sqlx(skip)]
+    pub delay_provisional: bool,
+    /// TRUST's running delay against the working timetable
+    /// (`train_current_state.delay_minutes`), internal: the input to the
+    /// per-stop estimates and to the forecast above. Never serialized.
+    #[serde(skip_serializing)]
+    pub working_delay_minutes: Option<i32>,
+    /// The leg's shared `trains` row and its UID, internal: what the delay
+    /// is read for.
+    #[serde(skip_serializing)]
+    pub trains_id: Option<i64>,
+    #[serde(skip_serializing)]
+    pub train_uid: Option<String>,
+}
+
+impl crate::data::stop_delay::PublicDelayFields for JourneyListItem {
+    fn delay_target(&self) -> Option<crate::data::stop_delay::StopDelayTarget> {
+        crate::data::stop_delay::target(
+            self.trains_id,
+            self.train_uid.as_deref(),
+            self.service_date,
+            self.destination_crs.as_deref(),
+            self.working_delay_minutes,
+        )
+    }
+
+    fn set_public_delay(&mut self, delay: Option<crate::data::stop_delay::StopDelay>) {
+        (self.delay_minutes, self.delay_basis, self.delay_provisional) =
+            crate::data::stop_delay::split(delay);
+    }
 }
 
 /// Most-recently-created journey first, capped at the same
@@ -1364,6 +1404,7 @@ pub async fn list_journeys_for_user(
              SELECT jl.id, jl.journey_id, jl.leg_order, jl.origin_crs, jl.destination_crs, \
                     jl.service_date, jl.match_mode, jl.train_subscription_id, \
                     ts.resolution_status, cs.status, cs.delay_minutes, \
+                    ts.trains_id, tr.train_uid, \
                     ROW_NUMBER() OVER ( \
                         PARTITION BY jl.journey_id \
                         ORDER BY (cs.status IS DISTINCT FROM 'completed') DESC, \
@@ -1373,12 +1414,14 @@ pub async fn list_journeys_for_user(
              FROM journey_legs jl \
              LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
              LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+             LEFT JOIN trains tr ON tr.id = ts.trains_id \
              WHERE jl.journey_id IN (SELECT id FROM recent) \
          ) \
          SELECT r.id, r.custom_name, r.created_at, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
                 so.name AS origin_name, sd.name AS destination_name, rl.match_mode, \
-                rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes \
+                rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes, \
+                rl.delay_minutes AS working_delay_minutes, rl.trains_id, rl.train_uid \
          FROM recent r \
          JOIN ranked_legs rl ON rl.journey_id = r.id AND rl.rn = 1 \
          LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs)::bpchar \
@@ -1389,6 +1432,8 @@ pub async fn list_journeys_for_user(
     .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
     .fetch_all(pool)
     .await?;
+    let mut rows = rows;
+    crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     Ok(rows)
 }
 
