@@ -353,11 +353,15 @@ async fn server_main() -> anyhow::Result<()> {
     // `api::migrate`.
     let migrate = async {
         data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
-        let migration_options: sqlx::postgres::PgConnectOptions =
-            app.config
-                .database_url
-                .parse()
-                .context("could not parse DATABASE_URL")?;
+        // MIGRATION_DATABASE_URL (the schema owner) when set, else
+        // DATABASE_URL. See `api::migrate::migration_url`.
+        let (migration_url, migration_url_var) = api::migrate::migration_url(
+            &app.config.database_url,
+            app.config.migration_database_url.as_deref(),
+        );
+        let migration_options: sqlx::postgres::PgConnectOptions = migration_url
+            .parse()
+            .with_context(|| format!("could not parse {migration_url_var}"))?;
         api::migrate::run(
             api::app::with_dead_client_detection(migration_options),
             api::migrate::MigrationSettings::from_env()?,

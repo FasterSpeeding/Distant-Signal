@@ -20,6 +20,24 @@
 
 use sqlx::{Connection, PgConnection, PgPool};
 
+/// URL for the few database-gated tests that need the schema owner's rights
+/// (DDL: creating and dropping tables and indexes, running the migrator):
+/// `MIGRATION_DATABASE_URL` when set and not blank, else `DATABASE_URL`.
+///
+/// With the role split (docs/postgres-app-role.md) the suite runs with
+/// `DATABASE_URL` as the non-superuser app role, which only has DML, and
+/// `MIGRATION_DATABASE_URL` as the owner role -- exactly as in production,
+/// where only `api::migrate` uses the owner. Without it both are the same
+/// (super)user, as before.
+pub(crate) fn owner_database_url() -> String {
+    let database_url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+    let migration_database_url = std::env::var(crate::migrate::MIGRATION_DATABASE_URL_ENV).ok();
+    crate::migrate::migration_url(&database_url, migration_database_url.as_deref())
+        .0
+        .to_owned()
+}
+
 /// Fixture dates must be at least this far in the future, so a date-scoped
 /// delete can never touch a real published day. See [`assert_synthetic_date`].
 pub(crate) const FIRST_SYNTHETIC_YEAR: i32 = 2050;
