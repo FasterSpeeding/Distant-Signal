@@ -427,6 +427,7 @@ fn collect_crs_departures(
                 scheduled: departure,
                 day_offset,
                 destination_crs,
+                public_departure: cp.public_departure,
             });
     }
 }
@@ -546,6 +547,11 @@ pub fn departures_by_destination_crs(
             .calling_points
             .last()
             .and_then(|last| last.booked_arrival);
+        // The public counterpart, from the same terminating calling point.
+        let public_destination_arrival = resolved
+            .calling_points
+            .last()
+            .and_then(|last| last.public_arrival);
         // The terminating calling point's OWN day_offset -- already
         // computed for every calling point (including the last one) by
         // `assign_day_offsets` inside `resolve_for_date`, just not
@@ -602,6 +608,9 @@ pub fn departures_by_destination_crs(
                     operator_atoc: operator_atoc.clone(),
                     headcode: headcode.clone(),
                     rsid: rsid.clone(),
+                    public_departure: cp.public_departure,
+                    public_calling_point_arrival: cp.public_arrival,
+                    public_destination_arrival,
                 });
         }
     }
@@ -923,6 +932,7 @@ mod tests {
             public_arrival: None,
             public_departure: None,
             platform: None,
+            booked_pass: None,
         }
     }
 
@@ -943,6 +953,7 @@ mod tests {
             public_arrival: None,
             public_departure: None,
             platform: None,
+            booked_pass: None,
         }
     }
 
@@ -963,6 +974,7 @@ mod tests {
             public_arrival: None,
             public_departure: None,
             platform: None,
+            booked_pass: None,
         }
     }
 
@@ -984,6 +996,7 @@ mod tests {
             public_arrival: None,
             public_departure: None,
             platform: None,
+            booked_pass: None,
         }
     }
 
@@ -2442,6 +2455,7 @@ mod tests {
                 public_arrival: None,
                 public_departure: None,
                 platform: None,
+                booked_pass: None,
             }],
         )];
         // service_date is 2026-09-05, but Barking's real booked_departure

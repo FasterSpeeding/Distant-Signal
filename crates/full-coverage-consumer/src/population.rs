@@ -716,6 +716,7 @@ mod tests {
             public_arrival: None,
             public_departure: None,
             platform: None,
+            booked_pass: None,
         }
     }
 

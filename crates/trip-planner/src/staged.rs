@@ -347,6 +347,10 @@ impl<'a> Forward<'a> {
                 let boarding = match aboard[stage].get(&connection.uid) {
                     Some(&boarding) => boarding,
                     None => {
+                        // No fresh boarding at a set-down-only stop.
+                        if !connection.can_board {
+                            continue;
+                        }
                         let labels = previous.unwrap_or(&*current);
                         if stage > 0 && labels.arrival[stage].is_empty() {
                             continue;
@@ -370,17 +374,21 @@ impl<'a> Forward<'a> {
                 if arena[boarding].first.is_none() {
                     arena[boarding].first = Some(connection.clone());
                 }
-                self.relax(
-                    current,
-                    stage,
-                    &connection.to_tiploc,
-                    connection.arrival_min,
-                    Via::Train {
-                        connection: connection.clone(),
-                        round,
-                        boarding,
-                    },
-                );
+                // No arrival at a pick-up-only stop. Riding on through it --
+                // including through a waypoint there -- is still allowed.
+                if connection.can_alight {
+                    self.relax(
+                        current,
+                        stage,
+                        &connection.to_tiploc,
+                        connection.arrival_min,
+                        Via::Train {
+                            connection: connection.clone(),
+                            round,
+                            boarding,
+                        },
+                    );
+                }
                 if stage < self.last()
                     && self.targets[stage].contains(normalize_tiploc(&connection.to_tiploc))
                 {
@@ -608,6 +616,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            can_board: true,
+            can_alight: true,
         }
     }
 
@@ -772,6 +782,17 @@ mod tests {
         assert!(scan_staged(&options, 0, None, None).is_none());
     }
 
+    /// `(can board at the next call, can alight at it)` for a random network:
+    /// an intermediate call is set-down-only one time in seven and
+    /// pick-up-only one time in seven; the last call is an ordinary one.
+    fn random_direction(intermediate: bool, roll: u64) -> (bool, bool) {
+        match (intermediate, roll) {
+            (true, 0) => (false, true),
+            (true, 1) => (true, false),
+            _ => (true, true),
+        }
+    }
+
     /// With no waypoints the staged searches are the plain ones: same
     /// arrivals, same change counts, over random networks.
     #[test]
@@ -789,16 +810,25 @@ mod tests {
             for train in 0..25 {
                 let mut at = stops[next(stops.len() as u64) as usize];
                 let mut time = 300 + next(600) as u32;
-                for _ in 0..(1 + next(4)) {
+                let mut can_board_at = true;
+                let hops = 1 + next(4);
+                for hop in 0..hops {
                     let mut to = stops[next(stops.len() as u64) as usize];
                     if to == at {
                         to =
                             stops[(stops.iter().position(|s| *s == at).unwrap() + 1) % stops.len()];
                     }
                     let run = 5 + next(60) as u32;
-                    connections.push(conn(&format!("T{train}"), at, to, time, time + run));
+                    // Some intermediate calls are set-down-only or
+                    // pick-up-only (see `random_direction`).
+                    let (board_next, alight) = random_direction(hop + 1 < hops, next(7));
+                    let mut connection = conn(&format!("T{train}"), at, to, time, time + run);
+                    connection.can_board = can_board_at;
+                    connection.can_alight = alight;
+                    connections.push(connection);
                     time += run + next(3) as u32;
                     at = to;
+                    can_board_at = board_next;
                 }
             }
             let connections = sorted(connections);
@@ -879,16 +909,25 @@ mod tests {
             for train in 0..30 {
                 let mut at = stops[next(stops.len() as u64) as usize];
                 let mut time = 300 + next(600) as u32;
-                for _ in 0..(1 + next(5)) {
+                let mut can_board_at = true;
+                let hops = 1 + next(5);
+                for hop in 0..hops {
                     let mut to = stops[next(stops.len() as u64) as usize];
                     if to == at {
                         to =
                             stops[(stops.iter().position(|s| *s == at).unwrap() + 1) % stops.len()];
                     }
                     let run = 5 + next(60) as u32;
-                    connections.push(conn(&format!("T{train}"), at, to, time, time + run));
+                    // Some intermediate calls are set-down-only or
+                    // pick-up-only (see `random_direction`).
+                    let (board_next, alight) = random_direction(hop + 1 < hops, next(7));
+                    let mut connection = conn(&format!("T{train}"), at, to, time, time + run);
+                    connection.can_board = can_board_at;
+                    connection.can_alight = alight;
+                    connections.push(connection);
                     time += run + next(3) as u32;
                     at = to;
+                    can_board_at = board_next;
                 }
             }
             let connections = sorted(connections);
@@ -982,16 +1021,25 @@ mod tests {
             for train in 0..30 {
                 let mut at = stops[next(stops.len() as u64) as usize];
                 let mut time = 300 + next(600) as u32;
-                for _ in 0..(1 + next(5)) {
+                let mut can_board_at = true;
+                let hops = 1 + next(5);
+                for hop in 0..hops {
                     let mut to = stops[next(stops.len() as u64) as usize];
                     if to == at {
                         to =
                             stops[(stops.iter().position(|s| *s == at).unwrap() + 1) % stops.len()];
                     }
                     let run = 5 + next(60) as u32;
-                    connections.push(conn(&format!("T{train}"), at, to, time, time + run));
+                    // Some intermediate calls are set-down-only or
+                    // pick-up-only (see `random_direction`).
+                    let (board_next, alight) = random_direction(hop + 1 < hops, next(7));
+                    let mut connection = conn(&format!("T{train}"), at, to, time, time + run);
+                    connection.can_board = can_board_at;
+                    connection.can_alight = alight;
+                    connections.push(connection);
                     time += run + next(3) as u32;
                     at = to;
+                    can_board_at = board_next;
                 }
             }
             let connections = sorted(connections);

@@ -300,6 +300,10 @@ fn run_one_round<'c>(
         let ride = match reachable_trip.get(&connection.uid) {
             Some(&ride) => ride,
             None => {
+                // No fresh boarding at a set-down-only stop.
+                if !connection.can_board {
+                    continue;
+                }
                 let Some(source) = ready_source_at(
                     &previous.arrival,
                     origin,
@@ -319,16 +323,19 @@ fn run_one_round<'c>(
                 ride
             }
         };
-        relax_in_round(
-            &mut current,
-            &mut touched,
-            interchange,
-            restrictions,
-            date,
-            &connection.to_tiploc,
-            connection.arrival_min,
-            ArrivalSource::Train(connection.clone(), round, ride),
-        );
+        // No arrival at a pick-up-only stop; the ride carries on.
+        if connection.can_alight {
+            relax_in_round(
+                &mut current,
+                &mut touched,
+                interchange,
+                restrictions,
+                date,
+                &connection.to_tiploc,
+                connection.arrival_min,
+                ArrivalSource::Train(connection.clone(), round, ride),
+            );
+        }
     }
 
     let improved = !touched.is_empty();
@@ -533,6 +540,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            can_board: true,
+            can_alight: true,
         }
     }
 

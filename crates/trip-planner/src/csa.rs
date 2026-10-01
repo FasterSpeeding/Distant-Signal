@@ -357,6 +357,11 @@ pub fn scan_connections_restricted(
         let ride = match scan.reachable_trip.get(&connection.uid) {
             Some(&ride) => ride,
             None => {
+                // A set-down-only stop: the train calls, but nobody may get
+                // on here.
+                if !connection.can_board {
+                    continue;
+                }
                 let Some(source) = scan.ready_source_at(&connection.from_tiploc) else {
                     continue;
                 };
@@ -370,11 +375,14 @@ pub fn scan_connections_restricted(
             }
         };
 
-        scan.relax(
-            &connection.to_tiploc,
-            connection.arrival_min,
-            ArrivalSource::Train(connection.clone(), ride),
-        );
+        // A pick-up-only stop: stay aboard, but never arrive here.
+        if connection.can_alight {
+            scan.relax(
+                &connection.to_tiploc,
+                connection.arrival_min,
+                ArrivalSource::Train(connection.clone(), ride),
+            );
+        }
     }
 
     let best_dest_tiploc = scan.best_dest_tiploc.clone()?;
@@ -454,6 +462,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            can_board: true,
+            can_alight: true,
         }
     }
 

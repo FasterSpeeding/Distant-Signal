@@ -435,6 +435,22 @@ pub struct ChainPoint {
     pub dep_delay: Option<i32>,
     pub arr_delay: Option<i32>,
     pub served: bool,
+    /// The call's direction flags, carried from the connections (see
+    /// `schedule_query::Connection::can_board`/`can_alight`), so a
+    /// replacement connection keeps them.
+    pub can_board: bool,
+    pub can_alight: bool,
+}
+
+/// One call while [`evaluate_chain`] reassembles a chain: its TIPLOC, its
+/// timetabled arrival and departure minutes, and whether a passenger may
+/// board and alight there.
+struct ChainCall {
+    tiploc: String,
+    sched_arr: Option<u32>,
+    sched_dep: Option<u32>,
+    can_board: bool,
+    can_alight: bool,
 }
 
 /// The calls of one train's connections (`chain` sorted by departure, as the
@@ -443,33 +459,45 @@ pub struct ChainPoint {
 /// known delay, never backward; a call before any known delay keeps its
 /// timetable time. Live times are made monotone along the train.
 pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint> {
-    let mut calls: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
+    let mut calls: Vec<ChainCall> = Vec::new();
     for connection in chain {
         match calls.last_mut() {
             Some(last)
-                if normalize_tiploc(&last.0) == normalize_tiploc(&connection.from_tiploc)
-                    && last.2.is_none() =>
+                if normalize_tiploc(&last.tiploc) == normalize_tiploc(&connection.from_tiploc)
+                    && last.sched_dep.is_none() =>
             {
-                last.2 = Some(connection.departure_min);
+                last.sched_dep = Some(connection.departure_min);
+                last.can_board = connection.can_board;
             }
-            _ => calls.push((
-                connection.from_tiploc.clone(),
-                None,
-                Some(connection.departure_min),
-            )),
+            _ => calls.push(ChainCall {
+                tiploc: connection.from_tiploc.clone(),
+                sched_arr: None,
+                sched_dep: Some(connection.departure_min),
+                can_board: connection.can_board,
+                can_alight: true,
+            }),
         }
-        calls.push((
-            connection.to_tiploc.clone(),
-            Some(connection.arrival_min),
-            None,
-        ));
+        calls.push(ChainCall {
+            tiploc: connection.to_tiploc.clone(),
+            sched_arr: Some(connection.arrival_min),
+            sched_dep: None,
+            can_board: true,
+            can_alight: connection.can_alight,
+        });
     }
 
     let mut carry: Option<i32> = None;
     let mut floor = 0u32;
     calls
         .into_iter()
-        .map(|(tiploc, sched_arr, sched_dep)| {
+        .map(|call| {
+            let ChainCall {
+                tiploc,
+                sched_arr,
+                sched_dep,
+                can_board,
+                can_alight,
+            } = call;
             let fact = live.fact(&tiploc, [sched_arr, sched_dep]);
             let known_arr = fact.and_then(|f| f.arr_delay);
             let arr_delay = known_arr.or(carry);
@@ -500,6 +528,8 @@ pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint
                 live_dep,
                 dep_delay: sched_dep.and(dep_delay),
                 arr_delay: sched_arr.and(arr_delay),
+                can_board,
+                can_alight,
             }
         })
         .collect()
@@ -527,6 +557,8 @@ pub fn adjusted_connections(uid: &str, points: &[ChainPoint]) -> Option<Vec<Conn
                     to_tiploc: to.tiploc.clone(),
                     departure_min: from.live_dep?,
                     arrival_min: to.live_arr?,
+                    can_board: from.can_board,
+                    can_alight: to.can_alight,
                 })
             })
             .collect(),
@@ -1143,6 +1175,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            can_board: true,
+            can_alight: true,
         }
     }
 
