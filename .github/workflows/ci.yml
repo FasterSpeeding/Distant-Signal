@@ -1340,6 +1340,23 @@ jobs:
           grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "components.frontend.internet=true must add the internet"
           out=$(egress_of enricher "${eg}")
           if grep -q 'cidr: 0.0.0.0/0' <<<"${out}"; then fail "components.enricher.internet=false must drop the internet"; fi
+          # components.<component>.extraEgress/extraIngress reach that
+          # component's policy only, including the frontend's otherwise
+          # empty ingress.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set 'networkPolicy.components.aggregator.extraEgress[0].to[0].ipBlock.cidr=192.0.2.10/32' \
+            --set 'networkPolicy.components.postgres.extraIngress[0].from[0].podSelector.matchLabels.probe=pg' \
+            --set 'networkPolicy.components.frontend.extraIngress[0].from[0].podSelector.matchLabels.probe=fe' \
+            --set 'networkPolicy.components.notifier.extraIngress[0].from[0].podSelector.matchLabels.probe=nt' \
+            --show-only templates/networkpolicy.yaml)
+          out=$(egress_of aggregator "${eg}")
+          grep -q 'cidr: 192.0.2.10/32' <<<"${out}" || fail "aggregator extraEgress must render"
+          out=$(egress_of enricher "${eg}")
+          if grep -q '192.0.2.10' <<<"${out}"; then fail "extraEgress must not leak to another component"; fi
+          for c in postgres:pg frontend:fe notifier:nt; do
+            out=$(policy "distant-signal-${c%%:*}" <<<"${eg}" | awk '/^  ingress:/{f=1} /^  egress:/{f=0} f')
+            grep -q "probe: ${c##*:}\$" <<<"${out}" || fail "${c%%:*} extraIngress must render under ingress"
+          done
           # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
           if render --set networkPolicy.components.no-such-thing.egress=false \
               --show-only templates/networkpolicy.yaml >/dev/null 2>&1; then

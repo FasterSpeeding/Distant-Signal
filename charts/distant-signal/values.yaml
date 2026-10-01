@@ -3718,10 +3718,25 @@ networkPolicy:
   #                    # egress.enabled (its egress is then unrestricted
   #                    # by the chart)
   #   internet: true   # add or drop the public-internet rule
-  # e.g.
+  #   extraEgress: []  # NetworkPolicyEgressRule entries appended to this
+  #                    # component's egress policy (with egress.enabled)
+  #   extraIngress: [] # NetworkPolicyIngressRule entries appended to this
+  #                    # component's ingress policy
+  # e.g. a private archive and LLM endpoint:
   #   components:
   #     aggregator:
-  #       internet: false   # the archive S3 endpoint is private
+  #       internet: false
+  #       extraEgress:
+  #         - to: [{ipBlock: {cidr: 100.90.247.108/32}}]
+  #           ports: [{protocol: TCP, port: 50140}]
+  #     enricher:
+  #       internet: false
+  #       extraEgress:
+  #         - to:
+  #             - namespaceSelector:
+  #                 matchLabels: {kubernetes.io/metadata.name: tailscale}
+  #               podSelector:
+  #                 matchLabels: {tailscale.com/parent-resource: ollama-web-proxies}
   components: {}
 
 # ---------------------------------------------------------------------------

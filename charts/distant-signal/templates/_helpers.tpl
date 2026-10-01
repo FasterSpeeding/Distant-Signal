@@ -1200,6 +1200,20 @@ Takes (dict "root" $root "component" "api" "deps" (dict "postgres" true)
 {{- with $np.egress.extraRules }}
 {{ toYaml . }}
 {{- end }}
+{{- with get $cs "extraEgress" }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+
+{{/*
+networkPolicy.components.<component>.extraIngress as NetworkPolicyIngressRule
+list items, or nothing. Takes (dict "root" $root "component" "postgres").
+*/}}
+{{- define "distant-signal.extraIngress" -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- with get $cs "extraIngress" -}}
+{{- toYaml . -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -1268,6 +1282,9 @@ spec:
         - protocol: TCP
           port: {{ . }}
         {{- end }}
+    {{- with include "distant-signal.extraIngress" (dict "root" $root "component" .component) }}
+    {{- . | nindent 4 }}
+    {{- end }}
   {{- if $egressOn }}
   egress:
     {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .egress "internet" (ternary .internet true (hasKey . "internet"))) | nindent 4 }}

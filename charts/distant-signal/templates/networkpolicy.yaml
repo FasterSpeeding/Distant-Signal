@@ -51,7 +51,12 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postgresql.service.port }}
-{{- include "distant-signal.egressSection" (dict "root" . "component" "postgres" "deps" (dict ) "internet" .Values.postgresql.pgbackrest.enabled) | nindent 2 }}
+{{- with include "distant-signal.extraIngress" (dict "root" . "component" "postgres") }}
+    {{- . | nindent 4 }}
+{{- end }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "postgres" "deps" dict "internet" .Values.postgresql.pgbackrest.enabled) }}
+  {{- . | nindent 2 }}
+{{- end }}
 ---
 {{- end }}
 {{- if .Values.redis.enabled }}
@@ -106,7 +111,12 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.redis.service.port }}
-{{- include "distant-signal.egressSection" (dict "root" . "component" "redis" "deps" (dict ) "internet" false) | nindent 2 }}
+{{- with include "distant-signal.extraIngress" (dict "root" . "component" "redis") }}
+    {{- . | nindent 4 }}
+{{- end }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "redis" "deps" dict "internet" false) }}
+  {{- . | nindent 2 }}
+{{- end }}
 ---
 {{- end }}
 apiVersion: networking.k8s.io/v1
@@ -265,7 +275,12 @@ spec:
         - protocol: TCP
           port: {{ .Values.metrics.port }}
   {{- end }}
-{{- include "distant-signal.egressSection" (dict "root" . "component" "api" "deps" (dict "postgres" true "redis" true "idp" true) "internet" true) | nindent 2 }}
+{{- with include "distant-signal.extraIngress" (dict "root" . "component" "api") }}
+    {{- . | nindent 4 }}
+{{- end }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "api" "deps" (dict "postgres" true "redis" true "idp" true) "internet" true) }}
+  {{- . | nindent 2 }}
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -283,8 +298,10 @@ spec:
     - Egress
     {{- end }}
   {{- $viaIngress := and .Values.ingress.enabled .Values.ingress.frontend.enabled }}
-  {{- if or $viaIngress .Values.networkPolicy.tunnel.enabled }}
+  {{- $extraIngress := include "distant-signal.extraIngress" (dict "root" . "component" "frontend") }}
+  {{- if or $viaIngress .Values.networkPolicy.tunnel.enabled $extraIngress }}
   ingress:
+    {{- if or $viaIngress .Values.networkPolicy.tunnel.enabled }}
     - from:
         {{- if $viaIngress }}
         - namespaceSelector:
@@ -300,11 +317,17 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.frontend.service.port }}
+    {{- end }}
+    {{- with $extraIngress }}
+    {{- . | nindent 4 }}
+    {{- end }}
   {{- else }}
   # No Ingress or tunnel in front of the frontend, so nothing outside the pod
   # needs to reach it. Omitting `ingress` entirely is a default-deny.
   {{- end }}
-{{- include "distant-signal.egressSection" (dict "root" . "component" "frontend" "deps" (dict "api" true) "internet" false) | nindent 2 }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "frontend" "deps" (dict "api" true) "internet" false) }}
+  {{- . | nindent 2 }}
+{{- end }}
 {{- /*
 INF-10: every background worker gets a policy from
 distant-signal.workerNetworkPolicy (_helpers.tpl): its /metrics port from the
@@ -418,6 +441,11 @@ spec:
         - protocol: TCP
           port: {{ .Values.scheduleFeed.reference.metricsPort }}
   {{- end }}
-{{- include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" (dict "api" true) "internet" true) | nindent 2 }}
+{{- with include "distant-signal.extraIngress" (dict "root" . "component" "schedulefeed") }}
+    {{- . | nindent 4 }}
+{{- end }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" (dict "api" true) "internet" true) }}
+  {{- . | nindent 2 }}
+{{- end }}
 {{- end }}
 {{- end }}

@@ -919,8 +919,10 @@ cluster.
 
 `networkPolicy.components.<component>` (keyed by the
 `app.kubernetes.io/component` label) tunes one component: `internet`
-adds or drops its public-internet rule, and `egress: false` leaves it
-without an egress policy. Before enabling, add a rule for anything reached
+adds or drops its public-internet rule, `egress: false` leaves it
+without an egress policy, and `extraEgress`/`extraIngress` append raw
+NetworkPolicy egress/ingress rules to that component's policy alone (e.g.
+only the aggregator may reach a private archive endpoint). Before enabling, add a rule for anything reached
 at a private address: an external Redis or Postgres, an OIDC or OAuth
 endpoint inside the cluster or on a tailnet (`100.64.0.0/10`), a private
 Kafka broker, LLM endpoint, archive or pgBackRest S3 endpoint, or a proxy.
@@ -2171,7 +2173,7 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.egress.privateCidrsV6` | loopback, ULA, link-local, multicast, NAT64/6to4/Teredo | IPv6 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.extraDeniedCidrs` | `[]` | More CIDRs (IPv4 and IPv6 mixed) excluded from the public-internet egress allow, on top of `privateCidrs`/`privateCidrsV6`. Set the nodes' own public addresses here. |
 | `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every egress policy the chart renders. |
-| `networkPolicy.components` | `{}` | Per-component settings keyed by the `app.kubernetes.io/component` label (`api`, `postgres`, `poller-ldbws`, ...); an unknown key fails the render. Each entry: `egress` (`false` renders no egress policy for it), `internet` (add or drop its public-internet rule). See [NetworkPolicy](#networkpolicy). |
+| `networkPolicy.components` | `{}` | Per-component settings keyed by the `app.kubernetes.io/component` label (`api`, `postgres`, `poller-ldbws`, ...); an unknown key fails the render. Each entry: `egress` (`false` renders no egress policy for it), `internet` (add or drop its public-internet rule), `extraEgress` / `extraIngress` (raw NetworkPolicy rules appended to its policy). See [NetworkPolicy](#networkpolicy). |
 | `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. |
 
 ### scheduleFeed: CIF routing and CORPUS
