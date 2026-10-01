@@ -1,7 +1,9 @@
 [package]
 name = "schedule-ingest"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 health-http = { path = "../health-http" }
@@ -34,3 +36,6 @@ tempfile = "3"
 # spec as `crates/common`.
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 wiremock = "0.6"
+
+[lints]
+workspace = true
