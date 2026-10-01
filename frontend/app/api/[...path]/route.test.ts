@@ -692,6 +692,28 @@ describe('/api/[...path] proxy', () => {
       expect(headers.Referer).toBe('http://localhost:3000/account');
     });
 
+    // Prod logged "Request with GET/HEAD method cannot have body" from this
+    // proxy: a HEAD that Next ran through the GET handler. Every body-less
+    // method must reach fetch without a body, whichever handler runs it.
+    it.each([
+      ['GET', GET],
+      ['HEAD', HEAD],
+      // Next's fallback when a route has no HEAD export.
+      ['HEAD', GET],
+      ['OPTIONS', GET],
+    ] as const)('sends no body upstream for a %s request', async (method, handler) => {
+      vi.mocked(fetch).mockImplementationOnce(async (input, init) => {
+        const upstream = new Request(input as URL, init);
+        expect(upstream.body).toBeNull();
+        return new Response(null, { status: 200 });
+      });
+      const res = await handler(makeRequest('/api/auth/session', { method }), params);
+      expect(res.status).toBe(200);
+      const [, init] = vi.mocked(fetch).mock.calls[0];
+      expect((init as RequestInit).body).toBeUndefined();
+      expect(init).not.toHaveProperty('duplex');
+    });
+
     it('still 400s a path outside the allowed prefixes', async () => {
       const res = await HEAD(makeRequest('/api/../secret', { method: 'HEAD' }), {
         params: Promise.resolve({ path: ['..', 'secret'] }),

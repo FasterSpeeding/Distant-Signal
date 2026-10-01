@@ -176,6 +176,11 @@ export const MAX_PROXY_BODY_BYTES = 8 * 1024 * 1024;
  * request open until undici's own 300 s header timeout. */
 export const UPSTREAM_TIMEOUT_MS = 30_000;
 
+/** The methods whose request body is forwarded upstream. DELETE is handled
+ * separately (only a non-empty body is forwarded); GET, HEAD and anything
+ * else never carry one. */
+const METHODS_WITH_BODY: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH']);
+
 /** The client IP to send upstream as `X-Real-IP` (FE-8), or null.
  *
  * Only `CF-Connecting-IP` is trusted: in production the frontend is reached
@@ -339,7 +344,13 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     redirect: 'manual',
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   };
-  if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
+  // A body (and so any `duplex`, which this proxy never sets: the body is
+  // always a buffered ArrayBuffer) is attached only for the methods below,
+  // an allowlist rather than "everything but GET": fetch throws "Request
+  // with GET/HEAD method cannot have body" otherwise, which is how a HEAD
+  // reaching the GET handler used to 502 (the HEAD export now handles it,
+  // and any other method this proxy is ever handed goes body-less too).
+  if (METHODS_WITH_BODY.has(req.method)) {
     // arrayBuffer(), not text(): .text() decodes the incoming body as
     // UTF-8 before this function ever sees it, which is LOSSY for
     // non-UTF-8 bytes -- a .pkpass (zip) or PDF's raw bytes are binary and
