@@ -3566,6 +3566,8 @@ metrics:
     # delete (staged key count mismatch) within `mismatchWindow`.
     # DistantSignalScheduleReferencePublishRejected: api answered 400/413/422
     # to a product within `rejectedWindow` (permanent for that delivery).
+    # DistantSignalScheduleFeedIngestRejected: api answered 400/413/422 to
+    # schedule-ingest's delivery record within `rejectedWindow`.
     # DistantSignalLinePopulationMissing: past 06:00 London, some line still
     # has no schedule population for today's rail day (full-coverage-consumer
     # metric) for `populationMissingFor`.

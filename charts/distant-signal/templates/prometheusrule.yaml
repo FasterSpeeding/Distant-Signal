@@ -829,6 +829,27 @@ spec:
               timetable is not refreshed until a new upload replaces it. The
               ingest container's error log names the reason.
         {{- /*
+        N-2: api refused schedule-ingest's delivery record (400/413/422).
+        The delivery is quarantined until a new upload, not retried.
+        */}}
+        - alert: DistantSignalScheduleFeedIngestRejected
+          expr: |
+            sum by (namespace) (increase(distant_signal_schedule_feed_ingest_rejected_total{namespace="{{ $ns }}"}[{{ .rejectedWindow }}])) > 0
+          for: 0m
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "api rejected a schedule feed delivery record"
+            description: >-
+              schedule-ingest in {{ "{{ $labels.namespace }}" }} extracted a
+              CIF delivery but api answered 400/413/422 to its ingest record,
+              so schedule-reference never sees it. The delivery is not retried
+              until a new upload replaces it. The ingest container's error log
+              and api's log name the reason.
+        {{- /*
         CORPUS (scheduleFeed.corpus): schedule-ingest refused a CORPUS
         extract (not gzip, not the TIPLOCDATA JSON, too few rows, a row
         without an NLC, or over the decompression cap). The series only
