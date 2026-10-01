@@ -551,6 +551,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          # renovate: datasource=pypi depName=uv
           version: "0.12.21"
           # Nothing to cache: no dependencies are installed.
           enable-cache: false
@@ -605,7 +606,9 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          # uv itself, pinned (Ranma-Config new-service guidance 3.3a).
+          # uv itself, pinned (Ranma-Config new-service guidance 3.3a); the
+          # annotation is for renovate.json5's customManagers.
+          # renovate: datasource=pypi depName=uv
           version: "0.12.21"
           # Caches uv's download/wheel cache, keyed on uv.lock.
           enable-cache: true

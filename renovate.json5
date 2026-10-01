@@ -45,7 +45,29 @@
       "versioningTemplate": "deb",
       "registryUrlTemplate": "https://apt.postgresql.org/pub/repos/apt?suite=trixie-pgdg&components=main&binaryArch=amd64",
     },
+    {
+      // uv itself: astral-sh/setup-uv's `version:` input in the workflows.
+      // The github-actions manager bumps the action's SHA pin but does not
+      // extract that input (checked with `renovate --platform=local
+      // --dry-run=extract`, 44.126.1), so each `version:` line carries a
+      // `# renovate: datasource=... depName=...` annotation on the line
+      // above it, which this matches.
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+version: \"(?<currentValue>[^\"]+)\"",
+      ],
+    },
   ],
+
+  // uv.lock: the pep621 manager updates it together with a pyproject.toml
+  // pin, and lock-file maintenance re-locks the whole tree (transitive
+  // deps such as librt or pathspec, and hashes) weekly. The shared preset
+  // turns that on already (:maintainLockFilesWeekly); set here as well so
+  // it stays on if the preset ever drops it, as with pinDigests below.
+  "lockFileMaintenance": {
+    "enabled": true,
+  },
 
   // INF-11: every third-party image is now pinned by digest -- the
   // Dockerfile `FROM image:tag@sha256:...` lines and the chart's
@@ -108,23 +130,26 @@
   //                   instead of a subchart, see the chart's own top-of-
   //                   file comment) -- nothing for this manager to do.
   //   github-actions - see above; both new workflow files are picked up
-  //                   with no extra config. That includes the scripts-lint
-  //                   job's actions/setup-python SHA pin AND its
-  //                   `python-version` input: the manager extracts
-  //                   setup-python's python-version as a dependency of its
-  //                   own (github-releases of actions/python-versions).
+  //                   with no extra config. That includes the
+  //                   astral-sh/setup-uv SHA pins in the scripts-lint and
+  //                   migration-order jobs, but not their `version:` (uv)
+  //                   input: the custom manager above covers that.
   //                   Confirmed with `renovate --platform=local
-  //                   --dry-run=extract` (44.115.13), as were the pep621
-  //                   deps below.
+  //                   --dry-run=extract` (44.126.1), as were the pep621 and
+  //                   pyenv deps below.
   //   pep621        - default pattern `/(^|/)pyproject\.toml$/` matches the
-  //                   root pyproject.toml, which has no [project] table
-  //                   (tool config only); the manager needs none and
-  //                   extracts its [dependency-groups] `lint` group (PEP
-  //                   735): ruff, mypy, and shellcheck-py / shfmt-py /
+  //                   root pyproject.toml, a non-package uv project
+  //                   ([tool.uv] package = false), and extracts its
+  //                   [dependency-groups] `lint` group (PEP 735): ruff,
+  //                   mypy, PyYAML, and shellcheck-py / shfmt-py /
   //                   actionlint-py / hadolint-py, which carry the
   //                   shellcheck, shfmt, actionlint and hadolint binaries
   //                   the scripts-lint job runs. Each is an exact `==` pin,
-  //                   so Renovate bumps the pin.
+  //                   so Renovate bumps the pin, and it finds uv.lock as
+  //                   the lock file and updates it in the same PR.
+  //   pyenv         - default pattern `/(^|/)\.python-version$/` matches
+  //                   .python-version (3.14, the interpreter uv uses in CI),
+  //                   looked up as the docker `python` image's tags.
   //   docker-compose - default pattern
   //                   `/(^|/)(?:docker-)?compose[^/]*\.ya?ml$/` matches
   //                   docker-compose.yml and docker-compose.authentik.yml.
