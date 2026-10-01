@@ -391,7 +391,23 @@ pub async fn ingest_shared_movements_batch(
         .enumerate()
         .filter_map(|(i, e)| e.train_uid.as_ref().map(|_| i))
         .collect();
-    if known_indices.is_empty() {
+    // A Reinstatement whose Activation this consumer never parked (no
+    // `train_uid`) can still name the shared row by the TRUST `train_id`
+    // a live resolution already wrote onto it. Without this, a train
+    // cancelled and then reinstated after trust-backlog-consumer lost its
+    // parked Activation stayed "cancelled" in `train_current_state`, and
+    // its subscriptions stayed closed (H4 residual, 2026-10-01).
+    let reinstated_by_train_id = match trains_for_uidless_reinstatements(pool, events).await {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                "train_id lookup for uid-less reinstatements failed; they stay unapplied"
+            );
+            Vec::new()
+        }
+    };
+    if known_indices.is_empty() && reinstated_by_train_id.is_empty() {
         return results;
     }
 
@@ -498,10 +514,14 @@ pub async fn ingest_shared_movements_batch(
     // succeeded continue past this point -- matching the original
     // `find_or_create_train(...).await?; mark_train_resolved(...).await?;`
     // early-return-on-error shape.
-    let active: Vec<(usize, i64)> = resolved
+    let mut active: Vec<(usize, i64)> = resolved
         .into_iter()
         .filter(|&(i, _)| results[i].is_ok())
         .collect();
+    // Already-identified rows: nothing to create or mark, so they join
+    // here, in batch order with the rest.
+    active.extend(reinstated_by_train_id);
+    active.sort_by_key(|&(i, _)| i);
     if active.is_empty() {
         return results;
     }
@@ -669,10 +689,63 @@ pub async fn ingest_shared_movements_batch(
                 .await
         {
             results[i] = Err(err);
+            continue;
+        }
+        // This path sees every Reinstatement, unlike trust-consumer, which
+        // forwards one only for a train it still holds in memory -- so this
+        // is what reopens a cancelled subscription after a trust-consumer
+        // restart.
+        if event.msg_type == "0005" {
+            let reopened = match pool.acquire().await {
+                Ok(mut conn) => {
+                    crate::data::train_tracking::reopen_subscriptions_after_reinstatement(
+                        &mut conn,
+                        None,
+                        Some(trains_id),
+                    )
+                    .await
+                }
+                Err(err) => Err(err.into()),
+            };
+            if let Err(err) = reopened {
+                results[i] = Err(err);
+            }
         }
     }
 
     results
+}
+
+/// `(event index, trains_id)` for each Reinstatement in `events` that has
+/// no `train_uid` but whose `train_id` names exactly one shared `trains`
+/// row dated within a day of the event's `service_date` (an overnight
+/// train's rows can sit either side of midnight). TRUST recycles a
+/// `train_id` roughly monthly, so the date window is what keeps an old
+/// row from matching; more than one candidate is ambiguous and skipped.
+async fn trains_for_uidless_reinstatements(
+    pool: &PgPool,
+    events: &[TrustBacklogEventMessage],
+) -> anyhow::Result<Vec<(usize, i64)>> {
+    let mut found = Vec::new();
+    for (i, event) in events.iter().enumerate() {
+        if event.msg_type != "0005" || event.train_uid.is_some() {
+            continue;
+        }
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM trains \
+             WHERE train_id = $1 \
+               AND service_date BETWEEN $2::date - 1 AND $2::date + 1 \
+             LIMIT 2",
+        )
+        .bind(&event.train_id)
+        .bind(event.service_date)
+        .fetch_all(pool)
+        .await?;
+        if let [id] = ids.as_slice() {
+            found.push((i, *id));
+        }
+    }
+    Ok(found)
 }
 
 async fn fetch_previous_derived_state(
