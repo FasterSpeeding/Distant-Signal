@@ -652,6 +652,27 @@ export interface JourneyStop {
   // `null` means "not known", never "on time". Optional so older fixtures
   // and older backends stay valid.
   board?: StopBoard | null;
+  // Public (GBTT) times -- what the passenger timetable and station screens
+  // show, and what the UI displays first (`lib/stopTimes.ts`). `null` in a
+  // direction with no public call (the departure of a set-down-only stop),
+  // and until the next schedule publish for a schedule stored before these
+  // existed. `scheduledArrival`/`scheduledDeparture` above are the WORKING
+  // (WTT) times truncated to the minute; they stay WTT for one release.
+  // Optional so older fixtures and backends stay valid.
+  publicArrival?: string | null; // RFC3339
+  publicDeparture?: string | null; // RFC3339
+  // Exact working-timetable (WTT) times, `:30` seconds for a half-minute.
+  // `workingPass` is set only on a passing point (the train runs through
+  // without stopping), which has no other time. Shown only in the train
+  // page's detailed working-timetable view.
+  workingArrival?: string | null; // RFC3339
+  workingDeparture?: string | null; // RFC3339
+  workingPass?: string | null; // RFC3339
+  // Direction, from the CIF Activity field: `canBoard: false` is a
+  // set-down-only stop, `canAlight: false` a pick-up-only one.
+  canBoard?: boolean;
+  canAlight?: boolean;
+  requestStop?: boolean;
 }
 
 /** `JourneyStop.board`: Darwin's view of this train at this stop, from the
@@ -996,8 +1017,18 @@ export type TripPlanLeg =
       serviceDate: string; // "YYYY-MM-DD"
       originCrs: string | null;
       destinationCrs: string | null;
+      // WORKING-timetable (WTT) times the planner searched on; kept as WTT
+      // for one release. Display `publicDeparture`/`publicArrival` first.
       scheduledDeparture: string; // "HH:MM:SS"
       scheduledArrival: string;
+      // Public (GBTT) departure at the boarding call and arrival at the
+      // alighting call, with their own day offsets (rounding can cross
+      // midnight). `null` when the CIF has none there or the schedule
+      // predates them; absent from older responses.
+      publicDeparture?: string | null; // "HH:MM:SS"
+      publicArrival?: string | null;
+      publicDepartureDayOffset?: number | null;
+      publicArrivalDayOffset?: number | null;
       // Days past `serviceDate` the departure falls on (an onward train
       // boarded after midnight). Absent from older responses.
       departureDayOffset?: number;

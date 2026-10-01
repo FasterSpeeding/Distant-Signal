@@ -514,6 +514,7 @@ mod tests {
             live_status: None,
             late_minutes: None,
             board: None,
+            timetable: Default::default(),
         }
     }
 

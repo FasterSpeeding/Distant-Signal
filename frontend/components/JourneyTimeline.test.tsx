@@ -525,3 +525,45 @@ describe('JourneyTimeline', () => {
     });
   });
 });
+
+// Working vs public times (docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md).
+describe('JourneyTimeline public times and stop direction', () => {
+  it('shows the public time rather than the working one', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({
+            crs: 'MKC',
+            name: 'Milton Keynes Central',
+            // WTT 20:50H truncated; the public arrival is 20:51.
+            scheduledArrival: '2026-10-01T19:50:00Z',
+            publicArrival: '2026-10-01T19:51:00Z',
+            canBoard: false,
+            canAlight: true,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('20:51')).toBeInTheDocument();
+    expect(screen.queryByText('20:50')).not.toBeInTheDocument();
+  });
+
+  it('labels set-down-only, pick-up-only and request stops in words', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ crs: 'MTH', name: 'Motherwell', canBoard: false, canAlight: true }),
+          stop({ crs: 'WFJ', name: 'Watford Junction', canBoard: true, canAlight: false }),
+          stop({ crs: 'DBL', name: 'Dunblane', canBoard: true, canAlight: true, requestStop: true }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('Set down only')).toBeInTheDocument();
+    expect(screen.getByText('Pick up only')).toBeInTheDocument();
+    expect(screen.getByText('Request stop')).toBeInTheDocument();
+  });
+
+  it('treats a passing point at a station as not a calling point', () => {
+    expect(isGenuineCallingPoint(stop({ crs: 'WFJ', workingPass: '2026-10-01T10:52:30Z' }))).toBe(false);
+  });
+});

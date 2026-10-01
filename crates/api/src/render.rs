@@ -248,6 +248,19 @@ fn board_calling_point_json(cp: &common::BoardCallingPoint) -> Value {
 /// `schedule_destination_departures`-backed products gained an `operator`
 /// field). This function's own behavior is unchanged; this paragraph only
 /// corrects that stale claim.
+/// `d[key]`, a stored `"HH:MM:SS"`, trimmed to `"HH:MM"`; `null` when
+/// absent (a row published before the field existed, or no public time).
+fn hh_mm(d: &Value, key: &str) -> Option<String> {
+    d.get(key)
+        .and_then(Value::as_str)
+        .map(|s| s.chars().take(5).collect::<String>())
+}
+
+/// `scheduled` is the working-timetable (WTT) departure truncated to the
+/// minute, kept as WTT for one release and documented as deprecated-soon;
+/// `publicDeparture` is the public (GBTT) departure the station screens
+/// show, `null` until the next schedule publish. See
+/// docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md.
 pub(crate) fn schedule_departure_json(
     d: &Value,
     destination_names: &HashMap<String, String>,
@@ -279,6 +292,7 @@ pub(crate) fn schedule_departure_json(
     json!({
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
+        "publicDeparture": hh_mm(d, "public_departure"),
         "dayOffset": day_offset,
         "destinationCrs": destination_crs,
         "destinationName": destination_name,
@@ -393,6 +407,10 @@ pub(crate) fn calling_point_departure_json(
         "destinationName": destination_name,
         "destinationArrival": destination_arrival,
         "destinationArrivalDayOffset": destination_arrival_day_offset,
+        // Public (GBTT) counterparts of `scheduled`/`destinationArrival`,
+        // which stay WTT for one release. `null` until the next publish.
+        "publicDeparture": hh_mm(d, "public_departure"),
+        "publicDestinationArrival": hh_mm(d, "public_destination_arrival"),
         "operator": d.get("operator_atoc").cloned().unwrap_or(Value::Null),
     })
 }
@@ -1038,11 +1056,13 @@ mod tests {
             "destination_crs": "CRE",
         });
         let json = schedule_departure_json(&raw, &HashMap::new());
+        assert!(json["publicDeparture"].is_null(), "absent on an older row");
         assert_eq!(
             json,
             serde_json::json!({
                 "uid": "C11052",
                 "scheduled": "08:22",
+                "publicDeparture": null,
                 "dayOffset": 0,
                 "destinationCrs": "CRE",
                 "destinationName": null,
@@ -1167,6 +1187,32 @@ mod tests {
         assert_eq!(json["stationCrs"], "RDG");
         assert_eq!(json["originCrs"], "PAD");
         assert_eq!(json["destinationCrs"], "WAT");
+    }
+
+    /// The public (GBTT) times ride alongside the WTT `scheduled` /
+    /// `destinationArrival`, trimmed the same way.
+    #[test]
+    fn board_and_search_rows_carry_public_times_next_to_the_working_ones() {
+        let row = serde_json::json!({
+            "uid": "C01355",
+            "destination_crs": "WVH",
+            "true_origin_crs": "EUS",
+            "scheduled": "20:16:00",
+            "destination_arrival": "22:11:00",
+            "public_departure": "20:16:00",
+            "public_destination_arrival": "22:13:00",
+        });
+        let json = calling_point_departure_json(&row, "EUS", &HashMap::new());
+        assert_eq!(json["publicDeparture"], "20:16");
+        assert_eq!(json["publicDestinationArrival"], "22:13");
+        assert_eq!(json["destinationArrival"], "22:11");
+
+        let board = schedule_departure_json(
+            &serde_json::json!({"uid": "C01355", "scheduled": "18:18:00", "public_departure": "18:15:00"}),
+            &HashMap::new(),
+        );
+        assert_eq!(board["scheduled"], "18:18");
+        assert_eq!(board["publicDeparture"], "18:15");
     }
 
     #[test]

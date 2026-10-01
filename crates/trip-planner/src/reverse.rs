@@ -259,9 +259,10 @@ impl<'a> Reverse<'a> {
             {
                 let labels = previous.unwrap_or(&*current);
                 for stage in 0..stages {
-                    let alight = labels.latest_arrival[stage]
-                        .get(to)
-                        .is_some_and(|&latest| connection.arrival_min <= latest);
+                    let alight = connection.can_alight
+                        && labels.latest_arrival[stage]
+                            .get(to)
+                            .is_some_and(|&latest| connection.arrival_min <= latest);
                     let stay = aboard_ok[stage].contains(uid);
                     let through = stage + 1 < stages
                         && self.targets[stage].contains(to)
@@ -278,6 +279,11 @@ impl<'a> Reverse<'a> {
             let from = normalize_tiploc(&connection.from_tiploc);
             for &stage in &ok_stages {
                 aboard_ok[stage].insert(uid);
+                // Someone already aboard may ride on, but nobody boards at a
+                // set-down-only stop.
+                if !connection.can_board {
+                    continue;
+                }
                 if stage == 0 && self.origin.contains(from) {
                     current.offer_origin(connection.departure_min);
                     continue;
@@ -553,6 +559,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            can_board: true,
+            can_alight: true,
         }
     }
 
@@ -798,7 +806,9 @@ mod tests {
 
     /// Brute force: the latest departure minute whose forward earliest
     /// arrival is in time, over a small pseudo-random network, must equal
-    /// the backward scan's answer -- with and without restrictions.
+    /// the backward scan's answer -- with and without restrictions. Some
+    /// intermediate calls are set-down-only or pick-up-only, so both
+    /// directions agree on where boarding and alighting are allowed.
     #[test]
     fn the_backward_scan_agrees_with_a_brute_force_forward_search() {
         let stops = ["A", "B", "C", "D", "E", "F"];
@@ -815,16 +825,29 @@ mod tests {
             for train in 0..25 {
                 let mut at = stops[next(stops.len() as u64) as usize];
                 let mut time = 300 + next(600) as u32;
-                for _ in 0..(1 + next(4)) {
+                let mut can_board_at = true;
+                let hops = 1 + next(4);
+                for hop in 0..hops {
                     let mut to = stops[next(stops.len() as u64) as usize];
                     if to == at {
                         to =
                             stops[(stops.iter().position(|s| *s == at).unwrap() + 1) % stops.len()];
                     }
                     let run = 5 + next(60) as u32;
-                    connections.push(conn(&format!("T{train}"), at, to, time, time + run));
+                    // An intermediate call is set-down-only (D) or
+                    // pick-up-only (U) one time in seven each.
+                    let (board_next, alight) = match (hop + 1 < hops, next(7)) {
+                        (true, 0) => (false, true),
+                        (true, 1) => (true, false),
+                        _ => (true, true),
+                    };
+                    let mut connection = conn(&format!("T{train}"), at, to, time, time + run);
+                    connection.can_board = can_board_at;
+                    connection.can_alight = alight;
+                    connections.push(connection);
                     time += run + next(3) as u32;
                     at = to;
+                    can_board_at = board_next;
                 }
             }
             let connections = sorted(connections);

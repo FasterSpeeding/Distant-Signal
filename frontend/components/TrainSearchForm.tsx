@@ -65,6 +65,10 @@ function dateWindow() {
 interface TrainSearchRow {
   uid: string;
   scheduled: string;
+  /** The public (timetable) departure, shown in place of `scheduled` (the
+   * working-timetable time, kept as WTT for one release). `null`/absent
+   * until the next schedule publish. */
+  publicDeparture?: string | null;
   stationCrs: string;
   originCrs: string | null;
   destinationCrs: string | null;
@@ -627,8 +631,8 @@ export function TrainSearchForm({
              * belonging to the row beneath them. */
             <Group key={`${row.uid}-${row.scheduled}`} style={{ rowGap: 4 }}>
               <Text size="sm">
-                {row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs} <RouteArrow />{' '}
-                {row.destinationName ?? row.destinationCrs ?? '?'}
+                {row.publicDeparture ?? row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs}{' '}
+                <RouteArrow /> {row.destinationName ?? row.destinationCrs ?? '?'}
               </Text>
               <Group gap="sm" wrap="nowrap" style={{ marginInlineStart: 'auto' }}>
                 <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>

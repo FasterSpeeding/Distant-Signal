@@ -248,6 +248,10 @@ interface DepartureRow {
 interface ScheduleDepartureRow {
   uid: string;
   scheduled: string;
+  /** The public (timetable) departure, shown in place of `scheduled` (the
+   * working-timetable time, kept as WTT for one release). `null`/absent
+   * until the next schedule publish. */
+  publicDeparture?: string | null;
   dayOffset: number;
   destinationCrs: string | null;
   /** Same server-side batched-lookup enrichment as `DepartureRow`'s own
@@ -1106,7 +1110,9 @@ export function TrackTrainForm({
                 style={{ cursor: 'pointer' }}
               >
                 <Text size="sm">
-                  {row.scheduled}
+                  {/* Public time shown; `row.scheduled` (WTT) stays the
+                      value `pickCifDeparture` matches on. */}
+                  {row.publicDeparture ?? row.scheduled}
                   {/* `stationLabel` -- same "Name (CODE)", bare-code-fallback
                       convention as everywhere else in this app (item 5,
                       2026-09-22 UX review follow-up): this used to always

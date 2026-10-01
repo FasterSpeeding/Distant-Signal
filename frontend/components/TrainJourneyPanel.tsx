@@ -1,5 +1,6 @@
 import { TrainJourney } from './TrainJourney';
 import { RealTimeTrainsLink } from './RealTimeTrainsLink';
+import { WorkingTimetable } from './WorkingTimetable';
 import type { TrainJourneyState } from '@/lib/types';
 
 /** `TrainJourney` plus its Real Time Trains cross-reference link, bundled
@@ -18,7 +19,11 @@ import type { TrainJourneyState } from '@/lib/types';
  * future change to this pairing) only has to happen once.
  *
  * `suppressTrainUidHeading` passes straight through to `TrainJourney` --
- * see that component's own doc comment (Task 3.6.9). */
+ * see that component's own doc comment (Task 3.6.9).
+ *
+ * Both train pages also get the optional "Detailed (working timetable)"
+ * view here (`WorkingTimetable`), fed the UNFILTERED stops so it can show
+ * passing points the passenger view leaves out. */
 export function TrainJourneyPanel({
   state,
   suppressTrainUidHeading,
@@ -29,6 +34,7 @@ export function TrainJourneyPanel({
   return (
     <>
       <TrainJourney state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
+      {state.journeyStops && <WorkingTimetable stops={state.journeyStops} />}
       <RealTimeTrainsLink trainUid={state.trainUid} serviceDate={state.serviceDate} />
     </>
   );

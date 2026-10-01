@@ -708,6 +708,7 @@ pub async fn ingest_shared_movements_batch(
             loc_stanox: None,
             loc_crs: event.crs.clone(),
             planned_timestamp: event.planned_timestamp,
+            gbtt_timestamp: None,
             actual_timestamp: event.actual_timestamp,
             variation_status: event.variation_status.clone(),
             raw_body: serde_json::json!({}),

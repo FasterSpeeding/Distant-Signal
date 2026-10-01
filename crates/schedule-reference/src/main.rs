@@ -1737,6 +1737,9 @@ fn schedule_destination_departures_row_iter(
                     "operator_atoc": d.operator_atoc,
                     "headcode": d.headcode,
                     "rsid": d.rsid,
+                    "public_departure": d.public_departure,
+                    "public_calling_point_arrival": d.public_calling_point_arrival,
+                    "public_destination_arrival": d.public_destination_arrival,
                 })
             })
         })
@@ -1902,8 +1905,15 @@ fn schedule_calling_points_full_row_iter(
         .filter_map(move |uid| index.schedule_for_uid(uid, date))
         .filter(|resolved| !resolved.cancelled)
         .flat_map(move |resolved| {
+            // Every call a passenger may use in EITHER direction (a
+            // set-down-only stop is kept, flagged `can_board: false`), every
+            // passing point (for the detailed working-timetable view), and
+            // the terminus. Operational and not-advertised stops stay out.
             let public_calling_points = resolved.calling_points.iter().filter(|cp| {
-                cp.is_public_pickup() || cp.kind == schedule_query::CallingPointKind::Terminate
+                cp.can_board()
+                    || cp.can_alight()
+                    || cp.is_pass()
+                    || cp.kind == schedule_query::CallingPointKind::Terminate
             });
             let rows: Vec<serde_json::Value> = public_calling_points
                 .enumerate()
@@ -1925,6 +1935,18 @@ fn schedule_calling_points_full_row_iter(
                         // CIF booked platform (`None` -> JSON null) -- see
                         // `schedule_query::records::CallingPoint::platform`.
                         "platform": cp.platform,
+                        // Public times, exact working times (`:30` for a
+                        // half-minute; `working_pass` only on a passing
+                        // point) and direction. See
+                        // docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md.
+                        "public_arrival": cp.public_arrival,
+                        "public_departure": cp.public_departure,
+                        "working_arrival": cp.working_arrival(),
+                        "working_departure": cp.working_departure(),
+                        "working_pass": cp.working_pass(),
+                        "can_board": cp.can_board(),
+                        "can_alight": cp.can_alight(),
+                        "request_stop": cp.is_request_stop(),
                     })
                 })
                 .collect();
@@ -2814,6 +2836,7 @@ mod poll_once_tests {
                 scheduled: chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
                 day_offset: 0,
                 destination_crs: None,
+                public_departure: None,
             })
             .collect();
         by_crs.insert("EUS".to_string(), departures);
@@ -2854,12 +2877,14 @@ mod poll_once_tests {
                     scheduled: chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap(),
                     day_offset: 1,
                     destination_crs: Some("SNF".to_string()),
+                    public_departure: None,
                 },
                 schedule_query::ScheduleDeparture {
                     uid: "C11052".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(23, 50, 0).unwrap(),
                     day_offset: 0,
                     destination_crs: Some("CRE".to_string()),
+                    public_departure: None,
                 },
             ],
         );
@@ -2897,6 +2922,7 @@ mod poll_once_tests {
                 scheduled: chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
                 day_offset: 0,
                 destination_crs: None,
+                public_departure: None,
             })
             .collect();
         departures.push(schedule_query::ScheduleDeparture {
@@ -2904,6 +2930,7 @@ mod poll_once_tests {
             scheduled: chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap(),
             day_offset: 1,
             destination_crs: None,
+            public_departure: None,
         });
         let mut by_crs = std::collections::HashMap::new();
         by_crs.insert("BKG".to_string(), departures);
@@ -2948,6 +2975,7 @@ mod poll_once_tests {
                 scheduled: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
                 day_offset: 0,
                 destination_crs: Some("CRE".to_string()),
+                public_departure: None,
             }],
         );
         by_crs.insert(
@@ -2957,6 +2985,7 @@ mod poll_once_tests {
                 scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
                 day_offset: 0,
                 destination_crs: None,
+                public_departure: None,
             }],
         );
 
@@ -2989,6 +3018,7 @@ mod poll_once_tests {
                 scheduled: chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap(),
                 day_offset: 1,
                 destination_crs: Some("SNF".to_string()),
+                public_departure: None,
             }],
         );
 
@@ -3026,6 +3056,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
@@ -3039,6 +3072,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
             ],
         );
@@ -3056,6 +3092,9 @@ mod poll_once_tests {
                 operator_atoc: Some("SR".to_string()),
                 headcode: Some("1S00".to_string()),
                 rsid: Some("SR408800".to_string()),
+                public_departure: None,
+                public_calling_point_arrival: None,
+                public_destination_arrival: None,
             }],
         );
 
@@ -3087,8 +3126,11 @@ mod poll_once_tests {
                 "operator_atoc": "SR",
                 "headcode": "1S00",
                 "rsid": "SR408800",
+                "public_departure": null,
+                "public_calling_point_arrival": null,
+                "public_destination_arrival": null,
             }),
-            "exactly thirteen keys, named exactly as the table's columns are, \
+            "exactly sixteen keys, named exactly as the table's columns are, \
              with a Some(\"SR\") operator_atoc, a Some(\"1S00\") headcode \
              and a Some(\"SR408800\") rsid round-tripping to JSON strings"
         );
@@ -3146,6 +3188,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C11052".to_string(),
@@ -3159,6 +3204,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
             ],
         );
@@ -3203,6 +3251,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C99999".to_string(),
@@ -3216,6 +3267,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
             ],
         );
@@ -3262,6 +3316,9 @@ mod poll_once_tests {
                 operator_atoc: None,
                 headcode: None,
                 rsid: None,
+                public_departure: None,
+                public_calling_point_arrival: None,
+                public_destination_arrival: None,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -3301,6 +3358,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
@@ -3314,6 +3374,9 @@ mod poll_once_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    public_departure: None,
+                    public_calling_point_arrival: None,
+                    public_destination_arrival: None,
                 },
             ],
         );
@@ -3357,8 +3420,12 @@ mod poll_once_tests {
             chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap()
         }
 
+        /// A set-down-only (`D`) stop is a real passenger call -- you may get
+        /// off there -- so it is published, flagged `can_board: false`.
+        /// (Until 2026-10-01 it was dropped, which hid it from the train page
+        /// and made it unreachable in the trip planner.)
         #[test]
-        fn a_non_public_intermediate_stop_is_excluded_while_a_public_one_is_retained() {
+        fn a_set_down_only_intermediate_stop_is_published_flagged_not_boardable() {
             let text = format!(
                 "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LI_CARLILE_SET_DOWN_ONLY}\n{LT_EUSTON}"
             );
@@ -3367,23 +3434,30 @@ mod poll_once_tests {
             let rows = schedule_calling_points_full_rows(&index, service_date());
 
             let tiplocs: Vec<&str> = rows.iter().map(|r| r["tiploc"].as_str().unwrap()).collect();
-            assert!(
-                !tiplocs.contains(&"CARLILE"),
-                "the set-down-only (non-public-pickup) intermediate stop must be excluded: {tiplocs:?}"
-            );
-            assert!(
-                tiplocs.contains(&"EUSTON"),
-                "the real, public Origin stop must still be published: {tiplocs:?}"
-            );
+            assert_eq!(tiplocs, vec!["EUSTON", "CARLILE", "EUSTON"], "{rows:?}");
+            let carlisle = &rows[1];
+            assert_eq!(carlisle["can_board"], false);
+            assert_eq!(carlisle["can_alight"], true);
+            assert_eq!(carlisle["request_stop"], false);
+            assert_eq!(rows[0]["can_board"], true);
+            assert_eq!(rows[0]["can_alight"], false, "nobody alights at the origin");
+            assert_eq!(rows[2]["can_board"], false, "nobody boards at the terminus");
+            assert_eq!(rows[2]["can_alight"], true);
+        }
 
-            // Only Origin (EUSTON) and Terminate (EUSTON, the schedule loops
-            // back in this synthetic fixture -- irrelevant to this test)
-            // survive; the dropped LI leaves a real gap in `seq`.
-            assert_eq!(
-                rows.len(),
-                2,
-                "the non-public LI must not appear at all: {rows:?}"
-            );
+        /// Operational (`OP`) and not-advertised (`N`) stops are still left
+        /// out: nobody may board or alight there.
+        #[test]
+        fn an_operational_or_not_advertised_stop_is_still_excluded() {
+            for activity in ["OP", "N"] {
+                let li = format!("LICARLILE 1202 1213      120212131        {activity}");
+                let text = format!("{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{li}\n{LT_EUSTON}");
+                let index = schedule_query::ScheduleIndex::from_text(&text);
+                let rows = schedule_calling_points_full_rows(&index, service_date());
+                let tiplocs: Vec<&str> =
+                    rows.iter().map(|r| r["tiploc"].as_str().unwrap()).collect();
+                assert_eq!(tiplocs, vec!["EUSTON", "EUSTON"], "{activity}: {rows:?}");
+            }
         }
 
         /// Each published row carries its calling point's CIF booked
@@ -3456,8 +3530,9 @@ mod poll_once_tests {
 
         #[test]
         fn seq_is_renumbered_contiguously_over_the_filtered_sequence() {
+            const LI_CARLILE_OPERATIONAL: &str = "LICARLILE 1202 1213      120212131        OP";
             let text = format!(
-                "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LI_CARLILE_SET_DOWN_ONLY}\n{LT_EUSTON}"
+                "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LI_CARLILE_OPERATIONAL}\n{LT_EUSTON}"
             );
             let index = schedule_query::ScheduleIndex::from_text(&text);
 
@@ -3469,6 +3544,270 @@ mod poll_once_tests {
                 vec![0, 1],
                 "seq must stay contiguous over the surviving rows, not carry a gap for the \
                  dropped LI"
+            );
+        }
+    }
+
+    /// Set-down-only (`D`) and pick-up-only (`U`) stops, end to end from CIF
+    /// text through `schedule_calling_points_full_rows` (the planner's and
+    /// the train page's feed), `build_connections` and the real Connection
+    /// Scan planner. These started as characterisation tests of the wrong
+    /// behaviour (the `D` stop dropped, alighting allowed at `U`); since the
+    /// fix (docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md,
+    /// P2) they assert the correct rule: a passenger may ALIGHT but not board
+    /// at `D`, and BOARD but not alight at `U`; neither stop vanishes from a
+    /// train's calling points.
+    ///
+    /// Fixtures are real lines from the 2026-09-30 RJTTF975 full extract,
+    /// trailing spaces trimmed:
+    /// - UID C01372, Avanti 9S65 Euston -> Glasgow Central: Motherwell is
+    ///   `D` (public arrival 17:01, public departure `0000`).
+    /// - UID C01355, Avanti 9G44 Euston -> Wolverhampton: Watford Junction
+    ///   is `U` (public arrival `0000`, public departure 20:31), and Milton
+    ///   Keynes is a normal `T` stop whose working arrival 20:50H is 20:51
+    ///   in the public timetable.
+    mod set_down_and_pick_up_only_characterisation {
+        use super::*;
+
+        const C01372: &str = "\
+BSNC013722605182612111111100 PXX9S653110122114001 EMU390 125      B A F        P
+LOEUSTON  1140 11405  X      TB
+LIWATFDJ            1152H000000006  FL FL
+LIMKNSCEN           1208H000000006  FL FL             1
+LICREWE   1408 1410H     1408141012 FL    T
+LICREWECY           1412H00000000
+LICARLILE 1559H1602      160016023  DML   T
+LIMOTHRWL 1700H1702      170100002        D
+LTGLGC    1721 17212     TF";
+
+        const C01355: &str = "\
+BSNC013552605182612111111100 PXX9G445430122100001 EMU800 125      B A F        P
+LOEUSTON  2016 20163  X      TB
+LIWATFDJ  2029H2031      000020316  FL FL U
+LIMKNSCEN 2050H2052H     205120526  FL FL T           1
+LTWVRMPTN 2211 22113     TF";
+
+        fn date() -> chrono::NaiveDate {
+            // A Thursday inside both schedules' validity (Mon-Fri).
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap()
+        }
+
+        fn index() -> schedule_query::ScheduleIndex {
+            schedule_query::ScheduleIndex::from_text(&format!("{C01372}\n{C01355}"))
+        }
+
+        fn rows_for(rows: &[serde_json::Value], uid: &str) -> Vec<serde_json::Value> {
+            rows.iter().filter(|r| r["uid"] == uid).cloned().collect()
+        }
+
+        fn tiplocs(rows: &[serde_json::Value]) -> Vec<String> {
+            rows.iter()
+                .map(|r| r["tiploc"].as_str().unwrap().to_string())
+                .collect()
+        }
+
+        fn time(value: &serde_json::Value) -> Option<chrono::NaiveTime> {
+            value
+                .as_str()
+                .map(|s| chrono::NaiveTime::parse_from_str(s, "%H:%M:%S").unwrap())
+        }
+
+        /// The published rows, turned into the planner's connection array the
+        /// same way `crates/api`'s `data::trip_planning` does (uid groups in
+        /// `seq` order).
+        fn connections(rows: &[serde_json::Value]) -> Vec<schedule_query::Connection> {
+            let mut by_uid: std::collections::BTreeMap<
+                String,
+                Vec<schedule_query::CallingPointForConnections>,
+            > = std::collections::BTreeMap::new();
+            for row in rows {
+                by_uid
+                    .entry(row["uid"].as_str().unwrap().to_string())
+                    .or_default()
+                    .push(schedule_query::CallingPointForConnections {
+                        tiploc: row["tiploc"].as_str().unwrap().to_string(),
+                        booked_arrival: time(&row["booked_arrival"]),
+                        booked_departure: time(&row["booked_departure"]),
+                        day_offset: row["day_offset"].as_u64().unwrap() as u8,
+                        can_board: row["can_board"].as_bool().unwrap(),
+                        can_alight: row["can_alight"].as_bool().unwrap(),
+                    });
+            }
+            schedule_query::build_connections(
+                by_uid
+                    .iter()
+                    .map(|(uid, points)| (uid.as_str(), points.as_slice())),
+            )
+        }
+
+        fn plan(
+            connections: &[schedule_query::Connection],
+            from: &str,
+            to: &str,
+        ) -> Option<trip_planner::Journey> {
+            let interchange = schedule_query::InterchangeData {
+                change_time_by_tiploc: std::collections::HashMap::new(),
+                tiploc_to_crs: std::collections::HashMap::new(),
+                crs_to_tiplocs: std::collections::HashMap::new(),
+                fixed_links_from_crs: std::collections::HashMap::new(),
+            };
+            trip_planner::scan_connections(trip_planner::ScanOptions {
+                connections,
+                interchange: &interchange,
+                from_tiplocs: &[from.to_string()],
+                to_tiplocs: &[to.to_string()],
+                departure_min: 0,
+                date: date(),
+            })
+        }
+
+        #[test]
+        fn the_parser_keeps_both_stops_and_their_public_times() {
+            let index = index();
+            let c01372 = index.schedule_for_uid("C01372", date()).unwrap();
+            let motherwell = c01372
+                .calling_points
+                .iter()
+                .find(|cp| cp.tiploc.trim() == "MOTHRWL")
+                .unwrap();
+            assert_eq!(motherwell.activity.trim(), "D");
+            assert_eq!(
+                motherwell.public_arrival,
+                chrono::NaiveTime::from_hms_opt(17, 1, 0)
+            );
+            assert_eq!(motherwell.public_departure, None, "D: no public departure");
+
+            let c01355 = index.schedule_for_uid("C01355", date()).unwrap();
+            let watford = c01355
+                .calling_points
+                .iter()
+                .find(|cp| cp.tiploc.trim() == "WATFDJ")
+                .unwrap();
+            assert_eq!(watford.activity.trim(), "U");
+            assert_eq!(watford.public_arrival, None, "U: no public arrival");
+            assert_eq!(
+                watford.public_departure,
+                chrono::NaiveTime::from_hms_opt(20, 31, 0)
+            );
+        }
+
+        #[test]
+        fn a_set_down_only_stop_is_kept_in_the_calling_points_feed() {
+            let rows = schedule_calling_points_full_rows(&index(), date());
+            let c01372 = rows_for(&rows, "C01372");
+            let names = tiplocs(&c01372);
+            // Motherwell is a real passenger call (alight only): present in
+            // the trip planner's graph and on the train page, flagged.
+            let motherwell = c01372
+                .iter()
+                .find(|r| r["tiploc"] == "MOTHRWL")
+                .unwrap_or_else(|| panic!("Motherwell must be published: {names:?}"));
+            assert_eq!(motherwell["can_board"], false);
+            assert_eq!(motherwell["can_alight"], true);
+            assert_eq!(motherwell["public_arrival"], "17:01:00");
+            assert_eq!(motherwell["public_departure"], serde_json::Value::Null);
+            assert!(names.contains(&"CARLILE".to_string()), "{names:?}");
+        }
+
+        #[test]
+        fn the_planner_alights_at_a_set_down_only_stop() {
+            let rows = schedule_calling_points_full_rows(&index(), date());
+            let connections = connections(&rows);
+            // Carlisle -> Motherwell on 9S65 is a valid journey (public
+            // 16:02 -> 17:01; the planner still searches on WTT, 16:02 ->
+            // 17:00 truncated -- planning on public times is P6).
+            let journey = plan(&connections, "CARLILE", "MOTHRWL")
+                .expect("a set-down-only stop is somewhere to alight");
+            assert_eq!(journey.departure_min, 16 * 60 + 2);
+            assert_eq!(journey.arrival_min, 17 * 60);
+        }
+
+        #[test]
+        fn the_planner_never_boards_at_a_set_down_only_stop() {
+            let rows = schedule_calling_points_full_rows(&index(), date());
+            assert!(plan(&connections(&rows), "MOTHRWL", "GLGC").is_none());
+        }
+
+        #[test]
+        fn the_planner_never_alights_at_a_pick_up_only_stop() {
+            let rows = schedule_calling_points_full_rows(&index(), date());
+            let connections = connections(&rows);
+            // 9G44 is pick-up only at Watford Junction, so a passenger from
+            // Euston may not get off there, and these are the only trains.
+            assert!(plan(&connections, "EUSTON", "WATFDJ").is_none());
+            // Riding through it to Milton Keynes is fine.
+            let through = plan(&connections, "EUSTON", "MKNSCEN").expect("ride through U");
+            assert_eq!(through.departure_min, 20 * 60 + 16);
+        }
+
+        #[test]
+        fn the_planner_boards_at_a_pick_up_only_stop() {
+            let rows = schedule_calling_points_full_rows(&index(), date());
+            let journey = plan(&connections(&rows), "WATFDJ", "MKNSCEN").unwrap();
+            assert_eq!(journey.departure_min, 20 * 60 + 31);
+            // The planner still searches on the WTT arrival 20:50H truncated
+            // to 20:50 (P6 moves it to public); the published row carries
+            // the PUBLIC arrival, 20:51, which is what users are shown, and
+            // the exact working arrival with its half-minute.
+            assert_eq!(journey.arrival_min, 20 * 60 + 50);
+            let milton_keynes = rows_for(&rows, "C01355")
+                .into_iter()
+                .find(|r| r["tiploc"] == "MKNSCEN")
+                .unwrap();
+            assert_eq!(milton_keynes["public_arrival"], "20:51:00");
+            assert_eq!(milton_keynes["working_arrival"], "20:50:30");
+        }
+
+        /// Passing points stay in the feed, with their exact pass time, for
+        /// the detailed working-timetable view; they are never boardable or
+        /// alightable.
+        #[test]
+        fn passing_points_carry_their_pass_time_and_no_direction() {
+            let rows = schedule_calling_points_full_rows(&index(), date());
+            let watford_pass = rows_for(&rows, "C01372")
+                .into_iter()
+                .find(|r| r["tiploc"] == "WATFDJ")
+                .unwrap();
+            assert_eq!(watford_pass["working_pass"], "11:52:30");
+            assert_eq!(watford_pass["booked_arrival"], serde_json::Value::Null);
+            assert_eq!(watford_pass["can_board"], false);
+            assert_eq!(watford_pass["can_alight"], false);
+        }
+
+        #[test]
+        fn correct_departure_boards_respect_both_directions() {
+            let tiploc_to_crs: std::collections::HashMap<String, String> = [
+                ("EUSTON", "EUS"),
+                ("WATFDJ", "WFJ"),
+                ("MKNSCEN", "MKC"),
+                ("CREWE", "CRE"),
+                ("CARLILE", "CAR"),
+                ("MOTHRWL", "MTH"),
+                ("GLGC", "GLC"),
+                ("WVRMPTN", "WVH"),
+            ]
+            .into_iter()
+            .map(|(t, c)| (t.to_string(), c.to_string()))
+            .collect();
+            let by_crs = schedule_query::departures_by_crs(
+                &index(),
+                date(),
+                chrono::NaiveTime::MIN,
+                &tiploc_to_crs,
+            );
+            let uids_at = |crs: &str| -> Vec<String> {
+                by_crs
+                    .get(crs)
+                    .map(|d| d.iter().map(|d| d.uid.clone()).collect())
+                    .unwrap_or_default()
+            };
+            assert!(
+                !uids_at("MTH").contains(&"C01372".to_string()),
+                "no boardable departure at a set-down-only stop"
+            );
+            assert!(
+                uids_at("WFJ").contains(&"C01355".to_string()),
+                "a pick-up-only stop is a boardable departure"
             );
         }
     }

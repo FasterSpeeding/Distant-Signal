@@ -960,8 +960,8 @@ pub async fn upsert_train_movement_on(
     sqlx::query(
         "INSERT INTO train_movement_events \
             (trains_id, dedup_key, msg_type, event_type, loc_stanox, loc_crs, \
-             planned_timestamp, actual_timestamp, variation_status, raw_body) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+             planned_timestamp, actual_timestamp, variation_status, raw_body, gbtt_timestamp) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          ON CONFLICT (trains_id, dedup_key) WHERE trains_id IS NOT NULL DO NOTHING",
     )
     .bind(trains_id)
@@ -974,6 +974,7 @@ pub async fn upsert_train_movement_on(
     .bind(event.actual_timestamp)
     .bind(&event.variation_status)
     .bind(&event.raw_body)
+    .bind(event.gbtt_timestamp)
     .execute(&mut *tx)
     .await?;
 
@@ -3494,6 +3495,7 @@ mod db_tests {
             loc_stanox: Some("72410".to_string()),
             loc_crs: Some("EUS".to_string()),
             planned_timestamp: Some("2026-09-05T18:15:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-05T18:15:00Z".parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),
@@ -3996,6 +3998,7 @@ mod db_tests {
             loc_stanox: Some("87212".to_string()),
             loc_crs: Some("WAT".to_string()),
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: None,
             variation_status: None,
             raw_body: serde_json::json!({}),
@@ -4442,6 +4445,7 @@ mod db_tests {
             loc_stanox: Some("87212".to_string()),
             loc_crs: Some("WAT".to_string()),
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: None,
             variation_status: None,
             raw_body: serde_json::json!({}),
@@ -4519,6 +4523,7 @@ mod db_tests {
             loc_stanox: Some("87212".to_string()),
             loc_crs: Some("WAT".to_string()),
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: None,
             variation_status: None,
             raw_body: serde_json::json!({}),
@@ -4608,6 +4613,7 @@ mod db_tests {
             loc_stanox: Some("87212".to_string()),
             loc_crs: Some("WAT".to_string()),
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: Some(at),
             variation_status: None,
             raw_body: serde_json::json!({}),
@@ -4708,6 +4714,7 @@ mod db_tests {
             loc_stanox: Some("87212".to_string()),
             loc_crs: Some("MKC".to_string()),
             planned_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),
@@ -4737,6 +4744,7 @@ mod db_tests {
             loc_stanox: Some("72410".to_string()),
             loc_crs: Some("EUS".to_string()),
             planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
             variation_status: Some("LATE".to_string()),
             raw_body: serde_json::json!({}),
@@ -4836,6 +4844,7 @@ mod db_tests {
             loc_stanox: Some("72410".to_string()),
             loc_crs: Some("EUS".to_string()),
             planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),
@@ -4864,6 +4873,7 @@ mod db_tests {
             loc_stanox: Some("87212".to_string()),
             loc_crs: Some("MKC".to_string()),
             planned_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
             variation_status: Some("LATE".to_string()),
             raw_body: serde_json::json!({}),
@@ -4954,6 +4964,7 @@ mod db_tests {
             loc_stanox: Some("72410".to_string()),
             loc_crs: Some("EUS".to_string()),
             planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),
@@ -4985,6 +4996,7 @@ mod db_tests {
             loc_stanox: None,
             loc_crs: None,
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: None,
             variation_status: None,
             raw_body: serde_json::json!({}),
@@ -5055,6 +5067,7 @@ mod db_tests {
             loc_stanox: Some("72410".to_string()),
             loc_crs: Some("EUS".to_string()),
             planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),
@@ -5081,6 +5094,7 @@ mod db_tests {
             loc_stanox: None,
             loc_crs: None,
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: None,
             variation_status: None,
             raw_body: serde_json::json!({}),
@@ -5123,6 +5137,7 @@ mod db_tests {
             loc_stanox: Some("11111".to_string()),
             loc_crs: Some("XXX".to_string()),
             planned_timestamp: Some("2026-09-06T18:00:00Z".parse().unwrap()),
+            gbtt_timestamp: None,
             actual_timestamp: Some("2026-09-06T18:00:00Z".parse().unwrap()),
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),
@@ -6404,6 +6419,7 @@ mod db_tests {
             loc_stanox: Some("12345".to_string()),
             loc_crs: Some("EUS".to_string()),
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: None,
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),
@@ -6525,6 +6541,7 @@ mod db_tests {
             loc_stanox: Some("87212".to_string()),
             loc_crs: Some("WAT".to_string()),
             planned_timestamp: None,
+            gbtt_timestamp: None,
             actual_timestamp: None,
             variation_status: Some("ON TIME".to_string()),
             raw_body: serde_json::json!({}),

@@ -44,7 +44,7 @@ column names what was found, not everything the spec proposed. Where a
 spec's counterpart lives outside this repository (the distant-signal-mcp
 server), only this repository's side was checked.
 
-160 specs: 106 implemented, 1 partly, 6 not implemented, 7 superseded, 40 research / review.
+161 specs: 106 implemented, 1 partly, 7 not implemented, 7 superseded, 40 research / review.
 
 | Spec | Status | Evidence / note |
 |---|---|---|
@@ -208,6 +208,7 @@ server), only this repository's side was checked.
 | [2026-09-27-full-coverage-windowed-stats-design](specs/2026-09-27-full-coverage-windowed-stats-design.md) | implemented | `20260927120000_full_coverage_line_window_stats.sql`; all switches off by default |
 | [2026-09-29-trips-plan-arrive-by-avoid-design](specs/2026-09-29-trips-plan-arrive-by-avoid-design.md) | implemented | `crates/trip-planner/src/{reverse,restrictions}.rs`, `plan_trip` in `trip_planning_itinerary.rs` |
 | [2026-09-30-backup-and-observability-gaps-design](specs/2026-09-30-backup-and-observability-gaps-design.md) | implemented | Live on mine-bringer 2026-10-01: pgBackRest PITR (`postgresql.pgbackrest`, tini image, exec grant as designed), explicit CronJob `timeZone` (CI check), Prometheus/Grafana PVCs, cold-archive expiry (`archive.expiry`, 730 d, dry-run), Loki + Alloy (7 d, all namespaces, shared `logging` service); Postgres password, SFTP host key and push password sealed as current values, not rotated; Redis, MCP SQLite and schedulefeed need no backups |
+| [2026-10-01-working-vs-public-times-design](specs/2026-10-01-working-vs-public-times-design.md) | partly | Phase 1 landed (§10): public and exact working times stored, TRUST `gbtt_timestamp` stored, set-down-only stops kept and direction honoured by the planner, additive `public*`/`working*`/`can*` API fields, public times shown first, detailed WTT view. Not yet: delay on public (P5), Delay Repay (P1), planning on public minutes (P6), live overlay, MCP (P7) |
 
 ## Plans
 

@@ -1,3 +1,4 @@
+import { stopDisplayArrival, stopDisplayTime } from './stopTimes';
 import { formatTime } from './dateFormat';
 import { routeLabel } from './stationLabel';
 import type { JourneyStop } from './types';
@@ -64,7 +65,7 @@ export function legRouteAndTime(
   const destinationName = legEndpointName(destinationCrs, stops, pin, 'destination');
   const route = routeLabel(originCrs, originName, destinationCrs, destinationName);
   const originStop = findStop(stops, originCrs);
-  const departure = originStop ? (originStop.scheduledDeparture ?? originStop.scheduledArrival) : null;
+  const departure = originStop ? stopDisplayTime(originStop) : null;
   return departure ? `${route} · ${formatTime(departure)}` : route;
 }
 
@@ -82,6 +83,6 @@ export function legDestinationArrivalLabel(
   const stop = findStop(stops, destinationCrs);
   if (!stop) return null;
   if (stop.actualArrival) return `arrive ${formatTime(stop.actualArrival)}`;
-  const estimate = stop.estimatedArrival ?? stop.scheduledArrival;
+  const estimate = stop.estimatedArrival ?? stopDisplayArrival(stop);
   return estimate ? `arrive est. ${formatTime(estimate)}` : null;
 }

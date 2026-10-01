@@ -23,6 +23,8 @@ fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         to_tiploc: to.to_string(),
         departure_min: dep,
         arrival_min: arr,
+        can_board: true,
+        can_alight: true,
     }
 }
 
@@ -184,4 +186,69 @@ fn an_unreachable_destination_agrees_on_no_journey_at_all() {
 fn a_departure_time_after_every_service_has_left_agrees_on_no_journey() {
     let (connections, interchange) = network();
     assert_agreement(&connections, &interchange, "EUSTON", "MKC", 700);
+}
+
+/// One train, A -> U -> D -> Z, where U is pick-up-only and D is
+/// set-down-only. Both algorithms must agree that nobody alights at U and
+/// nobody boards at D, while riding through both is fine.
+fn directional_network() -> (Vec<Connection>, InterchangeData) {
+    let mut a_u = conn("T1", "A", "U", 480, 490);
+    a_u.can_alight = false;
+    let u_d = conn("T1", "U", "D", 491, 500);
+    let mut d_z = conn("T1", "D", "Z", 501, 510);
+    d_z.can_board = false;
+    let interchange = InterchangeData {
+        change_time_by_tiploc: HashMap::new(),
+        tiploc_to_crs: HashMap::new(),
+        crs_to_tiplocs: HashMap::new(),
+        fixed_links_from_crs: HashMap::new(),
+    };
+    (vec![a_u, u_d, d_z], interchange)
+}
+
+fn arrival(
+    connections: &[Connection],
+    interchange: &InterchangeData,
+    from: &str,
+    to: &str,
+) -> Option<u32> {
+    let (from, to) = (vec![from.to_string()], vec![to.to_string()]);
+    let csa = scan_connections(ScanOptions {
+        connections,
+        interchange,
+        from_tiplocs: &from,
+        to_tiplocs: &to,
+        departure_min: 0,
+        date: date(),
+    })
+    .map(|journey| journey.arrival_min);
+    let raptor = raptor_search(RaptorOptions {
+        connections,
+        interchange,
+        from_tiplocs: &from,
+        to_tiplocs: &to,
+        departure_min: 0,
+        date: date(),
+        max_rounds: 4,
+    })
+    .iter()
+    .map(|journey| journey.arrival_min)
+    .min();
+    assert_eq!(csa, raptor, "{from:?} -> {to:?}");
+    csa
+}
+
+#[test]
+fn set_down_only_and_pick_up_only_stops_agree() {
+    let (connections, interchange) = directional_network();
+    // Cannot alight at the pick-up-only stop.
+    assert_eq!(arrival(&connections, &interchange, "A", "U"), None);
+    // Can board there.
+    assert_eq!(arrival(&connections, &interchange, "U", "Z"), Some(510));
+    // Can alight at the set-down-only stop.
+    assert_eq!(arrival(&connections, &interchange, "A", "D"), Some(500));
+    // Cannot board there.
+    assert_eq!(arrival(&connections, &interchange, "D", "Z"), None);
+    // Riding through both is fine.
+    assert_eq!(arrival(&connections, &interchange, "A", "Z"), Some(510));
 }
