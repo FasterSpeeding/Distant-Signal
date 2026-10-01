@@ -237,12 +237,9 @@ async fn poll_once(
     for (crs, body) in &invalid_crs {
         record_invalid_crs(rotation, crs, body, now);
     }
-    record_cycle_metrics(
-        ordered.len(),
-        completed,
-        samples.len(),
-        rotation.stalest_age(&ordered, now),
-    );
+    let stalest = rotation.stalest_age(&ordered, now);
+    record_cycle_metrics(ordered.len(), completed, samples.len(), stalest);
+    record_rotation_progress(rotation, polled.len(), completed, stalest, now);
 
     if samples.is_empty() {
         tracing::warn!("no station samples collected this cycle; nothing to post");
@@ -278,6 +275,65 @@ fn record_cycle_metrics(total: usize, completed: usize, sampled: usize, stalest:
         "ldbws_stalest_station_age_seconds"
     ))
     .set(stalest.as_secs_f64());
+}
+
+/// The aggregator's [`common::STATION_SAMPLE_MAX_AGE_MINUTES`], the age at
+/// which it stops using a station's sample.
+const AGGREGATOR_MAX_SAMPLE_AGE: Duration =
+    Duration::from_secs(60 * common::STATION_SAMPLE_MAX_AGE_MINUTES as u64);
+
+/// Logs and exports the rotation's progress. A cycle cut short by the time
+/// budget is normal (the next cycle carries on from there; see `rotation`),
+/// so it is only logged at debug. Instead there is one info line per full
+/// pass over the list, plus `ldbws_full_rotation_seconds` and
+/// `ldbws_full_rotation_cycles`. Warnings are kept for the case that
+/// matters: a pass slower than the aggregator's sample-age limit, or a
+/// station not sampled for longer than that limit, so the aggregator is
+/// dropping it.
+fn record_rotation_progress(
+    rotation: &mut Rotation,
+    total: usize,
+    completed: usize,
+    stalest: Duration,
+    now: std::time::Instant,
+) {
+    if let Some(full) = rotation.record_progress(total, completed, now) {
+        metrics::gauge!(common::metrics::metric_name("ldbws_full_rotation_seconds"))
+            .set(full.duration.as_secs_f64());
+        metrics::gauge!(common::metrics::metric_name("ldbws_full_rotation_cycles"))
+            .set(f64::from(full.cycles));
+        if full.duration > AGGREGATOR_MAX_SAMPLE_AGE {
+            tracing::warn!(
+                stations_total = total,
+                cycles = full.cycles,
+                rotation_secs = full.duration.as_secs(),
+                max_sample_age_secs = AGGREGATOR_MAX_SAMPLE_AGE.as_secs(),
+                "a full LDBWS station rotation took longer than the aggregator's sample-age \
+                 limit, so stations go stale between samples; see \
+                 ldbws_stations_attempted_per_cycle"
+            );
+        } else {
+            tracing::info!(
+                stations_total = total,
+                cycles = full.cycles,
+                rotation_secs = full.duration.as_secs(),
+                "completed a full LDBWS station rotation"
+            );
+        }
+    }
+    match rotation.note_stale(stalest > AGGREGATOR_MAX_SAMPLE_AGE) {
+        Some(true) => tracing::warn!(
+            stalest_age_secs = stalest.as_secs(),
+            max_sample_age_secs = AGGREGATOR_MAX_SAMPLE_AGE.as_secs(),
+            "an LDBWS station has gone unsampled for longer than the aggregator's sample-age \
+             limit; the aggregator now ignores it (ldbws_stalest_station_age_seconds)"
+        ),
+        Some(false) => tracing::info!(
+            stalest_age_secs = stalest.as_secs(),
+            "every LDBWS station is within the aggregator's sample-age limit again"
+        ),
+        None => {}
+    }
 }
 
 /// `ldbws_invalid_crs_station{crs}`: 1 while LDBWS rejects `crs` as an
@@ -423,12 +479,15 @@ async fn sample_stations_until(
     };
 
     if sampling.cut_short {
-        tracing::warn!(
+        // Debug, not warn: this is every production cycle (~255 of 560
+        // stations fit the budget) and the rotation is designed around it.
+        // `record_rotation_progress` reports per full pass instead.
+        tracing::debug!(
             stations_total = stations.len(),
+            stations_completed = sampling.completed,
             stations_sampled = sampling.samples.len(),
-            "per-cycle station-sampling time budget exceeded; moving on with what was \
-             collected so far rather than blocking this and every subsequent cycle \
-             (the next cycle starts where this one stopped)"
+            "per-cycle station-sampling time budget reached; the next cycle starts where \
+             this one stopped"
         );
     }
 
@@ -1424,6 +1483,36 @@ mod tests {
             handle
                 .render()
                 .contains(r#"distant_signal_ldbws_invalid_crs_station{crs="ANV"} 0"#)
+        );
+    }
+
+    /// A full pass is exported once it completes; cycles in between leave
+    /// the gauges at the previous pass.
+    #[test]
+    fn a_full_rotation_is_exported_when_it_completes() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let started = std::time::Instant::now();
+        let mut rotation = Rotation::new(started);
+        metrics::with_local_recorder(&recorder, || {
+            for cycle in 1..=2u64 {
+                let now = started + Duration::from_secs(60 * cycle);
+                record_rotation_progress(&mut rotation, 560, 255, Duration::ZERO, now);
+            }
+        });
+        assert!(!handle.render().contains("full_rotation"));
+        metrics::with_local_recorder(&recorder, || {
+            let now = started + Duration::from_secs(180);
+            record_rotation_progress(&mut rotation, 560, 255, Duration::ZERO, now);
+        });
+        let rendered = handle.render();
+        assert!(
+            rendered.contains("distant_signal_ldbws_full_rotation_seconds 180"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("distant_signal_ldbws_full_rotation_cycles 3"),
+            "{rendered}"
         );
     }
 

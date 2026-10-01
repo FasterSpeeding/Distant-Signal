@@ -1112,8 +1112,11 @@ spec:
             description: >-
               The least recently sampled LDBWS station in {{ "{{ $labels.namespace }}" }}
               was last sampled {{ "{{ $value | humanizeDuration }}" }} ago (threshold
-              {{ .maxAgeSeconds }}s). The rotation (SVC-04) has stopped reaching part
-              of the station list, e.g. every cycle runs out of budget first; see
+              {{ .maxAgeSeconds }}s). The aggregator ignores samples older than 15
+              minutes, so that station has no live data. Either the poller cannot
+              sample or post at all (check DistantSignalPollerFailing and api), or
+              the rotation (SVC-04) has stopped reaching part of the station list;
+              see distant_signal_ldbws_full_rotation_seconds, and
               distant_signal_ldbws_stations_attempted_per_cycle against
               distant_signal_ldbws_stations_total. Stations LDBWS rejects as an
               invalid CRS are excluded here; see DistantSignalLdbwsInvalidCrs.

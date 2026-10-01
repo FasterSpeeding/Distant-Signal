@@ -899,7 +899,9 @@ fn routes_from_stations(line: &LineDefinition, stations: &[String]) -> Vec<Affec
 /// slowly", it is not being sampled at all -- while still leaving ample room
 /// for a single degraded sweep, an RDM rate-limit backoff, or a poller
 /// restart without a station flapping in and out of coverage.
-const MAX_SAMPLE_AGE_MINUTES: i64 = 15;
+///
+/// Shared with `poller-ldbws` as [`common::STATION_SAMPLE_MAX_AGE_MINUTES`].
+const MAX_SAMPLE_AGE_MINUTES: i64 = common::STATION_SAMPLE_MAX_AGE_MINUTES as i64;
 
 /// Drops every `station_samples` entry whose `polled_at` is older than
 /// [`MAX_SAMPLE_AGE_MINUTES`], returning how many were dropped.
