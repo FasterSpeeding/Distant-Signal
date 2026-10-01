@@ -590,6 +590,170 @@ fn legacy_files_if_complete(dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFi
     }
 }
 
+/// Written into a complete delivery directory once api has accepted its
+/// record: the source zip's name, size, exact mtime (Unix nanoseconds) and
+/// SHA-256, one tab-separated line. A restarted process compares the zip
+/// still in `watch_dir` against it (see [`recognise_completed`]) instead
+/// of waiting for the zip to look stable and posting it again. Hidden, so
+/// `schedule-reference` and pruning never treat it as a delivery file.
+pub const INGESTED_RECORD: &str = ".delivery-ingested";
+
+/// The zip a delivery directory was extracted from and posted for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestedRecord {
+    pub zip_name: String,
+    pub zip_bytes: u64,
+    pub zip_mtime: SystemTime,
+    pub zip_sha256: String,
+}
+
+fn unix_nanos(time: SystemTime) -> Option<u128> {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_nanos())
+}
+
+/// Writes [`INGESTED_RECORD`] into `storage_dir/<dir_name>` atomically.
+pub fn write_ingested_record(
+    storage_dir: &Path,
+    dir_name: &str,
+    record: &IngestedRecord,
+) -> anyhow::Result<()> {
+    let dir = storage_dir.join(dir_name);
+    let nanos = unix_nanos(record.zip_mtime)
+        .ok_or_else(|| anyhow::anyhow!("zip mtime is before the Unix epoch"))?;
+    let temp = dir.join(format!("{INGESTED_RECORD}.tmp"));
+    {
+        let mut out = std::fs::File::create(&temp)?;
+        writeln!(
+            out,
+            "{}\t{}\t{nanos}\t{}",
+            record.zip_name, record.zip_bytes, record.zip_sha256
+        )?;
+        out.sync_all()?;
+    }
+    std::fs::rename(&temp, dir.join(INGESTED_RECORD))?;
+    fsync_dir(&dir)?;
+    Ok(())
+}
+
+/// The [`INGESTED_RECORD`] in `dir`, or `None` when it is absent or
+/// unreadable (treated the same: the delivery is not known to be posted).
+pub fn read_ingested_record(dir: &Path) -> anyhow::Result<Option<IngestedRecord>> {
+    let contents = match std::fs::read_to_string(dir.join(INGESTED_RECORD)) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let mut parts = contents.trim_end_matches('\n').split('\t');
+    let (Some(name), Some(bytes), Some(nanos), Some(sha256), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return Ok(None);
+    };
+    let (Ok(bytes), Ok(nanos)) = (bytes.parse::<u64>(), nanos.parse::<u64>()) else {
+        return Ok(None);
+    };
+    Ok(Some(IngestedRecord {
+        zip_name: name.to_string(),
+        zip_bytes: bytes,
+        zip_mtime: SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(nanos),
+        zip_sha256: sha256.to_string(),
+    }))
+}
+
+/// What a previous run of this process already did with the zip in
+/// `watch_dir`, as far as `storage_dir` shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recognised {
+    /// Extracted, marked complete, and accepted by api: nothing left to
+    /// do. Carries the record that matched.
+    Ingested(IngestedRecord),
+    /// Extracted and marked complete, but not (known to be) accepted by
+    /// api -- the process stopped before the POST succeeded, or the
+    /// directory predates [`INGESTED_RECORD`]. The zip is the complete one
+    /// that was extracted, so it needs no stability wait, only the POST.
+    Extracted,
+}
+
+/// Whether the zip at `zip_path` (as the current scan saw it: `zip_mtime`,
+/// `zip_bytes`) is a delivery a previous run already completed, so a
+/// restart need not wait for it to look stable again (finding: after a pod
+/// restart the day's already-ingested zip was waited on for
+/// `stability_cycles`, logged as a stalled upload past the final check
+/// time, then posted again).
+///
+/// Only the directory [`delivery_dir_name`] gives for `zip_mtime` is
+/// considered, and only once it carries the completion marker. Then:
+/// * with an [`INGESTED_RECORD`] for the same file name: [`Recognised::Ingested`]
+///   when the size and exact mtime match, or (an mtime the filesystem
+///   reported differently) the size and the zip's SHA-256 match. A partial
+///   or rewritten zip can match neither.
+/// * without one: [`Recognised::Extracted`] when the zip's own central
+///   directory -- which sits at its end, so a partial upload has none --
+///   lists exactly the files and sizes the marker records.
+///
+/// `Ok(None)` for anything else: a genuinely new or changing zip goes
+/// through the normal stability wait.
+pub fn recognise_completed(
+    storage_dir: &Path,
+    zip_path: &Path,
+    zip_mtime: SystemTime,
+    zip_bytes: u64,
+) -> anyhow::Result<Option<Recognised>> {
+    let dir = storage_dir.join(delivery_dir_name(zip_mtime));
+    let Some(marked) = read_marker(&dir)? else {
+        return Ok(None);
+    };
+    let zip_name = zip_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Some(record) = read_ingested_record(&dir)? {
+        if record.zip_name != zip_name || record.zip_bytes != zip_bytes {
+            return Ok(None);
+        }
+        if record.zip_mtime == zip_mtime {
+            return Ok(Some(Recognised::Ingested(record)));
+        }
+        let hashed = crate::audit::DeliveredFile::hash_file(&zip_name, zip_path)?;
+        return Ok(
+            (hashed.bytes == record.zip_bytes && hashed.sha256 == record.zip_sha256)
+                .then_some(Recognised::Ingested(record)),
+        );
+    }
+    let Ok(file) = std::fs::File::open(zip_path) else {
+        return Ok(None);
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return Ok(None);
+    };
+    let mut listed = Vec::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index_raw(i)?;
+        if entry.is_dir() {
+            continue;
+        }
+        match entry.enclosed_name() {
+            Some(enclosed) if enclosed.components().count() == 1 => {
+                listed.push((enclosed.to_string_lossy().into_owned(), entry.size()));
+            }
+            _ => {}
+        }
+    }
+    let mut recorded: Vec<(String, u64)> = marked
+        .into_iter()
+        .map(|file| (file.name, file.bytes))
+        .collect();
+    listed.sort();
+    recorded.sort();
+    Ok((!listed.is_empty() && listed == recorded).then_some(Recognised::Extracted))
+}
+
 /// A minimal in-memory `.zip` writer, used only by this module's own tests
 /// (and reused by `main.rs`'s tests) to build a fixture archive without a
 /// checked-in binary file.
@@ -1255,5 +1419,140 @@ mod tests {
         let adopted =
             adopt_legacy_deliveries(storage.path(), watch.path(), &Routing::defaults()).unwrap();
         assert_eq!(adopted, vec![current]);
+    }
+
+    /// The zip in `watch`, extracted and marked complete under its
+    /// mtime's directory; returns its path, mtime, size and directory.
+    fn completed_fixture(
+        watch: &Path,
+        storage: &Path,
+    ) -> (PathBuf, SystemTime, u64, PathBuf, String) {
+        let zip_path = fixture_zip(watch);
+        let metadata = std::fs::metadata(&zip_path).unwrap();
+        let mtime = metadata.modified().unwrap();
+        let dir_name = delivery_dir_name(mtime);
+        ensure_extracted(
+            &zip_path,
+            storage,
+            &dir_name,
+            ExtractLimits::default(),
+            |_| Ok(()),
+        )
+        .unwrap();
+        let sha256 = crate::audit::DeliveredFile::hash_file("", &zip_path)
+            .unwrap()
+            .sha256;
+        (
+            zip_path,
+            mtime,
+            metadata.len(),
+            storage.join(dir_name),
+            sha256,
+        )
+    }
+
+    #[test]
+    fn ingested_record_round_trips_with_a_nanosecond_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = IngestedRecord {
+            zip_name: "timetable_full.zip".to_string(),
+            zip_bytes: 77_000_000,
+            zip_mtime: SystemTime::UNIX_EPOCH
+                + std::time::Duration::new(1_790_000_000, 123_456_789),
+            zip_sha256: "ab".repeat(32),
+        };
+        assert_eq!(read_ingested_record(dir.path()).unwrap(), None);
+        let storage = dir.path().parent().unwrap();
+        let name = dir.path().file_name().unwrap().to_str().unwrap();
+        write_ingested_record(storage, name, &record).unwrap();
+        assert_eq!(read_ingested_record(dir.path()).unwrap(), Some(record));
+        std::fs::write(dir.path().join(INGESTED_RECORD), "a\t1\n").unwrap();
+        assert_eq!(read_ingested_record(dir.path()).unwrap(), None);
+    }
+
+    /// A posted delivery is recognised by size and exact mtime, or, when
+    /// the mtime reads differently, by its SHA-256; a different size or
+    /// different bytes is not.
+    #[test]
+    fn recognise_completed_matches_an_ingested_zip_by_size_and_mtime_or_sha256() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let (zip_path, mtime, bytes, dir, sha256) = completed_fixture(watch.path(), storage.path());
+        let record = IngestedRecord {
+            zip_name: "timetable_full.zip".to_string(),
+            zip_bytes: bytes,
+            zip_mtime: mtime,
+            zip_sha256: sha256.clone(),
+        };
+        let dir_name = dir.file_name().unwrap().to_str().unwrap();
+        write_ingested_record(storage.path(), dir_name, &record).unwrap();
+
+        let recognise = |bytes| recognise_completed(storage.path(), &zip_path, mtime, bytes);
+        assert_eq!(
+            recognise(bytes).unwrap(),
+            Some(Recognised::Ingested(record.clone()))
+        );
+        assert_eq!(recognise(bytes - 1).unwrap(), None);
+
+        // Same second (same directory), different sub-second mtime: the
+        // hash decides.
+        let skewed = IngestedRecord {
+            zip_mtime: mtime - std::time::Duration::from_nanos(1),
+            ..record.clone()
+        };
+        write_ingested_record(storage.path(), dir_name, &skewed).unwrap();
+        assert_eq!(
+            recognise(bytes).unwrap(),
+            Some(Recognised::Ingested(skewed.clone()))
+        );
+        let other_hash = IngestedRecord {
+            zip_sha256: "00".repeat(32),
+            ..skewed
+        };
+        write_ingested_record(storage.path(), dir_name, &other_hash).unwrap();
+        assert_eq!(recognise(bytes).unwrap(), None);
+
+        // No completed directory for this mtime: a new delivery.
+        assert_eq!(
+            recognise_completed(
+                storage.path(),
+                &zip_path,
+                mtime + std::time::Duration::from_secs(60),
+                bytes
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    /// Without an ingested record, a complete zip whose entries match the
+    /// marker is recognised as extracted; a partial upload (its central
+    /// directory not yet written) or a different archive is not.
+    #[test]
+    fn recognise_completed_without_a_record_needs_the_zip_to_match_the_marker() {
+        let watch = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let (zip_path, mtime, bytes, _dir, _) = completed_fixture(watch.path(), storage.path());
+        assert_eq!(
+            recognise_completed(storage.path(), &zip_path, mtime, bytes).unwrap(),
+            Some(Recognised::Extracted)
+        );
+
+        let full = std::fs::read(&zip_path).unwrap();
+        std::fs::write(&zip_path, &full[..full.len() / 2]).unwrap();
+        assert_eq!(
+            recognise_completed(storage.path(), &zip_path, mtime, bytes / 2).unwrap(),
+            None
+        );
+
+        std::fs::write(
+            &zip_path,
+            build_test_zip(&[("RJTTF942MCA.txt", b"mca content, longer")]),
+        )
+        .unwrap();
+        assert_eq!(
+            recognise_completed(storage.path(), &zip_path, mtime, bytes).unwrap(),
+            None
+        );
     }
 }
