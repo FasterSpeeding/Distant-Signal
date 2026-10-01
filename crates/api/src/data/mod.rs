@@ -31,6 +31,7 @@ pub mod schedule_matching;
 pub mod station_skip;
 pub mod station_stats;
 pub mod stop_board;
+pub mod stop_delay;
 pub mod stop_live_status;
 pub mod ticket_extraction;
 pub mod ticket_precheck;

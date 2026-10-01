@@ -21,16 +21,38 @@ use serde::Serialize;
 /// intentionally NOT optional: every estimate this function returns
 /// carries its own caveat text baked in, so a caller serializing this type
 /// cannot accidentally display a bare percentage with no caveat attached.
+///
+/// The delay it is computed from is the train's delay against the PUBLIC
+/// arrival at the ticket's destination (design doc §9 decision 3), which
+/// is what operators pay Delay Repay on. Before the train has arrived there
+/// that delay is a projection, and the estimate says so: `provisional` is
+/// `true` and `disclaimer` is [`PROVISIONAL_DISCLAIMER`], which leads with
+/// that fact. It becomes final (`provisional: false`, [`DISCLAIMER`]) once
+/// the train has arrived.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DelayRepayEstimate {
     pub scheme: &'static str, // "DR15" | "DR30"
-    pub band_minutes: i32,    // the threshold band this delay fell into
+    pub band_minutes: i32,    // the threshold band this delay fell into: 15, 30, 60 or 120
     pub percentage: u8,       // rough percentage-of-fare estimate
+    /// Which fare `percentage` is of: `"single"` (the single fare, or half
+    /// a return) in every band below 120 minutes, `"return"` (the whole
+    /// return fare) in the 120-minute band.
+    pub fare_basis: &'static str,
+    /// `true` while the train has not reached the ticket's destination yet.
+    pub provisional: bool,
     pub disclaimer: &'static str,
 }
 
 const DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a guarantee of \
+    compensation and not proof you travelled. Always verify eligibility and submit any claim \
+    directly with the operator -- this app never submits a claim on your behalf.";
+
+/// [`DISCLAIMER`] for a provisional estimate: the same caveat, led by the
+/// fact that the train has not arrived yet and the figure will change.
+pub const PROVISIONAL_DISCLAIMER: &str = "Provisional: the train has not reached your \
+    destination yet, so this uses its current delay projected to the public timetable arrival \
+    there, and it will change. This is a rough, community-sourced estimate, not a guarantee of \
     compensation and not proof you travelled. Always verify eligibility and submit any claim \
     directly with the operator -- this app never submits a claim on your behalf.";
 
@@ -137,7 +159,15 @@ pub const GENERIC_CLAIM_URL: &str =
 /// lowest band (e.g. a 20-minute delay on a DR30 operator) -- there is
 /// nothing positive to estimate, and the route (Task 5) still surfaces the
 /// disclaimer and a claim link regardless of whether this returns `Some`.
-pub fn estimate_delay_repay(operator: &str, delay_minutes: i32) -> Option<DelayRepayEstimate> {
+///
+/// `delay_minutes` is the delay against the public arrival at the ticket's
+/// destination; `provisional` is whether the train has yet to arrive there
+/// (see [`DelayRepayEstimate`]).
+pub fn estimate_delay_repay(
+    operator: &str,
+    delay_minutes: i32,
+    provisional: bool,
+) -> Option<DelayRepayEstimate> {
     let operator_lower = operator.to_lowercase();
     let scheme_is_dr30 = DR30_OPERATORS.iter().any(|op| operator_lower.contains(op));
 
@@ -151,12 +181,33 @@ pub fn estimate_delay_repay(operator: &str, delay_minutes: i32) -> Option<DelayR
         scheme,
         band_minutes: band.0,
         percentage: band.1,
-        disclaimer: DISCLAIMER,
+        fare_basis: if band.0 >= 120 { "return" } else { "single" },
+        provisional,
+        disclaimer: if provisional {
+            PROVISIONAL_DISCLAIMER
+        } else {
+            DISCLAIMER
+        },
     })
 }
 
+/// [`estimate_delay_repay`] from a ticket's operator and the delay at its
+/// destination (`data::stop_delay`): `None` without an operator or a delay.
+/// The one place both callers (the delay-repay route and the ticket list)
+/// turn the two into an estimate, so they can never disagree.
+pub fn estimate_for(
+    operator: Option<&str>,
+    delay: Option<crate::data::stop_delay::StopDelay>,
+) -> Option<DelayRepayEstimate> {
+    let delay = delay?;
+    estimate_delay_repay(operator?, delay.minutes, delay.provisional)
+}
+
+/// DR15: 15-29 minutes 25% of the single fare, 30-59 50%, 60-119 100%, and
+/// 120 or more 100% of the return fare.
 fn dr15_band(delay_minutes: i32) -> Option<(i32, u8)> {
     match delay_minutes {
+        d if d >= 120 => Some((120, 100)),
         d if d >= 60 => Some((60, 100)),
         d if d >= 30 => Some((30, 50)),
         d if d >= 15 => Some((15, 25)),
@@ -164,8 +215,10 @@ fn dr15_band(delay_minutes: i32) -> Option<(i32, u8)> {
     }
 }
 
+/// DR30: as DR15 without the 15-minute band.
 fn dr30_band(delay_minutes: i32) -> Option<(i32, u8)> {
     match delay_minutes {
+        d if d >= 120 => Some((120, 100)),
         d if d >= 60 => Some((60, 100)),
         d if d >= 30 => Some((30, 50)),
         _ => None,
@@ -188,57 +241,171 @@ mod tests {
 
     #[test]
     fn dr15_band_edges() {
-        assert_eq!(estimate_delay_repay("Southeastern", 14), None);
+        assert_eq!(estimate_delay_repay("Southeastern", 14, false), None);
         assert_eq!(
-            estimate_delay_repay("Southeastern", 15).unwrap().percentage,
+            estimate_delay_repay("Southeastern", 15, false)
+                .unwrap()
+                .percentage,
             25
         );
         assert_eq!(
-            estimate_delay_repay("Southeastern", 29).unwrap().percentage,
+            estimate_delay_repay("Southeastern", 29, false)
+                .unwrap()
+                .percentage,
             25
         );
         assert_eq!(
-            estimate_delay_repay("Southeastern", 30).unwrap().percentage,
+            estimate_delay_repay("Southeastern", 30, false)
+                .unwrap()
+                .percentage,
             50
         );
         assert_eq!(
-            estimate_delay_repay("Southeastern", 59).unwrap().percentage,
+            estimate_delay_repay("Southeastern", 59, false)
+                .unwrap()
+                .percentage,
             50
         );
         assert_eq!(
-            estimate_delay_repay("Southeastern", 60).unwrap().percentage,
+            estimate_delay_repay("Southeastern", 60, false)
+                .unwrap()
+                .percentage,
             100
         );
         assert_eq!(
-            estimate_delay_repay("Southeastern", 30).unwrap().scheme,
+            estimate_delay_repay("Southeastern", 30, false)
+                .unwrap()
+                .scheme,
             "DR15"
         );
     }
 
     #[test]
     fn dr30_band_edges_have_no_fifteen_minute_band() {
-        assert_eq!(estimate_delay_repay("LNER", 15), None);
-        assert_eq!(estimate_delay_repay("LNER", 29), None);
-        assert_eq!(estimate_delay_repay("LNER", 30).unwrap().percentage, 50);
-        assert_eq!(estimate_delay_repay("LNER", 59).unwrap().percentage, 50);
-        assert_eq!(estimate_delay_repay("LNER", 60).unwrap().percentage, 100);
-        assert_eq!(estimate_delay_repay("LNER", 30).unwrap().scheme, "DR30");
+        assert_eq!(estimate_delay_repay("LNER", 15, false), None);
+        assert_eq!(estimate_delay_repay("LNER", 29, false), None);
+        assert_eq!(
+            estimate_delay_repay("LNER", 30, false).unwrap().percentage,
+            50
+        );
+        assert_eq!(
+            estimate_delay_repay("LNER", 59, false).unwrap().percentage,
+            50
+        );
+        assert_eq!(
+            estimate_delay_repay("LNER", 60, false).unwrap().percentage,
+            100
+        );
+        assert_eq!(
+            estimate_delay_repay("LNER", 30, false).unwrap().scheme,
+            "DR30"
+        );
     }
 
     #[test]
     fn dr30_operator_matching_is_case_insensitive_and_substring_based() {
-        assert_eq!(estimate_delay_repay("ScotRail", 30).unwrap().scheme, "DR30");
-        assert_eq!(estimate_delay_repay("scotrail", 30).unwrap().scheme, "DR30");
         assert_eq!(
-            estimate_delay_repay("Abellio ScotRail", 30).unwrap().scheme,
+            estimate_delay_repay("ScotRail", 30, false).unwrap().scheme,
+            "DR30"
+        );
+        assert_eq!(
+            estimate_delay_repay("scotrail", 30, false).unwrap().scheme,
+            "DR30"
+        );
+        assert_eq!(
+            estimate_delay_repay("Abellio ScotRail", 30, false)
+                .unwrap()
+                .scheme,
             "DR30"
         );
     }
 
     #[test]
     fn every_estimate_carries_the_disclaimer() {
-        let estimate = estimate_delay_repay("LNER", 60).unwrap();
+        let estimate = estimate_delay_repay("LNER", 60, false).unwrap();
         assert_eq!(estimate.disclaimer, DISCLAIMER);
+        assert!(!estimate.provisional);
+    }
+
+    /// Design doc §9 decision 3: every band edge, DR15 and DR30, provisional
+    /// and final alike. (band, percentage, fare) or None.
+    #[test]
+    fn every_band_edge_provisional_and_final() {
+        let dr15: &[(i32, Option<(i32, u8, &str)>)] = &[
+            (14, None),
+            (15, Some((15, 25, "single"))),
+            (29, Some((15, 25, "single"))),
+            (30, Some((30, 50, "single"))),
+            (59, Some((30, 50, "single"))),
+            (60, Some((60, 100, "single"))),
+            (119, Some((60, 100, "single"))),
+            (120, Some((120, 100, "return"))),
+            (400, Some((120, 100, "return"))),
+        ];
+        let dr30: &[(i32, Option<(i32, u8, &str)>)] = &[
+            (14, None),
+            (15, None),
+            (29, None),
+            (30, Some((30, 50, "single"))),
+            (59, Some((30, 50, "single"))),
+            (60, Some((60, 100, "single"))),
+            (119, Some((60, 100, "single"))),
+            (120, Some((120, 100, "return"))),
+        ];
+        for (operator, table) in [("Southeastern", dr15), ("LNER", dr30)] {
+            for &(minutes, expected) in table {
+                for provisional in [true, false] {
+                    let estimate = estimate_delay_repay(operator, minutes, provisional);
+                    assert_eq!(
+                        estimate
+                            .as_ref()
+                            .map(|e| (e.band_minutes, e.percentage, e.fare_basis)),
+                        expected,
+                        "{operator} {minutes} min (provisional: {provisional})"
+                    );
+                    if let Some(estimate) = estimate {
+                        assert_eq!(estimate.provisional, provisional);
+                        assert_eq!(
+                            estimate.disclaimer,
+                            if provisional {
+                                PROVISIONAL_DISCLAIMER
+                            } else {
+                                DISCLAIMER
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_provisional_disclaimer_says_so_first_and_keeps_the_full_caveat() {
+        assert!(PROVISIONAL_DISCLAIMER.starts_with("Provisional:"));
+        assert!(PROVISIONAL_DISCLAIMER.ends_with(DISCLAIMER));
+    }
+
+    #[test]
+    fn estimate_for_needs_an_operator_and_a_delay() {
+        use crate::data::stop_delay::{DelayBasis, StopDelay};
+        let arrived = StopDelay {
+            minutes: 31,
+            basis: DelayBasis::Public,
+            provisional: false,
+        };
+        assert_eq!(estimate_for(None, Some(arrived)), None);
+        assert_eq!(estimate_for(Some("LNER"), None), None);
+        let estimate = estimate_for(Some("LNER"), Some(arrived)).unwrap();
+        assert_eq!((estimate.band_minutes, estimate.provisional), (30, false));
+        let projected = StopDelay {
+            provisional: true,
+            ..arrived
+        };
+        assert!(
+            estimate_for(Some("LNER"), Some(projected))
+                .unwrap()
+                .provisional
+        );
     }
 
     #[test]
@@ -261,11 +428,13 @@ mod tests {
     #[test]
     fn cross_country_with_a_space_is_still_recognized_as_dr30() {
         assert_eq!(
-            estimate_delay_repay("Cross Country", 30).unwrap().scheme,
+            estimate_delay_repay("Cross Country", 30, false)
+                .unwrap()
+                .scheme,
             "DR30"
         );
         assert_eq!(
-            estimate_delay_repay("Cross Country", 20),
+            estimate_delay_repay("Cross Country", 20, false),
             None,
             "DR30 has no 15-29 minute band, same as the no-space spelling"
         );
@@ -283,13 +452,13 @@ mod tests {
     #[test]
     fn lners_full_trading_name_is_still_recognized_as_dr30() {
         assert_eq!(
-            estimate_delay_repay("London North Eastern Railway", 30)
+            estimate_delay_repay("London North Eastern Railway", 30, false)
                 .unwrap()
                 .scheme,
             "DR30"
         );
         assert_eq!(
-            estimate_delay_repay("London North Eastern Railway", 20),
+            estimate_delay_repay("London North Eastern Railway", 20, false),
             None,
             "DR30 has no 15-29 minute band, same as the LNER initialism"
         );
