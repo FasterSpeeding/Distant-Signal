@@ -94,10 +94,27 @@ describe('proxy matcher', () => {
     expect(re.test(path)).toBe(false);
   });
 
-  it('skips next/link prefetches', () => {
-    expect(config.matcher[0].missing).toEqual([
-      { type: 'header', key: 'next-router-prefetch' },
-      { type: 'header', key: 'purpose', value: 'prefetch' },
-    ]);
+  // Next's CSP guide skips prefetches (`missing: next-router-prefetch /
+  // purpose: prefetch`), which left an HTML page served to such a request
+  // with no CSP at all. Every page request must reach the proxy.
+  it('does not skip prefetches', () => {
+    expect(config.matcher[0]).not.toHaveProperty('missing');
+    expect(config.matcher[0]).not.toHaveProperty('has');
+  });
+});
+
+describe('proxy on prefetch requests', () => {
+  it.each<Record<string, string>>([
+    { 'next-router-prefetch': '1' },
+    { 'next-router-prefetch': '1', rsc: '1' },
+    { purpose: 'prefetch' },
+    { 'sec-purpose': 'prefetch' },
+  ])('sets the nonce CSP on a request with %o', (headers) => {
+    const res = proxy(new NextRequest('http://localhost:3000/', { headers }));
+    const csp = res.headers.get('Content-Security-Policy');
+    const nonce = nonceOf(csp);
+    expect(csp).toMatch(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/);
+    expect(res.headers.get('x-middleware-request-x-nonce')).toBe(nonce);
+    expect(res.headers.get('x-middleware-request-content-security-policy')).toBe(csp);
   });
 });
