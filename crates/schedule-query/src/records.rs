@@ -863,7 +863,10 @@ mod tests {
         assert_eq!(serde_json::from_str::<HalfMinuteTime>(&json).unwrap(), time);
         let whole: HalfMinuteTime = serde_json::from_str(r#""23:59:00""#).unwrap();
         assert!(!whole.is_half_minute());
-        assert_eq!(whole.time(), chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap());
+        assert_eq!(
+            whole.time(),
+            chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap()
+        );
     }
 
     /// Adding the pass time must not grow the struct the schedule index holds

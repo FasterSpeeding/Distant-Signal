@@ -2677,6 +2677,7 @@ mod db_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -2692,6 +2693,7 @@ mod db_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
             ]
         }
@@ -2855,6 +2857,7 @@ mod db_tests {
                     operator_atoc: operator_atoc.map(str::to_string),
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -2870,6 +2873,7 @@ mod db_tests {
                     operator_atoc: operator_atoc.map(str::to_string),
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
             ]
         }

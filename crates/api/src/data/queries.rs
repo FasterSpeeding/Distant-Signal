@@ -2476,7 +2476,7 @@ pub async fn latest_schedule_network_departures(
 /// whole. See
 /// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
 /// §3 for why the bucket shape could not work here.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ScheduleDestinationDeparturesRow {
     pub service_date: chrono::NaiveDate,
     pub destination_crs: String,
@@ -2555,6 +2555,16 @@ pub struct ScheduleDestinationDeparturesRow {
     /// publisher that predates the field still deserializes (as `None`).
     #[serde(default)]
     pub rsid: Option<String>,
+    /// The public (GBTT) counterparts of `scheduled`,
+    /// `calling_point_arrival` and `destination_arrival` -- see
+    /// `schedule_query::DestinationDeparture`. `#[serde(default)]` for the
+    /// same rolling-deploy reason as `rsid`: NULL until the next publish.
+    #[serde(default)]
+    pub public_departure: Option<chrono::NaiveTime>,
+    #[serde(default)]
+    pub public_calling_point_arrival: Option<chrono::NaiveTime>,
+    #[serde(default)]
+    pub public_destination_arrival: Option<chrono::NaiveTime>,
 }
 
 /// An opaque-to-the-caller position in one station's ordered results: the
@@ -3124,6 +3134,14 @@ pub async fn upsert_schedule_destination_departures_publish_part(
         rows.iter().map(|r| r.operator_atoc.as_deref()).collect();
     let headcode: Vec<Option<&str>> = rows.iter().map(|r| r.headcode.as_deref()).collect();
     let rsid: Vec<Option<&str>> = rows.iter().map(|r| r.rsid.as_deref()).collect();
+    let public_departure: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.public_departure).collect();
+    let public_calling_point_arrival: Vec<Option<chrono::NaiveTime>> = rows
+        .iter()
+        .map(|r| r.public_calling_point_arrival)
+        .collect();
+    let public_destination_arrival: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.public_destination_arrival).collect();
 
     let mut distinct_dates = service_dates.clone();
     distinct_dates.sort_unstable();
@@ -3157,11 +3175,15 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     // unchanged row from being rewritten: it is read, not written.
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures AS d \
-            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid) \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, \
+             public_departure, public_calling_point_arrival, public_destination_arrival) \
          SELECT DISTINCT ON (service_date, destination_crs, scheduled, train_uid, origin_crs) \
-                service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid \
-         FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[], $13::text[]) \
-              WITH ORDINALITY AS t(service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, ord) \
+                service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, \
+                public_departure, public_calling_point_arrival, public_destination_arrival \
+         FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::time[], $10::smallint[], $11::text[], $12::text[], $13::text[], \
+                     $14::time[], $15::time[], $16::time[]) \
+              WITH ORDINALITY AS t(service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, calling_point_arrival, destination_arrival, destination_arrival_day_offset, operator_atoc, headcode, rsid, \
+                                   public_departure, public_calling_point_arrival, public_destination_arrival, ord) \
          ORDER BY service_date, destination_crs, scheduled, train_uid, origin_crs, ord \
          ON CONFLICT (service_date, destination_crs, scheduled, train_uid, origin_crs) DO UPDATE SET \
             day_offset = EXCLUDED.day_offset, \
@@ -3171,10 +3193,15 @@ pub async fn upsert_schedule_destination_departures_publish_part(
             destination_arrival_day_offset = EXCLUDED.destination_arrival_day_offset, \
             operator_atoc = EXCLUDED.operator_atoc, \
             headcode = EXCLUDED.headcode, \
-            rsid = EXCLUDED.rsid \
-         WHERE (d.day_offset, d.true_origin_crs, d.calling_point_arrival, d.destination_arrival, d.destination_arrival_day_offset, d.operator_atoc, d.headcode, d.rsid) \
+            rsid = EXCLUDED.rsid, \
+            public_departure = EXCLUDED.public_departure, \
+            public_calling_point_arrival = EXCLUDED.public_calling_point_arrival, \
+            public_destination_arrival = EXCLUDED.public_destination_arrival \
+         WHERE (d.day_offset, d.true_origin_crs, d.calling_point_arrival, d.destination_arrival, d.destination_arrival_day_offset, d.operator_atoc, d.headcode, d.rsid, \
+                d.public_departure, d.public_calling_point_arrival, d.public_destination_arrival) \
                IS DISTINCT FROM \
-               (EXCLUDED.day_offset, EXCLUDED.true_origin_crs, EXCLUDED.calling_point_arrival, EXCLUDED.destination_arrival, EXCLUDED.destination_arrival_day_offset, EXCLUDED.operator_atoc, EXCLUDED.headcode, EXCLUDED.rsid)",
+               (EXCLUDED.day_offset, EXCLUDED.true_origin_crs, EXCLUDED.calling_point_arrival, EXCLUDED.destination_arrival, EXCLUDED.destination_arrival_day_offset, EXCLUDED.operator_atoc, EXCLUDED.headcode, EXCLUDED.rsid, \
+                EXCLUDED.public_departure, EXCLUDED.public_calling_point_arrival, EXCLUDED.public_destination_arrival)",
     )
     .bind(&service_dates)
     .bind(&destination_crs)
@@ -3189,6 +3216,9 @@ pub async fn upsert_schedule_destination_departures_publish_part(
     .bind(&operator_atoc)
     .bind(&headcode)
     .bind(&rsid)
+    .bind(&public_departure)
+    .bind(&public_calling_point_arrival)
+    .bind(&public_destination_arrival)
     .execute(&mut *tx)
     .await?;
 
@@ -3215,7 +3245,7 @@ pub async fn upsert_schedule_destination_departures_publish_part(
 /// See docs/superpowers/plans/2026-09-22-dynamic-trip-planning-phase2-connections-array-plan.md
 /// Task 1 and the migration's own doc comment
 /// (`20260923100000_schedule_calling_points_full.sql`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ScheduleCallingPointsFullRow {
     pub service_date: chrono::NaiveDate,
     pub uid: String,
@@ -3241,6 +3271,29 @@ pub struct ScheduleCallingPointsFullRow {
     /// ingests (as NULL, "not known") during a rolling deploy.
     #[serde(default)]
     pub platform: Option<String>,
+    /// CIF public (GBTT) arrival -- see
+    /// `schedule_query::records::CallingPoint::public_arrival`. This and
+    /// every field below are `#[serde(default)]` so a `schedule-reference`
+    /// build that predates them still ingests (as NULL, "not known").
+    #[serde(default)]
+    pub public_arrival: Option<chrono::NaiveTime>,
+    #[serde(default)]
+    pub public_departure: Option<chrono::NaiveTime>,
+    /// The exact working (WTT) times, `:30` seconds for a half-minute --
+    /// `CallingPoint::working_arrival`/`working_departure`/`working_pass`.
+    #[serde(default)]
+    pub working_arrival: Option<chrono::NaiveTime>,
+    #[serde(default)]
+    pub working_departure: Option<chrono::NaiveTime>,
+    #[serde(default)]
+    pub working_pass: Option<chrono::NaiveTime>,
+    /// `CallingPoint::can_board`/`can_alight`/`is_request_stop`.
+    #[serde(default)]
+    pub can_board: Option<bool>,
+    #[serde(default)]
+    pub can_alight: Option<bool>,
+    #[serde(default)]
+    pub request_stop: Option<bool>,
 }
 
 /// Replaces one service date's worth of whole-network resolved calling
@@ -3310,6 +3363,19 @@ pub async fn upsert_schedule_calling_points_full_publish_part(
         rows.iter().map(|r| r.booked_departure).collect();
     let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
     let platforms: Vec<Option<&str>> = rows.iter().map(|r| r.platform.as_deref()).collect();
+    let public_arrivals: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.public_arrival).collect();
+    let public_departures: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.public_departure).collect();
+    let working_arrivals: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.working_arrival).collect();
+    let working_departures: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.working_departure).collect();
+    let working_passes: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.working_pass).collect();
+    let can_board: Vec<Option<bool>> = rows.iter().map(|r| r.can_board).collect();
+    let can_alight: Vec<Option<bool>> = rows.iter().map(|r| r.can_alight).collect();
+    let request_stop: Vec<Option<bool>> = rows.iter().map(|r| r.request_stop).collect();
 
     let mut distinct_dates = service_dates.clone();
     distinct_dates.sort_unstable();
@@ -3336,11 +3402,18 @@ pub async fn upsert_schedule_calling_points_full_publish_part(
     // DISTINCT ON / IS DISTINCT FROM reasoning -- identical here.
     let result = sqlx::query(
         "INSERT INTO schedule_calling_points_full AS c \
-            (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform) \
+            (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform, \
+             public_arrival, public_departure, working_arrival, working_departure, working_pass, \
+             can_board, can_alight, request_stop) \
          SELECT DISTINCT ON (service_date, uid, seq) \
-                service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform \
-         FROM UNNEST($1::date[], $2::text[], $3::smallint[], $4::text[], $5::text[], $6::time[], $7::time[], $8::smallint[], $9::text[]) \
-              WITH ORDINALITY AS t(service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform, ord) \
+                service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform, \
+                public_arrival, public_departure, working_arrival, working_departure, working_pass, \
+                can_board, can_alight, request_stop \
+         FROM UNNEST($1::date[], $2::text[], $3::smallint[], $4::text[], $5::text[], $6::time[], $7::time[], $8::smallint[], $9::text[], \
+                     $10::time[], $11::time[], $12::time[], $13::time[], $14::time[], $15::bool[], $16::bool[], $17::bool[]) \
+              WITH ORDINALITY AS t(service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform, \
+                                   public_arrival, public_departure, working_arrival, working_departure, working_pass, \
+                                   can_board, can_alight, request_stop, ord) \
          ORDER BY service_date, uid, seq, ord \
          ON CONFLICT (service_date, uid, seq) DO UPDATE SET \
             tiploc = EXCLUDED.tiploc, \
@@ -3348,10 +3421,22 @@ pub async fn upsert_schedule_calling_points_full_publish_part(
             booked_arrival = EXCLUDED.booked_arrival, \
             booked_departure = EXCLUDED.booked_departure, \
             day_offset = EXCLUDED.day_offset, \
-            platform = EXCLUDED.platform \
-         WHERE (c.tiploc, c.kind, c.booked_arrival, c.booked_departure, c.day_offset, c.platform) \
+            platform = EXCLUDED.platform, \
+            public_arrival = EXCLUDED.public_arrival, \
+            public_departure = EXCLUDED.public_departure, \
+            working_arrival = EXCLUDED.working_arrival, \
+            working_departure = EXCLUDED.working_departure, \
+            working_pass = EXCLUDED.working_pass, \
+            can_board = EXCLUDED.can_board, \
+            can_alight = EXCLUDED.can_alight, \
+            request_stop = EXCLUDED.request_stop \
+         WHERE (c.tiploc, c.kind, c.booked_arrival, c.booked_departure, c.day_offset, c.platform, \
+                c.public_arrival, c.public_departure, c.working_arrival, c.working_departure, c.working_pass, \
+                c.can_board, c.can_alight, c.request_stop) \
                IS DISTINCT FROM \
-               (EXCLUDED.tiploc, EXCLUDED.kind, EXCLUDED.booked_arrival, EXCLUDED.booked_departure, EXCLUDED.day_offset, EXCLUDED.platform)",
+               (EXCLUDED.tiploc, EXCLUDED.kind, EXCLUDED.booked_arrival, EXCLUDED.booked_departure, EXCLUDED.day_offset, EXCLUDED.platform, \
+                EXCLUDED.public_arrival, EXCLUDED.public_departure, EXCLUDED.working_arrival, EXCLUDED.working_departure, EXCLUDED.working_pass, \
+                EXCLUDED.can_board, EXCLUDED.can_alight, EXCLUDED.request_stop)",
     )
     .bind(&service_dates)
     .bind(&uids)
@@ -3362,6 +3447,14 @@ pub async fn upsert_schedule_calling_points_full_publish_part(
     .bind(&booked_departures)
     .bind(&day_offsets)
     .bind(&platforms)
+    .bind(&public_arrivals)
+    .bind(&public_departures)
+    .bind(&working_arrivals)
+    .bind(&working_departures)
+    .bind(&working_passes)
+    .bind(&can_board)
+    .bind(&can_alight)
+    .bind(&request_stop)
     .execute(&mut *tx)
     .await?;
 
@@ -3487,7 +3580,7 @@ pub async fn list_calling_point_departures_for_train(
 /// consumed entirely by the `ORDER BY` below, never read back into Rust --
 /// same "ordering is SQL's job, not re-sorted in Rust" posture
 /// `trip_planning::CallingPointRow` already has for the identical column).
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, Default, sqlx::FromRow)]
 pub struct ScheduleCallingPointFullRowForTrain {
     pub tiploc: String,
     /// `"origin"`/`"intermediate"`/`"terminate"` -- see
@@ -3501,6 +3594,17 @@ pub struct ScheduleCallingPointFullRowForTrain {
     /// CIF booked platform, NULL when blank or not yet published -- see the
     /// `20260926170000_schedule_calling_points_full_platform` migration.
     pub platform: Option<String>,
+    /// Public times, exact working times and direction -- see
+    /// `ScheduleCallingPointsFullRow`. NULL on a row published before
+    /// migration `20261001120000` until the next publish.
+    pub public_arrival: Option<chrono::NaiveTime>,
+    pub public_departure: Option<chrono::NaiveTime>,
+    pub working_arrival: Option<chrono::NaiveTime>,
+    pub working_departure: Option<chrono::NaiveTime>,
+    pub working_pass: Option<chrono::NaiveTime>,
+    pub can_board: Option<bool>,
+    pub can_alight: Option<bool>,
+    pub request_stop: Option<bool>,
 }
 
 /// Every calling point of `train_uid`'s resolved (non-cancelled) schedule on
@@ -3534,7 +3638,9 @@ pub async fn list_schedule_calling_points_full_for_train(
     service_date: chrono::NaiveDate,
 ) -> Result<Vec<ScheduleCallingPointFullRowForTrain>> {
     let rows = sqlx::query_as::<_, ScheduleCallingPointFullRowForTrain>(
-        "SELECT tiploc, kind, booked_arrival, booked_departure, day_offset, platform \
+        "SELECT tiploc, kind, booked_arrival, booked_departure, day_offset, platform, \
+                public_arrival, public_departure, working_arrival, working_departure, working_pass, \
+                can_board, can_alight, request_stop \
          FROM schedule_calling_points_full \
          WHERE service_date = $1 AND uid = $2 \
          ORDER BY seq",
@@ -3758,7 +3864,8 @@ pub async fn search_schedule_calling_point_departures(
     let fetch = limit.saturating_add(1);
 
     // train_uid, destination_crs, true_origin_crs, scheduled,
-    // destination_arrival, destination_arrival_day_offset, operator_atoc.
+    // destination_arrival, destination_arrival_day_offset, operator_atoc,
+    // public_departure, public_destination_arrival.
     type CallingPointDepartureRow = (
         String,
         String,
@@ -3767,11 +3874,14 @@ pub async fn search_schedule_calling_point_departures(
         Option<chrono::NaiveTime>,
         i16,
         Option<String>,
+        Option<chrono::NaiveTime>,
+        Option<chrono::NaiveTime>,
     );
 
     let rows: Vec<CallingPointDepartureRow> = sqlx::query_as(
         r#"
-            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc
+            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
+                   main.public_departure, main.public_destination_arrival
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
@@ -3860,12 +3970,14 @@ pub async fn search_schedule_calling_point_departures(
     };
 
     let next_cursor = if has_more {
-        page_rows.last().map(
-            |(train_uid, _, _, scheduled, _, _, _)| CallingPointDepartureCursor {
-                scheduled: *scheduled,
-                train_uid: train_uid.clone(),
-            },
-        )
+        page_rows
+            .last()
+            .map(
+                |(train_uid, _, _, scheduled, _, _, _, _, _)| CallingPointDepartureCursor {
+                    scheduled: *scheduled,
+                    train_uid: train_uid.clone(),
+                },
+            )
     } else {
         None
     };
@@ -3881,6 +3993,8 @@ pub async fn search_schedule_calling_point_departures(
                 destination_arrival,
                 destination_arrival_day_offset,
                 operator_atoc,
+                public_departure,
+                public_destination_arrival,
             )| {
                 serde_json::json!({
                     "uid": train_uid,
@@ -3890,6 +4004,8 @@ pub async fn search_schedule_calling_point_departures(
                     "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                     "destination_arrival_day_offset": destination_arrival_day_offset,
                     "operator_atoc": operator_atoc,
+                    "public_departure": public_departure.map(|t| t.format("%H:%M:%S").to_string()),
+                    "public_destination_arrival": public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                 })
             },
         )
@@ -8469,6 +8585,7 @@ mod schedule_destination_departures_query_tests {
             operator_atoc: None,
             headcode: None,
             rsid: None,
+            ..Default::default()
         }
     }
 
@@ -8706,6 +8823,7 @@ mod schedule_destination_departures_query_tests {
                     operator_atoc: Some("SR".to_string()),
                     headcode: Some("1S00".to_string()),
                     rsid: Some("SR408800".to_string()),
+                    ..Default::default()
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date: date,
@@ -8721,6 +8839,7 @@ mod schedule_destination_departures_query_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -9276,6 +9395,7 @@ mod schedule_destination_departures_query_tests {
                             operator_atoc: None,
                             headcode: None,
                             rsid: None,
+                            ..Default::default()
                         }
                     },
                 )
@@ -10124,6 +10244,7 @@ mod schedule_destination_departures_query_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -10139,6 +10260,7 @@ mod schedule_destination_departures_query_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -10193,6 +10315,7 @@ mod schedule_destination_departures_query_tests {
                     booked_departure: "10:15:00".parse().ok(),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 ScheduleCallingPointsFullRow {
                     service_date,
@@ -10208,6 +10331,7 @@ mod schedule_destination_departures_query_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 ScheduleCallingPointsFullRow {
                     service_date,
@@ -10219,6 +10343,7 @@ mod schedule_destination_departures_query_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -10285,6 +10410,7 @@ mod schedule_destination_departures_query_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -10300,6 +10426,7 @@ mod schedule_destination_departures_query_tests {
                     operator_atoc: None,
                     headcode: None,
                     rsid: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -10617,6 +10744,7 @@ LTSTAFFRD 1630         TF";
                         operator_atoc: d.operator_atoc,
                         headcode: d.headcode,
                         rsid: d.rsid,
+                        ..Default::default()
                     })
             })
             .collect();
@@ -10743,6 +10871,7 @@ LTSTAFFRD 1630         TF";
                         operator_atoc: d.operator_atoc,
                         headcode: d.headcode,
                         rsid: d.rsid,
+                        ..Default::default()
                     })
             })
             .collect();
@@ -11048,6 +11177,7 @@ mod schedule_publish_diff_tests {
             operator_atoc: operator_atoc.map(str::to_string),
             headcode: None,
             rsid: None,
+            ..Default::default()
         }
     }
 
@@ -11067,6 +11197,7 @@ mod schedule_publish_diff_tests {
             booked_departure: Some(time(8, 2)),
             day_offset: 0,
             platform: platform.map(str::to_string),
+            ..Default::default()
         }
     }
 

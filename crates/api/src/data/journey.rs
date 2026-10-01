@@ -45,6 +45,146 @@ struct RawCallingPoint {
     /// `day_offset` above: an older row reads as `None` ("not known").
     #[serde(default)]
     platform: Option<String>,
+    /// Public times, exact working times and direction. Every field
+    /// defaults, so a stored blob that predates them still deserializes.
+    #[serde(flatten)]
+    timetable: RawTimetable,
+}
+
+/// The public-time, working-time and direction fields of a
+/// [`RawCallingPoint`] -- mirrors `schedule_matching::ScheduleCallingPointDto`
+/// and the matching `schedule_calling_points_full` columns. See
+/// docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct RawTimetable {
+    public_arrival: Option<chrono::NaiveTime>,
+    public_departure: Option<chrono::NaiveTime>,
+    /// Exact WTT times (`:30` for a half-minute). When absent (an older
+    /// blob), the WTT time is rebuilt from `booked_*` plus the stored
+    /// half-minute flags.
+    working_arrival: Option<chrono::NaiveTime>,
+    working_departure: Option<chrono::NaiveTime>,
+    working_pass: Option<chrono::NaiveTime>,
+    is_half_minute_arrival: bool,
+    is_half_minute_departure: bool,
+    /// `None` = not known (a row published before direction was); see
+    /// [`direction_or_default`].
+    can_board: Option<bool>,
+    can_alight: Option<bool>,
+    request_stop: Option<bool>,
+}
+
+/// `JourneyStop`'s public-time, working-time and direction fields,
+/// flattened into it on the wire (`publicArrival`, `publicDeparture`,
+/// `workingArrival`, `workingDeparture`, `workingPass`, `canBoard`,
+/// `canAlight`, `requestStop`).
+///
+/// * `public*`: the public (GBTT) times -- what a passenger timetable and
+///   the station screens show. `null` when there is no public call in that
+///   direction (e.g. the departure of a set-down-only stop), and until the
+///   next schedule publish for a schedule stored before these existed.
+/// * `working*`: the exact working-timetable (WTT) times, with `:30`
+///   seconds for a half-minute. `workingPass` is set only on a passing point
+///   (the train runs through without stopping), which has no other time.
+///   `scheduledArrival`/`scheduledDeparture` are the WTT time truncated to
+///   the minute: kept for one release, then switched to public or removed.
+/// * `canBoard`/`canAlight`/`requestStop`: from the CIF Activity field. A
+///   set-down-only stop has `canBoard: false`, a pick-up-only stop
+///   `canAlight: false`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopTimetable {
+    pub public_arrival: Option<DateTime<Utc>>,
+    pub public_departure: Option<DateTime<Utc>>,
+    pub working_arrival: Option<DateTime<Utc>>,
+    pub working_departure: Option<DateTime<Utc>>,
+    pub working_pass: Option<DateTime<Utc>>,
+    pub can_board: bool,
+    pub can_alight: bool,
+    pub request_stop: bool,
+}
+
+/// `booked` plus 30 seconds when `half_minute`.
+fn with_half_minute(
+    booked: Option<chrono::NaiveTime>,
+    half_minute: bool,
+) -> Option<chrono::NaiveTime> {
+    booked.map(|time| {
+        if half_minute {
+            time + Duration::seconds(30)
+        } else {
+            time
+        }
+    })
+}
+
+/// The calendar date a public (or working) time falls on, given the WTT time
+/// of the same call and that call's date. The two are minutes apart, so a
+/// gap of more than 12 hours means they straddle midnight: a 23:59H WTT
+/// arrival rounds up to a 00:00 public arrival on the next day.
+fn date_near(
+    reference: Option<chrono::NaiveTime>,
+    date: NaiveDate,
+    time: chrono::NaiveTime,
+) -> NaiveDate {
+    let Some(reference) = reference else {
+        return date;
+    };
+    let gap = time.signed_duration_since(reference);
+    if gap < -Duration::hours(12) {
+        date + Duration::days(1)
+    } else if gap > Duration::hours(12) {
+        date - Duration::days(1)
+    } else {
+        date
+    }
+}
+
+/// `(can_board, can_alight)` for a stop, defaulting what a row published
+/// before direction existed does not say: the origin is boardable only, the
+/// terminus alightable only, an untimed passing point neither, and any other
+/// call both (the behaviour before direction was published).
+fn direction_or_default(cp: &RawCallingPoint) -> (bool, bool) {
+    let untimed = cp.booked_arrival.is_none() && cp.booked_departure.is_none();
+    let (board, alight) = match cp.kind {
+        _ if untimed => (false, false),
+        schedule_query::CallingPointKind::Origin => (true, false),
+        schedule_query::CallingPointKind::Terminate => (false, true),
+        schedule_query::CallingPointKind::Intermediate => (true, true),
+    };
+    (
+        cp.timetable.can_board.unwrap_or(board),
+        cp.timetable.can_alight.unwrap_or(alight),
+    )
+}
+
+impl StopTimetable {
+    fn from_calling_point(cp: &RawCallingPoint, calling_point_date: NaiveDate) -> Self {
+        let t = &cp.timetable;
+        let instant = |reference: Option<chrono::NaiveTime>, time: Option<chrono::NaiveTime>| {
+            time.and_then(|time| {
+                london_to_utc(date_near(reference, calling_point_date, time).and_time(time))
+            })
+        };
+        let working_arrival = t
+            .working_arrival
+            .or_else(|| with_half_minute(cp.booked_arrival, t.is_half_minute_arrival));
+        let working_departure = t
+            .working_departure
+            .or_else(|| with_half_minute(cp.booked_departure, t.is_half_minute_departure));
+        let (can_board, can_alight) = direction_or_default(cp);
+        Self {
+            public_arrival: instant(cp.booked_arrival, t.public_arrival),
+            public_departure: instant(cp.booked_departure, t.public_departure),
+            working_arrival: instant(cp.booked_arrival, working_arrival),
+            working_departure: instant(cp.booked_departure, working_departure),
+            working_pass: instant(None, t.working_pass),
+            can_board,
+            can_alight,
+            request_stop: t.request_stop.unwrap_or(false),
+        }
+    }
 }
 
 /// The single lookup key both sides of the TIPLOC->CRS join must agree on:
@@ -340,6 +480,10 @@ pub struct JourneyStop {
     /// the matching rules and when it is null. Serialized as `null`, never
     /// omitted.
     pub board: Option<crate::data::stop_board::StopBoard>,
+    /// Public and exact working times, and direction -- see
+    /// [`StopTimetable`]. Flattened: its fields sit directly on the stop.
+    #[serde(flatten)]
+    pub timetable: StopTimetable,
 }
 
 impl JourneyStop {
@@ -395,6 +539,7 @@ impl JourneyStop {
             live_status: None,
             late_minutes: None,
             board: None,
+            timetable: StopTimetable::from_calling_point(cp, calling_point_date),
         }
     }
 }
@@ -578,6 +723,19 @@ fn raw_calling_point_from_full_row(
         // negative or oversized value to "same day" rather than panicking.
         day_offset: u8::try_from(row.day_offset).unwrap_or(0),
         platform: row.platform.clone(),
+        timetable: RawTimetable {
+            public_arrival: row.public_arrival,
+            public_departure: row.public_departure,
+            working_arrival: row.working_arrival,
+            working_departure: row.working_departure,
+            working_pass: row.working_pass,
+            // The table has no half-minute flags; `working_*` carries them.
+            is_half_minute_arrival: false,
+            is_half_minute_departure: false,
+            can_board: row.can_board,
+            can_alight: row.can_alight,
+            request_stop: row.request_stop,
+        },
     })
 }
 
@@ -1620,6 +1778,7 @@ pub(crate) mod test_support {
             live_status: None,
             late_minutes: None,
             board: None,
+            timetable: Default::default(),
         }
     }
 }
@@ -1653,6 +1812,7 @@ mod tests {
             live_status: None,
             late_minutes: None,
             board: None,
+            timetable: Default::default(),
         }
     }
 
@@ -1667,7 +1827,68 @@ mod tests {
             booked_departure: "08:01:00".parse().ok(),
             day_offset: 0,
             platform: None,
+            timetable: Default::default(),
         }
+    }
+
+    /// A stored `trains.calling_points` blob carries public times, exact
+    /// working times and direction through to the stop; an older blob
+    /// without them falls back to the half-minute flags and kind-based
+    /// direction. A public arrival rounded past midnight lands on the next
+    /// day.
+    #[test]
+    fn stops_carry_public_and_working_times_and_direction() {
+        let service_date: NaiveDate = "2026-10-01".parse().unwrap();
+        let raw: Vec<RawCallingPoint> = serde_json::from_value(serde_json::json!([
+            {
+                "tiploc": "MKNSCEN", "kind": "Intermediate",
+                "bookedArrival": "20:50:00", "bookedDeparture": "20:52:00",
+                "isHalfMinuteArrival": true, "isHalfMinuteDeparture": true,
+                "publicArrival": "20:51:00", "publicDeparture": "20:52:00",
+                "workingArrival": "20:50:30", "workingDeparture": "20:52:30",
+                "canBoard": false, "canAlight": true, "requestStop": true
+            },
+            {
+                "tiploc": "WVRMPTN", "kind": "Terminate",
+                "bookedArrival": "23:59:00", "isHalfMinuteArrival": true,
+                "publicArrival": "00:00:00"
+            },
+            {
+                "tiploc": "EUSTON", "kind": "Origin", "bookedDeparture": "20:16:00"
+            }
+        ]))
+        .unwrap();
+        let stops = stops_from_calling_points(&raw, &HashMap::new(), service_date);
+        let at = |s: &str| Some(s.parse::<DateTime<Utc>>().unwrap());
+
+        let milton = &stops[0].timetable;
+        assert_eq!(milton.public_arrival, at("2026-10-01T19:51:00Z"));
+        assert_eq!(milton.working_arrival, at("2026-10-01T19:50:30Z"));
+        assert_eq!(milton.working_departure, at("2026-10-01T19:52:30Z"));
+        assert!(!milton.can_board && milton.can_alight && milton.request_stop);
+
+        let terminus = &stops[1].timetable;
+        assert_eq!(
+            terminus.public_arrival,
+            at("2026-10-01T23:00:00Z"),
+            "00:00 BST next day"
+        );
+        // No `workingArrival` stored: rebuilt from the half-minute flag.
+        assert_eq!(terminus.working_arrival, at("2026-10-01T22:59:30Z"));
+        assert!(
+            !terminus.can_board && terminus.can_alight,
+            "kind-based default"
+        );
+
+        let origin = &stops[2].timetable;
+        assert!(origin.can_board && !origin.can_alight);
+        assert_eq!(origin.public_departure, None);
+
+        let json = serde_json::to_value(&stops[0]).unwrap();
+        assert_eq!(json["publicArrival"], "2026-10-01T19:51:00Z");
+        assert_eq!(json["canBoard"], false);
+        assert_eq!(json["requestStop"], true);
+        assert!(json.get("timetable").is_none(), "flattened onto the stop");
     }
 
     #[test]
@@ -2100,6 +2321,7 @@ mod tests {
             booked_departure: None,
             day_offset: 0,
             platform: None,
+            timetable: Default::default(),
         };
 
         let stops = stops_from_calling_points(&[cp], &tiploc_to_crs, service_date);
@@ -2181,6 +2403,7 @@ mod tests {
                 booked_departure: None,
                 day_offset: 0,
                 platform: None,
+                timetable: Default::default(),
             };
             assert!(!is_unresolved_booked_stop(&cp, None));
         }
@@ -2279,6 +2502,7 @@ mod tests {
             booked_departure: "17:18:00".parse().ok(),
             day_offset: 0,
             platform: None,
+            ..Default::default()
         };
 
         let cp = raw_calling_point_from_full_row(&row).expect("a valid kind converts");
@@ -2299,6 +2523,7 @@ mod tests {
             booked_departure: "16:06:00".parse().ok(),
             day_offset: 0,
             platform: None,
+            ..Default::default()
         };
         let terminate = queries::ScheduleCallingPointFullRowForTrain {
             tiploc: "EUSTON".to_string(),
@@ -2307,6 +2532,7 @@ mod tests {
             booked_departure: None,
             day_offset: 0,
             platform: None,
+            ..Default::default()
         };
 
         assert_eq!(
@@ -2337,6 +2563,7 @@ mod tests {
             booked_departure: None,
             day_offset: 0,
             platform: None,
+            ..Default::default()
         };
 
         assert!(raw_calling_point_from_full_row(&row).is_none());
@@ -4245,6 +4472,7 @@ mod db_tests {
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
                     platform: Some("4".to_string()),
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4256,6 +4484,7 @@ mod db_tests {
                     booked_departure: Some("08:20:00".parse().unwrap()),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4267,6 +4496,7 @@ mod db_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: Some("12".to_string()),
+                    ..Default::default()
                 },
             ],
         )
@@ -4375,6 +4605,7 @@ mod db_tests {
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4386,6 +4617,7 @@ mod db_tests {
                     booked_departure: Some("08:20:00".parse().unwrap()),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4397,6 +4629,7 @@ mod db_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -4514,6 +4747,7 @@ mod db_tests {
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4525,6 +4759,7 @@ mod db_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -4769,6 +5004,7 @@ mod db_tests {
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4780,6 +5016,7 @@ mod db_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -4886,6 +5123,7 @@ mod db_tests {
                     booked_departure: Some("08:00:00".parse().unwrap()),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4897,6 +5135,7 @@ mod db_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
             ],
         )

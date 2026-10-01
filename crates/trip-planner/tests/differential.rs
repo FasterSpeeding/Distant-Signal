@@ -206,7 +206,12 @@ fn directional_network() -> (Vec<Connection>, InterchangeData) {
     (vec![a_u, u_d, d_z], interchange)
 }
 
-fn arrival(connections: &[Connection], interchange: &InterchangeData, from: &str, to: &str) -> Option<u32> {
+fn arrival(
+    connections: &[Connection],
+    interchange: &InterchangeData,
+    from: &str,
+    to: &str,
+) -> Option<u32> {
     let (from, to) = (vec![from.to_string()], vec![to.to_string()]);
     let csa = scan_connections(ScanOptions {
         connections,

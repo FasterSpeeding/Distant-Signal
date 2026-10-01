@@ -1210,7 +1210,10 @@ fn process_message(
             // as `planned` (it is anchored on the same `actual`, so the
             // decision is identical). Empty for a pass: `None`.
             let gbtt = common::trust_timestamp::parse_trust_epoch_millis_pair(
-                movement.gbtt_timestamp.as_deref().filter(|raw| !raw.is_empty()),
+                movement
+                    .gbtt_timestamp
+                    .as_deref()
+                    .filter(|raw| !raw.is_empty()),
                 movement.actual_timestamp.as_deref(),
                 received_at,
                 state.trust_timestamp_correction_enabled,
@@ -2083,10 +2086,9 @@ mod tests {
             Some("2026-08-28T18:31:00Z".parse().unwrap())
         );
 
-        let mut feed = FakeMovementFeed::new(vec![vec![ORIGIN_DEPARTURE.replace(
-            r#""train_id""#,
-            r#""gbtt_timestamp":"","train_id""#,
-        )]]);
+        let mut feed = FakeMovementFeed::new(vec![vec![
+            ORIGIN_DEPARTURE.replace(r#""train_id""#, r#""gbtt_timestamp":"","train_id""#),
+        ]]);
         let mut state = ProcessorState::default();
         let events = run_once(
             &mut feed,

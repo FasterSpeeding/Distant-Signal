@@ -4118,6 +4118,7 @@ mod db_tests {
                     booked_departure: Some("12:00:00".parse().unwrap()),
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
                 crate::data::queries::ScheduleCallingPointsFullRow {
                     service_date,
@@ -4129,6 +4130,7 @@ mod db_tests {
                     booked_departure: None,
                     day_offset: 0,
                     platform: None,
+                    ..Default::default()
                 },
             ],
         )
@@ -4286,6 +4288,7 @@ mod db_tests {
                 booked_departure: dep.map(|d| d.time()),
                 day_offset: at.date().signed_duration_since(service_date).num_days() as i16,
                 platform: None,
+                ..Default::default()
             }
         };
         let terminate_at = london(now + chrono::Duration::minutes(90));

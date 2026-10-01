@@ -39,8 +39,8 @@
 use chrono::{NaiveDate, NaiveTime};
 
 use crate::records::{
-    Activity, BasicSchedule, CallingPoint, CallingPointKind, HalfMinuteTime, Platform, RawSchedule, StpIndicator,
-    Tiploc,
+    Activity, BasicSchedule, CallingPoint, CallingPointKind, HalfMinuteTime, Platform, RawSchedule,
+    StpIndicator, Tiploc,
 };
 
 /// Minimum length of a `BS` line this parser can decode: needs bytes
@@ -1475,7 +1475,10 @@ mod activity_tests {
         let pass = parsed.booked_pass.expect("pass time decoded");
         assert!(pass.is_half_minute());
         assert_eq!(parsed.working_pass(), NaiveTime::from_hms_opt(20, 30, 30));
-        assert_eq!(pass.whole_minute(), NaiveTime::from_hms_opt(20, 30, 0).unwrap());
+        assert_eq!(
+            pass.whole_minute(),
+            NaiveTime::from_hms_opt(20, 30, 0).unwrap()
+        );
         assert!(parsed.is_pass());
         assert!(!parsed.can_board());
         assert!(!parsed.can_alight());
@@ -1494,7 +1497,10 @@ mod activity_tests {
             CallingPointKind::Intermediate,
         );
         assert_eq!(parsed.booked_arrival, NaiveTime::from_hms_opt(20, 50, 0));
-        assert_eq!(parsed.working_arrival(), NaiveTime::from_hms_opt(20, 50, 30));
+        assert_eq!(
+            parsed.working_arrival(),
+            NaiveTime::from_hms_opt(20, 50, 30)
+        );
         assert_eq!(
             parsed.working_departure(),
             NaiveTime::from_hms_opt(20, 52, 30)

@@ -31,6 +31,23 @@ pub struct LegCallingPointRow {
     pub booked_departure: Option<NaiveTime>,
     pub day_offset: i16,
     pub platform: Option<String>,
+    /// The call's public (GBTT) times, NULL on a row published before
+    /// migration `20261001120000`.
+    pub public_arrival: Option<NaiveTime>,
+    pub public_departure: Option<NaiveTime>,
+}
+
+/// The day offset of a public time given the WTT time and offset of the
+/// same call: the same day, unless rounding straddles midnight.
+fn public_day_offset(wtt: NaiveTime, wtt_offset: u8, public: NaiveTime) -> u8 {
+    let gap = public.signed_duration_since(wtt);
+    if gap < -chrono::Duration::hours(12) {
+        wtt_offset.saturating_add(1)
+    } else if gap > chrono::Duration::hours(12) {
+        wtt_offset.saturating_sub(1)
+    } else {
+        wtt_offset
+    }
 }
 
 /// Same minutes-since-service-day-midnight arithmetic as
@@ -69,34 +86,32 @@ pub fn apply_leg_details(
 ) {
     let mut departures: HashMap<(String, u32), Option<String>> = HashMap::new();
     let mut arrivals: HashMap<(String, u32), Option<String>> = HashMap::new();
-    let record = |map: &mut HashMap<(String, u32), Option<String>>,
-                  uid: &str,
-                  at: u32,
-                  platform: &Option<String>| {
+    let mut public_departures: HashMap<(String, u32), Option<NaiveTime>> = HashMap::new();
+    let mut public_arrivals: HashMap<(String, u32), Option<NaiveTime>> = HashMap::new();
+    fn record<T: PartialEq + Clone>(
+        map: &mut HashMap<(String, u32), Option<T>>,
+        uid: &str,
+        at: u32,
+        value: &Option<T>,
+    ) {
         map.entry((uid.to_string(), at))
             .and_modify(|existing| {
-                if existing != platform {
+                if existing != value {
                     *existing = None;
                 }
             })
-            .or_insert_with(|| platform.clone());
-    };
+            .or_insert_with(|| value.clone());
+    }
     for row in rows {
         if let Some(departure) = row.booked_departure {
-            record(
-                &mut departures,
-                &row.uid,
-                minutes(departure, row_day_offset(row)),
-                &row.platform,
-            );
+            let at = minutes(departure, row_day_offset(row));
+            record(&mut departures, &row.uid, at, &row.platform);
+            record(&mut public_departures, &row.uid, at, &row.public_departure);
         }
         if let Some(arrival) = row.booked_arrival {
-            record(
-                &mut arrivals,
-                &row.uid,
-                minutes(arrival, row_day_offset(row)),
-                &row.platform,
-            );
+            let at = minutes(arrival, row_day_offset(row));
+            record(&mut arrivals, &row.uid, at, &row.platform);
+            record(&mut public_arrivals, &row.uid, at, &row.public_arrival);
         }
     }
     for segment in segments.iter_mut() {
@@ -110,6 +125,10 @@ pub fn apply_leg_details(
                     arrival_day_offset,
                     booked_departure_platform,
                     booked_arrival_platform,
+                    public_departure,
+                    public_arrival,
+                    public_departure_day_offset,
+                    public_arrival_day_offset,
                     operator,
                     headcode,
                     ..
@@ -127,13 +146,23 @@ pub fn apply_leg_details(
                 *booked_departure_platform = departure_minutes
                     .and_then(|at| departures.get(&(train_uid.clone(), at)).cloned())
                     .flatten();
-                *booked_arrival_platform = arrivals
-                    .get(&(
-                        train_uid.clone(),
-                        minutes(*scheduled_arrival, *arrival_day_offset),
-                    ))
-                    .cloned()
+                let arrival_key = (
+                    train_uid.clone(),
+                    minutes(*scheduled_arrival, *arrival_day_offset),
+                );
+                *booked_arrival_platform = arrivals.get(&arrival_key).cloned().flatten();
+                *public_departure = departure_minutes
+                    .and_then(|at| public_departures.get(&(train_uid.clone(), at)).cloned())
                     .flatten();
+                *public_departure_day_offset = public_departure.map(|public| {
+                    let offset =
+                        departure_minutes.map_or(*departure_day_offset, |at| (at / 1440) as u8);
+                    public_day_offset(*scheduled_departure, offset, public)
+                });
+                *public_arrival = public_arrivals.get(&arrival_key).cloned().flatten();
+                *public_arrival_day_offset = public_arrival.map(|public| {
+                    public_day_offset(*scheduled_arrival, *arrival_day_offset, public)
+                });
                 *operator = operators.get(train_uid.as_str()).cloned();
                 *headcode = headcodes.get(train_uid.as_str()).cloned();
             }
@@ -186,7 +215,8 @@ pub async fn attach_leg_details(
     }
 
     let rows: Vec<LegCallingPointRow> = sqlx::query_as(
-        "SELECT uid, booked_arrival, booked_departure, day_offset, platform \
+        "SELECT uid, booked_arrival, booked_departure, day_offset, platform, \
+                public_arrival, public_departure \
          FROM schedule_calling_points_full WHERE service_date = $1 AND uid = ANY($2)",
     )
     .bind(date)
@@ -245,6 +275,10 @@ mod tests {
             arrival_day_offset,
             booked_departure_platform: None,
             booked_arrival_platform: None,
+            public_departure: None,
+            public_arrival: None,
+            public_departure_day_offset: None,
+            public_arrival_day_offset: None,
             operator: None,
             headcode: None,
             from_tiploc: String::new(),
@@ -268,7 +302,55 @@ mod tests {
             booked_departure: departure.map(|t| t.parse().unwrap()),
             day_offset,
             platform: platform.map(str::to_string),
+            public_arrival: None,
+            public_departure: None,
         }
+    }
+
+    fn public_times(leg: &PlannedLeg) -> (Option<String>, Option<u8>, Option<String>, Option<u8>) {
+        let PlannedLeg::Train {
+            public_departure,
+            public_departure_day_offset,
+            public_arrival,
+            public_arrival_day_offset,
+            ..
+        } = leg
+        else {
+            panic!("expected a train leg");
+        };
+        (
+            public_departure.map(|t| t.format("%H:%M").to_string()),
+            *public_departure_day_offset,
+            public_arrival.map(|t| t.format("%H:%M").to_string()),
+            *public_arrival_day_offset,
+        )
+    }
+
+    /// The public times come from the boarding and alighting calls, and a
+    /// public arrival rounded up past midnight lands on the next day.
+    #[test]
+    fn fills_public_times_and_their_day_offsets() {
+        let mut segments = segments(vec![train_leg("U1", "20:52:00", "23:59:00", 0)]);
+        let mut boarding = row("U1", Some("20:50:00"), Some("20:52:00"), 0, None);
+        boarding.public_arrival = "20:51:00".parse().ok();
+        boarding.public_departure = "20:52:00".parse().ok();
+        let mut alighting = row("U1", Some("23:59:00"), None, 0, None);
+        alighting.public_arrival = "00:00:00".parse().ok();
+        apply_leg_details(
+            &mut segments,
+            &[boarding, alighting],
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            public_times(&segments[0].itineraries[0].legs[0]),
+            (
+                Some("20:52".to_string()),
+                Some(0),
+                Some("00:00".to_string()),
+                Some(1)
+            )
+        );
     }
 
     fn segments(legs: Vec<PlannedLeg>) -> Vec<SegmentResult> {

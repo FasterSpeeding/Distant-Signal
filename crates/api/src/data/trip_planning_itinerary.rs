@@ -75,6 +75,21 @@ pub enum PlannedLeg {
         /// fills them in; stays `None` when the CIF field is blank.
         booked_departure_platform: Option<String>,
         booked_arrival_platform: Option<String>,
+        /// The public (GBTT) departure at the boarding call and arrival at
+        /// the alighting call -- what the passenger timetable and station
+        /// screens show. `scheduled_departure`/`scheduled_arrival` are the
+        /// working (WTT) times the planner searched on; they are kept as WTT
+        /// for one release, then switched to public or removed. `None` until
+        /// `trip_leg_details::attach_leg_details` fills them in, and when the
+        /// CIF has no public time there (or the schedule predates the
+        /// column). Local clock time, like `scheduled_*`.
+        public_departure: Option<NaiveTime>,
+        public_arrival: Option<NaiveTime>,
+        /// Days past `service_date` of `public_departure`/`public_arrival`.
+        /// Usually the WTT time's own offset; differs when rounding crosses
+        /// midnight (a 23:59H WTT arrival is a 00:00 public one).
+        public_departure_day_offset: Option<u8>,
+        public_arrival_day_offset: Option<u8>,
         /// The schedule's `BX` ATOC operator code (e.g. `"SW"`), via
         /// `schedule_destination_departures.operator_atoc`. Filled in by
         /// `trip_leg_details::attach_leg_details`; `None` when unknown.
@@ -238,6 +253,10 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 // Filled in after planning -- see `trip_leg_details`.
                 booked_departure_platform: None,
                 booked_arrival_platform: None,
+                public_departure: None,
+                public_arrival: None,
+                public_departure_day_offset: None,
+                public_arrival_day_offset: None,
                 operator: None,
                 headcode: None,
                 from_tiploc: train.from_tiploc.clone(),
@@ -2472,6 +2491,8 @@ mod tests {
             booked_arrival: arr,
             booked_departure: dep,
             day_offset: 0,
+            can_board: true,
+            can_alight: true,
         };
         let f1 = vec![
             cp("EUSTON", None, at("08:00")),
