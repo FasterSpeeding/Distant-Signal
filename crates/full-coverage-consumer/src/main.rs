@@ -192,8 +192,7 @@ async fn run() -> anyhow::Result<()> {
         geometry: Arc::clone(&geometry),
         population: Arc::clone(&population),
         interval: population_reload_interval,
-        min_retry: Duration::from_secs(1),
-        max_retry: failed_reload_retry_delay(population_reload_interval),
+        retry: population_reload::RETRY_BACKOFF,
         initial_wait: Duration::from_secs(config.population_initial_wait_secs),
     }
     .spawn();
@@ -1730,8 +1729,10 @@ mod tests {
             geometry: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             population: Arc::clone(&population),
             interval: Duration::from_secs(300),
-            min_retry: Duration::from_millis(20),
-            max_retry: failed_reload_retry_delay(Duration::from_secs(300)),
+            retry: common::backoff::Backoff::new(
+                Duration::from_millis(20),
+                Duration::from_secs(60),
+            ),
             initial_wait: Duration::from_secs(600),
         }
         .spawn();
@@ -1808,8 +1809,7 @@ mod tests {
             geometry: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             population: Arc::clone(&population),
             interval: Duration::from_secs(300),
-            min_retry: Duration::from_secs(1),
-            max_retry: Duration::from_secs(15),
+            retry: population_reload::RETRY_BACKOFF,
             initial_wait: Duration::from_secs(600),
         }
         .spawn();

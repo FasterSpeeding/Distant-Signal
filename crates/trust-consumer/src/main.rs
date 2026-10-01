@@ -52,6 +52,11 @@ const API_CALL_OPERATIONS: &[&str] = &[
     "startup_reference_load",
 ];
 
+/// Retry backoff for a failed tracked-trains reload: 1s doubling to 60s,
+/// jittered, and never longer than the reload interval itself.
+const TRACKED_TRAINS_RETRY: common::backoff::Backoff =
+    common::backoff::Backoff::new(Duration::from_secs(1), Duration::from_secs(60));
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     common::logging::exit_code(run().await)
@@ -145,10 +150,16 @@ async fn run() -> anyhow::Result<()> {
     )
     .await;
     apply_loaded_reference(refs, &mut reference, &mut state);
-    let mut last_reference_reload = tokio::time::Instant::now();
+    // Due `reload_interval` after a success; after a failure, on
+    // TRACKED_TRAINS_RETRY's backoff. It used to be retried on every pass
+    // of this loop while it failed: ~23.6k failed GETs in the 2026-10-01
+    // Postgres outage.
+    let mut reference_reload =
+        common::backoff::RetrySchedule::new(reload_interval, TRACKED_TRAINS_RETRY);
+    reference_reload.succeeded();
 
     loop {
-        if last_reference_reload.elapsed() >= reload_interval {
+        if reference_reload.is_due() {
             match queries::fetch_active_tracked_trains(
                 &http,
                 &config.api_tracked_trains_url,
@@ -158,12 +169,18 @@ async fn run() -> anyhow::Result<()> {
             {
                 Ok(refs) => {
                     apply_loaded_reference(refs, &mut reference, &mut state);
-                    last_reference_reload = tokio::time::Instant::now();
+                    reference_reload.succeeded();
                 }
                 Err(err) => {
                     // An already-loaded reference is kept as it is: a stale
                     // snapshot is far better than none (PL-11).
-                    tracing::error!(error = ?err, "failed to reload active tracked trains; keeping the previous reference and retrying next cycle");
+                    let retry_in = reference_reload.failed();
+                    tracing::error!(
+                        error = ?err,
+                        failures = reference_reload.failures(),
+                        retry_in_ms = retry_in.as_millis() as u64,
+                        "failed to reload active tracked trains; keeping the previous reference"
+                    );
                     metrics::counter!(
                         common::metrics::metric_name("trust_consumer_errors_total"),
                         "operation" => "reload_tracked_trains"
