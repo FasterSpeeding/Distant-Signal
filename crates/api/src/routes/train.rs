@@ -1981,8 +1981,11 @@ mod tests {
 
     #[test]
     fn dr30_operator_with_a_qualifying_delay_gets_a_specific_estimate_and_claim_url() {
-        let response =
-            build_delay_repay_response(&ticket(Some("LNER")), arrived(45), Some("EDB".into()));
+        let response = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            Some(arrived(45)),
+            Some("EDB".into()),
+        );
 
         let estimate = response
             .estimate
@@ -1999,12 +2002,12 @@ mod tests {
         assert_eq!(response.measured_at_crs.as_deref(), Some("EDB"));
     }
 
-    fn arrived(minutes: i32) -> Option<crate::data::stop_delay::StopDelay> {
-        Some(crate::data::stop_delay::StopDelay {
+    fn arrived(minutes: i32) -> crate::data::stop_delay::StopDelay {
+        crate::data::stop_delay::StopDelay {
             minutes,
             basis: crate::data::stop_delay::DelayBasis::Public,
             provisional: false,
-        })
+        }
     }
 
     /// Design doc §9 decision 3: before the train reaches the destination
@@ -2036,7 +2039,7 @@ mod tests {
 
         let response = build_delay_repay_response(
             &ticket(Some("Southeastern")),
-            arrived(14),
+            Some(arrived(14)),
             Some("ASH".into()),
         );
         assert!(!response.provisional);
@@ -2071,7 +2074,8 @@ mod tests {
 
     #[test]
     fn no_operator_on_the_ticket_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
-        let response = build_delay_repay_response(&ticket(None), arrived(45), Some("EDB".into()));
+        let response =
+            build_delay_repay_response(&ticket(None), Some(arrived(45)), Some("EDB".into()));
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);

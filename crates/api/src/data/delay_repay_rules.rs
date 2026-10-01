@@ -331,7 +331,9 @@ mod tests {
     /// and final alike. (band, percentage, fare) or None.
     #[test]
     fn every_band_edge_provisional_and_final() {
-        let dr15: &[(i32, Option<(i32, u8, &str)>)] = &[
+        // (delay minutes, expected (band, percentage, fare basis)).
+        type Edge = (i32, Option<(i32, u8, &'static str)>);
+        let dr15: &[Edge] = &[
             (14, None),
             (15, Some((15, 25, "single"))),
             (29, Some((15, 25, "single"))),
@@ -342,7 +344,7 @@ mod tests {
             (120, Some((120, 100, "return"))),
             (400, Some((120, 100, "return"))),
         ];
-        let dr30: &[(i32, Option<(i32, u8, &str)>)] = &[
+        let dr30: &[Edge] = &[
             (14, None),
             (15, None),
             (29, None),

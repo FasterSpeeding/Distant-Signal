@@ -328,6 +328,8 @@ pub mod db {
         pub working_delay_minutes: Option<i32>,
     }
 
+    /// One `train_movement_events` row, as far as a delay needs it.
+    #[derive(sqlx::FromRow)]
     struct EventRow {
         trains_id: i64,
         loc_crs: String,
@@ -337,25 +339,21 @@ pub mod db {
         gbtt_timestamp: Option<DateTime<Utc>>,
     }
 
-    type EventTuple = (
-        i64,
-        String,
-        Option<String>,
-        Option<DateTime<Utc>>,
-        Option<DateTime<Utc>>,
-        Option<DateTime<Utc>>,
-    );
+    impl EventRow {
+        fn movement(&self) -> Option<CallMovement> {
+            Some(CallMovement {
+                kind: MovementKind::from_event_type(self.event_type.as_deref()),
+                reported: Reported {
+                    actual: self.actual_timestamp?,
+                    planned: self.planned_timestamp,
+                    gbtt: self.gbtt_timestamp,
+                },
+            })
+        }
+    }
 
-    type CallTuple = (
-        NaiveDate,
-        String,
-        String,
-        Option<NaiveTime>,
-        Option<NaiveTime>,
-        Option<NaiveTime>,
-        Option<NaiveTime>,
-    );
-
+    /// One schedule call at a CRS (`schedule_calling_points_full`).
+    #[derive(sqlx::FromRow)]
     struct CallRow {
         service_date: NaiveDate,
         uid: String,
@@ -382,15 +380,183 @@ pub mod db {
         }
     }
 
-    fn movement(event: &EventRow) -> Option<CallMovement> {
-        Some(CallMovement {
-            kind: MovementKind::from_event_type(event.event_type.as_deref()),
-            reported: Reported {
-                actual: event.actual_timestamp?,
-                planned: event.planned_timestamp,
-                gbtt: event.gbtt_timestamp,
-            },
-        })
+    /// The movements each target needs, from two narrow reads: every
+    /// movement at a target's own stop (by `(trains_id, CRS)`), and, for a
+    /// target with no stop, only its train's latest reported arrival or
+    /// departure (a line's whole day of trains would otherwise read every
+    /// movement of every train).
+    struct Movements {
+        /// `(trains_id, CRS)` -> that train's movements there, oldest first.
+        at_stop: HashMap<(i64, String), Vec<EventRow>>,
+        /// `trains_id` -> its latest reported call.
+        latest: HashMap<i64, EventRow>,
+    }
+
+    async fn read_events(pool: &PgPool, targets: &[StopDelayTarget]) -> anyhow::Result<Movements> {
+        let mut pairs: Vec<(i64, String)> = targets
+            .iter()
+            .filter_map(|t| Some((t.trains_id, t.stop_crs.as_deref()?.trim().to_uppercase())))
+            .collect();
+        pairs.sort();
+        pairs.dedup();
+        let mut latest_ids: Vec<i64> = targets
+            .iter()
+            .filter(|t| t.stop_crs.is_none())
+            .map(|t| t.trains_id)
+            .collect();
+        latest_ids.sort_unstable();
+        latest_ids.dedup();
+
+        let mut at_stop: HashMap<(i64, String), Vec<EventRow>> = HashMap::new();
+        if !pairs.is_empty() {
+            let (ids, crs): (Vec<i64>, Vec<String>) = pairs.into_iter().unzip();
+            let rows: Vec<EventRow> = sqlx::query_as(
+                "SELECT e.trains_id, UPPER(e.loc_crs) AS loc_crs, e.event_type, \
+                        e.planned_timestamp, e.actual_timestamp, e.gbtt_timestamp \
+                 FROM train_movement_events e \
+                 JOIN UNNEST($1::bigint[], $2::text[]) AS k(trains_id, crs) \
+                   ON e.trains_id = k.trains_id AND UPPER(e.loc_crs) = k.crs \
+                 ORDER BY e.trains_id, e.received_at ASC, e.id ASC",
+            )
+            .bind(&ids)
+            .bind(&crs)
+            .fetch_all(pool)
+            .await?;
+            for row in rows {
+                at_stop
+                    .entry((row.trains_id, row.loc_crs.clone()))
+                    .or_default()
+                    .push(row);
+            }
+        }
+        let mut latest: HashMap<i64, EventRow> = HashMap::new();
+        if !latest_ids.is_empty() {
+            let rows: Vec<EventRow> = sqlx::query_as(
+                "SELECT DISTINCT ON (trains_id) trains_id, UPPER(loc_crs) AS loc_crs, event_type, \
+                        planned_timestamp, actual_timestamp, gbtt_timestamp \
+                 FROM train_movement_events \
+                 WHERE trains_id = ANY($1) AND loc_crs IS NOT NULL \
+                   AND actual_timestamp IS NOT NULL \
+                   AND event_type IN ('ARRIVAL', 'DEPARTURE') \
+                 ORDER BY trains_id, received_at DESC, id DESC",
+            )
+            .bind(&latest_ids)
+            .fetch_all(pool)
+            .await?;
+            latest = rows.into_iter().map(|row| (row.trains_id, row)).collect();
+        }
+        Ok(Movements { at_stop, latest })
+    }
+
+    /// The target trains' schedule calls at any of `crs`, keyed by
+    /// `(date, uid, crs)`, each in stopping order.
+    async fn read_calls(
+        pool: &PgPool,
+        targets: &[StopDelayTarget],
+        crs: &[String],
+        corpus_fallback: bool,
+    ) -> anyhow::Result<HashMap<(NaiveDate, String, String), Vec<CallRow>>> {
+        let mut calls_at: HashMap<(NaiveDate, String, String), Vec<CallRow>> = HashMap::new();
+        if crs.is_empty() {
+            return Ok(calls_at);
+        }
+        let mut keys: Vec<(NaiveDate, String)> = targets
+            .iter()
+            .map(|t| (t.service_date, t.train_uid.clone()))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        let (dates, uids): (Vec<NaiveDate>, Vec<String>) = keys.into_iter().unzip();
+        let rows: Vec<CallRow> = sqlx::query_as(
+            "SELECT c.service_date, c.uid, x.crs, \
+                    c.public_arrival, c.public_departure, \
+                    COALESCE(c.working_arrival, c.booked_arrival) AS working_arrival, \
+                    COALESCE(c.working_departure, c.booked_departure) AS working_departure \
+             FROM schedule_calling_points_full c \
+             JOIN UNNEST($1::date[], $2::text[]) AS k(service_date, uid) \
+               ON c.service_date = k.service_date AND c.uid = k.uid \
+             JOIN LATERAL ( \
+                 SELECT UPPER(m.crs) AS crs FROM ( \
+                     SELECT crs, 1 AS priority FROM tiploc_crs \
+                      WHERE tiploc = UPPER(TRIM(c.tiploc)) \
+                     UNION ALL \
+                     SELECT crs, 2 AS priority FROM stanox_crs \
+                      WHERE tiploc = UPPER(TRIM(c.tiploc)) \
+                     UNION ALL \
+                     SELECT crs, 3 AS priority FROM corpus_tiploc_crs \
+                      WHERE $4 AND tiploc = UPPER(TRIM(c.tiploc)) \
+                 ) m ORDER BY m.priority LIMIT 1 \
+             ) x ON TRUE \
+             WHERE x.crs = ANY($3) \
+             ORDER BY c.service_date, c.uid, c.seq",
+        )
+        .bind(&dates)
+        .bind(&uids)
+        .bind(crs)
+        .bind(corpus_fallback)
+        .fetch_all(pool)
+        .await?;
+        for row in rows {
+            calls_at
+                .entry((row.service_date, row.uid.clone(), row.crs.clone()))
+                .or_default()
+                .push(row);
+        }
+        Ok(calls_at)
+    }
+
+    /// One target's delay from the already-read movements and calls.
+    fn delay_for(
+        target: &StopDelayTarget,
+        movements: &Movements,
+        calls_at: &HashMap<(NaiveDate, String, String), Vec<CallRow>>,
+    ) -> Option<StopDelay> {
+        let schedule = |crs: &str| {
+            calls_at
+                .get(&(
+                    target.service_date,
+                    target.train_uid.clone(),
+                    crs.to_string(),
+                ))
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+        };
+        let Some(crs) = &target.stop_crs else {
+            let latest = movements.latest.get(&target.trains_id).and_then(|event| {
+                let movement = event.movement()?;
+                let calls = schedule(&event.loc_crs);
+                // A departure is from the first call there, an arrival at the
+                // last (a loop's origin and terminus share a CRS).
+                let side = match movement.kind {
+                    MovementKind::Departure => calls
+                        .iter()
+                        .find(|c| c.working_departure.is_some())
+                        .map(CallRow::departure),
+                    _ => calls
+                        .iter()
+                        .rev()
+                        .find(|c| c.working_arrival.is_some())
+                        .map(CallRow::arrival),
+                };
+                Some((movement, side.unwrap_or_default()))
+            });
+            return delay_at_latest_call(latest, target.working_delay_minutes);
+        };
+        let crs = crs.trim().to_uppercase();
+        let reported: Vec<CallMovement> = movements
+            .at_stop
+            .get(&(target.trains_id, crs.clone()))
+            .into_iter()
+            .flatten()
+            .filter_map(EventRow::movement)
+            .collect();
+        let call = schedule(&crs).last();
+        delay_at_stop(
+            &reported,
+            call.map(CallRow::arrival).unwrap_or_default(),
+            call.map(CallRow::departure).unwrap_or_default(),
+            target.working_delay_minutes,
+        )
     }
 
     /// [`super::delay_at_stop`] (or [`super::delay_at_latest_call`] for a
@@ -412,182 +578,24 @@ pub mod db {
         if targets.is_empty() {
             return Ok(Vec::new());
         }
-        let mut trains_ids: Vec<i64> = targets.iter().map(|t| t.trains_id).collect();
-        trains_ids.sort_unstable();
-        trains_ids.dedup();
-        let events: Vec<EventTuple> = sqlx::query_as(
-            "SELECT trains_id, UPPER(loc_crs) AS loc_crs, event_type, \
-                    planned_timestamp, actual_timestamp, gbtt_timestamp \
-             FROM train_movement_events \
-             WHERE trains_id = ANY($1) AND loc_crs IS NOT NULL \
-             ORDER BY trains_id, received_at ASC, id ASC",
-        )
-        .bind(&trains_ids)
-        .fetch_all(pool)
-        .await?;
-        let events: Vec<EventRow> = events
-            .into_iter()
-            .map(
-                |(trains_id, loc_crs, event_type, planned, actual, gbtt)| EventRow {
-                    trains_id,
-                    loc_crs,
-                    event_type,
-                    planned_timestamp: planned,
-                    actual_timestamp: actual,
-                    gbtt_timestamp: gbtt,
-                },
-            )
-            .collect();
-        let mut by_train: HashMap<i64, Vec<&EventRow>> = HashMap::new();
-        for event in &events {
-            by_train.entry(event.trains_id).or_default().push(event);
-        }
-
+        let movements = read_events(pool, targets).await?;
         // The CRS each target needs a schedule call at.
-        let latest_call = |target: &StopDelayTarget| -> Option<&EventRow> {
-            by_train.get(&target.trains_id).and_then(|events| {
-                events.iter().rev().copied().find(|e| {
-                    e.actual_timestamp.is_some()
-                        && MovementKind::from_event_type(e.event_type.as_deref())
-                            != MovementKind::Other
-                })
-            })
-        };
-        let wanted: Vec<String> = targets
+        let mut wanted: Vec<String> = targets
             .iter()
             .filter_map(|t| match &t.stop_crs {
                 Some(crs) => Some(crs.trim().to_uppercase()),
-                None => latest_call(t).map(|e| e.loc_crs.clone()),
+                None => movements
+                    .latest
+                    .get(&t.trains_id)
+                    .map(|e| e.loc_crs.clone()),
             })
             .collect();
-        let mut keys: Vec<(NaiveDate, String)> = targets
-            .iter()
-            .map(|t| (t.service_date, t.train_uid.clone()))
-            .collect();
-        keys.sort();
-        keys.dedup();
-        let (dates, uids): (Vec<NaiveDate>, Vec<String>) = keys.into_iter().unzip();
-        let calls: Vec<CallTuple> = if wanted.is_empty() {
-            Vec::new()
-        } else {
-            sqlx::query_as(
-                "SELECT c.service_date, c.uid, x.crs, \
-                        c.public_arrival, c.public_departure, \
-                        COALESCE(c.working_arrival, c.booked_arrival) AS working_arrival, \
-                        COALESCE(c.working_departure, c.booked_departure) AS working_departure \
-                 FROM schedule_calling_points_full c \
-                 JOIN UNNEST($1::date[], $2::text[]) AS k(service_date, uid) \
-                   ON c.service_date = k.service_date AND c.uid = k.uid \
-                 JOIN LATERAL ( \
-                     SELECT UPPER(m.crs) AS crs FROM ( \
-                         SELECT crs, 1 AS priority FROM tiploc_crs \
-                          WHERE tiploc = UPPER(TRIM(c.tiploc)) \
-                         UNION ALL \
-                         SELECT crs, 2 AS priority FROM stanox_crs \
-                          WHERE tiploc = UPPER(TRIM(c.tiploc)) \
-                         UNION ALL \
-                         SELECT crs, 3 AS priority FROM corpus_tiploc_crs \
-                          WHERE $4 AND tiploc = UPPER(TRIM(c.tiploc)) \
-                     ) m ORDER BY m.priority LIMIT 1 \
-                 ) x ON TRUE \
-                 WHERE x.crs = ANY($3) \
-                 ORDER BY c.service_date, c.uid, c.seq",
-            )
-            .bind(&dates)
-            .bind(&uids)
-            .bind(&wanted)
-            .bind(corpus_fallback)
-            .fetch_all(pool)
-            .await?
-        };
-        let calls: Vec<CallRow> = calls
-            .into_iter()
-            .map(
-                |(
-                    service_date,
-                    uid,
-                    crs,
-                    public_arrival,
-                    public_departure,
-                    working_arrival,
-                    working_departure,
-                )| {
-                    CallRow {
-                        service_date,
-                        uid,
-                        crs,
-                        public_arrival,
-                        public_departure,
-                        working_arrival,
-                        working_departure,
-                    }
-                },
-            )
-            .collect();
-        // (date, uid, crs) -> that train's calls there, in stopping order.
-        let mut calls_at: HashMap<(NaiveDate, String, String), Vec<&CallRow>> = HashMap::new();
-        for call in &calls {
-            calls_at
-                .entry((call.service_date, call.uid.clone(), call.crs.clone()))
-                .or_default()
-                .push(call);
-        }
-
+        wanted.sort();
+        wanted.dedup();
+        let calls_at = read_calls(pool, targets, &wanted, corpus_fallback).await?;
         Ok(targets
             .iter()
-            .map(|target| {
-                let schedule = |crs: &str| {
-                    calls_at
-                        .get(&(
-                            target.service_date,
-                            target.train_uid.clone(),
-                            crs.to_string(),
-                        ))
-                        .map(Vec::as_slice)
-                        .unwrap_or_default()
-                };
-                match &target.stop_crs {
-                    Some(crs) => {
-                        let crs = crs.trim().to_uppercase();
-                        let movements: Vec<CallMovement> = by_train
-                            .get(&target.trains_id)
-                            .into_iter()
-                            .flatten()
-                            .filter(|e| e.loc_crs == crs)
-                            .filter_map(|e| movement(e))
-                            .collect();
-                        let call = schedule(&crs).last();
-                        delay_at_stop(
-                            &movements,
-                            call.map(|c| c.arrival()).unwrap_or_default(),
-                            call.map(|c| c.departure()).unwrap_or_default(),
-                            target.working_delay_minutes,
-                        )
-                    }
-                    None => {
-                        let latest = latest_call(target).and_then(|event| {
-                            let movement = movement(event)?;
-                            let calls = schedule(&event.loc_crs);
-                            // A departure is from the first call there, an
-                            // arrival at the last (a loop's origin and
-                            // terminus share a CRS).
-                            let side = match movement.kind {
-                                MovementKind::Departure => calls
-                                    .iter()
-                                    .find(|c| c.working_departure.is_some())
-                                    .map(|c| c.departure()),
-                                _ => calls
-                                    .iter()
-                                    .rev()
-                                    .find(|c| c.working_arrival.is_some())
-                                    .map(|c| c.arrival()),
-                            };
-                            Some((movement, side.unwrap_or_default()))
-                        });
-                        delay_at_latest_call(latest, target.working_delay_minutes)
-                    }
-                }
-            })
+            .map(|target| delay_for(target, &movements, &calls_at))
             .collect())
     }
 }

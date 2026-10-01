@@ -10910,28 +10910,14 @@ mod schedule_destination_departures_query_tests {
         .await
         .expect("search candidates")
         .expect("service date is published");
-        let found: Vec<(&str, Option<&str>, Option<&str>, Option<&str>)> = page
-            .departures
-            .iter()
-            .map(|d| {
-                (
-                    d["uid"].as_str().unwrap(),
-                    d["public_departure"].as_str(),
-                    d["leg_destination_arrival"].as_str(),
-                    d["leg_public_destination_arrival"].as_str(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            found,
-            vec![(
-                "T00005",
-                Some("15:39:00"),
-                Some("17:00:00"),
-                Some("17:01:00")
-            )],
-            "the set-down-only end is found with its public arrival; the pick-up-only one is not"
-        );
+        // The set-down-only end is found, with its public arrival; the
+        // pick-up-only one is not.
+        assert_eq!(page.departures.len(), 1, "{:?}", page.departures);
+        let found = &page.departures[0];
+        assert_eq!(found["uid"], "T00005");
+        assert_eq!(found["public_departure"], "15:39:00");
+        assert_eq!(found["leg_destination_arrival"], "17:00:00");
+        assert_eq!(found["leg_public_destination_arrival"], "17:01:00");
 
         // Boarding at the set-down-only call is never offered; the
         // pick-up-only one is.
