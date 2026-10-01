@@ -114,6 +114,11 @@ spec:
           ports:
             - name: sftp
               containerPort: {{ .Values.scheduleFeed.sftp.port }}
+            {{- if and .Values.metrics.enabled .Values.scheduleFeed.sftp.telemetry.enabled }}
+            - name: sftp-metrics
+              containerPort: {{ .Values.scheduleFeed.sftp.telemetry.port }}
+              protocol: TCP
+            {{- end }}
           # Overrides the image's own `CMD ["sftpgo", "serve"]` (no
           # ENTRYPOINT is set upstream, so this replaces it outright) to run
           # the sftp-entrypoint ConfigMap's script first -- see that
@@ -175,6 +180,34 @@ spec:
             # scheduleFeed.sftp.webAdmin in values.yaml.
             - name: SFTPGO_HTTPD__BINDINGS__0__PORT
               value: "0"
+            {{- end }}
+            # Audit log: SFTPGo's JSON lines on stdout. `login`, `Upload` and
+            # the command lines are info, but failed logins
+            # (`connection_failed`) and defender score changes are debug
+            # only, and the Loki rules on them need them, so the level is
+            # explicit (scheduleFeed.sftp.logLevel). UTC so the zone-less
+            # `time` field is UTC by definition. docs/schedule-feed-sftp.md
+            # lists the fields.
+            - name: SFTPGO_LOG_FILE_PATH
+              value: ""
+            - name: SFTPGO_LOG_LEVEL
+              value: {{ .Values.scheduleFeed.sftp.logLevel | quote }}
+            - name: SFTPGO_LOG_UTC_TIME
+              value: "true"
+            {{- if and .Values.metrics.enabled .Values.scheduleFeed.sftp.telemetry.enabled }}
+            # SFTPGo's telemetry listener: /metrics (unlabelled global
+            # counters: logins, uploads, errors) and /healthz, scraped
+            # through the PodMonitor's sftp-metrics endpoint. Never on the
+            # NodePort Service. No auth file: read-only counters, reachable
+            # only from the monitoring namespace (networkpolicy.yaml).
+            - name: SFTPGO_TELEMETRY__BIND_PORT
+              value: {{ .Values.scheduleFeed.sftp.telemetry.port | quote }}
+            - name: SFTPGO_TELEMETRY__BIND_ADDRESS
+              value: "0.0.0.0"
+            - name: SFTPGO_TELEMETRY__ENABLE_PROFILER
+              value: "false"
+            - name: SFTPGO_TELEMETRY__AUTH_USER_FILE
+              value: ""
             {{- end }}
             # SSH commands (md5sum, sha256sum, cd, pwd, scp... in the image's
             # sftpgo.json) other than the SFTP subsystem itself. None by

@@ -140,7 +140,142 @@ The defender needs real client addresses
 (`scheduleFeed.service.externalTrafficPolicy: Local`). Behind source NAT every
 client shares one address, and a ban would lock DTD out too.
 
-### If DTD's deliveries break
+## Audit log
+
+SFTPGo writes one JSON object per line to stdout, which Alloy ships to Loki
+as `{namespace="distant-signal", container="sftp"}`. The chart pins the level
+to `debug` (`scheduleFeed.sftp.logLevel`), because failed logins and defender
+scores are only logged at debug, and sets `SFTPGO_LOG_UTC_TIME=true`, so the
+zone-less `time` field is UTC. Every line has `level` (lowercase), `time`
+(`2006-01-02T15:04:05.000`, UTC) and `sender`. Lines below are from the local
+SFTPGo 2.7.5 run (IPs are loopback there; in production they are the client's
+real address, since `externalTrafficPolicy: Local`).
+
+| `sender` | Level | Fields | Meaning |
+| --- | --- | --- | --- |
+| `login` | info | `ip`, `username`, `method` (`keyboard-interactive`, `password`, `publickey`), `protocol` (`SSH`), `connection_id`, `client` (SSH version string, DTD's is `SSH-2.0-JSCH-0.1.54`), `encrypted`, `info` (negotiated algorithms) | A successful login |
+| `connection_failed` | debug | `client_ip`, `username` (empty if none was tried), `login_type` (`keyboard-interactive`, `password`, `publickey`, `no_auth_tried`), `protocol`, `error` (`invalid credentials`; `not found: username "x" does not exist`) | A failed login. `no_auth_tried` is a connection that never authenticated: the kubelet's TCP probe (every 30s from the pod network) and port scanners |
+| `Upload` | info, or error when it failed | `remote_addr` (`ip:port`), `local_addr`, `username`, `file_path`, `virtual_path`, `size_bytes`, `elapsed_ms`, `connection_id` (`SFTP_<login connection_id>_<n>`), `protocol` (`SFTP`), `error` (only on failure) | A completed or failed upload |
+| `Rename`, `Remove`, `Mkdir`, `Rmdir`, `SetStat` | info | `remote_addr`, `username`, `file_path`, `target_path`, `connection_id`, ... | A filesystem command that succeeded. `dtd-push` has no permission for any of them, so one appearing means the policy changed |
+| `defender` | debug (score), info (ban) | `client_ip`, `protocol`, `event` (`LoginFailed`, `UserNotFound`, `NoLoginTried`, `LimitExceeded`; `banned`), `increase_score_by`, `score` | Defender scoring and bans |
+
+Examples:
+
+```json
+{"level":"info","time":"2026-10-01T16:53:57.743","sender":"login","ip":"127.0.0.1","username":"dtd-push","method":"keyboard-interactive","protocol":"SSH","connection_id":"adb66d8d…","client":"SSH-2.0-OpenSSH_10.2","encrypted":true,"info":"negotiated algorithms: {...}"}
+{"level":"info","time":"2026-10-01T16:53:57.751","sender":"Upload","local_addr":"127.0.0.1:2299","remote_addr":"127.0.0.1:37628","elapsed_ms":0,"size_bytes":4000,"username":"dtd-push","file_path":"/data/schedule-feed/incoming/timetable_full.zip","virtual_path":"/timetable_full.zip","connection_id":"SFTP_adb66d8d…_1","protocol":"SFTP"}
+{"level":"error","time":"2026-10-01T16:53:57.880","sender":"Upload","local_addr":"127.0.0.1:2299","remote_addr":"127.0.0.1:37636","elapsed_ms":15,"size_bytes":0,"username":"dtd-push","file_path":"/data/schedule-feed/incoming/big.zip","virtual_path":"/big.zip","connection_id":"SFTP_cd88a96e…_1","protocol":"SFTP","error":"failure: denying write due to space limit"}
+{"level":"debug","time":"2026-10-01T16:53:58.052","sender":"connection_failed","client_ip":"127.0.0.1","username":"dtd-push","login_type":"keyboard-interactive","protocol":"SSH","error":"invalid credentials"}
+{"level":"debug","time":"2026-10-01T16:54:01.437","sender":"connection_failed","client_ip":"127.0.0.1","username":"scanner","login_type":"keyboard-interactive","protocol":"SSH","error":"not found: username \"scanner\" does not exist"}
+{"level":"debug","time":"2026-10-01T16:54:01.437","sender":"defender","client_ip":"127.0.0.1","protocol":"SSH","event":"UserNotFound","increase_score_by":2,"score":8}
+{"level":"info","time":"2026-10-01T16:54:01.437","sender":"defender","client_ip":"127.0.0.1","protocol":"SSH","event":"banned"}
+```
+
+Note the field names differ by line: the client address is `ip` on `login`,
+`client_ip` on `connection_failed` and `defender`, and `remote_addr` (with the
+port) on `Upload`. SFTPGo never logs passwords or keyboard-interactive
+answers, and does not log a refused operation (a `get` or `rm` the account
+has no permission for), only the ones that succeed.
+
+schedule-ingest adds one line per delivered file (`target` =
+`schedule_ingest::audit`, see [delivery checks](#delivery-checks)). Join it
+to the `Upload` line on file name, size and time: ingest's `delivered_at` is
+the file's mtime, which SFTPGo sets when the upload closes.
+
+### LogQL for login anomalies
+
+For the Loki ruler (Ranma owns the rules). The selectors below use the raw
+container stream; once Alloy tags the audit lines, `{audit="sftp-delivery"}`
+is the cheaper selector for the login lines.
+
+Successful `dtd-push` logins, as a table:
+
+```logql
+{namespace="distant-signal", container="sftp"} |= `"sender":"login"`
+  | json username, ip, method, client
+  | username = "dtd-push"
+```
+
+A successful `dtd-push` login from an IP not seen in the previous 30 days
+(needs 30 days of retention for these lines, and a `max_query_length` over
+30 days):
+
+```logql
+sum by (ip) (count_over_time(
+  {namespace="distant-signal", container="sftp"} |= `"sender":"login"`
+    | json username, ip | username = "dtd-push" [10m]))
+unless on (ip)
+sum by (ip) (count_over_time(
+  {namespace="distant-signal", container="sftp"} |= `"sender":"login"`
+    | json username, ip | username = "dtd-push" [30d] offset 10m))
+```
+
+A successful `dtd-push` login outside the expected windows. LogQL has no
+hour function, so this matches on the UTC `time` field; label regexes are
+anchored. For 22:00 to 01:29 and 16:00 to 16:59 UTC:
+
+```logql
+sum by (ip) (count_over_time(
+  {namespace="distant-signal", container="sftp"} |= `"sender":"login"`
+    | json username, ip, time
+    | username = "dtd-push"
+    | time !~ `.*T(22|23|00):.*|.*T01:[0-2].*|.*T16:.*` [10m])) > 0
+```
+
+The deliveries actually seen came at about 20:00 UTC (19:59 and 20:04), which
+those windows would flag. Until a month of logins shows DTD's real pattern,
+the observed window is the safer one: `time !~ ".*T(19|20):.*"`.
+
+Failed logins that tried a password (excluding probes):
+
+```logql
+{namespace="distant-signal", container="sftp"} |= `"sender":"connection_failed"`
+  | json client_ip, username, login_type, error
+  | login_type != "no_auth_tried"
+```
+
+Bans: `{namespace="distant-signal", container="sftp"} |= "\"event\":\"banned\""`.
+
+## Telemetry and alerts
+
+`scheduleFeed.sftp.telemetry` (on with `metrics.enabled`) serves SFTPGo's
+`/metrics` and `/healthz` on port 9097, named `sftp-metrics`, scraped by the
+chart's PodMonitor and admitted only from the monitoring namespace. It is not
+on the NodePort Service. The counters are global, with no username, IP or
+protocol labels, so login anomalies come from the log, not the metrics.
+
+### Alerts
+
+Group `distant-signal.schedule-sftp` (`metrics.prometheusRule.scheduleSftp`):
+
+| Alert | Fires when | What to do |
+| --- | --- | --- |
+| `DistantSignalSftpNoUpload` | no upload in 30h | Check the `login`/`Upload` lines for DTD's last session; if none, DTD did not push. A CORPUS upload also counts, so `DistantSignalScheduleReferencePublishStale` is the timetable signal |
+| `DistantSignalSftpUploadErrors` | an upload failed or was cut off in the last hour | Find the `Upload` line with `"level":"error"` and its `error`; check that the next ingest went through |
+| `DistantSignalSftpUserStoreDown` | SFTPGo's user store is down for 5m | Every login fails. Restart the pod; the store is rebuilt from the entrypoint at start |
+
+## Host keys
+
+SFTPGo serves the chart's preserved ECDSA (P-256, for JSch 0.1.54) and
+ed25519 host keys (`scheduleFeed.sftp.hostKeys`); there is no RSA key. DTD
+does not pin them, so the fingerprints are for information only. They can't
+be derived without reading the private keys from the Secret, so read them
+from SFTPGo's startup log after a deploy:
+
+```logql
+{namespace="distant-signal", container="sftp"} |= `"sender":"sftpd"` |= `fingerprint`
+```
+
+(`Host key "/srv/sftpgo/host_keys/ssh_host_ecdsa_key" loaded, type
+"ecdsa-sha2-nistp256", fingerprint "SHA256:..."`), or from outside with
+`ssh-keyscan -p 30450 <host> | ssh-keygen -lf -`.
+
+| Key | Fingerprint |
+| --- | --- |
+| `ecdsa-sha2-nistp256` | not yet recorded: the running pod (2026-10-01) still generates throwaway keys; record after the first deploy that serves the preserved ones |
+| `ssh-ed25519` | as above |
+
+## If DTD's deliveries break
 
 The `ingest` container logs "no .zip delivery observed" after the day's
 final check time, and `DistantSignalScheduleReferencePublishStale` fires. To

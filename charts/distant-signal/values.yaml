@@ -2920,6 +2920,19 @@ scheduleFeed:
       average: 20
       periodMs: 60000
       burst: 10
+    # -- SFTPGo log level (SFTPGO_LOG_LEVEL), set explicitly rather than
+    # left to the image default. Keep "debug": SFTPGo logs failed logins
+    # (sender "connection_failed") and defender score changes only at
+    # debug; bans are at info. Log-based alerts on failed logins need it.
+    # The time field is always UTC (SFTPGO_LOG_UTC_TIME).
+    logLevel: debug
+    # -- SFTPGo's telemetry listener (/metrics, /healthz) on `port`, scraped
+    # by the PodMonitor's `sftp-metrics` endpoint. Needs metrics.enabled.
+    # Never on the NodePort Service; the NetworkPolicy admits only the
+    # monitoring namespace. Feeds the distant-signal.schedule-sftp alerts.
+    telemetry:
+      enabled: true
+      port: 9097
     # -- The folder DTD's account lands files in. CORRECTED 2026-09-01
     # (this task): this account's SFTP home/chroot directory is set to
     # EXACTLY /data/schedule-feed/<this value+folderPath> (see
@@ -3740,6 +3753,24 @@ metrics:
       rejectedWindow: 6h
       populationMissingFor: 15m
       severity: warning
+    # -- The schedulefeed SFTP server's own alerts
+    # (distant-signal.schedule-sftp), from SFTPGo's telemetry counters.
+    # Renders with scheduleFeed.enabled and scheduleFeed.sftp.telemetry.enabled.
+    # No failed-login alert here: the counters carry no username or IP, so
+    # Loki rules own that (docs/schedule-feed-sftp.md).
+    scheduleSftp:
+      enabled: true
+      # DistantSignalSftpNoUpload: no upload at all in this window. DTD
+      # pushes daily (~20:00 UTC), so 30h allows one late delivery.
+      noUploadWindow: 30h
+      noUploadFor: 30m
+      # DistantSignalSftpUploadErrors: any failed or interrupted upload.
+      uploadErrorsWindow: 1h
+      # DistantSignalSftpUserStoreDown: SFTPGo's user store unavailable, so
+      # every login fails.
+      userStoreDownFor: 5m
+      severity: warning
+      userStoreDownSeverity: critical
 
 # ---------------------------------------------------------------------------
 # NetworkPolicy (optional)
