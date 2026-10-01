@@ -15,7 +15,7 @@
 //! summary ids, so a private custom line's id is never in the set these
 //! routes ever query with. Nested under `/public` (`routes::public_router()`),
 //! unlike `line_status.rs`'s TfL-shape-compatible routes, since there is no
-//! TfL API compatibility concern for a wholly new surface.
+//! `TfL` API compatibility concern for a wholly new surface.
 //!
 //! No Timeline-equivalent, no coverage-stats sibling -- both are
 //! deliberate Non-goals of the plan above (spec §D.3; coverage tables
@@ -71,11 +71,11 @@ pub fn router() -> Router {
 }
 
 /// Every catalogue (National Rail) line id -- the "network" scope's own
-/// line-id set. Deliberately NOT `queries::tfl_line_summaries` -- TfL
+/// line-id set. Deliberately NOT `queries::tfl_line_summaries` -- `TfL`
 /// lines never accrue rows in `line_status_daily_stats`/
 /// `line_status_half_hourly_stats` at all (see this plan's Judgment Call
 /// 5: the aggregator's own `record_daily_stats`/`record_half_hourly_stats`
-/// pass only ever iterates catalogue + custom lines, never TfL), so
+/// pass only ever iterates catalogue + custom lines, never `TfL`), so
 /// including `tfl-`-prefixed ids here would add ids to the `= ANY($1)`
 /// list that can never match a row -- harmless, but pointless. Pure and
 /// synchronous so it's unit-testable without a database.
@@ -83,6 +83,10 @@ fn network_line_ids(catalogue_lines: &[common::LineDefinition]) -> Vec<String> {
     catalogue_lines.iter().map(|line| line.id.clone()).collect()
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "operator/network history query failed");
     (
@@ -252,6 +256,7 @@ async fn get_network_six_hourly_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn network_line_ids_lists_every_catalogue_line_and_nothing_else() {
@@ -266,7 +271,7 @@ mod tests {
                 sample_stations: vec![],
                 match_keywords: vec![],
                 excluded_keywords: vec![],
-                severity_overrides: Default::default(),
+                severity_overrides: HashMap::default(),
                 destination_crs_filter: vec![],
                 headcode_prefixes: vec![],
                 full_coverage_enabled: false,
@@ -281,7 +286,7 @@ mod tests {
                 sample_stations: vec![],
                 match_keywords: vec![],
                 excluded_keywords: vec![],
-                severity_overrides: Default::default(),
+                severity_overrides: HashMap::default(),
                 destination_crs_filter: vec![],
                 headcode_prefixes: vec![],
                 full_coverage_enabled: false,
@@ -300,6 +305,7 @@ mod db_tests {
     use axum::http::{Request, StatusCode};
     use serde_json::Value;
     use sqlx::PgPool;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     use crate::app::{App, AppState};
@@ -382,7 +388,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
-            schedule_crs_line_index: std::collections::HashMap::new(),
+            schedule_crs_line_index: HashMap::new(),
         })
     }
 
@@ -398,12 +404,12 @@ mod db_tests {
             name: format!("Test {id}"),
             mode: "national-rail".to_string(),
             category: "main-line".to_string(),
-            operators: operators.iter().map(|s| s.to_string()).collect(),
+            operators: operators.iter().map(ToString::to_string).collect(),
             stations: vec![],
             sample_stations: vec![],
             match_keywords: vec![],
             excluded_keywords: vec![],
-            severity_overrides: Default::default(),
+            severity_overrides: HashMap::default(),
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,

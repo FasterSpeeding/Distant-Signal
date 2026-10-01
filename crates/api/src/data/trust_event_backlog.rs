@@ -36,8 +36,8 @@ pub struct BacklogBatchOutcome {
 /// row by row, each row behind its own savepoint, so every valid row lands
 /// and only the offending rows come back in
 /// [`BacklogBatchOutcome::rejected`]. Before this, a batch holding one row
-/// the table's msg_type CHECK refused (TRUST `0005`, before migration
-/// 20260926210000) failed as a whole; trust-backlog-consumer never XACKed
+/// the table's `msg_type` CHECK refused (TRUST `0005`, before migration
+/// 20260926210000) failed as a whole; trust-backlog-consumer never `XACKed`
 /// it, and XAUTOCLAIM replayed the same failing batch every 30 seconds,
 /// holding more than a thousand valid rows hostage until the capped stream
 /// trimmed them.
@@ -95,6 +95,10 @@ fn insert_backlog_row(
 /// row. One statement is also all-or-nothing, as the old single
 /// transaction was. `ON CONFLICT (dedup_key) DO NOTHING` also skips a
 /// duplicate key repeated within the same batch.
+#[expect(
+    clippy::similar_names,
+    reason = "the similar names are distinct domain terms"
+)]
 async fn insert_batch_in_one_statement(
     pool: &PgPool,
     events: &[TrustBacklogEventMessage],
@@ -310,7 +314,7 @@ fn data_error_reason(sqlstate: &str) -> Option<&'static str> {
 /// wiring behind "trust-backlog-consumer becomes the primary movement-event
 /// writer" (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md
 /// §3). A deliberate no-op, not an error, whenever `event.train_uid` is
-/// `None` -- this process never saw the Activation for this train_id
+/// `None` -- this process never saw the Activation for this `train_id`
 /// (Task 13's own named, accepted gap), so there is no natural key to
 /// create or find a `trains` row by. Independent of, and additional to,
 /// this same batch's existing `upsert_trust_event_backlog_batch` write --
@@ -381,6 +385,11 @@ pub async fn ingest_shared_movement(
 /// would if `fetch_previous_derived_state` had been re-run against the
 /// database after the first event's write (which is what the old
 /// sequential loop actually did).
+#[expect(
+    clippy::expect_used,
+    clippy::too_many_lines,
+    reason = "the invariant is established just above; the expect message names it; long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn ingest_shared_movements_batch(
     pool: &PgPool,
     events: &[TrustBacklogEventMessage],
@@ -463,34 +472,34 @@ pub async fn ingest_shared_movements_batch(
         }
     }
 
-    let id_map = match crate::data::trains::find_or_create_trains_batch(pool, &pair_order).await {
-        Ok(map) => map,
-        Err(_) => {
-            // Fallback: the batched INSERT failed outright (e.g. one bad
-            // row in an otherwise-fine batch) -- retry one pair at a time,
-            // the old way, so only the pair(s) that actually fail take
-            // down the event(s) that reference them.
-            let mut map = HashMap::new();
-            for pair in &pair_order {
-                match crate::data::trains::find_or_create_train(pool, &pair.0, pair.1).await {
-                    Ok(id) => {
-                        map.insert(pair.clone(), id);
-                    }
-                    Err(err) => {
-                        for &i in &known_indices {
-                            if events[i].train_uid.as_deref() == Some(pair.0.as_str())
-                                && events[i].service_date == pair.1
-                            {
-                                results[i] =
-                                    Err(SharedMovementError::new("find_or_create_train", &err)
-                                        .into());
-                            }
+    let id_map = if let Ok(map) =
+        crate::data::trains::find_or_create_trains_batch(pool, &pair_order).await
+    {
+        map
+    } else {
+        // Fallback: the batched INSERT failed outright (e.g. one bad
+        // row in an otherwise-fine batch) -- retry one pair at a time,
+        // the old way, so only the pair(s) that actually fail take
+        // down the event(s) that reference them.
+        let mut map = HashMap::new();
+        for pair in &pair_order {
+            match crate::data::trains::find_or_create_train(pool, &pair.0, pair.1).await {
+                Ok(id) => {
+                    map.insert(pair.clone(), id);
+                }
+                Err(err) => {
+                    for &i in &known_indices {
+                        if events[i].train_uid.as_deref() == Some(pair.0.as_str())
+                            && events[i].service_date == pair.1
+                        {
+                            results[i] =
+                                Err(SharedMovementError::new("find_or_create_train", &err).into());
                         }
                     }
                 }
             }
-            map
         }
+        map
     };
 
     // Every known-train_uid event whose identity resolved to a trains_id.
@@ -570,10 +579,10 @@ pub async fn ingest_shared_movements_batch(
             distinct_trains_ids.push(trains_id);
         }
     }
-    let mut state_map = match fetch_previous_derived_states_batch(pool, &distinct_trains_ids).await
-    {
-        Ok(map) => map,
-        Err(_) => {
+    let mut state_map =
+        if let Ok(map) = fetch_previous_derived_states_batch(pool, &distinct_trains_ids).await {
+            map
+        } else {
             // Fallback: same reasoning as Steps 1-2's -- this is a read,
             // not a write, so there's no data-shape reason it should ever
             // fail differently per row, but the fallback costs nothing to
@@ -598,8 +607,7 @@ pub async fn ingest_shared_movements_batch(
                 }
             }
             map
-        }
-    };
+        };
 
     // Step 3.5: destination_crs, batched the same way as Step 3 -- feeds
     // confirmed-terminus-ARRIVAL detection below
@@ -1034,6 +1042,10 @@ static FORCE_FETCH_PREVIOUS_DERIVED_STATES_BATCH_FAILURE: std::sync::atomic::Ato
 /// returned map -- callers must apply the same
 /// `DerivedState::awaiting_activation()` fallback
 /// [`fetch_previous_derived_state`] applies for that case.
+#[expect(
+    clippy::items_after_statements,
+    reason = "a local type or import sits next to its only use"
+)]
 async fn fetch_previous_derived_states_batch(
     pool: &PgPool,
     trains_ids: &[i64],
@@ -1094,6 +1106,11 @@ async fn fetch_previous_derived_states_batch(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "test code: paired test values share names; scenario tests read top to bottom"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -1146,7 +1163,7 @@ mod db_tests {
     }
 
     /// Regression test: trust-backlog-consumer forwards `0005`
-    /// (Reinstatement) since the H4 fix, but the table's msg_type CHECK
+    /// (Reinstatement) since the H4 fix, but the table's `msg_type` CHECK
     /// still only allowed `0001`/`0002`/`0003`, so any batch containing
     /// one failed as a whole -- dropping the valid Movements alongside it
     /// -- until migration 20260926210000 widened the constraint.
@@ -1211,7 +1228,7 @@ mod db_tests {
         );
     }
 
-    /// The production incident: one row the msg_type CHECK refuses used to
+    /// The production incident: one row the `msg_type` CHECK refuses used to
     /// fail the whole batch, and every valid row beside it with it. Now the
     /// valid rows land and only the bad one is reported. `0009` is not a
     /// TRUST message type at all, so it stays invalid however the CHECK is
@@ -1323,8 +1340,8 @@ mod db_tests {
         let sqlstate = err
             .downcast_ref::<sqlx::Error>()
             .and_then(|e| e.as_database_error())
-            .and_then(|db| db.code())
-            .map(|c| c.into_owned());
+            .and_then(sqlx::error::DatabaseError::code)
+            .map(std::borrow::Cow::into_owned);
         assert_eq!(
             sqlstate.as_deref(),
             Some("55P03"),
@@ -1358,7 +1375,7 @@ mod db_tests {
     }
 
     /// DB2-4: the single UNNEST insert keeps every column (NULLs included),
-    /// and skips a dedup_key repeated inside the same batch as well as one
+    /// and skips a `dedup_key` repeated inside the same batch as well as one
     /// already stored.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
@@ -1554,7 +1571,7 @@ mod db_tests {
     /// Movements of every train activated before then arrived without a
     /// `train_uid` and never reached `train_movement_events` (~55 rows in
     /// the next hour). Their Activations were in `trust_event_backlog`:
-    /// the Movement now takes its train_uid AND service_date from there
+    /// the Movement now takes its `train_uid` AND `service_date` from there
     /// (here the Activation's D, not the Movement's fallback D+1).
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
@@ -1634,8 +1651,8 @@ mod db_tests {
         cleanup_uid_inference(&pool, train_id).await;
     }
 
-    /// Two Activations with different uids for one train_id within the
-    /// window (a recycled train_id) are ambiguous; no Activation at all is
+    /// Two Activations with different uids for one `train_id` within the
+    /// window (a recycled `train_id`) are ambiguous; no Activation at all is
     /// the old accepted gap. Either way: no shared write, and no error.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
@@ -1758,7 +1775,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn an_out_of_order_ingest_shared_movement_call_does_not_regress_current_state() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let newer_movement = TrustBacklogEventMessage {
             crs: Some("MKC".to_string()),
@@ -1989,7 +2006,7 @@ mod db_tests {
         // and NEITHER count grows with how many events happen to share an
         // identity, unlike the old per-event loop.
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let event_a1 = TrustBacklogEventMessage {
             crs: Some("EUS".to_string()),
@@ -2162,7 +2179,7 @@ mod db_tests {
         // reported against only itself -- not silently swallowed, and not
         // misattributed to the good event.
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let good = TrustBacklogEventMessage {
             crs: Some("EUS".to_string()),
@@ -2253,7 +2270,7 @@ mod db_tests {
         // row is left un-resolved (train_id still NULL) rather than ending
         // up with a wrong/partial value.
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let good = TrustBacklogEventMessage {
             crs: Some("EUS".to_string()),
@@ -2376,7 +2393,7 @@ mod db_tests {
         // actually fetched each train's REAL prior state from the
         // database, not a default/lost one.
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let movement_a = TrustBacklogEventMessage {
             crs: Some("EUS".to_string()),
@@ -2406,7 +2423,7 @@ mod db_tests {
         };
         let seed_results = ingest_shared_movements_batch(&pool, &[movement_a, movement_b]).await;
         assert!(
-            seed_results.iter().all(|r| r.is_ok()),
+            seed_results.iter().all(Result::is_ok),
             "seeding movements must succeed: {seed_results:?}"
         );
 
@@ -2471,7 +2488,7 @@ mod db_tests {
              otherwise this test isn't exercising the fallback at all"
         );
         assert!(
-            results.iter().all(|r| r.is_ok()),
+            results.iter().all(Result::is_ok),
             "both cancellations must still succeed via the per-id fallback: {results:?}"
         );
 
@@ -2555,7 +2572,7 @@ mod db_tests {
         // pre-batch default instead (None/None/None), since there was no
         // database row before this call started.
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let movement = TrustBacklogEventMessage {
             crs: Some("EUS".to_string()),
@@ -2592,7 +2609,7 @@ mod db_tests {
 
         let results = ingest_shared_movements_batch(&pool, &[movement, cancellation]).await;
         assert!(
-            results.iter().all(|r| r.is_ok()),
+            results.iter().all(Result::is_ok),
             "both events should succeed: {results:?}"
         );
 

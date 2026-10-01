@@ -2,7 +2,7 @@
 //! Ported from `src/render.py`. Deliberately independent of any
 //! `#[serde(rename)]` on the stored types — the internal storage
 //! representation (however `LineStatus` happens to serialize by default)
-//! and the public TfL response shape are different concerns; this module
+//! and the public `TfL` response shape are different concerns; this module
 //! is the only place that knows the public shape, exactly like the
 //! Python original builds its response dict by hand rather than relying
 //! on dataclass field names.
@@ -30,7 +30,7 @@ pub fn to_tfl_shape(report: &LineStatusReport, computed_at: DateTime<Utc>, detai
 /// Like `to_tfl_shape`, but attaches a second line's current statuses under
 /// a `tflStatus` field when `tfl_overlay` is `Some`. Used only by the
 /// single-line detail endpoint (`routes/line_status.rs::get_line_status`)
-/// for lines with a TfL counterpart merged away from `/public/lines` --
+/// for lines with a `TfL` counterpart merged away from `/public/lines` --
 /// see `docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md`
 /// Area 1. `tfl_overlay`'s statuses are rendered through the same
 /// `status_to_json` as the primary line, unchanged, so this never
@@ -119,7 +119,7 @@ pub(crate) fn sample_availability_json(availability: &common::SampleAvailability
 }
 
 /// Full-coverage analog of `sample_availability_json` -- same "never
-/// duplicate the SampleStats payload a second time on the wire" posture
+/// duplicate the `SampleStats` payload a second time on the wire" posture
 /// (`full_coverage_stats` above already carries it when present).
 pub(crate) fn full_coverage_availability_json(
     availability: &common::FullCoverageAvailability,
@@ -420,7 +420,7 @@ pub(crate) fn calling_point_departure_json(
 /// opaque-JSONB pass-through `get_line_schedule` already returns for the
 /// whole population, unchanged shape) paired with live status from the
 /// shared `trains`/`train_current_state` tables, when a row already
-/// exists for that train_uid/date. See
+/// exists for that `train_uid/date`. See
 /// docs/superpowers/specs/2026-09-09-mcp-schedule-data-follow-up-design.md
 /// §5.3.
 ///

@@ -8,6 +8,12 @@
 //! transaction, the `-- no-transaction` one outside), so it never touches
 //! the shared dev database's real table.
 
+#![expect(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "test code: scenario tests read top to bottom; a panic is the right failure in a test"
+)]
+
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, Row};
 
@@ -40,8 +46,10 @@ fn migration(name: &str) -> &'static str {
     MIGRATIONS
         .iter()
         .find(|(file, _)| *file == name)
-        .map(|(_, sql)| *sql)
-        .unwrap_or_else(|| panic!("{name} is not embedded in MIGRATIONS"))
+        .map_or_else(
+            || panic!("{name} is not embedded in MIGRATIONS"),
+            |(_, sql)| *sql,
+        )
 }
 
 async fn apply(conn: &mut sqlx::PgConnection, name: &str) {

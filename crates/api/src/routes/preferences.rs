@@ -35,6 +35,10 @@ pub fn router() -> Router {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names are the camelCase wire keys"
+)]
 struct PreferencesResponse {
     pinned_lines: Vec<String>,
     pinned_stations: Vec<String>,
@@ -64,7 +68,7 @@ async fn get_preferences(
         .cloned()
         .collect();
     let readable_custom_ids = if pinned_custom_ids.is_empty() {
-        std::collections::HashSet::new()
+        HashSet::new()
     } else {
         custom_lines::readable_custom_line_ids(&app.database, &pinned_custom_ids, &user.id)
             .await
@@ -216,6 +220,10 @@ async fn put_pinned_operators(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "preferences operation failed");
     (
@@ -227,7 +235,7 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
 /// Filters `pinned_line_ids` down to ones that still resolve to a real
 /// line, dropping stale ids for lines that have since been removed/renamed.
 /// A line is "real" if it appears in the static catalogue, among the custom
-/// lines THE CALLER MAY READ, or among the TfL lines `crates/poller-tfl` has
+/// lines THE CALLER MAY READ, or among the `TfL` lines `crates/poller-tfl` has
 /// ingested -- all three are valid targets of
 /// `PUT /preferences/pinned-lines`, which itself validates nothing (see
 /// `preferences::replace_pinned_lines`), so this is the only place a stale
@@ -238,7 +246,7 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
 /// probe for whether another user owns a line with a given id. See
 /// `get_preferences`.
 ///
-/// Factored out of `get_preferences` so the "TfL ids count as known" rule
+/// Factored out of `get_preferences` so the "`TfL` ids count as known" rule
 /// is unit-testable without a database, unlike the three id sources
 /// themselves, which each need one to produce for real.
 fn filter_known_pinned_lines(
@@ -411,7 +419,7 @@ mod tests {
 
 /// End-to-end version of the `tests` module's regression case, exercising
 /// the real `preferences`/`queries` DB round trip that `get_preferences`
-/// itself makes, rather than hand-built inputs: writes a TfL line status
+/// itself makes, rather than hand-built inputs: writes a `TfL` line status
 /// row (as `crates/poller-tfl` -> `queries::upsert_tfl_line_status` would),
 /// pins it via `preferences::replace_pinned_lines` (the real write path,
 /// same as `PUT /preferences/pinned-lines`), then reads it back through

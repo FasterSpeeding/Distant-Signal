@@ -109,6 +109,10 @@ async fn get_station_sample_stats(
     ))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "station sample-stats query failed");
     (
@@ -170,6 +174,7 @@ mod db_tests {
     use axum::http::Request;
     use sqlx::PgPool;
     use sqlx::postgres::PgPoolOptions;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     use super::*;
@@ -280,7 +285,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
-            schedule_crs_line_index: std::collections::HashMap::new(),
+            schedule_crs_line_index: HashMap::new(),
         })
     }
 
@@ -334,7 +339,7 @@ mod db_tests {
             sample_stations: vec![],
             match_keywords: vec![],
             excluded_keywords: vec![],
-            severity_overrides: Default::default(),
+            severity_overrides: HashMap::default(),
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled,
@@ -348,7 +353,7 @@ mod db_tests {
         let pool = connect().await;
         delete_fixture(&pool, "ZQS").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -385,7 +390,7 @@ mod db_tests {
         .await
         .expect("seed empty-departures fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -450,7 +455,7 @@ mod db_tests {
         .await
         .expect("seed two-operator fixture row");
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -510,13 +515,12 @@ mod db_tests {
         .await
         .expect("seed full-coverage-only fixture row");
 
-        let router: axum::Router =
-            crate::app::Router::new()
-                .merge(router())
-                .with_state(test_app_with_lines(
-                    pool.clone(),
-                    vec![gating_line("ZQF", "ZF", true)],
-                ));
+        let router: axum::Router = Router::new()
+            .merge(router())
+            .with_state(test_app_with_lines(
+                pool.clone(),
+                vec![gating_line("ZQF", "ZF", true)],
+            ));
         let response = router
             .oneshot(
                 Request::builder()
@@ -573,13 +577,12 @@ mod db_tests {
 
         // Same as the previous test, but full_coverage_enabled is false --
         // proves the gate, not just row presence, controls the wire output.
-        let router: axum::Router =
-            crate::app::Router::new()
-                .merge(router())
-                .with_state(test_app_with_lines(
-                    pool.clone(),
-                    vec![gating_line("ZQG", "ZG", false)],
-                ));
+        let router: axum::Router = Router::new()
+            .merge(router())
+            .with_state(test_app_with_lines(
+                pool.clone(),
+                vec![gating_line("ZQG", "ZG", false)],
+            ));
         let response = router
             .oneshot(
                 Request::builder()
@@ -631,7 +634,7 @@ mod db_tests {
         // full_coverage_enabled_default: true -- proves the global
         // override alone is enough to flip the wire output on, the new
         // case this task adds.
-        let router: axum::Router = crate::app::Router::new().merge(router()).with_state(
+        let router: axum::Router = Router::new().merge(router()).with_state(
             test_app_with_lines_and_full_coverage_default(
                 pool.clone(),
                 vec![gating_line("ZQJ", "ZJ", false)],
@@ -713,13 +716,12 @@ mod db_tests {
         .await
         .expect("seed station_full_coverage_samples fixture row");
 
-        let router: axum::Router =
-            crate::app::Router::new()
-                .merge(router())
-                .with_state(test_app_with_lines(
-                    pool.clone(),
-                    vec![gating_line("ZQH", "ZH", true)],
-                ));
+        let router: axum::Router = Router::new()
+            .merge(router())
+            .with_state(test_app_with_lines(
+                pool.clone(),
+                vec![gating_line("ZQH", "ZH", true)],
+            ));
         let response = router
             .oneshot(
                 Request::builder()
@@ -775,7 +777,7 @@ mod db_tests {
         delete_fixture(&pool, "ZQI").await;
         delete_full_coverage_fixture(&pool, "ZQI", "ZI").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router
@@ -849,7 +851,7 @@ mod db_tests {
 
         // No catalogue line at all -- the global default alone is what
         // this test probes.
-        let router: axum::Router = crate::app::Router::new().merge(router()).with_state(
+        let router: axum::Router = Router::new().merge(router()).with_state(
             test_app_with_lines_and_full_coverage_default(pool.clone(), vec![], true),
         );
         let response = router

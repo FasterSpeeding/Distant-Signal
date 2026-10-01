@@ -1,4 +1,4 @@
-//! Verifies an internal-service OAuth2 client-credentials access token
+//! Verifies an internal-service `OAuth2` client-credentials access token
 //! (the `Authorization: Bearer` header on a `/private/*` request) against
 //! Authentik's JWKS, fetched via standard OIDC discovery and cached
 //! in-process. See
@@ -36,7 +36,7 @@ use serde::Deserialize;
 /// provider's own `client_id`... not confirmed against a real emitted
 /// token") in the 2026-09-25 Low-severity auth-core review: rather than
 /// keep assuming the bare-string shape and failing every array-shaped
-/// token closed as `Malformed` (indistinguishable, from a caller's PoV,
+/// token closed as `Malformed` (indistinguishable, from a caller's `PoV`,
 /// from a genuinely corrupt token), this accepts both, matching the spec.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
@@ -123,7 +123,7 @@ pub enum VerifyError {
     Invalid,
 }
 
-/// Fetches (and caches) Authentik's JWKS for the internal-service OAuth2
+/// Fetches (and caches) Authentik's JWKS for the internal-service `OAuth2`
 /// provider, and verifies bearer tokens against it. JWKS endpoint learned
 /// via standard OIDC discovery against `issuer_url` -- the same mechanism
 /// `crate::auth::oidc::OidcClient` already uses for the human-login flow
@@ -343,12 +343,11 @@ impl ServiceTokenVerifier {
             self.record_unknown_kid(kid).await;
             return Err(VerifyError::UnknownKey);
         }
-        match self.keys.read().await.get(kid).cloned() {
-            Some(key) => Ok(key),
-            None => {
-                self.record_unknown_kid(kid).await;
-                Err(VerifyError::UnknownKey)
-            }
+        if let Some(key) = self.keys.read().await.get(kid).cloned() {
+            Ok(key)
+        } else {
+            self.record_unknown_kid(kid).await;
+            Err(VerifyError::UnknownKey)
         }
     }
 
@@ -409,6 +408,10 @@ impl ServiceTokenVerifier {
     /// Verifies `token`'s signature against the cached (or freshly
     /// fetched) JWKS, then its `exp`/`iss`/`aud`, returning the parsed
     /// claims only if every check passes.
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "small constant durations, far below i64::MAX seconds"
+    )]
     pub async fn verify(&self, token: &str) -> Result<ServiceClaims, VerifyError> {
         let signed = self.verify_signed_jwt(token).await?;
         let claims: ServiceClaims =

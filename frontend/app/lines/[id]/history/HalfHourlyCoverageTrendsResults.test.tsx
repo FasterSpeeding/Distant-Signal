@@ -72,13 +72,13 @@ describe('toHalfHourlyCoverageChartPoints', () => {
   it('turns a half hour below the sparse-data floor into a gap, preserving sampleCycles', () => {
     const stats = [halfHourlyCoverageRow({ resolvedWindows: SPARSE_DATA_FLOOR_WINDOWS_HALF_HOURLY - 1 })];
     const [point] = toHalfHourlyCoverageChartPoints(stats);
-    expect(point.delayRate).toBeNull();
-    expect(point.cancellationRate).toBeNull();
-    expect(point.skipRate).toBeNull();
-    expect(point.avgDelayMinutes).toBeNull();
-    expect(point.total).toBe(100); // never nulled, even when sparse
-    expect(point.sampleCycles).toBe(SPARSE_DATA_FLOOR_WINDOWS_HALF_HOURLY - 1);
-    expect(point.bucketKey).toBe('2026-08-31T14:00:00Z');
+    expect(point!.delayRate).toBeNull();
+    expect(point!.cancellationRate).toBeNull();
+    expect(point!.skipRate).toBeNull();
+    expect(point!.avgDelayMinutes).toBeNull();
+    expect(point!.total).toBe(100); // never nulled, even when sparse
+    expect(point!.sampleCycles).toBe(SPARSE_DATA_FLOOR_WINDOWS_HALF_HOURLY - 1);
+    expect(point!.bucketKey).toBe('2026-08-31T14:00:00Z');
   });
 });
 

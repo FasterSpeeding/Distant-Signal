@@ -185,7 +185,7 @@ describe('PlanTripFlow', () => {
     // DOM order -- it's the only one below the form -- so it's the last
     // entry in `getAllByRole`'s result.
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
@@ -266,7 +266,7 @@ describe('PlanTripFlow', () => {
     // always non-null strings).
     await screen.findByText(byVisibleText('08:00 ? → ? 08:50'));
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
@@ -421,8 +421,8 @@ describe('PlanTripFlow', () => {
     // -- see the first test's own comment on why a bare `getByRole('radio')`
     // isn't usable here (the form's SegmentedControl radios come first).
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 2]);
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 2]!);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
@@ -518,7 +518,7 @@ describe('PlanTripFlow', () => {
 
     await screen.findByText(byVisibleText('10:00 CRE → PRE 11:15'));
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
@@ -617,8 +617,8 @@ describe('PlanTripFlow', () => {
     await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
     await screen.findByText(byVisibleText('09:10 MKC → EDB 13:00'));
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 2]);
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 2]!);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     await screen.findByText(
@@ -682,7 +682,7 @@ describe('PlanTripFlow', () => {
   it('renders the cappedByMaxChanges hint for a segment capped at the max-changes limit', async () => {
     const cappedPlan: TripPlanResponse = {
       results: 'fastest',
-      segments: [{ ...singleSegmentPlan.segments[0], cappedByMaxChanges: true }],
+      segments: [{ ...singleSegmentPlan.segments[0]!, cappedByMaxChanges: true }],
     };
     vi.stubGlobal(
       'fetch',
@@ -712,7 +712,7 @@ describe('PlanTripFlow', () => {
 
     await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     // Same `LoginPromptModal` copy/pattern `TrackTrainForm.tsx` already
@@ -727,7 +727,7 @@ describe('PlanTripFlow', () => {
     const twoSegmentPlan: TripPlanResponse = {
       results: 'fastest',
       segments: [
-        singleSegmentPlan.segments[0],
+        singleSegmentPlan.segments[0]!,
         {
           originCrs: 'MKC',
           destinationCrs: 'EDB',
@@ -773,8 +773,8 @@ describe('PlanTripFlow', () => {
     await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
     await screen.findByText(byVisibleText('09:10 MKC → EDB 13:00'));
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 2]);
-    fireEvent.click(radios[radios.length - 1]);
+    fireEvent.click(radios[radios.length - 2]!);
+    fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
     expect(await screen.findByText('Log in to track this journey.')).toBeInTheDocument();

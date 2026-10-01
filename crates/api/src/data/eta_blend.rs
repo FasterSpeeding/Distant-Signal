@@ -172,6 +172,10 @@ enum AmbiguousPick {
     AtOrAfterAnchor,
 }
 
+#[expect(
+    clippy::match_same_arms,
+    reason = "separate arms document distinct cases"
+)]
 fn resolve_near(
     anchor: DateTime<Utc>,
     time: NaiveTime,

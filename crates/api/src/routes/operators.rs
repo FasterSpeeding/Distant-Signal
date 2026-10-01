@@ -44,7 +44,7 @@ async fn get_operator(
 
 /// Hand-built camelCase JSON -- NOT a derived `#[serde(rename_all = "camelCase")]`
 /// struct embedding `common::SampleStats` directly, which would leak
-/// `avg_delay_minutes` (snake_case) one level down (a parent struct's
+/// `avg_delay_minutes` (`snake_case`) one level down (a parent struct's
 /// `rename_all` does not recurse into a nested type with no rename
 /// attribute of its own). Same rationale, and the same reused
 /// `sample_stats_json` helper, as `routes/station_stats.rs`'s own
@@ -66,6 +66,10 @@ fn operator_rollup_json(r: &operators::OperatorRollup) -> Value {
     out
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "operators rollup query failed");
     (
@@ -81,6 +85,7 @@ mod db_tests {
     use serde_json::Value;
     use sqlx::PgPool;
     use sqlx::postgres::PgPoolOptions;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     use super::*;
@@ -164,7 +169,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
-            schedule_crs_line_index: std::collections::HashMap::new(),
+            schedule_crs_line_index: HashMap::new(),
         })
     }
 
@@ -196,7 +201,7 @@ mod db_tests {
             sample_stations: vec![],
             match_keywords: vec![],
             excluded_keywords: vec![],
-            severity_overrides: Default::default(),
+            severity_overrides: HashMap::default(),
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
@@ -266,12 +271,10 @@ mod db_tests {
         )
         .await;
 
-        let router: axum::Router = crate::app::Router::new()
-            .merge(router())
-            .with_state(test_app(
-                pool.clone(),
-                vec![gating_line("ztest-operators-line", "ZA")],
-            ));
+        let router: axum::Router = Router::new().merge(router()).with_state(test_app(
+            pool.clone(),
+            vec![gating_line("ztest-operators-line", "ZA")],
+        ));
         let response = router
             .oneshot(
                 Request::builder()
@@ -306,7 +309,7 @@ mod db_tests {
                 get_operator_unknown_code_is_404 -- --ignored --test-threads=1`"]
     async fn get_operator_unknown_code_is_404() {
         let pool = connect().await;
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone(), vec![]));
         let response = router
@@ -330,7 +333,7 @@ mod db_tests {
         let pool = connect().await;
         seed_toc(&pool, "ZB", "Z Ghost Rail").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone(), vec![]));
         let response = router

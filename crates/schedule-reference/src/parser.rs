@@ -88,7 +88,7 @@ const MIN_MSN_CHANGE_TIME_LEN: usize = 65;
 
 /// One parsed `TI` (TIPLOC Insert) record from a CIF `MCA` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TiRecord {
+pub(crate) struct TiRecord {
     pub tiploc: String,
     pub station_name: String,
     pub stanox: Option<String>,
@@ -105,7 +105,7 @@ pub struct TiRecord {
 /// `timetable_full.zip` bytes, see this module's tests):
 /// `0..2` record type `"TI"`, `2..9` TIPLOC, `18..44` station name,
 /// `44..49` STANOX (blank/`00000` = none), `53..56` CRS (blank = none).
-pub fn parse_ti_lines(text: &str) -> Vec<TiRecord> {
+pub(crate) fn parse_ti_lines(text: &str) -> Vec<TiRecord> {
     text.lines()
         .filter_map(|line| {
             // Guards all four fixed-offset slices below (`2..9`, `18..44`,
@@ -148,7 +148,7 @@ pub fn parse_ti_lines(text: &str) -> Vec<TiRecord> {
 /// Byte layout: `0..1` record type `"A"`, `5..35` station name, `35..36`
 /// CATE digit, `36..43` TIPLOC, `49..52` CRS (always populated in a real
 /// record).
-pub fn parse_msn_a_lines(text: &str) -> HashMap<String, String> {
+pub(crate) fn parse_msn_a_lines(text: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in text.lines() {
         // Guards the `36..43` and `49..52` slices below against BOTH panic
@@ -245,7 +245,7 @@ pub fn parse_msn_a_lines(text: &str) -> HashMap<String, String> {
 /// malformed, never abort the whole extraction" posture as
 /// `parse_msn_a_lines`, not the sibling's own throw -- Judgment Call 5),
 /// not a hard error.
-pub fn parse_msn_change_time_by_tiploc(text: &str) -> HashMap<String, i32> {
+pub(crate) fn parse_msn_change_time_by_tiploc(text: &str) -> HashMap<String, i32> {
     let mut map = HashMap::new();
     for line in text.lines() {
         // Guards the `36..43` and `63..65` slices below against BOTH panic
@@ -273,7 +273,7 @@ pub fn parse_msn_change_time_by_tiploc(text: &str) -> HashMap<String, i32> {
 /// `common::StanoxCrsRecord` (Task 3 supplies `source_sequence`, which this
 /// pure module has no reason to know about).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedRow {
+pub(crate) struct ParsedRow {
     pub stanox: String,
     pub crs: String,
     pub tiploc: String,
@@ -294,7 +294,11 @@ pub struct ParsedRow {
 /// checked-in CSV -- prefer the sole non-`X`-prefixed candidate; otherwise
 /// (2+ non-X, or 2+ X-prefixed, with no principled tiebreaker) exclude the
 /// STANOX entirely. See this design's Decision 2.
-pub fn resolve(
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
+pub(crate) fn resolve(
     ti: &[TiRecord],
     msn_crs_by_tiploc: &HashMap<String, String>,
     msn_change_time_by_tiploc: &HashMap<String, i32>,
@@ -369,7 +373,7 @@ pub fn resolve(
 /// sites) -- see
 /// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TiplocCrsRow {
+pub(crate) struct TiplocCrsRow {
     pub tiploc: String,
     pub crs: String,
     pub station_name: String,
@@ -405,7 +409,7 @@ pub struct TiplocCrsRow {
 /// `an_x_prefixed_pseudo_crs_is_blanked_rather_than_displayed_as_a_real_station`
 /// test/mechanism already exists specifically to blank such values back out
 /// at render time, but worth documenting explicitly here.
-pub fn resolve_tiploc_crs(
+pub(crate) fn resolve_tiploc_crs(
     ti: &[TiRecord],
     msn_crs_by_tiploc: &HashMap<String, String>,
     msn_change_time_by_tiploc: &HashMap<String, i32>,

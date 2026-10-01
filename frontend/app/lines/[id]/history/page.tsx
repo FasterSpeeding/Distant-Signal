@@ -382,7 +382,7 @@ export async function HistoryResults({
               (Mantine Tabs keepMounted defaults to true), so this and the
               Trends tab's chart headings both have to land at h2 for the
               document to be skip-free either way the tabs are read. */}
-          <SectionTitle>{formatDate(day.spans[0].to)}</SectionTitle>
+          <SectionTitle>{formatDate(day.spans[0]!.to)}</SectionTitle>
           <Divider />
           {day.spans.map((span) => (
             <div className="issueRow" key={`${span.reason}-${span.from}`}>

@@ -192,6 +192,10 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers hand over values they no longer need"
+)]
 fn to_template_leg_input(
     leg: TemplateLegRequest,
 ) -> Result<TemplateLegInput, (StatusCode, String)> {
@@ -220,6 +224,10 @@ fn to_template_leg_input(
 /// mode (the "no schedule data yet" gap named in Task 1's migration
 /// comment -- rather than silently dropping that leg or minting a
 /// half-blank template leg, this fails loudly with an actionable message).
+#[expect(
+    clippy::similar_names,
+    reason = "the similar names are distinct domain terms"
+)]
 async fn post_journey_template(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -555,6 +563,10 @@ mod wire_format_tests {
 /// about), so this copy also clears those, same FK-respecting order
 /// `data::journey_templates::db_tests::cleanup_user` already established.
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts of small known test values"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -775,7 +787,7 @@ mod db_tests {
         router: axum::Router,
         uri: String,
         raw_token: Option<&str>,
-        body: serde_json::Value,
+        body: Value,
     ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .uri(uri)
@@ -807,7 +819,7 @@ mod db_tests {
         router: axum::Router,
         uri: String,
         raw_token: Option<&str>,
-        body: serde_json::Value,
+        body: Value,
     ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .uri(uri)
@@ -951,8 +963,7 @@ mod db_tests {
         let token = seed_session(&pool, user_id).await;
         let router = test_router(test_app(pool.clone()));
 
-        let legs: Vec<serde_json::Value> = (0
-            ..=crate::data::journey_templates::MAX_LEGS_PER_TEMPLATE)
+        let legs: Vec<Value> = (0..=crate::data::journey_templates::MAX_LEGS_PER_TEMPLATE)
             .map(|_| serde_json::json!({ "originCrs": "WAT", "destinationCrs": "RDG" }))
             .collect();
         let (status, body) = post_json(

@@ -1,0 +1,36 @@
+{
+  // Strict flags shared by every TypeScript program in frontend/: the app
+  // (tsconfig.json), the Node scripts (tsconfig.scripts.json) and the
+  // service worker (tsconfig.sw.json). Starts from the "Strict Config
+  // Starting Points" guide's tsconfig.base.json; each deviation says why.
+  "compilerOptions": {
+    "strict": true,
+    // Not in strict:
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    // Deviation: off for the app. Enabling it there finds 60 errors in 34
+    // files, nearly all optional props passed an explicit `undefined`
+    // (Mantine props, API types built field by field), the same trade-off
+    // Distant-Signal-MCP measured and declined. tsconfig.scripts.json and
+    // tsconfig.sw.json turn it on. Follow-up: fix those sites and move this
+    // to true.
+    "exactOptionalPropertyTypes": false,
+
+    // Module hygiene: code that single-file transpilers (SWC) handle.
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "erasableSyntaxOnly": true,
+    "noUncheckedSideEffectImports": true,
+
+    // Deliberate relaxation: don't type-check dependencies' .d.ts files.
+    "skipLibCheck": true,
+
+    // Leave unused-binding checks to ESLint (supports the _ convention).
+    // The two JS-only programs override this: their unused-binding checks
+    // predate the ESLint coverage and cost nothing there.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  }
+}

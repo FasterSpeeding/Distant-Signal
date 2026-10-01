@@ -130,7 +130,7 @@ describe('gapSpans (half-hourly buckets)', () => {
     const points = [halfHourPoint('2026-08-30T14:00:00Z', 0.1), halfHourPoint('2026-08-31T14:00:00Z', null)];
     const spans = gapSpans(points);
     expect(spans).toEqual([{ startKey: '2026-08-31T14:00:00Z', endKey: '2026-08-31T14:00:00Z' }]);
-    expect(spans[0].startKey).not.toBe(spans[0].endKey === points[0].bucketKey ? points[0].bucketKey : undefined);
+    expect(spans[0]!.startKey).not.toBe(spans[0]!.endKey === points[0]!.bucketKey ? points[0]!.bucketKey : undefined);
   });
 });
 
@@ -198,7 +198,7 @@ describe('TrendsCharts showVolume prop', () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
     const barChart = screen.getByTestId('bar-chart');
     const lineCharts = screen.getAllByTestId('line-chart');
-    expect(barChart.compareDocumentPosition(lineCharts[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(barChart.compareDocumentPosition(lineCharts[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('still renders the two rate/delay line charts unchanged when showVolume is true', () => {

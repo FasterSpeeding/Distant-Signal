@@ -89,7 +89,7 @@ where
 /// Pure: given `pass.json`'s already-parsed content, returns a
 /// `PartialTicket`, preferring Apple's standardised `semantics` dictionary
 /// (`departureStationName`/`destinationStationName`) when present, falling
-/// back to the positional `primaryFields` convention Apple's own PassKit
+/// back to the positional `primaryFields` convention Apple's own `PassKit`
 /// docs specify for a boarding/transit pass (exactly two entries:
 /// departure, then arrival, in that order -- positional, not per-issuer
 /// label-string matching, since the ordering is Apple's own convention,
@@ -181,7 +181,7 @@ fn semantics_current_departure_date(semantics: &serde_json::Value) -> Option<Dat
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-/// Apple's PassKit docs specify a boarding-pass-style pass's
+/// Apple's `PassKit` docs specify a boarding-pass-style pass's
 /// `primaryFields` array holds exactly two entries for a transit pass:
 /// departure, then arrival, in that order. Returns `(None, None)` for
 /// anything that doesn't match that exact two-field shape, rather than
@@ -210,7 +210,7 @@ fn primary_fields_origin_destination(
     }
 }
 
-/// Looks up an entry in a PassKit field array (`primaryFields`,
+/// Looks up an entry in a `PassKit` field array (`primaryFields`,
 /// `auxiliaryFields`, `secondaryFields` -- all the same `{key, label,
 /// value}` shape) by its machine-readable `key`, not by its
 /// issuer-chosen, freely-reworded `label` text. Returns `None` if `fields`
@@ -229,7 +229,7 @@ fn keyed_field_value(fields: &serde_json::Value, key: &str) -> Option<String> {
 
 /// Reads only the barcode's `format` string (e.g.
 /// `"PKBarcodeFormatAztec"`) from `pass.json`'s singular `"barcode"`
-/// object or, per Apple's newer PassKit convention, the first entry of
+/// object or, per Apple's newer `PassKit` convention, the first entry of
 /// the plural `"barcodes"` array -- documented container metadata,
 /// structurally no different from `organizationName` or `transitType`,
 /// both already read elsewhere in this module. NEVER reads `"message"`,
@@ -575,7 +575,7 @@ pub fn parse_pdf_text(text: &str) -> PartialTicket {
     let operator = KNOWN_RETAILER_MARKERS
         .iter()
         .find(|marker| text.contains(**marker))
-        .map(|marker| marker.to_string());
+        .map(ToString::to_string);
 
     let (origin, destination) = extract_route(text);
 
@@ -583,7 +583,7 @@ pub fn parse_pdf_text(text: &str) -> PartialTicket {
     let ticket_type = TICKET_TYPE_KEYWORDS
         .iter()
         .find(|kw| text_lower.contains(&kw.to_lowercase()))
-        .map(|kw| kw.to_string());
+        .map(ToString::to_string);
 
     PartialTicket {
         operator,
@@ -621,6 +621,10 @@ const TICKET_TYPE_KEYWORDS: &[&str] = &[
 /// positional `primaryFields` heuristic -- "most specific/structured
 /// signal first, generic fallback second" is now the same shape in both
 /// parsers.
+#[expect(
+    clippy::unwrap_used,
+    reason = "constant regex literals, compiled by the tests"
+)]
 static ROUTE_PATTERNS: std::sync::LazyLock<[regex::Regex; 2]> = std::sync::LazyLock::new(|| {
     [
         // OTRL's "Out:"/"Ret:" line -- anchored, already CRS-shaped,
@@ -955,6 +959,11 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// `Err`, contributing whatever it decoded before failing -- there is
 /// nothing more that can be recovered from it, and it contributed no risk
 /// either, since it never got the chance to produce unbounded output.
+#[expect(
+    clippy::large_stack_arrays,
+    clippy::match_same_arms,
+    reason = "a 64 KiB read buffer is fine on a thread stack; separate arms document distinct cases"
+)]
 fn bounded_inflate_len(raw: &[u8], budget: usize) -> usize {
     use std::io::Read;
 

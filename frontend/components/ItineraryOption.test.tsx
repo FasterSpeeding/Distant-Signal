@@ -60,7 +60,7 @@ describe('ItineraryOption', () => {
       observedAt: null,
       interchangeFeasible: null,
     };
-    const [leg] = trainItinerary.legs;
+    const leg = trainItinerary.legs[0]!;
     const { unmount } = renderWithMantine(
       <ItineraryOption
         itinerary={{ ...trainItinerary, legs: [{ ...leg, live } as typeof leg], liveFeasible: true }}

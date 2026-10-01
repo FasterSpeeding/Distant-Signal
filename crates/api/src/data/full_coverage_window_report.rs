@@ -67,7 +67,7 @@ pub const LDBWS_MIN_TOTAL: i64 = 6;
 pub struct Inputs {
     pub windows: Vec<StoredWindow>,
     pub verdicts: Vec<StoredVerdict>,
-    /// line_id -> (computed_at, worst severity), oldest first.
+    /// `line_id` -> (`computed_at`, worst severity), oldest first.
     pub history: HashMap<String, Vec<(DateTime<Utc>, Severity)>>,
     pub ldbws_half_hours: Vec<LdbwsHalfHour>,
     pub ldbws_days: Vec<LdbwsDay>,
@@ -251,10 +251,20 @@ impl LineHealth {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact"
+)]
 fn ratio(n: usize, d: usize) -> f64 {
     if d == 0 { 0.0 } else { n as f64 / d as f64 }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::implicit_hasher,
+    reason = "clamped to >= 0 first; a window has at most a few hundred buckets; callers always use the default hasher"
+)]
 pub fn health(
     inputs: &Inputs,
     per_line: &HashMap<String, Defaults>,
@@ -275,7 +285,7 @@ pub fn health(
         h.buckets_present += 1;
         match verdict_of(&w.row, thresholds(per_line, &w.row.line_id, &fallback)) {
             WindowVerdict::Ineligible(reason) => {
-                *h.ineligible.entry(reason.as_str()).or_default() += 1
+                *h.ineligible.entry(reason.as_str()).or_default() += 1;
             }
             _ => h.eligible += 1,
         }
@@ -303,10 +313,13 @@ pub struct Escalation {
 pub fn severity_at(history: &[(DateTime<Utc>, Severity)], at: DateTime<Utc>) -> Severity {
     let idx = history.partition_point(|(t, _)| *t <= at);
     idx.checked_sub(1)
-        .map(|i| history[i].1)
-        .unwrap_or(Severity::GoodService)
+        .map_or(Severity::GoodService, |i| history[i].1)
 }
 
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn escalations(
     inputs: &Inputs,
     per_line: &HashMap<String, Defaults>,
@@ -358,6 +371,10 @@ pub fn escalation_totals(
 
 /// Lines with at least [`FLAP_TRANSITIONS`] escalate/clear transitions
 /// inside any [`FLAP_WINDOW`], considering every eligible bucket in order.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn flapping_lines(
     inputs: &Inputs,
     per_line: &HashMap<String, Defaults>,
@@ -404,6 +421,10 @@ pub fn flapping_lines(
 
 /// Lines escalated (at any tier) in more than [`DAYTIME_ESCALATION_SHARE`]
 /// of their eligible daytime buckets: `(line, share)`.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn often_escalated_lines(
     inputs: &Inputs,
     per_line: &HashMap<String, Defaults>,
@@ -456,9 +477,19 @@ impl LdbwsPair {
     pub fn fc_cancel_rate(&self) -> f64 {
         ratio(self.fc.cancelled() as usize, self.fc.total as usize)
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "database counts are non-negative and far below u32::MAX"
+    )]
     pub fn ldbws_late_rate(&self) -> f64 {
         ratio(self.ldbws_delayed as usize, self.ldbws_total as usize)
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "database counts are non-negative and far below u32::MAX"
+    )]
     pub fn ldbws_cancel_rate(&self) -> f64 {
         ratio(self.ldbws_cancelled as usize, self.ldbws_total as usize)
     }
@@ -496,6 +527,10 @@ fn ldbws_severity(
 
 /// Each `recent` bucket paired with the LDBWS half-hours whose start lies
 /// in the window's due range.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn ldbws_pairs(inputs: &Inputs, per_line: &HashMap<String, Defaults>) -> Vec<LdbwsPair> {
     let fallback = Defaults::default();
     let mut halves: HashMap<&str, Vec<&LdbwsHalfHour>> = HashMap::new();
@@ -535,6 +570,14 @@ pub fn ldbws_pairs(inputs: &Inputs, per_line: &HashMap<String, Defaults>) -> Vec
 }
 
 /// Pearson correlation; `None` with fewer than 3 points or no variance.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counts stay far below 2^52, so the f64 ratio is exact"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "only rustc 1.88's clippy flags these names, so #[expect] can't be used"
+)]
 pub fn correlation(points: &[(f64, f64)]) -> Option<f64> {
     if points.len() < 3 {
         return None;
@@ -601,6 +644,10 @@ pub struct ClosedDayCheck {
 impl ClosedDayCheck {
     /// v2 only: the closed row and the last day-to-date bucket agree
     /// within 2% (the last hour's trains resolve in between).
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "counts stay far below 2^52, so the f64 ratio is exact"
+    )]
     pub fn totals_agree(&self) -> Option<bool> {
         let dtd = self.last_day_to_date_total?;
         if self.stats_version < 2 {
@@ -611,6 +658,11 @@ impl ClosedDayCheck {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "database counts are non-negative and far below u32::MAX"
+)]
 pub fn closed_day_checks(inputs: &Inputs) -> Vec<ClosedDayCheck> {
     let mut last_dtd: HashMap<(&str, NaiveDate), &StoredWindow> = HashMap::new();
     for w in inputs
@@ -708,6 +760,12 @@ pub struct LineVolume {
     pub flapping: bool,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "a rounded index into a short non-empty slice"
+)]
 fn percentile(sorted: &[u32], p: f64) -> u32 {
     if sorted.is_empty() {
         return 0;

@@ -42,10 +42,10 @@ describe('groupHistoryByDay', () => {
       entry('2026-08-19T18:20:00Z', [[9, 'Minor delays']]),
     ]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].samples).toBe(3);
-    expect(spans[0].from).toBe('2026-08-19T18:00:00Z');
-    expect(spans[0].to).toBe('2026-08-19T18:20:00Z');
-    expect(spans[0].flips).toHaveLength(1);
+    expect(spans[0]!.samples).toBe(3);
+    expect(spans[0]!.from).toBe('2026-08-19T18:00:00Z');
+    expect(spans[0]!.to).toBe('2026-08-19T18:20:00Z');
+    expect(spans[0]!.flips).toHaveLength(1);
   });
 
   it('groups a flapping incident into one span spanning its full first-to-last-seen window', () => {
@@ -60,12 +60,12 @@ describe('groupHistoryByDay', () => {
       entry('2026-08-19T15:00:00Z', [[9, 'Works in the area']]),
     ]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].from).toBe('2026-08-19T11:00:00Z');
-    expect(spans[0].to).toBe('2026-08-19T15:00:00Z');
-    expect(spans[0].samples).toBe(5);
+    expect(spans[0]!.from).toBe('2026-08-19T11:00:00Z');
+    expect(spans[0]!.to).toBe('2026-08-19T15:00:00Z');
+    expect(spans[0]!.samples).toBe(5);
     // 6 (Severe Delays) outranks 9 (Minor Delays).
-    expect(spans[0].severity).toBe(6);
-    expect(spans[0].flips).toHaveLength(5);
+    expect(spans[0]!.severity).toBe(6);
+    expect(spans[0]!.flips).toHaveLength(5);
   });
 
   it('keeps two genuinely different, simultaneously ongoing incidents as separate spans', () => {
@@ -89,8 +89,8 @@ describe('groupHistoryByDay', () => {
       entry('2026-08-19T11:10:00Z', [[6, 'Works in the area (live samples show: 7 of 14 sampled services delayed.)']]),
     ]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].reason).toBe('Works in the area');
-    expect(spans[0].samples).toBe(2);
+    expect(spans[0]!.reason).toBe('Works in the area');
+    expect(spans[0]!.samples).toBe(2);
   });
 
   it('does not let embedded live sample counts defeat grouping of an ongoing sample-inferred situation', () => {
@@ -103,8 +103,8 @@ describe('groupHistoryByDay', () => {
       entry('2026-08-19T11:20:00Z', [[9, '2 of 3 sampled services delayed. (most cited: Signal failure)']]),
     ]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].reason).toBe('N of M sampled services delayed. (most cited: Signal failure)');
-    expect(spans[0].samples).toBe(3);
+    expect(spans[0]!.reason).toBe('N of M sampled services delayed. (most cited: Signal failure)');
+    expect(spans[0]!.samples).toBe(3);
   });
 
   it('starts a new span when the most-cited cause genuinely changes, even though counts also fluctuate', () => {
@@ -133,7 +133,9 @@ describe('groupHistoryByDay', () => {
       ]),
     ]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].reason).toBe('N of M sampled services delayed, N of M sampled services skipping a scheduled stop.');
+    expect(spans[0]!.reason).toBe(
+      'N of M sampled services delayed, N of M sampled services skipping a scheduled stop.',
+    );
   });
 
   it('starts a new span when the reason genuinely changes', () => {
@@ -147,7 +149,7 @@ describe('groupHistoryByDay', () => {
   it('groups "no active status" recomputes into their own span', () => {
     const spans = spansFor([entry('2026-08-19T18:00:00Z', []), entry('2026-08-19T18:10:00Z', [])]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].samples).toBe(2);
+    expect(spans[0]!.samples).toBe(2);
   });
 
   it('reports the worst severity in the span, by true rank', () => {
@@ -173,7 +175,7 @@ describe('groupHistoryByDay', () => {
       entry('2026-08-20T10:00:00Z', [[10, 'Good Service']]),
     ]);
     expect(days.map((d) => d.day)).toEqual(['2026-08-20', '2026-08-19']);
-    expect(days[1].spans[0].reason).toBe('Minor delays');
+    expect(days[1]!.spans[0]!.reason).toBe('Minor delays');
   });
 });
 

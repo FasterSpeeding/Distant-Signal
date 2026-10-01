@@ -143,7 +143,7 @@ function searchCallUrls(fetchMock: ReturnType<typeof vi.fn>): string[] {
 function searchCallUrl(fetchMock: ReturnType<typeof vi.fn>): string {
   const urls = searchCallUrls(fetchMock);
   if (urls.length === 0) throw new Error('no /api/trains/search call recorded');
-  return urls[urls.length - 1];
+  return urls[urls.length - 1]!;
 }
 
 /** Clicks the Search button once it reads "Search" again, rather than
@@ -664,7 +664,7 @@ describe('TrainSearchForm', () => {
     expect(row.style.getPropertyValue('--group-wrap')).toBe('wrap');
     // ...and the actions still read flush right on whichever line they land
     // on, which `justify="space-between"` would NOT do once wrapped.
-    const actions = screen.getAllByRole('link', { name: 'View live status' })[0].parentElement as HTMLElement;
+    const actions = screen.getAllByRole('link', { name: 'View live status' })[0]!.parentElement as HTMLElement;
     expect(actions.style.marginInlineStart).toBe('auto');
     // ...and a wrapped actions line stays visually tied to ITS summary
     // rather than to the next train's. `Group`'s default `md` gap applies
@@ -725,7 +725,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
     const buttons = await screen.findAllByRole('button', { name: 'Track this train' });
-    fireEvent.click(buttons[0]);
+    fireEvent.click(buttons[0]!);
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(

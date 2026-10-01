@@ -13,6 +13,12 @@
 //! overhead (graph cache, leg details, live reads) is unchanged by these
 //! features and is measured in the live-overlay design doc.
 
+#![expect(
+    clippy::cast_possible_truncation,
+    clippy::print_stdout,
+    reason = "test code: casts of small known test values; test diagnostics"
+)]
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -29,8 +35,8 @@ impl Rng {
     fn next(&mut self, n: u64) -> u64 {
         self.0 = self
             .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         (self.0 >> 33) % n
     }
 }
@@ -44,7 +50,7 @@ fn tiploc(i: u64) -> String {
 }
 
 fn network() -> (Vec<Connection>, InterchangeData) {
-    let mut rng = Rng(0xdecade);
+    let mut rng = Rng(0x00de_cade);
     let mut connections = Vec::new();
     let mut trains = 0;
     for line in 0..700 {
@@ -60,7 +66,7 @@ fn network() -> (Vec<Connection>, InterchangeData) {
             } else {
                 route.iter().rev().copied().collect()
             };
-            let mut start = 300 + rng.next(headway as u64) as u32;
+            let mut start = 300 + rng.next(u64::from(headway)) as u32;
             while start < 1440 {
                 trains += 1;
                 let uid = format!("L{line}D{direction}T{trains}");
@@ -187,7 +193,7 @@ fn bench_arrive_by_and_restrictions() {
             to[0],
             times
                 .iter()
-                .map(|(t, n)| format!("{:>7.1?}/{n}", t))
+                .map(|(t, n)| format!("{t:>7.1?}/{n}"))
                 .collect::<Vec<_>>()
                 .join(" ")
         );

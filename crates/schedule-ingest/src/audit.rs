@@ -8,8 +8,8 @@
 //! that target into the long-retention audit stream, so the field names
 //! below are a contract:
 //! `file`, `bytes`, `sha256`, `delivered_at`, `outcome`, `reason` (absent
-//! when the file was accepted). The line joins SFTPGo's `Upload` line on file
-//! name, size and time: `delivered_at` is the file's mtime, which SFTPGo
+//! when the file was accepted). The line joins `SFTPGo`'s `Upload` line on file
+//! name, size and time: `delivered_at` is the file's mtime, which `SFTPGo`
 //! sets when the upload closes.
 
 use std::io::Read;
@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 /// One delivered file as this process read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveredFile {
+pub(crate) struct DeliveredFile {
     pub name: String,
     pub bytes: u64,
     /// Lowercase hex SHA-256 of the file's contents.
@@ -29,7 +29,7 @@ pub struct DeliveredFile {
 
 impl DeliveredFile {
     /// Hashes `bytes`, already read in full (the CORPUS path).
-    pub fn from_bytes(name: &str, bytes: &[u8]) -> Self {
+    pub(crate) fn from_bytes(name: &str, bytes: &[u8]) -> Self {
         Self {
             name: name.to_string(),
             bytes: bytes.len() as u64,
@@ -39,7 +39,7 @@ impl DeliveredFile {
 
     /// Streams the file at `path` through SHA-256 (the CIF zip, ~77 MB, is
     /// never held in memory).
-    pub fn hash_file(name: &str, path: &Path) -> std::io::Result<Self> {
+    pub(crate) fn hash_file(name: &str, path: &Path) -> std::io::Result<Self> {
         let mut file = std::fs::File::open(path)?;
         let mut hasher = Sha256::new();
         let mut buf = vec![0u8; 1 << 20];
@@ -62,13 +62,13 @@ impl DeliveredFile {
 
 /// A [`std::io::Write`] that hashes everything written through it, for
 /// hashing each zip entry while it is extracted.
-pub struct HashingWriter<W> {
+pub(crate) struct HashingWriter<W> {
     inner: W,
     hasher: Sha256,
 }
 
 impl<W> HashingWriter<W> {
-    pub fn new(inner: W) -> Self {
+    pub(crate) fn new(inner: W) -> Self {
         Self {
             inner,
             hasher: Sha256::new(),
@@ -76,7 +76,7 @@ impl<W> HashingWriter<W> {
     }
 
     /// The writer back, and the lowercase hex SHA-256 of what went through.
-    pub fn finish(self) -> (W, String) {
+    pub(crate) fn finish(self) -> (W, String) {
         (self.inner, hex(&self.hasher.finalize()))
     }
 }
@@ -103,7 +103,7 @@ fn hex(digest: &[u8]) -> String {
 
 /// What happened to a delivered file. The strings are the `outcome` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
+pub(crate) enum Outcome {
     /// Checked, extracted (CIF) or loaded (CORPUS), and recorded by api.
     Accepted,
     /// A CIF zip that failed a check and will not be retried until a new
@@ -116,7 +116,7 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
             Self::Quarantined => "quarantined",
@@ -128,15 +128,15 @@ impl Outcome {
 
 /// Logs the one audit line for `file`. `reason` is required for every
 /// outcome but [`Outcome::Accepted`], and omitted for it.
-pub fn decision(
+pub(crate) fn decision(
     file: &DeliveredFile,
     delivered_at: DateTime<Utc>,
     outcome: Outcome,
     reason: Option<&str>,
 ) {
     let delivered_at = delivered_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    match reason {
-        Some(reason) => tracing::info!(
+    if let Some(reason) = reason {
+        tracing::info!(
             target: "schedule_ingest::audit",
             file = %file.name,
             bytes = file.bytes,
@@ -145,8 +145,9 @@ pub fn decision(
             outcome = outcome.as_str(),
             reason = %reason,
             "delivery decision"
-        ),
-        None => tracing::info!(
+        );
+    } else {
+        tracing::info!(
             target: "schedule_ingest::audit",
             file = %file.name,
             bytes = file.bytes,
@@ -154,11 +155,15 @@ pub fn decision(
             delivered_at = %delivered_at,
             outcome = outcome.as_str(),
             "delivery decision"
-        ),
+        );
     }
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "test code: casts of small known test values"
+)]
 pub(crate) mod tests {
     use std::io::Write;
     use std::sync::{Arc, Mutex};

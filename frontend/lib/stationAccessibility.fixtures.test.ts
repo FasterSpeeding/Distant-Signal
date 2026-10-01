@@ -110,8 +110,8 @@ function allNodes(data: StationAccessibilityData): AccessibilityNode[] {
 function valuesAt(value: unknown, segments: string[]): unknown[] {
   if (segments.length === 0) return [value];
   const [head, ...rest] = segments;
-  const key = head.endsWith('[]') ? head.slice(0, -2) : head;
-  const isArrayStep = head.endsWith('[]');
+  const key = head!.endsWith('[]') ? head!.slice(0, -2) : head!;
+  const isArrayStep = head!.endsWith('[]');
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return [];
   const next = (value as Record<string, unknown>)[key];
   if (next === null || next === undefined) return [];
@@ -433,7 +433,7 @@ describe('Pattern B, over every real entry', () => {
       node.kind === 'openingTimes' ? node.entries.filter((entry) => entry.hours.includes('source also lists')) : [],
     );
     expect(conflicting).toHaveLength(2);
-    expect(conflicting[0].hours).toBe('24 hours (source also lists 06:10–12:40)');
+    expect(conflicting[0]!.hours).toBe('24 hours (source also lists 06:10–12:40)');
   });
 });
 

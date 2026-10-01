@@ -101,7 +101,7 @@ describe('MCP sign-in recovery against the real SDK auth()', () => {
     // The refresh with the dead client_id was attempted once...
     const tokenCalls = calls.filter((c) => c.path === '/token');
     expect(tokenCalls).toHaveLength(1);
-    expect(tokenCalls[0].body).toContain('client_id=expired-client');
+    expect(tokenCalls[0]!.body).toContain('client_id=expired-client');
     // ...then everything was discarded and a new client registered.
     expect(calls.filter((c) => c.path === '/register')).toHaveLength(1);
     expect(provider.clientInformation()?.client_id).toBe('fresh-client-1');

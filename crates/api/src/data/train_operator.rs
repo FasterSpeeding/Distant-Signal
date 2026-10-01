@@ -275,7 +275,7 @@ mod tests {
 
         let owned: Vec<String> = uids
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .chain(["TOP999".to_string()])
             .collect();
         let got = operators_for_trains(&pool, &owned, date).await.unwrap();

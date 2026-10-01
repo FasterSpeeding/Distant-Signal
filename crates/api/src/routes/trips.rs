@@ -84,23 +84,22 @@ const DEFAULT_GRAPH_CACHE_MAX_AGE_SECS: u64 = 600;
 
 /// TRIPS-1: built graphs, shared across requests for the same date. See
 /// [`trip_planning::GraphCache`].
-static GRAPH_CACHE: LazyLock<
-    std::sync::Arc<trip_planning::GraphCache<trip_planning::PlanningGraph>>,
-> = LazyLock::new(|| {
-    // Off in unit tests: the DB tests reseed the same date with different
-    // rows and must each see their own.
-    let default_dates = if cfg!(test) {
-        0
-    } else {
-        DEFAULT_GRAPH_CACHE_DATES
-    };
-    let dates = env_or_default(GRAPH_CACHE_DATES_ENV, default_dates);
-    let max_age = env_or_default(GRAPH_CACHE_MAX_AGE_ENV, DEFAULT_GRAPH_CACHE_MAX_AGE_SECS);
-    std::sync::Arc::new(trip_planning::GraphCache::new(
-        dates,
-        std::time::Duration::from_secs(max_age),
-    ))
-});
+static GRAPH_CACHE: LazyLock<Arc<trip_planning::GraphCache<trip_planning::PlanningGraph>>> =
+    LazyLock::new(|| {
+        // Off in unit tests: the DB tests reseed the same date with different
+        // rows and must each see their own.
+        let default_dates = if cfg!(test) {
+            0
+        } else {
+            DEFAULT_GRAPH_CACHE_DATES
+        };
+        let dates = env_or_default(GRAPH_CACHE_DATES_ENV, default_dates);
+        let max_age = env_or_default(GRAPH_CACHE_MAX_AGE_ENV, DEFAULT_GRAPH_CACHE_MAX_AGE_SECS);
+        Arc::new(trip_planning::GraphCache::new(
+            dates,
+            std::time::Duration::from_secs(max_age),
+        ))
+    });
 
 /// A numeric env var, or `default` (with a warning) when unset or invalid.
 fn env_or_default<T: std::str::FromStr + std::fmt::Display + Copy>(name: &str, default: T) -> T {
@@ -280,6 +279,10 @@ fn default_results() -> String {
 ///    batches of a few queries per pass. All passes run under the same
 ///    permit. The searches now start at their own departure time rather than
 ///    at 00:00, which more than pays for a re-plan on a daytime query.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn get_trip_plan(
     State(app): State<App>,
     Query(params): Query<TripPlanParams>,
@@ -601,6 +604,10 @@ struct LiveSummary {
 /// annotated, not re-planned. Trains read after the last allowed re-plan
 /// are still annotated. Any read error aborts the overlay; the caller then
 /// serves the timetable plan.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn plan_live(
     app: &App,
     graph: &Arc<trip_planning::PlanningGraph>,
@@ -763,7 +770,7 @@ fn parse_waypoints(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_ascii_uppercase())
+        .map(str::to_ascii_uppercase)
         .collect();
 
     if waypoints.len() > *WAYPOINT_LIMIT {
@@ -888,6 +895,10 @@ fn parse_max_changes(raw: Option<&str>) -> Result<u32, (StatusCode, String)> {
 
 /// `{"time": "HH:MM:SS", "dayOffset": n}` for a minutes-from-service-day-
 /// midnight value (which may pass 1440).
+#[expect(
+    clippy::expect_used,
+    reason = "a constant or range-checked time is always valid"
+)]
 fn segment_clock(minutes: u32) -> serde_json::Value {
     let time = NaiveTime::from_num_seconds_from_midnight_opt((minutes % 1440) * 60, 0)
         .expect("minutes modulo 1440 is a valid clock time");
@@ -1143,6 +1154,11 @@ mod tests {
 /// clean up -- only the ad-hoc `schedule_calling_points_full`/`stanox_crs`
 /// rows the seeded-connection test inserts and deletes itself).
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "test code: casts of small known test values"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::Request;
@@ -1211,7 +1227,7 @@ mod db_tests {
             inactive_account_retention_days: 0,
         };
 
-        std::sync::Arc::new(AppState {
+        Arc::new(AppState {
             line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
@@ -1239,9 +1255,7 @@ mod db_tests {
     /// does, turned into a `tower::Service` a test can drive with
     /// `.oneshot(..)`.
     fn test_router(app: App) -> axum::Router {
-        crate::app::Router::new()
-            .merge(super::router())
-            .with_state(app)
+        crate::app::Router::new().merge(router()).with_state(app)
     }
 
     async fn connect() -> PgPool {
@@ -1279,7 +1293,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn an_unresolvable_origin_crs_is_a_clear_error() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
         // Seed at least one calling-point row for the date, so this fails
         // on CRS resolution specifically, not on the "no schedule data
         // published for this date" 404 path.
@@ -1379,7 +1393,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn plan_via_waypoints_names_the_failing_segment() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
@@ -1438,7 +1452,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn plan_via_waypoints_names_the_failing_segment_when_an_earlier_one_succeeded() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
@@ -1503,7 +1517,7 @@ mod db_tests {
         // no real schedule data could ever reference keeps the search
         // space provably isolated.
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
@@ -1557,7 +1571,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn options_mode_excludes_results_over_the_cap_but_flags_when_capped() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 25).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 25).unwrap();
         // Within-cap route: 2 changes (3 legs), ORIGIN -> A -> B -> DEST.
         // Over-cap-but-faster route: 3 changes (4 legs),
         // ORIGIN -> P -> Q -> R -> DEST, arriving strictly before the
@@ -1712,7 +1726,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn max_changes_lifts_the_cap_only_when_asked() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
         // Every gap is exactly `DEFAULT_CHANGE_TIME` (5 minutes) -- see
         // `options_mode_excludes_results_over_the_cap_but_flags_when_capped`.
         sqlx::query(
@@ -1833,7 +1847,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn a_later_waypoint_segment_searches_from_the_previous_arrival() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 26).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 26).unwrap();
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
@@ -1897,8 +1911,8 @@ mod db_tests {
     // 2026-10-05 and seeds synthetic stations/trains for that date.
     // ---------------------------------------------------------------------
 
-    fn live_date() -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(2026, 10, 5).unwrap()
+    fn live_date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, 5).unwrap()
     }
 
     fn live_now() -> chrono::DateTime<chrono::Utc> {
@@ -2403,7 +2417,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn train_legs_carry_booked_platforms_operator_and_headcode_or_null() {
         let pool = connect().await;
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
         sqlx::query(
             "INSERT INTO schedule_calling_points_full \
              (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, platform) \

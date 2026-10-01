@@ -357,7 +357,7 @@ export function IncidentSearchForm({
     if (query) void runSearch(query);
     // Intentionally empty: this is a mount-only effect, not one that
     // tracks the filter state it reads -- see the comment above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only effect (see above)
   }, []);
 
   async function handleLoadMore() {

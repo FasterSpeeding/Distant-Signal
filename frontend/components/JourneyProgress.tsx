@@ -97,7 +97,7 @@ interface JourneyProgressProps {
  * confirmed yet) is a legitimate, common return value, not an error case. */
 function lastReachedIndex(stops: JourneyStop[]): number {
   for (let i = stops.length - 1; i >= 0; i--) {
-    if (stops[i].actualArrival !== null || stops[i].actualDeparture !== null || stops[i].lastEventType === 'PASS') {
+    if (stops[i]!.actualArrival !== null || stops[i]!.actualDeparture !== null || stops[i]!.lastEventType === 'PASS') {
       return i;
     }
   }
@@ -141,9 +141,9 @@ function reportedLocationIndex(
   const target = lastReportedLocation?.trim().toLowerCase();
   if (!target) return -1;
   for (let i = stops.length - 1; i >= 0; i--) {
-    const label = resolvedStopLabel(stops[i], i, stops.length, endpointNames);
+    const label = resolvedStopLabel(stops[i]!, i, stops.length, endpointNames);
     if (label && label.trim().toLowerCase() === target) return i;
-    const crs = stops[i].crs;
+    const crs = stops[i]!.crs;
     if (crs && crs.trim().toLowerCase() === target) return i;
   }
   return -1;
@@ -261,7 +261,7 @@ function progressCopy(
   }
 
   const total = stops.length;
-  const markerName = lastIndex >= 0 ? journeyStopLabel(stops[lastIndex], lastIndex, total, endpointNames) : null;
+  const markerName = lastIndex >= 0 ? journeyStopLabel(stops[lastIndex]!, lastIndex, total, endpointNames) : null;
   const stopNumber = lastIndex + 1;
 
   if (status === 'cancelled') {
@@ -278,7 +278,7 @@ function progressCopy(
   }
 
   if (status === 'completed') {
-    const terminusName = journeyStopLabel(stops[total - 1], total - 1, total, endpointNames);
+    const terminusName = journeyStopLabel(stops[total - 1]!, total - 1, total, endpointNames);
     return {
       caption: `Arrived at ${terminusName}.`,
       ariaLabel: `Journey progress: arrived at ${terminusName}`,

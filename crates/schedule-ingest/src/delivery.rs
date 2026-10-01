@@ -42,7 +42,7 @@ use crate::scan::DirSnapshot;
 /// happens to be named `timetable_full.zip` today, but that is not
 /// guaranteed to stay true, so this matches on shape (any `.zip` file), not
 /// the exact filename.
-pub fn is_zip_filename(name: &str) -> bool {
+pub(crate) fn is_zip_filename(name: &str) -> bool {
     name.len() > 4 && name.to_ascii_lowercase().ends_with(".zip")
 }
 
@@ -60,7 +60,10 @@ pub fn is_zip_filename(name: &str) -> bool {
 ///
 /// Only names `routing` classifies as CIF are candidates: a CORPUS extract
 /// (any format, a zip included) never is -- see `pattern.rs`.
-pub fn find_zip_candidates(snapshot: &DirSnapshot, routing: &Routing) -> Vec<(String, SystemTime)> {
+pub(crate) fn find_zip_candidates(
+    snapshot: &DirSnapshot,
+    routing: &Routing,
+) -> Vec<(String, SystemTime)> {
     let mut candidates: Vec<(String, SystemTime)> = snapshot
         .0
         .iter()
@@ -78,7 +81,7 @@ pub fn find_zip_candidates(snapshot: &DirSnapshot, routing: &Routing) -> Vec<(St
 /// sequence number there is nothing to be non-contiguous, so this only has
 /// two variants; don't invent a fake third one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryRelation {
+pub(crate) enum DeliveryRelation {
     /// `current` matches the last ingested mtime exactly -- this delivery
     /// has already been processed.
     AlreadyIngested,
@@ -91,7 +94,7 @@ pub enum DeliveryRelation {
 /// Classifies `current` (a stable zip candidate's observed mtime) against
 /// `last` (the last successfully ingested delivery's mtime, or `None` if
 /// this service has never ingested one).
-pub fn classify_delivery(last: Option<SystemTime>, current: SystemTime) -> DeliveryRelation {
+pub(crate) fn classify_delivery(last: Option<SystemTime>, current: SystemTime) -> DeliveryRelation {
     match last {
         Some(last) if last == current => DeliveryRelation::AlreadyIngested,
         _ => DeliveryRelation::New,
@@ -104,7 +107,7 @@ pub fn classify_delivery(last: Option<SystemTime>, current: SystemTime) -> Deliv
 /// chronological ordering exactly (fixed-width fields, most-significant
 /// first), which both `schedule-reference`'s "find the latest" discovery
 /// logic and this crate's own retention pruning rely on.
-pub fn delivery_dir_name(mtime: SystemTime) -> String {
+pub(crate) fn delivery_dir_name(mtime: SystemTime) -> String {
     let dt: DateTime<Utc> = DateTime::<Utc>::from(mtime);
     dt.format("%Y%m%dT%H%M%SZ").to_string()
 }
@@ -114,7 +117,7 @@ pub fn delivery_dir_name(mtime: SystemTime) -> String {
 /// ignore any directory that isn't one this crate itself created, same
 /// "never guess about unrelated names" posture the old numeric-only
 /// `prune_old_sequences` had.
-pub fn is_delivery_dir_name(name: &str) -> bool {
+pub(crate) fn is_delivery_dir_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     bytes.len() == 16
         && bytes[..8].iter().all(u8::is_ascii_digit)
@@ -129,7 +132,7 @@ pub fn is_delivery_dir_name(name: &str) -> bool {
 /// `storage_dir`'s volume would stop the whole CIF pipeline. A real full
 /// CIF delivery is ~1-2 GB uncompressed across about a dozen files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExtractLimits {
+pub(crate) struct ExtractLimits {
     /// Total uncompressed bytes across every extracted entry.
     pub max_total_bytes: u64,
     /// Number of entries in the archive (directories included).
@@ -150,7 +153,7 @@ impl Default for ExtractLimits {
 /// its central directory declares. Permanent for these bytes, so the caller
 /// quarantines the delivery instead of retrying it every cycle.
 #[derive(Debug)]
-pub struct RejectedZip(pub String);
+pub(crate) struct RejectedZip(pub String);
 
 impl std::fmt::Display for RejectedZip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -164,7 +167,7 @@ impl std::error::Error for RejectedZip {}
 /// its contents when this process extracted it (a directory adopted from
 /// before the hashes existed has none).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ExtractedFile {
+pub(crate) struct ExtractedFile {
     pub name: String,
     pub bytes: u64,
     pub sha256: Option<String>,
@@ -182,7 +185,7 @@ impl ExtractedFile {
 
 /// Whether `err` is a [`RejectedZip`] (permanent) rather than an IO or
 /// transient failure worth retrying.
-pub fn is_rejected(err: &anyhow::Error) -> bool {
+pub(crate) fn is_rejected(err: &anyhow::Error) -> bool {
     err.downcast_ref::<RejectedZip>().is_some()
 }
 
@@ -207,7 +210,11 @@ pub fn is_rejected(err: &anyhow::Error) -> bool {
 /// through a `take()` of its declared size plus one byte, so an entry that
 /// lies about its size stops there instead of filling the disk. Any of
 /// these is a [`RejectedZip`].
-pub fn extract_zip(
+#[expect(
+    clippy::unnecessary_debug_formatting,
+    reason = "Debug quotes the path in the error text, which is wanted"
+)]
+pub(crate) fn extract_zip(
     zip_path: &Path,
     dest_dir: &Path,
     limits: ExtractLimits,
@@ -293,7 +300,7 @@ pub fn extract_zip(
 
 /// How [`ensure_extracted`] arrived at a complete delivery directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Extraction {
+pub(crate) enum Extraction {
     /// The directory already carried the completion marker: nothing was
     /// extracted (PL-13 -- this is the steady state while an api POST keeps
     /// failing, and after a restart).
@@ -320,7 +327,7 @@ pub enum Extraction {
 ///    unmarked (so incomplete) final directory is first renamed aside and
 ///    removed after the swap. `storage_dir` is on one volume, so each rename
 ///    is atomic: a reader sees either no directory or a complete one.
-pub fn ensure_extracted(
+pub(crate) fn ensure_extracted(
     zip_path: &Path,
     storage_dir: &Path,
     dir_name: &str,
@@ -391,7 +398,7 @@ const STALE_DIR_PREFIX: &str = ".stale-";
 ///
 /// Each line is `name<TAB>bytes`, plus `<TAB>sha256` since the hashes were
 /// added (2026-10-01); a marker written before then has no hashes.
-pub fn read_marker(dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFile>>> {
+pub(crate) fn read_marker(dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFile>>> {
     let contents = match std::fs::read_to_string(dir.join(COMPLETE_MARKER)) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -445,6 +452,10 @@ fn fsync_dir(dir: &Path) -> std::io::Result<()> {
 /// The zip's flat regular-file entries with their recorded sizes, when every
 /// one of them exists in `dir` at exactly that size; `None` otherwise (or
 /// for an empty zip).
+#[expect(
+    clippy::unnecessary_debug_formatting,
+    reason = "Debug quotes the path in the error text, which is wanted"
+)]
 fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFile>>> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)
@@ -494,7 +505,7 @@ fn files_matching_zip(zip_path: &Path, dir: &Path) -> anyhow::Result<Option<Vec<
 ///   available for a delivery whose zip is gone.
 ///
 /// Returns the names adopted.
-pub fn adopt_legacy_deliveries(
+pub(crate) fn adopt_legacy_deliveries(
     storage_dir: &Path,
     watch_dir: &Path,
     routing: &Routing,
@@ -583,7 +594,7 @@ fn legacy_files_if_complete(dir: &Path) -> anyhow::Result<Option<Vec<ExtractedFi
 /// (and reused by `main.rs`'s tests) to build a fixture archive without a
 /// checked-in binary file.
 #[cfg(test)]
-pub fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+pub(crate) fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
@@ -591,7 +602,7 @@ pub fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
             writer
                 .start_file(*name, zip::write::SimpleFileOptions::default())
                 .unwrap();
-            std::io::Write::write_all(&mut writer, content).unwrap();
+            Write::write_all(&mut writer, content).unwrap();
         }
         writer.finish().unwrap();
     }
@@ -599,6 +610,10 @@ pub fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts of small known test values"
+)]
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
@@ -925,7 +940,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
             writer.start_file("RJTTF942MCA.txt", options).unwrap();
-            std::io::Write::write_all(&mut writer, &real).unwrap();
+            Write::write_all(&mut writer, &real).unwrap();
             writer.finish().unwrap();
         }
         // Rewrite the uncompressed size in the local header (offset 22) and

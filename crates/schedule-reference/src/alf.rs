@@ -24,7 +24,7 @@
 /// confused when Phase 2 consumes this data against a TIPLOC-keyed
 /// connections array).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedFixedLink {
+pub(crate) struct ParsedFixedLink {
     pub mode: String,
     pub from_crs: String,
     pub to_crs: String,
@@ -53,7 +53,7 @@ pub struct ParsedFixedLink {
 /// extraction -- this crate's own established "skip malformed, never abort"
 /// convention (this plan's Judgment Call 5), diverging deliberately from
 /// the sibling project's own `throw`-on-missing-field posture.
-pub fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
+pub(crate) fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
     let text = line.trim();
     if text.is_empty() || text.starts_with("/!!") {
         return None;
@@ -73,6 +73,10 @@ pub fn parse_alf_line(line: &str) -> Option<ParsedFixedLink> {
     // let an empty string flow through into a `NOT NULL` column as silent
     // junk, a blank required field simply fails this line's parse, exactly
     // like a genuinely absent key already does.
+    #[expect(
+        clippy::items_after_statements,
+        reason = "a local type or import sits next to its only use"
+    )]
     fn non_empty(values: &std::collections::HashMap<&str, &str>, key: &str) -> Option<String> {
         let value = *values.get(key)?;
         if value.is_empty() {
@@ -169,7 +173,7 @@ fn is_valid_days_mask(value: &str) -> bool {
 /// ALF file (mirrors `parser::parse_ti_lines`'s own "whole file as one
 /// `&str` in, `Vec` out" shape). A malformed line simply contributes
 /// nothing to the result -- see [`parse_alf_line`]'s own doc comment.
-pub fn parse_alf_lines(text: &str) -> Vec<ParsedFixedLink> {
+pub(crate) fn parse_alf_lines(text: &str) -> Vec<ParsedFixedLink> {
     text.lines().filter_map(parse_alf_line).collect()
 }
 

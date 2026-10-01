@@ -241,6 +241,10 @@ pub async fn prune_dead_links(pool: &PgPool) -> anyhow::Result<u64> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;

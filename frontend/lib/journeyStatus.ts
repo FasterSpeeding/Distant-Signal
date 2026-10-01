@@ -123,6 +123,6 @@ export function worstLegStatus(legs: JourneyLegDetail[]): LegStatusGroup | null 
   if (legs.length === 0) return null;
   return legs.reduce(
     (worst, leg) => (legStatusRank(leg) > LEG_STATUS_RANK[worst] ? legStatusGroup(leg) : worst),
-    legStatusGroup(legs[0]),
+    legStatusGroup(legs[0]!),
   );
 }

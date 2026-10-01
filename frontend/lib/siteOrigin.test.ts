@@ -55,7 +55,7 @@ describe('getSiteOrigin', () => {
     await getSiteOrigin();
     await getSiteOrigin();
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain('NEXT_PUBLIC_SITE_URL');
+    expect(warn.mock.calls[0]![0]).toContain('NEXT_PUBLIC_SITE_URL');
   });
 
   it('does not warn when NEXT_PUBLIC_SITE_URL is configured', async () => {

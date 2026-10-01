@@ -185,6 +185,10 @@ impl<'a> BoardIndex<'a> {
 /// "On time". Early running clamps to 0 and a midnight wrap is handled the
 /// same way as `poller-ldbws`'s `compute_delay_minutes` (only a diff below
 /// -12 h is a wrap), but a status word is `None` here, not 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a difference of two times of day, within +-1440 minutes"
+)]
 pub fn board_delay_minutes(std: &str, etd: &str) -> Option<i32> {
     let scheduled = NaiveTime::parse_from_str(std, "%H:%M").ok()?;
     if etd.eq_ignore_ascii_case("On time") {
@@ -211,6 +215,11 @@ fn only<T>(mut items: Vec<T>) -> Option<T> {
 /// The one board row that is this train at `stop`, with its board's poll
 /// time. See the module doc for every rule; "has the train left" is the
 /// caller's, as it gates `board` but not the platform.
+#[expect(
+    clippy::items_after_statements,
+    clippy::match_same_arms,
+    reason = "a local type or import sits next to its only use; separate arms document distinct cases"
+)]
 fn match_stop<'a>(
     stop: &JourneyStop,
     boards: &BoardIndex<'a>,
@@ -376,7 +385,7 @@ fn apply_board_platform(stop: &mut JourneyStop, row: &common::StationDeparture) 
         }
         return;
     };
-    stop.planned_platform = row.planned_platform.clone();
+    stop.planned_platform.clone_from(&row.planned_platform);
     // Mirrors `api::render::station_departure_json`'s identical derivation
     // for `StationDeparture`.
     stop.platform_changed = stop
@@ -481,7 +490,7 @@ mod tests {
                 polled_at: polled_at.parse().unwrap(),
                 departures,
             },
-            tiplocs: tiplocs.iter().map(|t| t.to_string()).collect(),
+            tiplocs: tiplocs.iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -899,7 +908,7 @@ mod tests {
     fn snapshot(stop: &mut JourneyStop, platform: &str, planned: Option<&str>) {
         stop.platform = Some(platform.to_string());
         stop.planned_platform = planned.map(str::to_string);
-        stop.platform_status = Some(PlatformStatus::Active);
+        stop.platform_status = Some(Active);
     }
 
     #[test]

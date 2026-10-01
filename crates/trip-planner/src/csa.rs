@@ -136,7 +136,7 @@ struct Scan<'a> {
     best_dest_tiploc: Option<String>,
 }
 
-impl<'a> Scan<'a> {
+impl Scan<'_> {
     /// The time a NEW boarding becomes possible at `tiploc`. The origin
     /// needs no interchange time. Every other stop folds in
     /// `minimum_change_time`, which can be `ChangeTime::NoInterchange` at
@@ -238,6 +238,10 @@ impl<'a> Scan<'a> {
     /// also relax every stop reachable from it by a fixed link, so the
     /// search recognises that two platforms a short walk apart are
     /// effectively the same station. Direct translation of `csa.ts:343-359`.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
+    )]
     fn relax_fixed_links(&mut self, from_tiploc: &str, at_min: u32) {
         // Normalize before the `tiploc_to_crs` lookup (keyed on the bare
         // form) and before this value is stored as an `ArrivalSource::Link`
@@ -277,14 +281,14 @@ impl<'a> Scan<'a> {
 /// `options.from_tiplocs` to any of `options.to_tiplocs`, departing no
 /// earlier than `options.departure_min`. `None` when no connection reaches
 /// the destination at all.
-pub fn scan_connections(options: ScanOptions) -> Option<Journey> {
+pub fn scan_connections(options: ScanOptions<'_>) -> Option<Journey> {
     scan_connections_with_overlay(options, None)
 }
 
 /// [`scan_connections`] over the base array with `overlay`'s trains
 /// replaced -- see [`crate::overlay`].
 pub fn scan_connections_with_overlay(
-    options: ScanOptions,
+    options: ScanOptions<'_>,
     overlay: Option<&crate::overlay::ConnectionOverlay>,
 ) -> Option<Journey> {
     scan_connections_restricted(options, overlay, None)
@@ -292,8 +296,12 @@ pub fn scan_connections_with_overlay(
 
 /// [`scan_connections_with_overlay`] honouring `restrictions` -- see
 /// [`crate::restrictions`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "public planner API takes its options and overlay by value"
+)]
 pub fn scan_connections_restricted(
-    options: ScanOptions,
+    options: ScanOptions<'_>,
     overlay: Option<&crate::overlay::ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
 ) -> Option<Journey> {
@@ -354,25 +362,24 @@ pub fn scan_connections_restricted(
             continue;
         }
 
-        let ride = match scan.reachable_trip.get(&connection.uid) {
-            Some(&ride) => ride,
-            None => {
-                // A set-down-only stop: the train calls, but nobody may get
-                // on here.
-                if !connection.can_board {
-                    continue;
-                }
-                let Some(source) = scan.ready_source_at(&connection.from_tiploc) else {
-                    continue;
-                };
-                if source.time > connection.departure_min {
-                    continue;
-                }
-                scan.boardings.push((connection.clone(), source.from));
-                let ride = scan.boardings.len() - 1;
-                scan.reachable_trip.insert(connection.uid.clone(), ride);
-                ride
+        let ride = if let Some(&ride) = scan.reachable_trip.get(&connection.uid) {
+            ride
+        } else {
+            // A set-down-only stop: the train calls, but nobody may get
+            // on here.
+            if !connection.can_board {
+                continue;
             }
+            let Some(source) = scan.ready_source_at(&connection.from_tiploc) else {
+                continue;
+            };
+            if source.time > connection.departure_min {
+                continue;
+            }
+            scan.boardings.push((connection.clone(), source.from));
+            let ride = scan.boardings.len() - 1;
+            scan.reachable_trip.insert(connection.uid.clone(), ride);
+            ride
         };
 
         // A pick-up-only stop: stay aboard, but never arrive here.
@@ -403,7 +410,11 @@ pub fn scan_connections_restricted(
 /// origin, one leg at a time -- a train leg read off `leg_boarded_at` in
 /// one step (the merge already decided during the sweep), a fixed-link
 /// step producing its own `TransferLeg`.
-fn reconstruct_legs(end_tiploc: &str, scan: &Scan) -> Vec<JourneyLeg> {
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
+)]
+fn reconstruct_legs(end_tiploc: &str, scan: &Scan<'_>) -> Vec<JourneyLeg> {
     let mut legs = Vec::new();
     let mut stop = end_tiploc.to_string();
 
@@ -441,7 +452,7 @@ fn reconstruct_legs(end_tiploc: &str, scan: &Scan) -> Vec<JourneyLeg> {
                     departure_min: boarded.departure_min,
                     arrival_min: connection.arrival_min,
                 }));
-                stop = source.clone();
+                stop.clone_from(source);
             }
         }
     }

@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
 import { clientIpFromHeaders, REAL_IP_HEADER } from '@/lib/clientIp';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import { createLogger } from '@/lib/logger';
@@ -128,7 +129,7 @@ function forwardedCookieHeader(rawCookieHeader: string | null): string | null {
 // a structural separator.
 function resolveTargetPath(path: string[]): string {
   const encoded = path.map(encodeURIComponent).join('/');
-  return ROOT_MOUNTED_PREFIXES.has(path[0]) ? `/${encoded}` : `/public/${encoded}`;
+  return ROOT_MOUNTED_PREFIXES.has(path[0]!) ? `/${encoded}` : `/public/${encoded}`;
 }
 
 /** Every browser-initiated mutation this app makes (creating a group,

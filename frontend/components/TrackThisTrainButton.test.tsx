@@ -242,7 +242,7 @@ describe('TrackThisTrainButton', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
       const [select] = await screen.findAllByLabelText('Track into');
-      fireEvent.click(select);
+      fireEvent.click(select!);
       fireEvent.click(await screen.findByText('Family'));
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
@@ -282,7 +282,7 @@ describe('TrackThisTrainButton', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
       const [select] = await screen.findAllByLabelText('Track into');
-      fireEvent.click(select);
+      fireEvent.click(select!);
       fireEvent.click(await screen.findByText('Family'));
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 

@@ -78,12 +78,12 @@ const DARK_6 = '#2e2e2e'; // `Card`/`Paper` surface -- darker case than DARK_7
 function luminance(hex: string): number {
   const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
   const [r, g, b] = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
 }
 
 function contrast(a: string, b: string): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
+  return (hi! + 0.05) / (lo! + 0.05);
 }
 
 const AA_BODY_TEXT = 4.5;
@@ -343,18 +343,18 @@ describe('non-filled variants and placeholders', () => {
     // surface physically possible, still fails. That is why app/globals.css
     // carries four hand-mixed hexes rather than four more `var(...)`s.
     for (const name of ['yellow', 'orange', 'green', 'teal']) {
-      const { surface, shade9 } = LIGHT_VARIANT[name];
+      const { surface, shade9 } = LIGHT_VARIANT[name]!;
       expect(contrast(shade9, surface)).toBeLessThan(AA_BODY_TEXT);
     }
-    expect(contrast(LIGHT_VARIANT.yellow.shade9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.00:1
-    expect(contrast(LIGHT_VARIANT.orange.shade9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.30:1
+    expect(contrast(LIGHT_VARIANT.yellow!.shade9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.00:1
+    expect(contrast(LIGHT_VARIANT.orange!.shade9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.30:1
   });
 
   it('leaves red on its palette token, and pins the margin that justified that', () => {
     // Red is the near-miss: 4.51:1, passing, so it keeps `red-9` rather
     // than gaining a fifth bespoke hex for 0.15. If a palette re-cut ever
     // pushes it under, this fails here rather than going unnoticed.
-    expect(contrast(LIGHT_VARIANT.red.shade9, LIGHT_VARIANT.red.surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(LIGHT_VARIANT.red!.shade9, LIGHT_VARIANT.red!.surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
     expect(lightRule()).not.toContain('--mantine-color-red-light-color');
   });
 
@@ -672,7 +672,7 @@ describe('journey progress diagram layout', () => {
     const formula = rule.match(/min-width:\s*calc\(([\s\S]*?)\);/)![1];
 
     function rowMinWidth(count: number, endpoints: number, slot: number, endpointSlot: number) {
-      const substituted = formula
+      const substituted = formula!
         .replace(/var\(--journey-progress-count[^)]*\)/g, String(count))
         .replace(/var\(--journey-progress-endpoint-count[^)]*\)/g, String(endpoints))
         .replace(/var\(--journey-progress-endpoint-slot[^)]*\)/g, String(endpointSlot))
@@ -696,8 +696,8 @@ describe('journey progress diagram layout', () => {
         [5, 1],
         [6, 3],
       ]) {
-        const sumOfSlots = (count - endpoints) * slot + endpoints * endpointSlot;
-        expect(rowMinWidth(count, endpoints, slot, endpointSlot)).toBe(sumOfSlots);
+        const sumOfSlots = (count! - endpoints!) * slot! + endpoints! * endpointSlot!;
+        expect(rowMinWidth(count!, endpoints!, slot!, endpointSlot!)).toBe(sumOfSlots);
       }
     }
   });

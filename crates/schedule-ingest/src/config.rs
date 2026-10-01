@@ -6,25 +6,29 @@ use clap::Parser;
 /// the full CIF timetable under. Locked to that name by the repo owner
 /// (2026-09-28), since the same SFTP account now also receives other feeds;
 /// any other file is a logged stray, never published as the timetable.
-pub const DEFAULT_CIF_FILE_PATTERN: &str = "timetable_full.zip";
+pub(crate) const DEFAULT_CIF_FILE_PATTERN: &str = "timetable_full.zip";
 
 /// Default for [`Config::cif_exclude_pattern`]: everything named like a
 /// Network Rail CORPUS extract, whatever its extension. The same SFTP
 /// account now also receives `CORPUSExtract.json.gz` (CORPUS) and
 /// `CORPUSExtract.csv.gz` (SMART berth data), and a zip of either must
 /// never become the timetable.
-pub const DEFAULT_CIF_EXCLUDE_PATTERN: &str = "CORPUSExtract*";
+pub(crate) const DEFAULT_CIF_EXCLUDE_PATTERN: &str = "CORPUSExtract*";
 
 /// Default for [`CorpusArgs::corpus_file_pattern`]: the RDM delivery name of
 /// Network Rail's CORPUS extract. Only this gzipped-JSON shape is loaded;
 /// the provider's `CORPUSExtract.csv.gz` is SMART berth data, deliberately
 /// ignored (a stray).
-pub const DEFAULT_CORPUS_FILE_PATTERN: &str = "CORPUSExtract.json.gz";
+pub(crate) const DEFAULT_CORPUS_FILE_PATTERN: &str = "CORPUSExtract.json.gz";
 
 /// Sanity checks on each extracted CIF delivery before it is accepted
 /// (`cif_check.rs`); a delivery that fails one is quarantined.
 #[derive(Debug, Clone, clap::Args)]
-pub struct CifCheckArgs {
+#[expect(
+    clippy::struct_field_names,
+    reason = "clap derives each env var from the field name, so the prefix is part of the interface"
+)]
+pub(crate) struct CifCheckArgs {
     /// Quarantine a delivery whose MSN banner `Generated` date is more than
     /// this many days before the delivery (a replayed old extract). Real
     /// deliveries are generated the same day. 0 disables.
@@ -44,7 +48,7 @@ pub struct CifCheckArgs {
 }
 
 impl CifCheckArgs {
-    pub fn checks(&self) -> crate::cif_check::CifChecks {
+    pub(crate) fn checks(&self) -> crate::cif_check::CifChecks {
         crate::cif_check::CifChecks {
             max_generated_age_days: self.cif_max_generated_age_days,
             min_schedules: self.cif_min_schedules,
@@ -56,7 +60,11 @@ impl CifCheckArgs {
 /// Network Rail CORPUS loading (`corpus.rs`,
 /// docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md).
 #[derive(Debug, Clone, clap::Args)]
-pub struct CorpusArgs {
+#[expect(
+    clippy::struct_field_names,
+    reason = "clap derives each env var from the field name, so the prefix is part of the interface"
+)]
+pub(crate) struct CorpusArgs {
     /// Load CORPUS deliveries from `watch_dir` into api's
     /// `corpus_locations`. Off by default: until it is on, a CORPUS file is
     /// left in `watch_dir` and reported once as a stray, as before.
@@ -94,11 +102,11 @@ pub struct CorpusArgs {
 ///
 /// Unlike the now-superseded pull design's equivalent `Config`, this crate
 /// makes no outbound SFTP connection at all — it only scans a local mounted
-/// directory that the sibling `schedule-sftp` (SFTPGo) container writes
+/// directory that the sibling `schedule-sftp` (`SFTPGo`) container writes
 /// into. See
 /// docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md.
 #[derive(Debug, Parser)]
-pub struct Config {
+pub(crate) struct Config {
     /// Where the SFTP daemon writes incoming files. Scanned each check time
     /// via `std::fs::read_dir` — see `src/scan.rs`.
     #[arg(long, env, default_value = "/data/schedule-feed/incoming")]
@@ -216,7 +224,7 @@ pub struct Config {
     )]
     pub api_ingest_url: String,
 
-    /// Shared, non-secret OAuth2 client-credentials config (same value
+    /// Shared, non-secret `OAuth2` client-credentials config (same value
     /// across all 9 real callers).
     #[command(flatten)]
     pub internal_oauth: common::oauth_client::InternalOAuthArgs,

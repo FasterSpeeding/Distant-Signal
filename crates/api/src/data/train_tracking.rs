@@ -49,8 +49,8 @@ pub(crate) const MINE_LIST_LIMIT: i64 = 100;
 /// no error envelope anywhere in this API (`crates/api/src/routes/train.rs`
 /// returns `(StatusCode::BAD_REQUEST, String)` as plain text), and
 /// `frontend/components/TrackTrainForm.tsx` renders the body verbatim as
-/// the form's error `Alert` -- so a snake_case field name written here
-/// becomes a snake_case field name on a user's screen
+/// the form's error `Alert` -- so a `snake_case` field name written here
+/// becomes a `snake_case` field name on a user's screen
 /// (docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F5).
 pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), String> {
     if pin.origin_crs.trim().is_empty() {
@@ -914,7 +914,7 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
 /// this function's pre-guard behaviour for exactly that case), rather than
 /// being silently and PERMANENTLY dropped -- without this branch, `NULL >=
 /// x` is SQL's UNKNOWN, `train_current_state.event_time IS NULL` is FALSE
-/// once a real event_time is stored, and `UNKNOWN OR FALSE` never
+/// once a real `event_time` is stored, and `UNKNOWN OR FALSE` never
 /// satisfies `WHERE`, so every future write to that `trains_id` (including
 /// ones that DO carry a real, newer timestamp) would silently no-op
 /// forever -- worse than having no guard at all. Symmetrically, `SET
@@ -1074,6 +1074,10 @@ pub async fn upsert_train_movement_on(
 /// dated D+1, and `trains(uid, D+1)` is the NEXT day's run of the same
 /// service, so the movements would land on another train's shared row. See
 /// [`identity_date_for`] for the plausibility rule.
+#[expect(
+    clippy::similar_names,
+    reason = "the similar names are distinct domain terms"
+)]
 async fn flip_legacy_resolution(
     conn: &mut PgConnection,
     tracked_train_id: i64,
@@ -1688,6 +1692,7 @@ pub async fn list_pending_pins_for_schedule_match(
 
 /// The sweeps' future bound: [`PIN_MAX_DAYS_AHEAD`] plus one day, since
 /// `CURRENT_DATE` here is the database's (UTC) date, not London's.
+#[expect(clippy::cast_possible_truncation, reason = "a small constant")]
 pub(crate) const SWEEP_MAX_DAYS_AHEAD: i32 = PIN_MAX_DAYS_AHEAD as i32 + 1;
 
 /// Row shape for `list_pending_pins_for_backlog_match`'s query -- a
@@ -2771,11 +2776,10 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
         }
         _ => None,
     };
-    let claim_url = row
-        .operator
-        .as_deref()
-        .map(delay_repay_rules::claim_url_for)
-        .unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
+    let claim_url = row.operator.as_deref().map_or(
+        delay_repay_rules::GENERIC_CLAIM_URL,
+        delay_repay_rules::claim_url_for,
+    );
 
     TicketListItem {
         id: row.id,
@@ -2997,6 +3001,13 @@ mod ticket_list_tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::unnecessary_wraps,
+    reason = "test code: fixtures sit next to their use; paired test values share names; scenario tests read top to bottom; fakes mirror the signatures they stand in for"
+)]
 mod db_tests {
     use super::*;
     use chrono::NaiveDate;
@@ -3061,7 +3072,7 @@ mod db_tests {
              VALUES ($1, $2, $3, $4) RETURNING id",
         )
         .bind(user_id)
-        .bind("2026-09-02".parse::<chrono::NaiveDate>().unwrap())
+        .bind("2026-09-02".parse::<NaiveDate>().unwrap())
         .bind("KGX")
         .bind("2026-09-02T09:00:00Z".parse::<DateTime<Utc>>().unwrap())
         .fetch_one(pool)
@@ -3154,7 +3165,7 @@ mod db_tests {
                 delete_ticket -- --ignored --test-threads=1`"]
     async fn delete_ticket_a_nonexistent_id_returns_false() {
         let pool = connect().await;
-        let deleted = delete_ticket(&pool, 99999999, "TEST-TICKET-DELETE-NOBODY")
+        let deleted = delete_ticket(&pool, 99_999_999, "TEST-TICKET-DELETE-NOBODY")
             .await
             .expect("delete ticket");
         assert!(!deleted);
@@ -3366,7 +3377,7 @@ mod db_tests {
                  VALUES ($1, $2, $3, $4) RETURNING id",
             )
             .bind(user_id)
-            .bind("2026-09-02".parse::<chrono::NaiveDate>().unwrap())
+            .bind("2026-09-02".parse::<NaiveDate>().unwrap())
             .bind(origin_crs)
             .bind("2026-09-02T09:00:00Z".parse::<DateTime<Utc>>().unwrap())
             .fetch_one(pool)
@@ -3483,8 +3494,8 @@ mod db_tests {
     // once posted. So relaxing the guard below cannot break an existing
     // test; these are the first direct tests for this function.
 
-    fn fixture_event(tracked_train_id: i64, dedup_key: &str) -> common::TrainMovementEventMessage {
-        common::TrainMovementEventMessage {
+    fn fixture_event(tracked_train_id: i64, dedup_key: &str) -> TrainMovementEventMessage {
+        TrainMovementEventMessage {
             tracked_train_id,
             resolved_train_uid: None,
             resolved_train_id: None,
@@ -3532,7 +3543,7 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-UPSERT-SCHEDULE-MATCHED";
         seed_user(&pool, user_id).await;
-        let service_date: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-05".parse().unwrap();
         let trains_id = crate::data::trains::find_or_create_train(&pool, "C88888", service_date)
             .await
             .expect("find_or_create_train for the schedule-matched identity");
@@ -3974,7 +3985,7 @@ mod db_tests {
         .await
         .expect("seed fixture user");
 
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let (tracked_train_id,): (i64,) = sqlx::query_as(
             "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
              VALUES ($1, $2, $3, $4) RETURNING id",
@@ -4428,7 +4439,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn upsert_train_movement_writes_a_row_for_a_trains_id_with_no_subscriber_at_all() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id = crate::data::trains::find_or_create_train(&pool, "NOSUB-UID", service_date)
             .await
             .expect("find_or_create_train");
@@ -4506,7 +4517,7 @@ mod db_tests {
         // trains_id-only write path, the same guarantee upsert_train_event
         // already had for the legacy tracked_train_id-keyed path.
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "IDEMPOTENT-UID", service_date)
                 .await
@@ -4596,7 +4607,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn an_identical_state_does_not_rewrite_current_state() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "DB2-3-NOOP-UID", service_date)
                 .await
@@ -4697,7 +4708,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn an_out_of_order_event_does_not_regress_current_state() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "OUT-OF-ORDER-UID", service_date)
                 .await
@@ -4827,7 +4838,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn in_order_events_still_update_current_state_normally() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "IN-ORDER-UID", service_date)
                 .await
@@ -4942,7 +4953,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn a_null_event_time_event_still_applies_even_with_a_known_stored_event_time() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             "NULL-EVENT-TIME-APPLIES-UID",
@@ -5047,7 +5058,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn a_null_event_time_write_does_not_clobber_the_stored_event_time() {
         let pool = connect().await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             "NULL-EVENT-TIME-NO-CLOBBER-UID",
@@ -5199,7 +5210,7 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-DELEGATES-ALREADY-RESOLVED";
         seed_user(&pool, user_id).await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
         let trains_id =
             crate::data::trains::find_or_create_train(&pool, "DELEGATE-UID", service_date)
                 .await
@@ -5408,9 +5419,8 @@ mod db_tests {
         let user_id = "TEST-NR-PRIMARY-TRACK";
         seed_user(&pool, user_id).await;
 
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        let scheduled_departure: chrono::DateTime<chrono::Utc> =
-            "2026-09-06T19:15:00Z".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
+        let scheduled_departure: DateTime<Utc> = "2026-09-06T19:15:00Z".parse().unwrap();
         let trains_id = sqlx::query_scalar::<_, i64>(
             "INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure) \
              VALUES ('TEST-NR-PRIMARY-UID', $1, 'EUS', $2) RETURNING id",
@@ -5428,7 +5438,7 @@ mod db_tests {
         let (row_trains_id, pin_origin_crs, pin_scheduled_departure): (
             Option<i64>,
             String,
-            chrono::DateTime<chrono::Utc>,
+            DateTime<Utc>,
         ) = sqlx::query_as(
             "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM train_subscriptions \
              WHERE id = $1",
@@ -5486,7 +5496,7 @@ mod db_tests {
         let (row_trains_id, pin_origin_crs, pin_scheduled_departure): (
             Option<i64>,
             Option<String>,
-            Option<chrono::DateTime<chrono::Utc>>,
+            Option<DateTime<Utc>>,
         ) = sqlx::query_as(
             "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM train_subscriptions \
              WHERE id = $1",
@@ -6408,7 +6418,7 @@ mod db_tests {
 
         // Step 2: the event trust-consumer posts once its Activation match
         // is confirmed by the first live Movement.
-        let event = common::TrainMovementEventMessage {
+        let event = TrainMovementEventMessage {
             tracked_train_id: tracking_id,
             resolved_train_uid: Some("TEST-NR-LIVE-UID".to_string()),
             resolved_train_id: Some("TEST-NR-LIVE-TRAINID".to_string()),
@@ -6510,7 +6520,7 @@ mod db_tests {
         cleanup_user(&pool, second_user).await;
         seed_user(&pool, first_user).await;
         seed_user(&pool, second_user).await;
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
 
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
@@ -6530,7 +6540,7 @@ mod db_tests {
         // Exactly the two messages trust-consumer's fan-out produces for
         // one Activation+Movement cycle: same dedup_key, same resolution
         // signal, different tracked_train_id.
-        let event_for = |tracked_train_id: i64| common::TrainMovementEventMessage {
+        let event_for = |tracked_train_id: i64| TrainMovementEventMessage {
             tracked_train_id,
             resolved_train_uid: Some("TEST-SHARED-RESOLVE-UID".to_string()),
             resolved_train_id: Some("TEST-SHARED-RESOLVE-TRAINID".to_string()),
@@ -6622,11 +6632,10 @@ mod db_tests {
     /// a `train_subscriptions` row with every column that predicate cares
     /// about under direct caller control, rather than only what
     /// `seed_tracked_train`'s fixed-value insert offers.
-    #[allow(clippy::too_many_arguments)]
     async fn seed_backlog_candidate_pin(
         pool: &PgPool,
         user_id: &str,
-        service_date: chrono::NaiveDate,
+        service_date: NaiveDate,
         pin_origin_crs: Option<&str>,
         pin_scheduled_departure: Option<DateTime<Utc>>,
         resolution_status: &str,

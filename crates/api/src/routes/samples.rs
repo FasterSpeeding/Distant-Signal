@@ -75,6 +75,10 @@ async fn get_sample_stations(
     Ok(Json(select_sample_stations(&lines, &pin_counts, selection)))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "sample-stations query failed");
     (

@@ -1,17 +1,17 @@
 //! Station-skip detection for a journey leg's own origin/destination --
 //! §5.2 of docs/superpowers/specs/2026-09-22-journey-tracking-design.md.
-//! Structurally mirrors eta_blend.rs's find_darwin_eta/blend_darwin_eta
+//! Structurally mirrors `eta_blend.rs`'s `find_darwin_eta/blend_darwin_eta`
 //! split (a pure matching function, plus an async "fetch samples, apply
-//! it" wrapper), reusing common::match_darwin_departure/
-//! departure_skips_station so this exact matching/skip semantics is shared
+//! it" wrapper), reusing `common::match_darwin_departure`/
+//! `departure_skips_station` so this exact matching/skip semantics is shared
 //! with crates/notifier's own, independently-written implementation of the
-//! same check (crates/notifier/src/skip_check.rs) -- that crate cannot
+//! same check (`crates/notifier/src/skip_check.rs`) -- that crate cannot
 //! depend on this one, see this module's own Cargo dependency note in the
 //! plan that added it.
 //!
 //! "The leg's own origin/destination", not the matched train's full-route
-//! origin/destination -- see the design spec's §1.1 for why journey_legs
-//! keeps its own origin_crs/destination_crs even once matched to a real
+//! origin/destination -- see the design spec's §1.1 for why `journey_legs`
+//! keeps its own `origin_crs/destination_crs` even once matched to a real
 //! train. A skip 50 miles from either end of this traveller's leg is not
 //! this traveller's problem (§5.2's own framing).
 
@@ -88,6 +88,10 @@ fn needs_train_origin_board(train_true_origin_crs: &str, leg_origin_crs: &str) -
 /// origin/destination come from its `journey_legs` row. A missing board
 /// degrades to `LegSkipStatus::default()` (both `false`) -- the same
 /// best-effort posture as `blend_darwin_eta`.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn leg_skip_status_from_samples(
     samples: &std::collections::HashMap<String, common::StationSample>,
     train_true_origin_crs: Option<&str>,

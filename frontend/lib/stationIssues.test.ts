@@ -56,7 +56,7 @@ describe('dedupeStationIssues', () => {
     // dedupeStationIssues always populates `lines`; the `!` is asserting
     // that guarantee, not sidestepping the (correctly) optional field on
     // the shared `IssueItem` type.
-    expect(items[0].lines!.map((l) => l.name)).toEqual([
+    expect(items[0]!.lines!.map((l) => l.name)).toEqual([
       'Portsmouth Direct Line',
       'South West Main Line',
       'Alton Line',
@@ -90,7 +90,7 @@ describe('dedupeStationIssues', () => {
   it('does not list the same line twice for an issue reported twice on it', () => {
     const items = dedupeStationIssues([report('a', 'A', [status('Dup'), status('Dup')])]);
     expect(items).toHaveLength(1);
-    expect(items[0].lines).toHaveLength(1);
+    expect(items[0]!.lines).toHaveLength(1);
   });
 
   it('returns nothing for no reports', () => {
@@ -117,7 +117,7 @@ describe('dedupeStationIssues', () => {
       ]),
     ]);
     expect(items).toHaveLength(1);
-    expect(items[0].lines!.map((l) => l.name)).toEqual(['South West Main Line', 'Portsmouth Direct Line']);
+    expect(items[0]!.lines!.map((l) => l.name)).toEqual(['South West Main Line', 'Portsmouth Direct Line']);
   });
 
   it('does not merge LDBWS-inferred statuses across lines when fromDate differs (a genuinely different disruption)', () => {

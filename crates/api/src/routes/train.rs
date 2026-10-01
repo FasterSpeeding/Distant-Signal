@@ -464,11 +464,10 @@ fn build_delay_repay_response(
         }
         _ => None,
     };
-    let claim_url = ticket
-        .operator
-        .as_deref()
-        .map(delay_repay_rules::claim_url_for)
-        .unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
+    let claim_url = ticket.operator.as_deref().map_or(
+        delay_repay_rules::GENERIC_CLAIM_URL,
+        delay_repay_rules::claim_url_for,
+    );
 
     DelayRepayEstimateResponse {
         delay_minutes: state.delay_minutes,
@@ -1069,7 +1068,7 @@ pub(crate) async fn enrich_shared_train(
             "no schedule match for this train's replayed origin departure"
         ),
         Err(err) => {
-            tracing::warn!(error = ?err, train_uid, "schedule match failed for a shared train row")
+            tracing::warn!(error = ?err, train_uid, "schedule match failed for a shared train row");
         }
     }
 }
@@ -1147,8 +1146,7 @@ async fn enrich_public_train_schedule(
         };
     let (origin_crs, scheduled) = origin;
 
-    let Some(scheduled_departure) = crate::data::eta_blend::london_to_utc(date.and_time(scheduled))
-    else {
+    let Some(scheduled_departure) = eta_blend::london_to_utc(date.and_time(scheduled)) else {
         tracing::warn!(
             train_uid,
             "scheduled departure did not resolve to a real London local time; skipping public \
@@ -1299,8 +1297,8 @@ impl ScheduleMatchFailureCache {
     }
 }
 
-static SCHEDULE_MATCH_FAILURE_CACHE: std::sync::LazyLock<ScheduleMatchFailureCache> =
-    std::sync::LazyLock::new(ScheduleMatchFailureCache::new);
+static SCHEDULE_MATCH_FAILURE_CACHE: LazyLock<ScheduleMatchFailureCache> =
+    LazyLock::new(ScheduleMatchFailureCache::new);
 
 /// Best-effort overlay: if a live Darwin/LDBWS departure board sample for
 /// this train's origin station has a concrete estimated time for a
@@ -1396,6 +1394,10 @@ pub(crate) fn apply_darwin_eta(
 /// building the overlay degrades to `journey_stops: None` rather than
 /// failing the whole request -- the same best-effort posture
 /// `blend_darwin_eta` already has for its own overlay.
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
 pub(crate) async fn attach_journey_stops(
     app: &App,
     state: train_tracking::TrackedTrainState,
@@ -1410,6 +1412,10 @@ pub(crate) async fn attach_journey_stops(
 /// (`journey::build_journey_stops_batch`, DB2-14), returned in the same
 /// order. Same best-effort posture: a failure degrades the affected
 /// states to `journey_stops: None`, never the request.
+#[expect(
+    clippy::expect_used,
+    reason = "the invariant is established just above; the expect message names it"
+)]
 pub(crate) async fn attach_journey_stops_batch(
     app: &App,
     mut states: Vec<train_tracking::TrackedTrainState>,
@@ -1484,7 +1490,7 @@ pub(crate) async fn attach_journey_stops_batch(
 /// Public-route sibling of `attach_journey_stops`, for `PublicTrainState`.
 /// `PublicTrainState.train_uid` is a bare `String` (always present once any
 /// `trains` row exists at all, per `get_public_train_state`'s `SELECT
-/// tr.train_uid`), so it cannot itself signal "train_uid unknown" the way
+/// tr.train_uid`), so it cannot itself signal "`train_uid` unknown" the way
 /// `TrackedTrainState.train_uid: Option<String>` can.
 ///
 /// Unlike `attach_journey_stops` above, this has NO early-return gate on
@@ -1636,7 +1642,7 @@ async fn handle_pdf_upload(
 ///    specific message, before a slot is taken or a process started.
 /// 2. [`ticket_subprocess::TicketParser`] runs the real parse in
 ///    `api parse-ticket <kind>`, a child with `RLIMIT_AS`/`RLIMIT_CPU`,
-///    SIGKILLed at [`TICKET_PARSE_TIMEOUT`] (504) or when this future is
+///    `SIGKILLed` at [`TICKET_PARSE_TIMEOUT`] (504) or when this future is
 ///    dropped. Its slots count live children, so a stuck parse holds a slot
 ///    for at most the timeout.
 ///
@@ -1721,7 +1727,7 @@ fn ticket_parse_failure_response(kind: TicketKind, failure: ParseFailure) -> (St
 
 /// Wall-clock budget for one ticket parse, both kinds -- generous for any
 /// legitimate ticket (well under a second). On expiry the child is
-/// SIGKILLed and reaped, and its slot freed, before the 504 is sent.
+/// `SIGKILLed` and reaped, and its slot freed, before the 504 is sent.
 const TICKET_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The process-wide parser behind both upload routes. Children are
@@ -1984,8 +1990,10 @@ mod tests {
             failed_at.insert(
                 ("A12345".to_string(), date),
                 std::time::Instant::now()
-                    - SCHEDULE_MATCH_FAILURE_TTL
-                    - std::time::Duration::from_secs(1),
+                    .checked_sub(SCHEDULE_MATCH_FAILURE_TTL)
+                    .unwrap()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap(),
             );
         }
         assert!(!cache.recently_failed("A12345", date));
@@ -2000,8 +2008,10 @@ mod tests {
             failed_at.insert(
                 ("STALE".to_string(), date),
                 std::time::Instant::now()
-                    - SCHEDULE_MATCH_FAILURE_TTL
-                    - std::time::Duration::from_secs(1),
+                    .checked_sub(SCHEDULE_MATCH_FAILURE_TTL)
+                    .unwrap()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap(),
             );
         }
 
@@ -2046,6 +2056,12 @@ mod tests {
 /// here, since that promotion is its own, separate decision for the plan's
 /// controller to make, not something to do unprompted mid-task).
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; paired test values share names; scenario tests read top to bottom"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -2427,7 +2443,7 @@ mod db_tests {
         router: axum::Router,
         uri: String,
         raw_token: Option<&str>,
-        body: serde_json::Value,
+        body: Value,
     ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .uri(uri)
@@ -3281,7 +3297,7 @@ mod db_tests {
         let token = seed_session(&pool, "TEST-DELETE-NOTFOUND").await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = delete_request(router, 99999999, Some(&token)).await;
+        let (status, body) = delete_request(router, 99_999_999, Some(&token)).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
@@ -3527,7 +3543,7 @@ mod db_tests {
         let token = seed_session(&pool, "TEST-TICKET-DELETE-NOTFOUND").await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = delete_ticket_request(router, 99999999, Some(&token)).await;
+        let (status, body) = delete_ticket_request(router, 99_999_999, Some(&token)).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, Value::String("no ticket with that id".to_string()));
@@ -4656,7 +4672,7 @@ mod db_tests {
         .await;
         assert_eq!(status, StatusCode::OK, "response: {body:?}");
         assert!(
-            body.get("originCrs").is_some_and(|v| v.is_null()),
+            body.get("originCrs").is_some_and(Value::is_null),
             "no schedule exists yet to match: {body:?}"
         );
 
@@ -4722,7 +4738,7 @@ mod db_tests {
 
         assert_eq!(status, StatusCode::OK, "response: {body:?}");
         assert!(
-            body.get("originCrs").is_some_and(|v| v.is_null()),
+            body.get("originCrs").is_some_and(Value::is_null),
             "a second read within the negative-cache TTL must NOT re-attempt the schedule \
              match, even though a schedule that would now match has since appeared -- if \
              this fails with a populated originCrs, the negative cache did not suppress the \
@@ -4935,7 +4951,7 @@ mod db_tests {
 
     /// The accepted §1 gap: a bare `train_uid`/`date` with no schedule match
     /// yet. Proves the whole request succeeds end-to-end (route ->
-    /// find_or_create_train -> create_subscription_for_train) and persists
+    /// `find_or_create_train` -> `create_subscription_for_train`) and persists
     /// `NULL` pin columns rather than erroring -- only possible because this
     /// task's own migration dropped their `NOT NULL` constraint.
     #[tokio::test]
@@ -5666,7 +5682,10 @@ mod db_tests {
             .and_then(Value::as_i64)
             .expect("trackingId present");
 
-        #[allow(clippy::type_complexity)]
+        #[expect(
+            clippy::type_complexity,
+            reason = "the tuple mirrors the columns of the SQL row it decodes"
+        )]
         let (
             trains_id,
             row_train_id,
@@ -5681,7 +5700,7 @@ mod db_tests {
             Option<chrono::DateTime<chrono::Utc>>,
             Option<String>,
             Option<String>,
-            Option<serde_json::Value>,
+            Option<Value>,
             Option<chrono::DateTime<chrono::Utc>>,
         ) = sqlx::query_as(
             "SELECT id, train_id, resolved_at, origin_crs, destination_crs, calling_points, \

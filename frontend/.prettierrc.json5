@@ -1,0 +1,14 @@
+// JSON5 so the deviations from the "Strict Config Starting Points" guide's
+// .prettierrc.json can carry their reasons.
+{
+  $schema: 'https://json.schemastore.org/prettierrc',
+  printWidth: 120,
+  singleQuote: true,
+  // Deviation: Prettier's defaults for tabWidth (2), trailingComma ('all')
+  // and arrowParens ('always') rather than the guide's 4 / 'none' /
+  // 'avoid'. The guide leaves the indent width to each repo as long as it
+  // stays consistent, and switching any of the three would rewrite nearly
+  // every line of the frontend for no behavioural gain. With a 2-space
+  // indent the guide's YAML/Markdown tabWidth override is a no-op, so it is
+  // left out.
+}

@@ -59,7 +59,7 @@ describe('AttachTicketAction', () => {
         trains={[train({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' })]}
       />,
     );
-    fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]);
+    fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]!);
     expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) → Woking \(WOK\)/))).toBeInTheDocument();
   });
 
@@ -91,7 +91,7 @@ describe('AttachTicketAction', () => {
     );
     renderWithMantine(<AttachTicketAction ticketId={5} trains={[train({ id: 1 })]} />);
 
-    fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]);
+    fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]!);
     const option = await screen.findByText(byVisibleText(/WAT → WOK/));
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
@@ -109,7 +109,7 @@ describe('AttachTicketAction', () => {
     vi.mocked(fetch).mockResolvedValue(new Response('ticket is already attached to a tracked train', { status: 409 }));
     renderWithMantine(<AttachTicketAction ticketId={5} trains={[train({ id: 1 })]} />);
 
-    fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]);
+    fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]!);
     const option = await screen.findByText(byVisibleText(/WAT → WOK/));
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Attach' }));

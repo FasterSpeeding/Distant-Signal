@@ -115,7 +115,7 @@ fn text_changed(existing: Option<&ExistingIncident>, summary: &str, description:
 }
 
 /// Upserts a batch of Knowledgebase incidents. Each incident is inserted or
-/// updated in `incidents`; if the stored summary/description/validity_periods
+/// updated in `incidents`; if the stored `summary/description/validity_periods`
 /// differ from what's incoming (or the incident is new), a snapshot is also
 /// appended to `incident_history`.
 ///
@@ -141,6 +141,10 @@ fn text_changed(existing: Option<&ExistingIncident>, summary: &str, description:
 /// re-sent every cycle. Incidents that have dropped out of the feed keep
 /// whatever was computed when they were last seen, which is why the
 /// backfill binary exists.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn upsert_incidents(
     pool: &PgPool,
     redis: &redis::Client,
@@ -236,7 +240,7 @@ pub async fn upsert_incidents(
         let lines: Vec<serde_json::Value> = rows.iter().map(|(_, l, _)| json_array(l)).collect();
 
         sqlx::query(
-            r#"
+            r"
             INSERT INTO incidents (
                 incident_id, summary, description, operators, affected_stations,
                 priority, validity_periods, is_planned, is_cleared, fetched_at,
@@ -271,7 +275,7 @@ pub async fn upsert_incidents(
                    EXCLUDED.affected_stations, EXCLUDED.priority,
                    EXCLUDED.validity_periods, EXCLUDED.is_planned,
                    EXCLUDED.is_cleared, EXCLUDED.affected_lines)
-            "#,
+            ",
         )
         .bind(&ids)
         .bind(&summaries)
@@ -313,7 +317,7 @@ pub async fn upsert_incidents(
             let h_planned: Vec<bool> = changed_rows.iter().map(|(i, _)| i.is_planned).collect();
             let h_cleared: Vec<bool> = changed_rows.iter().map(|(i, _)| i.is_cleared).collect();
             sqlx::query(
-                r#"
+                r"
                 INSERT INTO incident_history (
                     incident_id, summary, description, operators, affected_stations,
                     priority, validity_periods, is_planned, is_cleared
@@ -328,7 +332,7 @@ pub async fn upsert_incidents(
                        AS h(incident_id, summary, description, operators, affected_stations,
                             priority, validity_periods, is_planned, is_cleared, ord)
                  ORDER BY h.ord
-                "#,
+                ",
             )
             .bind(&h_ids)
             .bind(&h_summaries)
@@ -461,7 +465,7 @@ pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Re
     // `fetched_at` now means "when this row last CHANGED"; the feed-level
     // "last fetched" lives in `ingest_freshness` (see `record_ingest`).
     sqlx::query(
-        r#"
+        r"
         INSERT INTO stations (crs, name, latitude, longitude, station_operator, accessibility, fetched_at)
         SELECT crs, name, latitude, longitude, station_operator, accessibility, NOW()
         FROM UNNEST($1::text[], $2::text[], $3::float8[], $4::float8[], $5::text[], $6::jsonb[])
@@ -478,7 +482,7 @@ pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Re
               IS DISTINCT FROM
               (EXCLUDED.name, EXCLUDED.latitude, EXCLUDED.longitude,
                EXCLUDED.station_operator, EXCLUDED.accessibility)
-        "#,
+        ",
     )
     .bind(&crs)
     .bind(&names)
@@ -523,7 +527,7 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
     // writing new ones and leaving the old ones dead, and the update stays
     // HOT (no indexed column changes).
     sqlx::query(
-        r#"
+        r"
         INSERT INTO station_samples (crs, polled_at, departures, tiplocs)
         SELECT crs, polled_at, departures, tiplocs::text[]
         FROM UNNEST($1::text[], $2::timestamptz[], $3::jsonb[], $4::text[])
@@ -538,7 +542,7 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
             tiplocs    = EXCLUDED.tiplocs
         WHERE (station_samples.polled_at, station_samples.departures, station_samples.tiplocs)
               IS DISTINCT FROM (EXCLUDED.polled_at, EXCLUDED.departures, EXCLUDED.tiplocs)
-        "#,
+        ",
     )
     .bind(&crs)
     .bind(&polled_at)
@@ -650,7 +654,7 @@ pub async fn upsert_station_full_coverage_samples(
     // own age and must advance each cycle; an identical row is skipped and
     // an unchanged `stats` value is carried over, not rewritten.
     sqlx::query(
-        r#"
+        r"
         INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats)
         SELECT * FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::jsonb[])
         ON CONFLICT (crs, operator) DO UPDATE SET
@@ -662,7 +666,7 @@ pub async fn upsert_station_full_coverage_samples(
             END
         WHERE (station_full_coverage_samples.resolved_at, station_full_coverage_samples.stats)
               IS DISTINCT FROM (EXCLUDED.resolved_at, EXCLUDED.stats)
-        "#,
+        ",
     )
     .bind(&crs)
     .bind(&operators)
@@ -674,7 +678,7 @@ pub async fn upsert_station_full_coverage_samples(
 }
 
 /// Pure diff check, factored out of `upsert_tfl_line_status` so it's
-/// testable without a database: a TfL line's statuses are "changed" if the
+/// testable without a database: a `TfL` line's statuses are "changed" if the
 /// line is new to us, or if the incoming `statuses` JSON differs from what
 /// is stored, ignoring `sample_stats`/`sample_availability` — mirroring the
 /// aggregator's own `normalize_for_diff` (`crates/aggregator/src/queries.rs`),
@@ -698,9 +702,9 @@ fn tfl_statuses_changed(
 /// Strips `sample_stats`/`sample_availability` (and their Decision-1
 /// full-coverage siblings, `full_coverage_stats`/`full_coverage_availability`)
 /// from every status entry before comparison. See `tfl_statuses_changed`.
-/// The full-coverage pair is stripped symmetrically even though no TfL line
+/// The full-coverage pair is stripped symmetrically even though no `TfL` line
 /// populates it today (Decision 5: full coverage is scoped to national-rail
-/// lines only, out of scope for TfL) -- matching this function's own stated
+/// lines only, out of scope for `TfL`) -- matching this function's own stated
 /// rationale for `sample_stats`: strip on principle so a future producer
 /// doesn't silently reintroduce spurious `line_status_history` churn.
 fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
@@ -718,21 +722,21 @@ fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
     statuses
 }
 
-/// Upserts a batch of TfL line-status reports into `line_status` (marked
+/// Upserts a batch of `TfL` line-status reports into `line_status` (marked
 /// `source = 'tfl'`), appending a `line_status_history` snapshot for each
-/// line whose statuses actually changed, and deleting any TfL row missing
+/// line whose statuses actually changed, and deleting any `TfL` row missing
 /// from this batch.
 ///
 /// The whole batch is one transaction — unlike `upsert_incidents`, which
 /// chunks to bound its lock-hold window, this is ~20 rows once every 300s.
 ///
-/// An empty batch is a no-op rather than a mass delete: "TfL returned
+/// An empty batch is a no-op rather than a mass delete: "`TfL` returned
 /// nothing" is a fault, not an instruction to forget every line. The poller
 /// refuses to post one either (belt and braces, since this is the side that
 /// would do the damage).
 ///
 /// **Ownership guard.** `line_status.line_id` is only `TEXT PRIMARY KEY` --
-/// nothing in the schema stops a TfL line id (`crates/poller-tfl`'s own
+/// nothing in the schema stops a `TfL` line id (`crates/poller-tfl`'s own
 /// naming, e.g. `"victoria"`) from colliding with an `aggregator`-owned
 /// line id (derived from `lines/*.toml` file stems). The two writers'
 /// naming schemes staying disjoint is a CONVENTION, not an enforced
@@ -743,7 +747,7 @@ fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
 /// source = 'tfl'` would silently steal an `aggregator`-owned row -- and
 /// the "is this line changed" read just above only checked
 /// `source = 'tfl'` rows, so a colliding `aggregator` row read back as "no
-/// existing TfL row" (`existing = None`) rather than "an existing row I
+/// existing `TfL` row" (`existing = None`) rather than "an existing row I
 /// must not touch", making the theft look like an ordinary first-write.
 /// Now: (1) the pre-write read checks the row's actual owner regardless of
 /// source, and bails loudly (`anyhow::bail!`, aborting the whole batch's
@@ -755,6 +759,10 @@ fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
 /// resulting zero-rows-affected write (only reachable via that race, since
 /// the pre-write read already ruled out the non-racy case) is itself
 /// treated as the same loud failure, not silently ignored.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport]) -> Result<u64> {
     if reports.is_empty() {
         return Ok(0);
@@ -790,12 +798,10 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
     .await?;
     if let Some((line_id, owner, _)) = existing_rows.iter().find(|(_, owner, _)| owner != "tfl") {
         anyhow::bail!(
-            "refusing to upsert TfL line status for line_id {:?}: that line_id is \
-             already owned by source {:?}, not 'tfl' -- this is a naming collision \
+            "refusing to upsert TfL line status for line_id {line_id:?}: that line_id is \
+             already owned by source {owner:?}, not 'tfl' -- this is a naming collision \
              between two independent line-id schemes (see upsert_tfl_line_status's \
-             doc comment), not a legitimate TfL update",
-            line_id,
-            owner
+             doc comment), not a legitimate TfL update"
         );
     }
     let existing: HashMap<&str, &serde_json::Value> = existing_rows
@@ -804,7 +810,7 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
         .collect();
 
     let written: Vec<String> = sqlx::query_scalar(
-        r#"
+        r"
         INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
         SELECT i.line_id, i.name, i.mode_name,
                ARRAY(SELECT jsonb_array_elements_text(i.operators)), i.statuses, NOW(), 'tfl'
@@ -829,7 +835,7 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
             source      = 'tfl'
         WHERE line_status.source = 'tfl'
         RETURNING line_id
-        "#,
+        ",
     )
     .bind(&ids)
     .bind(&names)
@@ -843,12 +849,11 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
         let written: std::collections::HashSet<&str> = written.iter().map(String::as_str).collect();
         let refused = ids.iter().find(|id| !written.contains(*id));
         anyhow::bail!(
-            "refusing to upsert TfL line status for line_id {:?}: the write affected no \
+            "refusing to upsert TfL line status for line_id {refused:?}: the write affected no \
              rows, which only happens when a same-line_id row owned by a different source \
              was created concurrently after this function's own ownership check -- \
              aborting rather than silently no-op'ing what should have been an insert or \
-             update",
-            refused
+             update"
         );
     }
 
@@ -894,22 +899,22 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
     Ok(count)
 }
 
-/// The identity of one TfL line, for the `/public/lines` catalogue.
+/// The identity of one `TfL` line, for the `/public/lines` catalogue.
 pub struct TflLineSummaryRow {
     pub id: String,
     pub name: String,
     pub mode_name: String,
 }
 
-/// TfL lines, derived from the rows `crates/poller-tfl` wrote rather than
+/// `TfL` lines, derived from the rows `crates/poller-tfl` wrote rather than
 /// from a hand-curated `lines/*.toml` entry.
 ///
 /// A TOML entry would be wrong three ways: the aggregator loads that
-/// directory and would overwrite each ingested TfL status with a
+/// directory and would overwrite each ingested `TfL` status with a
 /// Good-Service fallback on its next cycle; a `LineDefinition` is mostly
 /// route topology (ordered CRS stations, segments, sample stations,
 /// keywords, thresholds) that a finished-status feed has no use for; and it
-/// would drift out of date — TfL split "London Overground" into six named
+/// would drift out of date — `TfL` split "London Overground" into six named
 /// lines in 2024. These rows are the feed's own answer, and
 /// `upsert_tfl_line_status` prunes the ones that leave it.
 pub async fn tfl_line_summaries(pool: &PgPool) -> Result<Vec<TflLineSummaryRow>> {
@@ -931,7 +936,7 @@ pub async fn tfl_line_summaries(pool: &PgPool) -> Result<Vec<TflLineSummaryRow>>
         .collect()
 }
 
-/// Timestamp of the most recent TfL line-status ingest, or `None` if none
+/// Timestamp of the most recent `TfL` line-status ingest, or `None` if none
 /// has ever landed. Backs both `GET /private/tfl-line-status` (the poller's
 /// startup freshness check) and the public `/public/freshness` endpoint.
 pub async fn last_tfl_line_status_fetch(
@@ -991,7 +996,7 @@ pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
     // `fetched_at` now means "when this row last CHANGED"; the feed-level
     // "last fetched" lives in `ingest_freshness` (see `record_ingest`).
     sqlx::query(
-        r#"
+        r"
         INSERT INTO tocs (atoc_code, name, legal_name, atoc_member, station_operator, fetched_at)
         SELECT atoc_code, name, legal_name, atoc_member, station_operator, NOW()
         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::bool[], $5::bool[])
@@ -1005,7 +1010,7 @@ pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
         WHERE (tocs.name, tocs.legal_name, tocs.atoc_member, tocs.station_operator)
               IS DISTINCT FROM
               (EXCLUDED.name, EXCLUDED.legal_name, EXCLUDED.atoc_member, EXCLUDED.station_operator)
-        "#,
+        ",
     )
     .bind(&codes)
     .bind(&names)
@@ -1089,7 +1094,7 @@ pub async fn last_schedule_feed_fetch(
 /// restarts and re-observes a delivery it already recorded, since it keeps
 /// no persistent state of its own) is a harmless no-op, not an error,
 /// matching this route's own idempotency needs -- `schedule-ingest` itself
-/// doesn't track "have I already POSTed this" locally (state lives here).
+/// doesn't track "have I already `POSTed` this" locally (state lives here).
 pub async fn insert_schedule_feed_ingest(
     pool: &PgPool,
     delivered_at: chrono::DateTime<chrono::Utc>,
@@ -1204,7 +1209,7 @@ pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord
     // `updated_at` means "last changed": an unchanged row is left alone
     // (nothing reads `updated_at`; every delivery re-sends the whole table).
     sqlx::query(
-        r#"
+        r"
         INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, change_time_minutes, updated_at)
         SELECT stanox, crs, tiploc, station_name, source_sequence, change_time_minutes, NOW()
         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int4[], $6::int4[])
@@ -1221,7 +1226,7 @@ pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord
               IS DISTINCT FROM
               (EXCLUDED.crs, EXCLUDED.tiploc, EXCLUDED.station_name,
                EXCLUDED.source_sequence, EXCLUDED.change_time_minutes)
-        "#,
+        ",
     )
     .bind(&stanox)
     .bind(&crs)
@@ -1466,7 +1471,7 @@ pub async fn upsert_tiploc_crs(pool: &PgPool, records: &[common::TiplocCrsRecord
 
     // `updated_at` means "last changed", as in `upsert_stanox_crs`.
     sqlx::query(
-        r#"
+        r"
         INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, updated_at)
         SELECT tiploc, crs, station_name, stanox, source_sequence, change_time_minutes, NOW()
         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int4[], $6::int4[])
@@ -1483,7 +1488,7 @@ pub async fn upsert_tiploc_crs(pool: &PgPool, records: &[common::TiplocCrsRecord
               IS DISTINCT FROM
               (EXCLUDED.crs, EXCLUDED.station_name, EXCLUDED.stanox,
                EXCLUDED.source_sequence, EXCLUDED.change_time_minutes)
-        "#,
+        ",
     )
     .bind(&tiploc)
     .bind(&crs)
@@ -1616,6 +1621,11 @@ pub async fn list_tiploc_crs_with(
 /// pass an outer transaction they roll back -- `begin` on a transaction is
 /// a savepoint, so the whole-table diff can never touch the real rows of
 /// the database the tests run against.
+#[expect(
+    clippy::items_after_statements,
+    clippy::too_many_lines,
+    reason = "a local type or import sits next to its only use; long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn upsert_fixed_links<'c>(
     conn: impl sqlx::Acquire<'c, Database = sqlx::Postgres>,
     records: &[common::FixedLinkRecord],
@@ -1716,11 +1726,11 @@ pub async fn upsert_fixed_links<'c>(
             seq.push(sq);
         }
         sqlx::query(
-            r#"
+            r"
             INSERT INTO fixed_links (mode, from_crs, to_crs, minutes, valid_from, valid_to, days_mask, source_sequence, updated_at)
             SELECT *, NOW()
             FROM UNNEST($1::text[], $2::text[], $3::text[], $4::int4[], $5::text[], $6::text[], $7::text[], $8::int4[])
-            "#,
+            ",
         )
         .bind(&modes)
         .bind(&from)
@@ -2069,14 +2079,14 @@ pub async fn upsert_schedule_line_population(
     population_json: &str,
 ) -> Result<()> {
     sqlx::query(
-        r#"
+        r"
         INSERT INTO schedule_line_population (line_id, service_date, population, updated_at)
         VALUES ($1, $2, $3::jsonb, now())
         ON CONFLICT (line_id, service_date) DO UPDATE SET
             population = EXCLUDED.population,
             updated_at = EXCLUDED.updated_at
         WHERE schedule_line_population.population IS DISTINCT FROM EXCLUDED.population
-        "#,
+        ",
     )
     .bind(line_id)
     .bind(service_date)
@@ -2141,7 +2151,7 @@ pub enum ConditionalPopulation {
 /// `updated_at` means an unchanged population. When it equals any of
 /// `known_versions` (or `match_any` is set, `If-None-Match: *`), the `CASE`
 /// never evaluates `population::text`, so Postgres does not even
-/// decompress the TOASTed blob, and `api` allocates nothing for it.
+/// decompress the `TOASTed` blob, and `api` allocates nothing for it.
 ///
 /// `None` exactly when [`get_schedule_line_population`] would return
 /// `None`: no row at all.
@@ -2290,7 +2300,10 @@ pub async fn list_line_train_entries(
     line_id: &str,
     service_date: chrono::NaiveDate,
 ) -> Result<Option<Vec<LineTrainEntryRow>>> {
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple mirrors the columns of the SQL row it decodes"
+    )]
     let rows: Vec<(
         Option<i64>,
         Option<String>,
@@ -2299,7 +2312,7 @@ pub async fn list_line_train_entries(
         Option<String>,
         Option<String>,
     )> = sqlx::query_as(
-        r#"
+        r"
         SELECT x.ord,
                (x.e -> 'uid')::text,
                CASE WHEN jsonb_typeof(x.e -> 'uid') = 'string' THEN x.e ->> 'uid' END,
@@ -2316,7 +2329,7 @@ pub async fn list_line_train_entries(
         ) WITH ORDINALITY AS x(e, ord) ON true
         WHERE p.line_id = $1 AND p.service_date = $2
         ORDER BY x.ord
-        "#,
+        ",
     )
     .bind(line_id)
     .bind(service_date)
@@ -2425,7 +2438,7 @@ pub async fn upsert_schedule_network_departures(
     // last cycle's. `updated_at` therefore means "last changed" (nothing
     // reads it).
     sqlx::query(
-        r#"
+        r"
         INSERT INTO schedule_network_departures (crs, service_date, departures, updated_at)
         SELECT crs, service_date, departures, now()
         FROM UNNEST($1::text[], $2::date[], $3::jsonb[]) AS i(crs, service_date, departures)
@@ -2433,7 +2446,7 @@ pub async fn upsert_schedule_network_departures(
             departures = EXCLUDED.departures,
             updated_at = EXCLUDED.updated_at
         WHERE schedule_network_departures.departures IS DISTINCT FROM EXCLUDED.departures
-        "#,
+        ",
     )
     .bind(&crs)
     .bind(&service_date)
@@ -2836,7 +2849,7 @@ pub fn is_statement_timeout(err: &anyhow::Error) -> bool {
         cause
             .downcast_ref::<sqlx::Error>()
             .and_then(sqlx::Error::as_database_error)
-            .and_then(|db| db.code())
+            .and_then(sqlx::error::DatabaseError::code)
             .is_some_and(|code| code == "57014")
     })
 }
@@ -3131,6 +3144,10 @@ pub fn register_schedule_publish_metrics() {
 /// semantics (that function is exactly this one, called once as a first and
 /// final chunk). One transaction per call. An empty `rows` is a no-op (it
 /// neither stages nor finalizes). Returns rows inserted or changed.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn upsert_schedule_destination_departures_publish_part(
     pool: &PgPool,
     rows: &[ScheduleDestinationDeparturesRow],
@@ -3263,7 +3280,7 @@ pub async fn upsert_schedule_destination_departures_publish_part(
 }
 
 /// One `schedule_calling_points_full` row -- the literal, un-bucketed
-/// "ordered stop_times per trip" shape, one row per calling point of one
+/// "ordered `stop_times` per trip" shape, one row per calling point of one
 /// resolved (non-cancelled) schedule on one service date. Mirrors
 /// `schedule_query::CallingPoint` plus the schedule-level `uid` and the
 /// publish-time-assigned `seq` ordering key, exactly as
@@ -3369,6 +3386,10 @@ pub async fn upsert_schedule_calling_points_full(
 /// (that function is exactly this one, called once as a first and final
 /// chunk). One transaction per call. An empty `rows` is a no-op. Returns
 /// rows inserted or changed.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn upsert_schedule_calling_points_full_publish_part(
     pool: &PgPool,
     rows: &[ScheduleCallingPointsFullRow],
@@ -3498,7 +3519,7 @@ pub async fn upsert_schedule_calling_points_full_publish_part(
     Ok(result.rows_affected())
 }
 
-/// One `schedule_destination_departures` row for one train_uid/service_date,
+/// One `schedule_destination_departures` row for one `train_uid/service_date`,
 /// used to reconstruct a scheduled stop list when `trains.calling_points`
 /// hasn't been populated by schedule-matching (`crates/api/src/data/journey.rs`'s
 /// fallback source -- see
@@ -3873,7 +3894,15 @@ async fn schedule_destination_departures_published_for(
 /// `schedule_destination_departures_published_for` unchanged -- that probe
 /// was already day-scoped, not destination-scoped, so it needs no change
 /// for the new leading column.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::items_after_statements,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; limit is a validated page size, far below usize::MAX and i64::MAX; a local type or import sits next to its only use; long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn search_schedule_calling_point_departures(
     pool: &PgPool,
     station_crs: &str,
@@ -4111,7 +4140,15 @@ pub async fn search_schedule_calling_point_departures(
 /// (maps to a 404, mirroring the function above). `Ok(Some(page))` with an
 /// empty `page.departures` means the day IS published and the window
 /// matched nothing.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; the tuple mirrors the SQL row; limit is a validated page size, far below usize::MAX and i64::MAX; long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn search_journey_leg_candidates(
     pool: &PgPool,
     origin_crs: &str,
@@ -4151,7 +4188,7 @@ pub async fn search_journey_leg_candidates(
         Option<chrono::NaiveTime>,
         Option<i16>,
     )> = sqlx::query_as(
-        r#"
+        r"
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
                    -- The arrival at the LEG's own destination, which is
                    -- what the traveller is actually choosing between --
@@ -4239,7 +4276,7 @@ pub async fn search_journey_leg_candidates(
                    OR (main.scheduled, main.train_uid) > ($9, $10))
             ORDER BY main.scheduled, main.train_uid
             LIMIT $11
-            "#,
+            ",
     )
     .bind(service_date)
     .bind(origin_crs)
@@ -4346,6 +4383,11 @@ pub async fn search_journey_leg_candidates(
 /// rows in 20 minutes). The `WHERE ... IS DISTINCT FROM` leaves an
 /// identical row alone, so `updated_at` now means "last changed", not
 /// "last posted". Returns the number of rows actually written.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "per-day train counts and the stats version are small"
+)]
 pub async fn upsert_full_coverage_line_stats(
     pool: &PgPool,
     rows: &[common::FullCoverageLineStatsRow],
@@ -4397,7 +4439,7 @@ pub async fn upsert_full_coverage_line_stats(
         stats_versions.push(stats_version);
     }
     let result = sqlx::query(
-        r#"
+        r"
         INSERT INTO full_coverage_line_stats
             (line_id, service_date, availability, total, delayed, cancelled, skipped,
              avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending,
@@ -4431,7 +4473,7 @@ pub async fn upsert_full_coverage_line_stats(
                EXCLUDED.skipped, EXCLUDED.avg_delay_minutes, EXCLUDED.partial,
                EXCLUDED.cancelled_explicit, EXCLUDED.cancelled_presumed, EXCLUDED.pending,
                EXCLUDED.unobserved, EXCLUDED.stats_version)
-        "#,
+        ",
     )
     .bind(&line_ids)
     .bind(&service_dates)
@@ -4470,6 +4512,10 @@ pub async fn last_full_coverage_line_stats_fetch(
 
 const FULL_COVERAGE_LINE_STATS_COLUMNS: &str = "line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending, unobserved, stats_version";
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "database counts are non-negative and far below u32::MAX"
+)]
 fn full_coverage_line_stats_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<common::FullCoverageLineStatsRow> {
@@ -4691,6 +4737,10 @@ pub struct LineStatusRow {
     pub computed_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers hand over values they no longer need"
+)]
 fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
     use sqlx::Row;
     let statuses_json: serde_json::Value = row.try_get("statuses")?;
@@ -4704,10 +4754,10 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
     })
 }
 
-/// Every line whose `mode_name` is in `modes`. Plural because TfL's
+/// Every line whose `mode_name` is in `modes`. Plural because `TfL`'s
 /// `/Line/Mode/{modes}/Status` takes a comma-separated list and this API
 /// mimics its URL scheme — and because the frontend's list pages want
-/// National Rail and the five TfL modes in one round trip.
+/// National Rail and the five `TfL` modes in one round trip.
 pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
         "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE mode_name = ANY($1)",
@@ -4892,7 +4942,7 @@ pub struct HalfHourlyStatsRow {
 }
 
 /// Half-hourly-granularity sibling of `daily_stats_for_range` -- same
-/// shape, same "empty vec for an unknown line_id, no error" behavior, same
+/// shape, same "empty vec for an unknown `line_id`, no error" behavior, same
 /// read-time rate derivation posture (never stored pre-divided). `from`/
 /// `to` are real instants (`DateTime<Utc>`), not calendar dates -- a
 /// 30-minute bucket has no calendar-day analog to round-trip through,
@@ -5008,7 +5058,7 @@ pub async fn half_hourly_stats_for_range_multi(
 /// AND 6-hour buckets alike, so this origin aligns every bucket boundary
 /// to whole hours regardless of which `bucket_minutes` value is requested
 /// -- no origin-dependent edge case to get wrong. `date_bin` requires
-/// PostgreSQL 14+; this deployment runs Postgres 16
+/// `PostgreSQL` 14+; this deployment runs Postgres 16
 /// (`docker-compose.yml`'s `postgres:16` image), confirmed, not assumed.
 ///
 /// Returns the same `HalfHourlyStatsRow` shape `half_hourly_stats_for_range`
@@ -5146,7 +5196,7 @@ pub struct DailyCoverageStatsRow {
 }
 
 /// Full-coverage sibling of `daily_stats_for_range` -- identical shape and
-/// "empty vec for an unknown line_id, no error" contract, reading
+/// "empty vec for an unknown `line_id`, no error" contract, reading
 /// `line_status_daily_coverage_stats` instead (`resolved_windows` in place
 /// of `sample_cycles`). See
 /// docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
@@ -5439,7 +5489,13 @@ pub struct IncidentSearchPage {
 /// have been even if the column were populated, since the matcher's
 /// `KeywordOnly`/`OperatorOnly` tiers -- which station overlap could never
 /// see -- are how most real incidents are attributed to a line.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; limit is a validated page size, far below usize::MAX and i64::MAX"
+)]
 pub async fn search_incidents(
     pool: &PgPool,
     operators: Option<Vec<String>>,
@@ -5456,7 +5512,7 @@ pub async fn search_incidents(
     let fetch = limit.saturating_add(1);
 
     let rows: Vec<IncidentSummaryRow> = sqlx::query_as(
-        r#"
+        r"
             SELECT incident_id, summary, operators, affected_stations,
                    COALESCE(affected_lines, '{}') AS affected_lines,
                    priority, is_planned, is_cleared, first_seen_at, fetched_at
@@ -5473,7 +5529,7 @@ pub async fn search_incidents(
                    OR (first_seen_at, incident_id) < ($9, $10))
             ORDER BY first_seen_at DESC, incident_id DESC
             LIMIT $11
-            "#,
+            ",
     )
     .bind(operators)
     .bind(line)
@@ -5510,11 +5566,15 @@ pub async fn search_incidents(
     })
 }
 
-/// Every fixture incident_id in this module is prefixed `archive-test-`
+/// Every fixture `incident_id` in this module is prefixed `archive-test-`
 /// and cleaned up by prefix, rather than day-scoped like the calling-point
 /// search tests (`incidents` has no natural per-test partition key the way
 /// `schedule_destination_departures` has `service_date`).
 #[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
 mod incident_search_query_tests {
     use super::*;
     use chrono::TimeZone;
@@ -5567,7 +5627,10 @@ mod incident_search_query_tests {
         .expect("seed fixture incidents row");
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test fixture: one positional argument per column it seeds"
+    )]
     async fn seed_incident(
         pool: &PgPool,
         incident_id: &str,
@@ -6611,6 +6674,10 @@ pub async fn station_names_for_crs_batch(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    reason = "test code: fixtures sit next to their use"
+)]
 mod tests {
     use super::*;
 
@@ -6950,9 +7017,9 @@ mod tests {
 
     /// Regression test for the Signal Box Audit Low finding on
     /// `upsert_tfl_line_status`: `line_id` is only `TEXT PRIMARY KEY`, so
-    /// nothing at the schema level stops a TfL line id from colliding with
+    /// nothing at the schema level stops a `TfL` line id from colliding with
     /// an `aggregator`-owned one. Before the ownership guard, a colliding
-    /// TfL post would silently `ON CONFLICT (line_id) DO UPDATE SET ...
+    /// `TfL` post would silently `ON CONFLICT (line_id) DO UPDATE SET ...
     /// source = 'tfl'`, stealing the aggregator's row -- this proves it
     /// now fails loudly (`Err`, whole batch rolled back by the caller
     /// never committing) and leaves the aggregator's row untouched.
@@ -6981,7 +7048,7 @@ mod tests {
         .await
         .expect("seed a non-TfL-owned row under the colliding line_id");
 
-        let colliding_report = common::LineStatusReport {
+        let colliding_report = LineStatusReport {
             id: "TEST-COLLIDE".to_string(),
             name: "a TfL line that happens to share this id".to_string(),
             mode_name: "tube".to_string(),
@@ -7194,6 +7261,10 @@ mod tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets -- --ignored --test-threads=1` \
                 against docker compose's postgres"]
+    #[expect(
+        clippy::float_cmp,
+        reason = "sums of whole-number minutes are exact in f64"
+    )]
     async fn sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -7329,6 +7400,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 daily_stats_for_range_multi -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::float_cmp,
+        reason = "sums of whole-number minutes are exact in f64"
+    )]
     async fn daily_stats_for_range_multi_sums_across_lines_and_excludes_others() {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -8517,6 +8592,10 @@ mod crs_tiploc_normalization_tests {
 /// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md). Same
 /// shape/doc-comment convention as `stanox_crs_lookup_query_tests` above.
 #[cfg(test)]
+#[expect(
+    clippy::similar_names,
+    reason = "test code: paired test values share names"
+)]
 mod tiploc_crs_query_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -8675,7 +8754,10 @@ mod schedule_destination_departures_query_tests {
     /// adding an 8th positional argument to `row` itself, so every existing
     /// `row(...)` call site (which is about something else entirely) does
     /// not need to grow a trailing `None`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test fixture: one positional argument per column it seeds"
+    )]
     fn row_with_calling_point_arrival(
         service_date: chrono::NaiveDate,
         destination_crs: &str,
@@ -9218,7 +9300,7 @@ mod schedule_destination_departures_query_tests {
     /// `calling_point_fixture_rows` above (one row per schedule, only ever
     /// useful for `origin`/time-range coverage). C41001 calls RDG, OXF and
     /// DID; C41002 calls RDG only (discriminates a plain "calls at OXF"
-    /// membership test from a bare "shares a train_uid" one); C41003 calls
+    /// membership test from a bare "shares a `train_uid`" one); C41003 calls
     /// RDG and OXF but not DID; C41004 calls RDG and OXF too, but from a
     /// DIFFERENT true origin (PAD, not RDG), to prove `stops_at` and
     /// `origin` are independent filters.
@@ -9338,7 +9420,7 @@ mod schedule_destination_departures_query_tests {
             .iter()
             .map(|d| d["uid"].as_str().unwrap())
             .collect();
-        uids.sort();
+        uids.sort_unstable();
         assert_eq!(
             uids,
             vec!["C41001", "C41003", "C41004"],
@@ -9378,7 +9460,7 @@ mod schedule_destination_departures_query_tests {
             .iter()
             .map(|d| d["uid"].as_str().unwrap())
             .collect();
-        uids.sort();
+        uids.sort_unstable();
         assert_eq!(
             uids,
             vec!["C41001", "C41003"],
@@ -9542,7 +9624,6 @@ mod schedule_destination_departures_query_tests {
             .collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn loop_search(
         pool: &PgPool,
         date: chrono::NaiveDate,
@@ -10810,7 +10891,7 @@ LTSTAFFRD 1630         TF";
             "{AVANTI_EUS_MKC}\n{LNR_EUS_MKC_INTERMEDIATE}"
         ));
 
-        let tiploc_to_crs: std::collections::HashMap<String, String> =
+        let tiploc_to_crs: HashMap<String, String> =
             [("EUSTON", "EUS"), ("MKNSCEN", "MKC"), ("STAFFRD", "STA")]
                 .into_iter()
                 .map(|(tiploc, crs)| (tiploc.to_string(), crs.to_string()))
@@ -10851,13 +10932,13 @@ LTSTAFFRD 1630         TF";
                         service_date: date,
                         destination_crs: destination_crs.clone(),
                         scheduled: d.scheduled,
-                        day_offset: d.day_offset as i16,
+                        day_offset: i16::from(d.day_offset),
                         train_uid: d.uid,
                         origin_crs: d.origin_crs,
                         true_origin_crs: d.true_origin_crs,
                         calling_point_arrival: d.calling_point_arrival,
                         destination_arrival: d.destination_arrival,
-                        destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
+                        destination_arrival_day_offset: i16::from(d.destination_arrival_day_offset),
                         operator_atoc: d.operator_atoc,
                         headcode: d.headcode,
                         rsid: d.rsid,
@@ -10951,7 +11032,7 @@ LTSTAFFRD 1630         TF";
             "{AVANTI_EUS_MKC_XX}\n{LNR_EUS_MKC_INTERMEDIATE_ZZ}"
         ));
 
-        let tiploc_to_crs: std::collections::HashMap<String, String> =
+        let tiploc_to_crs: HashMap<String, String> =
             [("EUSTON", "EUS"), ("MKNSCEN", "MKC"), ("STAFFRD", "STA")]
                 .into_iter()
                 .map(|(tiploc, crs)| (tiploc.to_string(), crs.to_string()))
@@ -10978,13 +11059,13 @@ LTSTAFFRD 1630         TF";
                         service_date: date,
                         destination_crs: destination_crs.clone(),
                         scheduled: d.scheduled,
-                        day_offset: d.day_offset as i16,
+                        day_offset: i16::from(d.day_offset),
                         train_uid: d.uid,
                         origin_crs: d.origin_crs,
                         true_origin_crs: d.true_origin_crs,
                         calling_point_arrival: d.calling_point_arrival,
                         destination_arrival: d.destination_arrival,
-                        destination_arrival_day_offset: d.destination_arrival_day_offset as i16,
+                        destination_arrival_day_offset: i16::from(d.destination_arrival_day_offset),
                         operator_atoc: d.operator_atoc,
                         headcode: d.headcode,
                         rsid: d.rsid,
@@ -11253,6 +11334,12 @@ mod schedule_pipeline_integrity_tests {
 ///
 /// Fixture dates are July 2099, used by no other test module.
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; scenario tests read top to bottom"
+)]
 mod schedule_publish_diff_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -12212,7 +12299,9 @@ mod schedule_publish_diff_tests {
             .await
             .expect_err("analyze_publish_keys must refuse any other table");
         assert_eq!(
-            err.as_database_error().and_then(|db| db.code()).as_deref(),
+            err.as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .as_deref(),
             Some("22023"),
             "{err}"
         );
@@ -12627,6 +12716,10 @@ mod schedule_destination_departures_row_serde_tests {
 /// so lowercase/padded codes still match, and those lookups can use the
 /// tables' own indexes.
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    reason = "test code: fixtures sit next to their use"
+)]
 mod db_review_guard_and_normalisation_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -13155,7 +13248,7 @@ mod db_review_guard_and_normalisation_tests {
             summary: format!("{id} summary"),
             description: description.to_string(),
             operators: vec!["ZZ".to_string(), "YY".to_string()],
-            affected_stations: stations.iter().map(|s| s.to_string()).collect(),
+            affected_stations: stations.iter().map(ToString::to_string).collect(),
             priority: 3,
             validity: vec![],
             is_planned: true,
@@ -13299,7 +13392,7 @@ mod db_review_guard_and_normalisation_tests {
                 db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
     async fn tfl_line_status_keeps_computed_at_advancing_without_duplicate_history() {
         let pool = test_pool().await;
-        let report = common::LineStatusReport {
+        let report = LineStatusReport {
             id: "TEST-GUARD-TFL".to_string(),
             name: "Guard line".to_string(),
             mode_name: "tube".to_string(),
@@ -13406,9 +13499,9 @@ mod db_review_guard_and_normalisation_tests {
         cleanup(pool.clone()).await;
     }
 
-    /// F2: the batched TfL upsert writes every line in one statement, keeps
+    /// F2: the batched `TfL` upsert writes every line in one statement, keeps
     /// each line's operators, appends history only for new or changed lines,
-    /// and keeps the LAST report of a line_id repeated in one batch.
+    /// and keeps the LAST report of a `line_id` repeated in one batch.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 tfl_line_status_batch -- --ignored --test-threads=1`"]
@@ -13434,11 +13527,11 @@ mod db_review_guard_and_normalisation_tests {
             }]))
             .unwrap()
         };
-        let report = |id: &str, severity: u8, operators: &[&str]| common::LineStatusReport {
+        let report = |id: &str, severity: u8, operators: &[&str]| LineStatusReport {
             id: id.to_string(),
             name: format!("{id} name"),
             mode_name: "tube".to_string(),
-            operators: operators.iter().map(|s| s.to_string()).collect(),
+            operators: operators.iter().map(ToString::to_string).collect(),
             statuses: status(severity),
         };
         let history = |pool: PgPool, id: &'static str| async move {

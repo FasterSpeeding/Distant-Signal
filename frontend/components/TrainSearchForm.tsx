@@ -438,7 +438,7 @@ export function TrainSearchForm({
     if (CRS_PATTERN.test(initialStation.trim())) void runSearch();
     // Intentionally empty: this is a mount-only effect, not one that tracks
     // the filter state it reads -- see the comment above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only effect (see above)
   }, []);
 
   async function handleLoadMore() {

@@ -121,11 +121,11 @@ describe('Pattern A -- facility record', () => {
 
   it('renders location and notes as unlabelled sanitized rich text, in that order', () => {
     const node = expectKind(renderAccessibilityValue(dnoTrainRamp), 'facility');
-    expect(node.parts[0].label).toBeUndefined();
-    expect(expectKind(node.parts[0].node, 'richText').html).toContain('Speak to on train staff.');
-    expect(expectKind(node.parts[1].node, 'richText').html).toContain('ramps can');
+    expect(node.parts[0]!.label).toBeUndefined();
+    expect(expectKind(node.parts[0]!.node, 'richText').html).toContain('Speak to on train staff.');
+    expect(expectKind(node.parts[1]!.node, 'richText').html).toContain('ramps can');
     // The entity is decoded by the sanitizer's own parse, not left literal.
-    expect(expectKind(node.parts[1].node, 'richText').html).not.toContain('&#39;');
+    expect(expectKind(node.parts[1]!.node, 'richText').html).not.toContain('&#39;');
   });
 
   it('renders an extra scalar sibling as an unlabelled Pattern E sentence', () => {
@@ -149,7 +149,7 @@ describe('Pattern A -- facility record', () => {
       'facility',
     );
     expect(node.available).toBe(true);
-    expect(expectKind(node.parts[0].node, 'sentence').text).toBe('There is taxi provision');
+    expect(expectKind(node.parts[0]!.node, 'sentence').text).toBe('There is taxi provision');
   });
 
   it('routes an extra array sibling through Patterns F and D', () => {
@@ -161,11 +161,11 @@ describe('Pattern A -- facility record', () => {
       }),
       'facility',
     );
-    expect(expectKind(node.parts[0].node, 'tokens').tokens).toEqual([
+    expect(expectKind(node.parts[0]!.node, 'tokens').tokens).toEqual([
       'Ticket barriers',
       'Ticket barriers, main concourse',
     ]);
-    expect(expectKind(node.parts[1].node, 'collection').items[0].label).toBe('Toilet');
+    expect(expectKind(node.parts[1]!.node, 'collection').items[0]!.label).toBe('Toilet');
   });
 });
 
@@ -293,7 +293,7 @@ describe('Pattern C -- contact details', () => {
   it('drops `name` and keeps `operatorName`', () => {
     const node = expectKind(renderAccessibilityValue(greggs), 'contact');
     expect(node.fields.map((field) => field.label)).toEqual(['Operator', 'Note']);
-    expect(expectKind(node.fields[0].node, 'text').text).toBe('GREGGS BAKERY');
+    expect(expectKind(node.fields[0]!.node, 'text').text).toBe('GREGGS BAKERY');
   });
 
   it('links a phone number, an email and a url', () => {
@@ -309,10 +309,10 @@ describe('Pattern C -- contact details', () => {
       }),
       'contact',
     );
-    expect(expectKind(node.fields[0].node, 'link').href).toBe('tel:03450774224');
-    expect(expectKind(node.fields[1].node, 'link').href).toBe('mailto:customer.relations@scotrail.co.uk');
+    expect(expectKind(node.fields[0]!.node, 'link').href).toBe('tel:03450774224');
+    expect(expectKind(node.fields[1]!.node, 'link').href).toBe('mailto:customer.relations@scotrail.co.uk');
     // `http:` must survive -- 45 of the sample's 193 anchors use it.
-    const website = expectKind(node.fields[2].node, 'link');
+    const website = expectKind(node.fields[2]!.node, 'link');
     expect(website.href).toBe('http://www.apcoa.co.uk');
     expect(website.external).toBe(true);
   });
@@ -332,7 +332,7 @@ describe('Pattern C -- contact details', () => {
       }),
       'contact',
     );
-    expect(expectKind(node.fields[0].node, 'text').text).toBe('Court Square, Carlisle, CA1 1QZ');
+    expect(expectKind(node.fields[0]!.node, 'text').text).toBe('Court Square, Carlisle, CA1 1QZ');
   });
 
   it('drops an address of nothing but "-" placeholders rather than printing "-, -"', () => {
@@ -357,7 +357,7 @@ describe('Pattern C -- contact details', () => {
       }),
       'contact',
     );
-    expect(expectKind(node.fields[0].node, 'richText').html).toContain('href="https://');
+    expect(expectKind(node.fields[0]!.node, 'richText').html).toContain('href="https://');
   });
 });
 
@@ -372,8 +372,8 @@ describe('Pattern D -- named-item collection', () => {
 
   it('renders an all-string item as unlabelled bullets under its name', () => {
     const node = expectKind(renderAccessibilityValue([balPlatform]), 'collection');
-    expect(node.items[0].label).toBe('Platform 3');
-    const bullets = expectKind(node.items[0].body, 'bullets');
+    expect(node.items[0]!.label).toBe('Platform 3');
+    const bullets = expectKind(node.items[0]!.body, 'bullets');
     expect(bullets.items.map((item) => (item.kind === 'sentence' ? item.text : null))).toEqual([
       'There is a Help Point close to this platform',
       'Seating is limited on this platform',
@@ -394,10 +394,10 @@ describe('Pattern D -- named-item collection', () => {
       ]),
       'collection',
     );
-    expect(node.items[0].label).toBe('Balham Passenger Assistance Meeting Point 0');
+    expect(node.items[0]!.label).toBe('Balham Passenger Assistance Meeting Point 0');
     // The structured branch, because `available` is not a string -- and
     // `available` comes out as an ordinary labelled boolean line (§4.5).
-    const { fields } = expectKind(node.items[0].body, 'fields');
+    const { fields } = expectKind(node.items[0]!.body, 'fields');
     const availability = fields.find((field) => field.label === 'Available');
     expect(availability).toBeDefined();
     expect(expectKind(availability!.node, 'text').text).toBe('Yes');
@@ -433,7 +433,7 @@ describe('Pattern D -- named-item collection', () => {
       ]),
       'collection',
     );
-    const { fields } = expectKind(node.items[0].body, 'fields');
+    const { fields } = expectKind(node.items[0]!.body, 'fields');
     const byLabel = new Map(fields.map((field) => [field.label, field.node]));
     expect(expectKind(byLabel.get('Number of spaces')!, 'text').text).toBe('120');
     // The `charges` rate object -- one of §4.9's unmatched interior shapes
@@ -445,15 +445,15 @@ describe('Pattern D -- named-item collection', () => {
     ]);
     // `operator` is the PARENT of a Pattern C object, not one itself.
     const operator = expectKind(byLabel.get('Operator')!, 'fields');
-    expectKind(operator.fields[0].node, 'contact');
+    expectKind(operator.fields[0]!.node, 'contact');
     expectKind(byLabel.get('Accessible locations')!, 'collection');
   });
 
   // §4.5's two "fit the bullet branch but read badly there" exceptions.
   it('renders a {name, crsCode} item as "Swansea (SWA)" linked to that station', () => {
     const node = expectKind(renderAccessibilityValue([{ crsCode: 'SWA', name: 'Swansea' }]), 'collection');
-    expect(node.items[0].label).toBe('Swansea (SWA)');
-    expect(node.items[0].link).toEqual({ href: '/stations/SWA', external: false });
+    expect(node.items[0]!.label).toBe('Swansea (SWA)');
+    expect(node.items[0]!.link).toEqual({ href: '/stations/SWA', external: false });
   });
 
   it('renders a {name, url} map item as a link with the name as its text', () => {
@@ -463,8 +463,8 @@ describe('Pattern D -- named-item collection', () => {
       ]),
       'collection',
     );
-    expect(node.items[0].label).toBe('Rail Replacement Bus Map - Balham 1');
-    expect(node.items[0].link).toEqual({
+    expect(node.items[0]!.label).toBe('Rail Replacement Bus Map - Balham 1');
+    expect(node.items[0]!.link).toEqual({
       href: 'https://assets.nationalrail.co.uk/x.pdf',
       external: true,
     });
@@ -472,7 +472,7 @@ describe('Pattern D -- named-item collection', () => {
 
   it('falls back to a plain text row when a phone number has no digits at all', () => {
     const node = expectKind(renderAccessibilityValue({ primaryTelephoneNumber: 'see website' }), 'contact');
-    expectKind(node.fields[0].node, 'text');
+    expectKind(node.fields[0]!.node, 'text');
   });
 
   it('is not matched by an array whose elements lack a string name', () => {
@@ -490,8 +490,10 @@ describe('Patterns E and F', () => {
       }),
       'fields',
     );
-    expect(node.fields[0].label).toBeUndefined();
-    expect(expectKind(node.fields[0].node, 'sentence').text).toBe('There are tactile warnings on all platforms in use');
+    expect(node.fields[0]!.label).toBeUndefined();
+    expect(expectKind(node.fields[0]!.node, 'sentence').text).toBe(
+      'There are tactile warnings on all platforms in use',
+    );
   });
 
   // §4.6's failure case for a pure length heuristic: capitalised, spaced,
@@ -504,15 +506,15 @@ describe('Patterns E and F', () => {
       }),
       'fields',
     );
-    expect(node.fields[0].label).toBe('Category');
-    expect(expectKind(node.fields[0].node, 'text').text).toBe('B1, (refer to quick reference guide)');
+    expect(node.fields[0]!.label).toBe('Category');
+    expect(expectKind(node.fields[0]!.node, 'text').text).toBe('B1, (refer to quick reference guide)');
   });
 
   it('keeps the label on a number or a boolean', () => {
     const node = expectKind(renderAccessibilityValue({ numberOfSpaces: 80, cctv: true }), 'fields');
     // 'cctv' -> 'CCTV': the acronym map review §3.5.11 asks for.
     expect(node.fields.map((field) => field.label)).toEqual(['Number of spaces', 'CCTV']);
-    expect(expectKind(node.fields[1].node, 'text').text).toBe('Yes');
+    expect(expectKind(node.fields[1]!.node, 'text').text).toBe('Yes');
   });
 
   it('humanizes camelCase tokens but leaves prose and acronyms alone', () => {
@@ -567,8 +569,8 @@ describe('fields that arrive as an unexpected type', () => {
   // sends an array -- no label, no raw block, no trace.
   it('still renders a facility field whose type the bespoke slot does not handle', () => {
     const node = expectKind(renderAccessibilityValue({ available: true, notes: ['One note', 'Another'] }), 'facility');
-    expect(node.parts[0].label).toBe('Notes');
-    expect(expectKind(node.parts[0].node, 'tokens').tokens).toEqual(['One note', 'Another']);
+    expect(node.parts[0]!.label).toBe('Notes');
+    expect(expectKind(node.parts[0]!.node, 'tokens').tokens).toEqual(['One note', 'Another']);
   });
 
   it('still renders a contact field whose type the bespoke slot does not handle', () => {
@@ -618,7 +620,7 @@ describe('fields that arrive as an unexpected type', () => {
       }),
       'contact',
     );
-    expect(expectKind(node.fields[0].node, 'text').text).toBe('Court Square, Carlisle, CA1 1QZ');
+    expect(expectKind(node.fields[0]!.node, 'text').text).toBe('Court Square, Carlisle, CA1 1QZ');
     // `country` is not an address line this renderer knows, so it is not
     // joined into the line -- but it is still shown, on its own row.
     expect(node.fields).toHaveLength(2);
@@ -631,8 +633,8 @@ describe('the fallback branch', () => {
   // nested. That bail is what produced the 96.2%.
   it('renders an unmatched object as labelled rows, recursing rather than bailing to raw', () => {
     const node = expectKind(renderAccessibilityValue({ spaces: { notes: null, numberOfSpaces: 80 } }), 'fields');
-    const spaces = expectKind(node.fields[0].node, 'fields');
-    expect(spaces.fields[0].label).toBe('Number of spaces');
+    const spaces = expectKind(node.fields[0]!.node, 'fields');
+    expect(spaces.fields[0]!.label).toBe('Number of spaces');
   });
 
   it('recurses arbitrarily deep plain objects up to the bound, then dumps', () => {
@@ -781,7 +783,7 @@ describe('dedupeAcrossSection (review §3.5.4)', () => {
     // `notes` (the duplicate) is gone; `inductionLoop` (new information)
     // survives -- exactly the MAN-fixture "Help points" case this fix
     // targets.
-    const facility = expectKind(second, 'fields').fields[0].node;
+    const facility = expectKind(second, 'fields').fields[0]!.node;
     expectKind(facility, 'facility');
     expect(isEmptyNode(facility)).toBe(false);
     const partLabels = expectKind(facility, 'facility').parts.map((p) => p.label);
@@ -803,7 +805,7 @@ describe('dedupeAcrossSection (review §3.5.4)', () => {
       }),
       seen,
     );
-    const collection = expectKind(expectKind(node, 'fields').fields[0].node, 'collection');
+    const collection = expectKind(expectKind(node, 'fields').fields[0]!.node, 'collection');
     expect(collection.items).toHaveLength(2);
     expect(collection.items.map((item) => item.label)).toEqual(['Platform 1', 'Platform 2']);
   });
@@ -902,8 +904,8 @@ describe('review §3.5.11: label defects', () => {
       }),
       'fields',
     );
-    expect(node.fields[0].label).toBe('Step free category');
-    const inner = expectKind(node.fields[0].node, 'fields');
+    expect(node.fields[0]!.label).toBe('Step free category');
+    const inner = expectKind(node.fields[0]!.node, 'fields');
     expect(inner.fields.map((f) => f.label)).toEqual([undefined]);
   });
 
@@ -917,8 +919,8 @@ describe('review §3.5.11: label defects', () => {
     expect(facilityNode.parts.find((p) => !p.label)?.node).toEqual({ kind: 'text', text: 'Concourse' });
 
     const plainNode = expectKind(renderAccessibilityValue({ location: 'Concourse' }), 'fields');
-    expect(plainNode.fields[0].label).toBeUndefined();
-    expect(plainNode.fields[0].node).toEqual({ kind: 'text', text: 'Concourse' });
+    expect(plainNode.fields[0]!.label).toBeUndefined();
+    expect(plainNode.fields[0]!.node).toEqual({ kind: 'text', text: 'Concourse' });
   });
 
   it('expands ATM/CCTV/Wi-Fi as acronyms rather than mechanically capitalising the first letter', () => {

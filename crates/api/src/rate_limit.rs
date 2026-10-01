@@ -510,6 +510,11 @@ impl RateLimiter {
 
     /// `Ok` if a request by `client` in `class` is allowed at `now` (and
     /// records it), else `Err(retry_after)`.
+    #[expect(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "a poisoned lock means another thread already panicked"
+    )]
     fn check_at(&self, class: LimitClass, client: ClientKey, now: Instant) -> Result<(), Duration> {
         let quota = self.settings.quota(class, client.caller());
         let mut state = self.state.lock().expect("rate limiter lock poisoned");
@@ -533,7 +538,7 @@ impl RateLimiter {
         let new_tat = tat + quota.interval;
         let ahead = new_tat - now;
         if ahead > quota.tolerance {
-            return Err(ahead - quota.tolerance);
+            return Err(ahead.checked_sub(quota.tolerance).unwrap());
         }
         state.tat.insert(key, new_tat);
         Ok(())
@@ -570,29 +575,26 @@ impl RateLimiter {
                     "reason" => reason
                 )
                 .increment(1);
-                Err(Box::new(match verified {
-                    Ok(claims) => {
-                        tracing::warn!(
-                            sub = %claims.sub,
-                            class = class.label(),
-                            "valid internal oauth token without the MCP group on a public \
-                             rate-limited route; rejected 403"
-                        );
-                        (
-                            StatusCode::FORBIDDEN,
-                            "this service credential is not allowed on public routes",
-                        )
-                            .into_response()
-                    }
-                    Err(_) => {
-                        let mut response =
-                            (StatusCode::UNAUTHORIZED, "invalid bearer token").into_response();
-                        response.headers_mut().insert(
-                            header::WWW_AUTHENTICATE,
-                            HeaderValue::from_static("Bearer error=\"invalid_token\""),
-                        );
-                        response
-                    }
+                Err(Box::new(if let Ok(claims) = verified {
+                    tracing::warn!(
+                        sub = %claims.sub,
+                        class = class.label(),
+                        "valid internal oauth token without the MCP group on a public \
+                         rate-limited route; rejected 403"
+                    );
+                    (
+                        StatusCode::FORBIDDEN,
+                        "this service credential is not allowed on public routes",
+                    )
+                        .into_response()
+                } else {
+                    let mut response =
+                        (StatusCode::UNAUTHORIZED, "invalid bearer token").into_response();
+                    response.headers_mut().insert(
+                        header::WWW_AUTHENTICATE,
+                        HeaderValue::from_static("Bearer error=\"invalid_token\""),
+                    );
+                    response
                 }))
             }
         }
@@ -639,13 +641,14 @@ impl RateLimiter {
 fn normalise(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V4(_) => ip,
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => IpAddr::V4(v4),
-            None => {
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                IpAddr::V4(v4)
+            } else {
                 let bits = u128::from(v6) & !((1u128 << 64) - 1);
                 IpAddr::V6(Ipv6Addr::from(bits))
             }
-        },
+        }
     }
 }
 
@@ -1082,7 +1085,7 @@ mod tests {
             exp: i64::MAX,
             nbf: None,
             iat: None,
-            groups: groups.iter().map(|g| g.to_string()).collect(),
+            groups: groups.iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -1181,7 +1184,7 @@ mod tests {
     }
 
     fn token(issuer: &str, groups: &[&str]) -> String {
-        let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
+        let groups: Vec<String> = groups.iter().map(ToString::to_string).collect();
         sign_token(&valid_claims(issuer, |c| {
             c["sub"] = serde_json::json!("srv-ds-mcp");
             c["groups"] = serde_json::json!(groups);

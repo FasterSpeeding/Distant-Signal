@@ -35,7 +35,7 @@ pub fn router() -> Router {
 /// `knowledgebase-incident-{incidentId}` is the ONLY provenance-string
 /// format that names a real `incidents` row -- see the design spec's
 /// Correction 1. Reconstructing it here (rather than storing/returning the
-/// bare incident_id as `disruption.source`) is what lets
+/// bare `incident_id` as `disruption.source`) is what lets
 /// `lines_currently_reporting_incident` reach into `line_status.statuses`'
 /// JSONB and find this exact incident.
 fn knowledgebase_source(incident_id: &str) -> String {
@@ -382,9 +382,13 @@ async fn get_incident(
 /// that embeds `validity_periods` directly, because `rename_all` is not
 /// inherited into a nested type. See this plan's Status note Correction A
 /// and Global Constraints for the concrete failure mode that would produce
-/// (a response that's camelCase at the top level but snake_case inside
+/// (a response that's camelCase at the top level but `snake_case` inside
 /// every validity period). Pure function, no I/O -- unit-testable without
 /// a database, matching `to_tfl_shape`'s own testable shape in `render.rs`.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers hand over values they no longer need"
+)]
 fn to_incident_detail_json(
     incident: queries::IncidentRow,
     history: Vec<queries::IncidentHistoryRow>,
@@ -450,6 +454,10 @@ fn render_validity_periods(raw: &Value) -> Value {
     )
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "incident lookup failed");
     (
@@ -708,7 +716,6 @@ mod db_tests {
         .expect("seed fixture incidents row");
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn seed_incident(
         pool: &PgPool,
         incident_id: &str,
@@ -741,7 +748,7 @@ mod db_tests {
         lines: Vec<common::LineDefinition>,
         uri: &str,
     ) -> (StatusCode, String) {
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone(), lines));
         let response = router
@@ -779,15 +786,12 @@ mod db_tests {
         incident_id: &str,
         raw_token: Option<&str>,
     ) -> (StatusCode, axum::http::HeaderMap, Value) {
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone(), vec![]));
         let mut builder = Request::builder().uri(format!("/incidents/{incident_id}"));
         if let Some(token) = raw_token {
-            builder = builder.header(
-                axum::http::header::COOKIE,
-                format!("distant_signal_session={token}"),
-            );
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
         }
         let response = router
             .oneshot(builder.body(Body::empty()).unwrap())
@@ -1200,7 +1204,7 @@ mod db_tests {
         // stay visible to everyone, proving the gate drops only what it
         // should.
         seed_line_reporting(&pool, "route-test-privacy-catalogue", incident_id).await;
-        let custom = crate::data::custom_lines::insert_custom_line(
+        let custom = custom_lines::insert_custom_line(
             &pool,
             NewCustomLine {
                 name: "Mums House To Work".to_string(),
@@ -1237,7 +1241,7 @@ mod db_tests {
         );
         assert_eq!(
             headers
-                .get(axum::http::header::CACHE_CONTROL)
+                .get(header::CACHE_CONTROL)
                 .and_then(|v| v.to_str().ok()),
             Some("private, no-store"),
             "a session-dependent body must not be cacheable at the edge"
@@ -1286,7 +1290,7 @@ mod db_tests {
         let member_token = seed_session(&pool, "TEST-INCIDENT-GRANT-MEMBER").await;
         let stranger_token = seed_session(&pool, "TEST-INCIDENT-GRANT-STRANGER").await;
 
-        let custom = crate::data::custom_lines::insert_custom_line(
+        let custom = custom_lines::insert_custom_line(
             &pool,
             NewCustomLine {
                 name: "Incident Grant Shared Line".to_string(),

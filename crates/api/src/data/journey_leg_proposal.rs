@@ -96,6 +96,12 @@ pub fn propose_window_leg(
 /// arithmetic in seconds-since-midnight, not `NaiveTime` addition/
 /// subtraction directly, specifically to sidestep `chrono`'s own wrapping
 /// semantics there rather than fighting them after the fact.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    reason = "seconds within one day, checked by from_num_seconds_from_midnight_opt; a constant or range-checked time is always valid"
+)]
 fn window_around(time: NaiveTime) -> (NaiveTime, NaiveTime) {
     const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
     let secs = i64::from(time.num_seconds_from_midnight());

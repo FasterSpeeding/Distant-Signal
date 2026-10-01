@@ -23,8 +23,8 @@ describe('mergeSharedCustomLines', () => {
     ]);
 
     expect(merged).toHaveLength(1);
-    expect(merged[0].line.lineId).toBe('custom-my-commute');
-    expect(merged[0].groupNames).toEqual(['Family', 'Commute Buddies']);
+    expect(merged[0]!.line.lineId).toBe('custom-my-commute');
+    expect(merged[0]!.groupNames).toEqual(['Family', 'Commute Buddies']);
   });
 
   it('de-duplicates a repeated group name rather than tagging the row twice', () => {
@@ -33,7 +33,7 @@ describe('mergeSharedCustomLines', () => {
       row({ groupId: 'g1', groupName: 'Family' }),
     ]);
 
-    expect(merged[0].groupNames).toEqual(['Family']);
+    expect(merged[0]!.groupNames).toEqual(['Family']);
   });
 
   it('keeps genuinely different lines apart', () => {

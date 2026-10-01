@@ -51,6 +51,10 @@ struct NetworkFilter {
     network: Option<String>,
 }
 
+#[expect(
+    clippy::ref_option,
+    reason = "callers hold the Option by reference in a struct field"
+)]
 fn parse_network(
     raw: &Option<String>,
 ) -> Result<Option<IslandOfIrelandNetwork>, (StatusCode, String)> {
@@ -129,7 +133,7 @@ async fn get_station_departures(
 
 /// Hand-built camelCase JSON, matching `render::station_departure_json`'s
 /// established convention for a public departures endpoint even though
-/// this route's own producer (Task B4) writes snake_case internally.
+/// this route's own producer (Task B4) writes `snake_case` internally.
 fn departure_json(d: &IslandOfIrelandDeparture) -> serde_json::Value {
     serde_json::json!({
         "trainCode": d.train_code,
@@ -145,6 +149,10 @@ fn departure_json(d: &IslandOfIrelandDeparture) -> serde_json::Value {
     })
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "island-of-ireland catalogue query failed");
     (
@@ -320,7 +328,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn island_of_ireland_catalogue_routes_set_cache_control() {
         let pool = connect().await;
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
 

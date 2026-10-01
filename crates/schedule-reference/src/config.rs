@@ -9,7 +9,7 @@ use common::config::{LineCatalogue, parse_lines};
 /// docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md's
 /// Decision 1(c). Never writes to `storage_dir`.
 #[derive(Debug, Parser)]
-pub struct Config {
+pub(crate) struct Config {
     /// Root of the shared PVC -- same path `schedule-ingest`'s own
     /// `--storage-dir` writes into (`crates/schedule-ingest/src/config.rs`),
     /// mounted read-only in this container.
@@ -138,14 +138,14 @@ pub struct Config {
     pub tiploc_crs_url: String,
 
     /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
-    /// value_parser pattern as `crates/aggregator/src/config.rs`'s own
+    /// `value_parser` pattern as `crates/aggregator/src/config.rs`'s own
     /// field of the same name. Used to build the per-line TIPLOC set this
     /// service's own `schedules_touching` query needs (Task 7) -- a
     /// responsibility this crate did not have before Task 7.
     #[arg(long = "lines-dir", env = "LINES_DIR", default_value = "/app/lines", value_parser = parse_lines)]
     pub lines: LineCatalogue,
 
-    /// Shared, non-secret OAuth2 client-credentials config (same value
+    /// Shared, non-secret `OAuth2` client-credentials config (same value
     /// across all 9 real callers).
     #[command(flatten)]
     pub internal_oauth: common::oauth_client::InternalOAuthArgs,
@@ -181,7 +181,7 @@ pub struct Config {
 /// so a dependency that comes back after the ~1 minute the 2026-09-26 node
 /// reboot's SSO outage lasted is noticed within seconds, while a long outage
 /// costs one GET a minute.
-pub const STARTUP_SEED_BACKOFF: common::backoff::Backoff = common::backoff::Backoff::new(
+pub(crate) const STARTUP_SEED_BACKOFF: common::backoff::Backoff = common::backoff::Backoff::new(
     std::time::Duration::from_secs(1),
     std::time::Duration::from_secs(60),
 );
@@ -189,7 +189,7 @@ pub const STARTUP_SEED_BACKOFF: common::backoff::Backoff = common::backoff::Back
 /// Bounded, in-cycle retry of one product publish -- see
 /// `main::publish_with_retry`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PublishRetry {
+pub(crate) struct PublishRetry {
     /// Total attempts, including the first (so `1` means "no retry").
     pub attempts: u32,
     pub backoff: common::backoff::Backoff,
@@ -197,10 +197,10 @@ pub struct PublishRetry {
 
 /// Production value of [`Config::publish_retry`]: three attempts, waiting
 /// ~5-10s then ~10-20s. Long enough to ride out an `api` pod restart or an
-/// IdP blip, short enough that a genuinely broken product does not hold the
+/// `IdP` blip, short enough that a genuinely broken product does not hold the
 /// cycle for minutes -- and a product that still fails is picked up again
 /// by the next cycle (`main::PublishState`), on its own.
-pub const PUBLISH_RETRY: PublishRetry = PublishRetry {
+pub(crate) const PUBLISH_RETRY: PublishRetry = PublishRetry {
     attempts: 3,
     backoff: common::backoff::Backoff::new(
         std::time::Duration::from_secs(10),

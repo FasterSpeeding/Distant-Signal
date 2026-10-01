@@ -33,11 +33,11 @@ use crate::delivery::RejectedZip;
 /// Written into each accepted delivery directory (hidden, so neither
 /// discovery nor pruning treats it as a delivery file) so the next
 /// delivery can be compared with this one without re-reading its MCA.
-pub const STATS_FILE: &str = ".cif-stats.json";
+pub(crate) const STATS_FILE: &str = ".cif-stats.json";
 
 /// The thresholds (`CIF_*` env vars, `scheduleFeed.ingest.cifChecks`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CifChecks {
+pub(crate) struct CifChecks {
     /// Reject a delivery whose MSN `Generated` date is more than this many
     /// days before the delivery's own date: a replayed old extract. 0
     /// disables the check.
@@ -51,7 +51,7 @@ pub struct CifChecks {
 
 /// What [`inspect`] learned about one delivery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CifStats {
+pub(crate) struct CifStats {
     /// The MSN banner's `Generated` date.
     pub generated: NaiveDate,
     /// The banner's `Sequence`, when present (informational).
@@ -96,7 +96,7 @@ fn one_file(dir: &Path, suffix: &str) -> anyhow::Result<std::path::PathBuf> {
 
 /// Reads an extracted delivery in `dir`. A [`RejectedZip`] when it is not
 /// shaped like a full CIF extract; another error for IO trouble.
-pub fn inspect(dir: &Path) -> anyhow::Result<CifStats> {
+pub(crate) fn inspect(dir: &Path) -> anyhow::Result<CifStats> {
     let mca = one_file(dir, "MCA.txt")?;
     let msn = one_file(dir, "MSN.txt")?;
 
@@ -195,7 +195,7 @@ fn read_banner(path: &Path) -> anyhow::Result<(NaiveDate, Option<u32>)> {
 
 /// Applies `checks` to a delivery delivered at `delivered_at`, against the
 /// last accepted delivery's `previous` stats (none for the first).
-pub fn check(
+pub(crate) fn check(
     stats: &CifStats,
     previous: Option<&CifStats>,
     delivered_at: DateTime<Utc>,
@@ -251,7 +251,7 @@ pub fn check(
 }
 
 /// Writes `stats` into `dir` (see [`STATS_FILE`]).
-pub fn write_stats(dir: &Path, stats: &CifStats) -> anyhow::Result<()> {
+pub(crate) fn write_stats(dir: &Path, stats: &CifStats) -> anyhow::Result<()> {
     let path = dir.join(STATS_FILE);
     std::fs::write(&path, serde_json::to_vec(stats)?)?;
     std::fs::File::open(&path)?.sync_all()?;
@@ -263,7 +263,7 @@ pub fn write_stats(dir: &Path, stats: &CifStats) -> anyhow::Result<()> {
 /// delivery accepted before the file existed, by inspecting it (and then
 /// saving the file, best effort). `None` when there is none, or it can't
 /// be read (logged; the comparison is skipped rather than blocking).
-pub fn previous_stats(storage_dir: &Path, current: &str) -> Option<CifStats> {
+pub(crate) fn previous_stats(storage_dir: &Path, current: &str) -> Option<CifStats> {
     let mut dirs: Vec<String> = std::fs::read_dir(storage_dir)
         .ok()?
         .filter_map(Result::ok)
@@ -300,6 +300,11 @@ pub fn previous_stats(storage_dir: &Path, current: &str) -> Option<CifStats> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::format_collect,
+    clippy::needless_pass_by_value,
+    reason = "test code: test string building is not hot; helpers take owned fixtures"
+)]
 pub(crate) mod tests {
     use super::*;
 

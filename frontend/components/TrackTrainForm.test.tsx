@@ -1881,7 +1881,7 @@ describe('TrackTrainForm', () => {
       const link = screen.getAllByRole('link', { name: 'View live status' })[0];
       expect(link).toHaveAttribute('href', `/train/C11052/${today}`);
 
-      fireEvent.click(link);
+      fireEvent.click(link!);
 
       // pickCifDeparture would have filled Destination/Scheduled-departure
       // from this row -- it must not have run.
@@ -1901,8 +1901,8 @@ describe('TrackTrainForm', () => {
       await screen.findByRole('button', { name: /08:22/ });
 
       const link = screen.getAllByRole('link', { name: 'View live status' })[0];
-      link.focus();
-      fireEvent.keyDown(link, { key: 'Enter' });
+      link!.focus();
+      fireEvent.keyDown(link!, { key: 'Enter' });
 
       // The row's own onKeyDown (which calls pickCifDeparture on Enter) must
       // not have fired via bubbling from the nested link.
@@ -2161,7 +2161,7 @@ describe('TrackTrainForm', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
       const [select] = await screen.findAllByLabelText('Track into');
-      fireEvent.click(select);
+      fireEvent.click(select!);
       fireEvent.click(await screen.findByText('Family'));
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
@@ -2203,7 +2203,7 @@ describe('TrackTrainForm', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
       const [select] = await screen.findAllByLabelText('Track into');
-      fireEvent.click(select);
+      fireEvent.click(select!);
       fireEvent.click(await screen.findByText('Family'));
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 

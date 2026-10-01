@@ -33,7 +33,7 @@ pub struct ServiceArguments {
     /// `common::redis_auth::redis_url_with_password`, never logged.
     #[arg(long, env, hide_env_values = true)]
     pub redis_password: Option<common::secret::Secret>,
-    /// OIDC issuer base URL for the internal-service OAuth2 provider
+    /// OIDC issuer base URL for the internal-service `OAuth2` provider
     /// (Authentik) -- JWKS endpoint is learned via standard OIDC
     /// discovery against this URL, same mechanism as `sso_issuer_url`
     /// below. May be the same Authentik instance as `sso_issuer_url` (a
@@ -45,7 +45,7 @@ pub struct ServiceArguments {
     pub internal_oauth_issuer_url: String,
 
     /// Expected `aud` claim on a verified internal-service access token --
-    /// the shared Authentik OAuth2 Provider's own client_id (Decision 1:
+    /// the shared Authentik `OAuth2` Provider's own `client_id` (Decision 1:
     /// one provider, 8 service accounts underneath it). Must match every
     /// real caller's own `internal_oauth_client_id` (its own config) --
     /// same value, independently configured on each side.
@@ -199,7 +199,7 @@ pub struct ServiceArguments {
     /// *kind* of secret for this crate -- every other credential this
     /// crate's own config used to hold (the removed shared-secret field
     /// this design retired; the RDM API keys living in sibling pollers'
-    /// own configs) is a single shared/bearer token, not a paired OAuth2
+    /// own configs) is a single shared/bearer token, not a paired `OAuth2`
     /// confidential-client secret -- but handled with the same posture:
     /// env-only, required, never
     /// logged. `ServiceArguments` derives `Debug`; avoid ever logging
@@ -228,8 +228,8 @@ pub struct ServiceArguments {
     /// they're done, WHEN no per-attempt return path was captured or the
     /// one captured failed validation -- the frontend's own root URL (e.g.
     /// `https://rail.example.com/`). No longer the sole destination for
-    /// every successful login: see routes::auth::callback and
-    /// auth::validate_return_to for the per-login-attempt `return_to`
+    /// every successful login: see `routes::auth::callback` and
+    /// `auth::validate_return_to` for the per-login-attempt `return_to`
     /// this now falls back from. docs/superpowers/specs/2026-08-31-dynamic-post-login-redirect-design.md.
     #[arg(long, env)]
     pub sso_post_login_redirect_url: String,
@@ -306,7 +306,7 @@ pub struct ServiceArguments {
     /// authentication of its own. That listener is also exactly what the
     /// chart's Ingress resource (`charts/distant-signal/templates/ingress.yaml`)
     /// points at with a catch-all `path: / (Prefix)` rule when
-    /// `ingress.api.enabled` is true -- and NetworkPolicy (pod-to-pod only)
+    /// `ingress.api.enabled` is true -- and `NetworkPolicy` (pod-to-pod only)
     /// cannot see, let alone block, traffic arriving through an Ingress
     /// controller. So whenever an operator had BOTH `metrics_enabled` and
     /// `ingress.api.enabled` set (both common), `/metrics` -- read-only
@@ -316,7 +316,7 @@ pub struct ServiceArguments {
     ///
     /// Fixed the same way every other binary in this workspace already
     /// serves its own `/metrics`, via a listener the Ingress never routes
-    /// to and that the chart's NetworkPolicy scopes to the monitoring
+    /// to and that the chart's `NetworkPolicy` scopes to the monitoring
     /// namespace alone (see `networkpolicy.yaml`'s api-metrics rule) --
     /// this crate just can't reuse `common::metrics::install` verbatim like
     /// they do, since it already drives `axum-prometheus`'s
@@ -515,9 +515,9 @@ impl ChatbotAccessMode {
     }
 }
 
-/// LEG-6 (UK GDPR data minimisation): `users.groups` keeps only the IdP
+/// LEG-6 (UK GDPR data minimisation): `users.groups` keeps only the `IdP`
 /// groups something reads, not every group the SSO user belongs to (the
-/// production IdP maps unrelated groups such as `grafana-access` into the
+/// production `IdP` maps unrelated groups such as `grafana-access` into the
 /// claim). The groups read are:
 ///
 /// - `chatbot_access_group` (the `/chat` gate), only while `chatbot_access`
@@ -536,7 +536,7 @@ pub const STORED_GROUPS_EXTRA_ENV: &str = "OIDC_STORED_GROUPS_EXTRA";
 pub const DEFAULT_STORED_GROUPS_EXTRA: &str = "";
 
 impl ServiceArguments {
-    /// The IdP groups a login may store on `users.groups`; see
+    /// The `IdP` groups a login may store on `users.groups`; see
     /// [`STORED_GROUPS_EXTRA_ENV`].
     pub fn stored_group_allowlist(&self) -> Vec<String> {
         let extra = std::env::var(STORED_GROUPS_EXTRA_ENV)

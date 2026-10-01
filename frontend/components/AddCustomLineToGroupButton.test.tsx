@@ -47,7 +47,7 @@ describe('AddCustomLineToGroupButton', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/lines'));
     const [select] = await screen.findAllByLabelText('Custom line');
-    fireEvent.click(select);
+    fireEvent.click(select!);
 
     expect(await screen.findByText('My Commute')).toBeInTheDocument();
     expect(screen.getByText('Weekend Run')).toBeInTheDocument();
@@ -63,7 +63,7 @@ describe('AddCustomLineToGroupButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
 
     const [select] = await screen.findAllByLabelText('Custom line');
-    fireEvent.click(select);
+    fireEvent.click(select!);
 
     expect(await screen.findByText('My Commute')).toBeInTheDocument();
     expect(screen.queryByText('Weekend Run')).not.toBeInTheDocument();
@@ -80,7 +80,7 @@ describe('AddCustomLineToGroupButton', () => {
     renderWithMantine(<AddCustomLineToGroupButton groupId="grp-1" excludeLineIds={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
     const [select] = await screen.findAllByLabelText('Custom line');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText('My Commute'));
     fireEvent.click(screen.getByRole('button', { name: 'Share with group' }));
 
@@ -110,7 +110,7 @@ describe('AddCustomLineToGroupButton', () => {
     renderWithMantine(<AddCustomLineToGroupButton groupId="grp-1" excludeLineIds={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
     const [select] = await screen.findAllByLabelText('Custom line');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText('My Commute'));
     fireEvent.click(screen.getByRole('button', { name: 'Share with group' }));
 
@@ -135,14 +135,14 @@ describe('AddCustomLineToGroupButton', () => {
     renderWithMantine(<AddCustomLineToGroupButton groupId="grp-1" excludeLineIds={[]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
     let [select] = await screen.findAllByLabelText('Custom line');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText('My Commute'));
     fireEvent.click(screen.getByRole('button', { name: 'Share with group' }));
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole('button', { name: 'Share one of my custom lines' }));
     [select] = await screen.findAllByLabelText('Custom line');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText('My Commute'));
     expect(screen.getByRole('button', { name: 'Share with group' })).not.toBeDisabled();
   });

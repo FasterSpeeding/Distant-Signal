@@ -64,7 +64,7 @@ describe('ShareJourneyButton', () => {
     fireEvent.click(button);
 
     const [select] = await screen.findAllByLabelText('Group');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     expect(await screen.findByText('Commuters')).toBeInTheDocument();
     expect(screen.getByText('Family')).toBeInTheDocument();
   });
@@ -76,7 +76,7 @@ describe('ShareJourneyButton', () => {
     renderWithGroups(<ShareJourneyButton journeyId={7} />, GROUPS_FIXTURE);
     fireEvent.click(await screen.findByRole('button', { name: 'Share with a group' }));
     const [select] = await screen.findAllByLabelText('Group');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText('Commuters'));
     fireEvent.click(screen.getByRole('button', { name: 'Share' }));
 
@@ -99,7 +99,7 @@ describe('ShareJourneyButton', () => {
     renderWithGroups(<ShareJourneyButton journeyId={7} />, GROUPS_FIXTURE);
     fireEvent.click(await screen.findByRole('button', { name: 'Share with a group' }));
     const [select] = await screen.findAllByLabelText('Group');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText('Commuters'));
     fireEvent.click(screen.getByRole('button', { name: 'Share' }));
 
@@ -114,7 +114,7 @@ describe('ShareJourneyButton', () => {
     renderWithGroups(<ShareJourneyButton journeyId={7} />, GROUPS_FIXTURE);
     fireEvent.click(await screen.findByRole('button', { name: 'Share with a group' }));
     const [select] = await screen.findAllByLabelText('Group');
-    fireEvent.click(select);
+    fireEvent.click(select!);
     fireEvent.click(await screen.findByText('Commuters'));
     fireEvent.click(screen.getByRole('button', { name: 'Share' }));
 

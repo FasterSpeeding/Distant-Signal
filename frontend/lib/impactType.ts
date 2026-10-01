@@ -30,5 +30,5 @@ export function impactTypeLabel(impactType: string | null | undefined): string |
   // `IssueList` would render that function where they expect a string or
   // `null`. Guarding with `hasOwnProperty` keeps the lookup to
   // IMPACT_TYPE_LABELS' own declared keys.
-  return Object.prototype.hasOwnProperty.call(IMPACT_TYPE_LABELS, impactType) ? IMPACT_TYPE_LABELS[impactType] : null;
+  return Object.prototype.hasOwnProperty.call(IMPACT_TYPE_LABELS, impactType) ? IMPACT_TYPE_LABELS[impactType]! : null;
 }

@@ -138,14 +138,14 @@ function collapseDay(entries: LineStatusHistoryEntry[]): HistorySpan[] {
       });
     }
 
-    const worst = points.reduce((worst, point) => worstOf(worst, point.status), points[0].status);
+    const worst = points.reduce((worst, point) => worstOf(worst, point.status), points[0]!.status);
 
     spans.push({
       reason,
       severity: worst.statusSeverity,
       status: worst,
-      from: points[0].at,
-      to: points[points.length - 1].at,
+      from: points[0]!.at,
+      to: points[points.length - 1]!.at,
       samples: points.length,
       flips,
     });

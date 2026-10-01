@@ -1,8 +1,13 @@
 [package]
 name = "trip-planner"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 schedule-query = { path = "../schedule-query" }
 chrono = { version = "0.4.44", features = ["serde"] }
+
+[lints]
+workspace = true

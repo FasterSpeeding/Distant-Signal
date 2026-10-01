@@ -256,6 +256,10 @@ impl<'a> Forward<'a> {
         self.relax_links(labels, stage, tiploc, time);
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the value is clamped to >= 0 first, and minute values fit easily"
+    )]
     fn relax_links(&self, labels: &mut Labels, stage: usize, from_tiploc: &str, at: u32) {
         let from_tiploc = normalize_tiploc(from_tiploc);
         let Some(crs) = self.interchange.tiploc_to_crs.get(from_tiploc) else {
@@ -344,32 +348,30 @@ impl<'a> Forward<'a> {
             // Highest stage first: once a stage rides this connection, the
             // same ride at a lower stage is dominated (see `relax`).
             for stage in (0..stages).rev() {
-                let boarding = match aboard[stage].get(&connection.uid) {
-                    Some(&boarding) => boarding,
-                    None => {
-                        // No fresh boarding at a set-down-only stop.
-                        if !connection.can_board {
-                            continue;
-                        }
-                        let labels = previous.unwrap_or(&*current);
-                        if stage > 0 && labels.arrival[stage].is_empty() {
-                            continue;
-                        }
-                        let Some((ready, from)) =
-                            self.ready(labels, stage, &connection.from_tiploc)
-                        else {
-                            continue;
-                        };
-                        if ready > connection.departure_min {
-                            continue;
-                        }
-                        arena.push(Boarding {
-                            first: Some(connection.clone()),
-                            source: Source::Ready { from },
-                        });
-                        aboard[stage].insert(connection.uid.clone(), arena.len() - 1);
-                        arena.len() - 1
+                let boarding = if let Some(&boarding) = aboard[stage].get(&connection.uid) {
+                    boarding
+                } else {
+                    // No fresh boarding at a set-down-only stop.
+                    if !connection.can_board {
+                        continue;
                     }
+                    let labels = previous.unwrap_or(&*current);
+                    if stage > 0 && labels.arrival[stage].is_empty() {
+                        continue;
+                    }
+                    let Some((ready, from)) = self.ready(labels, stage, &connection.from_tiploc)
+                    else {
+                        continue;
+                    };
+                    if ready > connection.departure_min {
+                        continue;
+                    }
+                    arena.push(Boarding {
+                        first: Some(connection.clone()),
+                        source: Source::Ready { from },
+                    });
+                    aboard[stage].insert(connection.uid.clone(), arena.len() - 1);
+                    arena.len() - 1
                 };
                 if arena[boarding].first.is_none() {
                     arena[boarding].first = Some(connection.clone());
@@ -415,6 +417,13 @@ impl<'a> Forward<'a> {
 
     /// Walks back from the destination. `rounds[r]` is a round's labels and
     /// boarding arena; `single_pass` for CSA (one "round", no stepping back).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::expect_used,
+        clippy::too_many_lines,
+        reason = "the value is clamped to >= 0 first, and minute values fit easily; a journey has a handful of legs; the invariant is established just above; the expect message names it; long but linear; splitting it would scatter its shared state across helpers"
+    )]
     fn reconstruct(
         &self,
         rounds: &[(Labels, Vec<Boarding>)],
@@ -514,7 +523,7 @@ impl<'a> Forward<'a> {
             .sum();
         let departure_min = parts
             .iter()
-            .flat_map(|part| part.legs.first())
+            .filter_map(|part| part.legs.first())
             .map(|leg| match leg {
                 JourneyLeg::Train(t) => t.departure_min,
                 JourneyLeg::Transfer(t) => t.departure_min,
@@ -534,7 +543,7 @@ impl<'a> Forward<'a> {
 /// departing no earlier than `departure_min` (Connection Scan). `None` when
 /// none reaches the destination.
 pub fn scan_staged(
-    options: &StagedOptions,
+    options: &StagedOptions<'_>,
     departure_min: u32,
     overlay: Option<&ConnectionOverlay>,
     restrictions: Option<&Restrictions>,
@@ -559,7 +568,7 @@ pub fn scan_staged(
 /// through every waypoint, using at most `max_rounds` trains (RAPTOR).
 /// Fewest changes first, as `raptor::raptor_search`.
 pub fn raptor_staged(
-    options: &StagedOptions,
+    options: &StagedOptions<'_>,
     departure_min: u32,
     max_rounds: u32,
     overlay: Option<&ConnectionOverlay>,
@@ -603,6 +612,11 @@ pub fn raptor_staged(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; scenario tests read top to bottom"
+)]
 mod tests {
     use super::*;
     use crate::{
@@ -636,7 +650,7 @@ mod tests {
         InterchangeData {
             change_time_by_tiploc: change_times
                 .iter()
-                .map(|(t, m)| (t.to_string(), *m))
+                .map(|(t, m)| ((*t).to_string(), *m))
                 .collect(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),
@@ -801,8 +815,8 @@ mod tests {
         let mut seed: u64 = 0xfeed;
         let mut next = |n: u64| {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) % n
         };
         for case in 0..60 {
@@ -899,8 +913,8 @@ mod tests {
         let mut seed: u64 = 0xbeef;
         let mut next = |n: u64| {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) % n
         };
         let (mut found, mut total) = (0, 0);
@@ -1011,8 +1025,8 @@ mod tests {
         let mut seed: u64 = 0xabcd;
         let mut next = |n: u64| {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) % n
         };
         let mut found = 0;
@@ -1198,8 +1212,8 @@ mod tests {
         let mut seed: u64 = 0x0ac1e;
         let mut next = |n: u64| {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) % n
         };
         let mut found = 0;
@@ -1208,7 +1222,7 @@ mod tests {
             for train in 0..25 {
                 let mut at = stops[next(stops.len() as u64) as usize];
                 let mut time = 300 + next(500) as u32;
-                for _ in 0..(1 + next(5)) {
+                for _ in 0..=next(5) {
                     let mut to = stops[next(stops.len() as u64) as usize];
                     if to == at {
                         to =

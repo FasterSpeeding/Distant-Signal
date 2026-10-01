@@ -117,7 +117,7 @@ pub fn router() -> Router {
 /// fields of a struct-shaped variant the way it would for a plain struct.
 /// Without `rename_all_fields` too, every field below (`originCrs`,
 /// `scheduledDeparture`, `trainUid`, `departWindow`, the `skippedStations`
-/// field this finding adds, ...) would only deserialize off a snake_case
+/// field this finding adds, ...) would only deserialize off a `snake_case`
 /// wire key, which nothing that calls `POST /Journeys` (`TrackTrainForm.tsx`,
 /// `TrackThisTrainButton.tsx`, this file's own `db_tests`) ever sends --
 /// confirmed by writing `wire_format_tests` below against the *actual*
@@ -570,6 +570,10 @@ struct CreateJourneyResponse {
     resolution_status: Option<&'static str>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn post_journey(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -1066,7 +1070,7 @@ struct JourneyLegDetailResponse {
     tracked_train_state: Option<train_tracking::TrackedTrainState>,
     /// `null` when the leg has no matched train yet, or no known
     /// origin/destination to check against (nothing to report -- not
-    /// "checked and clean"). See station_skip.rs and this plan's §5.2.
+    /// "checked and clean"). See `station_skip.rs` and this plan's §5.2.
     leg_skip: Option<LegSkipResponse>,
 }
 
@@ -1284,6 +1288,11 @@ async fn get_journey_by_share_token(
 /// `is_owner` is the caller's decision, not this function's: `get_journey`
 /// passes whatever it computed from `journey_readable_by`/`get_journey_summary`;
 /// `get_journey_by_share_token` always passes `false`.
+#[expect(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "the similar names are distinct domain terms; long but linear; splitting it would scatter its shared state across helpers"
+)]
 async fn build_journey_detail_response(
     app: &App,
     journey_id: i64,
@@ -1327,12 +1336,10 @@ async fn build_journey_detail_response(
         )
         .bind(&trains_ids)
         .fetch_all(&app.database)
-        .await
-        .map(|rows| rows.into_iter().collect())
-        .unwrap_or_else(|err| {
+        .await.map_or_else(|err| {
             tracing::warn!(error = ?err, journey_id, "could not read leg train origins; skipping the origin-skip check");
             std::collections::HashMap::new()
-        })
+        }, |rows| rows.into_iter().collect())
     };
 
     let mut board_crs: Vec<String> = Vec::new();
@@ -1360,7 +1367,7 @@ async fn build_journey_detail_response(
             .await
             .unwrap_or_else(|err| {
                 tracing::warn!(error = ?err, journey_id, "could not read departure boards for journey legs; no ETA overlay or skip flags");
-                Default::default()
+                std::collections::HashMap::default()
             });
 
     // Every leg's ETA overlay, then every leg's stop list in one batched
@@ -1868,6 +1875,12 @@ async fn delete_journey(
 /// problem, already solved there): delete `journey_legs`, then `journeys`,
 /// then `train_subscriptions`, then the user.
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::items_after_statements,
+    clippy::too_many_lines,
+    reason = "test code: casts of small known test values; fixtures sit next to their use; scenario tests read top to bottom"
+)]
 mod db_tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -2126,7 +2139,7 @@ mod db_tests {
         router: axum::Router,
         uri: String,
         raw_token: Option<&str>,
-        body: serde_json::Value,
+        body: Value,
     ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .uri(uri)
@@ -3012,7 +3025,7 @@ mod db_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             body,
-            serde_json::Value::String("no journey leg with that id".to_string())
+            Value::String("no journey leg with that id".to_string())
         );
 
         cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG-OWNER").await;
@@ -3239,10 +3252,7 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(
-            body,
-            serde_json::Value::String("no journey with that id".to_string())
-        );
+        assert_eq!(body, Value::String("no journey with that id".to_string()));
 
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-BYSTANDER").await;
@@ -3371,7 +3381,7 @@ mod db_tests {
         );
         assert_eq!(
             legs[0]["legSkip"],
-            serde_json::Value::Null,
+            Value::Null,
             "an unmatched leg must report legSkip: null, not an object: {legs:?}"
         );
 
@@ -3593,7 +3603,7 @@ mod db_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             body,
-            serde_json::Value::String("no journey leg with that id".to_string())
+            Value::String("no journey leg with that id".to_string())
         );
 
         // The leg -- and its journey -- must genuinely survive a
@@ -3629,7 +3639,7 @@ mod db_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             body,
-            serde_json::Value::String("no journey leg with that id".to_string())
+            Value::String("no journey leg with that id".to_string())
         );
 
         cleanup_user(&pool, "TEST-ROUTE-DELETE-LEG-NOTFOUND").await;
@@ -3776,10 +3786,7 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(
-            body,
-            serde_json::Value::String("no journey with that id".to_string())
-        );
+        assert_eq!(body, Value::String("no journey with that id".to_string()));
 
         // Must genuinely survive a non-owner's delete attempt, not just
         // return 404 with the row quietly gone anyway.
@@ -3807,10 +3814,7 @@ mod db_tests {
         let (status, body) =
             delete_request(router, "/Journeys/99999999".to_string(), Some(&token)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(
-            body,
-            serde_json::Value::String("no journey with that id".to_string())
-        );
+        assert_eq!(body, Value::String("no journey with that id".to_string()));
 
         cleanup_user(&pool, "TEST-ROUTE-DELETE-JOURNEY-NOTFOUND").await;
     }
@@ -3980,7 +3984,7 @@ mod db_tests {
         let (status, body) = request(router, format!("/Journeys/shared/{token}"), None).await;
         assert_eq!(status, StatusCode::OK, "resolve share token: {body:?}");
         assert_eq!(body["isOwner"], false);
-        assert_eq!(body["shareLink"], serde_json::Value::Null);
+        assert_eq!(body["shareLink"], Value::Null);
         let legs = body["legs"].as_array().expect("legs array");
         assert_eq!(legs.len(), 1);
         assert_eq!(legs[0]["matchMode"], "manual");
@@ -4108,10 +4112,7 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(
-            body,
-            serde_json::Value::String("no journey with that id".to_string())
-        );
+        assert_eq!(body, Value::String("no journey with that id".to_string()));
 
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-BYSTANDER").await;
@@ -4217,7 +4218,7 @@ mod db_tests {
         let (status, body) = request(router, format!("/Journeys/shared/{token}"), None).await;
         assert_eq!(status, StatusCode::OK, "resolve share token: {body:?}");
         assert_eq!(body["isOwner"], false);
-        assert_eq!(body["shareLink"], serde_json::Value::Null);
+        assert_eq!(body["shareLink"], Value::Null);
 
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-VIEWER-OWNER").await;
     }
@@ -4373,7 +4374,7 @@ mod db_tests {
         assert_eq!(body["isOwner"], false);
         assert_eq!(
             body["shareLink"],
-            serde_json::Value::Null,
+            Value::Null,
             "a group member can read the journey but must never see its owner's share token"
         );
 

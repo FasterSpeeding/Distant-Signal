@@ -154,8 +154,8 @@ describe('LineTrainsResults', () => {
 
   it('sorts rows by their own scheduled time, not response order', async () => {
     vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({ uid: 'LATER', callingPoints: [{ ...entry().callingPoints![0], booked_departure: '10:00:00' }] }),
-      entry({ uid: 'EARLIER', callingPoints: [{ ...entry().callingPoints![0], booked_departure: '06:00:00' }] }),
+      entry({ uid: 'LATER', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '10:00:00' }] }),
+      entry({ uid: 'EARLIER', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '06:00:00' }] }),
     ]);
     renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
     const links = screen.getAllByRole('link', { name: /View live status/ });
@@ -199,7 +199,7 @@ describe('LineTrainsResults', () => {
         // pre-fix code this would have rendered as "08:30" (Europe/London,
         // BST, formatted via `formatTime`) instead of the schedule-side
         // "09:15" the row's own sort key is based on.
-        callingPoints: [{ ...entry().callingPoints![0], booked_departure: '09:15:00' }],
+        callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '09:15:00' }],
         liveStatus: {
           trainsId: 1,
           trainId: '1A11',
@@ -233,8 +233,8 @@ describe('LineTrainsResults', () => {
 
   it('splits departed trains into a collapsed section, upcoming trains shown directly (regression: 2026-09-22 UX review §4.2, past trains first with no cap)', async () => {
     vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({ uid: 'DEPARTED', callingPoints: [{ ...entry().callingPoints![0], booked_departure: '06:00:00' }] }),
-      entry({ uid: 'UPCOMING', callingPoints: [{ ...entry().callingPoints![0], booked_departure: '20:00:00' }] }),
+      entry({ uid: 'DEPARTED', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '06:00:00' }] }),
+      entry({ uid: 'UPCOMING', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '20:00:00' }] }),
     ]);
     // 12:00 UTC (13:00 BST) is after the departed train's 06:00 and before
     // the upcoming train's 20:00.

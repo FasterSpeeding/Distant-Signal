@@ -502,6 +502,10 @@ mod accessibility_filter_tests {
 // These share one database: run with
 // `DATABASE_URL=... cargo test -p api data::reference::db_tests -- --ignored --test-threads=1`.
 #[cfg(test)]
+#[expect(
+    clippy::items_after_statements,
+    reason = "test code: fixtures sit next to their use"
+)]
 mod db_tests {
     use sqlx::postgres::PgPoolOptions;
 

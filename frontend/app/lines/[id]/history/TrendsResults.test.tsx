@@ -84,12 +84,12 @@ describe('toChartPoints (generic)', () => {
   it('turns a bucket below the given floor into a gap, preserving sampleCycles', () => {
     const stats = [dailyRow({ sampleCycles: 19 })];
     const [point] = toChartPoints(stats, (row) => row.day, 20);
-    expect(point.delayRate).toBeNull();
-    expect(point.cancellationRate).toBeNull();
-    expect(point.skipRate).toBeNull();
-    expect(point.avgDelayMinutes).toBeNull();
-    expect(point.total).toBe(100); // never nulled, even when sparse
-    expect(point.sampleCycles).toBe(19);
+    expect(point!.delayRate).toBeNull();
+    expect(point!.cancellationRate).toBeNull();
+    expect(point!.skipRate).toBeNull();
+    expect(point!.avgDelayMinutes).toBeNull();
+    expect(point!.total).toBe(100); // never nulled, even when sparse
+    expect(point!.sampleCycles).toBe(19);
   });
 });
 

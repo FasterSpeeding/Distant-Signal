@@ -62,6 +62,11 @@ fn minutes(time: NaiveTime, day_offset: u8) -> u32 {
 
 /// `schedule_calling_points_full.day_offset` is `SMALLINT`; same
 /// `max(0) as u8` clamp `trip_planning::fetch_calling_points_for_date` uses.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to >= 0 first, and minute values fit easily"
+)]
 fn row_day_offset(row: &LegCallingPointRow) -> u8 {
     row.day_offset.max(0) as u8
 }
@@ -78,6 +83,10 @@ fn row_day_offset(row: &LegCallingPointRow) -> u8 {
 /// lands on exactly the leg's own minute. If more than one row shares that
 /// `(uid, minute)` -- two TIPLOCs of one schedule at the same minute --
 /// their platforms must agree, otherwise the answer is `None`.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn apply_leg_details(
     segments: &mut [SegmentResult],
     rows: &[LegCallingPointRow],
@@ -88,6 +97,19 @@ pub fn apply_leg_details(
     let mut arrivals: HashMap<(String, u32), Option<String>> = HashMap::new();
     let mut public_departures: HashMap<(String, u32), Option<NaiveTime>> = HashMap::new();
     let mut public_arrivals: HashMap<(String, u32), Option<NaiveTime>> = HashMap::new();
+    #[expect(
+        clippy::items_after_statements,
+        clippy::cast_possible_truncation,
+        reason = "a helper next to its only use; minutes since service-day midnight span a day or two"
+    )]
+    fn day_offset_of(minutes: u32) -> u8 {
+        (minutes / 1440) as u8
+    }
+    #[expect(
+        clippy::items_after_statements,
+        clippy::ref_option,
+        reason = "a helper next to its only use; callers hold the Option by reference in a struct field"
+    )]
     fn record<T: PartialEq + Clone>(
         map: &mut HashMap<(String, u32), Option<T>>,
         uid: &str,
@@ -161,14 +183,13 @@ pub fn apply_leg_details(
                 );
                 *booked_arrival_platform = arrivals.get(&arrival_key).cloned().flatten();
                 *public_departure = departure_minutes
-                    .and_then(|at| public_departures.get(&(train_uid.clone(), at)).cloned())
+                    .and_then(|at| public_departures.get(&(train_uid.clone(), at)).copied())
                     .flatten();
                 *public_departure_day_offset = public_departure.map(|public| {
-                    let offset =
-                        departure_minutes.map_or(*departure_day_offset, |at| (at / 1440) as u8);
+                    let offset = departure_minutes.map_or(*departure_day_offset, day_offset_of);
                     public_day_offset(*scheduled_departure, offset, public)
                 });
-                *public_arrival = public_arrivals.get(&arrival_key).cloned().flatten();
+                *public_arrival = public_arrivals.get(&arrival_key).copied().flatten();
                 *public_arrival_day_offset = public_arrival.map(|public| {
                     public_day_offset(*scheduled_arrival, *arrival_day_offset, public)
                 });

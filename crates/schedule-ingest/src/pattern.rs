@@ -17,14 +17,14 @@
 /// `?`, character classes or path separators: delivery names are plain
 /// file names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FilePattern {
+pub(crate) struct FilePattern {
     globs: Vec<String>,
 }
 
 impl FilePattern {
     /// Parses `raw`. Errors on an empty list, so a blank env var cannot
     /// silently match nothing (or, for the CIF pattern, stop ingest).
-    pub fn parse(raw: &str) -> anyhow::Result<Self> {
+    pub(crate) fn parse(raw: &str) -> anyhow::Result<Self> {
         let globs: Vec<String> = raw
             .split(',')
             .map(str::trim)
@@ -41,7 +41,7 @@ impl FilePattern {
     }
 
     /// Whether `name` matches any glob in the list.
-    pub fn matches(&self, name: &str) -> bool {
+    pub(crate) fn matches(&self, name: &str) -> bool {
         let name = name.to_ascii_lowercase();
         self.globs.iter().any(|glob| glob_matches(glob, &name))
     }
@@ -74,7 +74,7 @@ fn glob_matches(glob: &str, name: &str) -> bool {
 
 /// The patterns together, so every caller applies the same precedence.
 #[derive(Debug, Clone)]
-pub struct Routing {
+pub(crate) struct Routing {
     pub cif: FilePattern,
     pub cif_exclude: FilePattern,
     /// The CORPUS extract's pattern, or `None` while CORPUS ingest is off
@@ -85,18 +85,18 @@ pub struct Routing {
 impl Routing {
     /// A CIF candidate: matches `cif`, and neither `cif_exclude` nor the
     /// CORPUS pattern (should an operator point that at a zip name).
-    pub fn is_cif(&self, name: &str) -> bool {
+    pub(crate) fn is_cif(&self, name: &str) -> bool {
         self.cif.matches(name) && !self.cif_exclude.matches(name) && !self.is_corpus(name)
     }
 
     /// A CORPUS candidate (always `false` while CORPUS ingest is off).
-    pub fn is_corpus(&self, name: &str) -> bool {
+    pub(crate) fn is_corpus(&self, name: &str) -> bool {
         self.corpus.as_ref().is_some_and(|p| p.matches(name))
     }
 
     /// The defaults the service ships with (`config.rs`), CORPUS off.
     #[cfg(test)]
-    pub fn defaults() -> Self {
+    pub(crate) fn defaults() -> Self {
         Self {
             cif: FilePattern::parse(crate::config::DEFAULT_CIF_FILE_PATTERN).unwrap(),
             cif_exclude: FilePattern::parse(crate::config::DEFAULT_CIF_EXCLUDE_PATTERN).unwrap(),
@@ -106,7 +106,7 @@ impl Routing {
 
     /// The defaults with CORPUS ingest on.
     #[cfg(test)]
-    pub fn with_corpus() -> Self {
+    pub(crate) fn with_corpus() -> Self {
         Self {
             corpus: Some(FilePattern::parse(crate::config::DEFAULT_CORPUS_FILE_PATTERN).unwrap()),
             ..Self::defaults()

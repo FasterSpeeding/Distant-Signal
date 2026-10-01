@@ -55,10 +55,13 @@ export type McpCredentialScope = 'all' | 'client' | 'tokens' | 'verifier' | 'dis
  * `ChatPanel.tsx`) can drive it directly -- no hand-rolled redirect/
  * exchange/store sequence needed. */
 export class BrowserMcpOAuthProvider implements OAuthClientProvider {
-  constructor(
-    private readonly callbackUrl: string,
-    private readonly now: () => number = Date.now,
-  ) {}
+  private readonly callbackUrl: string;
+  private readonly now: () => number;
+
+  constructor(callbackUrl: string, now: () => number = Date.now) {
+    this.callbackUrl = callbackUrl;
+    this.now = now;
+  }
 
   get redirectUrl(): string {
     return this.callbackUrl;

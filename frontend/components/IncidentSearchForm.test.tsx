@@ -121,7 +121,7 @@ describe('IncidentSearchForm', () => {
     await clickSearch();
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
+    const requestedUrl = new URL(fetchMock.mock.calls[0]![0], 'http://localhost');
     const from = requestedUrl.searchParams.get('from');
     expect(from).not.toBeNull();
     const daysAgo = Math.round((Date.now() - new Date(from as string).getTime()) / (1000 * 60 * 60 * 24));
@@ -149,7 +149,7 @@ describe('IncidentSearchForm', () => {
     // The LAST call, not the first: mount already fired its own auto-search
     // (review §3.3) with the default (no-operator) filter set before this
     // click ever happened.
-    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0], 'http://localhost');
+    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]![0], 'http://localhost');
     expect(requestedUrl.searchParams.get('operator')).toBe('SW,VT');
   });
 
@@ -175,7 +175,7 @@ describe('IncidentSearchForm', () => {
     expect(list.textContent).toContain('retired-line');
     // Neutral gray tags like the affected-station ones, not blue (blue
     // means planned: the "Planned Work" badge on the same row).
-    expect(within(list).getAllByTitle('Affected line')[0].closest('.mantine-Badge-root')).toHaveStyle({
+    expect(within(list).getAllByTitle('Affected line')[0]!.closest('.mantine-Badge-root')).toHaveStyle({
       '--badge-color': 'var(--mantine-color-gray-outline)',
     });
   });
@@ -231,7 +231,7 @@ describe('IncidentSearchForm', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     // The LAST call: mount's own auto-search (review §3.3) fired first,
     // against the default period (no "to" bound at all).
-    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0], 'http://localhost');
+    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]![0], 'http://localhost');
     // 15 Sep is in BST, so the London day ends at 22:59:59.999Z.
     expect(requestedUrl.searchParams.get('to')).toBe('2026-09-15T22:59:59.999Z');
   });
@@ -243,7 +243,7 @@ describe('IncidentSearchForm', () => {
     fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '2026-05-10' } });
     await clickSearch();
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
-    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0], 'http://localhost');
+    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]![0], 'http://localhost');
     expect(requestedUrl.searchParams.get('from')).toBe('2026-05-09T23:00:00.000Z');
   });
 
@@ -268,7 +268,7 @@ describe('IncidentSearchForm', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    const secondRequestUrl = new URL(fetchMock.mock.calls[2][0], 'http://localhost');
+    const secondRequestUrl = new URL(fetchMock.mock.calls[2]![0], 'http://localhost');
     expect(secondRequestUrl.searchParams.get('priority_min')).toBe('2');
     expect(secondRequestUrl.searchParams.get('after')).toBe('cursor-a');
   });
@@ -416,7 +416,7 @@ describe('IncidentSearchForm', () => {
     await waitFor(() => expect(screen.getAllByText('Signal failure at Woking')).toHaveLength(2));
     // Call 0 is mount's own auto-search, call 1 the explicit Search click,
     // call 2 the failed "Load more", call 3 this retry.
-    expect(new URL(fetchMock.mock.calls[3][0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
+    expect(new URL(fetchMock.mock.calls[3]![0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
     expect(screen.getByText("You've reached the end — no more incidents match these filters.")).toBeInTheDocument();
   });
@@ -684,7 +684,7 @@ describe('IncidentSearchForm', () => {
       // The `period` marker must never reach the actual API request --
       // it's a URL-only disambiguator, not part of the wire query.
       const lastFetchUrl = new URL(
-        String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0]),
+        String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]![0]),
         'http://localhost',
       );
       expect(lastFetchUrl.searchParams.has('period')).toBe(false);
@@ -774,7 +774,7 @@ describe('IncidentSearchForm', () => {
 
       await awaitMountSettled();
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
+      const requestedUrl = new URL(fetchMock.mock.calls[0]![0], 'http://localhost');
       // 00:00Z on 1 Aug is 01:00 London on 1 Aug, so the London day starts at
       // 23:00Z the day before (FE-5).
       expect(requestedUrl.searchParams.get('from')).toBe('2026-07-31T23:00:00.000Z');
@@ -813,7 +813,7 @@ describe('IncidentSearchForm', () => {
       // no lower/upper bound at all.
       expect(screen.queryByLabelText('From (optional)')).not.toBeInTheDocument();
       expect(screen.queryByLabelText('To (optional)')).not.toBeInTheDocument();
-      const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
+      const requestedUrl = new URL(fetchMock.mock.calls[0]![0], 'http://localhost');
       expect(requestedUrl.searchParams.get('operator')).toBe('SW');
       expect(requestedUrl.searchParams.has('from')).toBe(false);
       expect(requestedUrl.searchParams.has('to')).toBe(false);

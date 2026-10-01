@@ -214,7 +214,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
     // `useRouter()` is a stable reference in real usage, but is not
     // guaranteed to be by every caller (this file's own tests, notably),
     // and this effect has no reason to depend on router identity anyway.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- exchange the code once per mount (see above)
   }, []);
 
   if (state.kind === 'error') {

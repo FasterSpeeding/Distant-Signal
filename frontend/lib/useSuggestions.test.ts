@@ -59,7 +59,7 @@ describe('useSuggestions', () => {
       await vi.advanceTimersByTimeAsync(250);
     });
     expect(search).toHaveBeenCalledTimes(1);
-    const firstSignal = search.mock.calls[0][1] as AbortSignal;
+    const firstSignal = search.mock.calls[0]![1] as AbortSignal;
 
     rerender({ query: 'alt' });
     expect(firstSignal.aborted).toBe(true);

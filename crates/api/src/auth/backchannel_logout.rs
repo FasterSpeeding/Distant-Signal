@@ -1,5 +1,5 @@
-//! OpenID Connect Back-Channel Logout 1.0 (M14, 2026-09-27): validation of the
-//! signed logout token the IdP (Authentik) POSTs to
+//! `OpenID` Connect Back-Channel Logout 1.0 (M14, 2026-09-27): validation of the
+//! signed logout token the `IdP` (Authentik) POSTs to
 //! `POST /public/auth/backchannel-logout` (`routes::auth::backchannel_logout`)
 //! when a user logs out there, is deactivated, or has an Authentik session
 //! deleted by an admin.
@@ -42,7 +42,7 @@ pub const BACKCHANNEL_LOGOUT_EVENT: &str = "http://schemas.openid.net/event/back
 pub const MAX_LOGOUT_TOKEN_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// Why a logout token was refused. The route answers `400` for all of them
-/// and logs the variant; the IdP learns nothing more.
+/// and logs the variant; the `IdP` learns nothing more.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LogoutTokenError {
     /// Not a JWT, bad base64/JSON, no `kid`, or a claim of the wrong type.
@@ -150,6 +150,10 @@ fn typ_is_acceptable(typ: Option<&str>) -> bool {
 
 /// The claim half of [`LogoutTokenVerifier::verify`], split out so it's
 /// testable without a JWKS. `now` is Unix seconds.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "small constant durations, far below i64::MAX seconds"
+)]
 fn check_claims(
     typ: Option<&str>,
     payload: &[u8],

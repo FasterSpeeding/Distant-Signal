@@ -7,6 +7,11 @@
 //! Call 3) -- agreement here is real, independent evidence, not a
 //! tautology.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "test code: a panic is the right failure in a test"
+)]
+
 use chrono::NaiveDate;
 use schedule_query::{Connection, FixedLink, InterchangeData};
 use std::collections::HashMap;

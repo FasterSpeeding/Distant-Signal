@@ -59,6 +59,10 @@ async fn list_stanox_crs(
     ))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err callback, which passes the error by value"
+)]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "public stanox-crs mirror query failed");
     (
@@ -73,7 +77,7 @@ mod tests {
     /// silently being added to `common::StanoxCrsRecord` (which would
     /// change this route's response shape without anyone touching this
     /// file) -- this route deliberately mirrors `GET /private/stanox-crs`'s
-    /// existing snake_case shape unchanged, per this plan's Global
+    /// existing `snake_case` shape unchanged, per this plan's Global
     /// Constraints.
     #[test]
     fn stanox_crs_record_serializes_as_snake_case_unchanged() {
@@ -243,7 +247,7 @@ mod db_tests {
         seed_fixture(&pool, "9ZTEST01", "ZTA", "ZTESTTPA", "Test Alpha").await;
         seed_fixture(&pool, "9ZTEST02", "ZTB", "ZTESTTPB", "Test Beta").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
 
@@ -267,7 +271,7 @@ mod db_tests {
         assert_eq!(
             response
                 .headers()
-                .get(axum::http::header::CACHE_CONTROL)
+                .get(header::CACHE_CONTROL)
                 .and_then(|v| v.to_str().ok()),
             Some(STANOX_CRS_CACHE_CONTROL),
             "public whole-table dump must carry a public, positive-max-age Cache-Control"
@@ -306,7 +310,7 @@ mod db_tests {
         seed_fixture(&pool, "9ZTEST03", "ZTC", "ZTESTTPC", "Test Gamma Old Name").await;
         seed_fixture(&pool, "9ZTEST03", "ZTC", "ZTESTTPC", "Test Gamma New Name").await;
 
-        let router: axum::Router = crate::app::Router::new()
+        let router: axum::Router = Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
         let response = router

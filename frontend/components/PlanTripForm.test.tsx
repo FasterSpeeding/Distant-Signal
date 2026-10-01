@@ -74,7 +74,7 @@ describe('PlanTripForm', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
     fireEvent.click(screen.getByText('Add a waypoint'));
-    fireEvent.change(screen.getAllByPlaceholderText('Station name or CRS code')[2], { target: { value: 'YRK' } });
+    fireEvent.change(screen.getAllByPlaceholderText('Station name or CRS code')[2]!, { target: { value: 'YRK' } });
     fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ originCrs: 'EUS', destinationCrs: 'EDB', waypointCrs: ['YRK'], results: 'fastest' }),

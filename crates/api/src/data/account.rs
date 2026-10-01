@@ -144,7 +144,7 @@ pub async fn delete_account(pool: &PgPool, user_id: &str) -> Result<Option<Accou
 
 /// Everything `export_account` returns: every row of personal data held
 /// about the user, one key per category. Rows are each table's own columns
-/// (`to_jsonb`, so snake_case column names), minus the few columns listed
+/// (`to_jsonb`, so `snake_case` column names), minus the few columns listed
 /// in `omitted`, which are security credentials rather than information
 /// about the user.
 #[derive(Debug, Serialize)]
@@ -194,6 +194,10 @@ async fn rows(pool: &PgPool, inner: &str, user_id: &str) -> Result<Value> {
 
 /// Builds the user's personal-data export (UK GDPR Arts. 15 and 20).
 /// Returns `Ok(None)` if there is no such user.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
 pub async fn export_account(pool: &PgPool, user_id: &str) -> Result<Option<AccountExport>> {
     let account: Option<Value> =
         sqlx::query_scalar("SELECT to_jsonb(u) FROM users u WHERE id = $1")
@@ -360,6 +364,10 @@ pub async fn export_account(pool: &PgPool, user_id: &str) -> Result<Option<Accou
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
 pub(crate) mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
@@ -542,7 +550,7 @@ pub(crate) mod db_tests {
         // which orders e.g. "groups"/"group_trains" differently from byte order.
         tables.sort();
         tables.dedup();
-        let mut expected: Vec<String> = USER_KEYED_TABLES.iter().map(|t| t.to_string()).collect();
+        let mut expected: Vec<String> = USER_KEYED_TABLES.iter().map(ToString::to_string).collect();
         expected.sort();
         assert_eq!(
             tables, expected,

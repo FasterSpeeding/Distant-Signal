@@ -7,7 +7,7 @@
 //! cancellation hook. On a `spawn_blocking` thread, a `tokio::time::timeout`
 //! only stops the request from waiting; the thread keeps running the
 //! abandoned parse, and an allocation failure inside it aborts the whole
-//! API. A child process can be SIGKILLed at the deadline and has its own
+//! API. A child process can be `SIGKILLed` at the deadline and has its own
 //! address space, so neither failure reaches the server.
 //!
 //! ## How
@@ -40,7 +40,7 @@
 //! - **Concurrency:** a semaphore of owned permits, one per live child,
 //!   acquired with `try_acquire_owned` (full = [`ParseFailure::Busy`], a
 //!   503). The permit is released only once the child has been reaped (or,
-//!   on drop, SIGKILLed), so it now counts live processes, and a slot can no
+//!   on drop, `SIGKILLed`), so it now counts live processes, and a slot can no
 //!   longer be held forever by a stuck parse.
 //! - **Panics:** the child still wraps the parse in `catch_unwind` (and
 //!   `parse_pdf` keeps its own), so a parser panic comes back as an
@@ -223,6 +223,7 @@ impl TicketParser {
 
     /// Lets this parser's children run the `test-*` modes.
     #[doc(hidden)]
+    #[must_use]
     pub fn with_test_hooks(mut self) -> Self {
         self.test_hooks = true;
         self
@@ -230,6 +231,7 @@ impl TicketParser {
 
     /// Called with each child's pid right after it is spawned.
     #[doc(hidden)]
+    #[must_use]
     pub fn with_on_spawn(mut self, on_spawn: impl Fn(u32) + Send + Sync + 'static) -> Self {
         self.on_spawn = Some(Arc::new(on_spawn));
         self
@@ -278,6 +280,7 @@ impl TicketParser {
         // exec and only makes async-signal-safe syscalls (getrlimit,
         // setrlimit, open, write, close); it allocates nothing and takes no
         // locks.
+        #[expect(unsafe_code, reason = "pre_exec is unsafe; see SAFETY above")]
         unsafe {
             command.pre_exec(move || apply_child_limits(&limits));
         }
@@ -403,6 +406,10 @@ type Resource = libc::c_int;
 
 /// Lowers a limit to (`soft`, `hard`), never above the current hard limit
 /// (raising it would need `CAP_SYS_RESOURCE`, which the pod drops).
+#[expect(
+    unsafe_code,
+    reason = "getrlimit/setrlimit have no safe wrapper in std"
+)]
 fn set_limit(resource: Resource, soft: u64, hard: u64) -> std::io::Result<()> {
     let mut current = libc::rlimit {
         rlim_cur: 0,
@@ -410,7 +417,7 @@ fn set_limit(resource: Resource, soft: u64, hard: u64) -> std::io::Result<()> {
     };
     // SAFETY: plain syscalls on a stack-allocated struct.
     unsafe {
-        if libc::getrlimit(resource, &mut current) != 0 {
+        if libc::getrlimit(resource, &raw mut current) != 0 {
             return Err(std::io::Error::last_os_error());
         }
         let hard = (hard as libc::rlim_t).min(current.rlim_max);
@@ -419,7 +426,7 @@ fn set_limit(resource: Resource, soft: u64, hard: u64) -> std::io::Result<()> {
             rlim_cur: soft,
             rlim_max: hard,
         };
-        if libc::setrlimit(resource, &wanted) != 0 {
+        if libc::setrlimit(resource, &raw const wanted) != 0 {
             return Err(std::io::Error::last_os_error());
         }
     }
@@ -428,6 +435,10 @@ fn set_limit(resource: Resource, soft: u64, hard: u64) -> std::io::Result<()> {
 
 /// Best effort: on Linux, make this process the OOM killer's first choice
 /// within the pod. Silently does nothing where `/proc` isn't available.
+#[expect(
+    unsafe_code,
+    reason = "raw open/write/close: this runs in the child before exec"
+)]
 fn raise_oom_score_adj() {
     const PATH: &[u8] = b"/proc/self/oom_score_adj\0";
     const VALUE: &[u8] = b"1000";
