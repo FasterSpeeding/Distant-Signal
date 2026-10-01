@@ -116,6 +116,40 @@ isolated by the dead-letter path. full-coverage-consumer's
    retried, so nothing is lost until the stream's MAXLEN trims them: watch
    [DistantSignalMovementLagHigh](#distantsignalmovementlaghigh).
 
+### DistantSignalAggregatorCycleFailing
+
+No aggregation cycle has succeeded for `cycleStalled.maxAgeSeconds`:
+`time() - distant_signal_aggregator_last_success_timestamp_seconds{cycle="aggregate"}`.
+The gauge holds the last successful cycle's time, or the process start
+until one succeeds, so an aggregator that restarts into a failing database
+still fires. `distant_signal_aggregator_cycles_total{result}` counts both
+outcomes. On 2026-10-01 every cycle failed for six hours with no alert:
+`aggregator_cycle_duration_seconds_count` rises whether a cycle succeeds or
+not.
+
+While it fires, line statuses, line stats and the full-coverage window
+verdicts stop updating (the site shows stale data). Retention runs on its own
+task and is not covered.
+
+1. The aggregator's log: "aggregation cycle failed" with the error.
+2. Usually the database:
+   [DistantSignalPostgresDown](#distantsignalpostgresdown). Otherwise a
+   statement timeout on a slow query, or a migration the aggregator's build
+   expects but api has not run yet.
+
+### DistantSignalNotifierCycleFailing
+
+One of the notifier's loops (`cycle` label: `line_status`, `forward_queue`
+or `skip_check`) has not succeeded for `cycleStalled.maxAgeSeconds`
+(`distant_signal_notifier_last_success_timestamp_seconds{cycle}`, the process
+start until the first success; `distant_signal_notifier_cycles_total` counts
+both outcomes). The hourly `template_sweep` loop is left out.
+
+While it fires, line-status, train and skipped-stop push notifications for
+that loop are not decided. Delivery is at-most-once within a grace window, so
+some users miss them for good. Read the notifier's log ("notifier ... cycle
+failed") and check the database.
+
 ## movement-events
 
 ### DistantSignalMovementLagHigh

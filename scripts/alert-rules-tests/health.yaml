@@ -90,3 +90,37 @@ tests:
               summary: trust-consumer keeps failing its calls to api
               description: "5 failed api calls in 5m, for 10m: its data is not landing. Check api and the consumer's log."
               runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalconsumerapicallsfailing
+  # The aggregator's last success stops at 600s (10m); 15m later it fires.
+  # The notifier's line_status loop is healthy; its hourly template_sweep
+  # is old but left out; its skip_check loop never succeeded after a start
+  # at 0s.
+  - interval: 1m
+    input_series:
+      - series: 'distant_signal_aggregator_last_success_timestamp_seconds{namespace="distant-signal", pod="agg", cycle="aggregate"}'
+        values: '0+60x10 600x30'
+      - series: 'distant_signal_notifier_last_success_timestamp_seconds{namespace="distant-signal", pod="ntf", cycle="line_status"}'
+        values: '0+60x40'
+      - series: 'distant_signal_notifier_last_success_timestamp_seconds{namespace="distant-signal", pod="ntf", cycle="template_sweep"}'
+        values: '0x40'
+      - series: 'distant_signal_notifier_last_success_timestamp_seconds{namespace="distant-signal", pod="ntf", cycle="skip_check"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: DistantSignalAggregatorCycleFailing
+        exp_alerts: []
+      - eval_time: 26m
+        alertname: DistantSignalAggregatorCycleFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: distant-signal, cycle: aggregate}
+            exp_annotations:
+              summary: no successful aggregator cycle for 16m 0s
+              description: "Line statuses and stats are going stale. Check the aggregator's log, Postgres and DistantSignalApiDatabaseDown."
+              runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalaggregatorcyclefailing
+      - eval_time: 16m
+        alertname: DistantSignalNotifierCycleFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: distant-signal, cycle: skip_check}
+            exp_annotations:
+              summary: no successful notifier skip_check cycle for 16m 0s
+              description: "Push notifications for this loop are not being decided or sent. Check the notifier's log and Postgres."
+              runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalnotifiercyclefailing

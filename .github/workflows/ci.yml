@@ -1133,6 +1133,9 @@ jobs:
           n_api=$(grep -c 'label_replace(sum by (namespace) (increase(distant_signal_[a-z_]*_errors_total{namespace="[^"]*", operation=~"[a-z_|]*"}\[5m\])), "consumer"' <<<"${rule}" || true)
           [[ "${n_api}" -eq 3 ]] || { echo "expected 3 consumer api-error clauses, got ${n_api}" >&2; exit 1; }
           grep -q 'alert: DistantSignalConsumerApiCallsFailing' <<<"${rule}"
+          # No successful aggregator / notifier cycle for 15m.
+          grep -q 'time() - max by (namespace, cycle) (distant_signal_aggregator_last_success_timestamp_seconds{namespace="[^"]*"}) > 900$' <<<"${rule}"
+          grep -q 'distant_signal_notifier_last_success_timestamp_seconds{namespace="[^"]*", cycle!="template_sweep"}) > 900$' <<<"${rule}"
           # R-040/R-097: stuck entries and TRUST parse drops alert, one
           # parse-drop clause per consumer.
           grep -q 'increase(distant_signal_movement_feed_long_pending_total{namespace="[^"]*"}\[1h\])) > 0$' <<<"${rule}"

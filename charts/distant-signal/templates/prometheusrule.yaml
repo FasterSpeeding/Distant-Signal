@@ -53,7 +53,8 @@ so that clause fired on every rollout.
 {{- $postgresDownOn := ($rule.postgresDown).enabled }}
 {{- $apiDbDownOn := ($rule.apiDatabaseDown).enabled }}
 {{- $consumerApiOn := ($rule.consumerApiErrors).enabled }}
-{{- $healthOn := or $postgresDownOn $apiDbDownOn $consumerApiOn }}
+{{- $cyclesOn := ($rule.cycleStalled).enabled }}
+{{- $healthOn := or $postgresDownOn $apiDbDownOn $consumerApiOn $cyclesOn }}
 {{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn $healthOn }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -164,6 +165,45 @@ spec:
             summary: "{{ "{{ $labels.consumer }}" }} keeps failing its calls to api"
             description: "{{ "{{ $value | humanize }}" }} failed api calls in {{ .window }}, for {{ .for }}: its data is not landing. Check api and the consumer's log."
             runbook_url: {{ printf "%s#distantsignalconsumerapicallsfailing" $runbook | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with $rule.cycleStalled }}
+        {{- if .enabled }}
+        {{- /*
+        2026-10-01: every aggregator and notifier cycle failed for six
+        hours and nothing alerted (aggregator_cycle_duration_seconds_count
+        rises either way). <service>_last_success_timestamp_seconds{cycle}
+        is the last successful cycle, or the process start until one
+        succeeds (common::metrics::register_cycle), so a process that never
+        succeeds still ages. The notifier's hourly template_sweep is left
+        out.
+        */}}
+        - alert: DistantSignalAggregatorCycleFailing
+          expr: |
+            time() - max by (namespace, cycle) (distant_signal_aggregator_last_success_timestamp_seconds{namespace="{{ $ns }}"}) > {{ .maxAgeSeconds }}
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "no successful aggregator cycle for {{ "{{ $value | humanizeDuration }}" }}"
+            description: "Line statuses and stats are going stale. Check the aggregator's log, Postgres and DistantSignalApiDatabaseDown."
+            runbook_url: {{ printf "%s#distantsignalaggregatorcyclefailing" $runbook | quote }}
+        - alert: DistantSignalNotifierCycleFailing
+          expr: |
+            time() - max by (namespace, cycle) (distant_signal_notifier_last_success_timestamp_seconds{namespace="{{ $ns }}", cycle!="template_sweep"}) > {{ .maxAgeSeconds }}
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "no successful notifier {{ "{{ $labels.cycle }}" }} cycle for {{ "{{ $value | humanizeDuration }}" }}"
+            description: "Push notifications for this loop are not being decided or sent. Check the notifier's log and Postgres."
+            runbook_url: {{ printf "%s#distantsignalnotifiercyclefailing" $runbook | quote }}
         {{- end }}
         {{- end }}
     {{- end }}

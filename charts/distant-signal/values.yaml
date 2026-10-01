@@ -3411,6 +3411,17 @@ metrics:
       minErrors: 3
       for: 10m
       severity: warning
+    # DistantSignalAggregatorCycleFailing / DistantSignalNotifierCycleFailing:
+    # no successful aggregation cycle, or no successful run of one of the
+    # notifier's line_status / forward_queue / skip_check loops, for
+    # maxAgeSeconds (<service>_last_success_timestamp_seconds{cycle}; the
+    # process start counts until a cycle succeeds). The notifier's hourly
+    # template_sweep is left out.
+    cycleStalled:
+      enabled: true
+      maxAgeSeconds: 900
+      for: 0m
+      severity: warning
     # Needs movementRelay.enabled (all rules in this group read
     # movement-events state).
     #

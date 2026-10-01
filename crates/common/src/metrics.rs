@@ -40,6 +40,57 @@ pub fn register_operation_counters(metric: &str, operations: &[&str]) {
     }
 }
 
+/// Outcome metrics for a service's periodic cycle (the aggregator's
+/// aggregation pass, each of the notifier's loops), named after `service`:
+///
+/// - `<service>_cycles_total{cycle, result="success"|"failure"}`;
+/// - `<service>_last_success_timestamp_seconds{cycle}`: Unix time of the
+///   last successful cycle, or of [`register_cycle`] (process start) until
+///   one succeeds -- so a process whose every cycle fails still ages, and the
+///   chart's "no successful cycle for 15m" alerts see it.
+///
+/// **Why** (2026-10-01): during the six-hour Postgres outage every
+/// aggregator and notifier cycle failed, but the only cycle metric was a
+/// duration histogram whose count kept rising either way.
+pub fn register_cycle(service: &str, cycle: &'static str) {
+    for result in ["success", "failure"] {
+        metrics::counter!(
+            metric_name(&format!("{service}_cycles_total")),
+            "cycle" => cycle,
+            "result" => result
+        )
+        .increment(0);
+    }
+    metrics::gauge!(
+        metric_name(&format!("{service}_last_success_timestamp_seconds")),
+        "cycle" => cycle
+    )
+    .set(unix_now());
+}
+
+/// Records one cycle's outcome (see [`register_cycle`]).
+pub fn record_cycle(service: &str, cycle: &'static str, succeeded: bool) {
+    metrics::counter!(
+        metric_name(&format!("{service}_cycles_total")),
+        "cycle" => cycle,
+        "result" => if succeeded { "success" } else { "failure" }
+    )
+    .increment(1);
+    if succeeded {
+        metrics::gauge!(
+            metric_name(&format!("{service}_last_success_timestamp_seconds")),
+            "cycle" => cycle
+        )
+        .set(unix_now());
+    }
+}
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// Default histogram bucket boundaries applied to every metric recorded
 /// via this module's install functions, covering roughly 50ms to 2
 /// minutes -- wide enough for a poll cycle or an aggregator cycle without
@@ -133,6 +184,70 @@ mod tests {
                 "{series} missing from {rendered}"
             );
         }
+    }
+
+    /// The value of the one rendered series starting with `prefix`.
+    fn value_of(rendered: &str, prefix: &str) -> f64 {
+        let line = rendered
+            .lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix} missing from {rendered}"));
+        line.rsplit(' ').next().unwrap().parse().unwrap()
+    }
+
+    #[test]
+    fn a_cycle_is_registered_with_zero_counts_and_the_start_as_last_success() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let before = unix_now();
+        metrics::with_local_recorder(&recorder, || register_cycle("svc", "main"));
+        let rendered = handle.render();
+        for result in ["success", "failure"] {
+            let series =
+                format!(r#"distant_signal_svc_cycles_total{{cycle="main",result="{result}"}} 0"#);
+            assert!(
+                rendered.contains(&series),
+                "{series} missing from {rendered}"
+            );
+        }
+        let last = value_of(
+            &rendered,
+            r#"distant_signal_svc_last_success_timestamp_seconds{cycle="main"}"#,
+        );
+        assert!(last >= before.floor() && last <= unix_now() + 1.0, "{last}");
+    }
+
+    #[test]
+    fn a_failed_cycle_counts_but_leaves_the_last_success_alone() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            register_cycle("svc", "main");
+            metrics::gauge!(
+                "distant_signal_svc_last_success_timestamp_seconds",
+                "cycle" => "main"
+            )
+            .set(1.0);
+            record_cycle("svc", "main", false);
+            record_cycle("svc", "main", false);
+        });
+        let rendered = handle.render();
+        assert!(
+            rendered
+                .contains(r#"distant_signal_svc_cycles_total{cycle="main",result="failure"} 2"#),
+            "{rendered}"
+        );
+        let gauge = r#"distant_signal_svc_last_success_timestamp_seconds{cycle="main"}"#;
+        assert!((value_of(&rendered, gauge) - 1.0).abs() < f64::EPSILON);
+
+        metrics::with_local_recorder(&recorder, || record_cycle("svc", "main", true));
+        let rendered = handle.render();
+        assert!(
+            rendered
+                .contains(r#"distant_signal_svc_cycles_total{cycle="main",result="success"} 1"#),
+            "{rendered}"
+        );
+        assert!(value_of(&rendered, gauge) > 1.0);
     }
 
     #[test]
