@@ -34,6 +34,51 @@ describe('DelayRepayEstimate', () => {
     expect(screen.getByText(/This is an estimate, not a guarantee/)).toBeInTheDocument();
   });
 
+  it('a provisional estimate says so, names where it is measured, and the 120-minute band is of the return fare', () => {
+    renderWithMantine(
+      <DelayRepayEstimate
+        response={response({
+          delayMinutes: 125,
+          provisional: true,
+          delayBasis: 'publicSchedule',
+          measuredAtCrs: 'EDB',
+          estimate: {
+            scheme: 'DR30',
+            bandMinutes: 120,
+            percentage: 100,
+            fareBasis: 'return',
+            provisional: true,
+            disclaimer: ESTIMATE_DISCLAIMER,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText('Provisional Delay Repay estimate')).toBeInTheDocument();
+    expect(screen.getByText(/100% of your return fare/)).toBeInTheDocument();
+    expect(screen.getByText(/hasn.t reached EDB yet/)).toBeInTheDocument();
+  });
+
+  it('a final estimate carries no provisional note', () => {
+    renderWithMantine(
+      <DelayRepayEstimate
+        response={response({
+          delayMinutes: 35,
+          provisional: false,
+          measuredAtCrs: 'EDB',
+          estimate: {
+            scheme: 'DR30',
+            bandMinutes: 30,
+            percentage: 50,
+            provisional: false,
+            disclaimer: ESTIMATE_DISCLAIMER,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText('Estimated Delay Repay eligibility')).toBeInTheDocument();
+    expect(screen.queryByText(/Provisional/)).not.toBeInTheDocument();
+  });
+
   it('estimate null with a real delayMinutes: does not assert a specific reason', () => {
     renderWithMantine(<DelayRepayEstimate response={response({ delayMinutes: 10 })} />);
     expect(screen.getByText(/10 minutes/)).toBeInTheDocument();

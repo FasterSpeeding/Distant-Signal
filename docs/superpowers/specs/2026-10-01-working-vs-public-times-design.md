@@ -1,7 +1,8 @@
 # Working vs public timetable times: evaluation and recommendation
 
-Date: 2026-10-01. Status: evaluation, nothing implemented. A characterisation
-test was committed with it (`set_down_and_pick_up_only_characterisation` in
+Date: 2026-10-01. Status: phases 1 and 2 implemented (§10, §11). A
+characterisation test was committed with it
+(`set_down_and_pick_up_only_characterisation` in
 `crates/schedule-reference/src/main.rs`).
 
 Code references are to main at `b84e97de`. Measurements come from the
@@ -521,6 +522,78 @@ view (P9).
 - **Journeys leg search.** `schedule_destination_departures` still lists
   only boardable departures, so a journey leg cannot yet END at a `D`
   stop; the leg-candidate search does not carry public times yet.
+
+## 11. Phase 2 implementation (2026-10-01)
+
+Implemented: P5, P1, P6, the live-overlay arithmetic, the journeys leg
+search and the passing-point date gap. P7 (the MCP's mapping) is the MCP
+session's; `docs/api-changelog.md` lists every field and meaning change for
+it.
+
+- **The arithmetic** lives in `common::public_delay`, pure, with one shared
+  read (`public_delay::db::stop_delays`) that api and notifier both use.
+  - A reported TRUST movement is measured against its own `gbtt_timestamp`
+    (`delayBasis: public`).
+  - Without one, TRUST's `planned_timestamp` is moved by the CIF schedule's
+    `public - working` gap at that call (`publicSchedule`). Movements
+    matched from the backlog have no gbtt, nor do those stored before
+    phase 1. No TRUST instant is ever diffed against a CIF one, which
+    would reintroduce the hour-skew bug.
+  - Failing both, the working time (`working`).
+  - A call not yet reported is forecast: its working time plus TRUST's
+    running delay, against its public time (so a terminus's recovery
+    margin counts).
+  - `plausible_delay_minutes` guards every measurement.
+- **P5.**
+  - `JourneyStop.delayMinutes` is on public times and gains `delayBasis`.
+    `status`/`lateMinutes` compare the estimate with the public time.
+  - Every train-level `delayMinutes` (tracked train, `/Train/mine`,
+    journeys, groups, the public train page and line trains) is the delay
+    at the passenger's own stop (`api::data::stop_delay`), with
+    `delayBasis` and `delayProvisional`. On the public pages it is the
+    latest reported call.
+  - The notifier ranks each subscriber on the delay at their own stop.
+  - `train_current_state.delay_minutes` (WTT, latest event anywhere) stays
+    internal: the input to forecasts and per-stop estimates.
+  - Station boards, line status and network statistics already used LDBWS
+    public times and are unchanged. Full-coverage stays an operational
+    WTT measure.
+- **P1.**
+  - Delay Repay is measured against the public arrival at the ticket's
+    destination (else the pin destination, else the terminus).
+  - It is final once the train has arrived there, and provisional before
+    (`provisional`, plus a disclaimer that leads with it).
+  - 120-minute band (100% of the return fare).
+  - `delay_repay_rules` stays pure; `estimate_for` is the one place the
+    route and the ticket list turn a delay into an estimate.
+- **P6.**
+  - `schedule_query::Connection::departure_min`/`arrival_min` are public
+    times, falling back per call and direction to WTT.
+    `working_departure_min`/`working_arrival_min` (also on `TrainLeg`)
+    keep the WTT ones for `scheduled*`.
+  - Every search and the minimum change times use the public minutes.
+- **Live overlay.**
+  - A reported call uses the delay the journey overlay measured from that
+    TRUST report's own fields.
+  - Darwin's `etd - std` is unchanged.
+  - Estimates are compared with the public time.
+  - Facts are looked up by WTT minutes, and plans shifted by public ones.
+- **Journeys leg search.**
+  - `schedule_destination_departures` also publishes set-down-only calls,
+    with `can_board`/`can_alight` (migration `20261001170000`).
+  - Boarding readers require `can_board`, destination sides `can_alight`.
+  - Leg candidates carry `publicDeparture`, `publicDestinationArrival` and
+    `legPublicDestinationArrival`.
+- **Passing points after midnight.**
+  - `assign_day_offsets` orders passes by their own (truncated) pass
+    time.
+  - The journey stops re-date a stored pass that reads more than 12 hours
+    before the previous working time.
+
+**Not done, deliberately:**
+- `trust_event_backlog` still does not carry `gbtt_timestamp`, so a
+  backlog-matched movement uses the `publicSchedule` fallback.
+- `scheduled*` stay WTT for this release (§9 decision 1).
 
 ## Appendix: method
 

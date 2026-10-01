@@ -400,6 +400,10 @@ pub struct JourneyStop {
     pub name: Option<String>,
     pub tiploc: Option<String>,
     pub kind: Option<schedule_query::CallingPointKind>,
+    /// The WORKING-timetable time, truncated to the minute. Deprecated on
+    /// the wire (docs/api-changelog.md): kept for one release, then switched
+    /// to the public time or removed. Read `publicArrival`/`publicDeparture`
+    /// (or `workingArrival`/`workingDeparture`) instead.
     pub scheduled_arrival: Option<DateTime<Utc>>,
     pub scheduled_departure: Option<DateTime<Utc>>,
     pub actual_arrival: Option<DateTime<Utc>>,
