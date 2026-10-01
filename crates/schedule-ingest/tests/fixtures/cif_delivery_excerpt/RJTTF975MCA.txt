@@ -1,0 +1,12 @@
+HDTPS.UCFCATE.PD1107191907112108DFTTISN       FA190711300912                    
+TIAACHEN 00081601LAACHEN                    00005   0                           
+TIABDARE 00398200TABERDARE PLATFORM 1       78100   0ABAABERDARE                
+TIABDO   00909000ZABERDOUR                  03295   0AURABERDOUR                
+TIABER   08381300LABER                      78371   0ABEABER                    
+BSNG007042605172608300000001            1                                      C
+BSNW684682605172610180000001 POO2E88    113560015 EMU    075D     S            O
+BX         SRYSR408800                                                          
+LOBALLOCH 2308 2308          TB                                                 
+LICHSTRSJ           0721H00000000   UFL                  H                      
+LTCHST    0724 07244     TF                                                     
+ZZ                                                                              

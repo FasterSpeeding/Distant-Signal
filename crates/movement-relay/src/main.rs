@@ -20,11 +20,13 @@ use event_sink::{EventSink, RedisEventSink};
 use kafka_source::{KafkaRawSource, RawKafkaSource};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    common::logging::exit_code(run().await)
+}
+
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("movement-relay");
 
     let config = Config::parse();
     if config.metrics_enabled {
@@ -76,13 +78,21 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         match run_cycle(&mut source, &mut sink).await {
-            Cycle::Committed => {}
-            Cycle::Failed => tokio::time::sleep(ERROR_BACKOFF).await,
+            Cycle::Committed => progress.beat(),
+            // A failed receive or publish (Kafka or Redis down) is the
+            // process alive and retrying, not a wedge: restarting would not
+            // bring Redis back. See `health_http::Progress`.
+            Cycle::Failed => {
+                tokio::time::sleep(ERROR_BACKOFF).await;
+                progress.beat();
+            }
+            // A record that published but whose offset cannot be stored is
+            // different: retrying it forever while beating would hide a
+            // wedge from `/livez` (a revoked partition used to do exactly
+            // that). Transient failures clear on the next cycle; one that
+            // persists for `progress_stall_secs` restarts the pod.
+            Cycle::CommitFailed => tokio::time::sleep(ERROR_BACKOFF).await,
         }
-        // One loop iteration completed, however it went -- a failed cycle
-        // (Redis down) is the process alive and retrying, not a wedge. See
-        // `health_http::Progress`.
-        progress.beat();
     }
 }
 
@@ -95,7 +105,11 @@ const ERROR_BACKOFF: Duration = Duration::from_secs(2);
 #[derive(Debug, PartialEq, Eq)]
 enum Cycle {
     Committed,
+    /// Receiving or publishing failed; the record (if any) is retained.
     Failed,
+    /// The record published but its offset commit failed; it is retained.
+    /// Does not count as liveness progress (see `main`).
+    CommitFailed,
 }
 
 /// One consume -> classify -> XADD -> commit cycle. Only commits the Kafka
@@ -161,7 +175,7 @@ where
         // made safe by the `dedup_key` path") -- a duplicate is recoverable
         // downstream, a dropped movement is not.
         source.retain_for_retry(batch);
-        return Cycle::Failed;
+        return Cycle::CommitFailed;
     }
     Cycle::Committed
 }
@@ -919,7 +933,7 @@ mod tests {
         source.fail_next_commit = true;
         let mut sink = FakeEventSink::default();
 
-        assert_eq!(run_cycle(&mut source, &mut sink).await, Cycle::Failed);
+        assert_eq!(run_cycle(&mut source, &mut sink).await, Cycle::CommitFailed);
         assert_eq!(source.committed_offsets, Vec::<i64>::new());
 
         assert_eq!(run_cycle(&mut source, &mut sink).await, Cycle::Committed);

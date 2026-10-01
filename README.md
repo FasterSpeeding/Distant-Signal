@@ -26,6 +26,8 @@ real differentiator.
 - `charts/distant-signal/` — the Helm chart for deploying the whole stack.
 - `lines/` — the curated TOML line-definition catalogue, one file per line
   (format in `lines/SCHEMA.md`).
+- `scripts/` — CI and maintenance tooling (Python, managed with uv; see
+  below).
 
 See `DESIGN.md` for the full architecture.
 
@@ -34,6 +36,26 @@ See `DESIGN.md` for the full architecture.
 For local development, see `docker-compose.yml` (its header explains the
 `local.env` / `dev.env` modes). For a real deployment, see
 `charts/distant-signal/README.md` for the Helm chart.
+
+## Scripts and their lint
+
+The Python tooling is managed with [uv](https://docs.astral.sh/uv/):
+`pyproject.toml` pins the lint tools in its `lint` dependency group,
+`uv.lock` pins the full tree, and `.python-version` the interpreter. With uv
+installed (e.g. `mise use -g uv`):
+
+```sh
+uv run scripts/lint-scripts.py         # what CI's scripts-lint job runs
+uv run scripts/lint-scripts.py --fix   # apply shfmt/ruff fixes first
+uv run python -m unittest discover -s scripts/tests   # the scripts' tests
+# Before merging a branch that adds migrations (CI's migration-order job):
+uv run scripts/check-migration-order.py "$(git merge-base main HEAD)"
+```
+
+`uv run` creates `.venv/` and installs the `lint` group on first use. It runs
+shellcheck and shfmt over every `*.sh`, ruff and mypy over `scripts/`,
+actionlint over the workflows, hadolint over the Dockerfiles, and
+`scripts/lint-containers.py`.
 
 ## How segments work
 

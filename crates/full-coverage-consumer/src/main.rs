@@ -1,8 +1,7 @@
 //! `full-coverage-consumer`: a second, independent consumer of the same RDM
-//! Train Movements feed `trust-consumer` reads -- by default its own
-//! consumer group on the `movement-events` Redis Stream that
-//! `movement-relay` fills (`--movement-feed-backend kafka` reads RDM's
-//! Kafka topic directly instead) -- correlating every event against the
+//! Train Movements feed `trust-consumer` reads -- its own consumer group on
+//! the `movement-events` Redis Stream that `movement-relay` fills (the
+//! direct-Kafka backend was removed in Deploy C, PL-15a) -- correlating every event against the
 //! FULL scheduled population of every shadow-computed line (not a small
 //! pinned-train set) -- see
 //! docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md and
@@ -93,7 +92,6 @@ use clap::Parser;
 use config::{Config, MovementFeedBackend};
 use day::{DayState, Lookups};
 use feed::MovementFeed;
-use feed::kafka::KafkaMovementFeed;
 use movement_feed::ActiveFeed;
 use movement_feed::DeadLetterSink;
 use movement_feed::redis_stream::RedisStreamMovementFeed;
@@ -104,11 +102,13 @@ use stats::current_rail_service_date;
 use day::dispatch_message;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    common::logging::exit_code(run().await)
+}
+
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("full-coverage-consumer");
     let config = Config::parse();
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
@@ -124,9 +124,6 @@ async fn main() -> anyhow::Result<()> {
     let internal_oauth = Arc::new(config.internal_oauth.token_cache());
 
     let mut feed = match config.movement_feed_backend {
-        MovementFeedBackend::Kafka => {
-            ActiveFeed::Kafka(KafkaMovementFeed::connect(&config, connection_state)?)
-        }
         MovementFeedBackend::RedisStream => ActiveFeed::RedisStream(
             // Redis down at startup is waited for (each attempt logged,
             // beating progress so /livez stays 200); afterwards every Redis
@@ -195,8 +192,7 @@ async fn main() -> anyhow::Result<()> {
         geometry: Arc::clone(&geometry),
         population: Arc::clone(&population),
         interval: population_reload_interval,
-        min_retry: Duration::from_secs(1),
-        max_retry: failed_reload_retry_delay(population_reload_interval),
+        retry: population_reload::RETRY_BACKOFF,
         initial_wait: Duration::from_secs(config.population_initial_wait_secs),
     }
     .spawn();
@@ -281,9 +277,7 @@ async fn main() -> anyhow::Result<()> {
             last_stanox_crs_reload = tokio::time::Instant::now();
         }
 
-        // 1b. redis-stream gap check -- a no-op under the Kafka backend
-        // (ActiveFeed::check_gap returns Ok(None) immediately for that
-        // variant). See docs/superpowers/specs/2026-09-04-movement-relay-design.md
+        // 1b. redis-stream gap check. See docs/superpowers/specs/2026-09-04-movement-relay-design.md
         // Decision 2's "definitive gap detection."
         if last_redis_gap_check.elapsed() >= redis_gap_check_interval {
             match feed.check_gap().await {
@@ -350,6 +344,19 @@ async fn main() -> anyhow::Result<()> {
 /// 2026-09-27 review found `stream_gap_detected_total` had never existed in
 /// Prometheus at all, which is indistinguishable from the check never
 /// running).
+/// Every `full_coverage_consumer_errors_total` operation that is a failed
+/// call to api, registered at 0 and summed by the chart's
+/// DistantSignalConsumerApiCallsFailing alert (2026-10-01: ~516k failed
+/// population reloads raised nothing). `post_window_stats` is left out: it
+/// has its own alert (DistantSignalFullCoverageWindowPostErrors). The
+/// chart's template lists the same operations; a test keeps them in step.
+const API_CALL_OPERATIONS: &[&str] = &[
+    "reload_line_population_fetch",
+    "post_line_stats",
+    "post_station_samples",
+    "reload_stanox_crs",
+];
+
 fn init_metrics() {
     for counter in [
         "full_coverage_consumer_stream_gap_detected_total",
@@ -383,6 +390,20 @@ fn init_metrics() {
         "operation" => "post_window_stats"
     )
     .increment(0);
+    // DistantSignalConsumerApiCallsFailing.
+    common::metrics::register_operation_counters(
+        "full_coverage_consumer_errors_total",
+        API_CALL_OPERATIONS,
+    );
+    // DistantSignalTrustEnvelopeParseDrops (R-097).
+    for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+        metrics::counter!(
+            common::metrics::metric_name("full_coverage_consumer_errors_total"),
+            "operation" => "parse_envelope",
+            "msg_type" => msg_type
+        )
+        .increment(0);
+    }
 }
 
 /// Waits for the first population load, then replays the current rail day
@@ -909,6 +930,25 @@ async fn post_windows(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    /// The chart's DistantSignalConsumerApiCallsFailing sums exactly
+    /// [`API_CALL_OPERATIONS`](super::API_CALL_OPERATIONS) for this consumer.
+    #[test]
+    fn the_chart_alerts_on_every_api_call_operation() {
+        let template = std::fs::read_to_string(
+            common::manifest_dir!()
+                .join("../../charts/distant-signal/templates/prometheusrule.yaml"),
+        )
+        .unwrap();
+        let entry = format!(
+            r#"(list "full_coverage_consumer" "full-coverage-consumer" "{}")"#,
+            super::API_CALL_OPERATIONS.join("|")
+        );
+        assert!(
+            template.contains(&entry),
+            "the chart template has no {entry}"
+        );
+    }
 
     use super::*;
     use crate::feed::FakeMovementFeed;
@@ -1592,39 +1632,6 @@ mod tests {
         }
     }
 
-    /// Kafka has no group-less replay: a process starting mid-day there
-    /// cannot rebuild the day, so the day is partial.
-    #[tokio::test]
-    async fn a_backend_without_replay_marks_the_starting_day_partial() {
-        let mut feed: ActiveFeed<movement_feed::FakeMovementFeed> =
-            ActiveFeed::Kafka(movement_feed::FakeMovementFeed::new(vec![]));
-        let (_, population) = todays_population();
-        let (_tx, mut rx) = tokio::sync::watch::channel(Some(population_reload::FirstLoad {
-            service_date: current_rail_service_date(chrono::Utc::now()),
-            missing_lines: vec!["other-line".to_string()],
-        }));
-        let day = start_consuming(
-            &mut feed,
-            &mut rx,
-            &shared(population),
-            &waterloo_lookups(),
-            &progress(),
-            true,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            day.partial_reason,
-            Some(day::PartialReason::ReplayUnsupported)
-        );
-        assert!(day.partial_lines.contains("other-line"));
-        assert!(day.trains.is_some(), "windowed state on when asked for");
-        assert!(
-            chrono::Utc::now() - day.observed_from < chrono::Duration::minutes(1),
-            "under Kafka nothing before the process start was seen"
-        );
-    }
-
     /// A feed that records, every time anything reads from it, whether the
     /// population had been loaded by then.
     struct RecordingFeed {
@@ -1666,9 +1673,9 @@ mod tests {
     impl replay::ReplaySource for RecordingFeed {
         async fn positions(
             &mut self,
-        ) -> anyhow::Result<Option<movement_feed::redis_stream::StreamPositions>> {
+        ) -> anyhow::Result<movement_feed::redis_stream::StreamPositions> {
             self.touch();
-            Ok(Some(movement_feed::redis_stream::StreamPositions::default()))
+            Ok(movement_feed::redis_stream::StreamPositions::default())
         }
         async fn pending_ids(&mut self) -> anyhow::Result<std::collections::HashSet<String>> {
             self.touch();
@@ -1722,8 +1729,10 @@ mod tests {
             geometry: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             population: Arc::clone(&population),
             interval: Duration::from_secs(300),
-            min_retry: Duration::from_millis(20),
-            max_retry: failed_reload_retry_delay(Duration::from_secs(300)),
+            retry: common::backoff::Backoff::new(
+                Duration::from_millis(20),
+                Duration::from_secs(60),
+            ),
             initial_wait: Duration::from_secs(600),
         }
         .spawn();
@@ -1800,8 +1809,7 @@ mod tests {
             geometry: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             population: Arc::clone(&population),
             interval: Duration::from_secs(300),
-            min_retry: Duration::from_secs(1),
-            max_retry: Duration::from_secs(15),
+            retry: population_reload::RETRY_BACKOFF,
             initial_wait: Duration::from_secs(600),
         }
         .spawn();

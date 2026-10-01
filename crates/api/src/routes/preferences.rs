@@ -383,6 +383,30 @@ mod tests {
             err.1
         );
     }
+
+    /// L10 (2026-09-26 review): each pinned id is capped at
+    /// `MAX_PINNED_ID_LENGTH` BYTES (not characters), exactly at the
+    /// boundary.
+    #[test]
+    fn a_pinned_id_over_the_byte_length_cap_is_rejected() {
+        let at_cap = vec!["a".repeat(MAX_PINNED_ID_LENGTH)];
+        assert!(reject_if_over_pin_limit(&at_cap, "lines").is_ok());
+
+        let over = vec!["SW".to_string(), "a".repeat(MAX_PINNED_ID_LENGTH + 1)];
+        let err = reject_if_over_pin_limit(&over, "operators")
+            .expect_err("an over-long id must be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(
+            err.1.contains("pinned operators id is too long"),
+            "{}",
+            err.1
+        );
+
+        // 86 three-byte characters: 86 chars but 258 bytes.
+        let multibyte = vec!["\u{20ac}".repeat(86)];
+        assert!(multibyte[0].chars().count() < MAX_PINNED_ID_LENGTH);
+        assert!(reject_if_over_pin_limit(&multibyte, "stations").is_err());
+    }
 }
 
 /// End-to-end version of the `tests` module's regression case, exercising

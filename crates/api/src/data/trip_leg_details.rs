@@ -104,7 +104,16 @@ pub fn apply_leg_details(
     }
     for row in rows {
         if let Some(departure) = row.booked_departure {
-            let at = minutes(departure, row_day_offset(row));
+            // The departure's own day (R-043), as the planner computed
+            // `departure_min` with.
+            let at = minutes(
+                departure,
+                schedule_query::records::departure_day_offset(
+                    row.booked_arrival,
+                    Some(departure),
+                    row_day_offset(row),
+                ),
+            );
             record(&mut departures, &row.uid, at, &row.platform);
             record(&mut public_departures, &row.uid, at, &row.public_departure);
         }
@@ -324,6 +333,44 @@ mod tests {
             public_arrival.map(|t| t.format("%H:%M").to_string()),
             *public_arrival_day_offset,
         )
+    }
+
+    /// R-043: boarding at a stop that dwells across midnight (arrive 23:55,
+    /// depart 00:02, stored with the arrival's day offset 0) is matched on
+    /// the departure's own next-day minute, so its platform and public
+    /// departure are found and dated the next day.
+    #[test]
+    fn a_midnight_dwell_boarding_matches_on_the_next_day() {
+        let mut leg = train_leg("U1", "00:02:00", "00:05:00", 1);
+        if let PlannedLeg::Train {
+            departure_day_offset,
+            ..
+        } = &mut leg
+        {
+            *departure_day_offset = 1;
+        }
+        let mut segments = segments(vec![leg]);
+        let mut boarding = row("U1", Some("23:55:00"), Some("00:02:00"), 0, Some("3"));
+        boarding.public_departure = "00:02:00".parse().ok();
+        let mut alighting = row("U1", Some("00:05:00"), None, 1, None);
+        alighting.public_arrival = "00:05:00".parse().ok();
+        apply_leg_details(
+            &mut segments,
+            &[boarding, alighting],
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let leg = &segments[0].itineraries[0].legs[0];
+        assert_eq!(details(leg).0, Some("3"));
+        assert_eq!(
+            public_times(leg),
+            (
+                Some("00:02".to_string()),
+                Some(1),
+                Some("00:05".to_string()),
+                Some(1)
+            )
+        );
     }
 
     /// The public times come from the boarding and alighting calls, and a

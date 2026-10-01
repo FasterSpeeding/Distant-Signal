@@ -1,11 +1,10 @@
 //! `trust-consumer`: persistent consumer for Network Rail's TRUST Train
 //! Movements feed (via RDM), filtered to exactly the currently
-//! user-tracked `(train_uid, date)` set. By default
-//! (`--movement-feed-backend redis-stream`) it reads the `movement-events`
-//! Redis Stream that `movement-relay` fans the RDM Kafka topic into; the
-//! `kafka` backend (a direct RDM Kafka consumer) is only used when asked
-//! for by name. Matched events are forwarded to `api`'s `/private/*`
-//! ingest endpoints. NOT a cron-style poller (it consumes a push stream
+//! user-tracked `(train_uid, date)` set. It reads the `movement-events`
+//! Redis Stream that `movement-relay` fans the RDM Kafka topic into (the
+//! direct-Kafka backend was removed in Deploy C, PL-15a). Matched events
+//! are forwarded to `api`'s `/private/*` ingest endpoints. NOT a
+//! cron-style poller (it consumes a push stream
 //! continuously rather than fetching on an interval), which is why it is
 //! not named `poller-trust`.
 
@@ -22,17 +21,51 @@ use std::time::Duration;
 use clap::Parser;
 use config::{Config, MovementFeedBackend};
 use feed::MovementFeed;
-use feed::kafka::KafkaMovementFeed;
 use movement_feed::ActiveFeed;
 use movement_feed::redis_stream::RedisStreamMovementFeed;
 
+/// Registers `trust_consumer_errors_total{operation="parse_envelope",msg_type}`
+/// at 0 for every msg_type a dropped envelope can carry, so the
+/// DistantSignalTrustEnvelopeParseDrops alert's `increase()` sees the first
+/// drop too (R-097).
+fn register_parse_envelope_counters() {
+    for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+        metrics::counter!(
+            common::metrics::metric_name("trust_consumer_errors_total"),
+            "operation" => "parse_envelope",
+            "msg_type" => msg_type
+        )
+        .increment(0);
+    }
+}
+
+/// Every `trust_consumer_errors_total` operation that is a failed call to
+/// api (not a data rejection, which is `post_rejected`), registered at 0
+/// and summed by the chart's DistantSignalConsumerApiCallsFailing alert
+/// (2026-10-01: ~23.6k failed tracked-trains reloads raised nothing). The
+/// chart's template lists the same operations; a test below keeps the two
+/// in step.
+const API_CALL_OPERATIONS: &[&str] = &[
+    "reload_tracked_trains",
+    "post_train_events",
+    "reload_stanox_crs",
+    "startup_reference_load",
+];
+
+/// Retry backoff for a failed tracked-trains reload: 1s doubling to 60s,
+/// jittered, and never longer than the reload interval itself.
+const TRACKED_TRAINS_RETRY: common::backoff::Backoff =
+    common::backoff::Backoff::new(Duration::from_secs(1), Duration::from_secs(60));
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    common::logging::exit_code(run().await)
+}
+
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("trust-consumer");
 
     let config = Config::parse();
     if config.metrics.metrics_enabled {
@@ -45,6 +78,11 @@ async fn main() -> anyhow::Result<()> {
         "trust_consumer_stream_gap_detected_total"
     ))
     .increment(0);
+    register_parse_envelope_counters();
+    common::metrics::register_operation_counters(
+        "trust_consumer_errors_total",
+        API_CALL_OPERATIONS,
+    );
     let (connection_state, progress) = health_http::spawn_with_progress(
         config.health_bind_url.clone(),
         "connected",
@@ -55,9 +93,6 @@ async fn main() -> anyhow::Result<()> {
     let internal_oauth = config.internal_oauth.token_cache();
 
     let mut feed = match config.movement_feed_backend {
-        MovementFeedBackend::Kafka => {
-            ActiveFeed::Kafka(KafkaMovementFeed::connect(&config, connection_state)?)
-        }
         MovementFeedBackend::RedisStream => ActiveFeed::RedisStream(
             Box::new(
                 connect_redis_feed(&config, common::startup::CONNECT_BACKOFF, &progress).await?,
@@ -115,10 +150,16 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
     apply_loaded_reference(refs, &mut reference, &mut state);
-    let mut last_reference_reload = tokio::time::Instant::now();
+    // Due `reload_interval` after a success; after a failure, on
+    // TRACKED_TRAINS_RETRY's backoff. It used to be retried on every pass
+    // of this loop while it failed: ~23.6k failed GETs in the 2026-10-01
+    // Postgres outage.
+    let mut reference_reload =
+        common::backoff::RetrySchedule::new(reload_interval, TRACKED_TRAINS_RETRY);
+    reference_reload.succeeded();
 
     loop {
-        if last_reference_reload.elapsed() >= reload_interval {
+        if reference_reload.is_due() {
             match queries::fetch_active_tracked_trains(
                 &http,
                 &config.api_tracked_trains_url,
@@ -128,12 +169,18 @@ async fn main() -> anyhow::Result<()> {
             {
                 Ok(refs) => {
                     apply_loaded_reference(refs, &mut reference, &mut state);
-                    last_reference_reload = tokio::time::Instant::now();
+                    reference_reload.succeeded();
                 }
                 Err(err) => {
                     // An already-loaded reference is kept as it is: a stale
                     // snapshot is far better than none (PL-11).
-                    tracing::error!(error = ?err, "failed to reload active tracked trains; keeping the previous reference and retrying next cycle");
+                    let retry_in = reference_reload.failed();
+                    tracing::error!(
+                        error = ?err,
+                        failures = reference_reload.failures(),
+                        retry_in_ms = retry_in.as_millis() as u64,
+                        "failed to reload active tracked trains; keeping the previous reference"
+                    );
                     metrics::counter!(
                         common::metrics::metric_name("trust_consumer_errors_total"),
                         "operation" => "reload_tracked_trains"
@@ -150,9 +197,6 @@ async fn main() -> anyhow::Result<()> {
             last_stanox_crs_reload = tokio::time::Instant::now();
         }
 
-        // A no-op under the Kafka backend (ActiveFeed::check_gap returns
-        // Ok(None) immediately for that variant) -- only meaningful once
-        // this deployment has been cut over to Redis Streams (Deploy B).
         if last_redis_gap_check.elapsed() >= redis_gap_check_interval {
             match feed.check_gap().await {
                 Ok(Some(gap)) => {
@@ -223,7 +267,7 @@ async fn main() -> anyhow::Result<()> {
             // `api` and the log for the whole outage. A flat, short pause is
             // enough to make that a trickle; it deliberately isn't
             // exponential or configurable, because the loop has no backlog
-            // to drain (Kafka holds the backlog) and a fixed small delay
+            // to drain (the stream holds the backlog) and a fixed small delay
             // costs nothing once the outage clears.
             tokio::time::sleep(ERROR_BACKOFF).await;
         }
@@ -468,15 +512,14 @@ where
     }
 
     if let Err(err) = feed.commit().await {
-        tracing::error!(error = ?err, "failed to commit Kafka offsets");
+        tracing::error!(error = ?err, "failed to commit the movement feed batch");
         metrics::counter!(
             common::metrics::metric_name("trust_consumer_errors_total"),
             "operation" => "commit_offsets"
         )
         .increment(1);
         // Rolled back even though the post itself succeeded: an uncommitted
-        // batch WILL be redelivered (Kafka: the seek-back in
-        // `feed::kafka`; Redis: `reclaim_stale`), and the replay must build
+        // batch WILL be redelivered (`reclaim_stale`), and the replay must build
         // the same events from the same pre-batch state. Re-posting them is
         // harmless -- that is exactly what `dedup_key` and `api`'s
         // `ON CONFLICT` clauses are for.
@@ -528,7 +571,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::LazyLock;
 
     use super::*;
@@ -540,8 +582,7 @@ mod tests {
     /// `one_pending_pin`'s pin.
     static TEST_STANOX_CRS: LazyLock<std::sync::RwLock<stanox_crs::StanoxCrsTable>> =
         LazyLock::new(|| {
-            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../reference-data/stanox-crs.csv");
+            let path = common::manifest_dir!().join("../../reference-data/stanox-crs.csv");
             std::sync::RwLock::new(
                 stanox_crs::StanoxCrsTable::from_file(&path)
                     .expect("reference-data/stanox-crs.csv should parse"),
@@ -1004,8 +1045,7 @@ mod tests {
 
     /// **Finding #4's end-to-end regression test.** A batch whose POST fails
     /// is redelivered (Redis `reclaim_stale` replays an unacked batch into
-    /// this same running process after 30 seconds; Kafka now seeks back to
-    /// it). The redelivered attempt MUST still carry the one-time
+    /// this same running process after 30 seconds). The redelivered attempt MUST still carry the one-time
     /// `resolved_train_uid`/`resolved_train_id` signal, because that is the
     /// only thing that ever flips the subscription to `'resolved'` in the
     /// database.
@@ -1121,6 +1161,43 @@ mod redis_outage_tests {
 
     use super::*;
 
+    /// R-097: every parse_envelope series exists at 0 from startup.
+    #[test]
+    fn parse_envelope_counters_are_registered_at_zero() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, register_parse_envelope_counters);
+        let rendered = handle.render();
+        for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+            let series = format!(
+                r#"distant_signal_trust_consumer_errors_total{{operation="parse_envelope",msg_type="{msg_type}"}} 0"#
+            );
+            assert!(
+                rendered.contains(&series),
+                "{series} missing from {rendered}"
+            );
+        }
+    }
+
+    /// The chart's DistantSignalConsumerApiCallsFailing sums exactly
+    /// [`API_CALL_OPERATIONS`] for this consumer.
+    #[test]
+    fn the_chart_alerts_on_every_api_call_operation() {
+        let template = std::fs::read_to_string(
+            common::manifest_dir!()
+                .join("../../charts/distant-signal/templates/prometheusrule.yaml"),
+        )
+        .unwrap();
+        let entry = format!(
+            r#"(list "trust_consumer" "trust-consumer" "{}")"#,
+            API_CALL_OPERATIONS.join("|")
+        );
+        assert!(
+            template.contains(&entry),
+            "the chart template has no {entry}"
+        );
+    }
+
     /// A local port with nothing listening on it (bound, then released).
     fn closed_local_port() -> u16 {
         std::net::TcpListener::bind("127.0.0.1:0")
@@ -1131,20 +1208,9 @@ mod redis_outage_tests {
     }
 
     fn config(redis_url: &str) -> Config {
-        let stanox_crs_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../reference-data/stanox-crs.csv");
+        let stanox_crs_file = common::manifest_dir!().join("../../reference-data/stanox-crs.csv");
         Config::try_parse_from([
             "trust-consumer",
-            "--kafka-brokers",
-            "kafka.example.com:9092",
-            "--kafka-topic",
-            "test-topic",
-            "--kafka-sasl-username",
-            "user",
-            "--kafka-sasl-password",
-            "pass",
-            "--kafka-sasl-mechanism",
-            "PLAIN",
             "--internal-oauth-token-url",
             "http://auth.example.com/token",
             "--internal-oauth-client-id",

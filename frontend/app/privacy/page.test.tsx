@@ -48,6 +48,15 @@ describe('PrivacyPage retention copy', () => {
     expect(retentionText('Your account')).toMatch(/If you do not sign in for 24 months .* we delete your account/);
   });
 
+  // docs/personal-data-retention.md: the SFTP server's 7/90/400-day log tiers.
+  it('states the file-transfer server log tiers', () => {
+    render();
+    const text = retentionText('Connections to our file-transfer server');
+    expect(text).toMatch(/7 days for connections that never try to sign in/);
+    expect(text).toMatch(/90 days for failed sign-ins and blocked addresses/);
+    expect(text).toMatch(/400 days for successful sign-ins and file transfers/);
+  });
+
   it('drops a limit that is switched off', () => {
     render({ RETENTION_STALE_PUSH_SUBSCRIPTION_DAYS: '0', RETENTION_PAST_TRAVEL_DAYS: '0' });
     expect(retentionText('Push notifications')).not.toMatch(/have not signed in/);

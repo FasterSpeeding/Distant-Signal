@@ -28,12 +28,21 @@ use movement_feed::MovementFeed;
 use movement_feed::redis_stream::RedisStreamMovementFeed;
 use movement_feed::{DeadLetter, DeadLetterSink};
 
+/// Every `trust_backlog_consumer_errors_total` operation that is a failed
+/// call to api (not a data rejection, which is `post_rejected`), registered
+/// at 0 and summed by the chart's DistantSignalConsumerApiCallsFailing alert
+/// (2026-10-01: ~2,200 failed backlog POSTs raised nothing). The chart's
+/// template lists the same operations; a test below keeps the two in step.
+const API_CALL_OPERATIONS: &[&str] = &["post_batch", "post_train_reasons", "reload_stanox_crs"];
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    common::logging::exit_code(run().await)
+}
+
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("trust-backlog-consumer");
     let config = Config::parse();
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
@@ -45,6 +54,20 @@ async fn main() -> anyhow::Result<()> {
         "trust_backlog_consumer_stream_gap_detected_total"
     ))
     .increment(0);
+    // Same for every parse_envelope series, for
+    // DistantSignalTrustEnvelopeParseDrops (R-097).
+    for msg_type in trust_schema::schema::ENVELOPE_FAILURE_MSG_TYPES {
+        metrics::counter!(
+            common::metrics::metric_name("trust_backlog_consumer_errors_total"),
+            "operation" => "parse_envelope",
+            "msg_type" => msg_type
+        )
+        .increment(0);
+    }
+    common::metrics::register_operation_counters(
+        "trust_backlog_consumer_errors_total",
+        API_CALL_OPERATIONS,
+    );
     let (connection_state, progress) = health_http::spawn_with_progress(
         config.health_bind_url.clone(),
         "connected",
@@ -72,12 +95,8 @@ async fn main() -> anyhow::Result<()> {
     // established pattern for a Redis-Streams backend
     // (`crates/movement-feed/src/active_feed.rs`'s own `ActiveFeed::RedisStream`
     // variant already does this generically -- see that module's doc
-    // comment). `ActiveFeed<K>` is generic over a Kafka backend type `K`
-    // this crate never uses (Task 7's own "Redis-Streams-only" decision);
-    // `RedisStreamMovementFeed` itself trivially satisfies `K: MovementFeed`,
-    // so `ActiveFeed<RedisStreamMovementFeed>` type-checks even though the
-    // `Kafka` variant is never constructed.
-    let mut feed: ActiveFeed<RedisStreamMovementFeed> = ActiveFeed::RedisStream(
+    // comment).
+    let mut feed: ActiveFeed = ActiveFeed::RedisStream(
         // Redis down at startup is waited for (each attempt logged, beating
         // progress so /livez stays 200); afterwards every Redis command is
         // bounded and a failure is retried by this loop. See
@@ -483,6 +502,25 @@ fn current_rail_day(at: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
 #[cfg(test)]
 mod rail_day_tests {
     use super::*;
+
+    /// The chart's DistantSignalConsumerApiCallsFailing sums exactly
+    /// [`API_CALL_OPERATIONS`] for this consumer.
+    #[test]
+    fn the_chart_alerts_on_every_api_call_operation() {
+        let template = std::fs::read_to_string(
+            common::manifest_dir!()
+                .join("../../charts/distant-signal/templates/prometheusrule.yaml"),
+        )
+        .unwrap();
+        let entry = format!(
+            r#"(list "trust_backlog_consumer" "trust-backlog-consumer" "{}")"#,
+            API_CALL_OPERATIONS.join("|")
+        );
+        assert!(
+            template.contains(&entry),
+            "the chart template has no {entry}"
+        );
+    }
 
     #[test]
     fn well_after_the_0200_cutoff_is_that_calendar_days_rail_day() {

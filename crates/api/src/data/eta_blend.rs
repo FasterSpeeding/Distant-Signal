@@ -90,7 +90,9 @@ pub fn find_darwin_eta(
         |time| resolve_london_time_near(pin_scheduled_departure, time),
     )?;
     let estimated = NaiveTime::parse_from_str(&matched.estimated, "%H:%M").ok()?;
-    resolve_london_time_near(pin_scheduled_departure, estimated)
+    // An estimate, anchored on the time it estimates: see
+    // `resolve_london_estimate_near` for the autumn-hour rule.
+    resolve_london_estimate_near(pin_scheduled_departure, estimated)
 }
 
 /// Resolves a bare Europe/London wall-clock `time` to the instant NEAREST
@@ -132,9 +134,59 @@ pub(crate) fn resolve_london_time_near(
     anchor: DateTime<Utc>,
     time: NaiveTime,
 ) -> Option<DateTime<Utc>> {
+    resolve_near(anchor, time, AmbiguousPick::Nearest)
+}
+
+/// [`resolve_london_time_near`] for an ESTIMATED or actual time whose
+/// `anchor` is the SCHEDULED time it estimates (L12 residual, 2026-10-01).
+///
+/// The one difference is the autumn repeated hour. Nearest-to-schedule
+/// misdates a long delay there: a train due 01:20 BST (00:20Z) and 50
+/// minutes late shows "01:10", meaning 01:10 GMT (01:10Z), but the BST
+/// reading (00:10Z) is nearer the anchor and showed it 10 minutes early.
+/// Trains run late far more than early, so of the two readings this takes
+/// the earliest one at or after `anchor`, and the nearest only when both
+/// are before it (shown running early). No extra distance bound is needed:
+/// the readings are an hour apart, so when the earlier one is before
+/// `anchor` the later one is less than an hour after it. An exact tie now
+/// goes to the later reading.
+///
+/// Callers: `find_darwin_eta`'s estimate only. Scheduled-vs-scheduled
+/// matching (`common::match_darwin_departure_near_time`'s conversion in
+/// `find_darwin_eta`) and `stop_board::match_stop`'s board `std` against
+/// its poll time have no lateness direction and keep pure nearest.
+pub(crate) fn resolve_london_estimate_near(
+    anchor: DateTime<Utc>,
+    time: NaiveTime,
+) -> Option<DateTime<Utc>> {
+    resolve_near(anchor, time, AmbiguousPick::AtOrAfterAnchor)
+}
+
+/// How [`resolve_near`] chooses between the two readings of an ambiguous
+/// (autumn repeated-hour) local time.
+#[derive(Clone, Copy)]
+enum AmbiguousPick {
+    /// Whichever is nearer the anchor; a tie goes to the earlier.
+    Nearest,
+    /// The earliest at or after the anchor; the nearest if neither is.
+    AtOrAfterAnchor,
+}
+
+fn resolve_near(
+    anchor: DateTime<Utc>,
+    time: NaiveTime,
+    pick: AmbiguousPick,
+) -> Option<DateTime<Utc>> {
     let anchor_local_date = anchor
         .with_timezone(&chrono_tz::Europe::London)
         .date_naive();
+    let nearest = |earliest_utc: DateTime<Utc>, latest_utc: DateTime<Utc>| {
+        if (earliest_utc - anchor).abs() <= (latest_utc - anchor).abs() {
+            earliest_utc
+        } else {
+            latest_utc
+        }
+    };
     [-1i64, 0, 1]
         .into_iter()
         .filter_map(|day_offset| {
@@ -144,13 +196,12 @@ pub(crate) fn resolve_london_time_near(
                 chrono::LocalResult::Ambiguous(earliest, latest) => {
                     let earliest_utc = earliest.with_timezone(&Utc);
                     let latest_utc = latest.with_timezone(&Utc);
-                    Some(
-                        if (earliest_utc - anchor).abs() <= (latest_utc - anchor).abs() {
-                            earliest_utc
-                        } else {
-                            latest_utc
-                        },
-                    )
+                    Some(match pick {
+                        AmbiguousPick::Nearest => nearest(earliest_utc, latest_utc),
+                        AmbiguousPick::AtOrAfterAnchor if earliest_utc >= anchor => earliest_utc,
+                        AmbiguousPick::AtOrAfterAnchor if latest_utc >= anchor => latest_utc,
+                        AmbiguousPick::AtOrAfterAnchor => nearest(earliest_utc, latest_utc),
+                    })
                 }
                 chrono::LocalResult::None => None,
             }
@@ -381,6 +432,65 @@ mod tests {
             "both the scheduled-time match and the resulting ETA must resolve to the GMT \
              occurrence, genuinely nearer this anchor -- not the earlier BST one a fixed \
              always-pick-BST rule would have wrongly chosen"
+        );
+    }
+
+    /// L12 residual (2026-10-01): a train due 01:20 BST (00:20Z) and 50
+    /// minutes late shows "01:10", which on the autumn Sunday means 01:10
+    /// GMT (01:10Z). The BST reading (00:10Z) is nearer the scheduled
+    /// anchor, so pure nearest showed the train 10 minutes EARLY. An
+    /// estimate prefers the reading at or after the scheduled time.
+    #[test]
+    fn a_long_delay_across_the_autumn_change_resolves_late_not_early() {
+        let samples = vec![departure_at("01:20", "WOK", "01:10", false)];
+        let eta = find_darwin_eta(&samples, Some("WOK"), None, pin("2026-10-25T00:20:00Z"));
+        assert_eq!(eta, Some("2026-10-25T01:10:00Z".parse().unwrap()));
+    }
+
+    /// An exact tie (anchor 00:40Z, readings 00:10Z and 01:10Z) used to go
+    /// to the earlier reading; for an estimate it goes to the one at or
+    /// after the scheduled time.
+    #[test]
+    fn an_exact_tie_in_the_autumn_hour_resolves_to_the_later_reading_for_an_estimate() {
+        let anchor: DateTime<Utc> = "2026-10-25T00:40:00Z".parse().unwrap();
+        let time = NaiveTime::from_hms_opt(1, 10, 0).unwrap();
+        assert_eq!(
+            resolve_london_estimate_near(anchor, time),
+            Some("2026-10-25T01:10:00Z".parse().unwrap())
+        );
+        // A scheduled time keeps pure nearest, ties to the earlier reading.
+        assert_eq!(
+            resolve_london_time_near(anchor, time),
+            Some("2026-10-25T00:10:00Z".parse().unwrap())
+        );
+    }
+
+    /// With neither reading at or after the scheduled time (the train is
+    /// shown running early), the estimate falls back to the nearest one.
+    #[test]
+    fn an_early_estimate_in_the_autumn_hour_falls_back_to_the_nearest_reading() {
+        // Due 01:50 GMT (01:50Z), estimated "01:45": readings 00:45Z and
+        // 01:45Z, both before the anchor.
+        let anchor: DateTime<Utc> = "2026-10-25T01:50:00Z".parse().unwrap();
+        assert_eq!(
+            resolve_london_estimate_near(anchor, NaiveTime::from_hms_opt(1, 45, 0).unwrap()),
+            Some("2026-10-25T01:45:00Z".parse().unwrap())
+        );
+    }
+
+    /// Spring change, 2026-03-29: nothing is ambiguous, so a late estimate
+    /// across the jump resolves as before, and a time inside the skipped
+    /// hour still yields `None`.
+    #[test]
+    fn a_late_estimate_across_the_spring_change_is_unaffected() {
+        // Due 00:50 GMT (00:50Z), estimated "02:10" BST (01:10Z), 20 late.
+        let samples = vec![departure_at("00:50", "WOK", "02:10", false)];
+        let eta = find_darwin_eta(&samples, Some("WOK"), None, pin("2026-03-29T00:50:00Z"));
+        assert_eq!(eta, Some("2026-03-29T01:10:00Z".parse().unwrap()));
+        let anchor: DateTime<Utc> = "2026-03-29T00:50:00Z".parse().unwrap();
+        assert_eq!(
+            resolve_london_estimate_near(anchor, NaiveTime::from_hms_opt(1, 30, 0).unwrap()),
+            None
         );
     }
 

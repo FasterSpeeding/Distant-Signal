@@ -501,20 +501,76 @@ async fn get_active_tracked_trains(
 /// `docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`).
 /// `ingested_at` is when this process actually happened to be processed,
 /// kept only as separate observability data.
+///
+/// `source_*` describe the delivered zip itself (its name, size and
+/// SHA-256 as `schedule-ingest` read it); absent from an older
+/// `schedule-ingest`, so all optional.
 #[derive(Debug, Deserialize)]
 struct ScheduleFeedIngestRequest {
     delivered_at: chrono::DateTime<chrono::Utc>,
     ingested_at: chrono::DateTime<chrono::Utc>,
     files: Vec<ScheduleFeedFile>,
+    #[serde(default)]
+    source_file: Option<String>,
+    #[serde(default)]
+    source_bytes: Option<u64>,
+    #[serde(default)]
+    source_sha256: Option<String>,
 }
 
 /// One file observed as part of a schedule-feed delivery. `bytes` is the
 /// size `schedule-ingest` itself observed on disk once stable, not a
 /// manifest-declared size -- the real manifest format has no such field.
+/// `sha256` is the extracted file's hash, when `schedule-ingest` extracted
+/// it itself (a delivery re-posted from its completion marker carries
+/// none).
 #[derive(Debug, Deserialize, Serialize)]
 struct ScheduleFeedFile {
     name: String,
     bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+}
+
+/// Whether `value` is a SHA-256 as `schedule-ingest` writes it: 64
+/// lowercase hex digits. The columns' CHECK constraints say the same; this
+/// turns a bad value into a 422 rather than a 500.
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A 422 for any malformed provenance field in a schedule-feed record.
+fn schedule_feed_ingest_problem(req: &ScheduleFeedIngestRequest) -> Option<String> {
+    if let Some(sha) = &req.source_sha256
+        && !is_sha256_hex(sha)
+    {
+        return Some("source_sha256 must be 64 lowercase hex digits".to_string());
+    }
+    if req
+        .source_bytes
+        .is_some_and(|bytes| i64::try_from(bytes).is_err())
+    {
+        return Some("source_bytes is out of range".to_string());
+    }
+    if req
+        .source_file
+        .as_deref()
+        .is_some_and(|f| f.trim().is_empty())
+    {
+        return Some("source_file must not be blank".to_string());
+    }
+    req.files
+        .iter()
+        .find(|f| f.sha256.as_deref().is_some_and(|s| !is_sha256_hex(s)))
+        .map(|f| {
+            format!(
+                "files[].sha256 of {:?} must be 64 lowercase hex digits",
+                f.name
+            )
+        })
 }
 
 async fn get_schedule_feed_last_fetched(
@@ -530,10 +586,24 @@ async fn post_schedule_feed_ingest(
     State(app): State<App>,
     Json(req): Json<ScheduleFeedIngestRequest>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    if let Some(problem) = schedule_feed_ingest_problem(&req) {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, problem));
+    }
     let files = serde_json::to_value(&req.files).map_err(|e| internal_error(e.into()))?;
-    queries::insert_schedule_feed_ingest(&app.database, req.delivered_at, req.ingested_at, &files)
-        .await
-        .map_err(internal_error)?;
+    let source = queries::ScheduleFeedSource {
+        file: req.source_file.as_deref(),
+        bytes: req.source_bytes.and_then(|b| i64::try_from(b).ok()),
+        sha256: req.source_sha256.as_deref(),
+    };
+    queries::insert_schedule_feed_ingest(
+        &app.database,
+        req.delivered_at,
+        req.ingested_at,
+        &files,
+        &source,
+    )
+    .await
+    .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted: 1 }))
 }
 
@@ -621,11 +691,17 @@ async fn post_tiploc_crs(
 /// One Network Rail CORPUS delivery from `schedule-ingest`'s CORPUS mode.
 /// Mirrors `schedule-ingest::corpus::CorpusLoadRequest` field for field.
 /// `delivered_at` is the delivered file's own mtime.
+/// `source_bytes`/`sha256` describe the delivered file as `schedule-ingest`
+/// read it; absent from an older `schedule-ingest`.
 #[derive(Debug, Deserialize)]
 struct CorpusLoadRequest {
     delivered_at: chrono::DateTime<chrono::Utc>,
     source_file: String,
     locations: Vec<crate::data::corpus::CorpusLocation>,
+    #[serde(default)]
+    source_bytes: Option<u64>,
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 /// Replaces `corpus_locations` with one whole delivery -- see
@@ -639,10 +715,22 @@ async fn post_corpus_locations(
     if let Some(problem) = corpus_load_problem(&req) {
         return Err((StatusCode::BAD_REQUEST, problem));
     }
-    let upserted = crate::data::corpus::replace_corpus_locations(
+    if req.sha256.as_deref().is_some_and(|s| !is_sha256_hex(s))
+        || req.source_bytes.is_some_and(|b| i64::try_from(b).is_err())
+    {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "sha256 must be 64 lowercase hex digits and source_bytes in range".to_string(),
+        ));
+    }
+    let upserted = crate::data::corpus::replace_corpus_locations_with_provenance(
         &app.database,
         req.delivered_at,
         &req.source_file,
+        &crate::data::corpus::DeliveredFileProvenance {
+            bytes: req.source_bytes.and_then(|b| i64::try_from(b).ok()),
+            sha256: req.sha256.as_deref(),
+        },
         &req.locations,
     )
     .await
@@ -650,6 +738,7 @@ async fn post_corpus_locations(
     tracing::info!(
         delivered_at = %req.delivered_at,
         source_file = %req.source_file,
+        sha256 = req.sha256.as_deref().unwrap_or(""),
         rows = upserted,
         "replaced corpus_locations"
     );
@@ -1221,6 +1310,7 @@ mod db_tests {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
+            migration_database_url: None,
             redis_url: "redis://127.0.0.1:0".to_string(),
             redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
@@ -3530,5 +3620,87 @@ mod corpus_load_validation_tests {
             "locations": [location("559500")]
         }));
         assert!(corpus_load_problem(&blank_source).is_some());
+    }
+
+    #[test]
+    fn corpus_provenance_is_optional() {
+        let req = request(serde_json::json!({
+            "delivered_at": "2026-09-28T03:00:00Z",
+            "source_file": "CORPUSExtract.json.gz",
+            "locations": [location("559500")],
+            "source_bytes": 295_957,
+            "sha256": "0f".repeat(32)
+        }));
+        assert_eq!(req.source_bytes, Some(295_957));
+        assert!(req.sha256.as_deref().is_some_and(is_sha256_hex));
+    }
+}
+
+#[cfg(test)]
+mod schedule_feed_provenance_tests {
+    use super::*;
+
+    fn request(body: serde_json::Value) -> ScheduleFeedIngestRequest {
+        serde_json::from_value(body).expect("valid ScheduleFeedIngestRequest JSON")
+    }
+
+    #[test]
+    fn an_older_schedule_ingest_record_without_provenance_is_accepted() {
+        let req = request(serde_json::json!({
+            "delivered_at": "2026-09-30T19:59:59Z",
+            "ingested_at": "2026-09-30T20:00:35Z",
+            "files": [{"name": "RJTTF975MCA.txt", "bytes": 724_116_170_u64}]
+        }));
+        assert_eq!(schedule_feed_ingest_problem(&req), None);
+        assert_eq!(req.source_sha256, None);
+        assert_eq!(req.files[0].sha256, None);
+        // No `sha256` key is written back into `files` for such a record.
+        assert_eq!(
+            serde_json::to_value(&req.files).unwrap(),
+            serde_json::json!([{"name": "RJTTF975MCA.txt", "bytes": 724_116_170_u64}])
+        );
+    }
+
+    #[test]
+    fn a_record_with_well_formed_provenance_is_accepted() {
+        let req = request(serde_json::json!({
+            "delivered_at": "2026-09-30T19:59:59Z",
+            "ingested_at": "2026-09-30T20:00:35Z",
+            "files": [{"name": "RJTTF975MCA.txt", "bytes": 3, "sha256": "ab".repeat(32)}],
+            "source_file": "timetable_full.zip",
+            "source_bytes": 77_222_226,
+            "source_sha256": "0123456789abcdef".repeat(4)
+        }));
+        assert_eq!(schedule_feed_ingest_problem(&req), None);
+    }
+
+    #[test]
+    fn malformed_provenance_is_refused() {
+        for (field, value) in [
+            (
+                "source_sha256",
+                serde_json::json!("ABCDEF".repeat(10) + "abcd"),
+            ),
+            ("source_sha256", serde_json::json!("abc")),
+            ("source_bytes", serde_json::json!(u64::MAX)),
+            ("source_file", serde_json::json!(" ")),
+        ] {
+            let mut body = serde_json::json!({
+                "delivered_at": "2026-09-30T19:59:59Z",
+                "ingested_at": "2026-09-30T20:00:35Z",
+                "files": []
+            });
+            body[field] = value;
+            assert!(
+                schedule_feed_ingest_problem(&request(body)).is_some(),
+                "{field} must be validated"
+            );
+        }
+        let bad_file = request(serde_json::json!({
+            "delivered_at": "2026-09-30T19:59:59Z",
+            "ingested_at": "2026-09-30T20:00:35Z",
+            "files": [{"name": "RJTTF975MCA.txt", "bytes": 3, "sha256": "xyz"}]
+        }));
+        assert!(schedule_feed_ingest_problem(&bad_file).is_some());
     }
 }

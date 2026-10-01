@@ -160,12 +160,20 @@ fn direction_or_default(cp: &RawCallingPoint) -> (bool, bool) {
 }
 
 impl StopTimetable {
-    fn from_calling_point(cp: &RawCallingPoint, calling_point_date: NaiveDate) -> Self {
+    /// `arrival_date` is the stop's own date (its arrival's day);
+    /// `departure_date` is its departure's, a day later for a stop that
+    /// dwells across midnight (R-043). Each public/working time is dated
+    /// against the WTT time on the same side.
+    fn from_calling_point(
+        cp: &RawCallingPoint,
+        arrival_date: NaiveDate,
+        departure_date: NaiveDate,
+    ) -> Self {
         let t = &cp.timetable;
-        let instant = |reference: Option<chrono::NaiveTime>, time: Option<chrono::NaiveTime>| {
-            time.and_then(|time| {
-                london_to_utc(date_near(reference, calling_point_date, time).and_time(time))
-            })
+        let instant = |date: NaiveDate,
+                       reference: Option<chrono::NaiveTime>,
+                       time: Option<chrono::NaiveTime>| {
+            time.and_then(|time| london_to_utc(date_near(reference, date, time).and_time(time)))
         };
         let working_arrival = t
             .working_arrival
@@ -175,11 +183,11 @@ impl StopTimetable {
             .or_else(|| with_half_minute(cp.booked_departure, t.is_half_minute_departure));
         let (can_board, can_alight) = direction_or_default(cp);
         Self {
-            public_arrival: instant(cp.booked_arrival, t.public_arrival),
-            public_departure: instant(cp.booked_departure, t.public_departure),
-            working_arrival: instant(cp.booked_arrival, working_arrival),
-            working_departure: instant(cp.booked_departure, working_departure),
-            working_pass: instant(None, t.working_pass),
+            public_arrival: instant(arrival_date, cp.booked_arrival, t.public_arrival),
+            public_departure: instant(departure_date, cp.booked_departure, t.public_departure),
+            working_arrival: instant(arrival_date, cp.booked_arrival, working_arrival),
+            working_departure: instant(departure_date, cp.booked_departure, working_departure),
+            working_pass: instant(arrival_date, None, t.working_pass),
             can_board,
             can_alight,
             request_stop: t.request_stop.unwrap_or(false),
@@ -498,6 +506,15 @@ impl JourneyStop {
         // service's post-midnight calling points are really the NEXT
         // calendar day.
         let calling_point_date = service_date + Duration::days(cp.day_offset as i64);
+        // The departure's own day: a stop that dwells across midnight
+        // (arrive 23:55, depart 00:02) departs the day after its stored
+        // `day_offset`, which is its arrival's (R-043).
+        let departure_date = service_date
+            + Duration::days(i64::from(schedule_query::records::departure_day_offset(
+                cp.booked_arrival,
+                cp.booked_departure,
+                cp.day_offset,
+            )));
         Self {
             crs,
             name: None, // filled in by a batch station-name pass in `build_journey_stops`
@@ -516,7 +533,7 @@ impl JourneyStop {
                 .and_then(|t| london_to_utc(calling_point_date.and_time(t))),
             scheduled_departure: cp
                 .booked_departure
-                .and_then(|t| london_to_utc(calling_point_date.and_time(t))),
+                .and_then(|t| london_to_utc(departure_date.and_time(t))),
             actual_arrival: None,
             actual_departure: None,
             estimated_arrival: None,
@@ -539,7 +556,7 @@ impl JourneyStop {
             live_status: None,
             late_minutes: None,
             board: None,
-            timetable: StopTimetable::from_calling_point(cp, calling_point_date),
+            timetable: StopTimetable::from_calling_point(cp, calling_point_date, departure_date),
         }
     }
 }
@@ -1113,8 +1130,12 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
         // is incomplete" convention (e.g. the event-type `_ => {}` arm
         // just above, and the no-match-found early `continue` at the top
         // of this loop).
+        //
+        // Guarded like every other TRUST delay (M11 sibling, 2026-10-01): a
+        // corrupt timestamp more than a day out is "delay unknown", not a
+        // delay of thousands of minutes shown to the user.
         stop.delay_minutes = match (event.actual_timestamp, event.planned_timestamp) {
-            (Some(a), Some(p)) => Some((a - p).num_minutes() as i32),
+            (Some(a), Some(p)) => common::trust_timestamp::plausible_delay_minutes(a, p),
             _ => None,
         };
     }
@@ -1883,6 +1904,25 @@ mod tests {
         let origin = &stops[2].timetable;
         assert!(origin.can_board && !origin.can_alight);
         assert_eq!(origin.public_departure, None);
+
+        // R-043: a stop dwelling across midnight departs the next day, and
+        // so do its public and working departures.
+        let dwell: Vec<RawCallingPoint> = serde_json::from_value(serde_json::json!([{
+            "tiploc": "BLFR", "kind": "Intermediate",
+            "bookedArrival": "23:55:00", "bookedDeparture": "00:02:00",
+            "publicArrival": "23:55:00", "publicDeparture": "00:02:00",
+            "workingDeparture": "00:02:30"
+        }]))
+        .unwrap();
+        let dwell = &stops_from_calling_points(&dwell, &HashMap::new(), service_date)[0];
+        assert_eq!(dwell.scheduled_arrival, at("2026-10-01T22:55:00Z"));
+        assert_eq!(dwell.scheduled_departure, at("2026-10-01T23:02:00Z"));
+        assert_eq!(dwell.timetable.public_departure, at("2026-10-01T23:02:00Z"));
+        assert_eq!(
+            dwell.timetable.working_departure,
+            at("2026-10-01T23:02:30Z")
+        );
+        assert_eq!(dwell.timetable.public_arrival, at("2026-10-01T22:55:00Z"));
 
         let json = serde_json::to_value(&stops[0]).unwrap();
         assert_eq!(json["publicArrival"], "2026-10-01T19:51:00Z");
@@ -2758,6 +2798,28 @@ mod tests {
             vec![Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)],
             "each of the six reports belongs to exactly one of the six calls, in order"
         );
+    }
+
+    /// M11 sibling (2026-10-01): a stop's `delay_minutes` goes through the
+    /// same plausibility guard as every other TRUST delay. A corrupt
+    /// `actual_timestamp` days away from its planned time used to show as a
+    /// delay of thousands of minutes (and an `as i32` could wrap).
+    #[test]
+    fn overlay_movement_events_drops_an_implausible_per_stop_delay() {
+        let mut stops = kingston_loop_stops();
+        let mut corrupt = event("KNG", "DEPARTURE", "2026-09-14T06:58:00Z");
+        corrupt.actual_timestamp = Some("2026-09-20T06:58:00Z".parse().unwrap());
+        let mut late = event("CLJ", "ARRIVAL", "2026-09-14T06:36:00Z");
+        late.actual_timestamp = Some("2026-09-14T06:41:00Z".parse().unwrap());
+
+        overlay_movement_events(&mut stops, &[late, corrupt]);
+
+        assert_eq!(stops[2].last_event_type.as_deref(), Some("DEPARTURE"));
+        assert_eq!(
+            stops[2].delay_minutes, None,
+            "six days late is a corrupt timestamp"
+        );
+        assert_eq!(stops[1].delay_minutes, Some(5));
     }
 
     /// The same loop, read end to end: the ORIGIN must show a departure and

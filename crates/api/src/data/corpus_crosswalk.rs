@@ -379,8 +379,7 @@ mod tests {
     /// The chart sets the flag on the api container, off by default.
     #[test]
     fn the_chart_wires_the_flag_off_by_default() {
-        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../charts/distant-signal");
+        let chart = common::manifest_dir!().join("../../charts/distant-signal");
         let template =
             std::fs::read_to_string(chart.join("templates/api-deployment.yaml")).unwrap();
         assert!(template.contains(&format!(

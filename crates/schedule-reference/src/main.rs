@@ -124,11 +124,13 @@ fn poll_interval(poll_interval_secs: u64) -> tokio::time::Interval {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    common::logging::exit_code(run().await)
+}
+
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("schedule-reference");
 
     let config = Config::parse();
     if config.metrics.metrics_enabled {

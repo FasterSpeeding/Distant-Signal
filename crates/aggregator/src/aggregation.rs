@@ -899,7 +899,23 @@ fn routes_from_stations(line: &LineDefinition, stations: &[String]) -> Vec<Affec
 /// slowly", it is not being sampled at all -- while still leaving ample room
 /// for a single degraded sweep, an RDM rate-limit backoff, or a poller
 /// restart without a station flapping in and out of coverage.
-const MAX_SAMPLE_AGE_MINUTES: i64 = 15;
+///
+/// Shared with `poller-ldbws` as [`common::STATION_SAMPLE_MAX_AGE_MINUTES`].
+pub(crate) const MAX_SAMPLE_AGE_MINUTES: i64 = common::STATION_SAMPLE_MAX_AGE_MINUTES as i64;
+
+/// Every station some line in `lines` samples, trimmed, uppercased, sorted
+/// and deduplicated: the same set `api`'s `/private/sample-stations` serves
+/// `poller-ldbws` (with its LEG-18 narrowing knobs off), so any other
+/// `station_samples` row belongs to a station nothing polls any more. See
+/// `queries::prune_orphaned_station_samples`.
+pub(crate) fn sampled_stations(lines: &HashMap<String, LineDefinition>) -> Vec<String> {
+    let set: std::collections::BTreeSet<String> = lines
+        .values()
+        .flat_map(|line| &line.sample_stations)
+        .map(|crs| crs.trim().to_ascii_uppercase())
+        .collect();
+    set.into_iter().collect()
+}
 
 /// Drops every `station_samples` entry whose `polled_at` is older than
 /// [`MAX_SAMPLE_AGE_MINUTES`], returning how many were dropped.
@@ -1500,10 +1516,9 @@ fn most_common<'a>(items: &[&'a str]) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn load_all_lines() -> HashMap<String, LineDefinition> {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lines");
+        let dir = common::manifest_dir!().join("../../lines");
         LineDefinition::from_dir(&dir)
             .expect("lines/ directory should parse")
             .into_iter()
@@ -1972,6 +1987,19 @@ mod tests {
         let mut kept: Vec<&str> = samples.keys().map(String::as_str).collect();
         kept.sort_unstable();
         assert_eq!(kept, ["AHT", "AON", "FRM"]);
+    }
+
+    /// The set `prune_orphaned_station_samples` keeps: every line's sample
+    /// stations, normalised like api's list, once each.
+    #[test]
+    fn sampled_stations_is_the_normalised_union_of_every_lines_samples() {
+        let mut a = test_line("a", false);
+        a.sample_stations = vec!["WOS".to_string(), "LMS".to_string()];
+        let mut b = test_line("b", false);
+        b.sample_stations = vec![" wos".to_string(), "WDM".to_string()];
+        let lines = HashMap::from([("a".to_string(), a), ("b".to_string(), b)]);
+        assert_eq!(sampled_stations(&lines), vec!["LMS", "WDM", "WOS"]);
+        assert!(sampled_stations(&HashMap::new()).is_empty());
     }
 
     #[test]

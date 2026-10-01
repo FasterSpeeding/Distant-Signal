@@ -105,7 +105,7 @@ pub struct Config {
     #[arg(long, env)]
     pub vapid_subject: String,
 
-    /// `main.rs` builds `tracing_subscriber::fmt().with_env_filter(...)`
+    /// `main.rs` builds its `common::logging::init_with_filter(...)` filter
     /// directly from THIS field's value, NOT from
     /// `EnvFilter::from_default_env()` (which every other binary in this
     /// workspace uses, and which reads `RUST_LOG`) -- so the env var clap
@@ -423,7 +423,7 @@ mod chart_env_wiring_tests {
     /// accident. `notifier` is the only container in this template, so "to
     /// EOF" is the whole block.
     fn notifier_container_block() -> String {
-        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/notifier-deployment.yaml");
         let rendered = std::fs::read_to_string(&chart)
             .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));

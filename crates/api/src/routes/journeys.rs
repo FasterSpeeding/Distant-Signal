@@ -1329,7 +1329,10 @@ async fn build_journey_detail_response(
         .fetch_all(&app.database)
         .await
         .map(|rows| rows.into_iter().collect())
-        .unwrap_or_default()
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = ?err, journey_id, "could not read leg train origins; skipping the origin-skip check");
+            std::collections::HashMap::new()
+        })
     };
 
     let mut board_crs: Vec<String> = Vec::new();
@@ -1355,7 +1358,10 @@ async fn build_journey_detail_response(
     let boards =
         crate::data::queries::latest_station_samples_for_crs_batch(&app.database, &board_crs)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = ?err, journey_id, "could not read departure boards for journey legs; no ETA overlay or skip flags");
+                Default::default()
+            });
 
     // Every leg's ETA overlay, then every leg's stop list in one batched
     // build. Cloned, not removed: two legs could in principle name one
@@ -1377,29 +1383,18 @@ async fn build_journey_detail_response(
         .unzip();
     let mut leg_states: Vec<Option<train_tracking::TrackedTrainState>> =
         (0..leg_rows.len()).map(|_| None).collect();
-    for (index, state) in stop_leg_indexes
-        .into_iter()
-        .zip(crate::routes::train::attach_journey_stops_batch(app, blended).await)
-    {
+    let mut stop_states = crate::routes::train::attach_journey_stops_batch(app, blended).await;
+    // Operator + TRUST reason overlays (train_operator / train_reasons),
+    // batched for every leg and applied after the batched stop build so
+    // per-stop live status sees the stops.
+    crate::data::train_operator::attach_to_tracked_states(&app.database, &mut stop_states).await;
+    crate::data::train_reasons::attach_to_tracked_states(&app.database, &mut stop_states).await;
+    for (index, state) in stop_leg_indexes.into_iter().zip(stop_states) {
         leg_states[index] = Some(state);
     }
 
     let mut legs = Vec::with_capacity(leg_rows.len());
     for (leg, tracked_train_state) in leg_rows.into_iter().zip(leg_states) {
-        // Operator + TRUST reason overlays (train_operator / train_reasons),
-        // applied after the batched stop build so per-stop live status sees
-        // the stops.
-        let tracked_train_state = match tracked_train_state {
-            Some(state) => {
-                let state =
-                    crate::data::train_operator::attach_to_tracked_state(&app.database, state)
-                        .await;
-                Some(
-                    crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
-                )
-            }
-            None => None,
-        };
         // Low finding #5 (2026-09-25 review): `TrackedTrainState` is reused
         // verbatim here for BOTH the owner's own read and every non-owner
         // read this function serves -- a fellow group member
@@ -1884,6 +1879,7 @@ mod db_tests {
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
+    use crate::data::journeys;
 
     /// Every `ServiceArguments` field filled with an inert placeholder --
     /// this file's routes don't read `config.lines` at all. Copied from
@@ -1895,6 +1891,7 @@ mod db_tests {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
+            migration_database_url: None,
             redis_url: "redis://127.0.0.1:0".to_string(),
             redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
@@ -2209,6 +2206,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn seed_session_survives_a_stale_row_left_by_a_panicked_prior_run() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let user_id = "TEST-JOURNEYS-SEED-SESSION-STALE-ROW-PROBE";
 
         // First "run": seeds the user and session rows, then -- unlike
@@ -2249,6 +2247,7 @@ mod db_tests {
     // them.
     async fn post_journey_rejects_an_overlong_custom_name() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2285,6 +2284,7 @@ mod db_tests {
     // leftover string.
     async fn post_journey_trims_a_whitespace_only_custom_name_to_null() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-BLANK-NAME").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2325,6 +2325,7 @@ mod db_tests {
                 get_leg_candidates -- --ignored --test-threads=1`"]
     async fn get_leg_candidates_a_non_owner_gets_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -2374,6 +2375,7 @@ mod db_tests {
         // `operators` column name -- producing a 200 with every candidate
         // unfiltered instead of a 400 naming the mistake.
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-BAD-PARAM").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2421,6 +2423,7 @@ mod db_tests {
                 post_leg_train -- --ignored --test-threads=1`"]
     async fn post_leg_train_commits_a_first_pick_then_a_change_train_repick() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2480,6 +2483,7 @@ mod db_tests {
                 post_leg_train_rejects_a_malformed_train_uid -- --ignored --test-threads=1`"]
     async fn post_leg_train_rejects_a_malformed_train_uid() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG-BAD-UID").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2537,6 +2541,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn post_journey_known_train_rejects_a_malformed_train_uid() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-BAD-UID").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2583,6 +2588,7 @@ mod db_tests {
                 post_journey_rejects_an_oversized_custom_name -- --ignored --test-threads=1`"]
     async fn post_journey_rejects_an_oversized_custom_name() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CREATE-LONG-NAME").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2631,6 +2637,7 @@ mod db_tests {
                 change_train_end_to_end -- --ignored --test-threads=1`"]
     async fn change_train_end_to_end_candidates_stay_window_scoped_on_an_already_matched_leg() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CHANGE-TRAIN-E2E").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2824,6 +2831,7 @@ mod db_tests {
                 get_leg_candidates -- --ignored --test-threads=1`"]
     async fn get_leg_candidates_operator_filter_narrows_results_over_http() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-CANDIDATES-OPERATOR").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -2971,6 +2979,7 @@ mod db_tests {
                 post_leg_train -- --ignored --test-threads=1`"]
     async fn post_leg_train_a_leg_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-MATCH-LEG-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3016,6 +3025,7 @@ mod db_tests {
                 get_journey -- --ignored --test-threads=1`"]
     async fn get_journey_returns_the_matched_legs_tracked_train_state() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3051,6 +3061,7 @@ mod db_tests {
                 get_journey -- --ignored --test-threads=1`"]
     async fn get_journey_a_journey_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3084,6 +3095,7 @@ mod db_tests {
                 get_my_journeys -- --ignored --test-threads=1`"]
     async fn get_my_journeys_lists_every_owned_journey_most_recent_first() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-MY-JOURNEYS").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3139,6 +3151,7 @@ mod db_tests {
                 post_journey_leg -- --ignored --test-threads=1`"]
     async fn post_journey_leg_adds_a_window_leg_and_assigns_the_next_leg_order() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-WINDOW").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3192,6 +3205,7 @@ mod db_tests {
                 post_journey_leg -- --ignored --test-threads=1`"]
     async fn post_journey_leg_a_journey_owned_by_someone_else_is_404_not_403() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3240,6 +3254,7 @@ mod db_tests {
                 post_journey_leg -- --ignored --test-threads=1`"]
     async fn post_journey_leg_a_known_train_leg_is_immediately_matched() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-ADD-LEG-KNOWN-TRAIN").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3318,6 +3333,7 @@ mod db_tests {
                 get_journey -- --ignored --test-threads=1`"]
     async fn get_journey_reports_leg_skip_as_null_when_unmatched_and_an_object_when_matched() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-LEG-SKIP").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3427,6 +3443,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_journey_a_group_member_can_read_a_shared_journey_the_owner_never_authorized() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-OWNER").await;
         let member_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-SHARE-MEMBER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3511,6 +3528,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_a_stranger_in_no_shared_group_still_gets_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER-OWNER").await;
         let stranger_token = seed_session(&pool, "TEST-ROUTE-GET-JOURNEY-STRANGER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3549,6 +3567,7 @@ mod db_tests {
                 delete_journey_leg -- --ignored --test-threads=1`"]
     async fn delete_journey_leg_a_leg_owned_by_someone_else_is_404_not_403_and_survives() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3597,6 +3616,7 @@ mod db_tests {
                 delete_journey_leg -- --ignored --test-threads=1`"]
     async fn delete_journey_leg_a_nonexistent_leg_is_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-NOTFOUND").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3621,6 +3641,7 @@ mod db_tests {
     async fn delete_journey_leg_the_owner_can_remove_a_no_window_leg_and_the_journey_goes_with_it_when_it_was_the_last_one()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-LAST").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3670,6 +3691,7 @@ mod db_tests {
     async fn delete_journey_leg_removing_one_of_two_legs_leaves_the_journey_and_the_other_leg_intact()
      {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-LEG-MULTI").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3731,6 +3753,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_a_journey_owned_by_someone_else_is_404_not_403_and_survives() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -3777,6 +3800,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_a_nonexistent_journey_is_404() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-NOTFOUND").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3796,6 +3820,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_the_owner_can_delete_a_single_leg_journey_in_one_call() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-SINGLE").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3843,6 +3868,7 @@ mod db_tests {
                 delete_journey -- --ignored --test-threads=1`"]
     async fn delete_journey_the_owner_can_delete_a_multi_leg_journey_in_one_call() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-DELETE-JOURNEY-MULTI").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3901,6 +3927,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn create_journey_share_link_then_resolve_it_via_the_public_token_route() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-RESOLVE-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -3976,6 +4003,7 @@ mod db_tests {
                 -- --ignored --test-threads=1`"]
     async fn get_journey_by_share_token_never_discloses_shared_group_count() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_id = "TEST-ROUTE-SHARE-SGC-OWNER";
         let owner_token = seed_session(&pool, owner_id).await;
         let router = test_router(test_app(pool.clone()));
@@ -4056,6 +4084,7 @@ mod db_tests {
                 create_journey_share_link_is_404_for_a_non_owner -- --ignored --test-threads=1`"]
     async fn create_journey_share_link_is_404_for_a_non_owner() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-OWNER").await;
         let bystander_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-BYSTANDER").await;
         let router = test_router(test_app(pool.clone()));
@@ -4094,6 +4123,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_by_share_token_is_404_for_an_unknown_token() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let router = test_router(test_app(pool.clone()));
 
         let (status, _) = request(
@@ -4110,6 +4140,7 @@ mod db_tests {
                 get_journey_by_share_token_is_404_after_revoke -- --ignored --test-threads=1`"]
     async fn get_journey_by_share_token_is_404_after_revoke() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-REVOKE-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -4157,6 +4188,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_by_share_token_a_token_viewer_sees_no_owner_actions() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-VIEWER-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -4196,6 +4228,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn regenerating_a_share_link_invalidates_the_old_token() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-REGEN-OWNER").await;
         let router = test_router(test_app(pool.clone()));
 
@@ -4259,6 +4292,7 @@ mod db_tests {
                 --test-threads=1`"]
     async fn get_journey_embeds_the_active_share_link_for_the_owner_only() {
         let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let owner_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-OWNER").await;
         let member_token = seed_session(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-MEMBER").await;
         let router = test_router(test_app(pool.clone()));
@@ -4346,5 +4380,178 @@ mod db_tests {
         cleanup_group(&pool, &group_id).await;
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-SHARE-LINK-EMBED-MEMBER").await;
+    }
+
+    /// L10 (2026-09-26 review): `POST /Journeys` refuses a new journey once
+    /// the caller has `MAX_JOURNEYS_PER_USER` hand-created ones, and
+    /// journeys materialized from a template don't count towards it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                post_journey_enforces_the_per_user_hand_created_journey_cap \
+                -- --ignored --test-threads=1`"]
+    async fn post_journey_enforces_the_per_user_hand_created_journey_cap() {
+        let user = "TEST-ROUTE-JOURNEY-CAP";
+        let pool = connect().await;
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let window_leg = serde_json::json!({
+            "leg": {
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": "2026-09-22",
+                "departWindow": { "after": "08:00:00" }
+            }
+        });
+
+        sqlx::query("INSERT INTO journeys (user_id) SELECT $1 FROM generate_series(1, $2::int)")
+            .bind(user)
+            .bind((journeys::MAX_JOURNEYS_PER_USER - 1) as i32)
+            .execute(&pool)
+            .await
+            .expect("seed hand-created journeys up to one below the cap");
+        // Template-materialized journeys are excluded from the count.
+        let template_id: i64 =
+            sqlx::query_scalar("INSERT INTO journey_templates (user_id) VALUES ($1) RETURNING id")
+                .bind(user)
+                .fetch_one(&pool)
+                .await
+                .expect("seed a template");
+        sqlx::query(
+            "INSERT INTO journeys (user_id, source_template_id) \
+             SELECT $1, $2 FROM generate_series(1, 5)",
+        )
+        .bind(user)
+        .bind(template_id)
+        .execute(&pool)
+        .await
+        .expect("seed template-materialized journeys");
+
+        let (status, body) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            window_leg.clone(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the journey landing ON the cap: {body:?}"
+        );
+
+        let (status, body) =
+            post_json(router, "/Journeys".to_string(), Some(&token), window_leg).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(
+            body.as_str().is_some_and(|b| b.contains("maximum")),
+            "{body:?}"
+        );
+        let manual: i64 = journeys::count_manual_journeys_for_user(&pool, user)
+            .await
+            .expect("count");
+        assert_eq!(manual, journeys::MAX_JOURNEYS_PER_USER);
+
+        cleanup_user(&pool, user).await;
+        sqlx::query("DELETE FROM journey_templates WHERE user_id = $1")
+            .bind(user)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// L11 (2026-09-26 review): all three journeys routes that take a
+    /// caller-typed `trainUid` -- `POST /Journeys` (knownTrain),
+    /// `POST /Journeys/{id}/legs` (knownTrain) and
+    /// `POST /Journeys/{id}/legs/{legId}/train` -- uppercase it, so a
+    /// lowercase uid resolves to the same uppercase `trains` row as CIF's
+    /// own and never mints a lowercase one.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                journeys_routes_uppercase_a_caller_typed_train_uid \
+                -- --ignored --test-threads=1`"]
+    async fn journeys_routes_uppercase_a_caller_typed_train_uid() {
+        let user = "TEST-ROUTE-JOURNEY-UID-CASE";
+        let uids = ["JCASE1", "JCASE2", "JCASE3"];
+        let pool = connect().await;
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let date = "2026-09-22";
+
+        // POST /Journeys, knownTrain.
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": " jcase1 ", "serviceDate": date }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        let journey_id = created["journeyId"].as_i64().expect("journeyId");
+
+        // POST /Journeys/{id}/legs, knownTrain.
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({ "mode": "knownTrain", "trainUid": "jCaSe2", "serviceDate": date }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+
+        // POST /Journeys/{id}/legs/{legId}/train, on a window leg.
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": date,
+                "departWindow": { "after": "08:00:00" }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let window_leg_id = body["legId"].as_i64().expect("legId");
+        let (status, body) = post_json(
+            router,
+            format!("/Journeys/{journey_id}/legs/{window_leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": "jcase3", "serviceDate": date }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+
+        let tracked: Vec<String> = sqlx::query_scalar(
+            "SELECT t.train_uid FROM train_subscriptions s JOIN trains t ON t.id = s.trains_id \
+             WHERE s.user_id = $1 ORDER BY t.train_uid",
+        )
+        .bind(user)
+        .fetch_all(&pool)
+        .await
+        .expect("read tracked uids");
+        assert_eq!(tracked, uids.to_vec());
+        let stray: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM trains WHERE UPPER(BTRIM(train_uid)) = ANY($1) \
+             AND train_uid <> ALL($1)",
+        )
+        .bind(uids.to_vec())
+        .fetch_one(&pool)
+        .await
+        .expect("count stray rows");
+        assert_eq!(stray, 0, "no non-uppercase trains row may be minted");
+
+        cleanup_user(&pool, user).await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+            .bind(uids.to_vec())
+            .execute(&pool)
+            .await
+            .ok();
     }
 }

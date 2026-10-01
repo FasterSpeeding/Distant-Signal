@@ -24,12 +24,14 @@ use config::Config;
 use dedup::SeenServiceLedger;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    common::logging::exit_code(run().await)
+}
+
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("aggregator");
 
     let config = Config::parse();
     // Fails startup on an enabled-but-incomplete archive config; `None`
@@ -128,6 +130,10 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(config.poll_interval_secs),
     ));
 
+    // aggregator_cycles_total{cycle="aggregate",result} and
+    // aggregator_last_success_timestamp_seconds, read by the chart's
+    // DistantSignalAggregatorCycleFailing (see common::metrics::register_cycle).
+    common::metrics::register_cycle("aggregator", AGGREGATE_CYCLE);
     let mut interval = cycle_interval(Duration::from_secs(config.poll_interval_secs));
 
     loop {
@@ -144,9 +150,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .await;
 
-        if let Err(err) = result {
+        if let Err(err) = &result {
             tracing::error!(error = ?err, "aggregation cycle failed; will retry next interval");
         }
+        common::metrics::record_cycle("aggregator", AGGREGATE_CYCLE, result.is_ok());
 
         // Aggregation only, since retention moved to its own task (SVC-06);
         // retention has `aggregator_retention_duration_seconds`.
@@ -170,6 +177,9 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// The `cycle` label of the aggregation pass's cycle metrics.
+const AGGREGATE_CYCLE: &str = "aggregate";
+
 /// Every retention knob, copied out of `Config` for the retention task.
 #[derive(Debug, Clone, Copy)]
 struct RetentionSettings {
@@ -181,6 +191,7 @@ struct RetentionSettings {
     untracked_trains_retention_days: i64,
     schedule_destination_departures_retention_days: i64,
     schedule_derived_products_retention_days: i64,
+    schedule_line_population_retention_days: i64,
     full_coverage_line_stats_retention_days: i64,
     full_coverage_window_stats_retention_days: i64,
 }
@@ -198,6 +209,7 @@ impl RetentionSettings {
                 .schedule_destination_departures_retention_days,
             schedule_derived_products_retention_days: config
                 .schedule_derived_products_retention_days,
+            schedule_line_population_retention_days: config.schedule_line_population_retention_days,
             full_coverage_line_stats_retention_days: config.full_coverage_line_stats_retention_days,
             full_coverage_window_stats_retention_days: config
                 .full_coverage_window
@@ -255,6 +267,7 @@ async fn run_retention_pass(
         settings.untracked_trains_retention_days,
         settings.schedule_destination_departures_retention_days,
         settings.schedule_derived_products_retention_days,
+        settings.schedule_line_population_retention_days,
         settings.full_coverage_line_stats_retention_days,
         archiver,
     )
@@ -416,6 +429,27 @@ async fn run_cycle(
     let registry = SegmentRegistry::new(&lines);
 
     let incidents = queries::load_incidents(pool).await?;
+    // Rows for stations no line samples any more (the catalogue dropped
+    // them) are never refreshed, so they would otherwise sit in the table
+    // and be reported as stale every cycle. Fail-open: a failed prune only
+    // means they are dropped as stale below, as before.
+    match queries::prune_orphaned_station_samples(
+        pool,
+        &aggregation::sampled_stations(&lines),
+        aggregation::MAX_SAMPLE_AGE_MINUTES,
+    )
+    .await
+    {
+        Ok(pruned) if !pruned.is_empty() => tracing::info!(
+            stations = ?pruned,
+            "deleted station_samples rows for stations no line samples any more"
+        ),
+        Ok(_) => {}
+        Err(err) => tracing::warn!(
+            error = ?err,
+            "failed to prune orphaned station_samples rows; will retry next cycle"
+        ),
+    }
     let mut samples = queries::load_station_samples(pool).await?;
     // Freshness gate on the LDBWS snapshot BEFORE anything reads it, so both
     // consumers below -- `aggregation::aggregate`'s severity inference and
@@ -686,6 +720,7 @@ async fn run_retention(
     untracked_trains_retention_days: i64,
     schedule_destination_departures_retention_days: i64,
     schedule_derived_products_retention_days: i64,
+    schedule_line_population_retention_days: i64,
     full_coverage_line_stats_retention_days: i64,
     archiver: Option<&archive::Archiver>,
 ) -> anyhow::Result<()> {
@@ -803,7 +838,7 @@ async fn run_retention(
     .increment(schedule_network_departures_pruned);
 
     let schedule_line_population_pruned =
-        queries::prune_schedule_line_population(pool, schedule_derived_products_retention_days)
+        queries::prune_schedule_line_population(pool, schedule_line_population_retention_days)
             .await?;
     metrics::counter!(common::metrics::metric_name(
         "aggregator_schedule_line_population_rows_pruned_total"

@@ -40,9 +40,19 @@ export function proxy(request: NextRequest) {
 //   next.config.mjs gives `/api/*`, the service worker scripts and
 //   `/offline.html` static policies of their own;
 // - `/healthz`: the probes' plain-text liveness route (app/healthz), which
-//   must stay dependency-free and cheap;
-// - `next/link` prefetches, as Next's guide recommends. They fetch an RSC
-//   payload, not a document, so there is nothing for a nonce to protect.
+//   must stay dependency-free and cheap.
+//
+// Prefetches are NOT skipped, unlike Next's CSP guide's example matcher
+// (`missing: next-router-prefetch / purpose: prefetch`). The guide skips
+// them only to save the proxy hop: a `next/link` prefetch fetches an RSC
+// payload, where a nonce protects nothing. But those request headers are
+// client-controlled and say nothing about what the server returns: with
+// them skipped, `curl -H 'next-router-prefetch: 1' /` (or `Purpose:
+// prefetch`) got the full HTML page with no CSP at all, and a browser's
+// `Purpose: prefetch` document prefetch can be shown as the real page. A
+// static nonce-less fallback would be worse there: it would block Next's own
+// inline scripts on such a page. Minting a nonce is a few random bytes, so
+// every page response, prefetch or not, gets the same per-request policy.
 //
 // Keep this list in sync with the CSP entries in next.config.mjs's headers().
 export const config = {
@@ -50,10 +60,6 @@ export const config = {
     {
       source:
         '/((?!(?:api|_next/static|_next/image)(?:/|$)|(?:healthz|favicon\\.ico|robots\\.txt|\\.well-known/security\\.txt|sw\\.js|sw-cache-rules\\.js|offline\\.html|manifest\\.webmanifest|icon\\.svg|apple-icon\\.png|icon-192\\.png|icon-512\\.png)$).*)',
-      missing: [
-        { type: 'header', key: 'next-router-prefetch' },
-        { type: 'header', key: 'purpose', value: 'prefetch' },
-      ],
     },
   ],
 };

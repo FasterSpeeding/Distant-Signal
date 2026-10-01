@@ -127,7 +127,7 @@ fn unmatched_route_endpoint_label(_exact_path: &str) -> String {
     "/{unmatched}".to_string()
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
     // `api parse-ticket <pdf|pkpass>`: the ticket-parse child process
     // (M13; see `data::ticket_subprocess`). Checked before anything else so
     // the child never starts a tokio runtime, reads `.env`, or parses the
@@ -135,7 +135,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(code) = data::ticket_subprocess::maybe_run_child() {
         std::process::exit(code);
     }
-    server_main()
+    common::logging::exit_code(server_main())
 }
 
 #[tokio::main]
@@ -145,9 +145,7 @@ async fn server_main() -> anyhow::Result<()> {
     // API-1: tracing FIRST, so nothing logged during `AppState::init` (the
     // INF-5 Postgres wait included), the migrations or a sweep's first tick
     // is dropped.
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    common::logging::init("api");
 
     let app = AppState::init().await?;
     // CORPUS_FALLBACK_ENABLED (default off): see `data::corpus_crosswalk`.
@@ -291,6 +289,11 @@ async fn server_main() -> anyhow::Result<()> {
         spawn_metrics_listener(app.config.metrics_port, metrics_handle);
         data::queries::register_schedule_publish_metrics();
         routes::auth::register_user_metrics();
+        // Before the migrations, so a database that goes away while they
+        // run (or right after) already shows as distant_signal_api_db_up 0.
+        data::db_health::register_metrics();
+        data::trust_event_backlog::register_uid_inference_metrics();
+        tokio::spawn(data::db_health::probe_loop(app.database.clone()));
     }
 
     // L4 (2026-09-26 review): api-layer Origin check on every
@@ -350,11 +353,15 @@ async fn server_main() -> anyhow::Result<()> {
     // `api::migrate`.
     let migrate = async {
         data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
-        let migration_options: sqlx::postgres::PgConnectOptions =
-            app.config
-                .database_url
-                .parse()
-                .context("could not parse DATABASE_URL")?;
+        // MIGRATION_DATABASE_URL (the schema owner) when set, else
+        // DATABASE_URL. See `api::migrate::migration_url`.
+        let (migration_url, migration_url_var) = api::migrate::migration_url(
+            &app.config.database_url,
+            app.config.migration_database_url.as_deref(),
+        );
+        let migration_options: sqlx::postgres::PgConnectOptions = migration_url
+            .parse()
+            .with_context(|| format!("could not parse {migration_url_var}"))?;
         api::migrate::run(
             api::app::with_dead_client_detection(migration_options),
             api::migrate::MigrationSettings::from_env()?,

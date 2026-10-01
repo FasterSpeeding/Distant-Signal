@@ -16,6 +16,15 @@ pub struct ServiceArguments {
     pub bind_url: String,
     #[arg(short, long, env)]
     pub database_url: String,
+    /// Connection URL for the startup migrations (`api::migrate`) only.
+    /// Unset or empty: the migrations use `database_url`, as before.
+    ///
+    /// Set when the database has separate roles (docs/postgres-app-role.md):
+    /// `database_url` is then the non-superuser app role (DML only) every
+    /// pool uses, and this is the owner role that owns the schema and may
+    /// run DDL. Nothing else in `api` connects with it. Never logged.
+    #[arg(long, env, hide_env_values = true)]
+    pub migration_database_url: Option<String>,
     #[arg(long, env)]
     pub redis_url: String,
 
@@ -634,7 +643,7 @@ mod chart_env_wiring_tests {
     /// `api` is the only container in this template, so "to EOF" is the whole
     /// block.
     fn api_container_block() -> String {
-        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/api-deployment.yaml");
         let rendered = std::fs::read_to_string(&chart)
             .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));
@@ -728,8 +737,7 @@ mod chart_env_wiring_tests {
              `api` container in charts/distant-signal/templates/api-deployment.yaml"
         );
         let values = std::fs::read_to_string(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../charts/distant-signal/values.yaml"),
+            common::manifest_dir!().join("../../charts/distant-signal/values.yaml"),
         )
         .expect("read values.yaml");
         assert!(

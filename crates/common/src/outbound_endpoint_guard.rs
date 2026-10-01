@@ -136,6 +136,8 @@ fn embedded_ipv4s(v6: Ipv6Addr) -> [Option<Ipv4Addr>; 2] {
         [0, 0, 0, 0, 0, 0, hi, lo] => [Some(v4(hi, lo)), None],
         // 64:ff9b::/96 -- NAT64 well-known prefix (RFC6052): the last 32 bits.
         [0x0064, 0xff9b, 0, 0, 0, 0, hi, lo] => [Some(v4(hi, lo)), None],
+        // ::ffff:0:a.b.c.d -- SIIT "IPv4-translated" (RFC2765, ::ffff:0:0/96).
+        [0, 0, 0, 0, 0xffff, 0, hi, lo] => [Some(v4(hi, lo)), None],
         // 2002::/16 -- 6to4 (RFC3056): bits 16..48.
         [0x2002, hi, lo, ..] => [Some(v4(hi, lo)), None],
         // 2001::/32 -- Teredo (RFC4380): the server in bits 32..64, the
@@ -390,6 +392,14 @@ mod tests {
     }
 
     #[test]
+    fn the_ipv4_translated_form_is_checked_against_its_embedded_ipv4() {
+        assert!(is_disallowed_ip(v6("::ffff:0:a00:7"))); // 10.0.0.7
+        assert!(is_disallowed_ip(v6("::ffff:0:7f00:1"))); // 127.0.0.1
+        assert!(is_disallowed_ip(v6("::ffff:0:a9fe:a9fe"))); // 169.254.169.254
+        assert!(!is_disallowed_ip(v6("::ffff:0:808:808"))); // 8.8.8.8
+    }
+
+    #[test]
     fn other_non_public_ipv6_ranges_are_disallowed() {
         for ip in [
             v6("2001:db8::1"),  // documentation
@@ -464,5 +474,62 @@ mod tests {
             out
         };
         assert!(chain.contains("disallowed"), "{chain}");
+    }
+
+    /// L9: the public-only client never follows a redirect -- a `Location`
+    /// is a second URL nothing validated. A local server 302s to a second
+    /// local server; the client must hand back the 302 itself and the
+    /// redirect target must never see a connection. (IP literals skip the
+    /// resolver, which is what lets this test reach 127.0.0.1 at all.)
+    #[tokio::test]
+    async fn a_public_only_client_does_not_follow_a_redirect() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let target = TcpListener::bind("127.0.0.1:0").await.expect("bind target");
+        let target_addr = target.local_addr().expect("target addr");
+        let target_hits = Arc::new(AtomicUsize::new(0));
+        let hits = Arc::clone(&target_hits);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = target.accept().await {
+                hits.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let redirector = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind redirector");
+        let redirector_addr = redirector.local_addr().expect("redirector addr");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = redirector.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nlocation: http://{target_addr}/internal\r\n\
+                     content-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = public_only_client_builder().build().expect("client");
+        let response = client
+            .post(format!("http://{redirector_addr}/push"))
+            .send()
+            .await
+            .expect("the redirect response itself is returned");
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        assert_eq!(
+            target_hits.load(Ordering::SeqCst),
+            0,
+            "the redirect target must never be contacted"
+        );
     }
 }

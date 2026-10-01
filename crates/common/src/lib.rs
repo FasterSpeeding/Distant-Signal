@@ -15,6 +15,7 @@ pub mod full_coverage_window;
 pub mod ingest;
 pub mod island_of_ireland;
 pub mod log_once;
+pub mod logging;
 pub mod matcher;
 pub mod metrics;
 pub mod oauth_client;
@@ -32,6 +33,7 @@ pub mod secret;
 pub mod segments;
 pub mod service_args;
 pub mod startup;
+pub mod test_paths;
 pub mod text_hash;
 pub mod trust_timestamp;
 pub mod user_agent;
@@ -1107,6 +1109,13 @@ pub struct StationSample {
     pub polled_at: DateTime<Utc>,
     pub departures: Vec<StationDeparture>,
 }
+
+/// How old a [`StationSample`] may be (by `polled_at`) and still count as
+/// live data. The aggregator ignores older `station_samples` rows; see
+/// `aggregator::aggregation::drop_stale_samples` for why 15 minutes.
+/// `poller-ldbws` warns when a full station rotation takes longer than
+/// this, since stations would then go stale between visits.
+pub const STATION_SAMPLE_MAX_AGE_MINUTES: u32 = 15;
 
 /// One resolved `(crs, operator)` full-coverage row, mirroring
 /// `StationSample`'s own per-station shape one level finer. Written

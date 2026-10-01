@@ -13,6 +13,60 @@ pub struct NewCustomLine {
     pub destination_crs_filter: Vec<String>,
 }
 
+impl NewCustomLine {
+    /// `stations` and `destination_crs_filter` trimmed, uppercased and
+    /// deduplicated (see [`normalize_crs_list`]). Applied by
+    /// [`insert_custom_line`] and [`update_custom_line`] themselves so
+    /// every writer stores canonical codes, not just the HTTP routes.
+    fn normalized(mut self) -> Self {
+        self.stations = normalize_crs_list(&self.stations);
+        self.destination_crs_filter = normalize_crs_list(&self.destination_crs_filter);
+        self
+    }
+}
+
+/// Trims and uppercases each CRS code and drops later duplicates, keeping
+/// the first occurrence's position (M3 residual, 2026-10-01 review).
+///
+/// Station order matters for a custom line (it is the order the line's
+/// stations are listed in), so this keeps it rather than sorting. Without
+/// it `" wok"` and `WOK` were stored as two different stations: each became
+/// its own `poller-ldbws` request every cycle, and a lowercase
+/// `destination_crs_filter` entry never matched LDBWS's uppercase
+/// destinations at all.
+pub fn normalize_crs_list(codes: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(codes.len());
+    codes
+        .iter()
+        .map(|code| code.trim().to_ascii_uppercase())
+        .filter(|code| seen.insert(code.clone()))
+        .collect()
+}
+
+/// The entries of `codes` that aren't in the `stations` reference table,
+/// in their given order. Expects already-normalised codes.
+///
+/// Returns nothing at all while `stations` is empty: a fresh deployment
+/// before `poller-stations`' first fetch has no reference data yet, and
+/// refusing every custom line then would be worse than the bogus-code
+/// cost this check exists to avoid (one wasted LDBWS request per cycle,
+/// which `poller-ldbws`'s invalid-CRS pruning already backs off from).
+pub async fn unknown_station_codes(pool: &PgPool, codes: &[String]) -> Result<Vec<String>> {
+    if codes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let unknown: Vec<String> = sqlx::query_scalar(
+        "SELECT t.code FROM unnest($1::text[]) WITH ORDINALITY AS t(code, ord) \
+         WHERE EXISTS (SELECT 1 FROM stations) \
+           AND NOT EXISTS (SELECT 1 FROM stations s WHERE s.crs = t.code::bpchar) \
+         ORDER BY t.ord",
+    )
+    .bind(codes)
+    .fetch_all(pool)
+    .await?;
+    Ok(unknown)
+}
+
 /// Turns a line name into a stable, URL-safe id: lowercase, non-alphanumeric
 /// runs collapsed to a single `-`, leading/trailing `-` trimmed, prefixed
 /// `custom-` so it can never collide with a static `lines/*.toml` id (none
@@ -151,6 +205,7 @@ pub async fn insert_custom_line(
     new: NewCustomLine,
     user_id: &str,
 ) -> Result<CustomLine> {
+    let new = new.normalized();
     let base_id = slugify(&new.name);
     let mut id = base_id.clone();
     let mut suffix = 2;
@@ -212,6 +267,7 @@ pub async fn update_custom_line(
     new: NewCustomLine,
     user_id: &str,
 ) -> Result<Option<CustomLine>> {
+    let new = new.normalized();
     let result = sqlx::query(
         r#"
         UPDATE custom_lines
@@ -485,6 +541,13 @@ mod tests {
     #[test]
     fn slugify_trims_trailing_punctuation() {
         assert_eq!(slugify("Trailing---"), "custom-trailing");
+    }
+
+    #[test]
+    fn normalize_crs_list_trims_uppercases_and_keeps_first_occurrence_order() {
+        let input = [" wok", "CLJ", "WOK", "clj ", "wat"].map(String::from);
+        assert_eq!(normalize_crs_list(&input), vec!["WOK", "CLJ", "WAT"]);
+        assert!(normalize_crs_list(&[]).is_empty());
     }
 }
 

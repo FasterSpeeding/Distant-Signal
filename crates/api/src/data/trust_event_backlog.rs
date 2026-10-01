@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use anyhow::Context;
 use chrono::NaiveDate;
 use common::TrustBacklogEventMessage;
 use sqlx::PgPool;
@@ -386,12 +387,62 @@ pub async fn ingest_shared_movements_batch(
 ) -> Vec<anyhow::Result<()>> {
     let mut results: Vec<anyhow::Result<()>> = (0..events.len()).map(|_| Ok(())).collect();
 
+    // Step 0: give each uid-less event the identity of its train's
+    // Activation, when exactly one is on record (see `infer_train_identities`).
+    // A failed lookup fails only those events, as a transient error, so the
+    // consumer retries the batch rather than dropping them.
+    let enriched: Vec<TrustBacklogEventMessage>;
+    let events = match infer_train_identities(pool, events).await {
+        Ok(inferred) if inferred.is_empty() => events,
+        Ok(inferred) => {
+            enriched = events
+                .iter()
+                .enumerate()
+                .map(|(i, event)| match inferred.get(&i) {
+                    Some((train_uid, service_date)) => TrustBacklogEventMessage {
+                        train_uid: Some(train_uid.clone()),
+                        service_date: *service_date,
+                        ..event.clone()
+                    },
+                    None => event.clone(),
+                })
+                .collect();
+            &enriched
+        }
+        Err(err) => {
+            for (i, event) in events.iter().enumerate() {
+                if needs_identity(event) {
+                    results[i] =
+                        Err(SharedMovementError::new("infer_train_identities", &err).into());
+                }
+            }
+            events
+        }
+    };
+
     let known_indices: Vec<usize> = events
         .iter()
         .enumerate()
+        .filter(|(i, _)| results[*i].is_ok())
         .filter_map(|(i, e)| e.train_uid.as_ref().map(|_| i))
         .collect();
-    if known_indices.is_empty() {
+    // A Reinstatement whose Activation this consumer never parked (no
+    // `train_uid`) can still name the shared row by the TRUST `train_id`
+    // a live resolution already wrote onto it. Without this, a train
+    // cancelled and then reinstated after trust-backlog-consumer lost its
+    // parked Activation stayed "cancelled" in `train_current_state`, and
+    // its subscriptions stayed closed (H4 residual, 2026-10-01).
+    let reinstated_by_train_id = match trains_for_uidless_reinstatements(pool, events).await {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                "train_id lookup for uid-less reinstatements failed; they stay unapplied"
+            );
+            Vec::new()
+        }
+    };
+    if known_indices.is_empty() && reinstated_by_train_id.is_empty() {
         return results;
     }
 
@@ -498,10 +549,14 @@ pub async fn ingest_shared_movements_batch(
     // succeeded continue past this point -- matching the original
     // `find_or_create_train(...).await?; mark_train_resolved(...).await?;`
     // early-return-on-error shape.
-    let active: Vec<(usize, i64)> = resolved
+    let mut active: Vec<(usize, i64)> = resolved
         .into_iter()
         .filter(|&(i, _)| results[i].is_ok())
         .collect();
+    // Already-identified rows: nothing to create or mark, so they join
+    // here, in batch order with the rest.
+    active.extend(reinstated_by_train_id);
+    active.sort_by_key(|&(i, _)| i);
     if active.is_empty() {
         return results;
     }
@@ -670,10 +725,248 @@ pub async fn ingest_shared_movements_batch(
                 .await
         {
             results[i] = Err(err);
+            continue;
+        }
+        // This path sees every Reinstatement, unlike trust-consumer, which
+        // forwards one only for a train it still holds in memory -- so this
+        // is what reopens a cancelled subscription after a trust-consumer
+        // restart.
+        if event.msg_type == "0005" {
+            let reopened = match pool.acquire().await {
+                Ok(mut conn) => {
+                    crate::data::train_tracking::reopen_subscriptions_after_reinstatement(
+                        &mut conn,
+                        None,
+                        Some(trains_id),
+                    )
+                    .await
+                }
+                Err(err) => Err(err.into()),
+            };
+            if let Err(err) = reopened {
+                results[i] = Err(err);
+            }
         }
     }
 
     results
+}
+
+/// A uid-less event the shared tables can only take once its train's
+/// identity is known: anything but an Activation (which always carries its
+/// own `train_uid`).
+fn needs_identity(event: &TrustBacklogEventMessage) -> bool {
+    event.train_uid.is_none() && event.msg_type != "0001"
+}
+
+/// The metric counting how each uid-less event's identity was found.
+pub const UID_INFERRED_METRIC: &str = "api_trust_event_backlog_uid_inferred_total";
+
+/// Registers [`UID_INFERRED_METRIC`] at 0 for every `source`.
+pub fn register_uid_inference_metrics() {
+    for source in ["activation", "none"] {
+        metrics::counter!(common::metrics::metric_name(UID_INFERRED_METRIC), "source" => source)
+            .increment(0);
+    }
+}
+
+/// `event index -> (train_uid, service_date)` for each uid-less event (see
+/// [`needs_identity`]) whose `train_id` has exactly one Activation (`0001`)
+/// in `trust_event_backlog` with a `train_uid`, dated within a day of the
+/// event's `service_date`; the Activation's own `service_date` replaces the
+/// event's, as the consumer itself would have filed it.
+///
+/// **Why** (2026-10-01): trust-backlog-consumer keeps the `train_id ->
+/// train_uid` map from each Activation in memory only, so after every
+/// restart the Movements of every train activated before it arrived
+/// uid-less, and this function's caller used to drop them without an
+/// error. TRUST activates a train about an hour before it departs, so each
+/// restart (08:50 that day) left `train_movement_events` with ~55 rows for
+/// the next hour against the backlog's usual ~5.4k per 10 minutes. The
+/// Activations themselves were in `trust_event_backlog` all along (it keeps
+/// a day), and this batch's own rows are inserted before this runs, so an
+/// Activation earlier in the same POST counts too.
+///
+/// TRUST recycles a `train_id` roughly monthly, so the date window is what
+/// keeps an old Activation from matching; two candidates are ambiguous and
+/// the event is left uid-less (and, as before, not written to the shared
+/// tables). One batched query, served by `trust_event_backlog_train
+/// (train_id, service_date)`.
+async fn infer_train_identities(
+    pool: &PgPool,
+    events: &[TrustBacklogEventMessage],
+) -> anyhow::Result<HashMap<usize, (String, NaiveDate)>> {
+    let mut indices: Vec<i32> = Vec::new();
+    let mut train_ids: Vec<&str> = Vec::new();
+    let mut dates: Vec<NaiveDate> = Vec::new();
+    for (i, event) in events.iter().enumerate() {
+        if needs_identity(event) {
+            indices.push(i32::try_from(i).context("batch index out of range")?);
+            train_ids.push(&event.train_id);
+            dates.push(event.service_date);
+        }
+    }
+    if indices.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i32, String, NaiveDate)> = sqlx::query_as(
+        "SELECT u.idx, a.train_uid, a.service_date \
+         FROM unnest($1::int4[], $2::text[], $3::date[]) AS u(idx, train_id, service_date) \
+         CROSS JOIN LATERAL ( \
+             SELECT DISTINCT b.train_uid, b.service_date \
+             FROM trust_event_backlog b \
+             WHERE b.msg_type = '0001' \
+               AND b.train_id = u.train_id \
+               AND b.service_date BETWEEN u.service_date - 1 AND u.service_date + 1 \
+               AND b.train_uid IS NOT NULL \
+             LIMIT 2 \
+         ) a",
+    )
+    .bind(&indices)
+    .bind(&train_ids)
+    .bind(&dates)
+    .fetch_all(pool)
+    .await
+    .context("looking up uid-less events' Activations")?;
+
+    let mut candidates: HashMap<usize, Vec<(String, NaiveDate)>> = HashMap::new();
+    for (idx, train_uid, service_date) in rows {
+        let idx = usize::try_from(idx).context("negative batch index")?;
+        candidates
+            .entry(idx)
+            .or_default()
+            .push((train_uid, service_date));
+    }
+    let inferred: HashMap<usize, (String, NaiveDate)> = candidates
+        .into_iter()
+        .filter_map(|(idx, mut found)| (found.len() == 1).then(|| (idx, found.remove(0))))
+        .collect();
+    let unresolved = indices.len() - inferred.len();
+    metrics::counter!(common::metrics::metric_name(UID_INFERRED_METRIC), "source" => "activation")
+        .increment(inferred.len() as u64);
+    metrics::counter!(common::metrics::metric_name(UID_INFERRED_METRIC), "source" => "none")
+        .increment(unresolved as u64);
+    Ok(inferred)
+}
+
+/// What [`replay_uidless_backlog`] did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UidlessReplayReport {
+    /// uid-less non-Activation backlog rows read.
+    pub rows: u64,
+    /// Of those, rows whose shared write failed (logged; re-run to retry).
+    pub failed: u64,
+}
+
+/// Re-runs the shared-table write ([`ingest_shared_movements_batch`]) for
+/// every uid-less non-Activation row in `trust_event_backlog` received at
+/// or after `since`, oldest first, `chunk` rows at a time: the rows a
+/// trust-backlog-consumer restart left out of `train_movement_events`
+/// before api inferred their identity (see [`infer_train_identities`]).
+/// Every shared write is idempotent (dedup keys, the event-time guard), so
+/// re-running it is safe. The backlog keeps a day, so this only reaches
+/// that far back.
+pub async fn replay_uidless_backlog(
+    pool: &PgPool,
+    since: chrono::DateTime<chrono::Utc>,
+    chunk: i64,
+) -> anyhow::Result<UidlessReplayReport> {
+    type Row = (
+        i64,
+        Option<String>,
+        String,
+        NaiveDate,
+        String,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        Option<i32>,
+        String,
+    );
+    let mut report = UidlessReplayReport::default();
+    let mut after_id = 0i64;
+    loop {
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, crs, train_id, service_date, msg_type, event_type, planned_timestamp, \
+                    actual_timestamp, variation_status, delay_minutes, dedup_key \
+             FROM trust_event_backlog \
+             WHERE train_uid IS NULL AND msg_type <> '0001' AND received_at >= $1 AND id > $2 \
+             ORDER BY id LIMIT $3",
+        )
+        .bind(since)
+        .bind(after_id)
+        .bind(chunk)
+        .fetch_all(pool)
+        .await
+        .context("reading uid-less backlog rows")?;
+        let Some(last) = rows.last() else {
+            return Ok(report);
+        };
+        after_id = last.0;
+        let events: Vec<TrustBacklogEventMessage> = rows
+            .into_iter()
+            .map(|r| TrustBacklogEventMessage {
+                crs: r.1,
+                train_uid: None,
+                train_id: r.2,
+                service_date: r.3,
+                msg_type: r.4,
+                event_type: r.5,
+                planned_timestamp: r.6,
+                actual_timestamp: r.7,
+                variation_status: r.8,
+                delay_minutes: r.9,
+                dedup_key: r.10,
+            })
+            .collect();
+        let results = ingest_shared_movements_batch(pool, &events).await;
+        report.rows += events.len() as u64;
+        for (event, result) in events.iter().zip(results) {
+            if let Err(err) = result {
+                report.failed += 1;
+                tracing::warn!(error = ?err, dedup_key = %event.dedup_key, "replaying a uid-less backlog row failed");
+            }
+        }
+        tracing::info!(
+            rows = report.rows,
+            failed = report.failed,
+            after_id,
+            "replayed a chunk of uid-less backlog rows"
+        );
+    }
+}
+
+/// `(event index, trains_id)` for each Reinstatement in `events` that has
+/// no `train_uid` but whose `train_id` names exactly one shared `trains`
+/// row dated within a day of the event's `service_date` (an overnight
+/// train's rows can sit either side of midnight). TRUST recycles a
+/// `train_id` roughly monthly, so the date window is what keeps an old
+/// row from matching; more than one candidate is ambiguous and skipped.
+async fn trains_for_uidless_reinstatements(
+    pool: &PgPool,
+    events: &[TrustBacklogEventMessage],
+) -> anyhow::Result<Vec<(usize, i64)>> {
+    let mut found = Vec::new();
+    for (i, event) in events.iter().enumerate() {
+        if event.msg_type != "0005" || event.train_uid.is_some() {
+            continue;
+        }
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM trains \
+             WHERE train_id = $1 \
+               AND service_date BETWEEN $2::date - 1 AND $2::date + 1 \
+             LIMIT 2",
+        )
+        .bind(&event.train_id)
+        .bind(event.service_date)
+        .fetch_all(pool)
+        .await?;
+        if let [id] = ids.as_slice() {
+            found.push((i, *id));
+        }
+    }
+    Ok(found)
 }
 
 async fn fetch_previous_derived_state(
@@ -1201,6 +1494,252 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    fn activation(
+        train_id: &str,
+        train_uid: &str,
+        service_date: &str,
+        dedup: &str,
+    ) -> TrustBacklogEventMessage {
+        TrustBacklogEventMessage {
+            crs: None,
+            train_uid: Some(train_uid.to_string()),
+            train_id: train_id.to_string(),
+            service_date: service_date.parse().unwrap(),
+            msg_type: "0001".to_string(),
+            event_type: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            dedup_key: dedup.to_string(),
+        }
+    }
+
+    fn uidless_movement(
+        train_id: &str,
+        service_date: &str,
+        dedup: &str,
+    ) -> TrustBacklogEventMessage {
+        TrustBacklogEventMessage {
+            crs: Some("WAT".to_string()),
+            train_uid: None,
+            train_id: train_id.to_string(),
+            service_date: service_date.parse().unwrap(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: Some("2026-10-01T08:55:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-10-01T08:56:00Z".parse().unwrap()),
+            variation_status: Some("LATE".to_string()),
+            delay_minutes: Some(1),
+            dedup_key: dedup.to_string(),
+        }
+    }
+
+    async fn cleanup_uid_inference(pool: &PgPool, train_id: &str) {
+        sqlx::query("DELETE FROM trains WHERE train_id = $1 OR train_uid LIKE 'TEST-INFER-%'")
+            .bind(train_id)
+            .execute(pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trust_event_backlog WHERE train_id = $1")
+            .bind(train_id)
+            .execute(pool)
+            .await
+            .ok();
+    }
+
+    /// 2026-10-01: after trust-backlog-consumer restarted at 08:50, the
+    /// Movements of every train activated before then arrived without a
+    /// `train_uid` and never reached `train_movement_events` (~55 rows in
+    /// the next hour). Their Activations were in `trust_event_backlog`:
+    /// the Movement now takes its train_uid AND service_date from there
+    /// (here the Activation's D, not the Movement's fallback D+1).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_uidless_movement_takes_its_activations_identity -- --ignored --test-threads=1`"]
+    async fn a_uidless_movement_takes_its_activations_identity() {
+        let pool = connect().await;
+        let train_id = "TEST-INFER-TID-1";
+        cleanup_uid_inference(&pool, train_id).await;
+        upsert_trust_event_backlog_batch(
+            &pool,
+            &[activation(
+                train_id,
+                "TEST-INFER-UID-1",
+                "2026-09-30",
+                "test-infer-act-1",
+            )],
+        )
+        .await
+        .expect("seed the Activation");
+
+        let movement = uidless_movement(train_id, "2026-10-01", "test-infer-mov-1");
+        upsert_trust_event_backlog_batch(&pool, std::slice::from_ref(&movement))
+            .await
+            .expect("backlog row");
+        let results = ingest_shared_movements_batch(&pool, &[movement]).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+
+        let (trains_id, service_date): (i64, NaiveDate) = sqlx::query_as(
+            "SELECT id, service_date FROM trains WHERE train_uid = 'TEST-INFER-UID-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the Movement created the Activation's trains row");
+        assert_eq!(service_date, "2026-09-30".parse::<NaiveDate>().unwrap());
+        let movements: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM train_movement_events WHERE trains_id = $1 AND dedup_key = 'test-infer-mov-1'",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(movements, 1);
+        cleanup_uid_inference(&pool, train_id).await;
+    }
+
+    /// The Activation may come earlier in the same POST: its backlog row is
+    /// inserted before the shared write runs.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                an_activation_in_the_same_batch_identifies_a_uidless_movement -- --ignored --test-threads=1`"]
+    async fn an_activation_in_the_same_batch_identifies_a_uidless_movement() {
+        let pool = connect().await;
+        let train_id = "TEST-INFER-TID-2";
+        cleanup_uid_inference(&pool, train_id).await;
+        let batch = [
+            activation(
+                train_id,
+                "TEST-INFER-UID-2",
+                "2026-10-01",
+                "test-infer-act-2",
+            ),
+            uidless_movement(train_id, "2026-10-01", "test-infer-mov-2"),
+        ];
+        upsert_trust_event_backlog_batch(&pool, &batch)
+            .await
+            .expect("backlog rows");
+        let results = ingest_shared_movements_batch(&pool, &batch).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let movements: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM train_movement_events m JOIN trains t ON t.id = m.trains_id \
+             WHERE t.train_uid = 'TEST-INFER-UID-2' AND m.dedup_key = 'test-infer-mov-2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(movements, 1);
+        cleanup_uid_inference(&pool, train_id).await;
+    }
+
+    /// Two Activations with different uids for one train_id within the
+    /// window (a recycled train_id) are ambiguous; no Activation at all is
+    /// the old accepted gap. Either way: no shared write, and no error.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                an_ambiguous_or_missing_activation_leaves_the_movement_unwritten -- --ignored --test-threads=1`"]
+    async fn an_ambiguous_or_missing_activation_leaves_the_movement_unwritten() {
+        let pool = connect().await;
+        let ambiguous = "TEST-INFER-TID-3";
+        let missing = "TEST-INFER-TID-4";
+        cleanup_uid_inference(&pool, ambiguous).await;
+        cleanup_uid_inference(&pool, missing).await;
+        upsert_trust_event_backlog_batch(
+            &pool,
+            &[
+                activation(
+                    ambiguous,
+                    "TEST-INFER-UID-3A",
+                    "2026-10-01",
+                    "test-infer-act-3a",
+                ),
+                activation(
+                    ambiguous,
+                    "TEST-INFER-UID-3B",
+                    "2026-09-30",
+                    "test-infer-act-3b",
+                ),
+                // Outside the one-day window: an old use of the same train_id.
+                activation(
+                    missing,
+                    "TEST-INFER-UID-4",
+                    "2026-09-25",
+                    "test-infer-act-4",
+                ),
+            ],
+        )
+        .await
+        .expect("seed the Activations");
+
+        let batch = [
+            uidless_movement(ambiguous, "2026-10-01", "test-infer-mov-3"),
+            uidless_movement(missing, "2026-10-01", "test-infer-mov-4"),
+        ];
+        let results = ingest_shared_movements_batch(&pool, &batch).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let trains: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM trains WHERE train_id IN ($1, $2) OR train_uid LIKE 'TEST-INFER-UID-%'",
+        )
+        .bind(ambiguous)
+        .bind(missing)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            trains, 0,
+            "no trains row from an ambiguous or missing Activation"
+        );
+        cleanup_uid_inference(&pool, ambiguous).await;
+        cleanup_uid_inference(&pool, missing).await;
+    }
+
+    /// The replay writes what a restart left out, once: a second run
+    /// changes nothing.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                replaying_uidless_backlog_rows_writes_the_missing_movements_once -- --ignored --test-threads=1`"]
+    async fn replaying_uidless_backlog_rows_writes_the_missing_movements_once() {
+        let pool = connect().await;
+        let train_id = "TEST-INFER-TID-5";
+        cleanup_uid_inference(&pool, train_id).await;
+        let since = chrono::Utc::now() - chrono::Duration::seconds(5);
+        upsert_trust_event_backlog_batch(
+            &pool,
+            &[
+                activation(
+                    train_id,
+                    "TEST-INFER-UID-5",
+                    "2026-10-01",
+                    "test-infer-act-5",
+                ),
+                uidless_movement(train_id, "2026-10-01", "test-infer-mov-5"),
+            ],
+        )
+        .await
+        .expect("backlog rows, as written before the fix (no shared write)");
+        let count = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM train_movement_events m JOIN trains t ON t.id = m.trains_id \
+                 WHERE t.train_uid = 'TEST-INFER-UID-5'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(count().await, 0);
+
+        let first = replay_uidless_backlog(&pool, since, 1)
+            .await
+            .expect("replay");
+        assert!(first.rows >= 1 && first.failed == 0, "{first:?}");
+        assert_eq!(count().await, 1);
+        replay_uidless_backlog(&pool, since, 1)
+            .await
+            .expect("replay again");
+        assert_eq!(count().await, 1, "idempotent");
+        cleanup_uid_inference(&pool, train_id).await;
     }
 
     /// Corroborating proof, for THIS call path specifically, of the guard

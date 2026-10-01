@@ -587,7 +587,11 @@ design than it was under direct Kafka.
    crates' `kafka_*` env vars), and `docker/trust-consumer.Dockerfile`'s/
    `docker/full-coverage-consumer.Dockerfile`'s now-unneeded
    `rdkafka`-only build dependencies if nothing else in either crate still
-   needs them. This step is not time-pressured — B's dangerous window ends
+   needs them. **Done 2026-10-01 (R-101):** both `feed/kafka.rs` files,
+   the rdkafka dependency and its Dockerfile build packages, the consumers'
+   `KAFKA_*` env and `movementFeed` values are gone; `MOVEMENT_FEED_BACKEND=kafka`
+   now fails startup. `trustConsumer.kafka.*` stays as movement-relay's
+   fallback connection. This step is not time-pressured — B's dangerous window ends
    once B3 lands; C can wait for ordinary review.
 
 **Open questions flagged as genuine judgment calls a human should confirm

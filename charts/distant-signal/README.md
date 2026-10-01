@@ -198,10 +198,10 @@ deploying a pod that cannot work:
   neither block has brokers, topic, consumer group and SASL mechanism. For
   an install that does not ingest TRUST train movements, set
   `movementRelay.enabled=false` instead; the three consumers then run on
-  an empty stream. The render also fails if `trustConsumer.movementFeed`
-  or `fullCoverageConsumer.movementFeed` is `kafka` and that consumer
-  shares movement-relay's consumer group, since two members of one group
-  split its partitions.
+  an empty stream. None of the consumers reads Kafka directly: their
+  legacy Kafka backend was removed (Deploy C), and a leftover
+  `trustConsumer.movementFeed` or `fullCoverageConsumer.movementFeed` of
+  `kafka` fails the render.
 
 The enricher is a strictly additive signal: its extractions only adjust
 the severity an incident already gives a line (a high-confidence
@@ -247,10 +247,18 @@ Read the next section before upgrading if you rely on generated secrets.
 > that left it at the old `false` default gains a movement-relay pod, and
 > its render fails unless `trustConsumer.kafka.*` (or
 > `movementRelay.kafka.*`) holds the Kafka connection; set
-> `movementRelay.enabled=false` to keep the old behaviour. If such an
-> install also runs `trustConsumer.movementFeed=kafka`, the render fails
-> until that is switched to `redis-stream` or the relay is turned off,
-> because the two would share one consumer group.
+> `movementRelay.enabled=false` to keep the old behaviour.
+
+> **Upgrade note: the consumers' Kafka backend is gone (Deploy C,
+> 2026-10-01).** `trustConsumer.movementFeed`,
+> `fullCoverageConsumer.movementFeed` and
+> `fullCoverageConsumer.kafka.consumerGroup` were removed: trust-consumer
+> and full-coverage-consumer only read movement-relay's `movement-events`
+> stream and no longer receive any `KAFKA_*` env var. A leftover
+> `movementFeed: redis-stream` is ignored, `movementFeed: kafka` fails the
+> render, and the binaries refuse `MOVEMENT_FEED_BACKEND=kafka` at
+> startup. `trustConsumer.kafka.*` is unchanged and is still the
+> connection movement-relay falls back to.
 
 `api` and `aggregator` roll concurrently with no ordering guarantee between
 them. When a release adds a database migration that `aggregator` depends on
@@ -705,7 +713,7 @@ stream is never trimmed. Alert on
 for how to inspect records and re-inject them with `redis-cli`.
 
 The same three consumers, and `movement-relay`, serve two health paths.
-`/healthz` is readiness: it needs the Kafka or Redis connection (for
+`/healthz` is readiness: it needs the Redis connection (for
 `movement-relay`, a confirmed Kafka partition assignment). `/livez` is
 liveness and does not depend on Redis, Kafka or Postgres. Both answer 503
 `stalled` when no loop iteration has completed for
@@ -718,7 +726,7 @@ pod but not one that is waiting for Redis to come back.
 On start, `full-coverage-consumer` waits for its first schedule population
 load, then replays the current rail day from `movement-events` before it
 consumes as its group, so a restart no longer corrupts that day's stats. A day
-it cannot replay in full (its start already trimmed, or the Kafka backend) is
+it cannot replay in full (its start already trimmed) is
 marked `partial`. The measured startup peak with a production-sized population
 and a full day's stream is about 373 MiB, well inside
 `fullCoverageConsumer.resources.limits.memory`. See
@@ -850,6 +858,16 @@ explicit allows:
 - **redis** ← api, enricher, trust-consumer, trust-backlog-consumer,
   full-coverage-consumer and movement-relay. Rendered only when
   `redis.enabled`.
+- **postgres/redis ← workloads outside the chart** (off by default):
+  `networkPolicy.postgresClients` and `networkPolicy.redisClients` are lists
+  of NetworkPolicy peers (`podSelector`, `namespaceSelector`) admitted on the
+  service port, e.g. a postgres-exporter, a pg_dump backup CronJob or a
+  redis-exporter. There are two ways to admit them: these values (the chart
+  then owns every way into the database), or a NetworkPolicy kept beside
+  the release (NetworkPolicies are additive, so it keeps working).
+  `networkPolicy.components.postgres.extraIngress` takes whole rules when a
+  client needs another port. The pgBackRest CronJobs need neither: they
+  `kubectl exec` into the Postgres pod through the API server.
 - **api** ← frontend, every enabled poller, the consumers, schedulefeed, and — when `ingress.enabled` and
   `ingress.api.enabled` — the namespace named by
   `networkPolicy.ingressControllerNamespace`, plus every namespace in
@@ -870,11 +888,18 @@ explicit allows:
   poller including the three island-of-Ireland ones; INF-10): their own
   metrics port from the monitoring namespace (when `metrics.enabled`), and
   their health port(s) from any source, because kubelet probes come from the
-  node, which no selector can name. Nothing else.
+  node, which no selector can name. Nothing else. `networkPolicy.healthIngress`
+  scopes the health ports: `from` lists the allowed peers (e.g. the nodes'
+  addresses as ipBlocks), and `enabled: false` drops the rule. kube-router
+  (k3s's policy controller) accepts all traffic from a pod's own node before
+  any policy applies, and Calico and Cilium allow it by default, so probes
+  keep working there either way. Check your CNI before dropping it: one that
+  filters node traffic would fail every probe.
 - **schedulefeed** (INF-2): SFTP on `scheduleFeed.sftp.port` from any source,
   or only from `scheduleFeed.sftp.allowedCidrs` when set. The allow-list only
-  works when the pod sees the client's real address (Service
-  `externalTrafficPolicy: Local`, or a load balancer that preserves it);
+  works when the pod sees the client's real address
+  (`scheduleFeed.service.externalTrafficPolicy: Local`, or a load balancer
+  that preserves it);
   behind source NAT it blocks every push. Also both containers' health ports
   and metrics ports.
 
@@ -898,17 +923,56 @@ tunnel reach the api on `api.service.port` still does after this.
 Narrowing the chart's policies cannot remove it.
 
 **Egress is unrestricted by default.** `networkPolicy.egress.enabled: true`
-(off by default) adds egress policies to the notifier, the consumers,
-movement-relay and every poller: DNS, the in-cluster services each one
-calls (api, the bundled Redis/Postgres, the bundled dev IdP), and the public
-internet minus `networkPolicy.egress.privateCidrs`/`privateCidrsV6`. That
-stops a notifier tricked into pushing to a private address, or a compromised
-poller, from reaching the rest of the cluster. Before enabling it, add a
-`networkPolicy.egress.extraRules` entry for anything these workers reach at
-a private address: an external Redis or Postgres, an OAuth token endpoint
-inside the cluster or on a tailnet (`100.64.0.0/10`), a private Kafka broker
-or a proxy. api, frontend, aggregator, enricher, schedulefeed, postgres and
-redis get no egress policy.
+(off by default) adds an egress policy to every component. Each may reach
+DNS (port 53), the in-cluster services it calls, and, where it needs it, the
+public internet minus `networkPolicy.egress.privateCidrs`/`privateCidrsV6`
+and `extraDeniedCidrs`. That stops a notifier tricked into pushing to a
+private address, or a compromised poller, from reaching the rest of the
+cluster.
+
+| Component | In-cluster | Public internet (why) |
+|---|---|---|
+| api | postgres, redis, dev IdP | yes (OIDC discovery and JWKS for `api.sso.issuerUrl` and `api.internalOauth.issuerUrl`) |
+| frontend | api | no (the `/chat` Anthropic calls run in the browser) |
+| aggregator | postgres | only with `archive.enabled` (S3) |
+| enricher | postgres, redis | yes (`enricher.llm.baseUrl`) |
+| notifier | postgres | yes (Web Push services) |
+| pollers, consumers, movement-relay | api and/or redis, dev IdP | yes (upstream feeds, Kafka, the OAuth token endpoint) |
+| schedulefeed | api, dev IdP | yes (the OAuth token endpoint) |
+| postgres | none | only with `postgresql.pgbackrest.enabled` (the repository's S3) |
+| redis | none | no |
+
+DNS goes to any destination on port 53 unless `networkPolicy.egress.dnsPeers`
+names the resolvers (e.g. CoreDNS: namespace `kube-system`, pods
+`k8s-app: kube-dns`; leave it empty with NodeLocal DNSCache).
+
+The internet rule allows only TCP `networkPolicy.egress.internetPorts`
+(default 443) plus the ports each component's own upstreams use, read from
+its configuration: an explicit port or the scheme's default in its URLs
+(the Irish Rail live feed is `http://`, so port 80), the Kafka brokers'
+ports, and `postgresql.pgbackrest.repo.s3.port`. Web Push services, OIDC and
+the OAuth token endpoint use 443. A self-hosted push service or other
+upstream on another port needs `networkPolicy.components.<component>.internetPorts`;
+`[]` (globally or per component) allows every port.
+
+`networkPolicy.components.<component>` (keyed by the
+`app.kubernetes.io/component` label) tunes one component: `internet`
+adds or drops its public-internet rule, `egress: false` leaves it
+without an egress policy, and `extraEgress`/`extraIngress` append raw
+NetworkPolicy egress/ingress rules to that component's policy alone (e.g.
+only the aggregator may reach a private archive endpoint). Before enabling, add a rule for anything reached
+at a private address: an external Redis or Postgres, an OIDC or OAuth
+endpoint inside the cluster or on a tailnet (`100.64.0.0/10`), a private
+Kafka broker, LLM endpoint, archive or pgBackRest S3 endpoint, or a proxy.
+
+**Exclude the nodes' own public addresses.** `privateCidrs` names only the
+reserved ranges. A node with a public IP is therefore reachable through the
+internet rule: the API server (6443), the kubelet (10250) and every port the
+host publishes. List those addresses in
+`networkPolicy.egress.extraDeniedCidrs` (`/32` or `/128`; IPv4 and IPv6 may
+be mixed). They are added to the defaults rather than replacing them, and
+because policies are additive, no policy outside the chart can take this
+allowance away.
 
 ## Distant-Signal-MCP as a service caller
 
@@ -1016,6 +1080,47 @@ helm upgrade distant-signal ./charts/distant-signal -n distant-signal \
   --set pollers.incidents.apiKey=your-rdm-key
 ```
 
+## Logging
+
+Every Rust workload and the frontend's server side log **one JSON object
+per line** on stdout (no ANSI colour, no multi-line output), for Loki/Alloy.
+The chart sets nothing for this: `LOG_FORMAT` defaults to `json` in the
+binaries themselves (`common::logging`, `frontend/lib/logger.ts`). To get
+human-readable text from one workload while debugging, add
+`LOG_FORMAT=pretty` through its `extraEnv` (where it has one). Verbosity is
+unchanged: the per-component `logLevel` values (`RUST_LOG`, or the
+notifier's `LOG_LEVEL`).
+
+| Key | Value |
+|---|---|
+| `timestamp` | RFC 3339, UTC (`2026-10-01T09:30:00.123456Z`; the frontend has millisecond precision) |
+| `level` | `TRACE`, `DEBUG`, `INFO`, `WARN` or `ERROR` |
+| `service` | the binary: `api`, `aggregator`, `notifier`, `enricher`, `movement-relay`, `trust-consumer`, `full-coverage-consumer`, `trust-backlog-consumer`, `poller-<name>`, `schedule-ingest`, `schedule-reference`, `frontend` |
+| `target` | Rust: the module path (`api::routes::lines`), the `log` crate's target (`librdkafka`), `panic` or `fatal`. Frontend: the module (`lib/api`), `next` (`onRequestError`) or `console` (Next's own console output) |
+| `message` | the event's message |
+| *(event fields)* | flattened to the top level as snake_case keys (`line_id`, `count`, ...) |
+| `error` | an error's text with its cause chain |
+| `stack` | a backtrace: panics, frontend `Error`s |
+| `spans` | Rust only, when inside a span: the enclosing spans root first, each `{"name": ..., <fields>}` (e.g. the api's per-request span) |
+
+A panic is one `ERROR` line with target `panic`, message
+`panicked at <file:line:col>: <payload>` and a `stack`; an error returned from
+`main` is one `ERROR` line with target `fatal`. Credentials are never logged
+(Rust `Secret` fields print `Secret(***)`; the frontend logger redacts
+token/secret/password/cookie/authorization/email keys).
+
+LogQL examples:
+
+```logql
+{namespace="distant-signal"} | json | level="ERROR"
+{namespace="distant-signal"} | json | target="panic"
+{namespace="distant-signal"} | json | service="trust-consumer" | message=~".*NOGROUP.*"
+```
+
+Clap's own argument errors (a missing required env var at startup) are
+still printed by clap as plain text before logging starts, then the process
+exits with code 2.
+
 ## Values reference
 
 ### Global
@@ -1066,6 +1171,42 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.image.tag` | `16.15-trixie@sha256:…` | Postgres 16, the major the compose stack uses, digest-pinned in the tag. |
 | `postgresql.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `postgresql.service.port` | `5432` | Port the headless Service and the container listen on. |
+| `postgresql.connectionBudget.externalClients` | `2` | Connections the render-time budget check reserves for clients deployed outside this chart that connect as the app role: Ranma-Config's postgres-exporter (1) and its nightly `pg_dump` (1). The app role is a superuser, so `superuser_reserved_connections` protects none of these. pgBackRest adds 2 more on its own when enabled. |
+| `postgresql.connectionBudget.adminSessions` | `3` | Interactive `kubectl exec ... psql` sessions the budget check keeps room for. |
+| `postgresql.roles.enabled` | `false` | Connect the api pools and every worker as `app`, api's migrations as `owner`, and the pgBackRest CronJobs as `backup` (docs/postgres-app-role.md). The roles must exist first (`setupJob`, or `initScript` on a new cluster). Does not restart Postgres on its own. |
+| `postgresql.roles.initScript` | `true` | With `enabled`: run files/postgres-roles.sql from /docker-entrypoint-initdb.d, which the image runs only on an EMPTY data directory (a new cluster), before any client connects. Turning it on restarts Postgres: set it false on an existing cluster. |
+| `postgresql.roles.setupJob.enabled` | `false` | Run files/postgres-roles.sql as a Helm post-install/post-upgrade hook Job, as the superuser over the Service, on every install and upgrade (idempotent: creates/updates the roles, moves ownership to `owner`, grants). Independent of `enabled`: on an existing cluster turn this on first. A failure fails the release. |
+| `postgresql.roles.setupJob.activeDeadlineSeconds` | `600` | Seconds before the Job gives up (it first waits for Postgres). |
+| `postgresql.roles.setupJob.backoffLimit` | `2` | Retries after a failed run. |
+| `postgresql.roles.setupJob.resources` | requests `10m`/`32Mi`, limit `128Mi` | Container resources. |
+| `postgresql.roles.setupJob.podSecurityContext` | `{}` | Overrides the pod securityContext (default: uid/gid 999, the image's postgres user, non-root, RuntimeDefault seccomp). |
+| `postgresql.roles.owner.username` | `distant_signal_owner` | Role name of the schema owner. |
+| `postgresql.roles.owner.password` | `""` | Password. Generated (32 alphanumeric chars, kept across upgrades) when empty and no `existingSecret`. |
+| `postgresql.roles.owner.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.owner.existingSecretPasswordKey` | `postgres-owner-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.owner.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `api.replicaCount` + 2. |
+| `postgresql.roles.app.username` | `distant_signal_app` | Role name the services connect as. |
+| `postgresql.roles.app.password` | `""` | Password. Generated (32 alphanumeric chars, kept across upgrades) when empty and no `existingSecret`. |
+| `postgresql.roles.app.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.app.existingSecretPasswordKey` | `postgres-app-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.app.connectionLimit` | `""` | CONNECTION LIMIT. Empty: the chart's pools (api `maxConnections` x `replicaCount`, aggregator 10, notifier 5, enricher 5, archive 2 when enabled) plus `connectionLimitSlack`. It is what makes `superuser_reserved_connections` a real admin reserve. |
+| `postgresql.roles.app.connectionLimitSlack` | `5` | Added to the computed CONNECTION LIMIT, for one-off binaries (backfills) run as the app role. |
+| `postgresql.roles.exporter.username` | `distant_signal_exporter` | Role name for postgres-exporter (pg_monitor). |
+| `postgresql.roles.exporter.password` | `""` | Password. Generated (32 alphanumeric chars, kept across upgrades) when empty and no `existingSecret`. |
+| `postgresql.roles.exporter.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.exporter.existingSecretPasswordKey` | `postgres-exporter-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.exporter.connectionLimit` | `3` | CONNECTION LIMIT. |
+| `postgresql.roles.dump.username` | `distant_signal_dump` | Role name for pg_dump (pg_read_all_data). |
+| `postgresql.roles.dump.password` | `""` | Password. Generated (32 alphanumeric chars, kept across upgrades) when empty and no `existingSecret`. |
+| `postgresql.roles.dump.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.dump.existingSecretPasswordKey` | `postgres-dump-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.dump.connectionLimit` | `2` | CONNECTION LIMIT (a parallel `pg_dump -j N` needs N + 1). |
+| `postgresql.roles.backup.username` | `distant_signal_backup` | Role name for pgBackRest (EXECUTE on pg_backup_start/stop, pg_switch_wal, pg_create_restore_point; pg_read_all_settings, pg_checkpoint). |
+| `postgresql.roles.backup.password` | `""` | Password. Generated (32 alphanumeric chars, kept across upgrades) when empty and no `existingSecret`. Defence in depth: pgBackRest uses the trusted local socket and never sends it. |
+| `postgresql.roles.backup.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.backup.existingSecretPasswordKey` | `postgres-backup-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.backup.connectionLimit` | `4` | CONNECTION LIMIT. |
+| `postgresql.roles.backup.database` | `postgres` | Database pgBackRest connects to (its pg1-database default); the function grants are made there and in `auth.database`. |
 | `postgresql.probes.startup.periodSeconds` | `10` | Startup probe period. Liveness starts only after `pg_isready` succeeds, so WAL redo after a reboot is never killed. |
 | `postgresql.probes.startup.failureThreshold` | `90` | Startup probe failures allowed (90 x 10s = 15 minutes of crash recovery). |
 | `postgresql.persistence.enabled` | `true` | Attach a PVC. When false an emptyDir is used and data is lost on reschedule. |
@@ -1110,6 +1251,14 @@ override only needs to name the keys it changes:
 | `log_parameter_max_length` | `0` | `-1` | Never log bind parameters: bulk arrays of ~250k rows, user data, session tokens. |
 | `log_lock_waits` | `on` | `off` | Logs lock waits longer than `deadlock_timeout` (1s). |
 | `track_io_timing` | `on` | `off` | I/O timings in `EXPLAIN (ANALYZE, BUFFERS)`, `pg_stat_statements` and `pg_stat_database`. |
+| `idle_in_transaction_session_timeout` | `10min` | `0` | Backstop for sessions that skip `common::pg` (psql, exporters): ends one left idle inside an open transaction. The pools set 30s; pg_dump sets its own 0. |
+| `tcp_keepalives_idle` / `_interval` / `_count` | `60` / `10` / `6` | `0` (OS: 2h) | Detects a client that vanished without closing its socket. Same values every pool sets. |
+| `client_connection_check_interval` | `10s` | `0` | A running query checks its socket and aborts once the client is gone. |
+
+`statement_timeout` is deliberately not set server-wide. pgBackRest's
+`pg_backup_stop()` waits for WAL archiving, which takes minutes while object
+storage is down. Manual VACUUM, CREATE INDEX and the api's migration
+connection also run long. Every service pool sets its own 60s.
 
 `random_page_cost` defaults to `"1.1"`, which assumes SSD-class storage
 (SSD/NVMe, or network block storage backed by it, as most managed
@@ -1231,6 +1380,10 @@ and [docs/postgres-pitr.md](../../docs/postgres-pitr.md).
 | `postgresql.pgbackrest.backup.image.repository` / `.tag` / `.pullPolicy` | `registry.k8s.io/kubectl`, `v1.36.5@sha256:…`, `IfNotPresent` | The image the CronJobs run `kubectl exec` from. Keep it within one minor version of the cluster. |
 | `postgresql.pgbackrest.backup.resources` | requests `20m`/`32Mi`, limit `128Mi` | CronJob pod resources. The work happens in the Postgres container. |
 | `postgresql.pgbackrest.backup.podSecurityContext` | `{}` | Merged over the CronJob pods' securityContext (non-root uid 65532 by default). |
+| `metrics.prometheusRule.postgresDown` | see `values.yaml` | `DistantSignalPostgresDown`: `enabled`, `for` (3m), `severity` (critical) and `pgUpSelector`, extra label matchers for postgres_exporter's `pg_up` (see [Alerts](#alerts)). |
+| `metrics.prometheusRule.apiDatabaseDown` | see `values.yaml` | `DistantSignalApiDatabaseDown`: `enabled`, `for` (2m) and `severity` (critical). |
+| `metrics.prometheusRule.consumerApiErrors` | see `values.yaml` | `DistantSignalConsumerApiCallsFailing`: `enabled`, `window` (5m), `minErrors` (3), `for` (10m) and `severity` (warning). |
+| `metrics.prometheusRule.cycleStalled` | see `values.yaml` | `DistantSignalAggregatorCycleFailing` / `DistantSignalNotifierCycleFailing`: `enabled`, `maxAgeSeconds` (900), `for` (0m) and `severity` (warning). |
 | `metrics.prometheusRule.pgbackrest` | see `values.yaml` | The pgBackRest alerts' windows, ages, `archiverSelector` and severity (see [Alerts](#alerts)). |
 
 ### externalDatabase
@@ -1565,9 +1718,10 @@ enricher:
 
 ### trustConsumer
 
-Resolves tracked trains from TRUST train movements. By default it reads
-movement-relay's `movement-events` stream; `trustConsumer.kafka.*` is also
-the Kafka connection movement-relay falls back to (see `movementRelay`).
+Resolves tracked trains from TRUST train movements. It reads
+movement-relay's `movement-events` stream and has no Kafka connection of
+its own. `trustConsumer.kafka.*` is the RDM Kafka connection movement-relay
+falls back to (see `movementRelay`).
 
 | Key | Default | Description |
 |---|---|---|
@@ -1575,10 +1729,10 @@ the Kafka connection movement-relay falls back to (see `movementRelay`).
 | `trustConsumer.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `trustConsumer.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `trustConsumer.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
-| `trustConsumer.kafka.brokers` | `""` | RDM Train Movements broker address(es). Used by movement-relay when `movementRelay.kafka.brokers` is empty, and by trust-consumer itself only with `movementFeed: kafka` (then **required**). |
-| `trustConsumer.kafka.topic` | `""` | Train Movements topic (production: `TRAIN_MVT_ALL_TOC`). Same fallback and requirement as `brokers`. |
-| `trustConsumer.kafka.consumerGroup` | `distant-signal-trust-consumer` | Kafka consumer group. For RDM this must be the RDM-issued `SC-...` id; RDM issues one per account, and movement-relay holds it. |
-| `trustConsumer.kafka.saslMechanism` | `""` | SASL mechanism (production: `PLAIN`). Same fallback and requirement as `brokers`. |
+| `trustConsumer.kafka.brokers` | `""` | RDM Train Movements broker address(es). Used by movement-relay when `movementRelay.kafka.brokers` is empty. trust-consumer itself does not read Kafka. |
+| `trustConsumer.kafka.topic` | `""` | Train Movements topic (production: `TRAIN_MVT_ALL_TOC`). Same fallback as `brokers`. |
+| `trustConsumer.kafka.consumerGroup` | `distant-signal-trust-consumer` | Kafka consumer group. For RDM this must be the RDM-issued `SC-...` id; RDM issues one per account, and movement-relay is its only member. |
+| `trustConsumer.kafka.saslMechanism` | `""` | SASL mechanism (production: `PLAIN`). Same fallback as `brokers`. |
 | `trustConsumer.kafka.saslUsername` | `""` | SASL username, rendered into the chart Secret as `kafka-sasl-username`. Never auto-generated. |
 | `trustConsumer.kafka.saslPassword` | `""` | SASL password, rendered as `kafka-sasl-password`. Never auto-generated. |
 | `trustConsumer.kafka.existingSecret` | `""` | Read the SASL credential from this pre-existing Secret instead. |
@@ -1595,9 +1749,8 @@ the Kafka connection movement-relay falls back to (see `movementRelay`).
 | `trustConsumer.healthPort` | `8081` | Port for `/healthz` (readiness) and `/livez` (liveness). |
 | `trustConsumer.progressStallSecs` | `300` | `/livez` answers 503 once no consume-loop iteration has completed for this many seconds. |
 | `trustConsumer.replicaCount` | `1` | Replicas. Exists so trust-consumer can be scaled to 0 through `helm upgrade`. |
-| `trustConsumer.movementFeed` | `redis-stream` | `redis-stream` reads movement-relay's stream. `kafka` is the legacy direct connection (no dead-letter stream, no gap check, and it needs its own consumer group). |
 | `trustConsumer.redisAutoclaimMinIdleSecs` | `30` | How long an entry may sit unacknowledged in this consumer's pending list before the periodic sweep reclaims it. |
-| `trustConsumer.redisGapCheckSecs` | `60` | How often the consumer group's position is compared with the stream's oldest entry to detect a gap (`redis-stream` only). |
+| `trustConsumer.redisGapCheckSecs` | `60` | How often the consumer group's position is compared with the stream's oldest entry to detect a gap. |
 | `trustConsumer.metricsPort` | `9095` | Prometheus `/metrics` port. |
 | `trustConsumer.logLevel` | `info` | `RUST_LOG` value. |
 | `trustConsumer.trustTimestampCorrectionEnabled` | `true` | Kill switch for the TRUST timestamp Europe/London-mislabelling correction (`crates/common/src/trust_timestamp.rs`). |
@@ -1612,9 +1765,9 @@ the Kafka connection movement-relay falls back to (see `movementRelay`).
 ### fullCoverageConsumer
 
 Computes whole-network delay and cancellation stats per line from the
-movement stream and the CIF schedule population. It reuses
-`trustConsumer.kafka.*` (except the consumer group) when `movementFeed` is
-`kafka`.
+movement stream and the CIF schedule population. It reads
+movement-relay's `movement-events` stream and has no Kafka connection of
+its own.
 
 | Key | Default | Description |
 |---|---|---|
@@ -1622,7 +1775,6 @@ movement stream and the CIF schedule population. It reuses
 | `fullCoverageConsumer.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `fullCoverageConsumer.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `fullCoverageConsumer.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
-| `fullCoverageConsumer.kafka.consumerGroup` | `distant-signal-full-coverage-consumer` | Kafka consumer group, used only with `movementFeed: kafka`. |
 | `fullCoverageConsumer.existingSecret` | `""` | Read this service's internal OAuth2 credential from a pre-existing Secret instead of the chart-rendered one. |
 | `fullCoverageConsumer.internalOauthUsername` | `""` | Internal OAuth2 service-account username (Authentik `svc-full-coverage-consumer`). |
 | `fullCoverageConsumer.internalOauthPassword` | `""` | Internal OAuth2 service-account app password. |
@@ -1636,7 +1788,6 @@ movement stream and the CIF schedule population. It reuses
 | `fullCoverageConsumer.progressStallSecs` | `900` | `/livez` answers 503 once no consume-loop iteration has completed for this many seconds. |
 | `fullCoverageConsumer.metricsPort` | `9093` | Prometheus `/metrics` port. |
 | `fullCoverageConsumer.replicaCount` | `1` | Replicas. |
-| `fullCoverageConsumer.movementFeed` | `redis-stream` | See `trustConsumer.movementFeed`. |
 | `fullCoverageConsumer.redisAutoclaimMinIdleSecs` | `30` | See `trustConsumer.redisAutoclaimMinIdleSecs`. |
 | `fullCoverageConsumer.redisGapCheckSecs` | `60` | See `trustConsumer.redisGapCheckSecs`. |
 | `fullCoverageConsumer.windowedStats.enabled` | `false` | Windowed full-coverage stats (`docs/superpowers/specs/2026-09-27-full-coverage-windowed-stats-design.md`). Off: only the whole-day rows are written. Turn on only after api and schedule-reference support it; `aggregator.fullCoverageWindow.mode` is a separate switch. |
@@ -1704,7 +1855,7 @@ credential of its own it uses trust-consumer's; see "Install" above.
 | `movementRelay.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `movementRelay.kafka.brokers` | `""` | Broker address(es). Empty: `trustConsumer.kafka.brokers`. |
 | `movementRelay.kafka.topic` | `""` | Train Movements topic. Empty: `trustConsumer.kafka.topic`. |
-| `movementRelay.kafka.consumerGroup` | `""` | RDM-issued consumer group id (`SC-...`). Empty: `trustConsumer.kafka.consumerGroup`. The render fails if a consumer on `movementFeed: kafka` would share it. |
+| `movementRelay.kafka.consumerGroup` | `""` | RDM-issued consumer group id (`SC-...`). Empty: `trustConsumer.kafka.consumerGroup`. |
 | `movementRelay.kafka.saslMechanism` | `""` | SASL mechanism. Empty: `trustConsumer.kafka.saslMechanism`. |
 | `movementRelay.kafka.saslUsername` | `""` | movement-relay's own SASL username, rendered into the chart Secret as `movement-relay-kafka-sasl-username`. With this, `saslPassword` and `existingSecret` all empty, trust-consumer's credential is used. |
 | `movementRelay.kafka.saslPassword` | `""` | movement-relay's own SASL password (`movement-relay-kafka-sasl-password`). |
@@ -1946,10 +2097,33 @@ Off by default.
 | `scheduleFeed.sftp.authMethod` | `""` | `password` or `public-key`. No default: enabling without it fails the render. |
 | `scheduleFeed.sftp.password` | `""` | Push account password (`authMethod: password`). Generated and preserved across upgrades when empty; NOTES.txt shows how to read it back. |
 | `scheduleFeed.sftp.publicKey` | `""` | The feed provider's public key (`authMethod: public-key`). |
+| `scheduleFeed.sftp.passwordPolicy.minLength` | `24` | Minimum push account password length. A `password` in values is checked at render time; one from `existingSecret` by the sftp entrypoint at start (only the length is logged). The generated default is 32 random alphanumerics (~190 bits). |
+| `scheduleFeed.sftp.passwordPolicy.enforce` | `true` | At start, refuse to run with a shorter password (`true`) or only log a warning (`false`). |
 | `scheduleFeed.sftp.existingSecret` | `""` | Read the SFTP credentials from this pre-existing Secret instead. |
 | `scheduleFeed.sftp.existingSecretPasswordKey` | `schedule-sftp-password` | Key for the push account password. |
 | `scheduleFeed.sftp.existingSecretPublicKeyKey` | `schedule-sftp-dtd-public-key` | Key for the provider's public key. |
-| `scheduleFeed.sftp.existingSecretHostKey` | `""` | Pre-existing Secret holding this server's own SSH host key (not the provider's). Empty: the chart generates and preserves one. |
+| `scheduleFeed.sftp.existingSecretHostKey` | `""` | Pre-existing Secret holding this server's own SSH host key (not the provider's). Empty: the chart generates and preserves them. |
+| `scheduleFeed.sftp.hostKeys` | `[ssh_host_ecdsa_key, ssh_host_ed25519_key]` | Keys in the host-key Secret that SFTPGo serves (`SFTPGO_SFTPD__HOST_KEYS`), mounted 0440 for the pod's fsGroup. ECDSA covers clients without ed25519 (DTD's JSch 0.1.54). With `existingSecretHostKey`, that Secret must hold every listed key. Empty: SFTPGo generates fresh keys on every start. |
+| `scheduleFeed.sftp.webAdmin.enabled` | `false` | Run SFTPGo's web admin/REST listener. Off, because with no admin account anyone who reaches it can create one. |
+| `scheduleFeed.sftp.extraEnv` | `[]` | Extra env entries for the SFTPGo container (e.g. `SFTPGO_*` telemetry, defender or log settings). |
+| `scheduleFeed.sftp.permissions` | `[upload, overwrite, list]` | SFTPGo permissions the push account has on its home directory. Least privilege from DTD's observed client behaviour: no download, delete, rename, mkdir, symlink, chmod/chown/chtimes or copy. `overwrite` is needed because DTD replaces `timetable_full.zip` in place daily. `*` is refused. See [docs/schedule-feed-sftp.md](../../docs/schedule-feed-sftp.md). |
+| `scheduleFeed.sftp.maxSessions` | `2` | Simultaneous sessions for the push account. `0` = unlimited. |
+| `scheduleFeed.sftp.maxUploadFileSize` | `536870912` | Largest single upload in bytes (512 MiB, ~6.6x the 77 MB CIF zip). Larger uploads fail and are deleted. `0` = unlimited. |
+| `scheduleFeed.sftp.sshCommands` | `[]` | SSH commands SFTPGo runs besides SFTP (`SFTPGO_SFTPD__ENABLED_SSH_COMMANDS`; the image enables `md5sum`, `sha1sum`, `sha256sum`, `cd`, `pwd`, `scp`). None by default. |
+| `scheduleFeed.sftp.defender.enabled` | `true` | SFTPGo's in-process brute-force defender: bans a source IP whose score reaches `threshold` within `observationTime` minutes. Needs real client IPs (`scheduleFeed.service.externalTrafficPolicy: Local`); behind source NAT a ban locks out every client. Bans are in memory, so a pod restart clears them. |
+| `scheduleFeed.sftp.defender.banTime` / `.banTimeIncrement` | `60` / `100` | Ban length in minutes, and the percentage of it added each time a banned host connects again. |
+| `scheduleFeed.sftp.defender.threshold` | `8` | Score at which a host is banned. |
+| `scheduleFeed.sftp.defender.scoreValid` / `.scoreInvalid` | `2` / `2` | Score per wrong password for an existing account, and per unknown username. An OpenSSH or JSch client with a wrong password scores twice per connection (keyboard-interactive, then password). |
+| `scheduleFeed.sftp.defender.scoreLimitExceeded` | `4` | Score per rejected connection from the rate limiter or the per-host connection cap. |
+| `scheduleFeed.sftp.defender.scoreNoAuth` | `0` | Score per connection that never tried to authenticate (the kubelet's TCP probe, port scanners). Keep 0 unless the probe source is safelisted. |
+| `scheduleFeed.sftp.defender.observationTime` | `30` | Minutes of history a host's score covers. |
+| `scheduleFeed.sftp.defender.entriesSoftLimit` / `.entriesHardLimit` | `500` / `1000` | Hosts kept in memory. |
+| `scheduleFeed.sftp.defender.safelist` | `[]` | IPs/CIDRs never scored, banned or rate-limited (loaded as SFTPGo IP list entries through the push account's loaddata file). |
+| `scheduleFeed.sftp.maxPerHostConnections` | `8` | Simultaneous connections allowed from one source IP; `0` disables the cap. |
+| `scheduleFeed.sftp.rateLimit.average` / `.periodMs` / `.burst` | `20` / `60000` / `10` | Per-source SSH connection rate limit: `average` connections per `periodMs`, bursting to `burst`. `average: 0` disables it. |
+| `scheduleFeed.sftp.logLevel` | `debug` | SFTPGo log level (`SFTPGO_LOG_LEVEL`). Failed logins and defender score changes are only logged at `debug`, so log-based alerts on them need it. Timestamps are always UTC (`SFTPGO_LOG_UTC_TIME`). Fields: [docs/schedule-feed-sftp.md](../../docs/schedule-feed-sftp.md#audit-log). |
+| `scheduleFeed.sftp.telemetry.enabled` | `true` | SFTPGo's telemetry listener (`/metrics`, `/healthz`), as container port `sftp-metrics` and a PodMonitor endpoint. Needs `metrics.enabled`. Not on the NodePort Service; the NetworkPolicy admits only the monitoring namespace. No auth, no profiler. |
+| `scheduleFeed.sftp.telemetry.port` | `9097` | Telemetry port. |
 | `scheduleFeed.sftp.destinationFolder` | `incoming` | Folder on the PVC the push account is chrooted to; also schedule-ingest's `WATCH_DIR`. |
 | `scheduleFeed.sftp.folderPath` | `""` | Optional subfolder within `destinationFolder`. |
 | `scheduleFeed.sftp.resources` | requests `25m`/`64Mi`, limit `128Mi` | SFTP container resource requests/limits. |
@@ -1985,6 +2159,7 @@ Off by default.
 | `scheduleFeed.service.type` | `LoadBalancer` | `LoadBalancer`, or `NodePort` behind an external load balancer. Not an Ingress: SFTP is not HTTP. |
 | `scheduleFeed.service.annotations` | `{}` | Service annotations. |
 | `scheduleFeed.service.nodePort` | `null` | Explicit NodePort for the SFTP port. Empty lets Kubernetes assign one. |
+| `scheduleFeed.service.externalTrafficPolicy` | `""` | `Local` or `Cluster`; empty renders nothing (Kubernetes defaults to `Cluster`). Only valid with type `NodePort` or `LoadBalancer`; anything else fails the render. `Local` keeps DTD's real source IP, which `scheduleFeed.sftp.allowedCidrs` needs, and only routes to nodes with a ready schedulefeed pod (no cost on a single node). |
 | `scheduleFeed.persistence.enabled` | `true` | Attach a PVC for deliveries. |
 | `scheduleFeed.persistence.size` | `5Gi` | Requested volume size. |
 | `scheduleFeed.persistence.storageClass` | `""` | StorageClass name. Empty means the cluster default. |
@@ -2059,8 +2234,8 @@ now matches every other workload.
 | `metrics.prometheusRule.labels` | `{}` | Extra labels on the `PrometheusRule` object — whatever your Prometheus's `ruleSelector` matches (e.g. `release: kube-prometheus-stack`). |
 | `metrics.prometheusRule.annotations` | `{}` | Extra annotations on the `PrometheusRule` object. |
 | `metrics.prometheusRule.ruleLabels` | `{}` | Extra labels added to every alert, next to `severity`. |
-| `metrics.prometheusRule.runbookBaseUrl` | GitHub `main` | Prefix for each alert's `runbook_url`; the repo-relative doc path is appended. |
-| `metrics.prometheusRule.<alert>` | see `values.yaml` | Per-alert `enabled`, `for`, `severity` and threshold settings, `for` durations, severities and thresholds for `movementLag`, `movementLagGrowing`, `streamGap`, `deadLetter`, `deadLetterFull`, `relayPublishFailing`, `redisPersistence`, `groupRecreated`, `deadLetterExpiring`, `enricherErrors`, `componentMemory`, `fullCoverageWindow`, `notifierPushDropped`, `userSignupSpike`, `archiveUploadFailures`, `archiveExpiry`, `schedulePipeline`, `pollerFailures`, `ldbwsStalestStation` and `ldbwsInvalidCrs`. |
+| `metrics.prometheusRule.runbookBaseUrl` | GitHub `main` | Prefix for each alert's `runbook_url`; `/docs/alerts.md#<alert name, lowercased>` is appended. |
+| `metrics.prometheusRule.<alert>` | see `values.yaml` | Per-alert `enabled`, `for`, `severity` and threshold settings, `for` durations, severities and thresholds for `movementLag`, `movementLagGrowing`, `streamGap`, `deadLetter`, `deadLetterFull`, `relayPublishFailing`, `redisPersistence`, `groupRecreated`, `deadLetterExpiring`, `longPending`, `parseEnvelope`, `enricherErrors`, `componentMemory`, `fullCoverageWindow`, `notifierPushDropped`, `userSignupSpike`, `archiveUploadFailures`, `archiveExpiry`, `schedulePipeline`, `scheduleSftp`, `pollerFailures`, `ldbwsStalestStation` and `ldbwsInvalidCrs`. |
 
 #### Alerts
 
@@ -2080,8 +2255,20 @@ alert only when `archive.enabled`, the archive-expiry group only when
 `archive.expiry.enabled` too, and the schedule-pipeline group only when
 `scheduleFeed.enabled`.
 
+Each alert carries a one-line `summary`, a short `description` and a
+`runbook_url` into [docs/alerts.md](../../docs/alerts.md), which holds the
+explanation and what to do. Expressions longer than about 300 characters are
+recording rules (`distant_signal:*`) in the same group, so the alert's
+`generatorURL` stays short. Both keep a 3-alert notification under ntfy's
+4,096-byte limit; `scripts/check-alert-payloads.py` checks it in CI.
+
 | Alert | Severity | Fires when (defaults) |
 |---|---|---|
+| `DistantSignalPostgresDown` | critical | postgres_exporter's `pg_up` is 0 (`postgresDown.pgUpSelector` narrows its series), or, with `postgresql.enabled`, the bundled Postgres StatefulSet has no ready replica (kube-state-metrics' `kube_statefulset_status_replicas_ready`), for 3m. |
+| `DistantSignalApiDatabaseDown` | critical | api's own `SELECT 1` probe through its request pool (`api_db_up`, every 15s) is 0 on some replica for 2m: a rotated password, an exhausted pool, `max_connections`, a NetworkPolicy, or the database itself. |
+| `DistantSignalConsumerApiCallsFailing` | warning | trust-consumer, trust-backlog-consumer or full-coverage-consumer failed at least 3 calls to api within 5m, continuously for 10m (`*_errors_total` for the operations that call api: trust-consumer `reload_tracked_trains`, `post_train_events`, `reload_stanox_crs`, `startup_reference_load`; trust-backlog-consumer `post_batch`, `post_train_reasons`, `reload_stanox_crs`; full-coverage-consumer `reload_line_population_fetch`, `post_line_stats`, `post_station_samples`, `reload_stanox_crs`). One alert per consumer. |
+| `DistantSignalAggregatorCycleFailing` | warning | No successful aggregation cycle for 15m (`aggregator_last_success_timestamp_seconds{cycle}`, the process start until the first success; `aggregator_cycles_total{cycle,result}` counts both outcomes). |
+| `DistantSignalNotifierCycleFailing` | warning | No successful run of a notifier loop (`line_status`, `forward_queue`, `skip_check`; not the hourly `template_sweep`) for 15m (`notifier_last_success_timestamp_seconds{cycle}`). |
 | `DistantSignalMovementLagHigh` | warning | A consumer group's `movement_relay_stream_lag` plus `movement_relay_stream_pending` (delivered but un-ACKed: a consumer whose downstream fails keeps reading, so its backlog sits in pending) is above 25% of the stream cap (`movement_relay_stream_maxlen`, falling back to `movementRelay.streamMaxLen`) for 10m. |
 | `DistantSignalMovementLagCritical` | critical | The same, above 50%. |
 | `DistantSignalMovementLagGrowing` | warning | A group's lag has a positive `deriv` and grew by more than 5000 entries over 30m, for 10m. Lag never reads 0, so neither alert is on `> 0`. |
@@ -2090,6 +2277,8 @@ alert only when `archive.enabled`, the archive-expiry group only when
 | `DistantSignalDeadLetterNearFull` | warning | The dead-letter stream's length (`movement_relay_deadletter_length`, read by movement-relay every tick; falls back to the consumers' `movement_feed_deadletter_length`) above 80% of the 10,000-record cap. |
 | `DistantSignalDeadLetterFull` | critical | A dead-letter write was refused because the stream is full (`movement_feed_deadletter_full_total`) within the last 1h. |
 | `DistantSignalDeadLetterExpiring` | warning | The oldest dead letter (`movement_relay_deadletter_oldest_age_seconds`) is within 4h (`deadLetterExpiring.warnBeforeTrimSecs`) of `movementRelay.deadLetterMaxAgeSecs` (24h), after which movement-relay deletes it, for 5m. Re-inject it first. |
+| `DistantSignalMovementFeedLongPending` | warning | A consumer group re-read entries already delivered more than 240 times (`movement_feed_long_pending_total{group}`, above `longPending.threshold` 0) within the last 1h. They are retried forever and never dead-lettered (R-040). |
+| `DistantSignalTrustEnvelopeParseDrops` | warning | trust-consumer, full-coverage-consumer or trust-backlog-consumer dropped TRUST envelopes whose body did not parse (`*_errors_total{operation="parse_envelope",msg_type}`, above `parseEnvelope.threshold` 0) within the last 1h: a feed schema change (R-097). |
 | `DistantSignalMovementRelayPublishFailing` | critical | movement-relay failed every `XADD` (`movement_relay_errors_total{operation=~"publish_event\|redis_oom"}`) and published nothing over 10m, for 5m: Redis is refusing writes and TRUST ingestion has stopped. |
 | `DistantSignalRedisPersistenceFailing` | critical | Redis's last AOF write or rewrite failed (`redis_aof_last_write_ok` / `redis_aof_last_bgrewrite_ok` is 0, from movement-relay's `INFO persistence`), or, for the bundled Redis with persistence, AOF is off, for 5m. |
 | `DistantSignalMovementGroupRecreated` | warning | Within 1h a consumer recreated its group after `NOGROUP` (`movement_feed_group_recreated_total`), or movement-relay recreated a missing stream with every group (`movement_relay_stream_created_total`): Redis lost its data. |
@@ -2106,15 +2295,19 @@ alert only when `archive.enabled`, the archive-expiry group only when
 | `DistantSignalArchiveExpiryCapReached` | warning | An expiry run hit `archive.expiry.maxDeletesPerRun` (`aggregator_archive_expiry_cap_reached_total`) within the last 1d. |
 | `DistantSignalArchiveExpiryOverdue` | warning | The oldest archived `service_date` (`aggregator_archive_oldest_service_date_seconds{table}`) is older than `archive.expiry.retentionDays` + 7 days, for 1h: expiry is not running, is failing, or is still in dry-run. |
 | `DistantSignalScheduleReferenceNotSeeded` | warning | schedule-reference has not read its last completed publish from api (`schedule_reference_seeded` is 0) for 30m. |
-| `DistantSignalScheduleFeedZipRejected` | warning | schedule-ingest quarantined a delivery zip (`schedule_feed_zip_rejected_total`) within the last 6h. |
+| `DistantSignalScheduleFeedZipRejected` | warning | schedule-ingest quarantined a delivery zip (`schedule_feed_zip_rejected_total`) within the last 6h: over the extraction caps, or failing a CIF content check (`scheduleFeed.ingest.cifChecks`). The `schedule_ingest::audit` line names the reason. |
+| `DistantSignalScheduleFeedIngestRejected` | warning | api answered 400/413/422 to schedule-ingest's delivery record (`schedule_feed_ingest_rejected_total`) within the last 6h (`schedulePipeline.rejectedWindow`). The delivery is not retried until a new upload. |
 | `DistantSignalCorpusRejected` | warning | schedule-ingest refused a CORPUS extract (`schedule_feed_corpus_rejected_total`) within the last 6h. The series exists only while `scheduleFeed.corpus.enabled`. |
 | `DistantSignalCorpusStale` | warning | The newest loaded CORPUS delivery (`api_corpus_last_delivered_at_seconds`, set by api from `corpus_deliveries` at startup and after each load) is over 45 days old (`schedulePipeline.corpusStaleAfterDays`), for 1h. CORPUS is published monthly: 45 days is one cycle plus two weeks' grace. Rendered only when `scheduleFeed.corpus.enabled`, and silent before the first load. |
 | `DistantSignalScheduleReferencePublishStale` | warning | No CIF delivery fully published for over 30h (`schedule_reference_last_published_delivery_timestamp_seconds`), for 15m. |
 | `DistantSignalSchedulePublishStagedMismatch` | warning | api skipped a final chunk's delete because the staged key count did not match (`api_schedule_publish_staged_mismatch_total{product}`) within the last 6h. |
 | `DistantSignalScheduleReferencePublishRejected` | warning | api answered 400/413/422 to a schedule-reference product (`schedule_reference_publishes_total{outcome="rejected"}`) within the last 6h. |
 | `DistantSignalLinePopulationMissing` | warning | After 06:00 London, some line still has no schedule population for today (`full_coverage_consumer_population_missing_past_deadline_lines` above 0) for 15m. |
-| `DistantSignalPollerFailing` | warning | A poller completed no successful cycle and at least one failed one (`poller_cycle_total{result}`) over the last 2h, or more than half its cycles over the last 1h failed (`pollerFailures.failureRatio`, `ratioWindow`) (SVC-08). Rendered only when a poller (including an island-of-Ireland one) is enabled, in a separate `<fullname>-pollers` PrometheusRule. |
-| `DistantSignalLdbwsStationStale` | warning | The least recently sampled LDBWS station (`ldbws_stalest_station_age_seconds`) is over 7200s old for 30m: the rotation stopped reaching part of the list (SVC-04). Stations LDBWS rejects as an invalid CRS are excluded. Only when `pollers.ldbws.enabled`. |
+| `DistantSignalSftpNoUpload` | warning | SFTPGo received no upload (`sftpgo_uploads_total`) in 30h (`scheduleSftp.noUploadWindow`), for 30m: DTD's daily push did not arrive. Quiet until the counter has a full window of history. Uploads are not per file type, so `DistantSignalScheduleReferencePublishStale` stays authoritative for the CIF. Group `distant-signal.schedule-sftp`, rendered with `scheduleFeed.enabled` and `scheduleFeed.sftp.telemetry.enabled`. Runbook: `docs/schedule-feed-sftp.md`. |
+| `DistantSignalSftpUploadErrors` | warning | Any failed or interrupted upload (`sftpgo_upload_errors_total`) in the last 1h. |
+| `DistantSignalSftpUserStoreDown` | critical | SFTPGo's user store is unavailable (`sftpgo_dataprovider_availability` 0) for 5m: every login fails. Failed-login alerts are Loki rules, not metrics: the counters carry no username or IP. |
+| `DistantSignalPollerFailing` | warning | A poller completed no successful cycle and at least one failed one (`poller_cycle_total{result}`) over the last 2h, or more than half its cycles over the last 15m failed (`pollerFailures.failureRatio`, `ratioWindow`), for 10m (SVC-08). Rendered only when a poller (including an island-of-Ireland one) is enabled, in a separate `<fullname>-pollers` PrometheusRule. |
+| `DistantSignalLdbwsStationStale` | warning | The least recently sampled LDBWS station (`ldbws_stalest_station_age_seconds`) is over 900s old (the aggregator's sample-age limit, past which it drops the station) for 15m: the rotation stopped reaching part of the list (SVC-04). Stations LDBWS rejects as an invalid CRS are excluded. Only when `pollers.ldbws.enabled`. |
 | `DistantSignalLdbwsInvalidCrs` | warning | LDBWS has answered "Invalid crs code supplied" for a sample station (`ldbws_invalid_crs_station{crs}` is 1) for 15m: a `lines/*.toml` typo. The poller re-probes it hourly instead of every cycle. Only when `pollers.ldbws.enabled`. |
 | `DistantSignalPgBackRestCheckFailed` | critical | The daily pgBackRest check Job or the weekly verify Job failed within 26h: archiving is broken, `verify` found a bad file, or WAL is missing (a PITR gap). This group renders only with `postgresql.pgbackrest.enabled`, in a separate `<fullname>-pgbackrest` PrometheusRule (`metrics.prometheusRule.pgbackrest`), and reads kube-state-metrics and postgres_exporter series rather than this chart's own. Runbook: `docs/postgres-pitr.md`. |
 | `DistantSignalPgBackRestBackupFailed` | warning | A full or diff backup Job failed within 26h. |
@@ -2137,16 +2330,24 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.ingressControllerNamespace` | `ingress-nginx` | Namespace the ingress controller runs in, matched by `kubernetes.io/metadata.name`. |
 | `networkPolicy.apiExtraIngressNamespaces` | `[]` | Extra namespaces allowed to reach `api.service.port` (e.g. `[ds-mcp]` for the Distant-Signal-MCP). |
 | `networkPolicy.apiExtraIngressPodLabels` | `ds-mcp`: `app.kubernetes.io/name: distant-signal-mcp`, `app.kubernetes.io/component: mcp` | Per-namespace pod labels that narrow an `apiExtraIngressNamespaces` entry to the calling pods. A namespace with no entry admits all its pods. Set an entry to `null` to clear it; `{}` merges with the default and does not clear it. |
+| `networkPolicy.healthIngress.enabled` | `true` | Render the rule admitting the workers' and schedulefeed's health (probe) ports. `false` closes them to every pod; probes still work on CNIs that exempt node-local traffic (kube-router, Calico and Cilium by default). |
+| `networkPolicy.healthIngress.from` | `[]` | NetworkPolicy peers allowed to reach the health ports, e.g. the nodes' addresses as ipBlocks. Empty allows any source. |
+| `networkPolicy.postgresClients` | `[]` | Extra NetworkPolicy peers (pod/namespace selectors) admitted to the bundled Postgres, e.g. a postgres-exporter or backup CronJob. See [NetworkPolicy](#networkpolicy). |
+| `networkPolicy.redisClients` | `[]` | Extra NetworkPolicy peers admitted to the bundled Redis, e.g. a redis-exporter. |
 | `networkPolicy.tunnel.enabled` | `false` | Admit an in-cluster tunnel connector (e.g. cloudflared) to the frontend. See [NetworkPolicy](#networkpolicy). |
 | `networkPolicy.tunnel.namespace` | `cloudflared` | Namespace the connector runs in, matched by `kubernetes.io/metadata.name`. |
 | `networkPolicy.tunnel.podLabels` | `app.kubernetes.io/name: cloudflared` | Labels selecting the connector pods. Empty admits the whole namespace. |
 | `networkPolicy.tunnel.api` | `false` | Also admit the connector to `api.service.port`, for a hostname routed straight to the api. Requires `api.rateLimit.trustXRealIp: false`. |
 | `networkPolicy.monitoringNamespace` | `monitoring` | Namespace Prometheus runs in, matched by `kubernetes.io/metadata.name`. Allowed to reach each workload's metrics port. Only used when `metrics.enabled` is true. |
-| `networkPolicy.egress.enabled` | `false` | Render egress policies for the notifier, consumers, movement-relay and pollers (see [NetworkPolicy](#networkpolicy)). |
+| `networkPolicy.egress.enabled` | `false` | Render an egress policy for every component (see [NetworkPolicy](#networkpolicy)). |
 | `networkPolicy.egress.privateCidrs` | RFC 1918, CGNAT, loopback, link-local, reserved | IPv4 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.privateCidrsV6` | loopback, ULA, link-local, multicast, NAT64/6to4/Teredo | IPv6 ranges excluded from the public-internet egress allow. |
-| `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every worker's egress policy. |
-| `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. |
+| `networkPolicy.egress.extraDeniedCidrs` | `[]` | More CIDRs (IPv4 and IPv6 mixed) excluded from the public-internet egress allow, on top of `privateCidrs`/`privateCidrsV6`. Set the nodes' own public addresses here. |
+| `networkPolicy.egress.dnsPeers` | `[]` | NetworkPolicy peers the DNS egress rule (port 53) is limited to, e.g. CoreDNS (`kube-system`, `k8s-app: kube-dns`). Empty allows port 53 to any destination. |
+| `networkPolicy.egress.internetPorts` | `[443]` | TCP ports the public-internet egress rule allows. Each component also gets its own upstreams' ports (from their URLs, the Kafka brokers, the pgBackRest S3 port). `[]` allows every port. |
+| `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every egress policy the chart renders. |
+| `networkPolicy.components` | `{}` | Per-component settings keyed by the `app.kubernetes.io/component` label (`api`, `postgres`, `poller-ldbws`, ...); an unknown key fails the render. Each entry: `egress` (`false` renders no egress policy for it), `internet` (add or drop its public-internet rule), `internetPorts` (replaces `egress.internetPorts` for it), `extraEgress` / `extraIngress` (raw NetworkPolicy rules appended to its policy). See [NetworkPolicy](#networkpolicy). |
+| `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. Needs the real client IP: set `scheduleFeed.service.externalTrafficPolicy: Local`. |
 
 ### scheduleFeed: CIF routing and CORPUS
 
@@ -2156,6 +2357,9 @@ See `docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md`.
 |---|---|---|
 | `scheduleFeed.ingest.cifFilePattern` | `timetable_full.zip` | Case-insensitive `*` globs (comma-separated) naming CIF deliveries in the landing folder. Locked to DTD's exact delivery name. |
 | `scheduleFeed.ingest.cifExcludePattern` | `CORPUSExtract*` | Globs that are never CIF deliveries, so a CORPUS or SMART file pushed as a zip is never published as the timetable. |
+| `scheduleFeed.ingest.cifChecks.maxGeneratedAgeDays` | `3` | Quarantine a CIF delivery whose MSN `Generated` date is more than this many days before the delivery (a replayed old extract). The structural checks (full-extract `HD`, known record types, one `ZZ` trailer, a `Generated` date) always run. `0` disables. See [docs/schedule-feed-sftp.md](../../docs/schedule-feed-sftp.md#delivery-checks). |
+| `scheduleFeed.ingest.cifChecks.minSchedules` | `100000` | Quarantine an MCA with fewer `BS` (schedule) records; the real extract has ~505,000. `0` disables. |
+| `scheduleFeed.ingest.cifChecks.maxRecordDropPercent` | `20` | Quarantine a delivery whose `BS` or `TI` count fell by more than this percentage since the last accepted delivery (real day-to-day change is under 0.3%). `0` disables. |
 | `scheduleFeed.corpus.enabled` | `false` | Load Network Rail CORPUS (`CORPUSExtract.json.gz`, pushed to the same SFTP account and folder) into `corpus_locations`. Off: the file stays in the landing folder with a one-time stray warning. |
 | `scheduleFeed.corpus.filePattern` | `CORPUSExtract.json.gz` | Globs naming the CORPUS extract. `CORPUSExtract.csv.gz` (SMART berth data) is deliberately ignored. |
 | `scheduleFeed.corpus.minRows` | `10000` | Fewer rows than this rejects the extract instead of replacing the table. |

@@ -487,10 +487,10 @@ movement-relay's effective Kafka connection settings. Each
 movementRelay.kafka.* field falls back to the matching trustConsumer.kafka.*
 field when left empty, so an install configures its one RDM Train Movements
 connection once (in either place) and movement-relay, which is on by
-default, picks it up. RDM issues one consumer group per account, so the
-fallback group is the one trust-consumer would otherwise have used; the
-consumer-group collision guard in movement-relay-deployment.yaml stops a
-consumer that still reads Kafka directly from sharing it.
+default, picks it up. RDM issues one consumer group per account, and
+movement-relay is its only member: since Deploy C (PL-15a) no consumer
+reads Kafka directly. trustConsumer.kafka.* is kept as the place this
+connection is configured, so existing installs keep working unchanged.
 */}}
 {{- define "distant-signal.movementRelayKafkaBrokers" -}}
 {{- .Values.movementRelay.kafka.brokers | default .Values.trustConsumer.kafka.brokers }}
@@ -687,13 +687,22 @@ the default path is never affected.
 */}}
 {{- define "distant-signal.databaseEnv" -}}
 {{- if .Values.postgresql.enabled -}}
+{{- /* With postgresql.roles.enabled, the non-superuser app role. */}}
+{{- $user := .Values.postgresql.auth.username -}}
+{{- $secretName := include "distant-signal.postgresSecretName" . -}}
+{{- $secretKey := include "distant-signal.postgresSecretPasswordKey" . -}}
+{{- if include "distant-signal.postgresRolesEnabled" . -}}
+{{- $user = .Values.postgresql.roles.app.username -}}
+{{- $secretName = include "distant-signal.postgresRoleSecretName" (dict "root" . "role" "app") -}}
+{{- $secretKey = include "distant-signal.postgresRoleSecretKey" (dict "root" . "role" "app") -}}
+{{- end -}}
 - name: PGPASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ include "distant-signal.postgresSecretName" . }}
-      key: {{ include "distant-signal.postgresSecretPasswordKey" . }}
+      name: {{ $secretName }}
+      key: {{ $secretKey }}
 - name: DATABASE_URL
-  value: {{ printf "postgres://%s:$(PGPASSWORD)@%s:%d/%s" .Values.postgresql.auth.username (include "distant-signal.postgresFullname" .) (int .Values.postgresql.service.port) .Values.postgresql.auth.database | quote }}
+  value: {{ printf "postgres://%s:$(PGPASSWORD)@%s:%d/%s" $user (include "distant-signal.postgresFullname" .) (int .Values.postgresql.service.port) .Values.postgresql.auth.database | quote }}
 {{- else if .Values.externalDatabase.existingSecret -}}
 - name: DATABASE_URL
   valueFrom:
@@ -713,6 +722,143 @@ the default path is never affected.
   value: {{ .Values.databasePool.idleInTransactionTimeoutSecs | int | quote }}
 - name: DATABASE_ACQUIRE_TIMEOUT_SECS
   value: {{ .Values.databasePool.acquireTimeoutSecs | int | quote }}
+{{- end }}
+
+{{/*
+postgresql.roles (docs/postgres-app-role.md). Every helper takes root
+unless it says otherwise.
+
+distant-signal.postgresRolesEnabled: true (non-empty) when the services
+connect as the separate roles. Needs the bundled Postgres.
+*/}}
+{{- define "distant-signal.postgresRolesEnabled" -}}
+{{- if .Values.postgresql.roles.enabled -}}
+{{- if not .Values.postgresql.enabled -}}
+{{- fail "postgresql.roles.enabled needs the bundled Postgres (postgresql.enabled: true). For an external database, give externalDatabase a non-superuser URL instead." -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when anything needs the role passwords: the services
+(roles.enabled) or the setup Job (roles.setupJob.enabled).
+*/}}
+{{- define "distant-signal.postgresRolesOn" -}}
+{{- if or (include "distant-signal.postgresRolesEnabled" .) (include "distant-signal.postgresRolesSetupJob" .) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{- define "distant-signal.postgresRolesSetupJob" -}}
+{{- if .Values.postgresql.roles.setupJob.enabled -}}
+{{- if not .Values.postgresql.enabled -}}
+{{- fail "postgresql.roles.setupJob.enabled needs the bundled Postgres (postgresql.enabled: true)." -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when the Postgres pod carries the initdb script.
+*/}}
+{{- define "distant-signal.postgresRolesInitScript" -}}
+{{- if and (include "distant-signal.postgresRolesEnabled" .) .Values.postgresql.roles.initScript -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Secret name / key of one role's password. Takes (dict "root" $ "role"
+"owner"|"app"|"exporter"|"dump"|"backup"). Same three-way shape as auth.password:
+the role's existingSecret, else the chart's Secret.
+*/}}
+{{- define "distant-signal.postgresRoleSecretName" -}}
+{{- $role := get .root.Values.postgresql.roles .role -}}
+{{- default (include "distant-signal.secretName" .root) $role.existingSecret -}}
+{{- end }}
+
+{{- define "distant-signal.postgresRoleSecretKey" -}}
+{{- $role := get .root.Values.postgresql.roles .role -}}
+{{- required (printf "postgresql.roles.%s.existingSecretPasswordKey must not be empty" .role) $role.existingSecretPasswordKey -}}
+{{- end }}
+
+{{/*
+A role's CONNECTION LIMIT. Takes (dict "root" $ "role" ...). An empty
+owner/app value is computed: the owner gets api.replicaCount + 2; the app
+gets the chart's pools (the same ones the api-deployment.yaml budget check
+counts, without the migration connection, which is the owner's) plus
+app.connectionLimitSlack.
+*/}}
+{{- define "distant-signal.postgresRoleConnectionLimit" -}}
+{{- $root := .root -}}
+{{- $role := get $root.Values.postgresql.roles .role -}}
+{{- $limit := toString (default "" $role.connectionLimit) -}}
+{{- if ne $limit "" -}}
+{{- if not (regexMatch "^[0-9]+$" $limit) -}}
+{{- fail (printf "postgresql.roles.%s.connectionLimit must be a whole number, or empty to compute it." .role) -}}
+{{- end -}}
+{{- $limit -}}
+{{- else if eq .role "owner" -}}
+{{- add (int $root.Values.api.replicaCount) 2 -}}
+{{- else if eq .role "app" -}}
+{{- $apiPool := mul (int $root.Values.api.replicaCount) (int $root.Values.api.database.maxConnections) -}}
+{{- $pools := add 10 5 5 (ternary 2 0 ($root.Values.archive.enabled | default false)) -}}
+{{- add $apiPool $pools (int $role.connectionLimitSlack) -}}
+{{- else -}}
+{{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The DS_PG_<ROLE>_PASSWORD env entries files/postgres-roles.sql reads with
+psql's \getenv.
+*/}}
+{{- define "distant-signal.postgresRolesPasswordEnv" -}}
+{{- $root := . -}}
+{{- range $role := list "owner" "app" "exporter" "dump" "backup" }}
+- name: {{ printf "DS_PG_%s_PASSWORD" (upper $role) }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "distant-signal.postgresRoleSecretName" (dict "root" $root "role" $role) }}
+      key: {{ include "distant-signal.postgresRoleSecretKey" (dict "root" $root "role" $role) }}
+{{- end }}
+{{- end }}
+
+{{/*
+psql --variable arguments for files/postgres-roles.sql, one per line.
+`old_owner` is auth.username: the image's bootstrap superuser, whose
+objects move to the owner role.
+*/}}
+{{- define "distant-signal.postgresRolesPsqlVariables" -}}
+{{- $roles := .Values.postgresql.roles -}}
+--variable=old_owner={{ .Values.postgresql.auth.username }}
+{{- range $role := list "owner" "app" "exporter" "dump" "backup" }}
+--variable={{ $role }}={{ (get $roles $role).username }}
+--variable={{ $role }}_connection_limit={{ include "distant-signal.postgresRoleConnectionLimit" (dict "root" $ "role" $role) }}
+{{- end }}
+--variable=backup_database={{ $roles.backup.database }}
+{{- end }}
+
+{{- define "distant-signal.postgresRolesConfigMapName" -}}
+{{- printf "%s-roles" (include "distant-signal.postgresFullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+api's MIGRATION_DATABASE_URL (the owner role) with postgresql.roles.enabled;
+empty otherwise, and then api migrates with DATABASE_URL as before. Same
+$(VAR) indirection as distant-signal.databaseEnv.
+*/}}
+{{- define "distant-signal.migrationDatabaseEnv" -}}
+{{- if include "distant-signal.postgresRolesEnabled" . -}}
+- name: PG_MIGRATION_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "distant-signal.postgresRoleSecretName" (dict "root" . "role" "owner") }}
+      key: {{ include "distant-signal.postgresRoleSecretKey" (dict "root" . "role" "owner") }}
+- name: MIGRATION_DATABASE_URL
+  value: {{ printf "postgres://%s:$(PG_MIGRATION_PASSWORD)@%s:%d/%s" .Values.postgresql.roles.owner.username (include "distant-signal.postgresFullname" .) (int .Values.postgresql.service.port) .Values.postgresql.auth.database | quote }}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -850,6 +996,19 @@ argument since the key name itself never varies.
 */}}
 {{- define "distant-signal.scheduleFeedHostKeySecretKey" -}}
 {{- print "ssh_host_ed25519_key" }}
+{{- end }}
+
+{{/*
+SFTPGo host-key file paths (comma-separated, for SFTPGO_SFTPD__HOST_KEYS),
+one per scheduleFeed.sftp.hostKeys entry under the host-key mount. Takes
+root.
+*/}}
+{{- define "distant-signal.scheduleFeedHostKeyPaths" -}}
+{{- $paths := list -}}
+{{- range .Values.scheduleFeed.sftp.hostKeys -}}
+{{- $paths = append $paths (printf "/srv/sftpgo/host_keys/%s" .) -}}
+{{- end -}}
+{{- join "," $paths -}}
 {{- end }}
 
 {{/*
@@ -1060,15 +1219,280 @@ root; renders a single `- namespaceSelector: ...` list item.
 {{- end }}
 
 {{/*
+The public-internet NetworkPolicyEgressRule: 0.0.0.0/0 and ::/0, each minus
+networkPolicy.egress.privateCidrs(V6) and the matching-family entries of
+networkPolicy.egress.extraDeniedCidrs (an entry containing ":" is IPv6).
+extraDeniedCidrs is where an operator names the node's own public
+address(es): privateCidrs only covers the reserved ranges, so without it a
+pod could reach the API server, the kubelet and any host-published port
+through the node's public IP. `ports` (TCP) limits the rule; empty allows
+every port. Takes (dict "root" $root "ports" (list 443)); renders one
+`- to: ...` list item.
+*/}}
+{{- define "distant-signal.internetEgressRule" -}}
+{{- $eg := .root.Values.networkPolicy.egress -}}
+{{- $v4 := list -}}
+{{- $v6 := list -}}
+{{- range ($eg.extraDeniedCidrs | default list) -}}
+{{- if not (regexMatch "^[0-9a-fA-F.:]+/[0-9]{1,3}$" .) -}}
+{{- fail (printf "networkPolicy.egress.extraDeniedCidrs: %q is not a CIDR. Write a single address as a /32 (IPv4) or /128 (IPv6)." .) -}}
+{{- end -}}
+{{- if contains ":" . -}}
+{{- $v6 = append $v6 . -}}
+{{- else -}}
+{{- $v4 = append $v4 . -}}
+{{- end -}}
+{{- end -}}
+{{- $except4 := concat ($eg.privateCidrs | default list) $v4 -}}
+{{- $except6 := concat ($eg.privateCidrsV6 | default list) $v6 -}}
+- to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        {{- with $except4 }}
+        except:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+    - ipBlock:
+        cidr: "::/0"
+        {{- with $except6 }}
+        except:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+  {{- with .ports }}
+  ports:
+    {{- range . }}
+    - protocol: TCP
+      port: {{ . }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+{{/*
+The TCP port a URL connects to: its explicit port, else 443 for https and
+80 for http, else nothing. Takes the URL string.
+*/}}
+{{- define "distant-signal.urlPort" -}}
+{{- if contains "://" . -}}
+{{- $u := urlParse . -}}
+{{- $m := regexFind ":[0-9]+$" $u.host -}}
+{{- if $m -}}
+{{- trimPrefix ":" $m -}}
+{{- else if eq $u.scheme "https" -}}
+443
+{{- else if eq $u.scheme "http" -}}
+80
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The TCP ports of the public-internet rule for one component, as a JSON list
+of ints, or [] for every port: networkPolicy.components.<component>.internetPorts
+if set, else networkPolicy.egress.internetPorts. A non-empty list also gets
+the ports the component's own upstreams need: `urls` (distant-signal.urlPort),
+`brokers` (a Kafka bootstrap list, host:port,...; 9092 when a port is
+missing) and `ports`. Takes the egressRules dict.
+*/}}
+{{- define "distant-signal.internetPorts" -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- $base := .root.Values.networkPolicy.egress.internetPorts | default list -}}
+{{- if hasKey $cs "internetPorts" -}}
+{{- $base = get $cs "internetPorts" | default list -}}
+{{- end -}}
+{{- $out := list -}}
+{{- if $base -}}
+{{- range $base -}}
+{{- $out = append $out (int .) -}}
+{{- end -}}
+{{- range (.urls | default list) -}}
+{{- with include "distant-signal.urlPort" (toString .) -}}
+{{- $out = append $out (int .) -}}
+{{- end -}}
+{{- end -}}
+{{- range (splitList "," (.brokers | default "" | toString)) -}}
+{{- $b := trim . -}}
+{{- if $b -}}
+{{- $m := regexFind ":[0-9]+$" $b -}}
+{{- $out = append $out (ternary (int (trimPrefix ":" $m)) 9092 (ne $m "")) -}}
+{{- end -}}
+{{- end -}}
+{{- range (.ports | default list) -}}
+{{- $out = append $out (int .) -}}
+{{- end -}}
+{{- end -}}
+{{- $out | uniq | toJson -}}
+{{- end }}
+
+{{/*
+Per-component NetworkPolicy settings: networkPolicy.components.<component>,
+keyed by the app.kubernetes.io/component label (api, postgres,
+poller-ldbws, ...), or an empty dict. Fails on a key naming no component
+this chart can render, so a typo cannot silently drop a rule. Takes
+(dict "root" $root "component" "api"); returns YAML (use fromYaml).
+*/}}
+{{- define "distant-signal.npComponent" -}}
+{{- $root := .root -}}
+{{- $all := $root.Values.networkPolicy.components | default dict -}}
+{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" -}}
+{{- range $name, $_ := $root.Values.pollers -}}
+{{- $known = append $known (printf "poller-%s" $name) -}}
+{{- end -}}
+{{- range $name, $_ := $all -}}
+{{- if not (has $name $known) -}}
+{{- fail (printf "networkPolicy.components.%s: no such component. Keys are app.kubernetes.io/component labels: %s." $name (join ", " $known)) -}}
+{{- end -}}
+{{- end -}}
+{{- get $all .component | default dict | toYaml -}}
+{{- end }}
+
+{{/*
+"true" when the component gets an egress policy: networkPolicy.egress.enabled
+and not networkPolicy.components.<component>.egress: false. Takes
+(dict "root" $root "component" "api").
+*/}}
+{{- define "distant-signal.egressOn" -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- if and .root.Values.networkPolicy.egress.enabled (ne (toString (get $cs "egress")) "false") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+The NetworkPolicyEgressRule list for one component (render under
+`egress:`): DNS (port 53, to networkPolicy.egress.dnsPeers when set); the in-cluster services in `deps` (api, redis, postgres;
+api and idp also admit the bundled dev IdP when devAuthentik.enabled); the
+public internet (distant-signal.internetEgressRule, on the ports from
+distant-signal.internetPorts, which reads `urls`, `brokers` and `ports`)
+when `internet` is true, unless networkPolicy.components.<component>.internet
+overrides it; then
+networkPolicy.egress.extraRules and networkPolicy.components.<component>.extraEgress.
+Takes (dict "root" $root "component" "api" "deps" (dict "postgres" true)
+"internet" true).
+*/}}
+{{- define "distant-signal.egressRules" -}}
+{{- $root := .root -}}
+{{- $np := $root.Values.networkPolicy -}}
+{{- $deps := .deps | default dict -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- $internet := .internet -}}
+{{- if hasKey $cs "internet" -}}
+{{- $internet = get $cs "internet" -}}
+{{- end -}}
+- ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  {{- with $np.egress.dnsPeers }}
+  to:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- if $deps.api }}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "api") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ $root.Values.api.service.port }}
+{{- end }}
+{{- if and (or $deps.api $deps.idp) $root.Values.devAuthentik.enabled }}
+# The bundled dev IdP serves the OAuth token, discovery and JWKS endpoints.
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "devauthentik-server") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: 9000
+{{- end }}
+{{- if and $deps.redis $root.Values.redis.enabled }}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "redis") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ $root.Values.redis.service.port }}
+{{- end }}
+{{- if and $deps.postgres $root.Values.postgresql.enabled }}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "postgres") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ $root.Values.postgresql.service.port }}
+{{- end }}
+{{- if $internet }}
+{{ include "distant-signal.internetEgressRule" (dict "root" $root "ports" (include "distant-signal.internetPorts" . | fromJsonArray)) }}
+{{- end }}
+{{- with $np.egress.extraRules }}
+{{ toYaml . }}
+{{- end }}
+{{- with get $cs "extraEgress" }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+
+{{/*
+networkPolicy.components.<component>.extraIngress as NetworkPolicyIngressRule
+list items, or nothing. Takes (dict "root" $root "component" "postgres").
+*/}}
+{{- define "distant-signal.extraIngress" -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- with get $cs "extraIngress" -}}
+{{- toYaml . -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+`egress:` plus distant-signal.egressRules for one of the inline policies in
+networkpolicy.yaml (api, frontend, postgres, redis, schedulefeed), or
+nothing when distant-signal.egressOn is false. Same arguments as
+egressRules.
+*/}}
+{{- define "distant-signal.egressSection" -}}
+{{- if include "distant-signal.egressOn" . -}}
+egress:
+  {{- include "distant-signal.egressRules" . | nindent 2 }}
+{{- end -}}
+{{- end }}
+
+{{/*
+The ingress rule for a workload's health (kubelet probe) ports, per
+networkPolicy.healthIngress: from any source (the default), from
+healthIngress.from when set, or nothing at all when healthIngress.enabled
+is false. Takes (dict "root" $root "ports" (list 8090)); renders one list
+item or nothing.
+*/}}
+{{- define "distant-signal.healthIngressRule" -}}
+{{- $h := .root.Values.networkPolicy.healthIngress | default dict -}}
+{{- if ne (toString $h.enabled) "false" -}}
+- ports:
+    {{- range .ports }}
+    - protocol: TCP
+      port: {{ . }}
+    {{- end }}
+  {{- with $h.from }}
+  from:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end -}}
+{{- end }}
+
+{{/*
 NetworkPolicy for one background worker (INF-10). Ingress: the worker's
 /metrics port from networkPolicy.monitoringNamespace (when metrics.enabled),
-and its health port(s) from anywhere, because kubelet probes come from the
-node, which no pod or namespace selector can name (INF-9's side note). A
+and its health port(s) per networkPolicy.healthIngress (by default from
+anywhere, because kubelet probes come from the node, which no pod or
+namespace selector can name: INF-9's side note). A
 worker serves nothing else, so everything else is denied.
 
 Egress (only when networkPolicy.egress.enabled and `egress` is given): DNS,
 the in-cluster services the worker actually calls (flags below), the public
-internet minus networkPolicy.egress.privateCidrs(V6) (RDM/Irish Rail feeds,
+internet minus networkPolicy.egress.privateCidrs(V6) and extraDeniedCidrs
+(distant-signal.internetEgressRule; RDM/Irish Rail feeds,
 Kafka brokers, the OAuth token endpoint, Web Push services), and
 networkPolicy.egress.extraRules.
 Usage:
@@ -1080,7 +1504,7 @@ Usage:
 {{- define "distant-signal.workerNetworkPolicy" -}}
 {{- $root := .root -}}
 {{- $np := $root.Values.networkPolicy -}}
-{{- $egressOn := and .egress ($np.egress).enabled -}}
+{{- $egressOn := and .egress (include "distant-signal.egressOn" (dict "root" $root "component" .component)) -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -1106,71 +1530,13 @@ spec:
         - protocol: TCP
           port: {{ .metricsPort }}
     {{- end }}
-    - ports:
-        {{- range .healthPorts }}
-        - protocol: TCP
-          port: {{ . }}
-        {{- end }}
+    {{- include "distant-signal.healthIngressRule" (dict "root" $root "ports" .healthPorts) | nindent 4 }}
+    {{- with include "distant-signal.extraIngress" (dict "root" $root "component" .component) }}
+    {{- . | nindent 4 }}
+    {{- end }}
   {{- if $egressOn }}
   egress:
-    - ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    {{- if .egress.api }}
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "api") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $root.Values.api.service.port }}
-    {{- if $root.Values.devAuthentik.enabled }}
-    # The bundled dev IdP serves the internal OAuth token endpoint.
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "devauthentik-server") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: 9000
-    {{- end }}
-    {{- end }}
-    {{- if and .egress.redis $root.Values.redis.enabled }}
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "redis") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $root.Values.redis.service.port }}
-    {{- end }}
-    {{- if and .egress.postgres $root.Values.postgresql.enabled }}
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "postgres") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $root.Values.postgresql.service.port }}
-    {{- end }}
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            {{- with $np.egress.privateCidrs }}
-            except:
-              {{- toYaml . | nindent 14 }}
-            {{- end }}
-        - ipBlock:
-            cidr: "::/0"
-            {{- with $np.egress.privateCidrsV6 }}
-            except:
-              {{- toYaml . | nindent 14 }}
-            {{- end }}
-    {{- with $np.egress.extraRules }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .egress "internet" (ternary .internet true (hasKey . "internet")) "urls" .urls "brokers" .brokers) | nindent 4 }}
   {{- end }}
 {{- end }}
 
@@ -1209,21 +1575,27 @@ existingClaim) there, as values.yaml's upgrade note says.
 
 {{/*
 The movement-events consumer groups movement-relay creates at the start of a
-fresh stream (MOVEMENT_CONSUMER_GROUPS): trust-consumer and
-full-coverage-consumer only while their movementFeed is redis-stream (the
-legacy kafka path never reads the stream), trust-event-backlog always.
+fresh stream (MOVEMENT_CONSUMER_GROUPS): every consumer reads the stream
+since Deploy C removed the consumers' direct-Kafka backend (PL-15a).
 Takes root.
 */}}
 {{- define "distant-signal.movementConsumerGroups" -}}
-{{- $groups := list -}}
-{{- if eq .Values.trustConsumer.movementFeed "redis-stream" -}}
-{{- $groups = append $groups "trust-consumer" -}}
+{{- print "trust-consumer,full-coverage-consumer,trust-event-backlog" -}}
+{{- end }}
+
+{{/*
+trustConsumer.movementFeed / fullCoverageConsumer.movementFeed were removed
+in Deploy C (PL-15a, R-101): both consumers only read movement-relay's
+movement-events stream. A leftover `redis-stream` is harmless and ignored;
+anything else (in practice `kafka`) fails the render rather than being
+silently ignored, so an install that still expects a direct Kafka consumer
+finds out. Takes (dict "name" <values key> "value" <its value or nil>).
+*/}}
+{{- define "distant-signal.removedMovementFeedGuard" -}}
+{{- $value := toString (default "redis-stream" .value) -}}
+{{- if ne $value "redis-stream" -}}
+{{- fail (printf "%s.movementFeed=%s is no longer supported: the consumers' direct Kafka backend was removed (Deploy C, PL-15a). movement-relay is the only Kafka client and every consumer reads its movement-events stream. Remove %s.movementFeed from your values." .name $value .name) -}}
 {{- end -}}
-{{- if eq .Values.fullCoverageConsumer.movementFeed "redis-stream" -}}
-{{- $groups = append $groups "full-coverage-consumer" -}}
-{{- end -}}
-{{- $groups = append $groups "trust-event-backlog" -}}
-{{- join "," $groups -}}
 {{- end }}
 
 {{/*

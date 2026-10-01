@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useState } from 'react';
-import { nowInLondon } from '@/lib/londonWallClock';
+import { londonToday, nowInLondon } from '@/lib/londonWallClock';
 import {
   Autocomplete,
   Button,
@@ -225,7 +225,10 @@ export function PlanTripForm({
       <Button variant="subtle" leftSection={<PlusIcon />} onClick={addWaypoint} style={{ alignSelf: 'flex-start' }}>
         Add a waypoint
       </Button>
-      <DateInput label="Date" value={date} onChange={setDate} minDate={new Date()} />
+      {/* London's today, not `new Date()` (the browser's): a visitor ahead
+          of UK time near midnight could otherwise not pick London's today,
+          the very day `date` defaults to. */}
+      <DateInput label="Date" value={date} onChange={setDate} minDate={londonToday()} />
       <TimeInput
         label="Depart after (optional)"
         value={departAfter}

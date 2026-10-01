@@ -17,9 +17,11 @@ metrics = "0.24"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls", "gzip"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+# SHA-256 of every delivered file (`audit.rs`); same spec as `crates/api`
+# and `crates/common`.
+sha2 = "0.10"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Same version/feature spec as `crates/api`'s existing direct dependency
 # (deflate-only, no default features) -- the real delivery zip uses
 # standard Deflate compression (confirmed via `unzip -v timetable_full.zip`
@@ -28,4 +30,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"
+# To capture `common::logging`'s JSON lines in the audit-line tests; same
+# spec as `crates/common`.
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 wiremock = "0.6"

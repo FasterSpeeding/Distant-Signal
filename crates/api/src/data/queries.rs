@@ -34,7 +34,10 @@ pub fn normalize_code(raw: &str) -> String {
 /// per-row upsert loop left behind for a batch naming one key twice. A
 /// single `INSERT ... SELECT FROM UNNEST ... ON CONFLICT DO UPDATE` refuses
 /// to touch one row twice, so every batched upsert below dedups first.
-fn last_per_key<T, K: Eq + std::hash::Hash>(items: &[T], key: impl Fn(&T) -> K) -> Vec<&T> {
+pub(crate) fn last_per_key<T, K: Eq + std::hash::Hash>(
+    items: &[T],
+    key: impl Fn(&T) -> K,
+) -> Vec<&T> {
     let mut last: HashMap<K, usize> = HashMap::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         last.insert(key(item), index);
@@ -54,7 +57,7 @@ fn last_per_key<T, K: Eq + std::hash::Hash>(items: &[T], key: impl Fn(&T) -> K) 
 /// `fetched_at`/`computed_at` columns can no longer answer "when did this
 /// feed last land" by `MAX()` -- and one row per source is also what lets
 /// `/public/freshness` be a single cheap query.
-async fn record_ingest(conn: &mut sqlx::PgConnection, source: &str) -> Result<()> {
+pub(crate) async fn record_ingest(conn: &mut sqlx::PgConnection, source: &str) -> Result<()> {
     sqlx::query(
         "INSERT INTO ingest_freshness (source, fetched_at) VALUES ($1, NOW()) \
          ON CONFLICT (source) DO UPDATE SET fetched_at = EXCLUDED.fetched_at",
@@ -1092,17 +1095,34 @@ pub async fn insert_schedule_feed_ingest(
     delivered_at: chrono::DateTime<chrono::Utc>,
     ingested_at: chrono::DateTime<chrono::Utc>,
     files: &serde_json::Value,
+    source: &ScheduleFeedSource<'_>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO schedule_feed_ingests (delivered_at, ingested_at, files) VALUES ($1, $2, $3) \
+        "INSERT INTO schedule_feed_ingests \
+             (delivered_at, ingested_at, files, source_file, source_bytes, source_sha256) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT (delivered_at) DO NOTHING",
     )
     .bind(delivered_at)
     .bind(ingested_at)
     .bind(files)
+    .bind(source.file)
+    .bind(source.bytes)
+    .bind(source.sha256)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// The delivered zip behind a `schedule_feed_ingests` row: its name, size
+/// and SHA-256 as `schedule-ingest` read it (migration
+/// `20261001150000_schedule_feed_delivery_sha256.sql`). Every field is
+/// `None` for a record from a `schedule-ingest` that predates it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScheduleFeedSource<'a> {
+    pub file: Option<&'a str>,
+    pub bytes: Option<i64>,
+    pub sha256: Option<&'a str>,
 }
 
 /// The delivery directory name (`YYYYMMDDTHHMMSSZ`) whose `schedule-reference`
@@ -2741,6 +2761,12 @@ struct PublishKeysSql {
     /// Refreshes the staging table's planner statistics. Run (inside the
     /// final chunk's transaction) right before `delete_missing`; takes no
     /// parameters. See [`finish_publish_part`] for why.
+    ///
+    /// Calls the `analyze_publish_keys` SECURITY DEFINER function
+    /// (migration 20261001140000) rather than a bare `ANALYZE`: on
+    /// Postgres 16 only the owner may ANALYZE a table, and for the
+    /// non-superuser app role a bare `ANALYZE` silently skips the table
+    /// with a WARNING (docs/postgres-app-role.md).
     analyze: &'static str,
     /// `$2` = the publish's staged service dates.
     delete_missing: &'static str,
@@ -2822,7 +2848,7 @@ const DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
             OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_destination_departures_publish_keys WHERE publish_id = $1",
-    analyze: "ANALYZE schedule_destination_departures_publish_keys",
+    analyze: "SELECT analyze_publish_keys('schedule_destination_departures_publish_keys')",
     delete_missing: "DELETE FROM schedule_destination_departures d \
          WHERE d.service_date = ANY($2::date[]) \
            AND NOT EXISTS ( \
@@ -2845,7 +2871,7 @@ const CALLING_POINTS_FULL_PUBLISH_KEYS_SQL: PublishKeysSql = PublishKeysSql {
             OR staged_at < now() - interval '1 hour'",
     summarize: "SELECT COUNT(*), COALESCE(array_agg(DISTINCT service_date), '{}') \
          FROM schedule_calling_points_full_publish_keys WHERE publish_id = $1",
-    analyze: "ANALYZE schedule_calling_points_full_publish_keys",
+    analyze: "SELECT analyze_publish_keys('schedule_calling_points_full_publish_keys')",
     delete_missing: "DELETE FROM schedule_calling_points_full c \
          WHERE c.service_date = ANY($2::date[]) \
            AND NOT EXISTS ( \
@@ -5784,7 +5810,7 @@ mod incident_search_query_tests {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
 
-        let lines_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lines");
+        let lines_dir = common::manifest_dir!().join("../../lines");
         let lines =
             common::LineDefinition::from_dir(&lines_dir).expect("lines/ directory should parse");
         let matcher = common::matcher::LineMatcher::new(&lines);
@@ -5966,7 +5992,7 @@ mod incident_search_query_tests {
         .await
         .expect("seed a pre-column row");
 
-        let lines_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lines");
+        let lines_dir = common::manifest_dir!().join("../../lines");
         let lines =
             common::LineDefinition::from_dir(&lines_dir).expect("lines/ directory should parse");
         let matcher = common::matcher::LineMatcher::new(&lines);
@@ -7630,6 +7656,77 @@ mod schedule_feed_ingest_query_tests {
             .expect("connect to postgres")
     }
 
+    /// The delivered zip's name, size and SHA-256 land in their columns,
+    /// and the per-file hashes stay inside `files`; a malformed hash is
+    /// refused by the column's CHECK.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_feed_insert_records_the_delivered_zip_provenance \
+                -- --ignored --test-threads=1`"]
+    async fn schedule_feed_insert_records_the_delivered_zip_provenance() {
+        use chrono::SubsecRound;
+
+        let pool = test_pool().await;
+        let delivered_at = (chrono::Utc::now() - chrono::Duration::days(400)).trunc_subsecs(0);
+        let sha = "ab".repeat(32);
+        let files =
+            serde_json::json!([{"name": "RJTTF975MCA.txt", "bytes": 3, "sha256": "cd".repeat(32)}]);
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            delivered_at,
+            &files,
+            &ScheduleFeedSource {
+                file: Some("timetable_full.zip"),
+                bytes: Some(77_222_226),
+                sha256: Some(&sha),
+            },
+        )
+        .await
+        .expect("insert with provenance");
+        let row: (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            serde_json::Value,
+        ) = sqlx::query_as(
+            "SELECT source_file, source_bytes, source_sha256, files \
+             FROM schedule_feed_ingests WHERE delivered_at = $1",
+        )
+        .bind(delivered_at)
+        .fetch_one(&pool)
+        .await
+        .expect("read back");
+        assert_eq!(row.0.as_deref(), Some("timetable_full.zip"));
+        assert_eq!(row.1, Some(77_222_226));
+        assert_eq!(row.2.as_deref(), Some(sha.as_str()));
+        assert_eq!(row.3, files);
+
+        let bad_at = delivered_at + chrono::Duration::seconds(1);
+        let err = insert_schedule_feed_ingest(
+            &pool,
+            bad_at,
+            bad_at,
+            &files,
+            &ScheduleFeedSource {
+                sha256: Some("NOT-A-SHA"),
+                ..ScheduleFeedSource::default()
+            },
+        )
+        .await;
+        assert!(
+            err.is_err(),
+            "the CHECK constraint refuses a malformed hash"
+        );
+
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE delivered_at IN ($1, $2)")
+            .bind(delivered_at)
+            .bind(bad_at)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture rows");
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_feed_insert_then_last_fetch_returns_the_delivered_at \
@@ -7650,9 +7747,15 @@ mod schedule_feed_ingest_query_tests {
         let ingested_at = (delivered_at + chrono::Duration::minutes(5)).trunc_subsecs(6);
         let files = serde_json::json!([{"name": "TEST.DAT", "bytes": 123}]);
 
-        insert_schedule_feed_ingest(&pool, delivered_at, ingested_at, &files)
-            .await
-            .expect("insert schedule feed ingest");
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            ingested_at,
+            &files,
+            &ScheduleFeedSource::default(),
+        )
+        .await
+        .expect("insert schedule feed ingest");
 
         let last = last_schedule_feed_fetch(&pool)
             .await
@@ -7685,9 +7788,15 @@ mod schedule_feed_ingest_query_tests {
         let first_ingested_at = delivered_at.trunc_subsecs(6);
         let first_files = serde_json::json!([{"name": "TEST-A.DAT", "bytes": 111}]);
 
-        insert_schedule_feed_ingest(&pool, delivered_at, first_ingested_at, &first_files)
-            .await
-            .expect("insert schedule feed ingest");
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            first_ingested_at,
+            &first_files,
+            &ScheduleFeedSource::default(),
+        )
+        .await
+        .expect("insert schedule feed ingest");
 
         // Same delivered_at (this is the whole point -- a re-POST of an
         // already-recorded delivery, e.g. after schedule-ingest restarts),
@@ -7696,9 +7805,15 @@ mod schedule_feed_ingest_query_tests {
         // upsert.
         let second_ingested_at = (first_ingested_at + chrono::Duration::hours(1)).trunc_subsecs(6);
         let second_files = serde_json::json!([{"name": "TEST-B.DAT", "bytes": 222}]);
-        insert_schedule_feed_ingest(&pool, delivered_at, second_ingested_at, &second_files)
-            .await
-            .expect("re-insert schedule feed ingest with the same delivered_at");
+        insert_schedule_feed_ingest(
+            &pool,
+            delivered_at,
+            second_ingested_at,
+            &second_files,
+            &ScheduleFeedSource::default(),
+        )
+        .await
+        .expect("re-insert schedule feed ingest with the same delivered_at");
 
         let last = last_schedule_feed_fetch(&pool)
             .await
@@ -12022,6 +12137,85 @@ mod schedule_publish_diff_tests {
             sql.product
         );
         tx.rollback().await.expect("rollback");
+    }
+
+    /// The final chunk's `analyze` really refreshes the staging table's
+    /// statistics for whatever role `DATABASE_URL` connects as -- in
+    /// particular the non-superuser app role of the role split
+    /// (docs/postgres-app-role.md), for which a bare `ANALYZE` only warns
+    /// and skips the table. `pg_class.reltuples` (readable by anyone) only
+    /// moves to the staged row count if the ANALYZE actually ran.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_publish_diff -- --ignored --test-threads=1`"]
+    async fn the_publish_analyze_refreshes_statistics_as_the_connecting_role() {
+        const ROWS: i64 = 3_000;
+        let pool = test_pool().await;
+        for (sql, keys_table) in [
+            (
+                &DESTINATION_DEPARTURES_PUBLISH_KEYS_SQL,
+                "schedule_destination_departures_publish_keys",
+            ),
+            (
+                &CALLING_POINTS_FULL_PUBLISH_KEYS_SQL,
+                "schedule_calling_points_full_publish_keys",
+            ),
+        ] {
+            let mut tx = pool.begin().await.expect("begin");
+            // Everything below rolls back: these keys never commit.
+            sqlx::query(&format!("DELETE FROM {keys_table}"))
+                .execute(&mut *tx)
+                .await
+                .expect("empty the staging table inside the transaction");
+            let insert = if keys_table.starts_with("schedule_destination") {
+                format!(
+                    "INSERT INTO {keys_table} \
+                     (publish_id, service_date, destination_crs, scheduled, train_uid, origin_crs) \
+                     SELECT 'test-analyze-role', DATE '2050-01-01', 'Z' || (g % 90 + 10)::text, \
+                            TIME '08:00', 'T' || g::text, 'Y99' \
+                     FROM generate_series(1, $1) g"
+                )
+            } else {
+                format!(
+                    "INSERT INTO {keys_table} (publish_id, service_date, uid, seq) \
+                     SELECT 'test-analyze-role', DATE '2050-01-01', 'T' || g::text, 1 \
+                     FROM generate_series(1, $1) g"
+                )
+            };
+            sqlx::query(&insert)
+                .bind(ROWS)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(|err| panic!("stage keys in {keys_table}: {err}"));
+            sqlx::query(sql.analyze)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(|err| panic!("{}: {err}", sql.analyze));
+            let reltuples: f32 =
+                sqlx::query_scalar("SELECT reltuples FROM pg_class WHERE oid = $1::regclass")
+                    .bind(keys_table)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .expect("reltuples");
+            assert_eq!(
+                reltuples as i64, ROWS,
+                "{}: the staging table's statistics were not refreshed (the ANALYZE was \
+                 skipped for lack of ownership?)",
+                sql.analyze
+            );
+            tx.rollback().await.expect("rollback");
+        }
+
+        // Only the two staging tables, never anything a caller names.
+        let err = sqlx::query("SELECT analyze_publish_keys('users')")
+            .execute(&pool)
+            .await
+            .expect_err("analyze_publish_keys must refuse any other table");
+        assert_eq!(
+            err.as_database_error().and_then(|db| db.code()).as_deref(),
+            Some("22023"),
+            "{err}"
+        );
     }
 
     /// Regression test for the 2026-09-27 production CPU burn: stage a

@@ -647,6 +647,54 @@ fn validate_station_crs_codes(stations: &[String]) -> Result<(), (StatusCode, St
     Ok(())
 }
 
+/// Trims, uppercases and dedupes `stations` and `destination_crs_filter`
+/// before validation, so the "at least 2 stations" rule counts distinct
+/// stations (`["WOK", " wok"]` is one station, not two) -- see
+/// [`custom_lines::normalize_crs_list`]. The data layer normalises again
+/// on write; doing it here too keeps the checks and the stored row in
+/// agreement.
+fn normalize_line_request(req: &mut CreateLineRequest) {
+    req.stations = custom_lines::normalize_crs_list(&req.stations);
+    req.destination_crs_filter = custom_lines::normalize_crs_list(&req.destination_crs_filter);
+}
+
+/// The entries of `stations` missing from the `stations` reference table
+/// (empty while that table is unpopulated -- see
+/// [`custom_lines::unknown_station_codes`]).
+async fn unknown_stations(
+    app: &App,
+    stations: &[String],
+) -> Result<Vec<String>, (StatusCode, String)> {
+    custom_lines::unknown_station_codes(&app.database, stations)
+        .await
+        .map_err(internal_error)
+}
+
+/// 400s naming the first of `unknown` (from [`unknown_stations`]) that
+/// isn't in `allowed`.
+///
+/// Every station of a custom line becomes a recurring `poller-ldbws`
+/// request against the org's RDM quota, so a well-formed but made-up code
+/// such as `ZZZ` costs a request per cycle until LDBWS's invalid-CRS
+/// response gets it pruned (and re-probed hourly). The `stations` table is
+/// the RDM Knowledgebase station feed -- the same station set LDBWS serves
+/// -- and the form's own station search reads it, so a code it doesn't
+/// hold is a typo or invention rather than a real station LDBWS knows
+/// about. One primary-key lookup per station, at most
+/// [`MAX_CUSTOM_LINE_STATIONS`], on a rare write path.
+fn reject_unknown_stations(
+    unknown: &[String],
+    allowed: &[String],
+) -> Result<(), (StatusCode, String)> {
+    if let Some(bad) = unknown.iter().find(|code| !allowed.contains(code)) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("'{bad}' is not a known station code"),
+        ));
+    }
+    Ok(())
+}
+
 /// Most stations one custom line may list. The longest catalogue line
 /// (thameslink-southern) has 61; every station is polled by `poller-ldbws`,
 /// so this bounds recurring work as well as storage (API-7).
@@ -706,9 +754,11 @@ fn validate_line_request(req: &CreateLineRequest) -> Result<(), (StatusCode, Str
 async fn create_line(
     State(app): State<App>,
     user: AuthenticatedUser,
-    Json(req): Json<CreateLineRequest>,
+    Json(mut req): Json<CreateLineRequest>,
 ) -> Result<Json<LineSummary>, (StatusCode, String)> {
+    normalize_line_request(&mut req);
     validate_line_request(&req)?;
+    reject_unknown_stations(&unknown_stations(&app, &req.stations).await?, &[])?;
     if custom_lines::slugify(&req.name) == "custom-" {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -835,7 +885,7 @@ async fn update_line(
     State(app): State<App>,
     Path(id): Path<String>,
     user: AuthenticatedUser,
-    Json(req): Json<CreateLineRequest>,
+    Json(mut req): Json<CreateLineRequest>,
 ) -> Result<Json<LineSummary>, (StatusCode, String)> {
     if app.config.lines.iter().any(|l| l.id == id) {
         return Err((
@@ -843,7 +893,23 @@ async fn update_line(
             "cannot edit a catalogue line".to_string(),
         ));
     }
+    normalize_line_request(&mut req);
     validate_line_request(&req)?;
+    // A station already on this line stays allowed even if it has since
+    // left the reference table (a closure, a feed hiccup), so an unrelated
+    // edit such as a rename never fails over it. Read only when something
+    // is unknown, which is the rare path. A line the caller doesn't own
+    // reads as having no stations here and still gets its 404 below.
+    let unknown = unknown_stations(&app, &req.stations).await?;
+    if !unknown.is_empty() {
+        let existing = custom_lines::get_custom_line(&app.database, &id)
+            .await
+            .map_err(internal_error)?
+            .filter(|(_, owner)| owner.as_deref() == Some(user.id.as_str()))
+            .map(|(line, _)| custom_lines::normalize_crs_list(&line.stations))
+            .unwrap_or_default();
+        reject_unknown_stations(&unknown, &existing)?;
+    }
     // Deliberately no `slugify(&req.name) == "custom-"` check here, unlike
     // `create_line`: that check exists solely to guard id derivation from
     // an all-punctuation name, and `update_line` never derives an id (see
@@ -1199,6 +1265,7 @@ mod db_tests {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
+            migration_database_url: None,
             redis_url: "redis://127.0.0.1:0".to_string(),
             redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
@@ -1328,6 +1395,38 @@ mod db_tests {
             .expect("connect to postgres")
     }
 
+    /// Inserts any of `codes` missing from `stations` and returns the ones
+    /// it added, for [`remove_stations`] to delete again afterwards.
+    ///
+    /// `create_line`/`update_line` reject codes the `stations` table doesn't
+    /// hold (once it holds anything at all), so a request naming real
+    /// stations must find them there whatever else earlier tests left in
+    /// the table. Only rows this call inserted are removed again, so a
+    /// database carrying real reference data keeps it.
+    async fn ensure_stations(codes: &[&str]) -> Vec<String> {
+        let pool = connect().await;
+        sqlx::query_scalar(
+            "INSERT INTO stations (crs, name) SELECT c, 'Test fixture ' || c FROM unnest($1::text[]) c \
+             ON CONFLICT (crs) DO NOTHING RETURNING TRIM(crs)",
+        )
+        .bind(codes)
+        .fetch_all(&pool)
+        .await
+        .expect("seed fixture stations")
+    }
+
+    async fn remove_stations(added: &[String]) {
+        if added.is_empty() {
+            return;
+        }
+        let pool = connect().await;
+        sqlx::query("DELETE FROM stations WHERE crs = ANY($1::text[]::bpchar[])")
+            .bind(added)
+            .execute(&pool)
+            .await
+            .expect("remove fixture stations");
+    }
+
     /// Issues a `PUT` or `DELETE` against `/public/lines/{id}` -- the two
     /// owner-only mutation routes, which custom-line group sharing
     /// deliberately did NOT widen. Same `(status, JSON-or-plain-text body)`
@@ -1402,6 +1501,29 @@ mod db_tests {
         raw_token: &str,
         name: &str,
     ) -> (StatusCode, Value) {
+        create_line_with_body(
+            router,
+            raw_token,
+            serde_json::json!({
+                "name": name,
+                "operators": ["SW"],
+                "stations": ["WAT", "SUR"],
+            }),
+            &["WAT", "SUR"],
+        )
+        .await
+    }
+
+    /// `POST /public/lines` with `body`, with `real_stations` present in
+    /// the `stations` table for the duration of the request (see
+    /// [`ensure_stations`]).
+    async fn create_line_with_body(
+        router: axum::Router,
+        raw_token: &str,
+        body: Value,
+        real_stations: &[&str],
+    ) -> (StatusCode, Value) {
+        let added = ensure_stations(real_stations).await;
         let request = Request::builder()
             .method("POST")
             .uri("/public/lines")
@@ -1411,15 +1533,11 @@ mod db_tests {
             )
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                serde_json::to_vec(&serde_json::json!({
-                    "name": name,
-                    "operators": ["SW"],
-                    "stations": ["WAT", "SUR"],
-                }))
-                .expect("serialize request body"),
+                serde_json::to_vec(&body).expect("serialize request body"),
             ))
             .expect("build request");
         let response = router.oneshot(request).await.expect("oneshot request");
+        remove_stations(&added).await;
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -1428,6 +1546,191 @@ mod db_tests {
             Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
         });
         (status, value)
+    }
+
+    /// A code the test database's `stations` table must not hold -- not a
+    /// real CRS (checked against production's station list, 2026-10-01).
+    const FAKE_CRS: &str = "QXQ";
+
+    async fn stored_codes(pool: &PgPool, id: &str) -> (Vec<String>, Vec<String>) {
+        sqlx::query_as("SELECT stations, destination_crs_filter FROM custom_lines WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("read stored line")
+    }
+
+    async fn assert_fake_crs_unknown(pool: &PgPool) {
+        let present: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM stations WHERE crs = $1::bpchar)")
+                .bind(FAKE_CRS)
+                .fetch_one(pool)
+                .await
+                .expect("look up the fake code");
+        assert!(
+            !present,
+            "{FAKE_CRS} must not be in this database's stations table"
+        );
+    }
+
+    /// M3 residual (2026-10-01 review): station codes are stored trimmed,
+    /// uppercased and deduplicated, on create and on update, so `" wok"`
+    /// and `WOK` can no longer become two LDBWS polls.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                custom_line_station_codes_are_normalised_and_deduplicated_on_create_and_update \
+                -- --ignored --test-threads=1`"]
+    async fn custom_line_station_codes_are_normalised_and_deduplicated_on_create_and_update() {
+        const USER: &str = "test-user-custom-line-normalise";
+        let pool = connect().await;
+        let raw_token = seed_session(&pool, USER).await;
+        let router = test_router(test_app(pool.clone(), vec![]));
+
+        let (status, created) = create_line_with_body(
+            router.clone(),
+            &raw_token,
+            json!({
+                "name": "Normalise Me",
+                "operators": ["SW"],
+                "stations": [" wok", "WOK", "clj ", "Wat"],
+                "destinationCrsFilter": [" sur", "SUR"],
+            }),
+            &["WOK", "CLJ", "WAT", "SUR"],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let id = created["id"].as_str().expect("created id").to_string();
+        assert_eq!(
+            stored_codes(&pool, &id).await,
+            (
+                vec!["WOK".to_string(), "CLJ".to_string(), "WAT".to_string()],
+                vec!["SUR".to_string()]
+            )
+        );
+
+        let added = ensure_stations(&["WOK", "WAT", "SUR"]).await;
+        let (status, body) = mutate(
+            router.clone(),
+            "PUT",
+            &id,
+            Some(&raw_token),
+            Some(json!({
+                "name": "Normalise Me",
+                "operators": ["SW"],
+                "stations": ["sur", " SUR ", "wat"],
+                "destinationCrsFilter": ["wok"],
+            })),
+        )
+        .await;
+        remove_stations(&added).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            stored_codes(&pool, &id).await,
+            (
+                vec!["SUR".to_string(), "WAT".to_string()],
+                vec!["WOK".to_string()]
+            )
+        );
+
+        // Two spellings of one station are one station, so this is below
+        // the 2-station minimum.
+        let (status, body) = create_line_with_body(
+            router,
+            &raw_token,
+            json!({"name": "One Station", "operators": ["SW"], "stations": ["WOK", " wok"]}),
+            &["WOK"],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        cleanup_user(&pool, USER).await;
+    }
+
+    /// A well-formed but unknown CRS is refused with a 400 naming it, on
+    /// create and when an update adds it; a station already stored on the
+    /// line stays accepted on update even though the reference table
+    /// doesn't hold it (so an unrelated rename can't fail over it).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                unknown_station_codes_are_rejected_but_already_stored_ones_survive_an_edit \
+                -- --ignored --test-threads=1`"]
+    async fn unknown_station_codes_are_rejected_but_already_stored_ones_survive_an_edit() {
+        const USER: &str = "test-user-custom-line-unknown-crs";
+        let pool = connect().await;
+        assert_fake_crs_unknown(&pool).await;
+        let raw_token = seed_session(&pool, USER).await;
+        let router = test_router(test_app(pool.clone(), vec![]));
+
+        let (status, body) = create_line_with_body(
+            router.clone(),
+            &raw_token,
+            json!({"name": "Fake Stop", "operators": ["SW"], "stations": ["WOK", FAKE_CRS]}),
+            &["WOK"],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            Value::String(format!("'{FAKE_CRS}' is not a known station code"))
+        );
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom_lines WHERE user_id = $1")
+            .bind(USER)
+            .fetch_one(&pool)
+            .await
+            .expect("count lines");
+        assert_eq!(count, 0, "nothing may be stored for a refused create");
+
+        // A legacy line already holding the unknown code (written before
+        // this check existed).
+        let line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Legacy Fake Stop".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), FAKE_CRS.to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            USER,
+        )
+        .await
+        .expect("insert legacy line");
+
+        let added = ensure_stations(&["WOK"]).await;
+        let (status, body) = mutate(
+            router.clone(),
+            "PUT",
+            &line.id,
+            Some(&raw_token),
+            Some(json!({
+                "name": "Renamed Legacy",
+                "operators": ["SW"],
+                "stations": ["WOK", FAKE_CRS.to_lowercase()],
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, body) = mutate(
+            router,
+            "PUT",
+            &line.id,
+            Some(&raw_token),
+            Some(json!({
+                "name": "Renamed Legacy",
+                "operators": ["SW"],
+                "stations": ["WOK", FAKE_CRS, "QXZ"],
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        remove_stations(&added).await;
+        assert_eq!(
+            body,
+            Value::String("'QXZ' is not a known station code".to_string())
+        );
+
+        cleanup_user(&pool, USER).await;
     }
 
     #[tokio::test]
@@ -1778,6 +2081,9 @@ mod db_tests {
         // write gate match the read gate" would break, and the existing
         // non-owner tests in this file use a plain stranger, so they would
         // keep passing through exactly that mistake.
+        // Real stations, so the PUT gets past the station check and its
+        // 404 comes from the ownership gate under test.
+        let added = ensure_stations(&["WOK", "CLJ"]).await;
         let (status, body) = mutate(
             router.clone(),
             "PUT",
@@ -1790,6 +2096,7 @@ mod db_tests {
             })),
         )
         .await;
+        remove_stations(&added).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, Value::String("custom line not found".to_string()));
 

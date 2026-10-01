@@ -1343,7 +1343,7 @@ mod chart_env_wiring_tests {
 
     #[test]
     fn every_edge_and_rate_limit_env_var_is_set_on_the_charts_api_container() {
-        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/api-deployment.yaml");
         let template = std::fs::read_to_string(&chart).expect("read api-deployment.yaml");
         let mut declared: Vec<String> = Vec::new();

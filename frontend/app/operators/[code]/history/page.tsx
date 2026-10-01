@@ -2,11 +2,14 @@ import { Suspense } from 'react';
 import { Alert, Stack, Text, Title } from '@mantine/core';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { getAllTocs, getHistoryRetention, getOperator } from '@/lib/api';
+import { createLogger } from '@/lib/logger';
 import { TextLink } from '@/components/TextLink';
 import { availableGranularities, granularityShortfallDays, resolveGranularity, resolveRange } from '@/lib/history';
 import { GranularityControl } from '@/app/lines/[id]/history/GranularityControl';
 import { HistoryRangePicker } from '@/app/lines/[id]/history/HistoryRangePicker';
 import { OperatorTrendsResults } from './OperatorTrendsResults';
+
+const log = createLogger('app/operators/history');
 
 export const revalidate = 0;
 
@@ -25,7 +28,7 @@ async function resolveOperatorName(code: string): Promise<string> {
     const tocs = await getAllTocs();
     return tocs.find((toc) => toc.code === code)?.name ?? code;
   } catch (err) {
-    console.warn(`Could not resolve a name for operator "${code}"; falling back to the code.`, err);
+    log.warn('Could not resolve an operator name; falling back to the code.', { operator_code: code, error: err });
     return code;
   }
 }
@@ -45,7 +48,7 @@ async function resolveLineCount(code: string): Promise<number | null> {
     const operator = await getOperator(code);
     return operator.lineIds.length;
   } catch (err) {
-    console.warn(`Could not resolve a line count for operator "${code}".`, err);
+    log.warn('Could not resolve a line count for an operator.', { operator_code: code, error: err });
     return null;
   }
 }
@@ -61,7 +64,7 @@ async function resolveRetention(): Promise<{
       halfHourlyStatsRetentionHours: retention.halfHourlyStatsRetentionHours,
     };
   } catch (err) {
-    console.warn('Could not resolve retention ceilings; offering only Daily.', err);
+    log.warn('Could not resolve retention ceilings; offering only Daily.', { error: err });
     return { dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 };
   }
 }

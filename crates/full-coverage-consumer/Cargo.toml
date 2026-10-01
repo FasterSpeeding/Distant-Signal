@@ -14,14 +14,12 @@ dotenv = "0.15.0"
 health-http = { path = "../health-http" }
 metrics = "0.24"
 movement-feed = { path = "../movement-feed" }
-rdkafka = { version = "0.39.0", features = ["cmake-build", "ssl", "sasl"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls", "gzip", "query"] }
 schedule-query = { path = "../schedule-query" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trust-schema = { path = "../trust-schema" }
 
 [dev-dependencies]

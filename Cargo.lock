@@ -217,7 +217,6 @@ dependencies = [
  "tower",
  "tower-http 0.6.11",
  "tracing",
- "tracing-subscriber",
  "trip-planner",
  "trust-schema",
  "wiremock",
@@ -721,6 +720,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "glob",
+ "log",
  "metrics",
  "metrics-exporter-prometheus",
  "redis",
@@ -734,6 +734,8 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "url",
  "wiremock",
 ]
@@ -1361,7 +1363,6 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "wiremock",
 ]
 
@@ -1534,7 +1535,6 @@ dependencies = [
  "health-http",
  "metrics",
  "movement-feed",
- "rdkafka",
  "redis",
  "reqwest 0.13.4",
  "schedule-query",
@@ -1542,7 +1542,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "trust-schema",
  "wiremock",
 ]
@@ -2792,7 +2791,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "trust-schema",
 ]
 
@@ -3319,7 +3317,6 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3337,7 +3334,6 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "wiremock",
  "zip",
 ]
@@ -3358,7 +3354,6 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "wiremock",
 ]
 
@@ -3379,7 +3374,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "wiremock",
 ]
 
@@ -3398,7 +3392,6 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "wiremock",
 ]
 
@@ -3417,7 +3410,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3437,7 +3429,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3455,7 +3446,6 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -4199,6 +4189,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tracing",
@@ -4237,7 +4228,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "trip-planner",
  "wiremock",
 ]
@@ -5396,6 +5386,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5405,12 +5405,15 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]
@@ -5439,7 +5442,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "trust-schema",
 ]
 
@@ -5457,13 +5459,11 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "movement-feed",
- "rdkafka",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "trust-schema",
 ]
 

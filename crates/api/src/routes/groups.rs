@@ -1170,6 +1170,7 @@ mod db_tests {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
+            migration_database_url: None,
             redis_url: "redis://127.0.0.1:0".to_string(),
             redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
@@ -2348,5 +2349,166 @@ mod db_tests {
             ],
         )
         .await;
+    }
+
+    /// L10 (2026-09-26 review) at the HTTP layer: `POST /groups` and
+    /// `POST /groups/join/{token}` both refuse with 400 once the caller
+    /// belongs to `MAX_GROUPS_PER_USER` groups, and a join into a group
+    /// already holding `MAX_MEMBERS_PER_GROUP` members is a 409 -- while an
+    /// existing member re-clicking that full group's link still succeeds.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                group_routes_enforce_the_groups_per_user_and_members_per_group_caps \
+                -- --ignored --test-threads=1`"]
+    async fn group_routes_enforce_the_groups_per_user_and_members_per_group_caps() {
+        use crate::data::groups::{MAX_GROUPS_PER_USER, MAX_MEMBERS_PER_GROUP, rotate_invite_link};
+        const JOINER: &str = "TEST-ROUTE-GROUP-CAPS-JOINER";
+        const OWNER: &str = "TEST-ROUTE-GROUP-CAPS-OWNER";
+        const FILLER_PREFIX: &str = "TEST-ROUTE-GROUP-CAPS-FILLER-";
+        let pool = connect().await;
+        let wipe = || async {
+            sqlx::query(
+                "DELETE FROM groups WHERE id LIKE 'test-route-group-caps-%' OR id IN \
+                         (SELECT group_id FROM group_members WHERE user_id IN ($1, $2))",
+            )
+            .bind(JOINER)
+            .bind(OWNER)
+            .execute(&pool)
+            .await
+            .expect("wipe fixture groups");
+            sqlx::query("DELETE FROM users WHERE id IN ($1, $2) OR id LIKE $3 || '%'")
+                .bind(JOINER)
+                .bind(OWNER)
+                .bind(FILLER_PREFIX)
+                .execute(&pool)
+                .await
+                .expect("wipe fixture users");
+        };
+        wipe().await;
+        let joiner_token = seed_session(&pool, JOINER).await;
+        let owner_token = seed_session(&pool, OWNER).await;
+        let router = test_router(test_app(pool.clone()));
+
+        // The joiner already belongs to one below the cap.
+        sqlx::query(
+            "WITH g AS ( \
+                 INSERT INTO groups (id, name) \
+                 SELECT 'test-route-group-caps-' || i, 'Cap ' || i FROM generate_series(1, $2::int) i \
+                 RETURNING id) \
+             INSERT INTO group_members (group_id, user_id, role) SELECT id, $1, 'owner' FROM g",
+        )
+        .bind(JOINER)
+        .bind((MAX_GROUPS_PER_USER - 1) as i32)
+        .execute(&pool)
+        .await
+        .expect("seed memberships");
+
+        // A create landing exactly on the cap succeeds; the next is refused.
+        let (status, body) = post_json(
+            router.clone(),
+            "/groups".to_string(),
+            Some(&joiner_token),
+            Some(serde_json::json!({ "name": "Hundredth" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create at the cap: {body:?}");
+        let (status, body) = post_json(
+            router.clone(),
+            "/groups".to_string(),
+            Some(&joiner_token),
+            Some(serde_json::json!({ "name": "One Too Many" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(
+            body.as_str().is_some_and(|b| b.contains("maximum")),
+            "{body:?}"
+        );
+
+        // ...and so is joining someone else's group.
+        let (status, body) = post_json(
+            router.clone(),
+            "/groups".to_string(),
+            Some(&owner_token),
+            Some(serde_json::json!({ "name": "Owner's Group" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let group_id = body["id"].as_str().expect("group id").to_string();
+        let token = rotate_invite_link(&pool, &group_id, OWNER)
+            .await
+            .expect("rotate")
+            .token
+            .expect("fresh token");
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/groups/join/{token}"),
+            Some(&joiner_token),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "join over the groups cap: {body:?}"
+        );
+        assert!(
+            body.as_str().is_some_and(|b| b.contains("maximum")),
+            "{body:?}"
+        );
+
+        // Make room for the joiner, then fill the owner's group to the
+        // member cap (the owner is one member).
+        sqlx::query("DELETE FROM groups WHERE id LIKE 'test-route-group-caps-%'")
+            .execute(&pool)
+            .await
+            .expect("drop the joiner's filler groups");
+        sqlx::query(
+            "WITH u AS ( \
+                 INSERT INTO users (id, email, name) \
+                 SELECT $2 || i, $2 || i || '@example.com', $2 || i FROM generate_series(1, $3::int) i \
+                 RETURNING id) \
+             INSERT INTO group_members (group_id, user_id, role) SELECT $1, id, 'member' FROM u",
+        )
+        .bind(&group_id)
+        .bind(FILLER_PREFIX)
+        .bind((MAX_MEMBERS_PER_GROUP - 1) as i32)
+        .execute(&pool)
+        .await
+        .expect("fill the group");
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/groups/join/{token}"),
+            Some(&joiner_token),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "join into a full group: {body:?}"
+        );
+        let joiner_role: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2",
+        )
+        .bind(&group_id)
+        .bind(JOINER)
+        .fetch_optional(&pool)
+        .await
+        .expect("read role");
+        assert_eq!(joiner_role, None);
+
+        // An existing member re-clicking the full group's link is fine.
+        let (status, body) = post_json(
+            router,
+            format!("/groups/join/{token}"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "existing member re-click: {body:?}");
+
+        wipe().await;
     }
 }

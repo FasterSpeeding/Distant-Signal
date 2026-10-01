@@ -20,6 +20,15 @@ export default defineConfig({
     // `frontend/e2e/` entirely, which is Playwright's domain
     // (playwright.config.ts's own `testDir`).
     include: ['**/*.test.{ts,tsx,js,jsx}'],
+    // R-093 / FE-13: Vitest's 5 s default is per test, wall clock. The jsdom
+    // component tests that drive multi-step flows with user-event
+    // (PlanTripFlow, TrainSearchForm, StationAccessibilitySection on real
+    // payloads, ...) take 1-3 s on an idle machine, and on a busy shared host
+    // (load average ~50, 2026-10-01) 15 of 3,146 tests crossed 5 s, so
+    // `npm test` exited 1 with nothing wrong. 20 s absorbs that contention;
+    // a genuinely hung test (an await that never settles) still fails, just
+    // 15 s later.
+    testTimeout: 20_000,
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, '.') },

@@ -441,25 +441,11 @@ fn internal_oauth_route_table(
     ]
 }
 
-/// Session settings sent at connect time on every `api` pool connection so
-/// Postgres notices a client that has gone away (2026-09-27 incident: the
-/// server's defaults are all 0, and schedule publish deletes kept running
-/// for many minutes on behalf of an `api` pod that had already died --
-/// sqlx does not cancel a query when the future awaiting it is dropped).
-///
-/// * `client_connection_check_interval` (PG 14+; production runs 16) makes
-///   a long-running query poll its socket and abort once the client is gone.
-/// * The TCP keepalives turn a peer that vanished without a FIN/RST (a
-///   killed pod, a dropped node) into a closed socket that check can see:
-///   ~60s idle + 6 x 10s probes.
-///
-/// All are user-settable, so they go in the startup packet's `options`.
-const DEAD_CLIENT_DETECTION_SETTINGS: [(&str, &str); 4] = [
-    ("client_connection_check_interval", "10s"),
-    ("tcp_keepalives_idle", "60"),
-    ("tcp_keepalives_interval", "10"),
-    ("tcp_keepalives_count", "6"),
-];
+/// Dead-client detection (`client_connection_check_interval` and TCP
+/// keepalives), now shared with every pool through `common::pg`; kept here
+/// for the migration connection, which is not built by `PoolSettings`.
+const DEAD_CLIENT_DETECTION_SETTINGS: [(&str, &str); 4] =
+    common::pg::DEAD_CLIENT_DETECTION_SETTINGS;
 
 /// `pg_stat_activity.application_name` of every `api` pool connection.
 pub const API_APPLICATION_NAME: &str = "distant-signal-api";

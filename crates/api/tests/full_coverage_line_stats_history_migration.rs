@@ -8,28 +8,52 @@
 //! transaction, the `-- no-transaction` one outside), so it never touches
 //! the shared dev database's real table.
 
-use std::path::PathBuf;
-
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, Row};
 
-fn migration(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("migrations")
-        .join(name);
-    std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+/// Embedded at compile time instead of read from `env!("CARGO_MANIFEST_DIR")`
+/// at run time: with `CARGO_TARGET_DIR` shared between worktrees, cargo can
+/// reuse a binary built in another worktree, which would then read (or fail
+/// to find) THAT worktree's files (Train Register verification 2026-10-01,
+/// N6). `include_str!` also makes cargo rebuild this test whenever one of
+/// these files changes.
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "20260904100000_full_coverage_line_stats.sql",
+        include_str!("../migrations/20260904100000_full_coverage_line_stats.sql"),
+    ),
+    (
+        "20260927050000_full_coverage_line_stats_partial.sql",
+        include_str!("../migrations/20260927050000_full_coverage_line_stats_partial.sql"),
+    ),
+    (
+        "20260927050100_full_coverage_line_stats_line_date_key.sql",
+        include_str!("../migrations/20260927050100_full_coverage_line_stats_line_date_key.sql"),
+    ),
+    (
+        "20260927050200_full_coverage_line_stats_line_date_pkey.sql",
+        include_str!("../migrations/20260927050200_full_coverage_line_stats_line_date_pkey.sql"),
+    ),
+];
+
+fn migration(name: &str) -> &'static str {
+    MIGRATIONS
+        .iter()
+        .find(|(file, _)| *file == name)
+        .map(|(_, sql)| *sql)
+        .unwrap_or_else(|| panic!("{name} is not embedded in MIGRATIONS"))
 }
 
 async fn apply(conn: &mut sqlx::PgConnection, name: &str) {
     let sql = migration(name);
     if sql.starts_with("-- no-transaction") {
-        sqlx::raw_sql(&sql)
+        sqlx::raw_sql(sql)
             .execute(&mut *conn)
             .await
             .unwrap_or_else(|err| panic!("apply {name}: {err}"));
     } else {
         let mut tx = conn.begin().await.unwrap();
-        sqlx::raw_sql(&sql)
+        sqlx::raw_sql(sql)
             .execute(&mut *tx)
             .await
             .unwrap_or_else(|err| panic!("apply {name}: {err}"));
@@ -41,8 +65,15 @@ async fn apply(conn: &mut sqlx::PgConnection, name: &str) {
 #[ignore = "requires a live database; run with `cargo test -p api --test \
             full_coverage_line_stats_history_migration -- --ignored --test-threads=1`"]
 async fn the_rekey_migrations_apply_to_a_table_that_already_has_rows() {
-    let database_url =
-        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+    // Migrations are DDL: run them as the migration role (the schema owner
+    // with the role split, docs/postgres-app-role.md), not as the DML-only
+    // app role `DATABASE_URL` then is.
+    let database_url = std::env::var("MIGRATION_DATABASE_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test")
+        });
     let schema = format!(
         "fcls_migration_test_{}",
         std::time::SystemTime::now()

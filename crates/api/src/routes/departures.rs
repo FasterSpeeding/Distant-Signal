@@ -301,6 +301,7 @@ mod db_tests {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
+            migration_database_url: None,
             redis_url: "redis://127.0.0.1:0".to_string(),
             redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),

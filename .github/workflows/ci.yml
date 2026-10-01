@@ -296,6 +296,31 @@ jobs:
       - name: cargo test -p movement-feed -- --ignored (Redis-backed tests)
         run: cargo test -p movement-feed -- --ignored --test-threads=1
 
+      # The Postgres role split (docs/postgres-app-role.md): proves no runtime
+      # path needs a superuser. scripts/test-postgres-roles.py makes a fresh
+      # database and roles with the chart's own setup script
+      # (charts/distant-signal/files/postgres-roles.sql), then runs the
+      # DB-backed suites with DATABASE_URL as the DML-only app role and
+      # MIGRATION_DATABASE_URL as the schema owner, as the chart wires them.
+      # `existing` converts a database migrated as the superuser (today's
+      # production); `new` creates the roles first and migrates as the owner
+      # (a new cluster). The #[sqlx::test] modules are skipped: they create a
+      # throwaway database per test, which needs CREATEDB, a test-harness
+      # right, not a runtime one; their DML runs in the step above.
+      - name: DB-backed tests as the non-superuser app role (existing cluster)
+        run: >-
+          scripts/test-postgres-roles.py --mode existing -- sh -c '
+          cargo test -p api -p aggregator -p notifier -- --ignored --test-threads=1
+          --skip corpus::db_tests --skip corpus_crosswalk::db_tests --skip freshness::db_tests
+          && cargo test -p common --features postgres pg::tests -- --ignored --test-threads=1
+          && cargo test -p enricher -- --ignored --skip live_eval --skip replay_ --test-threads=1'
+
+      - name: DB-backed tests as the non-superuser app role (new cluster)
+        run: >-
+          scripts/test-postgres-roles.py --mode new --
+          cargo test -p api -- --ignored --test-threads=1
+          migrate::tests schedule_publish
+
   # Custom: no reusable Piped workflow covers Node/npm at all (its
   # ecosystem coverage is Python + Rust). frontend/package.json now has a
   # `lint` script (`eslint .`, flat config in frontend/eslint.config.mjs
@@ -547,6 +572,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The script is stdlib-only; uv provides .python-version's interpreter.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # renovate: datasource=pypi depName=uv
+          version: "0.12.21"
+          # Nothing to cache: no dependencies are installed.
+          enable-cache: false
+
       - name: Check migration order
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -563,7 +597,7 @@ jobs:
             echo "no usable base commit (new branch or force push); skipping"
             exit 0
           fi
-          bash scripts/check-migration-order.sh "${base}"
+          uv run --locked --no-default-groups scripts/check-migration-order.py "${base}"
 
   # Lint, format-check and type-check the repo's scripts, strict by default:
   #   - every tracked *.sh: shellcheck with every optional check at style
@@ -582,9 +616,11 @@ jobs:
   #     healthchecks, `sh -c` commands); and every image a Dockerfile or
   #     compose file pulls (`# syntax=`, FROM, COPY --from, `image:`) must
   #     be pinned by @sha256 digest.
-  # Every tool is pinned in pyproject.toml's `lint` dependency group (pip's
-  # download cache is keyed on that file); scripts/lint-scripts.sh runs the
-  # same checks locally.
+  # Every tool is pinned in pyproject.toml's `lint` dependency group and,
+  # with the rest of the tree and its hashes, in uv.lock; `uv sync --locked`
+  # fails if uv.lock is stale. The interpreter is .python-version's (3.14),
+  # which uv installs on this GitHub-hosted runner. scripts/lint-scripts.py
+  # runs the same checks locally (`uv run scripts/lint-scripts.py`).
   scripts-lint:
     name: scripts lint (shellcheck, shfmt, ruff, mypy, actionlint, hadolint)
     runs-on: ubuntu-24.04
@@ -592,25 +628,50 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          # uv itself, pinned (Ranma-Config new-service guidance 3.3a); the
+          # annotation is for renovate.json5's customManagers.
+          # renovate: datasource=pypi depName=uv
+          version: "0.12.21"
+          # Caches uv's download/wheel cache, keyed on uv.lock.
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install the pinned lint tools
-        run: python -m pip install --group lint
+        run: uv sync --locked --group lint
 
       - name: Lint scripts
-        run: scripts/lint-scripts.sh
+        run: uv run --no-sync scripts/lint-scripts.py
+
+      # scripts/tests: stdlib unittest, e.g. check-migration-order.py's
+      # behaviour against throwaway git repos and the schedulefeed sftp
+      # entrypoint's account policy.
+      - name: Test scripts
+        run: uv run --no-sync python -m unittest discover -s scripts/tests -v
 
       # Every chart values.yaml key needs a row in the chart README's "Values
       # reference" tables, and every row must name a real key.
       # `scripts/chart-values-doc.py table <section>` drafts missing rows.
       # Here rather than in helm-lint: it needs the pinned PyYAML above.
       - name: chart values reference is complete
-        run: python scripts/chart-values-doc.py check
+        run: uv run --no-sync scripts/chart-values-doc.py check
+
+      # Every alert's summary, description, expr and estimated 3-alert
+      # webhook JSON stay under ntfy's 4,096-byte limit (the 2026-10-01
+      # outage's undelivered alerts), every alert has its docs/alerts.md
+      # runbook section, and the rendered rules pass `promtool check rules`
+      # and the unit tests in scripts/alert-rules-tests/. Here rather than
+      # in helm-lint: it needs the pinned PyYAML above. The script downloads
+      # promtool and verifies its checksum.
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.2.3
+
+      - name: alert payload sizes and promtool tests
+        run: uv run --no-sync scripts/check-alert-payloads.py --report --download-promtool "${RUNNER_TEMP}/promtool"
 
   # Custom: no reusable Piped/Piped-actions workflow covers Helm at all.
   # `helm lint` + `helm template` against both the chart's own defaults and
@@ -749,6 +810,14 @@ jobs:
           grep -q -- '- "huge_pages=off"' <<<"${out}"
           grep -q -- '- "temp_file_limit=100000000"' <<<"${out}"
           grep -q -- '- "jit=off"' <<<"${out}"
+          # Server-level backstops (Train Register N4), and never a
+          # server-wide statement_timeout (pgBackRest's pg_backup_stop).
+          grep -q -- '- "idle_in_transaction_session_timeout=10min"' <<<"${out}"
+          grep -q -- '- "client_connection_check_interval=10s"' <<<"${out}"
+          grep -q -- '- "tcp_keepalives_idle=60"' <<<"${out}"
+          if grep -q -- '"statement_timeout=' <<<"${out}"; then
+            echo "server-wide statement_timeout rendered" >&2; exit 1
+          fi
           grep -q 'mountPath: /dev/shm' <<<"${out}"
           grep -q 'medium: Memory' <<<"${out}"
           grep -q 'sizeLimit: 1Gi' <<<"${out}"
@@ -820,13 +889,202 @@ jobs:
           script=$(sed -n '/^  entrypoint.sh: |$/,$p' <<<"${cm}" | tail -n +2 | sed 's/^    //')
           diff -u charts/distant-signal/files/schedule-sftp-entrypoint.sh <(printf '%s\n' "${script}")
 
+      # SFTPGo must serve the chart's preserved host keys (not regenerate
+      # fresh ones each start), must not run its web admin, and must pass
+      # extraEnv through; the key files must be group-readable for uid 1000.
+      - name: helm template (sftp host keys, no web admin, extraEnv)
+        run: |
+          set -euo pipefail
+          render() {
+            helm template distant-signal charts/distant-signal \
+              --set trustConsumer.kafka.brokers=kafka.example.com:9094 \
+              --set trustConsumer.kafka.topic=test-topic \
+              --set trustConsumer.kafka.saslMechanism=PLAIN \
+              --set enricher.llm.baseUrl=http://llm.example.com/v1 \
+              --set enricher.llm.model=test-model \
+              --set api.sso.issuerUrl=https://sso.example.com \
+              --set api.sso.clientId=test-client \
+              --set api.sso.clientSecret=test-secret \
+              --set api.sso.redirectUrl=https://app.example.com/callback \
+              --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
+              --set scheduleFeed.enabled=true \
+              --set scheduleFeed.sftp.authMethod=password "$@"
+          }
+          fail() { echo "::error::$1"; exit 1; }
+          dep=$(render --show-only templates/schedulefeed-deployment.yaml)
+          grep -q 'value: "/srv/sftpgo/host_keys/ssh_host_ecdsa_key,/srv/sftpgo/host_keys/ssh_host_ed25519_key"' <<<"${dep}" \
+            || fail "SFTPGO_SFTPD__HOST_KEYS must list the mounted keys"
+          grep -A1 'SFTPGO_HTTPD__BINDINGS__0__PORT' <<<"${dep}" | grep -q 'value: "0"' \
+            || fail "the SFTPGo web admin must be off by default"
+          modes=$(grep -c 'mode: 0440' <<<"${dep}" || true)
+          [[ "${modes}" -eq 2 ]] || fail "both host keys must be mounted 0440"
+          sec=$(render --show-only templates/schedulefeed-secret.yaml)
+          grep -q 'ssh_host_ecdsa_key:' <<<"${sec}" || fail "the chart must generate an ECDSA host key"
+          dep=$(render --set scheduleFeed.sftp.webAdmin.enabled=true \
+            --set 'scheduleFeed.sftp.extraEnv[0].name=SFTPGO_TELEMETRY__BIND_PORT' \
+            --set-string 'scheduleFeed.sftp.extraEnv[0].value=9097' \
+            --show-only templates/schedulefeed-deployment.yaml)
+          if grep -q 'SFTPGO_HTTPD__BINDINGS__0__PORT' <<<"${dep}"; then fail "webAdmin.enabled must drop the port override"; fi
+          grep -q 'SFTPGO_TELEMETRY__BIND_PORT' <<<"${dep}" || fail "extraEnv must reach the SFTPGo container"
+          dep=$(render --set 'scheduleFeed.sftp.hostKeys=null' --show-only templates/schedulefeed-deployment.yaml)
+          if grep -q 'SFTPGO_SFTPD__HOST_KEYS' <<<"${dep}"; then fail "an empty hostKeys list must not set HOST_KEYS"; fi
+
+      # The push account's least-privilege policy reaches the entrypoint
+      # (scripts/tests/ checks what the entrypoint does with it), and a
+      # change to the entrypoint script rolls the pod.
+      - name: helm template (sftp push account policy)
+        run: |
+          set -euo pipefail
+          render() {
+            helm template distant-signal charts/distant-signal \
+              --set trustConsumer.kafka.brokers=kafka.example.com:9094 \
+              --set trustConsumer.kafka.topic=test-topic \
+              --set trustConsumer.kafka.saslMechanism=PLAIN \
+              --set enricher.llm.baseUrl=http://llm.example.com/v1 \
+              --set enricher.llm.model=test-model \
+              --set api.sso.issuerUrl=https://sso.example.com \
+              --set api.sso.clientId=test-client \
+              --set api.sso.clientSecret=test-secret \
+              --set api.sso.redirectUrl=https://app.example.com/callback \
+              --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
+              --set scheduleFeed.enabled=true \
+              --set scheduleFeed.sftp.authMethod=password "$@" \
+              --show-only templates/schedulefeed-deployment.yaml
+          }
+          fail() { echo "::error::$1"; exit 1; }
+          dep=$(render)
+          grep -A1 'name: SCHEDULE_SFTP_PERMISSIONS' <<<"${dep}" | grep -q 'value: "upload,overwrite,list"' \
+            || fail "the push account must default to upload,overwrite,list"
+          grep -A1 'name: SCHEDULE_SFTP_MAX_SESSIONS' <<<"${dep}" | grep -q 'value: "2"' \
+            || fail "maxSessions must reach the entrypoint"
+          grep -A1 'name: SCHEDULE_SFTP_MAX_UPLOAD_FILE_SIZE' <<<"${dep}" | grep -q 'value: "536870912"' \
+            || fail "maxUploadFileSize must reach the entrypoint"
+          sum=$(grep 'checksum/sftp-entrypoint:' <<<"${dep}") || fail "the pod must carry the entrypoint checksum"
+          [[ "${sum}" =~ [0-9a-f]{64} ]] || fail "the entrypoint checksum must be a sha256"
+          dep=$(render --set 'scheduleFeed.sftp.permissions={upload}')
+          grep -A1 'name: SCHEDULE_SFTP_PERMISSIONS' <<<"${dep}" | grep -q 'value: "upload"' \
+            || fail "scheduleFeed.sftp.permissions must be configurable"
+          # Password strength: the entrypoint gets the policy, and a short
+          # password in values fails the render (with its length, not value).
+          grep -A1 'name: SCHEDULE_SFTP_PASSWORD_MIN_LENGTH' <<<"${dep}" | grep -q 'value: "24"' \
+            || fail "the password minimum must reach the entrypoint"
+          grep -A1 'name: SCHEDULE_SFTP_PASSWORD_POLICY' <<<"${dep}" | grep -q 'value: "enforce"' \
+            || fail "the password policy must default to enforce"
+          set +e
+          out=$(render --set scheduleFeed.sftp.password=tooShort-2026 2>&1)
+          status=$?
+          set -e
+          [[ "${status}" -ne 0 ]] || fail "a short scheduleFeed.sftp.password must fail the render"
+          grep -q '13 characters' <<<"${out}" || fail "the render error must give the length"
+          if grep -q 'tooShort-2026' <<<"${out}"; then fail "the render error must not print the password"; fi
+          # A 24-character one renders (set -e fails the step otherwise).
+          render --set scheduleFeed.sftp.password=abcdefghijklmnopqrstuvwx >/dev/null
+
+      # Brute-force protection is on by default: SSH commands off, the
+      # defender (never scoring probe connections), the per-host cap and
+      # the per-source rate limiter; the safelist reaches the entrypoint.
+      - name: helm template (sftp defender, rate limit, no SSH commands)
+        run: |
+          set -euo pipefail
+          render() {
+            helm template distant-signal charts/distant-signal \
+              --set trustConsumer.kafka.brokers=kafka.example.com:9094 \
+              --set trustConsumer.kafka.topic=test-topic \
+              --set trustConsumer.kafka.saslMechanism=PLAIN \
+              --set enricher.llm.baseUrl=http://llm.example.com/v1 \
+              --set enricher.llm.model=test-model \
+              --set api.sso.issuerUrl=https://sso.example.com \
+              --set api.sso.clientId=test-client \
+              --set api.sso.clientSecret=test-secret \
+              --set api.sso.redirectUrl=https://app.example.com/callback \
+              --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
+              --set scheduleFeed.enabled=true \
+              --set scheduleFeed.sftp.authMethod=password "$@" \
+              --show-only templates/schedulefeed-deployment.yaml
+          }
+          fail() { echo "::error::$1"; exit 1; }
+          has() { grep -A1 "name: $1\$" <<<"${dep}" | grep -q "value: \"$2\"" || fail "$1 must be \"$2\""; }
+          dep=$(render)
+          has SFTPGO_SFTPD__ENABLED_SSH_COMMANDS ''
+          has SFTPGO_COMMON__DEFENDER__ENABLED true
+          has SFTPGO_COMMON__DEFENDER__SCORE_NO_AUTH 0
+          has SFTPGO_COMMON__DEFENDER__THRESHOLD 8
+          has SFTPGO_COMMON__MAX_PER_HOST_CONNECTIONS 8
+          has SFTPGO_COMMON__RATE_LIMITERS__0__AVERAGE 20
+          has SFTPGO_COMMON__RATE_LIMITERS__0__GENERATE_DEFENDER_EVENTS true
+          if grep -q 'SCHEDULE_SFTP_SAFELIST' <<<"${dep}"; then fail "no safelist by default"; fi
+          dep=$(render --set 'scheduleFeed.sftp.defender.safelist={192.0.2.0/24,198.51.100.7}')
+          has SCHEDULE_SFTP_SAFELIST '192.0.2.0/24 198.51.100.7'
+          has SFTPGO_LOG_LEVEL debug
+          has SFTPGO_LOG_UTC_TIME true
+          dep=$(render --set scheduleFeed.sftp.defender.enabled=false --set scheduleFeed.sftp.rateLimit.average=0)
+          has SFTPGO_COMMON__DEFENDER__ENABLED false
+          if grep -q 'SFTPGO_COMMON__DEFENDER__THRESHOLD\|SFTPGO_COMMON__RATE_LIMITERS' <<<"${dep}"; then
+            fail "a disabled defender and rate limiter must render no settings"
+          fi
+
+      # SFTPGo telemetry (on by default with metrics.enabled): the
+      # sftp-metrics container port, a PodMonitor endpoint, the
+      # monitoring-only NetworkPolicy port and the schedule-sftp alerts;
+      # never a port on the NodePort Service, which keeps exactly one.
+      - name: helm template (sftp telemetry)
+        run: |
+          set -euo pipefail
+          render() {
+            helm template distant-signal charts/distant-signal \
+              --set trustConsumer.kafka.brokers=kafka.example.com:9094 \
+              --set trustConsumer.kafka.topic=test-topic \
+              --set trustConsumer.kafka.saslMechanism=PLAIN \
+              --set enricher.llm.baseUrl=http://llm.example.com/v1 \
+              --set enricher.llm.model=test-model \
+              --set api.sso.issuerUrl=https://sso.example.com \
+              --set api.sso.clientId=test-client \
+              --set api.sso.clientSecret=test-secret \
+              --set api.sso.redirectUrl=https://app.example.com/callback \
+              --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
+              --set scheduleFeed.enabled=true \
+              --set scheduleFeed.sftp.authMethod=password \
+              --set metrics.enabled=true \
+              --set metrics.podMonitor.enabled=true \
+              --set metrics.prometheusRule.enabled=true \
+              --set networkPolicy.enabled=true "$@"
+          }
+          fail() { echo "::error::$1"; exit 1; }
+          dep=$(render --show-only templates/schedulefeed-deployment.yaml)
+          grep -A1 'name: sftp-metrics' <<<"${dep}" | grep -q 'containerPort: 9097' || fail "sftp-metrics must be port 9097"
+          grep -A1 'name: SFTPGO_TELEMETRY__BIND_PORT' <<<"${dep}" | grep -q 'value: "9097"' || fail "telemetry must bind 9097"
+          grep -A1 'name: SFTPGO_TELEMETRY__BIND_ADDRESS' <<<"${dep}" | grep -q 'value: "0.0.0.0"' || fail "telemetry must bind all addresses"
+          grep -A1 'name: SFTPGO_TELEMETRY__ENABLE_PROFILER' <<<"${dep}" | grep -q 'value: "false"' || fail "the profiler must stay off"
+          svc=$(render --show-only templates/schedulefeed-service.yaml)
+          ports=$(grep -c 'targetPort:' <<<"${svc}" || true)
+          [[ "${ports}" -eq 1 ]] || fail "the schedulefeed Service must keep exactly one port"
+          if grep -q '9097\|sftp-metrics' <<<"${svc}"; then fail "telemetry must not be on the Service"; fi
+          pm=$(render --show-only templates/podmonitor.yaml)
+          grep -q 'port: sftp-metrics' <<<"${pm}" || fail "the PodMonitor must scrape sftp-metrics"
+          np=$(render --show-only templates/networkpolicy.yaml)
+          grep -A60 'name: distant-signal-schedulefeed$' <<<"${np}" | grep -q 'port: 9097' \
+            || fail "the schedulefeed NetworkPolicy must admit monitoring on 9097"
+          rule=$(render --show-only templates/prometheusrule.yaml)
+          for alert in DistantSignalSftpNoUpload DistantSignalSftpUploadErrors DistantSignalSftpUserStoreDown; do
+            grep -q "alert: ${alert}\$" <<<"${rule}" || fail "missing ${alert}"
+          done
+          off=$(render --set scheduleFeed.sftp.telemetry.enabled=false)
+          if grep -q 'sftp-metrics\|SFTPGO_TELEMETRY\|alert: DistantSignalSftp' <<<"${off}"; then
+            fail "telemetry.enabled=false must render no telemetry, endpoint or alerts"
+          fi
+          nometrics=$(render --set metrics.enabled=false --show-only templates/schedulefeed-deployment.yaml)
+          if grep -q 'sftp-metrics\|SFTPGO_TELEMETRY' <<<"${nometrics}"; then
+            fail "telemetry needs metrics.enabled"
+          fi
+
       # movement-relay is on by default (the three movement consumers read
       # only its stream). Empty movementRelay.kafka.* fields fall back to
       # trustConsumer.kafka.*, including trust-consumer's SASL credential;
       # its own values win. With no Kafka config anywhere the render must
       # fail with a clear error, enabled=false must render nothing
-      # movement-relay-shaped, and a consumer still on movementFeed=kafka
-      # must not share the relay's consumer group.
+      # movement-relay-shaped, and the removed consumer Kafka backend
+      # (movementFeed=kafka, Deploy C) must fail the render while the
+      # consumers get no KAFKA_* env at all.
       - name: helm template (movement-relay default and fallback)
         run: |
           set -euo pipefail
@@ -876,12 +1134,23 @@ jobs:
           off=$(render --set movementRelay.enabled=false)
           if grep -E -q 'component: movement-relay|name: distant-signal-movement-relay|movement-relay-kafka-sasl' <<<"${off}"; then fail "movementRelay.enabled=false still rendered movement-relay"; fi
 
-          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
-          if render "${kafka[@]}" --set trustConsumer.movementFeed=kafka >/dev/null 2>&1; then
-            fail "trust-consumer on Kafka sharing the relay's group must fail the render"
-          fi
-          render "${kafka[@]}" --set trustConsumer.movementFeed=kafka \
-            --set movementRelay.kafka.consumerGroup=relay-group >/dev/null
+          for consumer in trustConsumer fullCoverageConsumer; do
+            # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+            if err=$(render "${kafka[@]}" --set "${consumer}.movementFeed=kafka" 2>&1 >/dev/null); then
+              fail "${consumer}.movementFeed=kafka must fail the render (Deploy C)"
+            fi
+            grep -q 'no longer supported' <<<"${err}" || fail "unexpected ${consumer}.movementFeed error: ${err}"
+            # A leftover explicit redis-stream (production's old value) still renders.
+            render "${kafka[@]}" --set "${consumer}.movementFeed=redis-stream" >/dev/null
+          done
+          for template in trust-consumer-deployment full-coverage-consumer-deployment; do
+            consumer=$(render "${kafka[@]}" --show-only "templates/${template}.yaml")
+            if grep -E -q 'name: (KAFKA_|MOVEMENT_FEED_BACKEND)' <<<"${consumer}"; then
+              fail "${template} must get no Kafka settings (Deploy C)"
+            fi
+          done
+          expect_env MOVEMENT_CONSUMER_GROUPS trust-consumer,full-coverage-consumer,trust-event-backlog \
+            "movement-relay must create every consumer group" <<<"${relay}"
 
       # INF-3 Redis AUTH. Off (the default) must render no REDIS_PASSWORD,
       # no --requirepass and no redis-password Secret key. On must give all
@@ -946,6 +1215,103 @@ jobs:
           render --set redis.enabled=false --set redis.externalUrl=redis://ext:6379 \
             --set redis.auth.enabled=true --set redis.auth.existingSecret=ext >/dev/null
           render --set redis.auth.enabled=true --set networkPolicy.enabled=true >/dev/null
+
+      # postgresql.roles (docs/postgres-app-role.md): off renders nothing new;
+      # on, every pool is the app role, api migrates as the owner, the
+      # pgBackRest CronJobs run as the backup role, and turning it on without
+      # initScript leaves the Postgres pod (and so Postgres) untouched.
+      - name: helm template (postgres roles)
+        run: |
+          set -euo pipefail
+          base=(
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+          )
+          pgbackrest=(
+            --set postgresql.pgbackrest.enabled=true
+            --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0
+            --set postgresql.pgbackrest.repo.path=/test/pgbackrest
+            --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com
+            --set postgresql.pgbackrest.repo.s3.bucket=test-bucket
+            --set postgresql.pgbackrest.repo.s3.existingSecret=pgbackrest-creds
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+
+          off=$(render "${pgbackrest[@]}" --set networkPolicy.enabled=true)
+          if grep -E -q 'postgres-roles|MIGRATION_DATABASE_URL|DS_PG_|_owner|_app:|PGBACKREST_PG1_USER=' <<<"${off}"; then
+            fail "postgresql.roles disabled but role settings rendered"
+          fi
+          # The DATABASE_URL / MIGRATION_DATABASE_URL values of every container.
+          off_urls=$(grep -A1 -E 'name: (MIGRATION_)?DATABASE_URL$' <<<"${off}")
+          n_super=$(grep -c 'value: "postgres://distant_signal:' <<<"${off_urls}" || true)
+          [[ "${n_super}" -eq 4 ]] || fail "roles off: the four DATABASE_URLs must stay the superuser's"
+
+          on=$(render "${pgbackrest[@]}" --set networkPolicy.enabled=true \
+            --set postgresql.roles.enabled=true --set postgresql.roles.setupJob.enabled=true \
+            --set postgresql.roles.app.existingSecret=pg-roles \
+            --set postgresql.roles.owner.existingSecret=pg-roles)
+          on_urls=$(grep -A1 -E 'name: (MIGRATION_)?DATABASE_URL$' <<<"${on}")
+          # shellcheck disable=SC2016 # "$(PGPASSWORD)" is Kubernetes env-var syntax matched literally, not a shell expansion
+          n_app=$(grep -c 'postgres://distant_signal_app:\$(PGPASSWORD)@' <<<"${on_urls}" || true)
+          [[ "${n_app}" -eq 4 ]] || fail "api, aggregator, enricher and notifier must connect as the app role"
+          # shellcheck disable=SC2016 # "$(PG_MIGRATION_PASSWORD)" is Kubernetes env-var syntax, matched literally
+          n_owner=$(grep -c 'postgres://distant_signal_owner:\$(PG_MIGRATION_PASSWORD)@' <<<"${on_urls}" || true)
+          [[ "${n_owner}" -eq 1 ]] || fail "only api's MIGRATION_DATABASE_URL may be the owner role"
+          grep -A4 'name: PGPASSWORD$' <<<"${on}" | grep -q 'key: postgres-app-password' \
+            || fail "PGPASSWORD must come from the app role's Secret key"
+          grep -A3 'name: PG_MIGRATION_PASSWORD$' <<<"${on}" | grep -q 'name: pg-roles' \
+            || fail "PG_MIGRATION_PASSWORD must come from roles.owner.existingSecret"
+          n_cron=$(grep -c -- '- "PGBACKREST_PG1_USER=distant_signal_backup"' <<<"${on}" || true)
+          [[ "${n_cron}" -eq 4 ]] || fail "all four pgBackRest CronJobs must run as the backup role"
+          grep -q 'helm.sh/hook: post-install,post-upgrade' <<<"${on}" || fail "the setup Job must be a hook"
+          grep -q "'--variable=app_connection_limit=75'" <<<"${on}" \
+            || fail "app CONNECTION LIMIT must default to the chart's pools (50 + 10 + 5 + 5) + 5"
+          grep -q "'--variable=owner_connection_limit=3'" <<<"${on}" \
+            || fail "owner CONNECTION LIMIT must default to api.replicaCount + 2"
+          grep -q 'mountPath: /docker-entrypoint-initdb.d' <<<"${on}" || fail "initScript must mount the initdb script"
+          np=$(render --set networkPolicy.enabled=true --set postgresql.roles.setupJob.enabled=true \
+            --show-only templates/networkpolicy.yaml)
+          grep -q -- '- postgres-roles$' <<<"${np}" || fail "the setup Job must be allowed into Postgres"
+          secret=$(render --set postgresql.roles.setupJob.enabled=true --show-only templates/secret.yaml)
+          for key in owner app exporter dump backup; do
+            grep -q "  postgres-${key}-password: " <<<"${secret}" || fail "chart-generated postgres-${key}-password missing"
+          done
+          job=$(render --set postgresql.roles.setupJob.enabled=true \
+            --set postgresql.roles.backup.existingSecret=pg-backup --show-only templates/postgres-roles.yaml)
+          grep -A4 'name: DS_PG_BACKUP_PASSWORD$' <<<"${job}" | grep -q 'name: pg-backup' \
+            || fail "the setup Job must read the backup password from roles.backup.existingSecret"
+          grep -A4 'name: DS_PG_BACKUP_PASSWORD$' <<<"${job}" | grep -q 'key: postgres-backup-password' \
+            || fail "the backup password key must default to postgres-backup-password"
+          if grep -q 'PASSWORD=' <<<"${on}"; then fail "no password may be passed on a command line"; fi
+
+          # Flipping roles.enabled on an existing cluster (initScript off) must
+          # not touch the Postgres pod, so Postgres does not restart.
+          sts_off=$(render "${pgbackrest[@]}" --show-only templates/postgres-statefulset.yaml)
+          sts_on=$(render "${pgbackrest[@]}" --set postgresql.roles.enabled=true \
+            --set postgresql.roles.initScript=false --show-only templates/postgres-statefulset.yaml)
+          [[ "${sts_off}" = "${sts_on}" ]] || fail "roles.enabled with initScript=false must leave the StatefulSet unchanged"
+
+          limit=$(render --set postgresql.roles.enabled=true --set postgresql.roles.app.connectionLimit=40)
+          grep -q "'--variable=app_connection_limit=40'" <<<"${limit}" || fail "an explicit connectionLimit must win"
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set postgresql.roles.enabled=true --set postgresql.roles.app.connectionLimit=lots \
+              >/dev/null 2>&1; then
+            fail "a non-numeric connectionLimit must fail the render"
+          fi
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set postgresql.enabled=false --set externalDatabase.url=postgres://x@db/ds \
+              --set postgresql.roles.enabled=true >/dev/null 2>&1; then
+            fail "postgresql.roles.enabled with an external database must fail the render"
+          fi
 
       # Reboot resilience: redis must roll with Recreate (single RWO AOF
       # volume, INF-1); postgres needs a startupProbe so WAL redo is never
@@ -1079,6 +1445,33 @@ jobs:
             echo "PrometheusRule must not use an 'x unless x offset' new-series clause" >&2; exit 1
           fi
           echo "${names}"
+          # 2026-10-01 outage: a critical DistantSignalPostgresDown on pg_up
+          # or, with the bundled Postgres, its StatefulSet's ready replicas.
+          grep -q 'max by (namespace) (pg_up{namespace="[^"]*"}) == 0$' <<<"${rule}"
+          grep -q 'kube_statefulset_status_replicas_ready{namespace="[^"]*", statefulset="distant-signal-postgres"}) < 1$' <<<"${rule}"
+          external_pg=$(helm template distant-signal charts/distant-signal "${base[@]}" \
+            --set metrics.prometheusRule.enabled=true \
+            --set postgresql.enabled=false \
+            --set externalDatabase.url=postgres://u:p@db.example.com/ds \
+            --set metrics.prometheusRule.postgresDown.pgUpSelector='job="pg"' \
+            --show-only templates/prometheusrule.yaml)
+          grep -q 'pg_up{namespace="[^"]*", job="pg"}' <<<"${external_pg}"
+          if grep -q 'kube_statefulset_status_replicas_ready' <<<"${external_pg}"; then
+            echo "PostgresDown must not read the bundled StatefulSet with postgresql.enabled=false" >&2; exit 1
+          fi
+          grep -q 'min by (namespace) (distant_signal_api_db_up{namespace="[^"]*"}) == 0$' <<<"${rule}"
+          # The three consumers' failed api calls (one recorded series each).
+          n_api=$(grep -c 'label_replace(sum by (namespace) (increase(distant_signal_[a-z_]*_errors_total{namespace="[^"]*", operation=~"[a-z_|]*"}\[5m\])), "consumer"' <<<"${rule}" || true)
+          [[ "${n_api}" -eq 3 ]] || { echo "expected 3 consumer api-error clauses, got ${n_api}" >&2; exit 1; }
+          grep -q 'alert: DistantSignalConsumerApiCallsFailing' <<<"${rule}"
+          # No successful aggregator / notifier cycle for 15m.
+          grep -q 'time() - max by (namespace, cycle) (distant_signal_aggregator_last_success_timestamp_seconds{namespace="[^"]*"}) > 900$' <<<"${rule}"
+          grep -q 'distant_signal_notifier_last_success_timestamp_seconds{namespace="[^"]*", cycle!="template_sweep"}) > 900$' <<<"${rule}"
+          # R-040/R-097: stuck entries and TRUST parse drops alert, one
+          # parse-drop clause per consumer.
+          grep -q 'increase(distant_signal_movement_feed_long_pending_total{namespace="[^"]*"}\[1h\])) > 0$' <<<"${rule}"
+          n_parse=$(grep -c '_errors_total{namespace="[^"]*", operation="parse_envelope"}\[1h\])), "consumer"' <<<"${rule}" || true)
+          [[ "${n_parse}" -eq 3 ]] || { echo "expected 3 parse_envelope clauses, got ${n_parse}" >&2; exit 1; }
           # Open sign-up: a burst of new accounts alerts, and the metric and
           # threshold come from values.
           grep -q 'alert: DistantSignalUserSignupSpike' <<<"${rule}"
@@ -1097,8 +1490,8 @@ jobs:
             --set pollers.ldbws.baseUrl=https://ldbws.example.com \
             --show-only templates/prometheusrule.yaml)
           grep -q 'alert: DistantSignalPollerFailing' <<<"${pollers}"
-          # ...including the mostly-failing clause (failure ratio over 1h).
-          grep -q '^ *> 0.5$' <<<"${pollers}"
+          # ...including the mostly-failing clause (failure ratio over 15m).
+          grep -q '> bool 0.5,$' <<<"${pollers}"
           grep -q 'alert: DistantSignalLdbwsStationStale' <<<"${pollers}"
           grep -q 'alert: DistantSignalLdbwsInvalidCrs' <<<"${pollers}"
           grep -q 'max by (namespace, crs) (distant_signal_ldbws_invalid_crs_station{' <<<"${pollers}"
@@ -1213,6 +1606,34 @@ jobs:
             --set api.replicaCount=2 --set api.database.maxConnections=30 > /dev/null
           helm template distant-signal charts/distant-signal "${base[@]}" \
             --set api.replicaCount=2 --set postgresql.config.max_connections=200 > /dev/null
+          # R-048: the budget also reserves postgresql.connectionBudget
+          # (exporter + pg_dump 2, admin psql 3) and 2 for pgBackRest. Pools
+          # other than api are 21, so api may have 97 - 21 - 5 = 71.
+          helm template distant-signal charts/distant-signal "${base[@]}" \
+            --set api.database.maxConnections=71 > /dev/null
+          if helm template distant-signal charts/distant-signal "${base[@]}" \
+              --set api.database.maxConnections=72 > /dev/null 2>&1; then
+            echo "72 + 21 + 5 reserved must exceed 97" >&2; exit 1
+          fi
+          if helm template distant-signal charts/distant-signal "${base[@]}" \
+              --set api.database.maxConnections=60 \
+              --set postgresql.connectionBudget.adminSessions=20 > /dev/null 2>&1; then
+            echo "postgresql.connectionBudget.adminSessions must count" >&2; exit 1
+          fi
+          pgbackrest=(
+            --set postgresql.pgbackrest.enabled=true
+            --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0
+            --set postgresql.pgbackrest.repo.path=/test/pgbackrest
+            --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com
+            --set postgresql.pgbackrest.repo.s3.bucket=test-bucket
+            --set postgresql.pgbackrest.repo.s3.existingSecret=pgbackrest-creds
+          )
+          helm template distant-signal charts/distant-signal "${base[@]}" "${pgbackrest[@]}" \
+            --set api.database.maxConnections=69 > /dev/null
+          if helm template distant-signal charts/distant-signal "${base[@]}" "${pgbackrest[@]}" \
+              --set api.database.maxConnections=70 > /dev/null 2>&1; then
+            echo "pgBackRest must reserve 2 connections" >&2; exit 1
+          fi
 
       # networkPolicy.enabled: every policy must keep the traffic its
       # workload needs. INF-2: the schedulefeed policy must admit SFTP.
@@ -1247,6 +1668,26 @@ jobs:
           feed=$(render --set 'scheduleFeed.sftp.allowedCidrs={203.0.113.0/24}' \
             --show-only templates/networkpolicy.yaml | policy distant-signal-schedulefeed)
           grep -q 'cidr: "203.0.113.0/24"' <<<"${feed}" || fail "allowedCidrs must render as ipBlocks"
+          # The allow-list needs the client IP, i.e. externalTrafficPolicy:
+          # Local on the SFTP Service. Empty renders nothing; Local/Cluster
+          # render; anything else, or a ClusterIP Service, fails.
+          svc=$(render --show-only templates/schedulefeed-service.yaml)
+          if grep -q 'externalTrafficPolicy' <<<"${svc}"; then fail "empty externalTrafficPolicy must render nothing"; fi
+          for p in Local Cluster; do
+            svc=$(render --set "scheduleFeed.service.externalTrafficPolicy=${p}" \
+              --show-only templates/schedulefeed-service.yaml)
+            grep -q "^  externalTrafficPolicy: ${p}\$" <<<"${svc}" || fail "externalTrafficPolicy=${p} must render"
+          done
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set scheduleFeed.service.externalTrafficPolicy=local \
+              --show-only templates/schedulefeed-service.yaml >/dev/null 2>&1; then
+            fail "externalTrafficPolicy must reject values other than Local/Cluster"
+          fi
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set scheduleFeed.service.externalTrafficPolicy=Local --set scheduleFeed.service.type=ClusterIP \
+              --show-only templates/schedulefeed-service.yaml >/dev/null 2>&1; then
+            fail "externalTrafficPolicy must fail on a ClusterIP Service"
+          fi
 
           # INF-10: every background worker has its own policy, admitting its
           # health port (kubelet probes). Egress policies are opt-in.
@@ -1269,6 +1710,159 @@ jobs:
           notifier=$(policy distant-signal-notifier <<<"${eg}")
           grep -q -- '- Egress' <<<"${notifier}" || fail "notifier must get an egress policy"
           grep -q -- '- 10.0.0.0/8' <<<"${notifier}" || fail "notifier egress must exclude private ranges"
+          # extraDeniedCidrs (the node's own public IPs) joins the internet
+          # rule's except list, sorted by family, without dropping the
+          # privateCidrs defaults; a bare address is rejected.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set 'networkPolicy.egress.extraDeniedCidrs={203.0.113.7/32,2001:db8::7/128}' \
+            --show-only templates/networkpolicy.yaml)
+          notifier=$(policy distant-signal-notifier <<<"${eg}")
+          v4=$(awk '/cidr: 0.0.0.0\/0/{f=1;next} /cidr: "::\/0"/{f=0} f' <<<"${notifier}")
+          v6=$(awk '/cidr: "::\/0"/{f=1;next} f' <<<"${notifier}")
+          grep -q -- '- 203.0.113.7/32' <<<"${v4}" || fail "extraDeniedCidrs must join the IPv4 except list"
+          grep -q -- '- 10.0.0.0/8' <<<"${v4}" || fail "extraDeniedCidrs must not replace privateCidrs"
+          grep -q -- '- 2001:db8::7/128' <<<"${v6}" || fail "an IPv6 extraDeniedCidrs entry must join the IPv6 except list"
+          if grep -q '2001:db8::7' <<<"${v4}"; then fail "an IPv6 entry must not land in the IPv4 except list"; fi
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set networkPolicy.egress.enabled=true --set 'networkPolicy.egress.extraDeniedCidrs={203.0.113.7}' \
+              --show-only templates/networkpolicy.yaml >/dev/null 2>&1; then
+            fail "extraDeniedCidrs must reject an entry without a prefix length"
+          fi
+
+          # egress.enabled gives every component an egress policy: DNS, the
+          # in-cluster services it calls, and the internet only where needed.
+          # egress_of <component> <render>: that policy's egress rules.
+          egress_of() { awk -v n="distant-signal-$1" 'BEGIN{RS="\n---\n"} $0 ~ "\n  name: " n "\n" {print}' <<<"$2" | awk '/^  egress:/{f=1} f'; }
+          eg=$(render --set networkPolicy.egress.enabled=true --show-only templates/networkpolicy.yaml)
+          for c in api frontend aggregator enricher schedulefeed postgres redis notifier; do
+            out=$(egress_of "${c}" "${eg}")
+            grep -q 'port: 53$' <<<"${out}" || fail "${c} must get an egress policy allowing DNS"
+          done
+          for d in api:postgres api:redis frontend:api aggregator:postgres enricher:postgres \
+              enricher:redis schedulefeed:api; do
+            out=$(egress_of "${d%%:*}" "${eg}")
+            grep -q "component: ${d##*:}\$" <<<"${out}" || fail "${d%%:*} egress must reach ${d##*:}"
+          done
+          for c in api enricher schedulefeed notifier; do
+            out=$(egress_of "${c}" "${eg}")
+            grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "${c} egress must reach the internet"
+          done
+          for c in frontend aggregator postgres redis; do
+            out=$(egress_of "${c}" "${eg}")
+            if grep -q 'cidr: 0.0.0.0/0' <<<"${out}"; then fail "${c} must not reach the internet by default"; fi
+          done
+          out=$(egress_of redis "${eg}")
+          if grep -q 'podSelector' <<<"${out}"; then fail "redis egress must reach no pod"; fi
+          out=$(egress_of api "${eg}")
+          if grep -q 'component: api$' <<<"${out}"; then fail "api must not reach itself"; fi
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set archive.enabled=true --set archive.s3.bucket=b --set archive.s3.existingSecret=s \
+            --set archive.s3.lifecycleConfirmed=true \
+            --set postgresql.pgbackrest.enabled=true \
+            --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0 \
+            --set postgresql.pgbackrest.repo.path=/test/pgbackrest \
+            --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com \
+            --set postgresql.pgbackrest.repo.s3.bucket=test-bucket \
+            --set postgresql.pgbackrest.repo.s3.existingSecret=pgbackrest-creds \
+            --show-only templates/networkpolicy.yaml)
+          out=$(egress_of aggregator "${eg}")
+          grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "archive.enabled must give the aggregator the internet"
+          out=$(egress_of postgres "${eg}")
+          grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "pgBackRest must give postgres the internet"
+          # networkPolicy.components.<component> overrides, and rejects typos.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set networkPolicy.components.api.egress=false \
+            --set networkPolicy.components.frontend.internet=true \
+            --set networkPolicy.components.enricher.internet=false \
+            --show-only templates/networkpolicy.yaml)
+          out=$(egress_of api "${eg}")
+          if [[ -n "${out}" ]]; then fail "components.api.egress=false must drop the api's egress policy"; fi
+          out=$(egress_of frontend "${eg}")
+          grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "components.frontend.internet=true must add the internet"
+          out=$(egress_of enricher "${eg}")
+          if grep -q 'cidr: 0.0.0.0/0' <<<"${out}"; then fail "components.enricher.internet=false must drop the internet"; fi
+          # egress.dnsPeers limits every DNS rule to the named resolvers.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set 'networkPolicy.egress.dnsPeers[0].podSelector.matchLabels.k8s-app=kube-dns' \
+            --show-only templates/networkpolicy.yaml)
+          for c in api redis notifier; do
+            out=$(egress_of "${c}" "${eg}")
+            grep -A4 'port: 53$' <<<"${out}" | grep -q 'k8s-app: kube-dns' || fail "${c} DNS egress must use dnsPeers"
+          done
+
+          # The internet rule allows egress.internetPorts (443) plus each
+          # component's own upstream ports: Kafka brokers, an http:// feed.
+          # internet_ports_of <component> <render>: the ports after ::/0.
+          internet_ports_of() { egress_of "$1" "$2" | awk '/cidr: "::\/0"/{f=1} f && /port:/{print $2}' | sort -n | tr '\n' ' '; }
+          eg=$(render --set networkPolicy.egress.enabled=true --set pollerIrishRailLive.enabled=true \
+            --set api.internalOauth.groups.irishRailLive=svc-poller-irish-rail-live \
+            --show-only templates/networkpolicy.yaml)
+          for c in 'notifier:443 ' 'api:443 ' 'trust-consumer:443 9094 ' 'full-coverage-consumer:443 9094 ' \
+              'movement-relay:443 9094 ' 'poller-irish-rail-live:80 443 '; do
+            got=$(internet_ports_of "${c%%:*}" "${eg}")
+            [[ "${got}" == "${c#*:}" ]] || fail "${c%%:*} internet ports: want '${c#*:}', got '${got}'"
+          done
+          eg=$(render --set networkPolicy.egress.enabled=true --set-json 'networkPolicy.egress.internetPorts=[]' \
+            --set 'networkPolicy.components.api.internetPorts={8443}' --show-only templates/networkpolicy.yaml)
+          got=$(internet_ports_of notifier "${eg}")
+          [[ -z "${got}" ]] || fail "internetPorts=[] must allow every port, got '${got}'"
+          got=$(internet_ports_of api "${eg}")
+          [[ "${got}" == "443 8443 " ]] || fail "components.api.internetPorts must replace the default (issuer ports still added), got '${got}'"
+
+          # networkPolicy.healthIngress scopes the probe ports (default: any
+          # source, checked above), or drops the rule.
+          np=$(render --set 'networkPolicy.healthIngress.from[0].ipBlock.cidr=10.42.0.1/32' \
+            --show-only templates/networkpolicy.yaml)
+          for c in notifier:8090 schedulefeed:8091; do
+            p=$(policy "distant-signal-${c%%:*}" <<<"${np}")
+            grep -A5 "port: ${c##*:}\$" <<<"${p}" | grep -q 'cidr: 10.42.0.1/32' \
+              || fail "healthIngress.from must scope ${c%%:*}'s health port"
+          done
+          np=$(render --set networkPolicy.healthIngress.enabled=false --show-only templates/networkpolicy.yaml)
+          for c in notifier:8090 schedulefeed:8091; do
+            p=$(policy "distant-signal-${c%%:*}" <<<"${np}")
+            if grep -q "port: ${c##*:}\$" <<<"${p}"; then fail "healthIngress.enabled=false must drop ${c%%:*}'s health port rule"; fi
+          done
+          p=$(policy distant-signal-schedulefeed <<<"${np}")
+          grep -q 'port: 2022' <<<"${p}" || fail "healthIngress.enabled=false must keep SFTP"
+
+          # postgresClients/redisClients admit outside workloads (exporters,
+          # the backup CronJob) on the service port only, and are off by default.
+          np=$(render --show-only templates/networkpolicy.yaml)
+          pg=$(policy distant-signal-postgres <<<"${np}")
+          if grep -q 'postgres-exporter' <<<"${pg}"; then fail "postgresClients must be empty by default"; fi
+          np=$(render --set 'networkPolicy.postgresClients[0].podSelector.matchLabels.app\.kubernetes\.io/name=postgres-exporter' \
+            --set 'networkPolicy.redisClients[0].podSelector.matchLabels.app\.kubernetes\.io/name=redis-exporter' \
+            --show-only templates/networkpolicy.yaml)
+          pg=$(policy distant-signal-postgres <<<"${np}")
+          rd=$(policy distant-signal-redis <<<"${np}")
+          grep -A3 'app.kubernetes.io/name: postgres-exporter' <<<"${pg}" | grep -q 'port: 5432' \
+            || fail "postgresClients must be admitted on the Postgres port"
+          grep -A3 'app.kubernetes.io/name: redis-exporter' <<<"${rd}" | grep -q 'port: 6379' \
+            || fail "redisClients must be admitted on the Redis port"
+
+          # components.<component>.extraEgress/extraIngress reach that
+          # component's policy only, including the frontend's otherwise
+          # empty ingress.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set 'networkPolicy.components.aggregator.extraEgress[0].to[0].ipBlock.cidr=192.0.2.10/32' \
+            --set 'networkPolicy.components.postgres.extraIngress[0].from[0].podSelector.matchLabels.probe=pg' \
+            --set 'networkPolicy.components.frontend.extraIngress[0].from[0].podSelector.matchLabels.probe=fe' \
+            --set 'networkPolicy.components.notifier.extraIngress[0].from[0].podSelector.matchLabels.probe=nt' \
+            --show-only templates/networkpolicy.yaml)
+          out=$(egress_of aggregator "${eg}")
+          grep -q 'cidr: 192.0.2.10/32' <<<"${out}" || fail "aggregator extraEgress must render"
+          out=$(egress_of enricher "${eg}")
+          if grep -q '192.0.2.10' <<<"${out}"; then fail "extraEgress must not leak to another component"; fi
+          for c in postgres:pg frontend:fe notifier:nt; do
+            out=$(policy "distant-signal-${c%%:*}" <<<"${eg}" | awk '/^  ingress:/{f=1} /^  egress:/{f=0} f')
+            grep -q "probe: ${c##*:}\$" <<<"${out}" || fail "${c%%:*} extraIngress must render under ingress"
+          done
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set networkPolicy.components.no-such-thing.egress=false \
+              --show-only templates/networkpolicy.yaml >/dev/null 2>&1; then
+            fail "an unknown networkPolicy.components key must fail the render"
+          fi
 
           # The api trusts X-Real-IP, so only its real callers may reach
           # api.service.port. An extra namespace is narrowed to the MCP pod by
@@ -1502,7 +2096,9 @@ jobs:
           n_alerts=$(grep -c . <<<"${names}" || true)
           [[ "${n_alerts}" -eq 6 ]] || fail "expected 6 pgBackRest alerts, got: ${names}"
           if bad=$(grep -v '^DistantSignal' <<<"${names}"); then fail "alert names must start with DistantSignal: ${bad}"; fi
-          grep -q 'kube_job_failed{namespace="distant-signal", job_name=~"distant-signal-pgbackrest-(check|verify)-\[0-9\]+", condition="true"}' <<<"${rule}" \
+          grep -q 'kube_job_failed{namespace="distant-signal", job_name=~"distant-signal-pgbackrest-(check|verify|full|diff)-\[0-9\]+", condition="true"}' <<<"${rule}" \
+            || fail "the recorded failed-Job series must match every pgBackRest CronJob's Jobs"
+          grep -q 'distant_signal:pgbackrest_job_failed:recent{namespace="distant-signal", job_name=~"distant-signal-pgbackrest-(check|verify)-\[0-9\]+"}' <<<"${rule}" \
             || fail "the check alert must match the check and verify CronJobs' Jobs"
 
           for unset in image.tag repo.path repo.s3.endpoint repo.s3.bucket repo.s3.existingSecret; do

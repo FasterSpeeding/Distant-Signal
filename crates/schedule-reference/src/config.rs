@@ -250,7 +250,7 @@ mod chart_env_wiring_tests {
     /// check by accident. `reference` is the last container in the template,
     /// so "from its `- name:` line to EOF" is the whole block.
     fn reference_container_block() -> String {
-        let chart = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/schedulefeed-deployment.yaml");
         let rendered = std::fs::read_to_string(&chart)
             .unwrap_or_else(|err| panic!("read {}: {err}", chart.display()));
