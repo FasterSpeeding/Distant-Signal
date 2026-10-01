@@ -1288,6 +1288,64 @@ jobs:
             fail "extraDeniedCidrs must reject an entry without a prefix length"
           fi
 
+          # egress.enabled gives every component an egress policy: DNS, the
+          # in-cluster services it calls, and the internet only where needed.
+          # egress_of <component> <render>: that policy's egress rules.
+          egress_of() { awk -v n="distant-signal-$1" 'BEGIN{RS="\n---\n"} $0 ~ "\n  name: " n "\n" {print}' <<<"$2" | awk '/^  egress:/{f=1} f'; }
+          eg=$(render --set networkPolicy.egress.enabled=true --show-only templates/networkpolicy.yaml)
+          for c in api frontend aggregator enricher schedulefeed postgres redis notifier; do
+            out=$(egress_of "${c}" "${eg}")
+            grep -q 'port: 53$' <<<"${out}" || fail "${c} must get an egress policy allowing DNS"
+          done
+          for d in api:postgres api:redis frontend:api aggregator:postgres enricher:postgres \
+              enricher:redis schedulefeed:api; do
+            out=$(egress_of "${d%%:*}" "${eg}")
+            grep -q "component: ${d##*:}\$" <<<"${out}" || fail "${d%%:*} egress must reach ${d##*:}"
+          done
+          for c in api enricher schedulefeed notifier; do
+            out=$(egress_of "${c}" "${eg}")
+            grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "${c} egress must reach the internet"
+          done
+          for c in frontend aggregator postgres redis; do
+            out=$(egress_of "${c}" "${eg}")
+            if grep -q 'cidr: 0.0.0.0/0' <<<"${out}"; then fail "${c} must not reach the internet by default"; fi
+          done
+          out=$(egress_of redis "${eg}")
+          if grep -q 'podSelector' <<<"${out}"; then fail "redis egress must reach no pod"; fi
+          out=$(egress_of api "${eg}")
+          if grep -q 'component: api$' <<<"${out}"; then fail "api must not reach itself"; fi
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set archive.enabled=true --set archive.s3.bucket=b --set archive.s3.existingSecret=s \
+            --set archive.s3.lifecycleConfirmed=true \
+            --set postgresql.pgbackrest.enabled=true \
+            --set postgresql.pgbackrest.image.tag=pg16.15-pgbackrest2.59.1-tini0.19.0 \
+            --set postgresql.pgbackrest.repo.path=/test/pgbackrest \
+            --set postgresql.pgbackrest.repo.s3.endpoint=s3.example.com \
+            --set postgresql.pgbackrest.repo.s3.bucket=test-bucket \
+            --set postgresql.pgbackrest.repo.s3.existingSecret=pgbackrest-creds \
+            --show-only templates/networkpolicy.yaml)
+          out=$(egress_of aggregator "${eg}")
+          grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "archive.enabled must give the aggregator the internet"
+          out=$(egress_of postgres "${eg}")
+          grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "pgBackRest must give postgres the internet"
+          # networkPolicy.components.<component> overrides, and rejects typos.
+          eg=$(render --set networkPolicy.egress.enabled=true \
+            --set networkPolicy.components.api.egress=false \
+            --set networkPolicy.components.frontend.internet=true \
+            --set networkPolicy.components.enricher.internet=false \
+            --show-only templates/networkpolicy.yaml)
+          out=$(egress_of api "${eg}")
+          if [[ -n "${out}" ]]; then fail "components.api.egress=false must drop the api's egress policy"; fi
+          out=$(egress_of frontend "${eg}")
+          grep -q 'cidr: 0.0.0.0/0' <<<"${out}" || fail "components.frontend.internet=true must add the internet"
+          out=$(egress_of enricher "${eg}")
+          if grep -q 'cidr: 0.0.0.0/0' <<<"${out}"; then fail "components.enricher.internet=false must drop the internet"; fi
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set networkPolicy.components.no-such-thing.egress=false \
+              --show-only templates/networkpolicy.yaml >/dev/null 2>&1; then
+            fail "an unknown networkPolicy.components key must fail the render"
+          fi
+
           # The api trusts X-Real-IP, so only its real callers may reach
           # api.service.port. An extra namespace is narrowed to the MCP pod by
           # default, and null clears the narrowing.

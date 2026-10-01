@@ -3639,21 +3639,28 @@ networkPolicy:
     # therefore fails unless api.rateLimit.trustXRealIp is false; with that
     # off, requests the frontend proxies share its pod's bucket.
     api: false
-  # Opt-in egress policies (INF-10, SVC-03 defence in depth) for the
-  # notifier, the Kafka/Redis consumers, movement-relay and every poller.
-  # OFF by default. Each of those may then reach only DNS (port 53, any
-  # destination), the in-cluster services it calls (api, the bundled
-  # Redis/Postgres, the bundled dev IdP) and the public internet minus
-  # `privateCidrs`/`privateCidrsV6` -- so a notifier tricked into pushing to
-  # a private address, or a compromised poller, cannot reach the rest of
-  # the cluster or the node's network. api, frontend, aggregator, enricher,
-  # schedulefeed, postgres and redis get no egress policy.
+  # Opt-in egress policies (INF-10, SVC-03 defence in depth) for every
+  # component: api, frontend, aggregator, enricher, notifier, the
+  # Kafka/Redis consumers, movement-relay, every poller, schedulefeed,
+  # postgres and redis. OFF by default. Each may then reach only DNS (port
+  # 53), the in-cluster services it calls (api, the bundled Redis/Postgres,
+  # the bundled dev IdP) and, where it needs it, the public internet minus
+  # `privateCidrs`/`privateCidrsV6`/`extraDeniedCidrs` -- so a notifier
+  # tricked into pushing to a private address, or a compromised poller,
+  # cannot reach the rest of the cluster or the node's network. Public
+  # internet: api (OIDC issuers), enricher (LLM API), schedulefeed and
+  # every ingest worker (OAuth token endpoint, upstream feeds, Kafka),
+  # notifier (Web Push), aggregator only with archive.enabled (S3),
+  # postgres only with postgresql.pgbackrest.enabled (S3). frontend and
+  # redis get none. Override per component with components.<name>.internet
+  # below, or opt one out entirely with components.<name>.egress: false.
   #
-  # BEFORE ENABLING, add an `extraRules` entry for anything these workers
-  # reach at a private address: an external Redis or Postgres
-  # (redis.enabled/postgresql.enabled false), an in-cluster or
-  # tailnet (100.64.0.0/10) OAuth token endpoint (internalOauth.tokenUrl),
-  # a private Kafka broker, or a proxy.
+  # BEFORE ENABLING, add a rule (components.<name>.extraEgress, or
+  # extraRules for all) for anything reached at a private address: an
+  # external Redis or Postgres (redis.enabled/postgresql.enabled false), an
+  # in-cluster or tailnet (100.64.0.0/10) OAuth/OIDC endpoint, a private
+  # Kafka broker, LLM endpoint (enricher.llm.baseUrl), archive or
+  # pgBackRest S3 endpoint, or a proxy.
   egress:
     enabled: false
     # -- Excluded from the public-internet allow: RFC 1918, CGNAT/tailnet,
@@ -3692,13 +3699,30 @@ networkPolicy:
     # the kubelet (10250) and every host-published port. Policies are
     # additive, so no other policy can take that allowance away.
     extraDeniedCidrs: []
-    # -- Extra NetworkPolicyEgressRule entries appended to every worker's
-    # egress policy, e.g.
+    # -- Extra NetworkPolicyEgressRule entries appended to every egress
+    # policy the chart renders. Prefer components.<name>.extraEgress for
+    # something only one component needs, e.g.
     #   - to:
     #       - ipBlock: {cidr: 10.0.5.20/32}
     #     ports:
     #       - {protocol: TCP, port: 5432}
     extraRules: []
+  # -- Per-component settings, keyed by the app.kubernetes.io/component
+  # label: api, frontend, aggregator, enricher, notifier, postgres, redis,
+  # schedulefeed, trust-consumer, trust-backlog-consumer,
+  # full-coverage-consumer, movement-relay, poller-<name> (each
+  # pollers.<name>), poller-irish-rail-gtfs, poller-irish-rail-live,
+  # poller-nir-stations. An unknown key fails the render. Each entry may
+  # set:
+  #   egress: false    # no egress policy for this component, even with
+  #                    # egress.enabled (its egress is then unrestricted
+  #                    # by the chart)
+  #   internet: true   # add or drop the public-internet rule
+  # e.g.
+  #   components:
+  #     aggregator:
+  #       internet: false   # the archive S3 endpoint is private
+  components: {}
 
 # ---------------------------------------------------------------------------
 # helm test

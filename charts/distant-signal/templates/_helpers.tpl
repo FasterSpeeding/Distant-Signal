@@ -1100,6 +1100,122 @@ through the node's public IP. Takes root; renders one `- to: ...` list item.
 {{- end }}
 
 {{/*
+Per-component NetworkPolicy settings: networkPolicy.components.<component>,
+keyed by the app.kubernetes.io/component label (api, postgres,
+poller-ldbws, ...), or an empty dict. Fails on a key naming no component
+this chart can render, so a typo cannot silently drop a rule. Takes
+(dict "root" $root "component" "api"); returns YAML (use fromYaml).
+*/}}
+{{- define "distant-signal.npComponent" -}}
+{{- $root := .root -}}
+{{- $all := $root.Values.networkPolicy.components | default dict -}}
+{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" -}}
+{{- range $name, $_ := $root.Values.pollers -}}
+{{- $known = append $known (printf "poller-%s" $name) -}}
+{{- end -}}
+{{- range $name, $_ := $all -}}
+{{- if not (has $name $known) -}}
+{{- fail (printf "networkPolicy.components.%s: no such component. Keys are app.kubernetes.io/component labels: %s." $name (join ", " $known)) -}}
+{{- end -}}
+{{- end -}}
+{{- get $all .component | default dict | toYaml -}}
+{{- end }}
+
+{{/*
+"true" when the component gets an egress policy: networkPolicy.egress.enabled
+and not networkPolicy.components.<component>.egress: false. Takes
+(dict "root" $root "component" "api").
+*/}}
+{{- define "distant-signal.egressOn" -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- if and .root.Values.networkPolicy.egress.enabled (ne (toString (get $cs "egress")) "false") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+The NetworkPolicyEgressRule list for one component (render under
+`egress:`): DNS; the in-cluster services in `deps` (api, redis, postgres;
+api and idp also admit the bundled dev IdP when devAuthentik.enabled); the
+public internet (distant-signal.internetEgressRule) when `internet` is true,
+unless networkPolicy.components.<component>.internet overrides it; then
+networkPolicy.egress.extraRules and networkPolicy.components.<component>.extraEgress.
+Takes (dict "root" $root "component" "api" "deps" (dict "postgres" true)
+"internet" true).
+*/}}
+{{- define "distant-signal.egressRules" -}}
+{{- $root := .root -}}
+{{- $np := $root.Values.networkPolicy -}}
+{{- $deps := .deps | default dict -}}
+{{- $cs := include "distant-signal.npComponent" . | fromYaml -}}
+{{- $internet := .internet -}}
+{{- if hasKey $cs "internet" -}}
+{{- $internet = get $cs "internet" -}}
+{{- end -}}
+- ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+{{- if $deps.api }}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "api") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ $root.Values.api.service.port }}
+{{- end }}
+{{- if and (or $deps.api $deps.idp) $root.Values.devAuthentik.enabled }}
+# The bundled dev IdP serves the OAuth token, discovery and JWKS endpoints.
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "devauthentik-server") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: 9000
+{{- end }}
+{{- if and $deps.redis $root.Values.redis.enabled }}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "redis") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ $root.Values.redis.service.port }}
+{{- end }}
+{{- if and $deps.postgres $root.Values.postgresql.enabled }}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "postgres") | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ $root.Values.postgresql.service.port }}
+{{- end }}
+{{- if $internet }}
+{{ include "distant-signal.internetEgressRule" $root }}
+{{- end }}
+{{- with $np.egress.extraRules }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+
+{{/*
+`egress:` plus distant-signal.egressRules for one of the inline policies in
+networkpolicy.yaml (api, frontend, postgres, redis, schedulefeed), or
+nothing when distant-signal.egressOn is false. Same arguments as
+egressRules.
+*/}}
+{{- define "distant-signal.egressSection" -}}
+{{- if include "distant-signal.egressOn" . -}}
+egress:
+  {{- include "distant-signal.egressRules" . | nindent 2 }}
+{{- end -}}
+{{- end }}
+
+{{/*
 NetworkPolicy for one background worker (INF-10). Ingress: the worker's
 /metrics port from networkPolicy.monitoringNamespace (when metrics.enabled),
 and its health port(s) from anywhere, because kubelet probes come from the
@@ -1121,7 +1237,7 @@ Usage:
 {{- define "distant-signal.workerNetworkPolicy" -}}
 {{- $root := .root -}}
 {{- $np := $root.Values.networkPolicy -}}
-{{- $egressOn := and .egress ($np.egress).enabled -}}
+{{- $egressOn := and .egress (include "distant-signal.egressOn" (dict "root" $root "component" .component)) -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -1154,52 +1270,7 @@ spec:
         {{- end }}
   {{- if $egressOn }}
   egress:
-    - ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    {{- if .egress.api }}
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "api") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $root.Values.api.service.port }}
-    {{- if $root.Values.devAuthentik.enabled }}
-    # The bundled dev IdP serves the internal OAuth token endpoint.
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "devauthentik-server") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: 9000
-    {{- end }}
-    {{- end }}
-    {{- if and .egress.redis $root.Values.redis.enabled }}
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "redis") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $root.Values.redis.service.port }}
-    {{- end }}
-    {{- if and .egress.postgres $root.Values.postgresql.enabled }}
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "distant-signal.selectorLabels" (dict "root" $root "component" "postgres") | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $root.Values.postgresql.service.port }}
-    {{- end }}
-    {{- include "distant-signal.internetEgressRule" $root | nindent 4 }}
-    {{- with $np.egress.extraRules }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .egress "internet" (ternary .internet true (hasKey . "internet"))) | nindent 4 }}
   {{- end }}
 {{- end }}
 

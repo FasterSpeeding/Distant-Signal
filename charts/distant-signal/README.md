@@ -898,17 +898,32 @@ tunnel reach the api on `api.service.port` still does after this.
 Narrowing the chart's policies cannot remove it.
 
 **Egress is unrestricted by default.** `networkPolicy.egress.enabled: true`
-(off by default) adds egress policies to the notifier, the consumers,
-movement-relay and every poller: DNS, the in-cluster services each one
-calls (api, the bundled Redis/Postgres, the bundled dev IdP), and the public
-internet minus `networkPolicy.egress.privateCidrs`/`privateCidrsV6`. That
-stops a notifier tricked into pushing to a private address, or a compromised
-poller, from reaching the rest of the cluster. Before enabling it, add a
-`networkPolicy.egress.extraRules` entry for anything these workers reach at
-a private address: an external Redis or Postgres, an OAuth token endpoint
-inside the cluster or on a tailnet (`100.64.0.0/10`), a private Kafka broker
-or a proxy. api, frontend, aggregator, enricher, schedulefeed, postgres and
-redis get no egress policy.
+(off by default) adds an egress policy to every component. Each may reach
+DNS (port 53), the in-cluster services it calls, and, where it needs it, the
+public internet minus `networkPolicy.egress.privateCidrs`/`privateCidrsV6`
+and `extraDeniedCidrs`. That stops a notifier tricked into pushing to a
+private address, or a compromised poller, from reaching the rest of the
+cluster.
+
+| Component | In-cluster | Public internet (why) |
+|---|---|---|
+| api | postgres, redis, dev IdP | yes (OIDC discovery and JWKS for `api.sso.issuerUrl` and `api.internalOauth.issuerUrl`) |
+| frontend | api | no (the `/chat` Anthropic calls run in the browser) |
+| aggregator | postgres | only with `archive.enabled` (S3) |
+| enricher | postgres, redis | yes (`enricher.llm.baseUrl`) |
+| notifier | postgres | yes (Web Push services) |
+| pollers, consumers, movement-relay | api and/or redis, dev IdP | yes (upstream feeds, Kafka, the OAuth token endpoint) |
+| schedulefeed | api, dev IdP | yes (the OAuth token endpoint) |
+| postgres | none | only with `postgresql.pgbackrest.enabled` (the repository's S3) |
+| redis | none | no |
+
+`networkPolicy.components.<component>` (keyed by the
+`app.kubernetes.io/component` label) tunes one component: `internet`
+adds or drops its public-internet rule, and `egress: false` leaves it
+without an egress policy. Before enabling, add a rule for anything reached
+at a private address: an external Redis or Postgres, an OIDC or OAuth
+endpoint inside the cluster or on a tailnet (`100.64.0.0/10`), a private
+Kafka broker, LLM endpoint, archive or pgBackRest S3 endpoint, or a proxy.
 
 **Exclude the nodes' own public addresses.** `privateCidrs` names only the
 reserved ranges. A node with a public IP is therefore reachable through the
@@ -2151,11 +2166,12 @@ creates new per-pod series, so that clause fired on every rollout.
 | `networkPolicy.tunnel.podLabels` | `app.kubernetes.io/name: cloudflared` | Labels selecting the connector pods. Empty admits the whole namespace. |
 | `networkPolicy.tunnel.api` | `false` | Also admit the connector to `api.service.port`, for a hostname routed straight to the api. Requires `api.rateLimit.trustXRealIp: false`. |
 | `networkPolicy.monitoringNamespace` | `monitoring` | Namespace Prometheus runs in, matched by `kubernetes.io/metadata.name`. Allowed to reach each workload's metrics port. Only used when `metrics.enabled` is true. |
-| `networkPolicy.egress.enabled` | `false` | Render egress policies for the notifier, consumers, movement-relay and pollers (see [NetworkPolicy](#networkpolicy)). |
+| `networkPolicy.egress.enabled` | `false` | Render an egress policy for every component (see [NetworkPolicy](#networkpolicy)). |
 | `networkPolicy.egress.privateCidrs` | RFC 1918, CGNAT, loopback, link-local, reserved | IPv4 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.privateCidrsV6` | loopback, ULA, link-local, multicast, NAT64/6to4/Teredo | IPv6 ranges excluded from the public-internet egress allow. |
 | `networkPolicy.egress.extraDeniedCidrs` | `[]` | More CIDRs (IPv4 and IPv6 mixed) excluded from the public-internet egress allow, on top of `privateCidrs`/`privateCidrsV6`. Set the nodes' own public addresses here. |
-| `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every worker's egress policy. |
+| `networkPolicy.egress.extraRules` | `[]` | Extra NetworkPolicyEgressRule entries appended to every egress policy the chart renders. |
+| `networkPolicy.components` | `{}` | Per-component settings keyed by the `app.kubernetes.io/component` label (`api`, `postgres`, `poller-ldbws`, ...); an unknown key fails the render. Each entry: `egress` (`false` renders no egress policy for it), `internet` (add or drop its public-internet rule). See [NetworkPolicy](#networkpolicy). |
 | `scheduleFeed.sftp.allowedCidrs` | `[]` | Source CIDRs allowed to reach SFTP when `networkPolicy.enabled`. Empty allows any source. |
 
 ### scheduleFeed: CIF routing and CORPUS
