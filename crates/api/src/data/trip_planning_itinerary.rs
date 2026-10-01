@@ -84,9 +84,11 @@ pub enum PlannedLeg {
         booked_arrival_platform: Option<String>,
         /// The public (GBTT) departure at the boarding call and arrival at
         /// the alighting call -- what the passenger timetable and station
-        /// screens show. `scheduled_departure`/`scheduled_arrival` are the
-        /// working (WTT) times the planner searched on; they are kept as WTT
-        /// for one release, then switched to public or removed. `None` until
+        /// screens show, and what the planner searched on (falling back to
+        /// the working time for a call with none). `scheduled_departure`/
+        /// `scheduled_arrival` are the working (WTT) times; they are kept as
+        /// WTT for one release (deprecated), then switched to public or
+        /// removed. `None` until
         /// `trip_leg_details::attach_leg_details` fills them in, and when the
         /// CIF has no public time there (or the schedule predates the
         /// column). Local clock time, like `scheduled_*`.
@@ -251,8 +253,14 @@ fn minutes_to_clock(total_minutes: u32) -> (NaiveTime, u8) {
 fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData) -> PlannedLeg {
     match leg {
         JourneyLeg::Train(train) => {
-            let (scheduled_departure, departure_day_offset) = minutes_to_clock(train.departure_min);
-            let (scheduled_arrival, arrival_day_offset) = minutes_to_clock(train.arrival_min);
+            // `scheduled*` stay the working-timetable times for one release
+            // (design doc §9 decision 1); the search itself, and
+            // `departure_min`/`arrival_min` below, are on public times
+            // (`schedule_query::Connection::departure_min`).
+            let (scheduled_departure, departure_day_offset) =
+                minutes_to_clock(train.working_departure_min);
+            let (scheduled_arrival, arrival_day_offset) =
+                minutes_to_clock(train.working_arrival_min);
             PlannedLeg::Train {
                 train_uid: train.uid.clone(),
                 service_date: date,
@@ -1736,6 +1744,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            working_departure_min: dep,
+            working_arrival_min: arr,
             can_board: true,
             can_alight: true,
         }
@@ -2534,6 +2544,8 @@ mod tests {
             day_offset: 0,
             can_board: true,
             can_alight: true,
+            public_arrival: None,
+            public_departure: None,
         };
         let f1 = vec![
             cp("EUSTON", None, at("08:00")),

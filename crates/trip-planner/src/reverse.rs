@@ -584,6 +584,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            working_departure_min: dep,
+            working_arrival_min: arr,
             can_board: true,
             can_alight: true,
         }

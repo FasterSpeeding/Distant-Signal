@@ -37,6 +37,11 @@ struct CallingPointRow {
     /// set-down-only stop was then simply absent).
     can_board: Option<bool>,
     can_alight: Option<bool>,
+    /// The public times the planner searches on (design doc §10, P6);
+    /// NULL on a row published before migration `20261001160000`, which
+    /// plans on the working time instead.
+    public_arrival: Option<chrono::NaiveTime>,
+    public_departure: Option<chrono::NaiveTime>,
 }
 
 /// Reads every `schedule_calling_points_full` row for `date`, grouped by
@@ -57,7 +62,8 @@ pub async fn fetch_calling_points_for_date(
     date: NaiveDate,
 ) -> Result<Option<HashMap<String, Vec<CallingPointForConnections>>>> {
     let rows: Vec<CallingPointRow> = sqlx::query_as(
-        "SELECT uid, seq, tiploc, booked_arrival, booked_departure, day_offset, can_board, can_alight \
+        "SELECT uid, seq, tiploc, booked_arrival, booked_departure, day_offset, can_board, can_alight, \
+                public_arrival, public_departure \
          FROM schedule_calling_points_full WHERE service_date = $1 ORDER BY uid, seq",
     )
     .bind(date)
@@ -80,6 +86,8 @@ pub async fn fetch_calling_points_for_date(
                 day_offset: row.day_offset.max(0) as u8,
                 can_board: row.can_board.unwrap_or(true),
                 can_alight: row.can_alight.unwrap_or(true),
+                public_arrival: row.public_arrival,
+                public_departure: row.public_departure,
             });
     }
     Ok(Some(by_uid))

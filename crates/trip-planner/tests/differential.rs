@@ -28,6 +28,8 @@ fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
         to_tiploc: to.to_string(),
         departure_min: dep,
         arrival_min: arr,
+        working_departure_min: dep,
+        working_arrival_min: arr,
         can_board: true,
         can_alight: true,
     }

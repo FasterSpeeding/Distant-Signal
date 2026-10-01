@@ -3664,6 +3664,8 @@ LTWVRMPTN 2211 22113     TF";
                         day_offset: row["day_offset"].as_u64().unwrap() as u8,
                         can_board: row["can_board"].as_bool().unwrap(),
                         can_alight: row["can_alight"].as_bool().unwrap(),
+                        public_arrival: time(&row["public_arrival"]),
+                        public_departure: time(&row["public_departure"]),
                     });
             }
             schedule_query::build_connections(
@@ -3746,13 +3748,12 @@ LTWVRMPTN 2211 22113     TF";
         fn the_planner_alights_at_a_set_down_only_stop() {
             let rows = schedule_calling_points_full_rows(&index(), date());
             let connections = connections(&rows);
-            // Carlisle -> Motherwell on 9S65 is a valid journey (public
-            // 16:02 -> 17:01; the planner still searches on WTT, 16:02 ->
-            // 17:00 truncated -- planning on public times is P6).
+            // Carlisle -> Motherwell on 9S65 is a valid journey, planned on
+            // the public times 16:02 -> 17:01 (P6), not the WTT 17:00H.
             let journey = plan(&connections, "CARLILE", "MOTHRWL")
                 .expect("a set-down-only stop is somewhere to alight");
             assert_eq!(journey.departure_min, 16 * 60 + 2);
-            assert_eq!(journey.arrival_min, 17 * 60);
+            assert_eq!(journey.arrival_min, 17 * 60 + 1);
         }
 
         #[test]
@@ -3778,11 +3779,10 @@ LTWVRMPTN 2211 22113     TF";
             let rows = schedule_calling_points_full_rows(&index(), date());
             let journey = plan(&connections(&rows), "WATFDJ", "MKNSCEN").unwrap();
             assert_eq!(journey.departure_min, 20 * 60 + 31);
-            // The planner still searches on the WTT arrival 20:50H truncated
-            // to 20:50 (P6 moves it to public); the published row carries
-            // the PUBLIC arrival, 20:51, which is what users are shown, and
-            // the exact working arrival with its half-minute.
-            assert_eq!(journey.arrival_min, 20 * 60 + 50);
+            // The planner searches on the PUBLIC arrival, 20:51 (design doc
+            // §10, P6), not the WTT 20:50H truncated to 20:50; the published
+            // row carries both, the working one with its half-minute.
+            assert_eq!(journey.arrival_min, 20 * 60 + 51);
             let milton_keynes = rows_for(&rows, "C01355")
                 .into_iter()
                 .find(|r| r["tiploc"] == "MKNSCEN")

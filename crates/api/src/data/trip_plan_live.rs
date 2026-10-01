@@ -278,24 +278,44 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
         let board = stop.board.as_ref();
         let board_cancelled =
             board.is_some_and(|b| b.is_cancelled) && stop.actual_departure.is_none();
-        let dep_delay = match (stop.scheduled_departure, stop.actual_departure) {
-            (Some(s), Some(a)) => Some(delay_between(s, a)),
-            _ => board
+        // Every delay here is against the PUBLIC time, the time the
+        // connections are planned on (`schedule_query::Connection`), and each
+        // pairs like with like:
+        // - a reported call: the stop's own `delay_minutes`, which the
+        //   journey overlay measured from that TRUST report's own fields
+        //   (actual against its gbtt/planned, see `journey`), never TRUST's
+        //   actual against a CIF time;
+        // - Darwin's board: `etd - std`, both public;
+        // - an estimate: the working time plus TRUST's running delay, against
+        //   the public time, both CIF-derived.
+        let public_departure = stop.timetable.public_departure.or(stop.scheduled_departure);
+        let public_arrival = stop.timetable.public_arrival.or(stop.scheduled_arrival);
+        let reported = |side: &str| {
+            (stop.last_event_type.as_deref() == Some(side)
+                || stop.last_event_type.as_deref() == Some("PASS"))
+            .then_some(stop.delay_minutes)
+            .flatten()
+            .map(|d| d.max(0))
+        };
+        let dep_delay = if stop.actual_departure.is_some() {
+            reported("DEPARTURE")
+        } else {
+            board
                 .filter(|b| !b.is_cancelled)
                 .and_then(|b| b.delay_minutes)
                 .map(|d| d.max(0))
                 .or_else(|| {
-                    stop.scheduled_departure
+                    public_departure
                         .zip(stop.estimated_departure)
                         .map(|(s, e)| delay_between(s, e))
-                }),
+                })
         };
-        let arr_delay = match (stop.scheduled_arrival, stop.actual_arrival) {
-            (Some(s), Some(a)) => Some(delay_between(s, a)),
-            _ => stop
-                .scheduled_arrival
+        let arr_delay = if stop.actual_arrival.is_some() {
+            reported("ARRIVAL")
+        } else {
+            public_arrival
                 .zip(stop.estimated_arrival)
-                .map(|(s, e)| delay_between(s, e)),
+                .map(|(s, e)| delay_between(s, e))
         };
         let fact = StopFact {
             served: stop.stop_status != StopStatus::Skipped && !board_cancelled,
@@ -441,8 +461,14 @@ impl TrainLive {
 pub struct ChainPoint {
     /// As in the connections array (possibly padded).
     pub tiploc: String,
+    /// Timetabled minutes as planned on: public, else working (see
+    /// `schedule_query::Connection::departure_min`).
     pub sched_arr: Option<u32>,
     pub sched_dep: Option<u32>,
+    /// The same calls' working-timetable minutes: what TRUST and Darwin
+    /// facts are looked up by, and what a leg's `scheduled*` serve.
+    pub work_arr: Option<u32>,
+    pub work_dep: Option<u32>,
     pub live_arr: Option<u32>,
     pub live_dep: Option<u32>,
     pub dep_delay: Option<i32>,
@@ -462,6 +488,8 @@ struct ChainCall {
     tiploc: String,
     sched_arr: Option<u32>,
     sched_dep: Option<u32>,
+    work_arr: Option<u32>,
+    work_dep: Option<u32>,
     can_board: bool,
     can_alight: bool,
 }
@@ -484,12 +512,15 @@ pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint
                     && last.sched_dep.is_none() =>
             {
                 last.sched_dep = Some(connection.departure_min);
+                last.work_dep = Some(connection.working_departure_min);
                 last.can_board = connection.can_board;
             }
             _ => calls.push(ChainCall {
                 tiploc: connection.from_tiploc.clone(),
                 sched_arr: None,
                 sched_dep: Some(connection.departure_min),
+                work_arr: None,
+                work_dep: Some(connection.working_departure_min),
                 can_board: connection.can_board,
                 can_alight: true,
             }),
@@ -498,6 +529,8 @@ pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint
             tiploc: connection.to_tiploc.clone(),
             sched_arr: Some(connection.arrival_min),
             sched_dep: None,
+            work_arr: Some(connection.working_arrival_min),
+            work_dep: None,
             can_board: true,
             can_alight: connection.can_alight,
         });
@@ -512,10 +545,12 @@ pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint
                 tiploc,
                 sched_arr,
                 sched_dep,
+                work_arr,
+                work_dep,
                 can_board,
                 can_alight,
             } = call;
-            let fact = live.fact(&tiploc, [sched_arr, sched_dep]);
+            let fact = live.fact(&tiploc, [work_arr, work_dep]);
             let known_arr = fact.and_then(|f| f.arr_delay);
             let arr_delay = known_arr.or(carry);
             if known_arr.is_some() {
@@ -537,10 +572,12 @@ pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint
                 t
             });
             ChainPoint {
-                served: live.served(sched_arr, sched_dep, fact),
+                served: live.served(work_arr, work_dep, fact),
                 tiploc,
                 sched_arr,
                 sched_dep,
+                work_arr,
+                work_dep,
                 live_arr,
                 live_dep,
                 dep_delay: sched_dep.and(dep_delay),
@@ -574,6 +611,8 @@ pub fn adjusted_connections(uid: &str, points: &[ChainPoint]) -> Option<Vec<Conn
                     to_tiploc: to.tiploc.clone(),
                     departure_min: from.live_dep?,
                     arrival_min: to.live_arr?,
+                    working_departure_min: from.work_dep?,
+                    working_arrival_min: to.work_arr?,
                     can_board: from.can_board,
                     can_alight: to.can_alight,
                 })
@@ -876,19 +915,24 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                         });
 
                         // The leg's own timetable and live minutes.
-                        let (sched_dep, sched_arr, live_dep, live_arr) = match &matched {
+                        let (sched_dep, live_dep, live_arr) = match &matched {
                             Some((_, board, alight)) => (
                                 board.sched_dep.unwrap_or(*departure_min),
-                                alight.sched_arr.unwrap_or(*arrival_min),
                                 board.live_dep.unwrap_or(*departure_min),
                                 alight.live_arr.unwrap_or(*arrival_min),
                             ),
-                            None => (*departure_min, *arrival_min, *departure_min, *arrival_min),
+                            None => (*departure_min, *departure_min, *arrival_min),
                         };
-                        if in_overlay {
+                        // `scheduled*` stay working-timetable times for one
+                        // release (design doc §9 decision 1).
+                        if in_overlay
+                            && let Some((_, board, alight)) = &matched
+                            && let (Some(work_dep), Some(work_arr)) =
+                                (board.work_dep, alight.work_arr)
+                        {
                             (*scheduled_departure, *departure_day_offset) =
-                                minutes_to_clock(sched_dep);
-                            (*scheduled_arrival, *arrival_day_offset) = minutes_to_clock(sched_arr);
+                                minutes_to_clock(work_dep);
+                            (*scheduled_arrival, *arrival_day_offset) = minutes_to_clock(work_arr);
                         }
                         *departure_min = live_dep;
                         *arrival_min = live_arr;
@@ -906,7 +950,7 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                             if !train_live.has_data() {
                                 return None;
                             }
-                            let fact = train_live.fact(&board.tiploc, [board.sched_dep, None]);
+                            let fact = train_live.fact(&board.tiploc, [board.work_dep, None]);
                             let cancelled = !board.served || !alight.served;
                             let (reason, reason_source) = if cancelled {
                                 match fact.and_then(|f| f.cancel_reason.clone()) {
@@ -1209,6 +1253,8 @@ mod tests {
             to_tiploc: to.to_string(),
             departure_min: dep,
             arrival_min: arr,
+            working_departure_min: dep,
+            working_arrival_min: arr,
             can_board: true,
             can_alight: true,
         }
@@ -1357,14 +1403,28 @@ mod tests {
         assert_eq!(points[2].live_arr, Some(510));
         assert_eq!(points[3].live_arr, Some(520));
         let adjusted = adjusted_connections("U1", &points).unwrap();
-        assert_eq!(adjusted[1], conn("U1", "B", "C", 501, 510));
+        // Live minutes to plan on; the working minutes stay the timetable's.
+        assert_eq!(
+            adjusted[1],
+            Connection {
+                working_departure_min: 491,
+                working_arrival_min: 500,
+                ..conn("U1", "B", "C", 501, 510)
+            }
+        );
     }
 
     #[test]
     fn a_trust_actual_departure_wins_and_early_running_clamps_to_zero() {
         let mut stops = stops();
+        // As the journey overlay leaves them: each actual with the delay
+        // measured from its own TRUST report.
         stops[0].actual_departure = Some(utc(478));
+        stops[0].last_event_type = Some("DEPARTURE".to_string());
+        stops[0].delay_minutes = Some(-2);
         stops[1].actual_arrival = Some(utc(497));
+        stops[1].last_event_type = Some("ARRIVAL".to_string());
+        stops[1].delay_minutes = Some(7);
         let live = profile(&stops, Some("en_route"), &[]);
         let points = evaluate(&live);
         assert_eq!(points[0].dep_delay, Some(0));
@@ -1374,6 +1434,42 @@ mod tests {
             Some(498),
             "departs no earlier than it arrived"
         );
+    }
+
+    /// A reported call's delay is the one measured from that TRUST report's
+    /// own fields, never its actual time against the CIF (public or working)
+    /// time: under TRUST's hour-skewed timestamps the latter would read an
+    /// on-time train as an hour late.
+    #[test]
+    fn a_reported_delay_never_diffs_a_trust_actual_against_a_cif_time() {
+        let mut stops = stops();
+        stops[0].actual_departure = Some(utc(480 + 60));
+        stops[0].last_event_type = Some("DEPARTURE".to_string());
+        stops[0].delay_minutes = Some(0);
+        stops[1].actual_arrival = Some(utc(490 + 60));
+        stops[1].last_event_type = Some("ARRIVAL".to_string());
+        stops[1].delay_minutes = None;
+        let live = profile(&stops, Some("en_route"), &[]);
+        let points = evaluate(&live);
+        assert_eq!(points[0].dep_delay, Some(0));
+        assert_eq!(
+            points[1].arr_delay,
+            Some(0),
+            "no TRUST delay at B: the delay carried from A, not 60"
+        );
+    }
+
+    /// Estimates are compared with the public time: running 3 late on the
+    /// working timetable into a call whose public arrival is 2 minutes
+    /// later is 1 late on the timetable passengers are sold.
+    #[test]
+    fn an_estimate_is_measured_against_the_public_time() {
+        let mut stops = stops();
+        stops[3].timetable.public_arrival = Some(utc(512));
+        stops[3].estimated_arrival = Some(utc(513));
+        let live = profile(&stops, Some("en_route"), &[]);
+        let points = evaluate(&live);
+        assert_eq!(points[3].arr_delay, Some(1));
     }
 
     #[test]
