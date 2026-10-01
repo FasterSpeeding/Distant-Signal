@@ -289,6 +289,11 @@ async fn server_main() -> anyhow::Result<()> {
         spawn_metrics_listener(app.config.metrics_port, metrics_handle);
         data::queries::register_schedule_publish_metrics();
         routes::auth::register_user_metrics();
+        // Before the migrations, so a database that goes away while they
+        // run (or right after) already shows as distant_signal_api_db_up 0.
+        data::db_health::register_metrics();
+        data::trust_event_backlog::register_uid_inference_metrics();
+        tokio::spawn(data::db_health::probe_loop(app.database.clone()));
     }
 
     // L4 (2026-09-26 review): api-layer Origin check on every

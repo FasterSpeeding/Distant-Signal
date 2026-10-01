@@ -18,7 +18,7 @@
 # resolves to the same rustc 1.88 requirement by way of the icu_* chain
 # above (api additionally hits it via `home`).
 #
-# This image carries FOUR binaries: `api` (the ENTRYPOINT), `corpus_compare`
+# This image carries FIVE binaries: `api` (the ENTRYPOINT), `corpus_compare`
 # (a read-only CORPUS report, see crates/api/src/bin/corpus_compare.rs),
 # `backfill_trains`, the one-off, idempotent shared-train-identity backfill
 # that MUST be run before this image is first started against a database
@@ -26,7 +26,8 @@
 # the one-off, idempotent `incidents.affected_lines` backfill (see
 # docs/incident-affected-lines-backfill.md -- optional, but the incident
 # archive's Line filter returns nothing for pre-existing rows until it has
-# run). `api`'s own startup enforces that
+# run), and `replay_uidless_movements` (one-off, idempotent, see below).
+# `api`'s own startup enforces that
 # ordering (it refuses to apply `20260906140000_drop_legacy_columns.sql`
 # while unbackfilled rows remain), so shipping both here is what makes the
 # enforced sequence actually satisfiable from inside the cluster. See
@@ -80,14 +81,15 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=cargo-target-1.88,target=/app/target,sharing=locked \
     if [ "${CARGO_PROFILE}" = "release" ]; then \
-      cargo build --release --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare; \
+      cargo build --release --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements; \
     else \
-      cargo build --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare; \
+      cargo build --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements; \
     fi \
     && cp "/app/target/${CARGO_PROFILE}/api" /usr/local/bin/api \
     && cp "/app/target/${CARGO_PROFILE}/backfill_trains" /usr/local/bin/backfill_trains \
     && cp "/app/target/${CARGO_PROFILE}/backfill_incident_lines" /usr/local/bin/backfill_incident_lines \
-    && cp "/app/target/${CARGO_PROFILE}/corpus_compare" /usr/local/bin/corpus_compare
+    && cp "/app/target/${CARGO_PROFILE}/corpus_compare" /usr/local/bin/corpus_compare \
+    && cp "/app/target/${CARGO_PROFILE}/replay_uidless_movements" /usr/local/bin/replay_uidless_movements
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
@@ -126,6 +128,11 @@ COPY --from=builder /usr/local/bin/backfill_incident_lines /usr/local/bin/backfi
 # run in the api pod with its own DATABASE_URL:
 #   kubectl exec deploy/<api deployment> -c api -- corpus_compare [--full]
 COPY --from=builder /usr/local/bin/corpus_compare /usr/local/bin/corpus_compare
+# One-off, idempotent: writes the shared movement tables for the uid-less
+# TRUST rows a trust-backlog-consumer restart left out of them (2026-10-01),
+# from trust_event_backlog (kept a day), with the api pod's DATABASE_URL:
+#   kubectl exec deploy/<api deployment> -c api -- replay_uidless_movements [<since, RFC 3339>]
+COPY --from=builder /usr/local/bin/replay_uidless_movements /usr/local/bin/replay_uidless_movements
 COPY --chown=api:api lines/ /app/lines/
 
 # Numeric USER, not the `api` name useradd created above: Kubernetes'
