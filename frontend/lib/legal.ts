@@ -19,6 +19,9 @@
  * see `legalPagesMode`. */
 
 import type { Metadata } from 'next';
+import { createLogger } from './logger';
+
+const log = createLogger('lib/legal');
 
 /** Matches a value the operator hasn't filled in yet. */
 const PLACEHOLDER = /\[\[[A-Z0-9_]+\]\]/;
@@ -91,7 +94,7 @@ export function legalPagesMode(
     if (unfilled.length === 0) return 'published';
     if (!warnedPlaceholders) {
       warnedPlaceholders = true;
-      console.warn(
+      log.warn(
         `LEGAL_PAGES_PUBLISHED is true but frontend/lib/legal.ts still has placeholders (${unfilled.join(', ')}); ` +
           'the legal pages stay unpublished until they are filled in.',
       );

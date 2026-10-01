@@ -50,6 +50,9 @@ import type {
   JourneyTemplateListItem,
   JourneyTemplateDetail,
 } from './types';
+import { createLogger } from './logger';
+
+const log = createLogger('lib/api');
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
  * not found" from other failures (network errors, 500s, etc.). */
@@ -549,16 +552,18 @@ export const LOGGED_OUT_SESSION: SessionInfo = {
  * The fix keeps the same fail-safe UI (there is no positively-confirmed
  * identity to show, so degrading to the logged-out nav/page state is still
  * the only safe default -- this is not a redesign of the auth UI) but adds
- * the one thing that was missing: a `console.error` so the failure leaves
+ * the one thing that was missing: an error log line so the failure leaves
  * an actual trace in server logs instead of vanishing, matching this
  * codebase's existing pattern for a tolerated-but-unexpected fetch failure
- * (see e.g. `app/lines/[id]/history/page.tsx`'s `console.error` on a failed
+ * (see e.g. `app/lines/[id]/history/page.tsx`'s `log.error` on a failed
  * history load, or `app/error.tsx`'s on an unhandled render error). */
 export async function getSessionOrLoggedOut(): Promise<SessionInfo> {
   try {
     return await getSession();
   } catch (err) {
-    console.error('getSession() failed; rendering as logged out, but this is NOT a confirmed logged-out state', err);
+    log.error('getSession() failed; rendering as logged out, but this is NOT a confirmed logged-out state', {
+      error: err,
+    });
     return LOGGED_OUT_SESSION;
   }
 }

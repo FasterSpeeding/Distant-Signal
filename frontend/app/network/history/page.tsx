@@ -2,11 +2,14 @@ import { Suspense } from 'react';
 import { Alert, Stack, Text, Title } from '@mantine/core';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { getHistoryRetention } from '@/lib/api';
+import { createLogger } from '@/lib/logger';
 import { TextLink } from '@/components/TextLink';
 import { availableGranularities, granularityShortfallDays, resolveGranularity, resolveRange } from '@/lib/history';
 import { GranularityControl } from '@/app/lines/[id]/history/GranularityControl';
 import { HistoryRangePicker } from '@/app/lines/[id]/history/HistoryRangePicker';
 import { NetworkTrendsResults } from './NetworkTrendsResults';
+
+const log = createLogger('app/network/history');
 
 export const revalidate = 0;
 
@@ -21,7 +24,7 @@ async function resolveRetention(): Promise<{
       halfHourlyStatsRetentionHours: retention.halfHourlyStatsRetentionHours,
     };
   } catch (err) {
-    console.warn('Could not resolve retention ceilings; offering only Daily.', err);
+    log.warn('Could not resolve retention ceilings; offering only Daily.', { error: err });
     return { dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 };
   }
 }

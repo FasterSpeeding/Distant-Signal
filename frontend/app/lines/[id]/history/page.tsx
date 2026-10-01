@@ -4,6 +4,7 @@ import { Alert, Divider, Paper, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text,
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { SectionTitle } from '@/components/SectionTitle';
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
+import { createLogger } from '@/lib/logger';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
 import {
@@ -22,6 +23,8 @@ import { GranularityControl } from './GranularityControl';
 import { HistoryRangePicker } from './HistoryRangePicker';
 import { TrendsResults } from './TrendsResults';
 import { CoverageTrendsResults } from './CoverageTrendsResults';
+
+const log = createLogger('app/lines/history');
 
 // Same `revalidate = 0` rationale as the other dynamic routes: without it
 // Next.js may treat this route as eligible for static generation and try to
@@ -43,7 +46,7 @@ async function resolveLineName(id: string): Promise<string> {
     const [report] = await getLineStatus([id], false);
     return report?.name ?? id;
   } catch (err) {
-    console.warn(`Could not resolve a name for line "${id}"; falling back to the id.`, err);
+    log.warn('Could not resolve a line name; falling back to the id.', { line_id: id, error: err });
     return id;
   }
 }
@@ -73,7 +76,9 @@ async function resolveRetention(): Promise<{
       halfHourlyStatsRetentionHours: retention.halfHourlyStatsRetentionHours,
     };
   } catch (err) {
-    console.warn('Could not resolve retention ceilings; hiding the retention notice and offering only Daily.', err);
+    log.warn('Could not resolve retention ceilings; hiding the retention notice and offering only Daily.', {
+      error: err,
+    });
     return { historyRetentionDays: null, dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 };
   }
 }
@@ -319,7 +324,7 @@ export async function HistoryResults({
     // already use). Logged so a genuine backend regression here isn't
     // silent, the same posture `resolveLineName` above takes for its own
     // swallowed failure.
-    console.error(`Could not load line status history for "${id}" (${from} to ${to}).`, err);
+    log.error('Could not load line status history.', { line_id: id, from, to, error: err });
     return (
       <Paper withBorder p="md">
         <Text c="dimmed">Couldn&apos;t load this line&apos;s history right now.</Text>
