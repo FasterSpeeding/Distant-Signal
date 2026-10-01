@@ -1329,7 +1329,10 @@ async fn build_journey_detail_response(
         .fetch_all(&app.database)
         .await
         .map(|rows| rows.into_iter().collect())
-        .unwrap_or_default()
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = ?err, journey_id, "could not read leg train origins; skipping the origin-skip check");
+            std::collections::HashMap::new()
+        })
     };
 
     let mut board_crs: Vec<String> = Vec::new();
@@ -1355,7 +1358,10 @@ async fn build_journey_detail_response(
     let boards =
         crate::data::queries::latest_station_samples_for_crs_batch(&app.database, &board_crs)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = ?err, journey_id, "could not read departure boards for journey legs; no ETA overlay or skip flags");
+                Default::default()
+            });
 
     // Every leg's ETA overlay, then every leg's stop list in one batched
     // build. Cloned, not removed: two legs could in principle name one
@@ -1377,29 +1383,18 @@ async fn build_journey_detail_response(
         .unzip();
     let mut leg_states: Vec<Option<train_tracking::TrackedTrainState>> =
         (0..leg_rows.len()).map(|_| None).collect();
-    for (index, state) in stop_leg_indexes
-        .into_iter()
-        .zip(crate::routes::train::attach_journey_stops_batch(app, blended).await)
-    {
+    let mut stop_states = crate::routes::train::attach_journey_stops_batch(app, blended).await;
+    // Operator + TRUST reason overlays (train_operator / train_reasons),
+    // batched for every leg and applied after the batched stop build so
+    // per-stop live status sees the stops.
+    crate::data::train_operator::attach_to_tracked_states(&app.database, &mut stop_states).await;
+    crate::data::train_reasons::attach_to_tracked_states(&app.database, &mut stop_states).await;
+    for (index, state) in stop_leg_indexes.into_iter().zip(stop_states) {
         leg_states[index] = Some(state);
     }
 
     let mut legs = Vec::with_capacity(leg_rows.len());
     for (leg, tracked_train_state) in leg_rows.into_iter().zip(leg_states) {
-        // Operator + TRUST reason overlays (train_operator / train_reasons),
-        // applied after the batched stop build so per-stop live status sees
-        // the stops.
-        let tracked_train_state = match tracked_train_state {
-            Some(state) => {
-                let state =
-                    crate::data::train_operator::attach_to_tracked_state(&app.database, state)
-                        .await;
-                Some(
-                    crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
-                )
-            }
-            None => None,
-        };
         // Low finding #5 (2026-09-25 review): `TrackedTrainState` is reused
         // verbatim here for BOTH the owner's own read and every non-owner
         // read this function serves -- a fellow group member

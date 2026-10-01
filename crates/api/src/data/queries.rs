@@ -34,7 +34,10 @@ pub fn normalize_code(raw: &str) -> String {
 /// per-row upsert loop left behind for a batch naming one key twice. A
 /// single `INSERT ... SELECT FROM UNNEST ... ON CONFLICT DO UPDATE` refuses
 /// to touch one row twice, so every batched upsert below dedups first.
-fn last_per_key<T, K: Eq + std::hash::Hash>(items: &[T], key: impl Fn(&T) -> K) -> Vec<&T> {
+pub(crate) fn last_per_key<T, K: Eq + std::hash::Hash>(
+    items: &[T],
+    key: impl Fn(&T) -> K,
+) -> Vec<&T> {
     let mut last: HashMap<K, usize> = HashMap::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         last.insert(key(item), index);
@@ -54,7 +57,7 @@ fn last_per_key<T, K: Eq + std::hash::Hash>(items: &[T], key: impl Fn(&T) -> K) 
 /// `fetched_at`/`computed_at` columns can no longer answer "when did this
 /// feed last land" by `MAX()` -- and one row per source is also what lets
 /// `/public/freshness` be a single cheap query.
-async fn record_ingest(conn: &mut sqlx::PgConnection, source: &str) -> Result<()> {
+pub(crate) async fn record_ingest(conn: &mut sqlx::PgConnection, source: &str) -> Result<()> {
     sqlx::query(
         "INSERT INTO ingest_freshness (source, fetched_at) VALUES ($1, NOW()) \
          ON CONFLICT (source) DO UPDATE SET fetched_at = EXCLUDED.fetched_at",

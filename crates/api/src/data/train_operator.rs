@@ -149,6 +149,46 @@ pub async fn attach_to_tracked_state(
     state
 }
 
+/// Batched form of [`attach_to_tracked_state`], for journey detail: one
+/// [`operators_for_trains`] query per distinct `service_date` (a journey's
+/// legs nearly always share one), instead of one per leg. Leaves the same
+/// fields as the single form would: a state without a `train_uid` is left
+/// unchanged, and a DB error leaves that date's states unchanged and is
+/// logged.
+pub async fn attach_to_tracked_states(
+    pool: &PgPool,
+    states: &mut [crate::data::train_tracking::TrackedTrainState],
+) {
+    let mut uids_by_date: HashMap<NaiveDate, Vec<String>> = HashMap::new();
+    for state in states.iter() {
+        if let Some(uid) = &state.train_uid {
+            uids_by_date
+                .entry(state.service_date)
+                .or_default()
+                .push(uid.clone());
+        }
+    }
+    for (service_date, mut uids) in uids_by_date {
+        uids.sort();
+        uids.dedup();
+        let by_uid = match operators_for_trains(pool, &uids, service_date).await {
+            Ok(by_uid) => by_uid,
+            Err(err) => {
+                tracing::warn!(error = ?err, %service_date, "could not read train operators for journey legs");
+                continue;
+            }
+        };
+        for state in states.iter_mut() {
+            if state.service_date != service_date {
+                continue;
+            }
+            if let Some(uid) = &state.train_uid {
+                (state.operator_code, state.operator_name) = split(by_uid.get(uid).cloned());
+            }
+        }
+    }
+}
+
 fn split(operator: Option<TrainOperator>) -> (Option<String>, Option<String>) {
     match operator {
         Some(TrainOperator { code, name }) => (Some(code), name),
