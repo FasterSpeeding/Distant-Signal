@@ -245,6 +245,56 @@ branch (3 of 3 cancelled), the Looe Valley, the Medway Valley on Friday
    clears about 70 minutes after the last cancelled train was due, and
    never sticks overnight.
 
+## Decisions (2026-10-02, incident sections)
+
+Not part of full coverage, but found by the same study: an incident "No
+trains between X and Y" matched none of `severity_from_incident`'s
+keywords, and an operator-wide match is capped at Minor Delays, so whole
+branch closures read Minor (2,749 in-effect operator-wide rows were Minor
+against 33 Part Suspended). The user's decision:
+
+1. **Resolve the section on each matched line**
+   (`crates/aggregator/src/no_trains.rs`). When a non-planned incident's
+   summary says "No trains between X and Y" (or "No service(s) between"),
+   and X and Y both resolve to different stations of the line, the closure
+   is evidence about that line. Names come from the `stations` reference
+   table (aggregator loads it each cycle; without it nothing changes),
+   normalised (case, apostrophes, "&" = "and", a parenthesised qualifier
+   dropped), matched exactly, as "London X", or as the one station of the
+   line whose name starts with X (4+ characters: "Falmouth Dock"). "X / Y"
+   alternatives need one of them on the line. The second name ends at the
+   time or cause that follows it ("until", "expected", "via", ":", ...).
+   A summary that says the closure is over ("CLEARED:", "Disruption
+   ended:") is ignored.
+2. **Scoped, so a partial closure of a busy line does not read as the
+   whole line at the Severe tier.** A section covering at least a third of
+   the line's stations (in `lines/*.toml` order) is **Part Suspended**; a
+   shorter one is **Reduced Service** with " (part of the line)" added to
+   the reason. Either way the status's `affected_stops` are the section's
+   stations and its `affected_routes` the section, the "(operator-wide
+   report)" note is dropped, and under an operator-wide or keyword-only
+   match the severity is capped at the section's (so "suspended" in the
+   text does not lift a short section to Suspended). A planned notice keeps
+   Planned Closure. Extraction may still demote a resolved incident.
+   Reduced Service rather than Part Suspended for a short section: the rest
+   of the line runs, Part Suspended is rank 4 and shown as severe for the
+   whole line, and where trains really are cancelled the windows (rate
+   tiers or rule A) escalate on their own evidence.
+3. **Outcome on the production archive.** Of the unplanned incidents in
+   the study, every branch closure resolves to Part Suspended: the Atlantic
+   Coast (7 of 7 stations), Lymington (3/3), Robin Hood (13/13), Looe
+   (6/6), Maritime (6/6), Greenford (5/5), Abbey (7/7), Marlow (4/5),
+   Mayflower (6/6), Tarka (Eggesford-Barnstaple, 6/14), Tyne Valley,
+   Paisley Canal. Short sections of longer lines are Reduced Service:
+   Virginia Water-Weybridge (Chertsey loop, 4/23), Downham Market-Ely
+   (King's Lynn, 3/32), Richmond-Willesden Junction (Mildmay, 6/28),
+   Wakefield Kirkgate-Pontefract Monkhill (5/16), Reading-Newbury on the
+   West of England line (2/12; Part Suspended on the Thames Valley line,
+   17/28). Other phrasings ("no trains will run between", "lines closed
+   between") do not occur in the production archive (1,971 incidents
+   since 2026-09-03); "no service between" occurs three times, all
+   planned.
+
 ## 1. Problem
 
 Full coverage today produces one number per line per rail day:
