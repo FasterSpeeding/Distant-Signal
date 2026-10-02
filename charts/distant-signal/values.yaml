@@ -1729,6 +1729,20 @@ aggregator:
     # Service; rank 3) are still recorded as would_escalate_to with
     # below_min_rank, for the evidence to lower this later.
     minEscalationRank: 4
+    # -- Lines enforce may raise with a SPARSE all-cancelled verdict (a
+    # window below the 6-train sample size in which every train, at least
+    # sparseMinCancelled of them, was explicitly cancelled: Part
+    # Suspended). Its own allowlist, NOT covered by enforceLines: comma
+    # list, or "*" for every full-coverage-enabled line. EMPTY by default,
+    # so sparse verdicts are recorded (shadow, basis sparse_all_cancelled)
+    # but never shown, even while enforceLines enforces the rate tiers.
+    sparseEnforceLines: ""
+    # -- Sparse all-cancelled rule: the fewest cancelled trains (all of the
+    # window's) that read Part Suspended below the sample size. 2 catches a
+    # two-trains-an-hour branch; 3 would miss exactly those. 0 turns the
+    # rule off. A line's severity_overrides
+    # (full_coverage_sparse_min_cancelled) wins over it.
+    sparseMinCancelled: 2
     # -- Retention of full_coverage_line_window_stats and
     # full_coverage_window_verdicts (pruned in every mode).
     retentionDays: 14

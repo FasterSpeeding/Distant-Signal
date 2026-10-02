@@ -4609,6 +4609,9 @@ fn full_coverage_line_stats_row(
                     pending: int("pending")?,
                     unobserved: int("unobserved")?,
                     avg_delay_minutes: row.try_get("avg_delay_minutes")?,
+                    // Only the windows store it (it annotates a sparse
+                    // window's reason); the closed day has no use for it.
+                    cancelled_in_advance: 0,
                 })
             })
             .transpose()?,

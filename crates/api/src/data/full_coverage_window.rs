@@ -90,9 +90,9 @@ pub async fn upsert_full_coverage_window_stats(
                 (line_id, window_kind, bucket_start, service_date, window_start, window_end,
                  computed_at, total, on_time, delayed, cancelled_explicit, cancelled_presumed,
                  skipped, pending, unobserved, avg_delay_minutes, relevance, presumed_enabled,
-                 partial, feed_stale, stats_version, updated_at)
+                 partial, feed_stale, stats_version, cancelled_in_advance, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21, now())
+                    $18, $19, $20, $21, $22, now())
             ON CONFLICT (line_id, window_kind, bucket_start) DO UPDATE SET
                 service_date       = EXCLUDED.service_date,
                 window_start       = EXCLUDED.window_start,
@@ -112,6 +112,7 @@ pub async fn upsert_full_coverage_window_stats(
                 partial            = EXCLUDED.partial,
                 feed_stale         = EXCLUDED.feed_stale,
                 stats_version      = EXCLUDED.stats_version,
+                cancelled_in_advance = EXCLUDED.cancelled_in_advance,
                 updated_at         = EXCLUDED.updated_at
             WHERE EXCLUDED.computed_at >= full_coverage_line_window_stats.computed_at
             ",
@@ -137,6 +138,7 @@ pub async fn upsert_full_coverage_window_stats(
         .bind(row.partial)
         .bind(row.feed_stale)
         .bind(row.stats_version as i16)
+        .bind(int(c.cancelled_in_advance))
         .execute(&mut *tx)
         .await?;
         count += result.rows_affected();
@@ -164,7 +166,7 @@ pub struct StoredWindow {
 const WINDOW_COLUMNS: &str = "line_id, window_kind, bucket_start, service_date, window_start, \
     window_end, computed_at, total, on_time, delayed, cancelled_explicit, cancelled_presumed, \
     skipped, pending, unobserved, avg_delay_minutes, relevance, presumed_enabled, partial, \
-    feed_stale, stats_version";
+    feed_stale, stats_version, cancelled_in_advance";
 
 #[expect(
     clippy::cast_sign_loss,
@@ -193,6 +195,7 @@ fn stored_window(row: &sqlx::postgres::PgRow) -> Result<StoredWindow> {
                 pending: uint("pending")?,
                 unobserved: uint("unobserved")?,
                 avg_delay_minutes: row.try_get("avg_delay_minutes")?,
+                cancelled_in_advance: uint("cancelled_in_advance")?,
             },
             relevance: row.try_get("relevance")?,
             presumed_enabled: row.try_get("presumed_enabled")?,
@@ -241,6 +244,9 @@ pub struct StoredVerdict {
     pub in_allowlist: bool,
     pub enforced: bool,
     pub reason: Option<String>,
+    /// The rule behind an `escalate` verdict; `None` for other verdicts,
+    /// and for rows written before the column existed (all rate-based).
+    pub basis: Option<common::full_coverage_window::EscalationBasis>,
 }
 
 fn severity_from_db(value: Option<i16>) -> Option<common::Severity> {
@@ -258,7 +264,7 @@ pub async fn verdicts_for_range(
     let rows = sqlx::query(
         "SELECT line_id, bucket_start, evaluated_at, mode, verdict, ineligible_reason,
                 verdict_severity, current_severity, would_escalate_to, below_min_rank,
-                in_allowlist, enforced, reason
+                in_allowlist, enforced, reason, basis
            FROM full_coverage_window_verdicts
           WHERE ($1::text IS NULL OR line_id = $1) AND bucket_start >= $2 AND bucket_start < $3
           ORDER BY line_id, bucket_start",
@@ -284,6 +290,10 @@ pub async fn verdicts_for_range(
                 in_allowlist: row.try_get("in_allowlist")?,
                 enforced: row.try_get("enforced")?,
                 reason: row.try_get("reason")?,
+                basis: row
+                    .try_get::<Option<String>, _>("basis")?
+                    .as_deref()
+                    .and_then(common::full_coverage_window::EscalationBasis::parse),
             })
         })
         .collect()

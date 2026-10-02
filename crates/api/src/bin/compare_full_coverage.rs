@@ -499,8 +499,10 @@ mod windows_report {
         let escalations = report::escalations(&inputs, &per_line, args.min_rank);
         let flapping = report::flapping_lines(&inputs, &per_line, args.min_rank);
         let often = report::often_escalated_lines(&inputs, &per_line, &escalations);
-        println!("\n== 2. would-escalate log (vs the severity each line was showing) ==");
-        for e in &escalations {
+        println!(
+            "\n== 2. would-escalate log, rate tiers (vs the severity each line was showing) =="
+        );
+        for e in escalations.iter().filter(|e| !e.is_sparse()) {
             println!(
                 "{} {:<40} {} -> {}{}  total={} late={} cancelled={}+{} skipped={}  {}",
                 e.at.format("%Y-%m-%d %H:%MZ"),
@@ -545,6 +547,44 @@ mod windows_report {
             report::FLAP_TRANSITIONS
         );
         println!("escalated in > 20% of daytime buckets: {often:?}");
+
+        // 2b. Sparse all-cancelled verdicts (rule A), apart from the rate
+        // tiers: the aggregator enforces them under their own allowlist.
+        let sparse = report::sparse_escalations(&escalations);
+        println!(
+            "\n== 2b. sparse all-cancelled verdicts (below the sample size, every train cancelled) =="
+        );
+        for e in &sparse {
+            println!(
+                "{} {:<40} {} -> {}  total={} cancelled={} in-advance={}  {}",
+                e.at.format("%Y-%m-%d %H:%MZ"),
+                e.line_id,
+                e.from.description(),
+                e.to.description(),
+                e.counts.total,
+                e.counts.cancelled_explicit,
+                e.counts.cancelled_in_advance,
+                e.reason
+            );
+        }
+        let events = report::sparse_events(&escalations);
+        println!(
+            "{} sparse bucket(s) in {} event(s) on {} line(s):",
+            sparse.len(),
+            events.len(),
+            events
+                .iter()
+                .map(|(line, ..)| line.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        );
+        for (line, first, last, n) in &events {
+            println!(
+                "  {line:<40} {} .. {}  ({n} bucket(s))",
+                first.format("%Y-%m-%d %H:%MZ"),
+                last.format("%H:%MZ")
+            );
+        }
 
         // 3. Against LDBWS.
         let pairs = report::ldbws_pairs(&inputs, &per_line);
@@ -649,13 +689,19 @@ mod windows_report {
             for ((severity, kind), n) in &summary.escalations {
                 println!("  {severity:<20} {kind:<16} {n}");
             }
+            println!(
+                "sparse all-cancelled escalations (FULL_COVERAGE_WINDOW_SPARSE_ENFORCE_LINES):"
+            );
+            for ((severity, kind), n) in &summary.sparse_escalations {
+                println!("  {severity:<20} {kind:<16} {n}");
+            }
         }
 
         // 6. Volume, for picking the pilot lines.
         let volumes = report::line_volumes(&inputs, &health, &escalations, &flapping);
         println!("\n== 6. per-line volume (for picking the enforce pilot lines) ==");
         println!(
-            "{:<40} {:>10} {:>6} {:>9} {:>9} {:>8} {:>9} {:>9} {:>5}",
+            "{:<40} {:>10} {:>6} {:>9} {:>9} {:>8} {:>9} {:>9} {:>6} {:>5}",
             "line",
             "day-median",
             "p90",
@@ -664,13 +710,14 @@ mod windows_report {
             "present",
             "enforced",
             "below-gate",
+            "sparse",
             "flap"
         );
         let mut sorted = volumes.clone();
         sorted.sort_by_key(|v| std::cmp::Reverse(v.daytime_median));
         for v in &sorted {
             println!(
-                "{:<40} {:>10} {:>6} {:>9} {:>9} {:>8} {:>9} {:>9} {:>5}",
+                "{:<40} {:>10} {:>6} {:>9} {:>9} {:>8} {:>9} {:>9} {:>6} {:>5}",
                 v.line_id,
                 v.daytime_median,
                 v.daytime_p90,
@@ -679,6 +726,7 @@ mod windows_report {
                 pct(v.bucket_presence),
                 v.escalations_enforced_tier,
                 v.escalations_below_gate,
+                v.escalations_sparse,
                 v.flapping
             );
         }
@@ -710,12 +758,12 @@ mod windows_report {
         let mut f = std::fs::File::create(dir.join("escalations.csv"))?;
         writeln!(
             f,
-            "computed_at,line_id,from,to,enforced_tier,total,delayed,cancelled_explicit,cancelled_presumed,skipped,reason"
+            "computed_at,line_id,from,to,enforced_tier,total,delayed,cancelled_explicit,cancelled_presumed,skipped,reason,basis"
         )?;
         for e in escalations {
             writeln!(
                 f,
-                "{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{}",
                 e.at.to_rfc3339(),
                 e.line_id,
                 quote(e.from.description()),
@@ -726,7 +774,8 @@ mod windows_report {
                 e.counts.cancelled_explicit,
                 e.counts.cancelled_presumed,
                 e.counts.skipped,
-                quote(&e.reason)
+                quote(&e.reason),
+                e.basis.as_str()
             )?;
         }
         let mut f = std::fs::File::create(dir.join("ldbws_pairs.csv"))?;
@@ -754,12 +803,12 @@ mod windows_report {
         let mut f = std::fs::File::create(dir.join("line_volumes.csv"))?;
         writeln!(
             f,
-            "line_id,daytime_median,daytime_p90,max_daily,eligible_share,bucket_presence,escalations_enforced_tier,escalations_below_gate,flapping"
+            "line_id,daytime_median,daytime_p90,max_daily,eligible_share,bucket_presence,escalations_enforced_tier,escalations_below_gate,flapping,escalations_sparse"
         )?;
         for v in volumes {
             writeln!(
                 f,
-                "{},{},{},{},{:.4},{:.4},{},{},{}",
+                "{},{},{},{},{:.4},{:.4},{},{},{},{}",
                 v.line_id,
                 v.daytime_median,
                 v.daytime_p90,
@@ -768,7 +817,8 @@ mod windows_report {
                 v.bucket_presence,
                 v.escalations_enforced_tier,
                 v.escalations_below_gate,
-                v.flapping
+                v.flapping,
+                v.escalations_sparse
             )?;
         }
         Ok(())

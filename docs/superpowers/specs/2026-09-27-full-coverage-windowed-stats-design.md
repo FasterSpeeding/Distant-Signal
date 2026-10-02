@@ -170,6 +170,81 @@ which override the rest of this document where they differ:
    `lnwr-birmingham-crewe`, `greater-anglia-west-anglia` and
    `elizabeth-shenfield`, with `minEscalationRank: 4`.
 
+## Decisions (2026-10-02, sparse windows)
+
+A read-only production study (stored windows 2026-09-27 20:45Z to
+2026-10-02 08:45Z; weekend figures are lower bounds) found 51,478 of
+99,873 `recent` windows below `full_coverage_min_sample_size` (6), so never
+judged: most late-night, weekend and branch-line windows. Real misses: the
+Atlantic Coast line on Monday 10:16-11:20 (4 cancelled; the incident "No
+trains between Par and Newquay" read only Minor Delays), the Lymington
+branch (3 of 3 cancelled), the Looe Valley, the Medway Valley on Friday
+07:37-09:33 (7 of 9 cancelled, nothing in effect) and the Robin Hood line
+(4 cancelled).
+
+1. **Rule A, sparse all-cancelled detection.** In
+   `classify_full_coverage_window`, after the `feed_stale`, `partial` and
+   row-age checks (which still win) and before `BelowThreshold`, a window
+   is **Part Suspended** when all of these hold
+   (`full_coverage_window::sparse_all_cancelled`):
+   - `2 <= total < full_coverage_min_sample_size`;
+   - `cancelled_explicit == total`, and at least
+     `Defaults.full_coverage_sparse_min_cancelled` (default
+     `FULL_COVERAGE_SPARSE_MIN_CANCELLED = 2`; 0 turns the rule off;
+     overridable per line through `severity_overrides`, and globally by
+     the aggregator's `FULL_COVERAGE_SPARSE_MIN_CANCELLED`);
+   - `pending == 0`, `cancelled_presumed == 0` and `unobserved == 0`;
+   - `relevance == "full"`.
+
+   The reason is "All N trains due in the last hour were cancelled.", with
+   " (cancelled in advance)" before the full stop when every one of those
+   cancellations arrived at least 3 hours before the train was due
+   (`FullCoverageWindowCounts.cancelled_in_advance`, counted by the
+   consumer from the 0002's receipt time; an annotation only). The verdict
+   carries `EscalationBasis::SparseAllCancelled`; the rate tiers carry
+   `EscalationBasis::Rate`.
+
+   Why a feed gap cannot fake it: explicit cancellations prove the feed is
+   alive (a TRUST gap yields pending or presumed trains, never explicit
+   cancellations), and planned closures (STP-cancelled trains, buses) are
+   not in the population at all. Why 2: 3 would drop exactly the target
+   branches (a two-trains-an-hour shuttle). Why `pending == 0`: a train
+   still to report may yet run (the Medway Valley's Friday window had
+   pending trains, so this rule does not catch it; the rate tiers caught
+   the busier windows of the same morning).
+2. **Enforced under its own allowlist.** The aggregator records sparse
+   verdicts in every mode, but `enforce` raises a line with one only when
+   `FULL_COVERAGE_WINDOW_SPARSE_ENFORCE_LINES` (chart
+   `aggregator.fullCoverageWindow.sparseEnforceLines`, comma list or `*`,
+   **empty by default**) names it. `FULL_COVERAGE_WINDOW_ENFORCE_LINES`
+   no longer covers sparse verdicts, so the pilot can enforce the rate
+   tiers while the sparse rule stays shadow-only. A line in the sparse list
+   but not the main one keeps its legacy counts and is only raised; a line
+   in the main list only shows the window's counts and is not raised by a
+   sparse verdict. `in_allowlist` on a verdict row means "the allowlist
+   governing this verdict's basis names the line".
+3. **Recorded apart.** `full_coverage_window_verdicts.basis` (migration
+   `20261002110000`, nullable, CHECK added `NOT VALID`) is `rate` or
+   `sparse_all_cancelled` for an `escalate` verdict and NULL otherwise
+   (and for every older row). `aggregator_full_coverage_window_verdicts_total`
+   and `..._escalations_total` gain a `basis` label (`none`, `rate`,
+   `sparse_all_cancelled`). `compare_full_coverage --windows` reports
+   sparse verdicts in their own section (2b, grouped into events), keeps
+   them out of the rate totals, the daytime-share flag and the
+   enforced/below-gate volume columns, and gives them their own `sparse`
+   column; the aggregator-record section splits them out too.
+   `full_coverage_line_window_stats.cancelled_in_advance` (migration
+   `20261002110100`, `NOT NULL DEFAULT 0`) stores the annotation's count.
+4. **Simulation.** Replaying the study's 99,873 stored windows through this
+   implementation (the real `classify_full_coverage_window`, defaults)
+   gives **78 sparse windows in 22 events on 13 lines, 15 of them on lines
+   with nothing at Severe rank in effect** -- the study's numbers exactly.
+   None is on the six pilot lines. With a minimum of 3 it is 45 windows /
+   11 events / 6 new. Latency is about 45-70 minutes after the first
+   cancelled train (the window must hold only cancelled trains); a verdict
+   clears about 70 minutes after the last cancelled train was due, and
+   never sticks overnight.
+
 ## 1. Problem
 
 Full coverage today produces one number per line per rail day:

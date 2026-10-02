@@ -1537,6 +1537,8 @@ write loop, pinned to `replicas: 1` with `strategy: Recreate`.
 | `aggregator.fullCoverageWindow.mode` | `off` | Windowed full-coverage severity: `off`, `shadow` (record a verdict per line, change nothing) or `enforce` (also escalate the lines in `enforceLines`). |
 | `aggregator.fullCoverageWindow.enforceLines` | `""` | Lines `enforce` may change: comma list, or `*` for every full-coverage-enabled line. Empty enforces nothing. |
 | `aggregator.fullCoverageWindow.minEscalationRank` | `4` | Only verdicts of at least this severity rank are enforced (4 is Severe Delays / Part Suspended). |
+| `aggregator.fullCoverageWindow.sparseEnforceLines` | `""` | Lines `enforce` may raise with a sparse all-cancelled verdict (below the 6-train sample size, every train cancelled: Part Suspended). Its own allowlist, not covered by `enforceLines`: comma list or `*`. Empty: recorded in shadow, never shown. |
+| `aggregator.fullCoverageWindow.sparseMinCancelled` | `2` | Fewest cancelled trains (all of the window's) the sparse rule needs. 0 turns it off; a line's `full_coverage_sparse_min_cancelled` override wins. |
 | `aggregator.fullCoverageWindow.retentionDays` | `14` | Days window stats and verdicts are kept (pruned in every mode). |
 | `aggregator.trustEventBacklogRetentionDays` | `1` | Days `trust_event_backlog` rows are kept. Deliberately 1: a TRUST licensing safeguard. |
 | `aggregator.scheduleDestinationDeparturesRetentionDays` | `8` | Service dates of `schedule_destination_departures` kept (about 377,000 rows a day); covers the train search's 7-day backward window. |

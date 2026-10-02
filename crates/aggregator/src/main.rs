@@ -101,7 +101,14 @@ async fn run() -> anyhow::Result<()> {
         .collect();
     tracing::info!(count = static_lines.len(), "loaded static line catalogue");
 
-    let defaults = Defaults::default();
+    let defaults = Defaults {
+        // FULL_COVERAGE_SPARSE_MIN_CANCELLED: the chart's knob for rule A;
+        // a line's severity_overrides still win over it.
+        full_coverage_sparse_min_cancelled: config
+            .full_coverage_window
+            .full_coverage_sparse_min_cancelled,
+        ..Defaults::default()
+    };
 
     // Lives for the whole process, threaded into every cycle -- this is
     // exactly what makes the dedup ledger "in-memory, restart-scoped"

@@ -39,7 +39,8 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use common::full_coverage_window::{
-    IneligibleReason, WindowVerdict, classify_full_coverage_window, escalation_decision,
+    EscalationBasis, IneligibleReason, WindowVerdict, classify_full_coverage_window,
+    escalation_decision,
 };
 use common::{
     Defaults, FullCoverageWindowCounts, FullCoverageWindowKind, FullCoverageWindowStatsRow,
@@ -241,7 +242,11 @@ pub struct LineHealth {
     pub line_id: String,
     pub buckets_present: usize,
     pub buckets_expected: usize,
+    /// Judged buckets, including the sparse all-cancelled ones below.
     pub eligible: usize,
+    /// Of `eligible`, buckets below the sample size judged only by the
+    /// sparse all-cancelled rule.
+    pub sparse: usize,
     pub ineligible: BTreeMap<&'static str, usize>,
 }
 
@@ -287,7 +292,12 @@ pub fn health(
             WindowVerdict::Ineligible(reason) => {
                 *h.ineligible.entry(reason.as_str()).or_default() += 1;
             }
-            _ => h.eligible += 1,
+            v => {
+                h.eligible += 1;
+                if v.basis() == Some(EscalationBasis::SparseAllCancelled) {
+                    h.sparse += 1;
+                }
+            }
         }
     }
     by_line.into_values().collect()
@@ -306,6 +316,56 @@ pub struct Escalation {
     pub below_min_rank: bool,
     pub reason: String,
     pub counts: FullCoverageWindowCounts,
+    /// Rate tiers, or the sparse all-cancelled rule -- reported apart
+    /// ([`rate_escalations`], [`sparse_escalations`]), since the aggregator
+    /// enforces the latter under its own allowlist.
+    pub basis: EscalationBasis,
+}
+
+impl Escalation {
+    pub fn is_sparse(&self) -> bool {
+        self.basis == EscalationBasis::SparseAllCancelled
+    }
+}
+
+/// The rate-tier escalations: what the enforce pilot's allowlist governs.
+pub fn rate_escalations(escalations: &[Escalation]) -> Vec<Escalation> {
+    escalations
+        .iter()
+        .filter(|e| !e.is_sparse())
+        .cloned()
+        .collect()
+}
+
+/// The sparse all-cancelled escalations (rule A), reported on their own.
+pub fn sparse_escalations(escalations: &[Escalation]) -> Vec<Escalation> {
+    escalations
+        .iter()
+        .filter(|e| e.is_sparse())
+        .cloned()
+        .collect()
+}
+
+/// Sparse escalations grouped into events: consecutive buckets of one line
+/// no more than 30 minutes apart. `(line, first, last, buckets)`.
+pub fn sparse_events(
+    escalations: &[Escalation],
+) -> Vec<(String, DateTime<Utc>, DateTime<Utc>, usize)> {
+    let mut sparse = sparse_escalations(escalations);
+    sparse.sort_by(|a, b| (&a.line_id, a.at).cmp(&(&b.line_id, b.at)));
+    let mut events: Vec<(String, DateTime<Utc>, DateTime<Utc>, usize)> = Vec::new();
+    for e in sparse {
+        match events.last_mut() {
+            Some((line, _, last, n))
+                if *line == e.line_id && e.at - *last <= chrono::Duration::minutes(30) =>
+            {
+                *last = e.at;
+                *n += 1;
+            }
+            _ => events.push((e.line_id.clone(), e.at, e.at, 1)),
+        }
+    }
+    events
 }
 
 /// The severity `line_id` was showing at `at`: the latest history row at
@@ -336,7 +396,7 @@ pub fn escalations(
             w.row.computed_at,
         );
         let decision = escalation_decision(&verdict, current, min_rank);
-        let (Some(to), WindowVerdict::Escalate { reason, .. }) =
+        let (Some(to), WindowVerdict::Escalate { reason, basis, .. }) =
             (decision.would_escalate_to, &verdict)
         else {
             continue;
@@ -349,18 +409,21 @@ pub fn escalations(
             below_min_rank: decision.below_min_rank,
             reason: reason.clone(),
             counts: w.row.counts.clone(),
+            basis: *basis,
         });
     }
     out
 }
 
-/// Totals by (severity, enforced tier or not) and by London hour.
+/// Totals of the rate-tier escalations by (severity, enforced tier or not)
+/// and by London hour. Sparse all-cancelled ones are left out
+/// ([`sparse_events`] reports them).
 pub fn escalation_totals(
     escalations: &[Escalation],
 ) -> (BTreeMap<(String, bool), usize>, BTreeMap<u32, usize>) {
     let mut by_severity = BTreeMap::new();
     let mut by_hour = BTreeMap::new();
-    for e in escalations {
+    for e in escalations.iter().filter(|e| !e.is_sparse()) {
         *by_severity
             .entry((e.to.description().to_string(), !e.below_min_rank))
             .or_default() += 1;
@@ -434,15 +497,19 @@ pub fn often_escalated_lines(
     let mut eligible: BTreeMap<&str, usize> = BTreeMap::new();
     for w in recent(&inputs.windows).filter(|w| is_daytime(w.row.computed_at)) {
         let line = w.row.line_id.as_str();
-        if !matches!(
-            verdict_of(&w.row, thresholds(per_line, line, &fallback)),
-            WindowVerdict::Ineligible(_)
-        ) {
+        // Rate-tier buckets only: the sparse rule is reported on its own.
+        let v = verdict_of(&w.row, thresholds(per_line, line, &fallback));
+        if !matches!(v, WindowVerdict::Ineligible(_))
+            && v.basis() != Some(EscalationBasis::SparseAllCancelled)
+        {
             *eligible.entry(line).or_default() += 1;
         }
     }
     let mut escalated: HashMap<&str, usize> = HashMap::new();
-    for e in escalations.iter().filter(|e| is_daytime(e.at)) {
+    for e in escalations
+        .iter()
+        .filter(|e| is_daytime(e.at) && !e.is_sparse())
+    {
         *escalated.entry(e.line_id.as_str()).or_default() += 1;
     }
     eligible
@@ -712,16 +779,22 @@ pub fn closed_day_checks(inputs: &Inputs) -> Vec<ClosedDayCheck> {
 pub struct VerdictSummary {
     pub evaluated: usize,
     pub by_verdict: BTreeMap<String, usize>,
-    /// (severity, "enforced" | "would-escalate" | "below gate") -> count.
+    /// Rate-tier escalations: (severity, "enforced" | "would-escalate" |
+    /// "below gate") -> count.
     pub escalations: BTreeMap<(String, &'static str), usize>,
+    /// The same for sparse all-cancelled escalations, kept apart: they are
+    /// enforced under their own allowlist.
+    pub sparse_escalations: BTreeMap<(String, &'static str), usize>,
 }
 
 pub fn verdict_summary(verdicts: &[StoredVerdict]) -> VerdictSummary {
     let mut summary = VerdictSummary::default();
     for v in verdicts {
         summary.evaluated += 1;
+        let sparse = v.basis == Some(EscalationBasis::SparseAllCancelled);
         let label = match (&v.verdict[..], &v.ineligible_reason) {
             ("ineligible", Some(reason)) => format!("ineligible: {reason}"),
+            ("escalate", _) if sparse => "escalate (sparse all-cancelled)".to_string(),
             (verdict, _) => verdict.to_string(),
         };
         *summary.by_verdict.entry(label).or_default() += 1;
@@ -733,10 +806,12 @@ pub fn verdict_summary(verdicts: &[StoredVerdict]) -> VerdictSummary {
             } else {
                 "would-escalate"
             };
-            *summary
-                .escalations
-                .entry((to.description().to_string(), kind))
-                .or_default() += 1;
+            let map = if sparse {
+                &mut summary.sparse_escalations
+            } else {
+                &mut summary.escalations
+            };
+            *map.entry((to.description().to_string(), kind)).or_default() += 1;
         }
     }
     summary
@@ -755,8 +830,11 @@ pub struct LineVolume {
     pub max_daily: u32,
     pub eligible_share: f64,
     pub bucket_presence: f64,
+    /// Rate-tier escalations at or above the gate.
     pub escalations_enforced_tier: usize,
     pub escalations_below_gate: usize,
+    /// Sparse all-cancelled escalations.
+    pub escalations_sparse: usize,
     pub flapping: bool,
 }
 
@@ -815,11 +893,15 @@ pub fn line_volumes(
                 bucket_presence: h.map_or(0.0, |h| h.presence()),
                 escalations_enforced_tier: escalations
                     .iter()
-                    .filter(|e| e.line_id == line && !e.below_min_rank)
+                    .filter(|e| e.line_id == line && !e.is_sparse() && !e.below_min_rank)
                     .count(),
                 escalations_below_gate: escalations
                     .iter()
-                    .filter(|e| e.line_id == line && e.below_min_rank)
+                    .filter(|e| e.line_id == line && !e.is_sparse() && e.below_min_rank)
+                    .count(),
+                escalations_sparse: escalations
+                    .iter()
+                    .filter(|e| e.line_id == line && e.is_sparse())
                     .count(),
                 flapping: flapping.iter().any(|f| f == line),
             }
@@ -946,6 +1028,59 @@ mod tests {
         assert_eq!(h[0].buckets_expected, 16);
         assert_eq!(h[0].buckets_present, 4);
         assert_eq!(h[0].ineligible["below_threshold"], 1);
+    }
+
+    /// A sparse all-cancelled bucket is judged, logged with its basis, kept
+    /// out of the rate totals and grouped into events of its own.
+    #[test]
+    fn sparse_all_cancelled_buckets_are_reported_apart() {
+        let inputs = Inputs {
+            windows: vec![
+                window("branch", "2026-09-28T09:00:00Z", 2, 0, 2),
+                window("branch", "2026-09-28T09:15:00Z", 3, 0, 3),
+                window("branch", "2026-09-28T09:30:00Z", 3, 0, 1), // ran: nothing
+                window("branch", "2026-09-28T11:00:00Z", 2, 0, 2), // a new event
+                window("busy", "2026-09-28T09:00:00Z", 12, 7, 0),
+            ],
+            ..Inputs::default()
+        };
+        let log = escalations(&inputs, &no_overrides(), 4);
+        assert_eq!(log.len(), 4);
+        let sparse = sparse_escalations(&log);
+        assert_eq!(sparse.len(), 3);
+        assert!(sparse.iter().all(|e| e.to == Severity::PartSuspended));
+        assert_eq!(
+            sparse[0].reason,
+            "All 2 trains due in the last hour were cancelled."
+        );
+        assert_eq!(rate_escalations(&log).len(), 1);
+        let (by_severity, _) = escalation_totals(&log);
+        assert_eq!(by_severity.len(), 1, "{by_severity:?}");
+        assert_eq!(by_severity[&("Severe Delays".to_string(), true)], 1);
+        let events = sparse_events(&log);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].3, 2);
+        assert_eq!(events[1].3, 1);
+
+        let h = health(
+            &inputs,
+            &no_overrides(),
+            at("2026-09-28T09:00:00Z"),
+            at("2026-09-28T12:00:00Z"),
+        );
+        let branch = h.iter().find(|h| h.line_id == "branch").unwrap();
+        assert_eq!((branch.eligible, branch.sparse), (3, 3));
+        assert_eq!(branch.ineligible["below_threshold"], 1);
+        let volumes = line_volumes(&inputs, &h, &log, &[]);
+        let branch = volumes.iter().find(|v| v.line_id == "branch").unwrap();
+        assert_eq!(
+            (
+                branch.escalations_sparse,
+                branch.escalations_enforced_tier,
+                branch.escalations_below_gate
+            ),
+            (3, 0, 0)
+        );
     }
 
     #[test]
@@ -1096,14 +1231,30 @@ mod tests {
             in_allowlist: enforced,
             enforced,
             reason: None,
+            basis: to.map(|_| EscalationBasis::Rate),
         };
+        let mut sparse = v("escalate", Some(Severity::PartSuspended), false, false);
+        sparse.basis = Some(EscalationBasis::SparseAllCancelled);
         let summary = verdict_summary(&[
             v("escalate", Some(Severity::SevereDelays), false, true),
             v("escalate", Some(Severity::SevereDelays), false, false),
             v("escalate", Some(Severity::MinorDelays), true, false),
             v("good", None, false, false),
+            sparse,
         ]);
-        assert_eq!(summary.evaluated, 4);
+        assert_eq!(summary.evaluated, 5);
+        assert_eq!(summary.by_verdict["escalate"], 3);
+        assert_eq!(summary.by_verdict["escalate (sparse all-cancelled)"], 1);
+        assert_eq!(
+            summary.sparse_escalations[&("Part Suspended".to_string(), "would-escalate")],
+            1
+        );
+        assert!(
+            !summary
+                .escalations
+                .contains_key(&("Part Suspended".to_string(), "would-escalate")),
+            "sparse verdicts are reported apart"
+        );
         assert_eq!(
             summary.escalations[&("Severe Delays".to_string(), "enforced")],
             1
