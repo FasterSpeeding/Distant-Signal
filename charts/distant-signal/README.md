@@ -2088,7 +2088,12 @@ Off by default; no API key needed.
 The schedulefeed pod: an SFTP server (SFTPGo) that receives the pushed CIF
 timetable, `schedule-ingest` (waits for a complete delivery and posts it
 to api) and `schedule-reference` (derives the schedule products from it).
-Off by default.
+Off by default. The feed has two sources, switched separately:
+`scheduleFeed.sftp.enabled` (the SFTP receiver, on by default) and
+`scheduleFeed.bucket.enabled` (a Google Cloud Storage bucket, off; see
+"scheduleFeed: bucket source" below and
+[docs/schedule-feed-bucket.md](../../docs/schedule-feed-bucket.md)). Both
+can run at once, deduplicated by content; with neither the render fails.
 
 | Key | Default | Description |
 |---|---|---|
