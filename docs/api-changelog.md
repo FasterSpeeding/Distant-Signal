@@ -145,3 +145,95 @@ one now does. Boarding rows are unchanged.
   working-timetable measure.
 - TRUST-to-schedule matching and `GET /public/trains/resolve`, which stay on
   WTT.
+
+## 2026-10-01: public times, phase 1
+
+Design: `docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md`
+(§10 what phase 1 shipped).
+
+All additive: no existing field changed meaning in phase 1. DS now stores
+the public (GBTT) times and the passenger direction of every call from the
+CIF schedule, and serves them next to the working-timetable (WTT) times.
+
+**Null until the next publish.** The new schedule columns refill on the
+next schedule-reference publish (and `trains.calling_points` for a train
+matched after it). Until then a `public*` field is `null` even where the
+call has a public time. A client must treat `null` as "not known", not as
+"no public call".
+
+### `scheduled*` stays WTT
+
+`scheduledArrival`/`scheduledDeparture` (`JourneyStop`, trip-plan legs) and
+`scheduled`/`destinationArrival` (board and search rows) keep their
+meaning: the **working** time, truncated to the minute. They are kept for
+one release and then switched to the public time or removed; phase 2
+(above) deprecates them.
+
+### `JourneyStop`: public times, working times, direction
+
+On every `JourneyStop` (train page `journeyStops[]`, journey legs),
+flattened onto the stop, not nested:
+
+| Field | Type | Meaning | `null` when |
+| --- | --- | --- | --- |
+| `publicArrival` | RFC 3339 UTC instant | The public (GBTT) arrival: what a passenger timetable and the station screens show. | No public arrival here (the origin, a pick-up-only stop, a passing point), or the schedule predates the next publish. |
+| `publicDeparture` | RFC 3339 UTC instant | The public departure. | No public departure here (the terminus, a set-down-only stop, a passing point), or the schedule predates the next publish. |
+| `workingArrival` | RFC 3339 UTC instant | The exact WTT arrival, with `:30` seconds for a half-minute (`H`). | No booked arrival (the origin, a passing point). |
+| `workingDeparture` | RFC 3339 UTC instant | The exact WTT departure, `:30` for a half-minute. | No booked departure (the terminus, a passing point). |
+| `workingPass` | RFC 3339 UTC instant | The WTT pass time. Set only on a passing point (the train runs through without stopping), which has no other time. | Any call that is not a pass, and a pass in a schedule stored before the next publish. |
+| `canBoard` | bool | A passenger can board here. `false` at a set-down-only (`D`) stop. | Never. |
+| `canAlight` | bool | A passenger can alight here. `false` at a pick-up-only (`U`) stop. | Never. |
+| `requestStop` | bool | A request stop (`R`): the train calls only if asked. | Never. |
+
+- Every instant is dated on its own day. A stop that dwells across
+  midnight has its departure on the next day. A public time that rounds
+  across midnight (a 23:59H WTT arrival is a 00:00 public one) is on the
+  next day too.
+- For a schedule stored before the next publish, `workingArrival`/
+  `workingDeparture` are rebuilt from the minute WTT time plus the stored
+  half-minute flag. Where neither is stored (the
+  `schedule_calling_points_full` fallback), they are the minute WTT time.
+- `canBoard`/`canAlight`/`requestStop` are always booleans. Where the
+  schedule predates the direction columns, DS fills them in as before
+  phase 1: the origin is boardable only, the terminus alightable only, an
+  untimed passing point neither, every other call both; `requestStop` is
+  `false`.
+- A client that may also talk to a server older than phase 1 sees the
+  fields absent: read a missing `canBoard`/`canAlight` as `true`, a missing
+  `requestStop` as `false`, and a missing `public*`/`working*` as `null`.
+- Set-down-only (`D`) stops are now in the stored schedule, with
+  `canBoard: false`; before phase 1 they were left out of it. `OP`
+  (operational) and `N` (not advertised) stops are still left out.
+
+### Board, search and trip-plan rows
+
+Times here are local (Europe/London) clock times, like the `scheduled*`
+fields beside them.
+
+| Where | Field | Format | Meaning |
+| --- | --- | --- | --- |
+| Schedule-departure board rows, `GET /public/stations/{crs}/schedule-departures` | `publicDeparture` | `"HH:MM"` | Public departure at the board's station. `dayOffset` is the WTT departure's; the public time is minutes from it. |
+| `GET /public/trains/search` rows | `publicDeparture` | `"HH:MM"` | Public departure at the searched station (`stationCrs`). |
+| `GET /public/trains/search` rows | `publicDestinationArrival` | `"HH:MM"` | Public arrival at the train's destination (`destinationCrs`). |
+| Trip-plan train legs, `GET /Trips/plan` (`kind: "train"`) | `publicDeparture` | `"HH:MM:SS"` | Public departure at the leg's boarding call. |
+| Trip-plan train legs | `publicArrival` | `"HH:MM:SS"` | Public arrival at the leg's alighting call. |
+| Trip-plan train legs | `publicDepartureDayOffset` | integer | Days past `serviceDate` of `publicDeparture`. |
+| Trip-plan train legs | `publicArrivalDayOffset` | integer | Days past `serviceDate` of `publicArrival`. |
+
+- Each `public*` time is `null` where the CIF has no public time for that
+  call in that direction, and until the next publish for a schedule stored
+  before public times were.
+- A day offset is `null` exactly when its time is. It is usually the WTT
+  time's own offset (`departureDayOffset`/`arrivalDayOffset`), one more
+  where rounding crosses midnight.
+- In phase 1 the trip planner still searched on WTT and attached the public
+  times afterwards; phase 2 (above) moved the search onto them.
+
+### Trip planning and direction
+
+- The planner (`GET /Trips/plan`, including waypoints, arrive-by and the
+  live overlay) never boards a train where `canBoard` is false and never
+  alights where `canAlight` is false. It still rides through those stops.
+- So an itinerary can now end at a set-down-only stop (before, the stop
+  was not in the schedule at all), and one that alighted at a pick-up-only
+  stop is gone.
