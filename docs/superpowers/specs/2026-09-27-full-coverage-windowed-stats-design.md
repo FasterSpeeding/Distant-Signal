@@ -104,6 +104,12 @@ which override the rest of this document where they differ:
    rank 3 stays off for enforcement (`minEscalationRank: 4` is the pilot
    setting). So "3 of 6 late" is now Minor Delays (recorded, not
    enforced), and "5 of 8 late" is Severe Delays.
+2. **Memory.** The shadow run measured a consumer working set of
+   430–570 MiB with windowed stats on, bounded and reset at each rail-day
+   rollover. This is accepted. The resource target in §8.4 item 6 is now
+   **~650 MiB** (was 400 MiB). The chart's
+   `fullCoverageConsumer.resources.requests.memory` is raised from 512Mi
+   to 640Mi to cover it. The limit stays 1 GiB.
 
 ## 1. Problem
 
@@ -945,8 +951,9 @@ series means "never scraped".
 0. **Ship with everything off.** Migrations run; nothing changes.
 1. **Consumer on** (`FULL_COVERAGE_WINDOWED_STATS=true`), after
    `schedule-reference` has republished populations with
-   `operator_atoc`/`train_status`. Check the working set (expect < 250
-   MB, limit 1 Gi), the startup replay time with the 6 h lookback
+   `operator_atoc`/`train_status`. Check the working set (expect < 650
+   MiB, limit 1 Gi; this said < 250 MB before "Decisions (2026-10-02)"
+   item 2), the startup replay time with the 6 h lookback
    (expect ~5 min), and that window rows arrive for ~243 lines every
    minute.
 2. **Aggregator shadow** (`FULL_COVERAGE_WINDOW_MODE=shadow`) for **≥ 7
@@ -1016,7 +1023,8 @@ Over the 7-day window, from the report:
 5. **Agreement with LDBWS where both see trouble.** When LDBWS shows ≥
    Minor on a half-hour with ≥ 6 services, the eligible recent window
    shows ≥ Minor at least 60% of the time.
-6. **Resources.** Consumer working set p99 ≤ 400 MiB, no OOM kills,
+6. **Resources.** Consumer working set p99 ≤ ~650 MiB (was 400 MiB; see
+   "Decisions (2026-10-02)" item 2), no OOM kills,
    startup replay ≤ 10 min.
 
 ## 9. Implementation tasks, file-level changes and tests

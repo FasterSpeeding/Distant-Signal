@@ -55,6 +55,12 @@ entries, 21 MB of JSON), the startup peak RSS was **381,492 KB (about
 For comparison, the previous binary reached 304,984 KB (about 298 MiB) after
 consuming the same day through the group.
 
+With windowed stats on, production's shadow run (2026-09-29 to 10-02)
+measured a steady working set of 430-570 MiB. It is bounded, and it drops
+back at each rail-day rollover. That was accepted on 2026-10-02: the
+resource target is about 650 MiB, the chart requests 640Mi, and the limit
+stays 1Gi.
+
 `/healthz` keeps beating throughout startup. A long wait for `api` is
 therefore not restarted by the liveness probe; `full_coverage_consumer_startup_complete`
 reports it instead.
