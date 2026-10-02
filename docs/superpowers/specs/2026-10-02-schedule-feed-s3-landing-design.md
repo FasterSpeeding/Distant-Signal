@@ -809,8 +809,8 @@ Nothing here retires SFTPGo. Each step can be undone by flipping a value.
    - OpenTofu, run once, creates:
      - the boundary policy;
      - the three controller users and their policies;
-     - the **$5/month budget alert** (the recipient email is still open,
-       §14).
+     - the **$5/month budget alert** (recipient and other account
+       specifics live in Ranma-Config, not here; see D6).
    - Seal the controller keys into `ack-system`.
    - *Rollback:* destroy the stack; nothing depends on it yet.
 2. **ACK controllers** (Ranma, `clusters/mine-bringer/controllers/6.ack/`).
@@ -890,20 +890,26 @@ small pods; measure them at install.
 
 ## 14. Open questions
 
+**Repo scope (D6, user, 2026-10-02).** This repo defines only the bucket
+deployment: the `ds-ingest-bucket` chart, its values contract and the
+schedule-ingest side. Everything account- or deploy-specific (the AWS
+account itself, the OpenTofu bootstrap stack, the boundary policy and
+controller users, the budget and its alert recipient, controller
+installs, sealed keys, the concrete values for the chart) belongs to
+Ranma-Config and is handed off to the deploy session.
+
 Answered 2026-10-02 and recorded under "Decisions": the account (D2),
 ACK vs OpenTofu (D3), the audit trail (D4) and source precedence (D5).
 
 ### For the user
 
-1. **Budget alert email.** Which address receives the $5/month AWS Budget
-   alert (D2)?
-2. **Cleanup.** The default is lifecycle expiry only: `reader.allowDelete`
+1. **Cleanup.** The default is lifecycle expiry only: `reader.allowDelete`
    and `deleteAfterIngest` stay off. This stands unless the user objects
    and wants the bucket emptied on ingest.
-3. **Reader IP pin.** Is the node's public egress address stable enough
+2. **Reader IP pin.** Is the node's public egress address stable enough
    to set `reader.allowedSourceCidrs`? Until it is confirmed, the list
    stays empty.
-4. **Steady state** after verification (§12, step 7): both (the
+3. **Steady state** after verification (§12, step 7): both (the
    default), bucket-only or SFTP-only.
 
 ### Questions for DTD/RDM (ready to send)

@@ -131,6 +131,9 @@ brief. Deploying phase 1 alone must be a no-op in production.
 
 ## Ranma-Config tasks (the cluster owner; read-only from this repo)
 
+Per D6 these are owned and configured in Ranma-Config by the deploy
+session; nothing account- or deploy-specific is committed to this repo.
+
 The order matches the spec's §12.
 
 1. **Bootstrap**, run once with OpenTofu (D3), stack
@@ -138,7 +141,7 @@ The order matches the spec's §12.
    the user creates the account and holds root MFA):
    - the boundary policy and the controller users with the policies in
      §7;
-   - the $5/month budget alert (recipient email still open).
+   - the $5/month budget alert (recipient set in Ranma-Config).
 
    No CloudTrail data events (D4).
 
