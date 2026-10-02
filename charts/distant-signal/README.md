@@ -2142,6 +2142,7 @@ Off by default.
 | `scheduleFeed.ingest.pollIntervalSecs` | `120` | Seconds between scans of the watch folder. |
 | `scheduleFeed.ingest.retentionKeepDeliveries` | `2` | Complete deliveries kept on disk (current plus fallback). |
 | `scheduleFeed.ingest.stabilityCycles` | `5` | Consecutive unchanged scans before a file is treated as complete. |
+| `scheduleFeed.ingest.extraEnv` | `[]` | Extra env entries for the schedule-ingest container. One named like a chart-set var (say `RUST_LOG`) replaces it, so each name is rendered once; the rest follow the chart's own. |
 | `scheduleFeed.ingest.progressStallSecs` | `1800` | `/livez` stall window (see `workerHealth`) for one scan cycle, including posting a delivery to api. |
 | `scheduleFeed.ingest.existingSecret` | `""` | Read schedule-ingest's internal OAuth2 credential from this pre-existing Secret. |
 | `scheduleFeed.ingest.internalOauthUsername` | `""` | Internal OAuth2 service-account username (Authentik `svc-schedule-ingest`). |

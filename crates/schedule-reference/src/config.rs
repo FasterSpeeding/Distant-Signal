@@ -248,7 +248,9 @@ mod chart_env_wiring_tests {
     /// only on the sibling `ingest` container (which has its own
     /// `API_INGEST_URL`, pointing at a different route) cannot satisfy this
     /// check by accident. `reference` is the last container in the template,
-    /// so "from its `- name:` line to EOF" is the whole block.
+    /// so "from its `- name:` line to the first env `define` after it" (the
+    /// sftp and ingest env defines sit at the end of the file) is the whole
+    /// block, and a var set only in the ingest define can't satisfy it.
     fn reference_container_block() -> String {
         let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/schedulefeed-deployment.yaml");
@@ -259,7 +261,10 @@ mod chart_env_wiring_tests {
             "the schedulefeed Deployment must still declare a container named `reference`; \
              if it was renamed, update this test's marker",
         );
-        rendered[start..].to_string()
+        let end = rendered[start..]
+            .find("\n{{- define ")
+            .map_or(rendered.len(), |offset| start + offset);
+        rendered[start..end].to_string()
     }
 
     #[test]

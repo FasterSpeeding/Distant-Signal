@@ -259,8 +259,12 @@ mod chart_env_wiring_tests {
 
     /// The `ingest` container's slice of the schedulefeed Deployment: from
     /// its `- name: ingest` line to the next container (`reference`), so a
-    /// var set only on a sibling container cannot satisfy the check.
+    /// var set only on a sibling container cannot satisfy the check, plus
+    /// the `distant-signal.scheduleFeedIngestEnv` define its env is
+    /// rendered from (through `distant-signal.mergeEnv`, so
+    /// `scheduleFeed.ingest.extraEnv` can override it).
     fn ingest_container_block() -> String {
+        const DEFINE: &str = "{{- define \"distant-signal.scheduleFeedIngestEnv\" }}";
         let chart = common::manifest_dir!()
             .join("../../charts/distant-signal/templates/schedulefeed-deployment.yaml");
         let rendered = std::fs::read_to_string(&chart)
@@ -271,7 +275,16 @@ mod chart_env_wiring_tests {
         let end = rendered[start..]
             .find("- name: reference\n")
             .map_or(rendered.len(), |offset| start + offset);
-        rendered[start..end].to_string()
+        let mut block = rendered[start..end].to_string();
+        let at = rendered
+            .find(DEFINE)
+            .expect("the ingest env define must exist");
+        let rest = &rendered[at + DEFINE.len()..];
+        let end_def = rest
+            .find("{{- define ")
+            .map_or(rendered.len(), |offset| at + DEFINE.len() + offset);
+        block.push_str(&rendered[at..end_def]);
+        block
     }
 
     #[test]

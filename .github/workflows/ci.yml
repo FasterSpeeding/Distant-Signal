@@ -719,6 +719,12 @@ jobs:
       - name: ds-ingest-bucket chart policies
         run: uv run --no-sync scripts/check-ingest-bucket-chart.py --download-crds "${RUNNER_TEMP}/crossplane-crds"
 
+      # charts/distant-signal's schedulefeed in each source mode (SFTP only,
+      # bucket only, both, neither): what renders, the ingest env contract,
+      # the reader key mount, alerts, and bad values refusing to render.
+      - name: schedulefeed chart sources
+        run: uv run --no-sync scripts/check-schedulefeed-chart.py
+
   # Custom: no reusable Piped/Piped-actions workflow covers Helm at all.
   # `helm lint` + `helm template` against both the chart's own defaults and
   # values-example.yaml (which turns on the optional pollers/devAuthentik
