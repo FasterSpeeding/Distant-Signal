@@ -70,7 +70,8 @@ implementation:
    higher by construction.
 4. **Minimum sample (open question 5).** 6 evaluable trains per 60-minute
    window (`full_coverage_min_sample_size`), and 3 affected trains per tier
-   (`full_coverage_min_affected`), as section 5.
+   (`full_coverage_min_affected`), as section 5. **Superseded for the
+   Severe tiers by "Decisions (2026-10-02)" item 1: 5 affected trains.**
 5. **No frontend or UI change (open question 3).** Day-to-date numbers are
    computed and stored (`full_coverage_line_window_stats`,
    `window_kind = 'day_to_date'`, and the v2 `full_coverage_line_stats`
@@ -83,6 +84,26 @@ ignored trains with no matched movement; the next day's Activations were
 wiped at the rollover (and never replayed after a restart); and
 rail-replacement buses and ships were counted as cancellations (they are left
 out once the population carries `train_status`).
+
+## Decisions (2026-10-02)
+
+A shadow evaluation in production (4.3 weekdays) found Severe firing on
+3.53% of judgeable windows (§8.4's limit is 3%) and 8 lines Severe in more
+than 20% of their daytime windows. The cause was the 3-minute "late"
+threshold combined with a 3-affected-train minimum: 3 of 6 trains at 3+
+minutes late is 50%, which read as Severe Delays. The user's decisions,
+which override the rest of this document where they differ:
+
+1. **Calibration.** The Severe-rank tiers (Part Suspended, Severe Delays
+   by lateness or by skipped stops) need **at least 5 affected trains**:
+   `Defaults.full_coverage_severe_min_affected`, default
+   `common::full_coverage_window::FULL_COVERAGE_SEVERE_MIN_AFFECTED = 5`,
+   overridable per line through `severity_overrides` like the other keys.
+   It is never below `full_coverage_min_affected`. The Minor Delays /
+   Reduced Service tiers keep 3. The 3-minute late threshold stays, and
+   rank 3 stays off for enforcement (`minEscalationRank: 4` is the pilot
+   setting). So "3 of 6 late" is now Minor Delays (recorded, not
+   enforced), and "5 of 8 late" is Severe Delays.
 
 ## 1. Problem
 

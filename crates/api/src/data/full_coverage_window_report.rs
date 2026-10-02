@@ -1009,7 +1009,8 @@ mod tests {
             ldbws_half_hours: vec![
                 half("2026-09-27T10:30:00Z", 100, 100), // starts before the range
                 half("2026-09-27T11:00:00Z", 4, 2),
-                half("2026-09-27T11:30:00Z", 4, 2),
+                // 5 of 8 late: the Severe tier needs 5 affected trains.
+                half("2026-09-27T11:30:00Z", 4, 3),
                 half("2026-09-27T12:00:00Z", 100, 100), // after
             ],
             ..Inputs::default()
@@ -1017,7 +1018,7 @@ mod tests {
         let pairs = ldbws_pairs(&inputs, &no_overrides());
         assert_eq!(pairs.len(), 1);
         let p = &pairs[0];
-        assert_eq!((p.ldbws_total, p.ldbws_delayed), (8, 4));
+        assert_eq!((p.ldbws_total, p.ldbws_delayed), (8, 5));
         assert_eq!(p.fc_severity, Some(Severity::SevereDelays));
         assert_eq!(p.ldbws_severity, Some(Severity::SevereDelays));
         assert_eq!(agreement_when_ldbws_sees_trouble(&pairs), (1, 1));

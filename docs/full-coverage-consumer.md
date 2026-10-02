@@ -115,7 +115,7 @@ before.
 | `FULL_COVERAGE_WINDOW_ENFORCE_LINES` | aggregator | empty | Lines `enforce` may change (comma list, or `*`). Empty: nothing is enforced until lines are named. |
 | `FULL_COVERAGE_WINDOW_MIN_ESCALATION_RANK` | aggregator | 4 | Only Severe Delays / Part Suspended are enforced. Minor Delays / Reduced Service are recorded as `would_escalate_to` with `below_min_rank`. |
 | `FULL_COVERAGE_WINDOW_STATS_RETENTION_DAYS` | aggregator | 14 | Prunes both window tables, in every mode. |
-| `full_coverage_delay_threshold_minutes` / `full_coverage_min_sample_size` / `full_coverage_min_affected` | `Defaults`, per line via `severity_overrides` | 3 / 6 / 3 | Delayed = 3+ minutes late at the train's first report on the line; a window needs 6 evaluable trains and a tier 3 affected trains. |
+| `full_coverage_delay_threshold_minutes` / `full_coverage_min_sample_size` / `full_coverage_min_affected` / `full_coverage_severe_min_affected` | `Defaults`, per line via `severity_overrides` | 3 / 6 / 3 / 5 | Delayed = 3+ minutes late at the train's first report on the line; a window needs 6 evaluable trains, a Minor Delays / Reduced Service tier 3 affected trains, and a Severe Delays / Part Suspended tier 5 (2026-10-02 calibration). |
 
 **Rollout.** Deploy `schedule-reference` and `api` first (the population then
 carries `operator_atoc`/`train_status`, and the route and migrations exist),
