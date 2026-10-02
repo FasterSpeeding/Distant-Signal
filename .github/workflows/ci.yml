@@ -710,11 +710,14 @@ jobs:
       # mode: both buckets private (UBLA, enforced public access
       # prevention), the delivery bucket's versioning, soft delete and
       # lifecycle, every grant bucket-level and to service accounts only,
-      # exactly the publisher and reader bindings, and bad values (no
-      # publisher members, public members, admin roles) refuse to render.
-      # Here rather than in helm-lint: it needs the pinned PyYAML above.
+      # exactly the publisher and reader bindings, the kill-switch labels
+      # and no crossplane.io/paused, bad values (no publisher members,
+      # public members, admin roles) refuse to render, and every resource
+      # validates against provider-upjet-gcp's CRD schemas (downloaded and
+      # checksum-verified by the script). Here rather than in helm-lint:
+      # it needs the pinned PyYAML above.
       - name: ds-ingest-bucket chart policies
-        run: uv run --no-sync scripts/check-ingest-bucket-chart.py
+        run: uv run --no-sync scripts/check-ingest-bucket-chart.py --download-crds "${RUNNER_TEMP}/crossplane-crds"
 
   # Custom: no reusable Piped/Piped-actions workflow covers Helm at all.
   # `helm lint` + `helm template` against both the chart's own defaults and

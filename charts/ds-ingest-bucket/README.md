@@ -108,12 +108,17 @@ soft delete.
 ```sh
 helm lint --strict charts/ds-ingest-bucket
 helm lint --strict charts/ds-ingest-bucket -f charts/ds-ingest-bucket/ci/example-values.yaml
-uv run scripts/check-ingest-bucket-chart.py
+uv run scripts/check-ingest-bucket-chart.py --download-crds "$TMPDIR/crossplane-crds"
 ```
 
 `check-ingest-bucket-chart.py` renders every mode and checks the bucket
 settings (UBLA, enforced PAP, versioning off, soft delete, lifecycle, no
 retention, orphan and keep), every grant (bucket-level only, service
 accounts only, never public, fully managed, exactly the expected
-publisher and reader bindings, the delete-only custom role), and that bad
-values refuse to render.
+publisher and reader bindings, the delete-only custom role), the
+kill-switch labels (and that nothing renders `crossplane.io/paused`), and
+that bad values refuse to render. With `--download-crds DIR` (as CI runs
+it) or `--crds DIR` it also validates every resource against
+provider-upjet-gcp's CRD schemas (the version and SHA-256s are pinned in
+the script; bump them by hand with the provider). Without either flag
+that check is skipped.
