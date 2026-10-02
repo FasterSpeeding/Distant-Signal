@@ -10,6 +10,34 @@ once.
 
 Phase 0 is done. The others are open.
 
+## Decisions this plan builds on (user, 2026-10-02)
+
+The spec's "Decisions" table has the detail.
+
+- **D1:** AWS S3, eu-west-2.
+- **D2:** a **new, dedicated AWS account**. The user holds root MFA. A
+  $5/month budget alert.
+- **D3:** **ACK via Helm** (`charts/ds-ingest-bucket`). Keys are created
+  once by hand and sealed in Ranma-Config. **OpenTofu only for the
+  one-off setup** (account baseline, controller users, boundary, budget).
+- **D4:** **S3 server access logs only**, no CloudTrail data events. Phase
+  5's tailer is therefore the only way object-level audit reaches Loki,
+  so it is recommended, not merely optional.
+- **D5:** **the bucket wins** when the sources disagree within the
+  window; the disagreement alert still fires.
+- **D6:** both sources are kept long-term; nothing is retired.
+- **Default unless the user objects:** lifecycle-only cleanup.
+  `reader.allowDelete` and `deleteAfterIngest` stay off, and task 2.5's
+  delete path can wait.
+
+Still open (spec §14):
+
+- the budget alert email;
+- the node egress IP pin;
+- the steady state after verification;
+- all of RDM's S3 destination details. These go to DTD/RDM; the
+  ready-to-send list is in spec §14.
+
 ## Ground rules for whoever executes this
 
 - Follow `/home/coder/ds-review/fix-brief-common.md`. It covers:
@@ -71,7 +99,7 @@ brief. Deploying phase 1 alone must be a no-op in production.
 | # | Task | Files | Tests |
 | --- | --- | --- | --- |
 | 3.1 | Dedup: after `fetch`, look the SHA-256 up in the ledger (1.6). On a hit, write a `duplicate` audit line (`duplicate_of`, `first_source`), append to `.delivery-sources`, `settle`, and skip extraction and the POST | `main.rs`, `corpus.rs` | The same zip through SFTP (watch dir) and the bucket (InMemory) in one cycle, and in successive cycles in either order: one extraction, one POST, one `accepted` and one `duplicate` line, with the same sha256 and both sources |
-| 3.2 | Disagreement: different SHA-256s for the same kind within `disagreement_window` → increment `schedule_feed_source_disagreement_total{kind}`; ingest the higher-precedence one; mark the other `superseded`. Write the rules from §9 exactly, including "a quarantined winner does not promote the loser" | `main.rs`, `corpus.rs` | A table-driven test: arrival orders (sftp→bucket, bucket→sftp) × precedence orders × winner passes or fails its checks; outside the window → treated as a newer delivery |
+| 3.2 | Disagreement: different SHA-256s for the same kind within `disagreement_window` → increment `schedule_feed_source_disagreement_total{kind}`; ingest the higher-precedence one (default `[bucket, sftp]`: the bucket wins, D5); mark the other `superseded`. Write the rules from §9 exactly, including "a quarantined winner does not promote the loser" | `main.rs`, `corpus.rs` | A table-driven test: arrival orders (sftp→bucket, bucket→sftp) × precedence orders × winner passes or fails its checks; outside the window → treated as a newer delivery |
 | 3.3 | api: a migration in the **assigned** range. `ALTER TABLE schedule_feed_ingests ADD COLUMN delivery_source text` and the same on `corpus_deliveries`, nullable, with a CHECK of `IN ('sftp','bucket')`. Request structs get an optional `delivery_source`. schedule-ingest sends it | `crates/api/migrations/<assigned>_schedule_feed_delivery_source.sql`, `crates/api/src/routes/ingest.rs`, `data/queries.rs`, `data/corpus.rs`; ingest's request structs | `migration_index_locking`, `migration_checksums`, `check-migration-order.py`; the api's DB-gated ingest tests with and without the field; `docs/api-changelog.md` row if this route is listed there |
 | 3.4 | Delivery directory collision: a different SHA-256 in the same second gets a `-<source>` suffix. Teach `is_delivery_dir_name` and schedule-reference's discovery to accept it and to order it after the bare name | `delivery.rs`, `crates/schedule-reference/src/discovery.rs` | Ordering test in both crates |
 
@@ -85,7 +113,7 @@ brief. Deploying phase 1 alone must be a no-op in production.
 | 4.4 | Docs: README values rows (`chart-values-doc.py check`); a new `docs/schedule-feed-bucket.md` (the operator page: the switches, adoption steps, key rotation, the audit LogQL); `docs/schedule-feed-sftp.md` gets a short "Alongside the S3 source" section (`sftp.enabled`, dedup, precedence) | as listed | `uv run scripts/chart-values-doc.py check`; `helm lint --strict` on both example files |
 | 4.5 | Bump `charts/distant-signal` `version`. Add `charts/ds-ingest-bucket` to `push-helm-chart` (package and push next to `distant-signal`, so Ranma can source it from `oci://ghcr.io/fasterspeeding/charts`) | `Chart.yaml`, `.github/workflows/containers.yml` | actionlint (scripts-lint) |
 
-## Phase 5 (optional): the access-log tailer
+## Phase 5 (recommended, per D4): the access-log tailer
 
 | # | Task | Files | Tests |
 | --- | --- | --- | --- |
@@ -105,11 +133,14 @@ brief. Deploying phase 1 alone must be a no-op in production.
 
 The order matches the spec's §12.
 
-1. **Bootstrap** (OpenTofu stack `aws/ds-ingest-bootstrap/` or CLI):
+1. **Bootstrap**, run once with OpenTofu (D3), stack
+   `aws/ds-ingest-bootstrap/`, in the **new dedicated account** (D2;
+   the user creates the account and holds root MFA):
    - the boundary policy and the controller users with the policies in
      §7;
-   - the $5 budget, root MFA checked, and optionally CloudTrail S3 data
-     events.
+   - the $5/month budget alert (recipient email still open).
+
+   No CloudTrail data events (D4).
 
    Seal the controller credentials files.
 2. **ACK controllers.** In `clusters/mine-bringer/controllers/6.ack/`:
@@ -130,7 +161,7 @@ The order matches the spec's §12.
 3. **The bucket.** In `clusters/mine-bringer/apps/`:
    - a `ds-ingest-aws` namespace;
    - a `ds-ingest-bucket` HelmRelease (`enabled: true`, account, bucket
-     name, boundary ARN, `writer.mode` per RDM's answer);
+     name, boundary ARN, `writer.mode` per DTD/RDM's answers to spec §14);
    - after sync, the reader key sealed as
      `distant-signal-schedulefeed-bucket` in `distant-signal`.
 4. **DS release values:**

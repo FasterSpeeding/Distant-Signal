@@ -1,11 +1,27 @@
 # Schedule feed: an S3 delivery source alongside SFTP
 
-Design, 2026-10-02. Status: **proposed**. Nothing here is deployed.
+Design, 2026-10-02. Status: **proposed**, with the user's decisions D1–D6 recorded the same day (below). Nothing here is deployed.
 
 This change adds `charts/ds-ingest-bucket`, off by default and installed
 nowhere. Everything else in this document is a proposal, and
 [the plan](../plans/2026-10-02-schedule-feed-s3-landing-plan.md) is how to
 build it.
+
+## Decisions (user, 2026-10-02)
+
+| # | Decision | Effect on this design |
+| --- | --- | --- |
+| D1 | **Cloud: AWS S3, eu-west-2.** | §3 |
+| D2 | **A new, dedicated AWS account** owns the bucket and everything in it. The user holds its root MFA. An AWS Budget alert at **$5 a month**. | §7 bootstrap creates the account baseline. The 100 GB free egress allowance belongs to this workload alone, so the typical cost in §13 holds |
+| D3 | **Provisioning: ACK via Helm** (`charts/ds-ingest-bucket`). Access keys are created **once by hand** and sealed in Ranma-Config. **OpenTofu only for the one-off setup**: account baseline, controller users, permissions boundary, budget. | §4, §7. The "OpenTofu alone" alternative is no longer under consideration |
+| D4 | **Audit: S3 server access logs only.** No CloudTrail data events. | §8. CloudTrail keeps only its free default 90-day management-event history (IAM and bucket changes) |
+| D5 | **Precedence: the bucket wins** when SFTP and the bucket deliver different content within the disagreement window. The disagreement alert still fires. | §9. `sourcePrecedence: [bucket, sftp]` becomes the fixed default |
+| D6 | **Both sources are kept long-term.** Nothing is retired. | §10, §12 |
+
+**Default unless the user objects:** clean up by lifecycle expiry only, so
+the reader never deletes (§5, "Deleting processed objects").
+
+Still open: §14.
 
 ## Summary
 
@@ -193,10 +209,17 @@ controller holding AWS write credentials. It is the better tool for
 boundary and the budget alarm, which must exist before any controller can
 run. This design uses OpenTofu, or the equivalent CLI, only for that
 bootstrap. The Helm chart is the deliverable for the bucket and its
-access. If the user prefers not to run AWS-credentialed controllers in the
-cluster at all, every resource in §5 maps one-to-one onto OpenTofu
-`aws_s3_bucket*`, `aws_iam_user*` and `aws_sqs_queue*` resources, and
-schedule-ingest is unchanged.
+access.
+
+**Decided (D3, 2026-10-02):**
+
+- ACK via Helm.
+- Keys created once by hand and sealed in Ranma-Config.
+- OpenTofu only for the one-off setup.
+
+For the record only: every resource in §5 would map one-to-one onto
+OpenTofu `aws_s3_bucket*`, `aws_iam_user*` and `aws_sqs_queue*`, with
+schedule-ingest unchanged.
 
 ### Chart placement
 
@@ -460,11 +483,12 @@ lists beyond what the chart uses.
   `UntagQueue` and `ListQueueTags` on
   `arn:aws:sqs:eu-west-2:<account>:ds-ingest-*`.
 
-**3. Account hygiene.**
+**3. Account hygiene** (D2: a new, dedicated account).
 
-- Root MFA, and no console users beyond the admin.
+- The user holds root MFA. There are no console users beyond one admin.
 - An AWS Budget at $5 a month, alerting by email (the artifact's runaway
-  re-download case is $270–380 a month).
+  re-download case is $270–380 a month). The recipient address is still
+  open (§14).
 - CloudTrail's default 90-day management event history, which records
   every IAM and bucket change the controllers make.
 
@@ -483,10 +507,14 @@ gives the requester ARN, remote IP, time, operation (`REST.PUT.OBJECT`),
 key, HTTP status, error code, bytes, user agent and version id.
 
 Delivery is best-effort, typically within an hour. That is good enough for
-anomaly alerts, not for real-time ones. CloudTrail S3 data events
-(write-only, about $0 at ~40 events a month) are the guaranteed
-alternative, but ACK's `Trail` has no event-selector fields. Add them with
-the OpenTofu bootstrap if the user wants guaranteed delivery.
+anomaly alerts, not for real-time ones.
+
+**Decided (D4, 2026-10-02): server access logs are the only object-level
+audit.** CloudTrail S3 data events, the guaranteed alternative, are not
+used. ACK's `Trail` couldn't configure them anyway. Because access logs
+can be delayed or, rarely, lost, the Prometheus alerts below, driven by
+schedule-ingest's own observations, are the timely signal. The Loki
+rules are forensic and anomaly checks.
 
 ### Shipping to Loki
 
@@ -653,7 +681,9 @@ two different files to two destinations, which is unexpected:
 - `schedule_feed_source_disagreement_total{kind}` is incremented, which
   drives `DistantSignalScheduleFeedSourcesDisagree`. Both SHA-256s,
   sizes and sources are logged.
-- **`sourcePrecedence`** (default `[bucket, sftp]`) decides. The
+- **The bucket wins** (D5, decided 2026-10-02). `sourcePrecedence`
+  defaults to `[bucket, sftp]` and stays configurable only for tests and
+  emergencies. The
   higher-precedence copy is ingested, whichever arrived first. The other
   gets `outcome: superseded` with `reason: "source precedence: <winner>"`
   and is not ingested. The bucket comes first because its writer
@@ -773,10 +803,14 @@ monitoring exception. The SFTP Loki rules simply go quiet.
 
 Nothing here retires SFTPGo. Each step can be undone by flipping a value.
 
-1. **AWS account and bootstrap** (user and Ranma, OpenTofu or CLI). Which
-   account owns it is an open question.
-   - Create the boundary policy, the three controller users and their
-     policies, and the $5 budget.
+1. **AWS account and bootstrap** (user and Ranma, OpenTofu, D2/D3).
+   - The user creates the **new dedicated account** and holds its root
+     MFA. There are no console users beyond one admin.
+   - OpenTofu, run once, creates:
+     - the boundary policy;
+     - the three controller users and their policies;
+     - the **$5/month budget alert** (the recipient email is still open,
+       §14).
    - Seal the controller keys into `ack-system`.
    - *Rollback:* destroy the stack; nothing depends on it yet.
 2. **ACK controllers** (Ranma, `clusters/mine-bringer/controllers/6.ack/`).
@@ -815,19 +849,9 @@ Nothing here retires SFTPGo. Each step can be undone by flipping a value.
      object arrives.
    - *Rollback:* `bucket.enabled: false`.
 5. **Ask RDM to add the bucket** as a destination for the timetable and
-   CORPUS subscriptions, **in addition to SFTP**. Send them:
-   - the bucket name, region `eu-west-2` and key prefix `rdm/`;
-   - that object names should stay `timetable_full.zip` and
-     `CORPUSExtract.json.gz`;
-   - the writer credential, entered in their form (`iamUser`), or a
-     request for their principal ARN (and external ID if they use one)
-     for `crossAccount`;
-   - that the bucket enforces TLS 1.2+ and owner-enforced ACLs (send no
-     ACL header, or only `bucket-owner-full-control`), and SSE-S3 by
-     default (send no SSE header, or `AES256`);
-   - what their client needs beyond `PutObject` (HEAD, LIST,
-     multipart, rename);
-   - whether one subscription can deliver to SFTP and S3 at once.
+   CORPUS subscriptions, **in addition to SFTP**. Send the questions in
+   §14, "Questions for DTD/RDM", ideally before step 3, because the answer
+   decides `writer.mode`.
 
    No credentials go by email. The writer key goes only into their
    portal form.
@@ -854,7 +878,7 @@ From the artifact, for eu-west-2.
 | --- | --- | --- |
 | S3 storage (3–4 versions of a 78 MB zip, CORPUS, logs) | $0.01 | $0.02 |
 | Requests (LIST every 5 min; GET per new version) | $0.05 | $0.24 (LIST every minute) |
-| Egress to the node (~2.4 GB) | $0 (100 GB free) | $0.32 if the allowance is used elsewhere |
+| Egress to the node (~2.4 GB) | $0 (100 GB free; the dedicated account, D2, has nothing else using it) | $0.32 only if the allowance were used elsewhere |
 | Access logs | <$0.01 | <$0.01 |
 | SQS (only if enabled) | $0 (free tier) | $0.05 |
 | KMS | $0 (SSE-S3) | $1 if `aws:kms` is chosen |
@@ -864,33 +888,65 @@ From the artifact, for eu-west-2.
 The ACK controllers cost nothing in AWS. In the cluster they are three
 small pods; measure them at install.
 
-## 14. Open questions for the user
+## 14. Open questions
 
-1. **Which AWS account owns this?** A new dedicated account (recommended:
-   the blast radius is only this) or an existing one. Who holds root MFA,
-   and does the 100 GB free egress allowance already go to other
-   workloads there?
-2. **Budget.** Is a $5 a month AWS Budget alert right, and which email
-   receives it?
-3. **RDM's S3 destination form** (§1): IAM key or cross-account
-   principal? If cross-account, what principal ARN and external ID? Do
-   they need anything beyond `PutObject`? What object keys, ACL and SSE
-   headers, multipart? **Can one subscription deliver to SFTP and S3 at
-   once?**
-4. **Delete or not.** Is lifecycle-only cleanup (recommended) acceptable,
-   or must the bucket be emptied on ingest (`allowDelete` +
-   `deleteAfterIngest`)?
-5. **Reader IP pin.** Is the node's public egress address stable enough
-   to set `reader.allowedSourceCidrs`?
-6. **Guaranteed audit.** Are best-effort S3 server access logs enough,
-   or add CloudTrail S3 data events through the OpenTofu bootstrap?
-7. **Source precedence** when the two disagree: is `[bucket, sftp]`
-   right?
-8. **OpenTofu vs in-cluster controllers.** Is the user comfortable with
-   ACK holding scoped AWS keys in the cluster? If not, the same resources
-   can be managed by OpenTofu alone.
-9. **Steady-state choice** after verification: both, bucket-only, or
-   SFTP-only.
+Answered 2026-10-02 and recorded under "Decisions": the account (D2),
+ACK vs OpenTofu (D3), the audit trail (D4) and source precedence (D5).
+
+### For the user
+
+1. **Budget alert email.** Which address receives the $5/month AWS Budget
+   alert (D2)?
+2. **Cleanup.** The default is lifecycle expiry only: `reader.allowDelete`
+   and `deleteAfterIngest` stay off. This stands unless the user objects
+   and wants the bucket emptied on ingest.
+3. **Reader IP pin.** Is the node's public egress address stable enough
+   to set `reader.allowedSourceCidrs`? Until it is confirmed, the list
+   stays empty.
+4. **Steady state** after verification (§12, step 7): both (the
+   default), bucket-only or SFTP-only.
+
+### Questions for DTD/RDM (ready to send)
+
+Send these through the RDM support channel or the subscription's
+destination settings, not to the user. They are about RDM's S3
+destination for our timetable (`timetable_full.zip`) and CORPUS
+(`CORPUSExtract.json.gz`) subscriptions. Don't send credentials by
+email.
+
+> We'd like to add an AWS S3 bucket (region eu-west-2, key prefix `rdm/`)
+> as a delivery destination for our timetable and CORPUS file
+> subscriptions, alongside our existing SFTP destination.
+>
+> 1. **Credentials.** Does your S3 destination take an IAM access key
+>    pair, or do you write as your own AWS principal (cross-account)? If
+>    it's the latter, what is the principal ARN, and do you use an
+>    external ID?
+> 2. **Permissions.** Besides `s3:PutObject`, does your client need
+>    anything else on the bucket, such as `HeadObject`, `ListBucket`,
+>    `GetBucketLocation`, `AbortMultipartUpload`, or a write-then-rename
+>    (copy and delete)?
+> 3. **Object keys.** Can we set the key prefix? Will the files keep the
+>    names `timetable_full.zip` and `CORPUSExtract.json.gz`, overwritten
+>    on each delivery, or are keys dated or otherwise varied?
+> 4. **Headers.** Do you send an ACL header (our bucket only accepts none,
+>    or `bucket-owner-full-control`) or a server-side-encryption header
+>    (our default is SSE-S3; `AES256` is fine, `aws:kms` isn't)?
+> 5. **Uploads.** Do you use multipart upload for the ~78 MB timetable
+>    zip? What are your retry behaviour and expected delivery time (today
+>    about 20:00 UTC)?
+> 6. **Dual delivery.** Can one subscription deliver to both SFTP and S3
+>    at the same time, or would we need a second subscription?
+> 7. **Testing.** Is there a way to trigger a test delivery once the
+>    destination is configured?
+
+## Previously open, now decided (kept for the record)
+
+- Which AWS account owns this → D2: a new dedicated account.
+- OpenTofu alone vs ACK in the cluster → D3: ACK, with OpenTofu for the
+  one-off setup.
+- CloudTrail data events → D4: no, access logs only.
+- Source precedence → D5: the bucket wins.
 
 ## Sources
 
