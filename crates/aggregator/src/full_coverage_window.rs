@@ -163,6 +163,24 @@ impl WindowSettings {
     }
 }
 
+/// The lines full coverage covers: every line except users' custom lines.
+/// `full-coverage-consumer` builds populations and windows for the
+/// `lines/*.toml` catalogue only, and `CustomLine`'s `From` impl already
+/// marks a custom line as never a full-coverage candidate -- but
+/// `FULL_COVERAGE_ENABLED_DEFAULT=true` would otherwise enable it, so each
+/// one read as a "missing" window every cycle (and as Pending under
+/// `enforce` with `*`). They keep `NotEnabled`.
+pub(crate) fn full_coverage_lines(
+    lines: &HashMap<String, LineDefinition>,
+    custom_ids: &HashSet<String>,
+) -> HashMap<String, LineDefinition> {
+    lines
+        .iter()
+        .filter(|(id, _)| !custom_ids.contains(*id))
+        .map(|(id, line)| (id.clone(), line.clone()))
+        .collect()
+}
+
 /// One stored window bucket.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StoredWindow {
@@ -998,6 +1016,58 @@ mod tests {
         assert_eq!(statuses[0].data_quality, DataQuality::TrustInferred);
         assert_eq!(statuses[1].severity, Severity::PartSuspended);
         assert_eq!(statuses[1].reason, "Buses replace late night trains.");
+    }
+
+    /// A custom line is not in the full-coverage set, so `enforce` with `*`
+    /// neither marks it Pending nor counts it as a missing window.
+    #[test]
+    fn custom_lines_are_left_out_of_full_coverage() {
+        let mut f = fixture();
+        let custom = "custom-milton-keynes-drain";
+        f.lines.insert(custom.to_string(), line(custom, false));
+        f.reports.insert(
+            custom.to_string(),
+            report(
+                custom,
+                vec![status(
+                    Severity::GoodService,
+                    DataQuality::LdbwsInferred,
+                    "Good Service",
+                )],
+            ),
+        );
+        let custom_ids: HashSet<String> = [custom.to_string()].into_iter().collect();
+        let catalogue = full_coverage_lines(&f.lines, &custom_ids);
+        assert!(!catalogue.contains_key(custom));
+        assert_eq!(catalogue.len(), 3);
+        let records = apply_windows(
+            &mut f.reports,
+            &catalogue,
+            &f.windows,
+            &Defaults::default(),
+            &settings(WindowMode::Enforce, "*"),
+            true,
+            now(),
+        );
+        assert!(records.iter().all(|r| r.line_id != custom));
+        assert_eq!(
+            f.reports[custom].statuses[0].full_coverage_availability,
+            FullCoverageAvailability::NotEnabled
+        );
+        // Without the filter, the same custom line is Pending ("missing").
+        apply_windows(
+            &mut f.reports,
+            &f.lines,
+            &f.windows,
+            &Defaults::default(),
+            &settings(WindowMode::Enforce, "*"),
+            true,
+            now(),
+        );
+        assert_eq!(
+            f.reports[custom].statuses[0].full_coverage_availability,
+            FullCoverageAvailability::Pending
+        );
     }
 
     #[test]

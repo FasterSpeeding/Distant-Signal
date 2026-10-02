@@ -154,6 +154,21 @@ which override the rest of this document where they differ:
    source `full-coverage-window`) for an enforced verdict. The legacy
    whole-day merge (`merge_full_coverage`) is unchanged; it never matches
    (§1) and `enforce` bypasses it for the lines it enforces.
+5. **Custom lines are not full-coverage lines.** Users' custom lines
+   (`custom-milton-keynes-drain`, `custom-west-barnes-drain` in production)
+   counted as `missing` every cycle: `FULL_COVERAGE_ENABLED_DEFAULT=true`
+   enabled them, but `full-coverage-consumer` only covers the
+   `lines/*.toml` catalogue. The aggregator now leaves every custom line
+   out of full coverage (`full_coverage_window::full_coverage_lines`): no
+   window verdict, no `missing` count, no `Pending` under `enforceLines:
+   "*"`, and the legacy merge leaves them `NotEnabled`, which is what
+   `CustomLine`'s `From` impl already intended.
+6. **Production values are not changed by this work.** The pilot values
+   (after a clean 7-day re-shadow including a weekend) are in the
+   2026-10-02 fix report: `enforce` on `gwr-windsor-branch`,
+   `scotrail-cathcart-circle`, `swr-chertsey-loop`,
+   `lnwr-birmingham-crewe`, `greater-anglia-west-anglia` and
+   `elizabeth-shenfield`, with `minEscalationRank: 4`.
 
 ## 1. Problem
 

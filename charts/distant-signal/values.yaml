@@ -1718,7 +1718,8 @@ aggregator:
     mode: "off"
     # -- Lines enforce may change: comma list, or "*" for every
     # full-coverage-enabled line (fullCoverageEnabledDefault is true, so
-    # that is every line). EMPTY by default: nothing is enforced until the
+    # that is every catalogue line; users' custom lines never take part in
+    # full coverage). EMPTY by default: nothing is enforced until the
     # pilot lines are named (pick ~5 of different volumes from
     # `compare_full_coverage --windows --all-lines`).
     enforceLines: ""
