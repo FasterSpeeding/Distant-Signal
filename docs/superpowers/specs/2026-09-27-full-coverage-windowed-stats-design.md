@@ -134,6 +134,26 @@ which override the rest of this document where they differ:
    few sleepers' first calls) are still counted nowhere, and for about 70
    minutes after the rollover the `recent` window does not see D's
    after-midnight trains (their TRUST state is dropped at the rollover).
+4. **Only statuses in effect now are raised (fix C).** Shadow showed
+   `enforce` would have escalated planned-works notices that were not in
+   effect (for example "Buses replace late night trains ... from Monday to
+   Thursday", whose validity spans whole days). `enforce` and the existing
+   LDBWS escalation (Layer 2) now raise only statuses in effect now, and
+   the line's "current severity" that a window verdict must beat is the
+   worst of those statuses alone (Good Service when there are none).
+   "In effect" is `aggregation::in_effect_now`: `validity.is_now`, or, for
+   anything but a planned notice, a validity period covering now.
+   `poller-incidents` publishes `is_now = false` for every notice with an
+   end date, so a bounded planned notice is never in effect. In production
+   on 2026-10-02 every planned status had `is_now = false`, and every
+   Knowledgebase, LDBWS and TfL status had `is_now = true`. Planned
+   notices stay exactly as published. When nothing on a line is in effect,
+   live data gets its own status instead of being attached to the notice:
+   Layer 2 adds its LDBWS-inferred status if the samples show worse than
+   Good Service, and `enforce` adds a `TrustInferred` status (disruption
+   source `full-coverage-window`) for an enforced verdict. The legacy
+   whole-day merge (`merge_full_coverage`) is unchanged; it never matches
+   (§1) and `enforce` bypasses it for the lines it enforces.
 
 ## 1. Problem
 
