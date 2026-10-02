@@ -112,6 +112,12 @@ brief. Deploying phase 1 alone must be a no-op in production.
 
 ## Phase 4: the `charts/distant-signal` `scheduleFeed` changes
 
+Expanded task by task, with the env-var and metric contract the Rust
+phases must implement, in
+[2026-10-02-gcs-landing-bucket-chart-plan](2026-10-02-gcs-landing-bucket-chart-plan.md).
+That plan also fixes a phase 0 bug: `AlertPolicy.documentation` must be an
+object.
+
 | # | Task | Files | Tests |
 | --- | --- | --- | --- |
 | 4.1 | Gate everything SFTP on `scheduleFeed.sftp.enabled` (default `true`): container, Service, ConfigMap and checksum, host-key Secret and volume, `sftp-bootstrap`, the `authMethod` guard, the 2022 ingress rule, the `sftp-metrics` endpoint and the `schedule-sftp` alert group. Fail with neither source enabled | `schedulefeed-*.yaml`, `networkpolicy.yaml`, `podmonitor.yaml`, `prometheusrule.yaml`, `values.yaml` | CI render step: **the default render is byte-identical** to `origin/main`'s; SFTP-off/bucket-on has no sftpgo, Service, NodePort or host key; neither → fails |
@@ -171,7 +177,7 @@ matches spec §12.
    default four), `reader.member`, and `auditLogs.sinkWriterIdentity`.
    Optionally `usageAlerts` with the notification channels.
 4. **DS release values:** `scheduleFeed.bucket.enabled: true`,
-   `bucket.bucket`, `bucket.existingSecret: distant-signal-schedulefeed-bucket`,
+   `bucket.name`, `bucket.existingSecret: distant-signal-schedulefeed-bucket`,
    `bucket.auditLogs.*` if shipping; SFTP left on.
 5. **Logging and alerts:** phase 5.2, and route
    `distant-signal.schedule-bucket` through the existing ntfy/Grafana
