@@ -405,7 +405,10 @@ mod tests {
         cleanup(&pool).await;
 
         let first = row(FIXTURE_LINE_ID, "2026-09-27T12:01:00Z", 10);
-        let later = row(FIXTURE_LINE_ID, "2026-09-27T12:02:00Z", 11);
+        let mut later = row(FIXTURE_LINE_ID, "2026-09-27T12:02:00Z", 11);
+        later.counts.on_time = 9;
+        later.counts.cancelled_explicit = 2;
+        later.counts.cancelled_in_advance = 1;
         let stale = row(FIXTURE_LINE_ID, "2026-09-27T12:01:30Z", 99);
         let next_bucket = row(FIXTURE_LINE_ID, "2026-09-27T12:16:00Z", 12);
 
