@@ -280,6 +280,9 @@ against 33 Part Suspended). The user's decision:
    of the line runs, Part Suspended is rank 4 and shown as severe for the
    whole line, and where trains really are cancelled the windows (rate
    tiers or rule A) escalate on their own evidence.
+   The one-third share (`PART_SUSPENDED_SHARE` in
+   `crates/aggregator/src/no_trains.rs`) was confirmed by the user on
+   2026-10-02.
 3. **Outcome on the production archive.** Of the unplanned incidents in
    the study, every branch closure resolves to Part Suspended: the Atlantic
    Coast (7 of 7 stations), Lymington (3/3), Robin Hood (13/13), Looe
