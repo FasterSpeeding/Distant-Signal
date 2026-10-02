@@ -2170,7 +2170,7 @@ Off by default.
 | `scheduleFeed.service.nodePort` | `null` | Explicit NodePort for the SFTP port. Empty lets Kubernetes assign one. |
 | `scheduleFeed.service.externalTrafficPolicy` | `""` | `Local` or `Cluster`; empty renders nothing (Kubernetes defaults to `Cluster`). Only valid with type `NodePort` or `LoadBalancer`; anything else fails the render. `Local` keeps DTD's real source IP, which `scheduleFeed.sftp.allowedCidrs` needs, and only routes to nodes with a ready schedulefeed pod (no cost on a single node). |
 | `scheduleFeed.persistence.enabled` | `true` | Attach a PVC for deliveries. |
-| `scheduleFeed.persistence.size` | `5Gi` | Requested volume size. |
+| `scheduleFeed.persistence.size` | `5Gi` | Requested volume size. With `scheduleFeed.bucket` on, budget `(archiveKeep + 1) × maxObjectBytes` on top of today's use; the defaults fit in 5Gi. |
 | `scheduleFeed.persistence.storageClass` | `""` | StorageClass name. Empty means the cluster default. |
 | `scheduleFeed.persistence.accessModes` | `[ReadWriteOnce]` | PVC access modes. |
 | `scheduleFeed.persistence.existingClaim` | `""` | Use this existing PVC instead of creating one. |
@@ -2374,6 +2374,39 @@ See `docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md`.
 | `scheduleFeed.corpus.minRows` | `10000` | Fewer rows than this rejects the extract instead of replacing the table. |
 | `scheduleFeed.corpus.maxDecompressedBytes` | `268435456` | gzip-bomb guard. |
 | `scheduleFeed.corpus.retentionKeep` | `3` | Processed (and, separately, rejected) extracts kept under `/data/schedule-feed/corpus/`. |
+
+### scheduleFeed: bucket source
+
+The Google Cloud Storage delivery source, an alternative (or addition) to
+SFTP: schedule-ingest polls a dedicated bucket, downloads only the expected
+names, verifies size and CRC32C, archives each object on the PVC and deletes
+it from the bucket. `charts/ds-ingest-bucket` provisions the bucket and its
+IAM. See [docs/schedule-feed-bucket.md](../../docs/schedule-feed-bucket.md)
+and `docs/superpowers/specs/2026-10-02-schedule-feed-gcs-landing-design.md`.
+Off by default; needs a schedule-ingest image with the bucket source.
+
+| Key | Default | Description |
+|---|---|---|
+| `scheduleFeed.bucket.enabled` | `false` | Run the bucket source. With `scheduleFeed.sftp.enabled` too, both run, deduplicated by SHA-256. |
+| `scheduleFeed.bucket.provider` | `gcs` | Only `gcs` is implemented; anything else fails the render. |
+| `scheduleFeed.bucket.name` | `""` | Bucket name (no dots). Required when enabled; set in deploy values. |
+| `scheduleFeed.bucket.baseUrl` | `""` | Empty means `https://storage.googleapis.com`. Set only for a fake-GCS test server. |
+| `scheduleFeed.bucket.existingSecret` | `""` | Pre-existing Secret holding the reader's service-account key (sealed in deploy config; never put the key in values). Required when enabled. Mounted read-only into `ingest` only, as an optional volume: a missing Secret leaves SFTP running and raises `DistantSignalScheduleBucketAccessRevoked`. |
+| `scheduleFeed.bucket.serviceAccountKey` | `service-account.json` | Key in `existingSecret` holding the JSON key. |
+| `scheduleFeed.bucket.expectedKeys` | `[timetable_full.zip, CORPUSExtract.json.gz]` | Case-insensitive `*` globs naming the objects (bucket root only) the reader downloads. Anything else is flagged and deleted unread after `deleteMinAgeSecs`. |
+| `scheduleFeed.bucket.pollIntervalSecs` | `300` | Seconds between bucket listings. At least 60. |
+| `scheduleFeed.bucket.deleteMinAgeSecs` | `3600` | Objects are deleted only once this old, so the publisher's read-back and scan finish first. Under 6 days (the bucket's lifecycle backstop is 7). |
+| `scheduleFeed.bucket.archiveKeep` | `5` | Raw objects kept under `/data/schedule-feed/sources/bucket/archive`. |
+| `scheduleFeed.bucket.maxObjectBytes` | `268435456` | Objects listed larger than this are never downloaded (flagged as unexpected). At most `maxDownloadBytesPerHour`. |
+| `scheduleFeed.bucket.maxDownloadsPerPoll` | `2` | Loop guard: downloads per poll; more wait for the next poll. |
+| `scheduleFeed.bucket.maxDownloadBytesPerHour` | `268435456` | Loop guard: bytes per rolling hour. Hitting it raises `DistantSignalScheduleBucketDownloadBudget`. At most `maxDownloadBytesPerDay`. |
+| `scheduleFeed.bucket.maxDownloadBytesPerDay` | `1073741824` | Loop guard: bytes per rolling day. |
+| `scheduleFeed.bucket.maxBackoffSecs` | `3600` | Ceiling of the exponential backoff after errors, and the retry interval while access is revoked. At least `pollIntervalSecs`. |
+| `scheduleFeed.bucket.auditLogs.ship` | `false` | Ship the bucket's Cloud Audit Logs (from the audit-log bucket) to stdout as `schedule_ingest::bucket_access` lines for Loki. |
+| `scheduleFeed.bucket.auditLogs.bucket` | `""` | Audit-log bucket name. Required with `ship`; must differ from `name`. |
+| `scheduleFeed.bucket.auditLogs.pollIntervalSecs` | `600` | Seconds between audit-log bucket listings. At least 60. |
+| `scheduleFeed.sourcePrecedence` | `[bucket, sftp]` | Which source wins when SFTP and the bucket deliver different content within `disagreementWindowMinutes` (decision D5: the bucket). Must be a permutation of `[bucket, sftp]`. |
+| `scheduleFeed.disagreementWindowMinutes` | `120` | Different content from the two sources within this many minutes is a disagreement (`DistantSignalScheduleFeedSourcesDisagree`). |
 
 ### tests
 

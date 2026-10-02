@@ -11,6 +11,9 @@ sharing one PVC -- see docs/superpowers/specs/2026-09-01-schedule-feed-push-desi
 {{- if not (or .Values.scheduleFeed.sftp.enabled (.Values.scheduleFeed.bucket).enabled) }}
 {{- fail "scheduleFeed.enabled needs at least one source: scheduleFeed.sftp.enabled and/or scheduleFeed.bucket.enabled" }}
 {{- end }}
+{{- if .Values.scheduleFeed.bucket.enabled }}
+{{- include "distant-signal.scheduleFeedValidateBucket" . }}
+{{- end }}
 {{- if $sftp }}
 {{- if not .Values.scheduleFeed.sftp.authMethod }}
 {{- fail "scheduleFeed.sftp.authMethod must be set (\"password\" or \"public-key\") when scheduleFeed.enabled -- see docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md, Credentials" }}
@@ -100,6 +103,21 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- end }}
+        {{- if .Values.scheduleFeed.bucket.enabled }}
+        # The bucket reader's service-account key (a sealed Secret from
+        # deploy config; the chart never renders it). Optional: a missing
+        # Secret or key must not stop the pod, and so SFTP; schedule-ingest
+        # reports it as revoked access instead. No subPath, so a rotated
+        # key reaches the running pod.
+        - name: bucket-credentials
+          secret:
+            secretName: {{ .Values.scheduleFeed.bucket.existingSecret }}
+            optional: true
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.scheduleFeed.bucket.serviceAccountKey }}
+                path: service-account.json
         {{- end }}
       containers:
         {{- if $sftp }}
@@ -233,6 +251,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data/schedule-feed
+            {{- if .Values.scheduleFeed.bucket.enabled }}
+            # Read-only, and on this container only: sftp and reference
+            # never see the reader key.
+            - name: bucket-credentials
+              mountPath: /var/run/secrets/distant-signal/gcs
+              readOnly: true
+            {{- end }}
           {{- with (.Values.scheduleFeed.ingest.resources | default .Values.scheduleFeed.resources) }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -632,4 +657,60 @@ scheduleFeed.ingest.extraEnv by distant-signal.mergeEnv (an extraEnv entry repla
               value: {{ .Values.scheduleFeed.ingest.progressStallSecs | quote }}
             - name: RUST_LOG
               value: {{ .Values.scheduleFeed.logLevel | quote }}
+            {{- $sf := .Values.scheduleFeed }}
+            {{- if or $sf.bucket.enabled (not $sf.sftp.enabled) }}
+            # Source switches (docs/schedule-feed-bucket.md). Rendered only
+            # when they differ from schedule-ingest's defaults (SFTP on,
+            # bucket off), so an SFTP-only release renders as before.
+            - name: SFTP_SOURCE_ENABLED
+              value: {{ $sf.sftp.enabled | quote }}
+            - name: BUCKET_SOURCE_ENABLED
+              value: {{ $sf.bucket.enabled | quote }}
+            {{- end }}
+            {{- if $sf.bucket.enabled }}
+            {{- $b := $sf.bucket }}
+            # Which source wins a disagreement (decision D5), and the window.
+            - name: SOURCE_PRECEDENCE
+              value: {{ join "," $sf.sourcePrecedence | quote }}
+            - name: DISAGREEMENT_WINDOW_MINUTES
+              value: {{ $sf.disagreementWindowMinutes | int | quote }}
+            # The GCS source (scheduleFeed.bucket; the bucket and its IAM
+            # are charts/ds-ingest-bucket's).
+            - name: BUCKET_NAME
+              value: {{ $b.name | quote }}
+            {{- with $b.baseUrl }}
+            - name: BUCKET_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            # The reader key, mounted from scheduleFeed.bucket.existingSecret.
+            - name: GOOGLE_SERVICE_ACCOUNT_PATH
+              value: /var/run/secrets/distant-signal/gcs/service-account.json
+            - name: BUCKET_EXPECTED_KEYS
+              value: {{ join "," $b.expectedKeys | quote }}
+            - name: BUCKET_POLL_INTERVAL_SECS
+              value: {{ $b.pollIntervalSecs | int64 | quote }}
+            - name: BUCKET_DELETE_MIN_AGE_SECS
+              value: {{ $b.deleteMinAgeSecs | int64 | quote }}
+            - name: BUCKET_ARCHIVE_KEEP
+              value: {{ $b.archiveKeep | int64 | quote }}
+            - name: BUCKET_MAX_OBJECT_BYTES
+              value: {{ $b.maxObjectBytes | int64 | quote }}
+            - name: BUCKET_MAX_DOWNLOADS_PER_POLL
+              value: {{ $b.maxDownloadsPerPoll | int64 | quote }}
+            - name: BUCKET_MAX_DOWNLOAD_BYTES_PER_HOUR
+              value: {{ $b.maxDownloadBytesPerHour | int64 | quote }}
+            - name: BUCKET_MAX_DOWNLOAD_BYTES_PER_DAY
+              value: {{ $b.maxDownloadBytesPerDay | int64 | quote }}
+            - name: BUCKET_MAX_BACKOFF_SECS
+              value: {{ $b.maxBackoffSecs | int64 | quote }}
+            {{- if $b.auditLogs.ship }}
+            # Cloud Audit Logs to stdout (schedule_ingest::bucket_access).
+            - name: BUCKET_AUDIT_LOGS_SHIP
+              value: "true"
+            - name: BUCKET_AUDIT_LOGS_BUCKET
+              value: {{ $b.auditLogs.bucket | quote }}
+            - name: BUCKET_AUDIT_LOGS_POLL_INTERVAL_SECS
+              value: {{ $b.auditLogs.pollIntervalSecs | int64 | quote }}
+            {{- end }}
+            {{- end }}
 {{- end }}

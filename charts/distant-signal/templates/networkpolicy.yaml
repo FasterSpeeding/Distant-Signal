@@ -465,7 +465,14 @@ spec:
 {{- with include "distant-signal.extraIngress" (dict "root" . "component" "schedulefeed") }}
     {{- . | nindent 4 }}
 {{- end }}
-{{- with include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" (dict "api" true) "internet" true "urls" (list .Values.internalOauth.tokenUrl)) }}
+{{- $sfUrls := list .Values.internalOauth.tokenUrl }}
+{{- if .Values.scheduleFeed.bucket.enabled }}
+{{- /* Ports only: the internet rule is by CIDR, so these add 443 (or a
+custom baseUrl's port) when networkPolicy.egress.internetPorts is set. */}}
+{{- $sfUrls = concat $sfUrls (list "https://storage.googleapis.com" "https://oauth2.googleapis.com") }}
+{{- with .Values.scheduleFeed.bucket.baseUrl }}{{ $sfUrls = append $sfUrls . }}{{ end }}
+{{- end }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" (dict "api" true) "internet" true "urls" $sfUrls) }}
   {{- . | nindent 2 }}
 {{- end }}
 {{- end }}

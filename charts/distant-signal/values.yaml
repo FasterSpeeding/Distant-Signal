@@ -3255,6 +3255,62 @@ scheduleFeed:
     # /data/schedule-feed/corpus/ (rejected ones into corpus/rejected/);
     # this many of each are kept.
     retentionKeep: 3
+  # -- The Google Cloud Storage delivery source (docs/schedule-feed-bucket.md):
+  # schedule-ingest polls a dedicated bucket that the feed provider pushes
+  # into, downloads only expected names, verifies size and CRC32C,
+  # archives each object on the PVC, then deletes it from the bucket. Runs
+  # alongside SFTP or instead of it. The bucket and its IAM are
+  # charts/ds-ingest-bucket's. Off by default. Needs a schedule-ingest
+  # image with the bucket source.
+  bucket:
+    enabled: false
+    # -- Only `gcs` is implemented.
+    provider: gcs
+    # -- Bucket name. Required when enabled; set in deploy values.
+    name: ""
+    # -- Empty: https://storage.googleapis.com. Set only for a fake-GCS
+    # test server.
+    baseUrl: ""
+    # -- Pre-existing Secret holding the reader's service-account key
+    # (sealed in deploy config, never in values). Required when enabled.
+    # Mounted read-only into `ingest` only, as an optional volume, so a
+    # missing Secret leaves SFTP running and raises
+    # DistantSignalScheduleBucketAccessRevoked instead of blocking the pod.
+    existingSecret: ""
+    # -- Key in existingSecret holding the JSON key.
+    serviceAccountKey: service-account.json
+    # -- Object names (case-insensitive `*` globs, bucket root only) the
+    # reader downloads. Anything else is flagged and deleted unread after
+    # deleteMinAgeSecs.
+    expectedKeys:
+      - timetable_full.zip
+      - CORPUSExtract.json.gz
+    # -- Seconds between bucket listings. At least 60.
+    pollIntervalSecs: 300
+    # -- An object is deleted only once it is this old, so the
+    # publisher's read-back and malware scan finish first. Under 6 days
+    # (the bucket's lifecycle backstop is 7).
+    deleteMinAgeSecs: 3600
+    # -- Raw objects kept under /data/schedule-feed/sources/bucket/archive.
+    archiveKeep: 5
+    # -- Objects listed larger than this are never downloaded (flagged as
+    # unexpected). At most maxDownloadBytesPerHour.
+    maxObjectBytes: 268435456
+    # -- Loop guards: downloads per poll, and bytes per rolling hour and
+    # day. A capped hour or day raises DistantSignalScheduleBucketDownloadBudget.
+    maxDownloadsPerPoll: 2
+    maxDownloadBytesPerHour: 268435456
+    maxDownloadBytesPerDay: 1073741824
+    # -- Ceiling of the exponential backoff after errors, and the retry
+    # interval while access is revoked. At least pollIntervalSecs.
+    maxBackoffSecs: 3600
+    # -- Ship the bucket's Cloud Audit Logs (from the audit-log bucket) to
+    # stdout as `schedule_ingest::bucket_access` lines for Loki. Off.
+    auditLogs:
+      ship: false
+      # -- Audit-log bucket name. Required with ship.
+      bucket: ""
+      pollIntervalSecs: 600
   # -- Third sibling container in this same Pod (crates/schedule-reference):
   # once `ingest` has moved a verified-complete delivery into
   # storage_dir/<n>/, parses that sequence's TI/A records into the
@@ -3336,6 +3392,15 @@ scheduleFeed:
         memory: 3Gi
       limits:
         memory: 4Gi
+  # -- Which source wins when SFTP and the bucket deliver different
+  # content within disagreementWindowMinutes (decision D5: the bucket).
+  # Must be a permutation of [bucket, sftp].
+  sourcePrecedence:
+    - bucket
+    - sftp
+  # -- Different content from the two sources within this many minutes
+  # counts as a disagreement (DistantSignalScheduleFeedSourcesDisagree).
+  disagreementWindowMinutes: 120
   service:
     # -- LoadBalancer or NodePort + an operator-managed external LB/DNS --
     # NOT an Ingress (HTTP(S)-only by spec, cannot carry SFTP). Actually
@@ -3370,6 +3435,10 @@ scheduleFeed:
     externalTrafficPolicy: ""
   persistence:
     enabled: true
+    # -- With scheduleFeed.bucket on, budget (bucket.archiveKeep + 1) x
+    # bucket.maxObjectBytes on top of today's use: the defaults fit in 5Gi
+    # (about 0.5 GB for real 78 MB objects, against about 2.3 GB for three
+    # extracted deliveries).
     size: 5Gi
     storageClass: ""
     accessModes:

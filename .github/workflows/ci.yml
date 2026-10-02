@@ -1091,8 +1091,13 @@ jobs:
           grep -A4 'name: RUST_LOG$' <<<"${dep}" | grep -q 'secretKeyRef' || fail "an extraEnv valueFrom must replace the chart's value"
           if grep -A1 'name: RUST_LOG$' <<<"${dep}" | grep -q 'value:'; then fail "the replaced entry must not keep the chart's value"; fi
           # No container anywhere repeats a name (containers are the
-          # 8-space list items, their env entries the 12-space ones).
+          # 8-space list items, their env entries the 12-space ones),
+          # including schedulefeed's ingest with the bucket source's env.
           all=$(render -f charts/distant-signal/values-example.yaml \
+            --set scheduleFeed.enabled=true --set scheduleFeed.sftp.authMethod=password \
+            --set scheduleFeed.bucket.enabled=true \
+            --set scheduleFeed.bucket.name=example-ds-ingest \
+            --set scheduleFeed.bucket.existingSecret=distant-signal-schedulefeed-bucket \
             --set 'pollers.tfl.extraEnv[0].name=RUST_LOG' --set-string 'pollers.tfl.extraEnv[0].value=debug')
           dups=$(awk '/^---/{doc++} /^        - name: /{c=$NF} /^            - name: [A-Z_][A-Z0-9_]*$/{print doc, c, $NF}' <<<"${all}" | sort | uniq -d)
           [[ -z "${dups}" ]] || fail "repeated env names: ${dups}"
