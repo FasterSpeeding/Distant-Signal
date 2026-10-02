@@ -1,15 +1,13 @@
 # Schedule feed: a cloud-bucket delivery source alongside SFTP
 
-Design, 2026-10-02. Status: **proposed**, with the user's decisions D1–D11
+Design, 2026-10-02. Status: **proposed**, with the user's decisions D1–D13
 recorded the same day (below). Nothing here is deployed.
 
-The bucket is **Google Cloud Storage** (D8). This file keeps its original
-name (`...-s3-landing-design.md`) from the first, AWS S3 draft so that
-existing links still work.
+The bucket is **Google Cloud Storage** (D8). The first draft targeted AWS S3.
 
 This change adds `charts/ds-ingest-bucket`, off by default and installed
 nowhere. Everything else in this document is a proposal, and
-[the plan](../plans/2026-10-02-schedule-feed-s3-landing-plan.md) is how to
+[the plan](../plans/2026-10-02-schedule-feed-gcs-landing-plan.md) is how to
 build it.
 
 ## Decisions (user, 2026-10-02)
@@ -27,6 +25,8 @@ build it.
 | D9 | **The bucket is dedicated** to timetable/CORPUS ingest and similar data. Nothing else ever goes in it. **Usage limits** cap the blast radius | §5, "Usage limits" |
 | D10 | **Publisher access is exactly what DTD specifies**: a list of DTD's service accounts, each with DTD's four roles, bound on the bucket only | §5, "Publisher access" |
 | D11 | **The bucket holds data only in transit.** schedule-ingest fetches only expected names, verifies each download, archives it locally, then **deletes it from the bucket** (conditional on generation). Unexpected objects are flagged and deleted unread. Versioning off, soft delete at the 7-day minimum, one lifecycle backstop | §5, "An object's life"; §9 |
+| D12 | **Crossplane v2** (provider-upjet-gcp) provisions the bucket from Helm, not Config Connector | §4 |
+| D13 | **A kill-switch trip pauses reconciliation of the affected bindings.** The Ranma-side kill switch sets `crossplane.io/paused: "true"` on the labelled `BucketIAMMember` resources before removing the bindings; Ranma's reapply unpauses them | §5, "The kill switch and Crossplane" |
 
 Also recorded: Ranma-Config's **kill switch** (user-approved): budget and
 Cloud Monitoring alerts → Pub/Sub → a function that removes bucket
@@ -390,7 +390,7 @@ Residual risk: DTD overwrites or deletes an object **before** we fetch it.
 Soft delete keeps the prior copy for a week, the SFTP path delivers the
 same content, and dedup by SHA-256 ingests it once.
 
-### Audit-log bucket (`templates/log-bucket.yaml`)
+### Audit-log bucket (`templates/audit-bucket.yaml`)
 
 The destination of Ranma's Logging sink for this bucket's Cloud Audit
 Logs. Same privacy settings, no versioning, 7-day soft delete, objects
@@ -409,7 +409,7 @@ schedule-ingest's own guards. Who owns what:
 | --- | --- | --- |
 | Usage alert policies | This chart, `usageAlerts` (off; needs `provider-gcp-monitoring` and Ranma's notification channels) | Hourly: total bytes, object count, write requests, delete requests, received bytes, sent bytes, all on the free `storage.googleapis.com` metrics for this bucket |
 | Kill switch | Ranma-Config (OpenTofu), user-approved | A dedicated project budget plus Cloud Monitoring alerts on received bytes, write requests and **sent** bytes → Pub/Sub → a function holding only `getIamPolicy`/`setIamPolicy` on this one bucket. It removes bucket bindings and never disables billing: an ingress or write spike removes the publisher members; an egress spike removes our reader; a budget trip removes all of them. Re-enabling is a deliberate reapply of the deploy values. Amounts and identities are Ranma's |
-| $5 budget | Ranma-Config | Alert, and a kill-switch trigger. A budget alone never caps spending |
+| Project budget | Ranma-Config | Alert, and a kill-switch trigger. A budget alone never caps spending |
 | Retention | This chart | 7-day lifecycle backstop, 7-day soft delete, 1-day multipart abort |
 | Reader guards | schedule-ingest (§9) | Expected-name allowlist; size cap before download; never re-download a confirmed generation; per-poll, per-hour and per-day download caps; backoff on errors |
 
@@ -417,19 +417,19 @@ schedule-ingest's own guards. Who owns what:
 resources. If the function removes a binding, Crossplane re-creates it at
 the provider's next poll (about 10 minutes by default), which would turn
 a kill into a throttle. So the trip must also stop reconciliation of the
-affected bindings. Recommended: a small Ranma-side watcher pulls the
+affected bindings (D13): a small Ranma-side watcher pulls the
 kill-switch topic (outbound only) and sets `crossplane.io/paused: "true"`
 on the bucket's `BucketIAMMember` resources selected by the chart's label
 `ds-ingest-bucket/kill-switch-group: publisher` or `reader`. The chart
 never sets `crossplane.io/paused`, so a Helm upgrade leaves a pause in
 place; recovery (Ranma's reapply) removes the annotation. For the reader
 alone, disabling our reader service account (Ranma-owned, not reconciled
-by this chart) is an equivalent lever. Which one Ranma builds is its call
-(§14).
+by this chart) is an extra lever Ranma may add; how the watcher is built
+is Ranma's call.
 
-### Optional Pub/Sub notifications (`templates/sqs.yaml`, `notifications.pubsub.enabled: false`)
+### Optional Pub/Sub notifications (`templates/pubsub.yaml`, `notifications.pubsub.enabled: false`)
 
-The file name is kept from the S3 draft. It renders a topic that only the
+It renders a topic that only the
 project's Cloud Storage service agent may publish to, a pull subscription
 (never expires) that only the reader may consume, and an `OBJECT_FINALIZE`
 notification on the bucket. No dead-letter topic: messages are hints for a
@@ -779,7 +779,7 @@ Settings that ship **off by default**: `scheduleFeed.bucket.enabled`,
 | Our authority | Filesystem access to the PVC | Get, list and delete on one bucket; never create |
 | A compromised DTD identity | Replaces the timetable with a crafted file | The same: a poisoned or junk file. Mitigated by ingest content checks, quarantine, the SHA-256 audit, the expected-name allowlist, the audit-log rules, usage alerts and the kill switch. An overwrite or delete before we fetch is restorable from soft delete for a week, and SFTP plus dedup delivers the genuine copy |
 | A leaked reader key | — | Reads public timetable data (egress cost, capped by alerts and the kill switch's egress trigger) and can delete undelivered objects (soft delete restores them; SFTP still delivers). Can't plant a file. No IP pin; detected by the "reader new source" rule |
-| Cost abuse | None | A looping reader or a flood of uploads. Reader guards, usage alerts, the kill switch and the $5 budget (§5) |
+| Cost abuse | None | A looping reader or a flood of uploads. Reader guards, usage alerts, the kill switch and the project budget (§5) |
 | Public exposure of the bucket | — | Impossible: public access prevention enforced, UBLA on, and the render refuses public members |
 | Detection | SFTPGo logs → Loki rules | Data Access audit logs → Loki rules; Prometheus for revocation, no-new-object, unexpected objects, download caps |
 | New dependency | None | A GCP project to secure, Crossplane in the cluster holding a scoped project key |
@@ -799,7 +799,7 @@ the operator's choice (§12, step 7). If chosen, Ranma updates
 Nothing here retires SFTPGo. Each step can be undone by flipping a value.
 
 1. **Project and bootstrap** (Ranma, OpenTofu, D2/D3/D7).
-   - The dedicated project, its billing link and the $5 budget.
+   - The dedicated project, its billing link and the budget (amount in Ranma-Config).
    - Check the effective org policies (§7).
    - The Crossplane provider's service account, its custom role and its
      key, sealed.
@@ -852,18 +852,14 @@ From the artifact's europe-west2 figures, adjusted for D11.
 Answered 2026-10-02 and recorded under "Decisions": the cloud (D8), the
 project (D2), provisioning (D3, with Crossplane recommended), the audit
 trail (D4), precedence (D5), repo scope (D7), the dedicated bucket (D9),
-the publisher's access (D10), and the in-transit object life (D11).
+the publisher's access (D10), the in-transit object life (D11), Crossplane (D12) and pausing
+bindings on a kill-switch trip (D13).
 DTD's credential model and permissions are answered by their
 instructions (§1).
 
 ### For the user
 
-1. **Provisioning controller.** Crossplane v2 (recommended, §4) or
-   Config Connector.
-2. **Kill switch vs reconciliation** (§5): the watcher that pauses the
-   bindings, disabling the reader account, or both. Ranma's call; until
-   one exists, a trip lasts only until the next provider poll.
-3. **Steady state** after verification (§12, step 7).
+1. **Steady state** after verification (§12, step 7).
 
 ### Questions for DTD/RDM (ready to send)
 

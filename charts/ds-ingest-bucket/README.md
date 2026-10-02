@@ -10,7 +10,7 @@ instead of it; `charts/distant-signal`'s `scheduleFeed` switches each one
 on separately.
 
 Design and rationale:
-[2026-10-02-schedule-feed-s3-landing-design](../../docs/superpowers/specs/2026-10-02-schedule-feed-s3-landing-design.md)
+[2026-10-02-schedule-feed-gcs-landing-design](../../docs/superpowers/specs/2026-10-02-schedule-feed-gcs-landing-design.md)
 (the file name predates the move from S3 to GCS).
 
 **Off by default** (`enabled: false`) and not deployed anywhere yet. This
@@ -27,13 +27,10 @@ calls.
 | Template | Kinds | Provider | Renders when |
 | --- | --- | --- | --- |
 | `bucket.yaml` | `storage.gcp.m.upbound.io/v1beta1` `Bucket` (delivery) | storage | `enabled` |
-| `log-bucket.yaml` | `Bucket` (audit-log sink destination) | storage | `enabled` and `auditLogs.bucket.enabled` |
-| `iam-users.yaml` | `BucketIAMMember` (publisher members × roles, reader, audit sink); `cloudplatform.gcp.m.upbound.io/v1beta1` `ProjectIAMCustomRole` (the reader's delete-only role) | storage, cloudplatform | `enabled` |
+| `audit-bucket.yaml` | `Bucket` (audit-log sink destination) | storage | `enabled` and `auditLogs.bucket.enabled` |
+| `iam.yaml` | `BucketIAMMember` (publisher members × roles, reader, audit sink); `cloudplatform.gcp.m.upbound.io/v1beta1` `ProjectIAMCustomRole` (the reader's delete-only role) | storage, cloudplatform | `enabled` |
 | `alerts.yaml` | `monitoring.gcp.m.upbound.io/v1beta1` `AlertPolicy` × 6 | monitoring | `enabled` and `usageAlerts.enabled` |
-| `sqs.yaml` | `pubsub.gcp.m.upbound.io/v1beta1` `Topic`, `Subscription`, `TopicIAMMember`, `SubscriptionIAMMember`; `storage` `Notification` | pubsub, storage | `enabled` and `notifications.pubsub.enabled` |
-
-(`iam-users.yaml`, `log-bucket.yaml` and `sqs.yaml` keep their names from
-the chart's S3 draft.)
+| `pubsub.yaml` | `pubsub.gcp.m.upbound.io/v1beta1` `Topic`, `Subscription`, `TopicIAMMember`, `SubscriptionIAMMember`; `storage` `Notification` | pubsub, storage | `enabled` and `notifications.pubsub.enabled` |
 
 The delivery bucket:
 

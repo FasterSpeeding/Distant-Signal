@@ -5,7 +5,7 @@ Activity). schedule-ingest's audit tailer reads it with the reader's key and
 ships one line per entry to Loki. Same privacy settings as the delivery
 bucket; no versioning (the sink only ever creates objects); soft delete
 stays at Google's 7-day default. Only the sink's writer identity can create
-objects (iam-users.yaml).
+objects (iam.yaml).
 */}}
 {{- if and .Values.enabled .Values.auditLogs.bucket.enabled }}
 {{- include "ds-ingest-bucket.validate" . }}

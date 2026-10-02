@@ -10,7 +10,7 @@ description: >-
   so installing it needs Crossplane and the GCP providers and their CRDs.
   `helm template` and `helm lint` work without them. Off by default
   (`enabled: false`).
-  Design: docs/superpowers/specs/2026-10-02-schedule-feed-s3-landing-design.md.
+  Design: docs/superpowers/specs/2026-10-02-schedule-feed-gcs-landing-design.md.
 type: application
 
 # Bump by hand for any template/values change, as charts/distant-signal does.

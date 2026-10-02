@@ -1,9 +1,8 @@
 # Schedule feed bucket source (GCS): implementation plan
 
-Spec: [2026-10-02-schedule-feed-s3-landing-design](../specs/2026-10-02-schedule-feed-s3-landing-design.md).
-Read the spec first. Section numbers (§) below refer to it. Both files keep
-their `s3-landing` names from the first, AWS draft; the bucket is now
-Google Cloud Storage (D8).
+Spec: [2026-10-02-schedule-feed-gcs-landing-design](../specs/2026-10-02-schedule-feed-gcs-landing-design.md).
+Read the spec first. Section numbers (§) below refer to it. The bucket is
+Google Cloud Storage (D8); the first draft targeted AWS S3.
 
 The goal is a GCS bucket in europe-west2 as a second schedule-feed source,
 peer to SFTP. Each source can be switched on independently, and both can
@@ -164,8 +163,8 @@ matches spec §12.
    if used), activation limited to the kinds used, the
    `ClusterProviderConfig`, PSA labels, egress 443, and **the kill-switch
    watcher** that pauses the bindings labelled
-   `ds-ingest-bucket/kill-switch-group` (or the reader-disable lever;
-   spec §5).
+   `ds-ingest-bucket/kill-switch-group` (spec D13, §5; disabling the
+   reader account is an optional extra lever).
 3. **The bucket**: a `ds-ingest-bucket` HelmRelease with `enabled: true`,
    `gcp.projectId`, `bucket.name`, **`publisher.members` set to DTD's
    service accounts** (from DTD's instructions; roles stay at the

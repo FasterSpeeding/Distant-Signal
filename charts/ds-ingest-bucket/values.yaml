@@ -4,7 +4,7 @@
 # managed resource from crossplane-contrib/provider-upjet-gcp
 # (provider-gcp-storage and provider-gcp-cloudplatform; provider-gcp-monitoring
 # with usageAlerts.enabled; provider-gcp-pubsub with notifications.pubsub.enabled). See README.md and
-# docs/superpowers/specs/2026-10-02-schedule-feed-s3-landing-design.md.
+# docs/superpowers/specs/2026-10-02-schedule-feed-gcs-landing-design.md.
 #
 # The bucket is dedicated to timetable/CORPUS ingest (decision D9): nothing
 # else ever goes in it.

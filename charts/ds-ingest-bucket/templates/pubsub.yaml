@@ -1,8 +1,7 @@
 {{- /*
 Optional object notifications (notifications.pubsub.enabled, off by
 default): Cloud Storage OBJECT_FINALIZE events -> a Pub/Sub topic -> a pull
-subscription that schedule-ingest pulls over outbound HTTPS. The file name
-is kept from the S3 draft of this chart (it held the SQS queue).
+subscription that schedule-ingest pulls over outbound HTTPS.
 
 - Only the project's Cloud Storage service agent may publish to the topic.
 - Only the reader may consume the subscription.

@@ -8,7 +8,7 @@ storage.gcp.m.upbound.io/v1beta1 Bucket (namespaced, Crossplane v2).
 
 No `logging` block: Cloud Storage usage logs carry no caller identity. The
 object-level audit trail is Cloud Audit Logs Data Access, routed by
-Ranma-Config's sink into the audit-log bucket (log-bucket.yaml).
+Ranma-Config's sink into the audit-log bucket (audit-bucket.yaml).
 */}}
 {{- if .Values.enabled }}
 {{- include "ds-ingest-bucket.validate" . }}

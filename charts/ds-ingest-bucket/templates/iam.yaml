@@ -2,8 +2,7 @@
 Who may use the buckets: bucket-level IAM member bindings only
 (storage.gcp.m.upbound.io/v1beta1 BucketIAMMember), never project-level, and
 never authoritative (no BucketIAMPolicy, so a binding someone else adds is
-not silently removed, and this chart can't wipe the bucket's policy). The
-file name is kept from the S3 draft of this chart.
+not silently removed, and this chart can't wipe the bucket's policy).
 
 - publisher.members x publisher.roles on the delivery bucket;
 - reader.member: roles/storage.objectViewer plus the delete-only custom
