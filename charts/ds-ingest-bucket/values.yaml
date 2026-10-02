@@ -1,5 +1,6 @@
-# Values for ds-ingest-bucket: the AWS S3 landing zone that replaces the
-# schedulefeed SFTP receiver. Every resource is an ACK (AWS Controllers for
+# Values for ds-ingest-bucket: the AWS S3 landing zone for the schedule
+# feed's bucket source, which runs alongside (or instead of) the schedulefeed
+# SFTP receiver. Every resource is an ACK (AWS Controllers for
 # Kubernetes) custom resource; the ACK s3 and iam controllers (and sqs, with
 # notifications.sqs.enabled) reconcile them into AWS. See README.md and
 # docs/superpowers/specs/2026-10-02-schedule-feed-s3-landing-design.md.
@@ -10,7 +11,7 @@
 # "After install").
 
 # -- Render anything at all. Off by default: the chart is not deployed
-# anywhere until the migration plan's phase 2.
+# anywhere until the adoption plan's step 3.
 enabled: false
 
 aws:
@@ -76,7 +77,7 @@ bucket:
 
 accessLogs:
   # -- S3 server access logging for the delivery bucket into a second,
-  # private bucket. The replacement for SFTPGo's login/upload audit lines:
+  # private bucket. The bucket's counterpart to SFTPGo's login/upload lines:
   # each record has the requester ARN, source IP, operation, key, status
   # and bytes. Best-effort delivery, usually within an hour.
   enabled: true

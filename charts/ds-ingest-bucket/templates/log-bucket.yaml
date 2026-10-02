@@ -1,6 +1,6 @@
 {{- /*
 Target of the delivery bucket's S3 server access logs: the audit trail that
-replaces SFTPGo's login and upload lines. Only the S3 logging service may
+is the counterpart of SFTPGo's login and upload lines. Only the S3 logging service may
 write here, and only for the delivery bucket in this account (the
 aws:SourceArn/aws:SourceAccount conditions stop another bucket from logging
 into it). Server access logging needs SSE-S3 on the target, so this bucket
