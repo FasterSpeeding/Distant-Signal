@@ -177,7 +177,7 @@ matches spec §12.
    default four), `reader.member`, and `auditLogs.sinkWriterIdentity`.
    Optionally `usageAlerts` with the notification channels.
 4. **DS release values:** `scheduleFeed.bucket.enabled: true`,
-   `bucket.bucket`, `bucket.existingSecret: distant-signal-schedulefeed-bucket`,
+   `bucket.name`, `bucket.existingSecret: distant-signal-schedulefeed-bucket`,
    `bucket.auditLogs.*` if shipping; SFTP left on.
 5. **Logging and alerts:** phase 5.2, and route
    `distant-signal.schedule-bucket` through the existing ntfy/Grafana

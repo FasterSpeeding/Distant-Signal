@@ -376,7 +376,7 @@ top-level keys go after `scheduleFeed.reference`.
     # -- Only `gcs` is implemented.
     provider: gcs
     # -- Bucket name. Required when enabled; set in deploy values.
-    bucket: ""
+    name: ""
     # -- Empty: https://storage.googleapis.com. Set only for a fake-GCS
     # test server.
     baseUrl: ""
@@ -441,7 +441,7 @@ question 1.
 | Rule | Message names |
 | --- | --- |
 | `provider` is `gcs` | `scheduleFeed.bucket.provider` |
-| `bucket` matches `^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$` (no dots, as `ds-ingest-bucket`) | `scheduleFeed.bucket.bucket` |
+| `name` matches `^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$` (no dots, as `ds-ingest-bucket`) | `scheduleFeed.bucket.name` |
 | `existingSecret` matches a DNS-1123 subdomain | `...existingSecret` and "never put the key in values" |
 | `serviceAccountKey` matches `^[-._a-zA-Z0-9]+$` | `...serviceAccountKey` |
 | `expectedKeys` is non-empty; no entry is empty or contains `/` or `,`; each is ≤ 1024 bytes | `...expectedKeys` |
@@ -452,7 +452,7 @@ question 1.
 | 1 ≤ `maxObjectBytes` ≤ `maxDownloadBytesPerHour` ≤ `maxDownloadBytesPerDay` (compare with `int64`) | all three |
 | `sourcePrecedence` is exactly `{bucket, sftp}` as a 2-element list | key |
 | `disagreementWindowMinutes` ≥ 0 | key |
-| `auditLogs.ship` needs `auditLogs.bucket` (same regex, ≠ `bucket`) and `auditLogs.pollIntervalSecs` ≥ 60 | keys |
+| `auditLogs.ship` needs `auditLogs.bucket` (same regex, ≠ `name`) and `auditLogs.pollIntervalSecs` ≥ 60 | keys |
 
 **Env.** Inside `distant-signal.scheduleFeedIngestEnv`, after `RUST_LOG`.
 Integers via `int64 | quote`.
@@ -475,7 +475,7 @@ Integers via `int64 | quote`.
             - name: DISAGREEMENT_WINDOW_MINUTES
               value: {{ $sf.disagreementWindowMinutes | int | quote }}
             - name: BUCKET_NAME
-              value: {{ $b.bucket | quote }}
+              value: {{ $b.name | quote }}
             {{- with $b.baseUrl }}
             - name: BUCKET_BASE_URL
               value: {{ . | quote }}
@@ -566,7 +566,7 @@ the connection block.
 **Assertions** in `check-schedulefeed-chart.py`. Every mode renders with
 `BASE`, `scheduleFeed.enabled=true` and `scheduleFeed.sftp.authMethod=password`.
 `BUCKET` means `--set scheduleFeed.bucket.enabled=true
---set scheduleFeed.bucket.bucket=example-ds-ingest
+--set scheduleFeed.bucket.name=example-ds-ingest
 --set scheduleFeed.bucket.existingSecret=distant-signal-schedulefeed-bucket`.
 
 | Mode | Must hold |
@@ -583,8 +583,8 @@ the connection block.
 Failures (render must exit non-zero, and the message must name the key):
 - neither source;
 - bucket on with an empty `existingSecret`;
-- bucket on with an empty `bucket`;
-- `bucket=Example.Bucket`;
+- bucket on with an empty `name`;
+- `name=Example.Bucket`;
 - `expectedKeys=null`;
 - `expectedKeys[0]=a/b`;
 - `maxObjectBytes=300000000` (over the hour cap);
@@ -696,7 +696,7 @@ recovery is a Ranma reapply.
 
 `check-alert-payloads.py` `RENDER_FLAGS` add
 `scheduleFeed.bucket.enabled=true`,
-`scheduleFeed.bucket.bucket=example-ds-ingest` and
+`scheduleFeed.bucket.name=example-ds-ingest` and
 `scheduleFeed.bucket.existingSecret=distant-signal-schedulefeed-bucket`.
 
 `scripts/alert-rules-tests/schedule-bucket.yaml`, in `health.yaml`'s
@@ -884,7 +884,11 @@ Task 1 makes this check permanent in CI.
   the kill-switch watcher. Also check that helm-controller drift detection
   doesn't strip a `crossplane.io/paused` it doesn't own.
 
-## Open questions (defaults chosen; none block)
+## Open questions (decided 2026-10-02)
+
+The user confirmed the defaults below: 256 MiB, an optional volume,
+the rename to `name` (3), no DS-side Pub/Sub values yet, and publishing
+`ds-ingest-bucket` to the OCI registry.
 
 1. **`maxObjectBytes` default.** 256 MiB, not the spec's 512 MiB, so it
    fits under the hourly cap. The alternative is raising
@@ -894,9 +898,10 @@ Task 1 makes this check permanent in CI.
    (and SFTP) starts and the bucket source reports `AccessRevoked`. The
    alternative, fail-fast (the pod stuck in `ContainerCreating`), would
    also stop SFTP.
-3. **The value name `scheduleFeed.bucket.bucket`** is kept from spec §10
-   and the parent plan's Ranma tasks. `scheduleFeed.bucket.name` reads
-   better. Rename now if wanted, before any deploy values use it.
+3. **The value name.** Settled: `scheduleFeed.bucket.name` (renamed from
+   spec §10's `scheduleFeed.bucket.bucket` before any deploy values used
+   it; the spec and parent plan now say `name`). `auditLogs.bucket` keeps
+   its name: it names a second bucket.
 4. **Pub/Sub values** are deferred, as above.
 5. **Publishing `ds-ingest-bucket`.** It is pushed to the same OCI
    registry as distant-signal. If Ranma's Flux reads charts from a

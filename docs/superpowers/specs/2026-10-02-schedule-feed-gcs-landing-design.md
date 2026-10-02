@@ -719,7 +719,7 @@ scheduleFeed:
   bucket:
     enabled: false           # NEW, off by default
     provider: gcs            # only gcs is implemented
-    bucket: ""               # required when enabled (Ranma's value)
+    name: ""                 # bucket name; required when enabled (Ranma's value)
     baseUrl: ""              # empty = storage.googleapis.com; set for a fake-GCS test server
     existingSecret: ""       # required: sealed reader key
     serviceAccountKey: service-account.json
