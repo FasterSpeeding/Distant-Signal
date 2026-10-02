@@ -170,6 +170,131 @@ which override the rest of this document where they differ:
    `lnwr-birmingham-crewe`, `greater-anglia-west-anglia` and
    `elizabeth-shenfield`, with `minEscalationRank: 4`.
 
+## Decisions (2026-10-02, sparse windows)
+
+A read-only production study (stored windows 2026-09-27 20:45Z to
+2026-10-02 08:45Z; weekend figures are lower bounds) found 51,478 of
+99,873 `recent` windows below `full_coverage_min_sample_size` (6), so never
+judged: most late-night, weekend and branch-line windows. Real misses: the
+Atlantic Coast line on Monday 10:16-11:20 (4 cancelled; the incident "No
+trains between Par and Newquay" read only Minor Delays), the Lymington
+branch (3 of 3 cancelled), the Looe Valley, the Medway Valley on Friday
+07:37-09:33 (7 of 9 cancelled, nothing in effect) and the Robin Hood line
+(4 cancelled).
+
+1. **Rule A, sparse all-cancelled detection.** In
+   `classify_full_coverage_window`, after the `feed_stale`, `partial` and
+   row-age checks (which still win) and before `BelowThreshold`, a window
+   is **Part Suspended** when all of these hold
+   (`full_coverage_window::sparse_all_cancelled`):
+   - `2 <= total < full_coverage_min_sample_size`;
+   - `cancelled_explicit == total`, and at least
+     `Defaults.full_coverage_sparse_min_cancelled` (default
+     `FULL_COVERAGE_SPARSE_MIN_CANCELLED = 2`; 0 turns the rule off;
+     overridable per line through `severity_overrides`, and globally by
+     the aggregator's `FULL_COVERAGE_SPARSE_MIN_CANCELLED`);
+   - `pending == 0`, `cancelled_presumed == 0` and `unobserved == 0`;
+   - `relevance == "full"`.
+
+   The reason is "All N trains due in the last hour were cancelled.", with
+   " (cancelled in advance)" before the full stop when every one of those
+   cancellations arrived at least 3 hours before the train was due
+   (`FullCoverageWindowCounts.cancelled_in_advance`, counted by the
+   consumer from the 0002's receipt time; an annotation only). The verdict
+   carries `EscalationBasis::SparseAllCancelled`; the rate tiers carry
+   `EscalationBasis::Rate`.
+
+   Why a feed gap cannot fake it: explicit cancellations prove the feed is
+   alive (a TRUST gap yields pending or presumed trains, never explicit
+   cancellations), and planned closures (STP-cancelled trains, buses) are
+   not in the population at all. Why 2: 3 would drop exactly the target
+   branches (a two-trains-an-hour shuttle). Why `pending == 0`: a train
+   still to report may yet run (the Medway Valley's Friday window had
+   pending trains, so this rule does not catch it; the rate tiers caught
+   the busier windows of the same morning).
+2. **Enforced under its own allowlist.** The aggregator records sparse
+   verdicts in every mode, but `enforce` raises a line with one only when
+   `FULL_COVERAGE_WINDOW_SPARSE_ENFORCE_LINES` (chart
+   `aggregator.fullCoverageWindow.sparseEnforceLines`, comma list or `*`,
+   **empty by default**) names it. `FULL_COVERAGE_WINDOW_ENFORCE_LINES`
+   no longer covers sparse verdicts, so the pilot can enforce the rate
+   tiers while the sparse rule stays shadow-only. A line in the sparse list
+   but not the main one keeps its legacy counts and is only raised; a line
+   in the main list only shows the window's counts and is not raised by a
+   sparse verdict. `in_allowlist` on a verdict row means "the allowlist
+   governing this verdict's basis names the line".
+3. **Recorded apart.** `full_coverage_window_verdicts.basis` (migration
+   `20261002110000`, nullable, CHECK added `NOT VALID`) is `rate` or
+   `sparse_all_cancelled` for an `escalate` verdict and NULL otherwise
+   (and for every older row). `aggregator_full_coverage_window_verdicts_total`
+   and `..._escalations_total` gain a `basis` label (`none`, `rate`,
+   `sparse_all_cancelled`). `compare_full_coverage --windows` reports
+   sparse verdicts in their own section (2b, grouped into events), keeps
+   them out of the rate totals, the daytime-share flag and the
+   enforced/below-gate volume columns, and gives them their own `sparse`
+   column; the aggregator-record section splits them out too.
+   `full_coverage_line_window_stats.cancelled_in_advance` (migration
+   `20261002110100`, `NOT NULL DEFAULT 0`) stores the annotation's count.
+4. **Simulation.** Replaying the study's 99,873 stored windows through this
+   implementation (the real `classify_full_coverage_window`, defaults)
+   gives **78 sparse windows in 22 events on 13 lines, 15 of them on lines
+   with nothing at Severe rank in effect** -- the study's numbers exactly.
+   None is on the six pilot lines. With a minimum of 3 it is 45 windows /
+   11 events / 6 new. Latency is about 45-70 minutes after the first
+   cancelled train (the window must hold only cancelled trains); a verdict
+   clears about 70 minutes after the last cancelled train was due, and
+   never sticks overnight.
+
+## Decisions (2026-10-02, incident sections)
+
+Not part of full coverage, but found by the same study: an incident "No
+trains between X and Y" matched none of `severity_from_incident`'s
+keywords, and an operator-wide match is capped at Minor Delays, so whole
+branch closures read Minor (2,749 in-effect operator-wide rows were Minor
+against 33 Part Suspended). The user's decision:
+
+1. **Resolve the section on each matched line**
+   (`crates/aggregator/src/no_trains.rs`). When a non-planned incident's
+   summary says "No trains between X and Y" (or "No service(s) between"),
+   and X and Y both resolve to different stations of the line, the closure
+   is evidence about that line. Names come from the `stations` reference
+   table (aggregator loads it each cycle; without it nothing changes),
+   normalised (case, apostrophes, "&" = "and", a parenthesised qualifier
+   dropped), matched exactly, as "London X", or as the one station of the
+   line whose name starts with X (4+ characters: "Falmouth Dock"). "X / Y"
+   alternatives need one of them on the line. The second name ends at the
+   time or cause that follows it ("until", "expected", "via", ":", ...).
+   A summary that says the closure is over ("CLEARED:", "Disruption
+   ended:") is ignored.
+2. **Scoped, so a partial closure of a busy line does not read as the
+   whole line at the Severe tier.** A section covering at least a third of
+   the line's stations (in `lines/*.toml` order) is **Part Suspended**; a
+   shorter one is **Reduced Service** with " (part of the line)" added to
+   the reason. Either way the status's `affected_stops` are the section's
+   stations and its `affected_routes` the section, the "(operator-wide
+   report)" note is dropped, and under an operator-wide or keyword-only
+   match the severity is capped at the section's (so "suspended" in the
+   text does not lift a short section to Suspended). A planned notice keeps
+   Planned Closure. Extraction may still demote a resolved incident.
+   Reduced Service rather than Part Suspended for a short section: the rest
+   of the line runs, Part Suspended is rank 4 and shown as severe for the
+   whole line, and where trains really are cancelled the windows (rate
+   tiers or rule A) escalate on their own evidence.
+3. **Outcome on the production archive.** Of the unplanned incidents in
+   the study, every branch closure resolves to Part Suspended: the Atlantic
+   Coast (7 of 7 stations), Lymington (3/3), Robin Hood (13/13), Looe
+   (6/6), Maritime (6/6), Greenford (5/5), Abbey (7/7), Marlow (4/5),
+   Mayflower (6/6), Tarka (Eggesford-Barnstaple, 6/14), Tyne Valley,
+   Paisley Canal. Short sections of longer lines are Reduced Service:
+   Virginia Water-Weybridge (Chertsey loop, 4/23), Downham Market-Ely
+   (King's Lynn, 3/32), Richmond-Willesden Junction (Mildmay, 6/28),
+   Wakefield Kirkgate-Pontefract Monkhill (5/16), Reading-Newbury on the
+   West of England line (2/12; Part Suspended on the Thames Valley line,
+   17/28). Other phrasings ("no trains will run between", "lines closed
+   between") do not occur in the production archive (1,971 incidents
+   since 2026-09-03); "no service between" occurs three times, all
+   planned.
+
 ## 1. Problem
 
 Full coverage today produces one number per line per rail day:

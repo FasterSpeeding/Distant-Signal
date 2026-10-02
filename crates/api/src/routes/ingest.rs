@@ -2291,6 +2291,7 @@ mod db_tests {
             pending: 4,
             unobserved: 3,
             avg_delay_minutes: 3.5,
+            cancelled_in_advance: 0,
         });
         assert_eq!(
             queries::upsert_full_coverage_line_stats(&pool, std::slice::from_ref(&v2))
