@@ -70,7 +70,8 @@ implementation:
    higher by construction.
 4. **Minimum sample (open question 5).** 6 evaluable trains per 60-minute
    window (`full_coverage_min_sample_size`), and 3 affected trains per tier
-   (`full_coverage_min_affected`), as section 5.
+   (`full_coverage_min_affected`), as section 5. **Superseded for the
+   Severe tiers by "Decisions (2026-10-02)" item 1: 5 affected trains.**
 5. **No frontend or UI change (open question 3).** Day-to-date numbers are
    computed and stored (`full_coverage_line_window_stats`,
    `window_kind = 'day_to_date'`, and the v2 `full_coverage_line_stats`
@@ -83,6 +84,91 @@ ignored trains with no matched movement; the next day's Activations were
 wiped at the rollover (and never replayed after a restart); and
 rail-replacement buses and ships were counted as cancellations (they are left
 out once the population carries `train_status`).
+
+## Decisions (2026-10-02)
+
+A shadow evaluation in production (4.3 weekdays) found Severe firing on
+3.53% of judgeable windows (§8.4's limit is 3%) and 8 lines Severe in more
+than 20% of their daytime windows. The cause was the 3-minute "late"
+threshold combined with a 3-affected-train minimum: 3 of 6 trains at 3+
+minutes late is 50%, which read as Severe Delays. The user's decisions,
+which override the rest of this document where they differ:
+
+1. **Calibration.** The Severe-rank tiers (Part Suspended, Severe Delays
+   by lateness or by skipped stops) need **at least 5 affected trains**:
+   `Defaults.full_coverage_severe_min_affected`, default
+   `common::full_coverage_window::FULL_COVERAGE_SEVERE_MIN_AFFECTED = 5`,
+   overridable per line through `severity_overrides` like the other keys.
+   It is never below `full_coverage_min_affected`. The Minor Delays /
+   Reduced Service tiers keep 3. The 3-minute late threshold stays, and
+   rank 3 stays off for enforcement (`minEscalationRank: 4` is the pilot
+   setting). So "3 of 6 late" is now Minor Delays (recorded, not
+   enforced), and "5 of 8 late" is Severe Delays.
+2. **Memory.** The shadow run measured a consumer working set of
+   430–570 MiB with windowed stats on, bounded and reset at each rail-day
+   rollover. This is accepted. The resource target in §8.4 item 6 is now
+   **~650 MiB** (was 400 MiB). The chart's
+   `fullCoverageConsumer.resources.requests.memory` is raised from 512Mi
+   to 640Mi to cover it. The limit stays 1 GiB.
+3. **Rail-day boundary (fixed before the pilot).** Populations are
+   published per CIF service date, and the consumer only counted the
+   current service date's population. Rail day D runs from 02:00 London
+   on D to 02:00 on D + 1, so D + 1's trains due between local midnight
+   and 02:00 were in no window when due (D's population did not hold them)
+   and were outside D + 1's day-to-date and closed-day ranges (which start
+   at `rail_day_start(D + 1)`): about 0.6% of trains. Evidence: the
+   Elizabeth line on 09-30 had 678 relevant trains against a closed-day
+   row of 675. **Rule: a train belongs to the rail day its due time falls
+   in.** Every window of rail day D now counts D's population (judged on
+   `TrainState::current`) plus D + 1's trains due before
+   `rail_day_start(D + 1)` (judged on `TrainState::next`, where their
+   Activations already go). This was chosen over re-keying the population
+   by rail day: `schedule-reference` publishes per service date, the
+   reloader already holds D and D + 1, and the TRUST state is already
+   split the same way, so nothing upstream or in the cache changes. The
+   closed-day row of D is written at D's close, when those trains are all
+   due. If D + 1's population is not held, any window reaching local
+   midnight is `partial` (so a closed day cannot read `available` with
+   those trains missing). Remaining gaps, both outside any evaluable
+   daytime window: D's own trains due after `rail_day_start(D + 1)` (a
+   few sleepers' first calls) are still counted nowhere, and for about 70
+   minutes after the rollover the `recent` window does not see D's
+   after-midnight trains (their TRUST state is dropped at the rollover).
+4. **Only statuses in effect now are raised (fix C).** Shadow showed
+   `enforce` would have escalated planned-works notices that were not in
+   effect (for example "Buses replace late night trains ... from Monday to
+   Thursday", whose validity spans whole days). `enforce` and the existing
+   LDBWS escalation (Layer 2) now raise only statuses in effect now, and
+   the line's "current severity" that a window verdict must beat is the
+   worst of those statuses alone (Good Service when there are none).
+   "In effect" is `aggregation::in_effect_now`: `validity.is_now`, or, for
+   anything but a planned notice, a validity period covering now.
+   `poller-incidents` publishes `is_now = false` for every notice with an
+   end date, so a bounded planned notice is never in effect. In production
+   on 2026-10-02 every planned status had `is_now = false`, and every
+   Knowledgebase, LDBWS and TfL status had `is_now = true`. Planned
+   notices stay exactly as published. When nothing on a line is in effect,
+   live data gets its own status instead of being attached to the notice:
+   Layer 2 adds its LDBWS-inferred status if the samples show worse than
+   Good Service, and `enforce` adds a `TrustInferred` status (disruption
+   source `full-coverage-window`) for an enforced verdict. The legacy
+   whole-day merge (`merge_full_coverage`) is unchanged; it never matches
+   (§1) and `enforce` bypasses it for the lines it enforces.
+5. **Custom lines are not full-coverage lines.** Users' custom lines
+   (`custom-milton-keynes-drain`, `custom-west-barnes-drain` in production)
+   counted as `missing` every cycle: `FULL_COVERAGE_ENABLED_DEFAULT=true`
+   enabled them, but `full-coverage-consumer` only covers the
+   `lines/*.toml` catalogue. The aggregator now leaves every custom line
+   out of full coverage (`full_coverage_window::full_coverage_lines`): no
+   window verdict, no `missing` count, no `Pending` under `enforceLines:
+   "*"`, and the legacy merge leaves them `NotEnabled`, which is what
+   `CustomLine`'s `From` impl already intended.
+6. **Production values are not changed by this work.** The pilot values
+   (after a clean 7-day re-shadow including a weekend) are in the
+   2026-10-02 fix report: `enforce` on `gwr-windsor-branch`,
+   `scotrail-cathcart-circle`, `swr-chertsey-loop`,
+   `lnwr-birmingham-crewe`, `greater-anglia-west-anglia` and
+   `elizabeth-shenfield`, with `minEscalationRank: 4`.
 
 ## 1. Problem
 
@@ -588,6 +674,9 @@ falls in the range shown.
 | `day_to_date` | `[rail_day_start(D), now − grace]` | every write | never |
 | closed day | the whole rail day | once, at close (existing `full_coverage_line_stats`) | never |
 
+(Since "Decisions (2026-10-02)" item 3, each range covers D + 1's
+trains due in it as well, i.e. those due before `rail_day_start(D + 1)`.)
+
 Parameters, with their defaults as consumer CLI/env options, and why:
 
 | Parameter | Default | Justification (§3) |
@@ -924,8 +1013,9 @@ series means "never scraped".
 0. **Ship with everything off.** Migrations run; nothing changes.
 1. **Consumer on** (`FULL_COVERAGE_WINDOWED_STATS=true`), after
    `schedule-reference` has republished populations with
-   `operator_atoc`/`train_status`. Check the working set (expect < 250
-   MB, limit 1 Gi), the startup replay time with the 6 h lookback
+   `operator_atoc`/`train_status`. Check the working set (expect < 650
+   MiB, limit 1 Gi; this said < 250 MB before "Decisions (2026-10-02)"
+   item 2), the startup replay time with the 6 h lookback
    (expect ~5 min), and that window rows arrive for ~243 lines every
    minute.
 2. **Aggregator shadow** (`FULL_COVERAGE_WINDOW_MODE=shadow`) for **≥ 7
@@ -995,7 +1085,8 @@ Over the 7-day window, from the report:
 5. **Agreement with LDBWS where both see trouble.** When LDBWS shows ≥
    Minor on a half-hour with ≥ 6 services, the eligible recent window
    shows ≥ Minor at least 60% of the time.
-6. **Resources.** Consumer working set p99 ≤ 400 MiB, no OOM kills,
+6. **Resources.** Consumer working set p99 ≤ ~650 MiB (was 400 MiB; see
+   "Decisions (2026-10-02)" item 2), no OOM kills,
    startup replay ≤ 10 min.
 
 ## 9. Implementation tasks, file-level changes and tests
