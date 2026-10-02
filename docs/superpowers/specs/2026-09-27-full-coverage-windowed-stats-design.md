@@ -110,6 +110,30 @@ which override the rest of this document where they differ:
    **~650 MiB** (was 400 MiB). The chart's
    `fullCoverageConsumer.resources.requests.memory` is raised from 512Mi
    to 640Mi to cover it. The limit stays 1 GiB.
+3. **Rail-day boundary (fixed before the pilot).** Populations are
+   published per CIF service date, and the consumer only counted the
+   current service date's population. Rail day D runs from 02:00 London
+   on D to 02:00 on D + 1, so D + 1's trains due between local midnight
+   and 02:00 were in no window when due (D's population did not hold them)
+   and were outside D + 1's day-to-date and closed-day ranges (which start
+   at `rail_day_start(D + 1)`): about 0.6% of trains. Evidence: the
+   Elizabeth line on 09-30 had 678 relevant trains against a closed-day
+   row of 675. **Rule: a train belongs to the rail day its due time falls
+   in.** Every window of rail day D now counts D's population (judged on
+   `TrainState::current`) plus D + 1's trains due before
+   `rail_day_start(D + 1)` (judged on `TrainState::next`, where their
+   Activations already go). This was chosen over re-keying the population
+   by rail day: `schedule-reference` publishes per service date, the
+   reloader already holds D and D + 1, and the TRUST state is already
+   split the same way, so nothing upstream or in the cache changes. The
+   closed-day row of D is written at D's close, when those trains are all
+   due. If D + 1's population is not held, any window reaching local
+   midnight is `partial` (so a closed day cannot read `available` with
+   those trains missing). Remaining gaps, both outside any evaluable
+   daytime window: D's own trains due after `rail_day_start(D + 1)` (a
+   few sleepers' first calls) are still counted nowhere, and for about 70
+   minutes after the rollover the `recent` window does not see D's
+   after-midnight trains (their TRUST state is dropped at the rollover).
 
 ## 1. Problem
 
@@ -614,6 +638,9 @@ falls in the range shown.
 | `recent` | `(now − grace − W, now − grace]` | every write | yes, when enabled (§6) |
 | `day_to_date` | `[rail_day_start(D), now − grace]` | every write | never |
 | closed day | the whole rail day | once, at close (existing `full_coverage_line_stats`) | never |
+
+(Since "Decisions (2026-10-02)" item 3, each range covers D + 1's
+trains due in it as well, i.e. those due before `rail_day_start(D + 1)`.)
 
 Parameters, with their defaults as consumer CLI/env options, and why:
 

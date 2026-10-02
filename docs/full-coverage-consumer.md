@@ -134,6 +134,12 @@ reports bucket health, the would-escalate log (enforced tier vs lower tiers),
 the comparison with LDBWS, the closed-day audit rows, the aggregator's own
 verdicts, and per-line volume with suggested pilot lines.
 
+**A train counts in the rail day its due time falls in.** Rail day D
+(02:00 London on D to 02:00 on D + 1) counts D's population plus D + 1's
+trains due after midnight and before 02:00, judged on the next date's TRUST
+state. If D + 1's population is not loaded yet, any window that reaches
+local midnight is `partial`.
+
 **Expect more "delayed" trains than the design measured.** It measured at 5
 minutes; the threshold is 3.
 
