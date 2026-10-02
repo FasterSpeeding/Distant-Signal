@@ -37,7 +37,11 @@ checks:
   - every env var of the chart -> schedule-ingest contract renders, and no
     mode renders a private key (outside the generated SFTP host keys) or a
     Secret named like the reader key's existingSecret;
-  - bad bucket values refuse to render, naming the key.
+  - bad bucket values refuse to render, naming the key;
+  - alerts: no distant-signal.schedule-bucket group with the bucket off or
+    metrics.prometheusRule.scheduleBucket.enabled=false; six alerts with
+    both sources; five (no SourcesDisagree) and no schedule-sftp group with
+    the bucket only.
 
 --baseline DIR renders DIR (a copy of charts/distant-signal from another
 commit, e.g. the merge base) and this chart with the same flags, for the
@@ -155,6 +159,18 @@ SFTP_TELEMETRY_PORT = 9097
 HTTPS_PORT = 443
 FAKE_GCS = "http://fake-gcs:4443"
 FAKE_GCS_PORT = 4443
+
+RULES = ("--set", "metrics.prometheusRule.enabled=true")
+BUCKET_GROUP = "distant-signal.schedule-bucket"
+SFTP_GROUP = "distant-signal.schedule-sftp"
+BUCKET_ALERTS = {
+    "DistantSignalScheduleBucketAccessRevoked",
+    "DistantSignalScheduleBucketNoNewObject",
+    "DistantSignalScheduleBucketReadErrors",
+    "DistantSignalScheduleBucketUnexpectedObject",
+    "DistantSignalScheduleBucketDownloadBudget",
+}
+DISAGREE = "DistantSignalScheduleFeedSourcesDisagree"
 
 # The value sets --baseline compares; every one is rendered with BASE.
 BASELINE_SETS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -603,6 +619,45 @@ def check_failures(c: Checker) -> None:
         )
 
 
+def alert_groups(docs: Sequence[Doc]) -> dict[str, set[str]]:
+    """Return every PrometheusRule group's alert names, by group name."""
+    out: dict[str, set[str]] = {}
+    for doc in docs:
+        if doc.get("kind") != "PrometheusRule":
+            continue
+        spec = cast("dict[str, list[dict[str, object]]]", doc["spec"])
+        for group in spec["groups"]:
+            rules = cast("list[dict[str, str]]", group["rules"])
+            out[str(group["name"])] = {r["alert"] for r in rules if "alert" in r}
+    return out
+
+
+def check_alerts(c: Checker) -> None:
+    """Check the bucket alert group renders only with the bucket, and right."""
+    off = alert_groups(c.docs(*ON, *RULES))
+    c.check(ok=BUCKET_GROUP not in off, message="bucket off: bucket alerts")
+    both = alert_groups(c.docs(*ON, *BUCKET, *RULES)).get(BUCKET_GROUP)
+    c.check(
+        ok=both == {*BUCKET_ALERTS, DISAGREE},
+        message=f"both: bucket alerts {sorted(both or [])}",
+    )
+    only = alert_groups(c.docs(*ON, *BUCKET, *SFTP_OFF, *RULES))
+    c.check(
+        ok=only.get(BUCKET_GROUP) == BUCKET_ALERTS and SFTP_GROUP not in only,
+        message=f"bucket only: groups {sorted(only)}, "
+        f"bucket alerts {sorted(only.get(BUCKET_GROUP, []))}",
+    )
+    disabled = (
+        "--set",
+        "metrics.prometheusRule.scheduleBucket.enabled=false",
+    )
+    groups = alert_groups(c.docs(*ON, *BUCKET, *RULES, *disabled))
+    c.check(
+        ok=BUCKET_GROUP not in groups,
+        message="scheduleBucket.enabled=false: bucket alerts",
+    )
+
+
 def check_no_duplicate_env(c: Checker, label: str, docs: Sequence[Doc]) -> None:
     """No container in any document repeats an env name."""
     for doc in docs:
@@ -675,6 +730,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     check_audit_and_override(c)
     check_contract_and_secrets(c)
     check_failures(c)
+    check_alerts(c)
     for label, values in (
         ("both", (*ON, *BUCKET)),
         ("bucket only", (*ON, *BUCKET, *SFTP_OFF, *AUDIT)),

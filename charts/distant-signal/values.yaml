@@ -4093,6 +4093,28 @@ metrics:
       userStoreDownFor: 5m
       severity: warning
       userStoreDownSeverity: critical
+    # The schedule-feed bucket source (scheduleFeed.bucket): rendered only
+    # with scheduleFeed.bucket.enabled. Runbooks: docs/alerts.md "schedule
+    # bucket" and docs/schedule-feed-bucket.md.
+    scheduleBucket:
+      enabled: true
+      # DistantSignalScheduleBucketAccessRevoked: every bucket call answered
+      # 401/403 (the kill switch removed the reader, or the key was rotated,
+      # disabled or is missing).
+      accessRevokedFor: 10m
+      # DistantSignalScheduleBucketNoNewObject: no new expected object for
+      # this many hours, once one has been seen. Daily CIF at ~20:00 UTC.
+      noNewObjectHours: 30
+      noNewObjectFor: 30m
+      # DistantSignalScheduleBucketReadErrors: list/get/verify/delete errors.
+      readErrorsWindow: 1h
+      readErrorsFor: 15m
+      # DistantSignalScheduleBucketUnexpectedObject.
+      unexpectedWindow: 1h
+      # DistantSignalScheduleFeedSourcesDisagree (both sources on).
+      disagreeWindow: 1d
+      severity: warning
+      criticalSeverity: critical
 
 # ---------------------------------------------------------------------------
 # NetworkPolicy (optional)
