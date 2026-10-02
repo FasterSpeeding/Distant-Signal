@@ -45,7 +45,7 @@ so that clause fired on every rollout.
 {{- $movementOn := and .Values.movementRelay.enabled (or $rule.movementLag.enabled $rule.movementLagGrowing.enabled $rule.streamGap.enabled $rule.deadLetter.enabled $rule.deadLetterFull.enabled ($rule.relayPublishFailing).enabled ($rule.redisPersistence).enabled ($rule.groupRecreated).enabled ($rule.deadLetterExpiring).enabled ($rule.longPending).enabled ($rule.parseEnvelope).enabled) }}
 {{- $fcwOn := and ($rule.fullCoverageWindow).enabled .Values.fullCoverageConsumer.windowedStats.enabled }}
 {{- $pipelineOn := and ($rule.schedulePipeline).enabled .Values.scheduleFeed.enabled }}
-{{- $sftpOn := and ($rule.scheduleSftp).enabled .Values.scheduleFeed.enabled .Values.scheduleFeed.sftp.telemetry.enabled }}
+{{- $sftpOn := and ($rule.scheduleSftp).enabled .Values.scheduleFeed.enabled .Values.scheduleFeed.sftp.enabled .Values.scheduleFeed.sftp.telemetry.enabled }}
 {{- $anyOn := or $movementOn $rule.enricherErrors.enabled $rule.componentMemory.enabled $fcwOn $pipelineOn $sftpOn }}
 {{- $notifierDroppedOn := ($rule.notifierPushDropped).enabled }}
 {{- $archiveAlertOn := and ($rule.archiveUploadFailures).enabled .Values.archive.enabled }}

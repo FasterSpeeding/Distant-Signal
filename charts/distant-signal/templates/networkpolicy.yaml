@@ -413,6 +413,7 @@ spec:
     - Egress
     {{- end }}
   ingress:
+    {{- if .Values.scheduleFeed.sftp.enabled }}
     # INF-2: DTD pushes the timetable over SFTP to the `sftp` container.
     # Until 2026-09-27 this policy allowed only the metrics scrape, so
     # enabling networkPolicy silently dropped every delivery. Traffic from
@@ -437,6 +438,7 @@ spec:
             cidr: {{ . | quote }}
         {{- end }}
       {{- end }}
+    {{- end }}
     # Kubelet probes (the ingest and reference /livez and /healthz ports)
     # come from the node, which no selector can name
     # (networkPolicy.healthIngress).
@@ -454,7 +456,7 @@ spec:
           port: {{ .Values.metrics.port }}
         - protocol: TCP
           port: {{ .Values.scheduleFeed.reference.metricsPort }}
-        {{- if .Values.scheduleFeed.sftp.telemetry.enabled }}
+        {{- if and .Values.scheduleFeed.sftp.enabled .Values.scheduleFeed.sftp.telemetry.enabled }}
         # The sftp container's SFTPGo telemetry (/metrics, /healthz).
         - protocol: TCP
           port: {{ .Values.scheduleFeed.sftp.telemetry.port }}

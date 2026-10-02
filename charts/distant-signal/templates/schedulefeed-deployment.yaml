@@ -7,8 +7,14 @@ app's own verifier/uploader (the `ingest` container, crates/schedule-ingest)
 sharing one PVC -- see docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md.
 */}}
 {{- if .Values.scheduleFeed.enabled }}
+{{- $sftp := .Values.scheduleFeed.sftp.enabled }}
+{{- if not (or .Values.scheduleFeed.sftp.enabled (.Values.scheduleFeed.bucket).enabled) }}
+{{- fail "scheduleFeed.enabled needs at least one source: scheduleFeed.sftp.enabled and/or scheduleFeed.bucket.enabled" }}
+{{- end }}
+{{- if $sftp }}
 {{- if not .Values.scheduleFeed.sftp.authMethod }}
 {{- fail "scheduleFeed.sftp.authMethod must be set (\"password\" or \"public-key\") when scheduleFeed.enabled -- see docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md, Credentials" }}
+{{- end }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -30,11 +36,14 @@ spec:
     metadata:
       labels:
         {{- include "distant-signal.labels" (dict "root" . "component" "schedulefeed") | nindent 8 }}
+      {{- if or $sftp .Values.metrics.enabled .Values.scheduleFeed.podAnnotations }}
       annotations:
+        {{- if $sftp }}
         # The sftp container reads its account policy (permissions, login
         # methods, limits) from the entrypoint script at start, so a change
         # to the script must replace the Pod; env changes already do.
         checksum/sftp-entrypoint: {{ include (print $.Template.BasePath "/schedulefeed-configmap.yaml") . | sha256sum }}
+        {{- end }}
         {{- if .Values.metrics.enabled }}
         # NOTE: this plain-annotation scrape fallback can only advertise
         # one port per Pod, so it still only ever advertises `ingest`'s
@@ -52,6 +61,7 @@ spec:
         {{- with .Values.scheduleFeed.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "distant-signal.serviceAccountName" . }}
       automountServiceAccountToken: false
@@ -65,6 +75,7 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ default (include "distant-signal.scheduleFeedFullname" .) .Values.scheduleFeed.persistence.existingClaim }}
+        {{- if $sftp }}
         - name: host-key
           secret:
             secretName: {{ default (include "distant-signal.scheduleFeedSecretName" .) .Values.scheduleFeed.sftp.existingSecretHostKey }}
@@ -89,7 +100,9 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- end }}
       containers:
+        {{- if $sftp }}
         - name: sftp
           image: {{ include "distant-signal.image" (dict "root" . "image" .Values.scheduleFeed.sftp.image) | quote }}
           imagePullPolicy: {{ .Values.scheduleFeed.sftp.image.pullPolicy }}
@@ -191,6 +204,7 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- end }}
         - name: ingest
           image: {{ include "distant-signal.image" (dict "root" . "image" .Values.scheduleFeed.ingest.image) | quote }}
           imagePullPolicy: {{ .Values.scheduleFeed.ingest.image.pullPolicy }}

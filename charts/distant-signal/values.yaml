@@ -2895,6 +2895,12 @@ pollerNirStations:
 scheduleFeed:
   enabled: false
   sftp:
+    # -- Run the SFTP receiver (the `sftp` container, its Service/NodePort,
+    # host keys and entrypoint). On by default, so existing values render
+    # unchanged. Off for bucket-only delivery (scheduleFeed.bucket); the
+    # PVC and the ingest/reference containers stay. scheduleFeed.enabled
+    # with neither source enabled fails the render.
+    enabled: true
     image:
       repository: drakkan/sftpgo
       # -- MUST be a real drakkan/sftpgo tag, NOT left empty: unlike every

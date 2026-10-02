@@ -12,7 +12,12 @@ checks:
     entry of the same name in its place (RUST_LOG, still right after
     PROGRESS_STALL_SECS), once, and an extra-only name follows the chart's
     entries;
-  - no container in any rendered document repeats an env name.
+  - no container in any rendered document repeats an env name;
+  - explicit equals implicit (CI's permanent byte-identity check): setting
+    `scheduleFeed.sftp.enabled=true` (the default) renders exactly what
+    leaving it unset does, for each of the --baseline value sets below;
+  - schedulefeed with neither source (`scheduleFeed.sftp.enabled=false`,
+    bucket off) refuses to render, naming both switches.
 
 --baseline DIR renders DIR (a copy of charts/distant-signal from another
 commit, e.g. the merge base) and this chart with the same flags, for the
@@ -193,6 +198,24 @@ def check_baseline(c: Checker, base: pathlib.Path) -> None:
         compare(c, label, c.docs(*args, chart=base), c.docs(*args))
 
 
+def check_explicit_sftp(c: Checker) -> None:
+    """`scheduleFeed.sftp.enabled=true` renders exactly what the default does."""
+    explicit = ("--set", "scheduleFeed.sftp.enabled=true")
+    for label, args in BASELINE_SETS:
+        compare(c, f"explicit sftp, {label}", c.docs(*args), c.docs(*args, *explicit))
+
+
+def check_neither_source(c: Checker) -> None:
+    """Schedulefeed on with no source enabled fails, naming both switches."""
+    code, out = c.render(*ON, "--set", "scheduleFeed.sftp.enabled=false")
+    c.check(
+        ok=code != 0
+        and "scheduleFeed.sftp.enabled" in out
+        and "scheduleFeed.bucket.enabled" in out,
+        message=f"neither source: rendered, or not naming both: {out[-300:]}",
+    )
+
+
 def check_no_duplicate_env(c: Checker, label: str, docs: Sequence[Doc]) -> None:
     """No container in any document repeats an env name."""
     for doc in docs:
@@ -256,6 +279,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     check_no_duplicate_env(c, "schedulefeed on", c.docs(*ON))
     check_extra_env(c)
+    check_explicit_sftp(c)
+    check_neither_source(c)
     if args.baseline is not None:
         check_baseline(c, args.baseline)
 

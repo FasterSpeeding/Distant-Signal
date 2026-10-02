@@ -2093,6 +2093,7 @@ Off by default.
 | Key | Default | Description |
 |---|---|---|
 | `scheduleFeed.enabled` | `false` | Deploy the schedulefeed pod, Service and PVC. |
+| `scheduleFeed.sftp.enabled` | `true` | Run the SFTP receiver (the `sftp` container, its Service/NodePort, host keys and entrypoint). Off for bucket-only delivery (`scheduleFeed.bucket`); the PVC and the ingest/reference containers stay. `scheduleFeed.enabled` with neither source enabled fails the render. |
 | `scheduleFeed.sftp.image.repository` | `drakkan/sftpgo` | SFTP server image. |
 | `scheduleFeed.sftp.image.tag` | `v2.7.5@sha256:…` | Must be a real `drakkan/sftpgo` tag: an empty tag would fall back to this chart's version. |
 | `scheduleFeed.sftp.image.pullPolicy` | `IfNotPresent` | Image pull policy. |

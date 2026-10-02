@@ -121,7 +121,7 @@ Verify the api is serving:
   helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
 {{- end }}
 
-{{- if .Values.scheduleFeed.enabled }}
+{{- if and .Values.scheduleFeed.enabled .Values.scheduleFeed.sftp.enabled }}
 
 Connection details to give to DTD for pushing the schedule feed:
 
