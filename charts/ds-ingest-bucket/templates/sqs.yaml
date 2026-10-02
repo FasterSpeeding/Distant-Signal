@@ -1,70 +1,103 @@
 {{- /*
-Optional object-created notifications (notifications.sqs.enabled, off by
-default): S3 -> an SSE-SQS encrypted standard queue -> schedule-ingest
-long-polls it over outbound HTTPS. Messages that fail maxReceiveCount times
-move to the dead-letter queue, which schedule-ingest reports as a metric.
-Only s3.amazonaws.com may send, and only for the delivery bucket in this
-account. ACK sqs controller kind: sqs.services.k8s.aws/v1alpha1 Queue, whose
-attributes are all strings.
+Optional object notifications (notifications.pubsub.enabled, off by
+default): Cloud Storage OBJECT_FINALIZE events -> a Pub/Sub topic -> a pull
+subscription that schedule-ingest pulls over outbound HTTPS. The file name
+is kept from the S3 draft of this chart (it held the SQS queue).
 
-S3 checks the destination when the bucket's notification configuration is
-written, so the Bucket stays un-synced (and ACK retries it) until this queue
-and its policy exist.
+- Only the project's Cloud Storage service agent may publish to the topic.
+- Only the reader may consume the subscription.
+- The subscription never expires from inactivity.
+- No dead-letter topic: messages are wake-up hints for a LIST reconcile, so
+  a message that can't be handled is acknowledged and the next poll finds
+  the object anyway (spec §6).
+
+Kinds: pubsub.gcp.m.upbound.io/v1beta1 Topic, TopicIAMMember, Subscription,
+SubscriptionIAMMember; storage.gcp.m.upbound.io/v1beta1 Notification.
 */}}
-{{- if and .Values.enabled .Values.notifications.sqs.enabled }}
+{{- if and .Values.enabled .Values.notifications.pubsub.enabled }}
 {{- include "ds-ingest-bucket.validate" . }}
-{{- $q := .Values.notifications.sqs }}
-{{- $queueArn := include "ds-ingest-bucket.queueArn" (dict "root" . "name" $q.queueName) }}
-{{- $dlqArn := include "ds-ingest-bucket.queueArn" (dict "root" . "name" $q.deadLetterQueueName) }}
-{{- $denyInsecure := dict "Sid" "DenyInsecureTransport" "Effect" "Deny" "Principal" "*" "Action" "sqs:*"
-  "Condition" (dict "Bool" (dict "aws:SecureTransport" "false")) }}
-{{- $queuePolicy := dict "Version" "2012-10-17" "Statement" (list
-  (merge (dict "Resource" $queueArn) $denyInsecure)
-  (dict "Sid" "S3ObjectCreatedFromDeliveryBucket" "Effect" "Allow"
-    "Principal" (dict "Service" "s3.amazonaws.com")
-    "Action" "sqs:SendMessage"
-    "Resource" $queueArn
-    "Condition" (dict
-      "ArnLike" (dict "aws:SourceArn" (include "ds-ingest-bucket.bucketArn" .))
-      "StringEquals" (dict "aws:SourceAccount" (toString .Values.aws.accountId))))) }}
-{{- $dlqPolicy := dict "Version" "2012-10-17" "Statement" (list (merge (dict "Resource" $dlqArn) $denyInsecure)) }}
-apiVersion: sqs.services.k8s.aws/v1alpha1
-kind: Queue
+{{- $p := .Values.notifications.pubsub }}
+{{- $topic := include "ds-ingest-bucket.topicPath" . }}
+apiVersion: pubsub.gcp.m.upbound.io/v1beta1
+kind: Topic
 metadata:
-  name: {{ $q.deadLetterQueueName }}
+  name: {{ $p.topicName }}
   labels:
     {{- include "ds-ingest-bucket.labels" . | nindent 4 }}
-    app.kubernetes.io/component: events-dead-letter-queue
+    app.kubernetes.io/component: events-topic
   annotations:
-    {{- include "ds-ingest-bucket.ackAnnotations" . | nindent 4 }}
+    crossplane.io/external-name: {{ $p.topicName }}
 spec:
-  queueName: {{ $q.deadLetterQueueName }}
-  sqsManagedSSEEnabled: "true"
-  messageRetentionPeriod: {{ $q.deadLetterRetentionSeconds | int | toString | quote }}
-  redriveAllowPolicy: {{ dict "redrivePermission" "byQueue" "sourceQueueArns" (list $queueArn) | toJson | squote }}
-  policy: {{ $dlqPolicy | toJson | squote }}
-  tags:
-    {{- include "ds-ingest-bucket.tagMap" . | nindent 4 }}
+  {{- include "ds-ingest-bucket.managed" . | nindent 2 }}
+  forProvider:
+    project: {{ .Values.gcp.projectId }}
+    labels:
+      {{- include "ds-ingest-bucket.gcpLabels" . | nindent 6 }}
 ---
-apiVersion: sqs.services.k8s.aws/v1alpha1
-kind: Queue
+apiVersion: pubsub.gcp.m.upbound.io/v1beta1
+kind: TopicIAMMember
 metadata:
-  name: {{ $q.queueName }}
+  name: {{ printf "%s-storage-agent-publisher" .Release.Name | trunc 63 | trimSuffix "-" }}
   labels:
     {{- include "ds-ingest-bucket.labels" . | nindent 4 }}
-    app.kubernetes.io/component: events-queue
-  annotations:
-    {{- include "ds-ingest-bucket.ackAnnotations" . | nindent 4 }}
+    app.kubernetes.io/component: events-topic
 spec:
-  queueName: {{ $q.queueName }}
-  # SSE-SQS: S3 can send to it with no KMS key policy (an AWS-managed KMS
-  # key would refuse S3's SendMessage).
-  sqsManagedSSEEnabled: "true"
-  visibilityTimeout: {{ $q.visibilityTimeoutSeconds | int | toString | quote }}
-  receiveMessageWaitTimeSeconds: {{ $q.receiveWaitTimeSeconds | int | toString | quote }}
-  messageRetentionPeriod: {{ $q.messageRetentionSeconds | int | toString | quote }}
-  redrivePolicy: {{ dict "deadLetterTargetArn" $dlqArn "maxReceiveCount" (int $q.maxReceiveCount) | toJson | squote }}
-  policy: {{ $queuePolicy | toJson | squote }}
-  tags:
-    {{- include "ds-ingest-bucket.tagMap" . | nindent 4 }}
+  {{- include "ds-ingest-bucket.managed" . | nindent 2 }}
+  forProvider:
+    project: {{ .Values.gcp.projectId }}
+    topic: {{ $p.topicName }}
+    role: roles/pubsub.publisher
+    member: {{ printf "serviceAccount:service-%s@gs-project-accounts.iam.gserviceaccount.com" (toString .Values.gcp.projectNumber) }}
+---
+apiVersion: pubsub.gcp.m.upbound.io/v1beta1
+kind: Subscription
+metadata:
+  name: {{ $p.subscriptionName }}
+  labels:
+    {{- include "ds-ingest-bucket.labels" . | nindent 4 }}
+    app.kubernetes.io/component: events-subscription
+  annotations:
+    crossplane.io/external-name: {{ $p.subscriptionName }}
+spec:
+  {{- include "ds-ingest-bucket.managed" . | nindent 2 }}
+  forProvider:
+    project: {{ .Values.gcp.projectId }}
+    topic: {{ $topic }}
+    ackDeadlineSeconds: {{ int $p.ackDeadlineSeconds }}
+    messageRetentionDuration: {{ $p.messageRetentionDuration | quote }}
+    expirationPolicy:
+      ttl: ""
+    labels:
+      {{- include "ds-ingest-bucket.gcpLabels" . | nindent 6 }}
+---
+apiVersion: pubsub.gcp.m.upbound.io/v1beta1
+kind: SubscriptionIAMMember
+metadata:
+  name: {{ printf "%s-reader-subscriber" .Release.Name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "ds-ingest-bucket.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reader
+spec:
+  {{- include "ds-ingest-bucket.managed" . | nindent 2 }}
+  forProvider:
+    project: {{ .Values.gcp.projectId }}
+    subscription: {{ $p.subscriptionName }}
+    role: roles/pubsub.subscriber
+    member: {{ .Values.reader.member }}
+---
+apiVersion: storage.gcp.m.upbound.io/v1beta1
+kind: Notification
+metadata:
+  name: {{ printf "%s-object-finalize" .Release.Name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "ds-ingest-bucket.labels" . | nindent 4 }}
+    app.kubernetes.io/component: events-topic
+spec:
+  {{- include "ds-ingest-bucket.managed" . | nindent 2 }}
+  forProvider:
+    bucket: {{ .Values.bucket.name }}
+    topic: {{ $topic }}
+    payloadFormat: JSON_API_V1
+    eventTypes:
+      - OBJECT_FINALIZE
 {{- end }}

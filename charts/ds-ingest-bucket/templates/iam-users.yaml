@@ -1,93 +1,91 @@
 {{- /*
-The two IAM identities, as ACK iam controller Users with inline policies
-(iam.services.k8s.aws/v1alpha1 User). Both sit under iam.path and carry the
-permissions boundary, which the controller's own policy requires.
+Who may use the buckets: bucket-level IAM member bindings only
+(storage.gcp.m.upbound.io/v1beta1 BucketIAMMember), never project-level, and
+never authoritative (no BucketIAMPolicy, so a binding someone else adds is
+not silently removed, and this chart can't wipe the bucket's policy). The
+file name is kept from the S3 draft of this chart.
 
-ACK cannot create access keys (the iam controller has no AccessKey kind),
-so a person mints one per user after install and seals the reader's into
-the distant-signal namespace; README.md, "After install".
+- publisher.members x publisher.roles on the delivery bucket;
+- reader.member: roles/storage.objectViewer plus the delete-only custom
+  role (reader.deleteRole, a ProjectIAMCustomRole rendered here) on the
+  delivery bucket, and roles/storage.objectViewer on the audit-log bucket;
+- auditLogs.sinkWriterIdentity: roles/storage.objectCreator on the
+  audit-log bucket.
+
+Public access prevention (bucket.yaml) makes allUsers/allAuthenticatedUsers
+grants fail in GCP as well as at render time.
 */}}
 {{- if .Values.enabled }}
 {{- include "ds-ingest-bucket.validate" . }}
-{{- $bucketArn := include "ds-ingest-bucket.bucketArn" . }}
-{{- $prefix := .Values.bucket.deliveryPrefix }}
-{{- $objects := printf "%s/%s*" $bucketArn $prefix }}
-{{- /* ---- reader: schedule-ingest ---- */}}
-{{- $listActions := list "s3:ListBucket" }}
-{{- if eq .Values.bucket.versioning "Enabled" }}
-{{- $listActions = append $listActions "s3:ListBucketVersions" }}
+{{- $bindings := list }}
+{{- range $i, $m := .Values.publisher.members }}
+{{- range $.Values.publisher.roles }}
+{{- $bindings = append $bindings (dict
+  "name" (printf "publisher-%d-%s" $i (trimPrefix "roles/storage." . | lower))
+  "component" "publisher"
+  "bucket" $.Values.bucket.name "role" . "member" $m) }}
 {{- end }}
-{{- $getActions := list "s3:GetObject" "s3:GetObjectVersion" }}
-{{- $reader := list
-  (dict "Sid" "ListDeliveryPrefix" "Effect" "Allow" "Action" $listActions "Resource" $bucketArn
-    "Condition" (dict "StringLike" (dict "s3:prefix" (list $prefix (printf "%s*" $prefix)))))
-  (dict "Sid" "ReadDeliveries" "Effect" "Allow" "Action" $getActions "Resource" $objects) }}
-{{- if .Values.reader.allowDelete }}
-{{- $reader = append $reader (dict "Sid" "DeleteDeliveries" "Effect" "Allow"
-  "Action" (list "s3:DeleteObject" "s3:DeleteObjectVersion") "Resource" $objects) }}
 {{- end }}
-{{- if and .Values.accessLogs.enabled .Values.reader.readAccessLogs }}
-{{- $logArn := include "ds-ingest-bucket.logBucketArn" . }}
-{{- $logPrefix := .Values.accessLogs.targetPrefix }}
-{{- $reader = append $reader (dict "Sid" "ListAccessLogs" "Effect" "Allow" "Action" "s3:ListBucket" "Resource" $logArn
-  "Condition" (dict "StringLike" (dict "s3:prefix" (list $logPrefix (printf "%s*" $logPrefix))))) }}
-{{- $reader = append $reader (dict "Sid" "ReadAccessLogs" "Effect" "Allow" "Action" "s3:GetObject"
-  "Resource" (printf "%s/%s*" $logArn $logPrefix)) }}
+{{- $bindings = append $bindings (dict
+  "name" "reader-objectviewer" "component" "reader"
+  "bucket" .Values.bucket.name "role" "roles/storage.objectViewer" "member" .Values.reader.member) }}
+{{- $bindings = append $bindings (dict
+  "name" "reader-objectdeleter" "component" "reader"
+  "bucket" .Values.bucket.name "role" (include "ds-ingest-bucket.deleteRoleName" .) "member" .Values.reader.member) }}
+{{- if .Values.auditLogs.bucket.enabled }}
+{{- $audit := include "ds-ingest-bucket.auditBucketName" . }}
+{{- $bindings = append $bindings (dict
+  "name" "reader-audit-objectviewer" "component" "reader"
+  "bucket" $audit "role" "roles/storage.objectViewer" "member" .Values.reader.member) }}
+{{- with .Values.auditLogs.sinkWriterIdentity }}
+{{- $bindings = append $bindings (dict
+  "name" "audit-sink-objectcreator" "component" "audit-sink"
+  "bucket" $audit "role" "roles/storage.objectCreator" "member" .) }}
 {{- end }}
-{{- if .Values.notifications.sqs.enabled }}
-{{- $q := .Values.notifications.sqs }}
-{{- $reader = append $reader (dict "Sid" "ConsumeObjectEvents" "Effect" "Allow"
-  "Action" (list "sqs:ReceiveMessage" "sqs:DeleteMessage" "sqs:ChangeMessageVisibility" "sqs:GetQueueAttributes" "sqs:GetQueueUrl")
-  "Resource" (include "ds-ingest-bucket.queueArn" (dict "root" . "name" $q.queueName))) }}
-{{- $reader = append $reader (dict "Sid" "WatchDeadLetterDepth" "Effect" "Allow"
-  "Action" (list "sqs:GetQueueAttributes" "sqs:GetQueueUrl")
-  "Resource" (include "ds-ingest-bucket.queueArn" (dict "root" . "name" $q.deadLetterQueueName))) }}
 {{- end }}
-apiVersion: iam.services.k8s.aws/v1alpha1
-kind: User
+apiVersion: cloudplatform.gcp.m.upbound.io/v1beta1
+kind: ProjectIAMCustomRole
 metadata:
-  name: {{ .Values.reader.userName }}
+  name: {{ printf "%s-reader-delete-role" .Release.Name | trunc 63 | trimSuffix "-" }}
   labels:
     {{- include "ds-ingest-bucket.labels" . | nindent 4 }}
     app.kubernetes.io/component: reader
   annotations:
-    {{- include "ds-ingest-bucket.ackAnnotations" . | nindent 4 }}
+    crossplane.io/external-name: {{ .Values.reader.deleteRole.roleId }}
 spec:
-  name: {{ .Values.reader.userName }}
-  path: {{ .Values.iam.path }}
-  permissionsBoundary: {{ .Values.iam.permissionsBoundaryArn }}
-  inlinePolicies:
-    schedule-ingest-read: {{ dict "Version" "2012-10-17" "Statement" $reader | toJson | squote }}
-  tags:
-    {{- include "ds-ingest-bucket.tagSet" . | nindent 4 }}
-{{- if eq .Values.writer.mode "iamUser" }}
-{{- /* ---- writer: the Rail Data Marketplace publisher ---- */}}
-{{- $putActions := list "s3:PutObject" }}
-{{- if .Values.writer.allowAbortMultipartUpload }}
-{{- $putActions = append $putActions "s3:AbortMultipartUpload" }}
-{{- end }}
-{{- $writer := list (dict "Sid" "PutDeliveries" "Effect" "Allow" "Action" $putActions "Resource" $objects) }}
-{{- if .Values.writer.allowList }}
-{{- $writer = append $writer (dict "Sid" "ListDeliveryPrefix" "Effect" "Allow" "Action" "s3:ListBucket" "Resource" $bucketArn
-  "Condition" (dict "StringLike" (dict "s3:prefix" (list $prefix (printf "%s*" $prefix))))) }}
-{{- end }}
+  {{- include "ds-ingest-bucket.managed" . | nindent 2 }}
+  forProvider:
+    project: {{ .Values.gcp.projectId }}
+    title: ds-ingest object deleter
+    description: >-
+      Delete only. Bound on the schedule-feed landing bucket to
+      schedule-ingest's reader, which deletes each object after a verified
+      download (with ifGenerationMatch).
+    stage: GA
+    permissions:
+      - storage.objects.delete
+{{- range $b := $bindings }}
 ---
-apiVersion: iam.services.k8s.aws/v1alpha1
-kind: User
+apiVersion: storage.gcp.m.upbound.io/v1beta1
+kind: BucketIAMMember
 metadata:
-  name: {{ .Values.writer.userName }}
+  name: {{ printf "%s-%s" $.Release.Name $b.name | trunc 63 | trimSuffix "-" }}
   labels:
-    {{- include "ds-ingest-bucket.labels" . | nindent 4 }}
-    app.kubernetes.io/component: writer
-  annotations:
-    {{- include "ds-ingest-bucket.ackAnnotations" . | nindent 4 }}
+    {{- include "ds-ingest-bucket.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $b.component }}
+    {{- if has $b.component (list "publisher" "reader") }}
+    # Selector for Ranma's kill-switch watcher, which pauses these managed
+    # resources (crossplane.io/paused) after the GCP-side kill switch removes
+    # the bindings, so Crossplane doesn't re-create them (spec §5, "Usage
+    # limits"). The chart never sets crossplane.io/paused itself, so a Helm
+    # upgrade leaves a pause in place.
+    ds-ingest-bucket/kill-switch-group: {{ $b.component }}
+    {{- end }}
 spec:
-  name: {{ .Values.writer.userName }}
-  path: {{ .Values.iam.path }}
-  permissionsBoundary: {{ .Values.iam.permissionsBoundaryArn }}
-  inlinePolicies:
-    rdm-put-deliveries: {{ dict "Version" "2012-10-17" "Statement" $writer | toJson | squote }}
-  tags:
-    {{- include "ds-ingest-bucket.tagSet" . | nindent 4 }}
+  {{- include "ds-ingest-bucket.managed" $ | nindent 2 }}
+  forProvider:
+    bucket: {{ $b.bucket }}
+    role: {{ $b.role }}
+    member: {{ $b.member }}
 {{- end }}
 {{- end }}

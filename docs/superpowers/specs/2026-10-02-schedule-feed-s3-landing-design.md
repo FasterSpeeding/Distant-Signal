@@ -1,6 +1,11 @@
-# Schedule feed: an S3 delivery source alongside SFTP
+# Schedule feed: a cloud-bucket delivery source alongside SFTP
 
-Design, 2026-10-02. Status: **proposed**, with the user's decisions D1–D6 recorded the same day (below). Nothing here is deployed.
+Design, 2026-10-02. Status: **proposed**, with the user's decisions D1–D11
+recorded the same day (below). Nothing here is deployed.
+
+The bucket is **Google Cloud Storage** (D8). This file keeps its original
+name (`...-s3-landing-design.md`) from the first, AWS S3 draft so that
+existing links still work.
 
 This change adds `charts/ds-ingest-bucket`, off by default and installed
 nowhere. Everything else in this document is a proposal, and
@@ -11,102 +16,110 @@ build it.
 
 | # | Decision | Effect on this design |
 | --- | --- | --- |
-| D1 | **Cloud: AWS S3, eu-west-2.** | §3 |
-| D2 | **A new, dedicated AWS account** owns the bucket and everything in it. The user holds its root MFA. An AWS Budget alert at **$5 a month**. | §7 bootstrap creates the account baseline. The 100 GB free egress allowance belongs to this workload alone, so the typical cost in §13 holds |
-| D3 | **Provisioning: ACK via Helm** (`charts/ds-ingest-bucket`). Access keys are created **once by hand** and sealed in Ranma-Config. **OpenTofu only for the one-off setup**: account baseline, controller users, permissions boundary, budget. | §4, §7. The "OpenTofu alone" alternative is no longer under consideration |
-| D4 | **Audit: S3 server access logs only.** No CloudTrail data events. | §8. CloudTrail keeps only its free default 90-day management-event history (IAM and bucket changes) |
-| D5 | **Precedence: the bucket wins** when SFTP and the bucket deliver different content within the disagreement window. The disagreement alert still fires. | §9. `sourcePrecedence: [bucket, sftp]` becomes the fixed default |
-| D6 | **Both sources are kept long-term.** Nothing is retired. | §10, §12 |
+| D1 | ~~AWS S3, eu-west-2.~~ **Superseded by D8** the same day | — |
+| D2 | **A new, dedicated cloud project** owns the bucket and everything in it, with a **$5 a month** budget alert. Under D8 this is a dedicated GCP project | §7, §12 |
+| D3 | **Provisioning as Helm.** Credentials are created **once by hand** and sealed in Ranma-Config. **OpenTofu only for the one-off setup** (project baseline, budget, controller credential, kill switch). Under D8 the in-cluster controller is Crossplane v2 with the GCP providers (the recommendation in §4) | §4, §7 |
+| D4 | **Audit: the storage service's own object-level logs only**, no extra paid trail. Under D8: Cloud Audit Logs Data Access for Cloud Storage | §8 |
+| D5 | **Precedence: the bucket wins** when SFTP and the bucket deliver different content within the disagreement window. The disagreement alert still fires | §9. `sourcePrecedence: [bucket, sftp]` is the fixed default |
+| D6 | **Both sources are kept long-term.** Nothing is retired | §10, §12 |
+| D7 | **Repo scope.** This repo holds only generic framing and templates: the chart, its values contract and the schedule-ingest side. Everything project- or deploy-specific (project id and number, org, billing, budget amounts and recipients, every service-account email, bucket names, the node's address, controller installs, sealed keys, the kill switch) is Ranma-Config's. Examples use obvious placeholders. (Recorded as "D6" in the first hand-off note; renumbered because D6 was taken) | Whole document |
+| D8 | **Google Cloud Storage, europe-west2**, replacing AWS S3. RDM's GCS destination needs **no credential from us**: we grant DTD's own service accounts access to the bucket, and revoking is removing a binding | §3 has the comparison |
+| D9 | **The bucket is dedicated** to timetable/CORPUS ingest and similar data. Nothing else ever goes in it. **Usage limits** cap the blast radius | §5, "Usage limits" |
+| D10 | **Publisher access is exactly what DTD specifies**: a list of DTD's service accounts, each with DTD's four roles, bound on the bucket only | §5, "Publisher access" |
+| D11 | **The bucket holds data only in transit.** schedule-ingest fetches only expected names, verifies each download, archives it locally, then **deletes it from the bucket** (conditional on generation). Unexpected objects are flagged and deleted unread. Versioning off, soft delete at the 7-day minimum, one lifecycle backstop | §5, "An object's life"; §9 |
 
-**Default unless the user objects:** clean up by lifecycle expiry only, so
-the reader never deletes (§5, "Deleting processed objects").
+Also recorded: Ranma-Config's **kill switch** (user-approved): budget and
+Cloud Monitoring alerts → Pub/Sub → a function that removes bucket
+bindings, never billing (§5, "Usage limits").
 
 Still open: §14.
 
 ## Summary
 
 The Rail Data Marketplace (RDM, "DTD" in older docs) can push file feeds to
-three places: SFTP, or a customer bucket in AWS, Google Cloud or Azure. It
-cannot push to our own S3-compatible store (Thoth). Today Distant Signal
-takes the CIF timetable and the CORPUS extract over SFTP:
+SFTP, or to a customer bucket in AWS, Google Cloud or Azure. It cannot push
+to our own S3-compatible store (Thoth). Today Distant Signal takes the CIF
+timetable and the CORPUS extract over SFTP:
 
 - an SFTPGo container on NodePort 30450, the only listener on the node's
   public IP;
 - schedule-ingest, which reads the shared PVC.
 
-This design adds an **S3 bucket in AWS eu-west-2 (London)** as a second,
-equal delivery source. Each source is switched on separately: SFTP only,
-bucket only, or both at once.
+This design adds a **Google Cloud Storage bucket in europe-west2
+(London)** as a second, equal delivery source. Each source is switched on
+separately: SFTP only, bucket only, or both at once.
 
-- **Cloud and region.** AWS S3, eu-west-2. The user chose this, based on
-  the cost and security research in the "Cloud Bucket Ingest Costs"
-  artifact. GCS europe-west2 is the fallback (§3).
-- **Bucket.** Private, TLS-only, SSE-S3, versioned, and with
-  lifecycle-expiry. S3 server access logs go to a second private bucket.
-  - The publisher gets `PutObject` on one prefix and nothing else.
-  - schedule-ingest gets list and get on that prefix, and by default no
-    delete.
-- **Provisioning.** A new Helm chart, `charts/ds-ingest-bucket`, renders
-  ACK (AWS Controllers for Kubernetes) resources. The ACK s3, iam and sqs
-  controllers are installed by Ranma-Config. ACK was chosen over
-  Crossplane for footprint and least privilege (§4). OpenTofu is the
-  non-Helm alternative, and it does the one-off bootstrap.
-- **How DS learns of new objects.** It polls `ListObjectsV2` on the prefix
-  every 5 minutes. S3 → SQS notifications were evaluated in full (§6). They
-  are templated in both charts but off: at one CIF a day, with
-  schedule-reference publishing every 30 minutes, they buy nothing that
-  justifies a queue, a DLQ, a third controller and a hand-rolled SigV4
-  client.
-- **schedule-ingest.**
-  - Sources become peers behind one abstraction: the SFTP watch directory
-    and the S3 bucket.
-  - One content-addressed pipeline extracts, validates, audits and posts
-    each delivery **once**, whichever source or sources it came through.
-    It dedups by SHA-256 and records the source.
-  - A fixed precedence decides when the two sources disagree.
-- **Adoption.** Stand up the bucket and turn the bucket source on
-  alongside SFTP. Ask RDM to add the bucket as a second destination, then
-  verify both. Running bucket-only, which closes the public port, is an
-  operator choice. Nothing is retired.
-- **Cost.** About $0.06 a month typical, and under $1.50 in the worst
-  realistic case. A $5 budget alert guards against a runaway download
-  loop.
+- **Why GCS** (D8). DTD's GCS destination works by us granting *their*
+  service accounts roles on our bucket. No secret is created or handed
+  over, and revoking access is removing one binding. AWS would need an
+  access key we mint and give to DTD; Azure an account key or SAS (§3).
+- **Bucket.** Dedicated (D9), uniform bucket-level access, public access
+  prevention enforced, Google-managed encryption, unversioned, 7-day soft
+  delete, a 7-day lifecycle backstop. Cloud Audit Logs (Data Access) go
+  to a second private bucket.
+  - The publisher: DTD's service accounts with DTD's four roles, on the
+    bucket only (D10). Effectively create, overwrite, delete, read and
+    list objects; no IAM or bucket-setting changes.
+  - schedule-ingest: our own service account with get, list and delete
+    on the bucket only. It can't create or overwrite.
+- **An object's life** (D11). DTD writes at the bucket root. Within
+  minutes schedule-ingest lists the root, downloads only expected names,
+  verifies size and CRC32C, archives locally, and deletes the object
+  `ifGenerationMatch`. Unexpected objects are alerted on and deleted
+  unread.
+- **Provisioning.** `charts/ds-ingest-bucket` renders Crossplane v2
+  managed resources (provider-upjet-gcp). Crossplane and its providers
+  are installed by Ranma-Config. OpenTofu does the one-off project
+  bootstrap (§4, §7).
+- **How DS learns of new objects.** Polling the bucket every 5 minutes.
+  Pub/Sub notifications to a pull subscription were evaluated (§6); they
+  are templated but off.
+- **schedule-ingest.** Sources become peers behind one abstraction. One
+  content-addressed pipeline ingests each delivery once, whichever
+  source it came through, deduplicated by SHA-256.
+- **Usage limits.** No native GCS quota exists. The chart has optional
+  Cloud Monitoring alerts; Ranma's kill switch removes bindings
+  automatically; schedule-ingest has its own size, download and
+  loop guards.
+- **Adoption.** Stand up the bucket, turn the bucket source on alongside
+  SFTP, ask RDM to add the bucket as a second destination, verify both.
+  Running bucket-only is an operator choice. Nothing is retired.
+- **Cost.** About $0.35 a month typical. The realistic expensive failure
+  is a looping reader (hundreds of dollars a month), which the reader's
+  guards, the alerts and the kill switch each stop.
 
 ## 1. What RDM supports, and what is still unknown
 
-From the "Cloud Bucket Ingest Costs" artifact (prices checked 2026-10-02),
-the Open Rail Data wiki and the 2026-10-01 SFTP evidence in
+From the "Cloud Bucket Ingest Costs" artifact, DTD's destination
+instructions (received 2026-10-02), the Open Rail Data wiki and the
+2026-10-01 SFTP evidence in
 [schedule-feed-sftp.md](../../schedule-feed-sftp.md).
 
 ### Confirmed
 
 | Fact | Value | Source |
 | --- | --- | --- |
-| Push destinations | AWS S3, Azure Blob, Google Cloud Storage, or SFTP. No pull option. Our own S3-compatible store (Thoth) is not a target | User; Open Rail Data wiki ("Rail Data Marketplace") |
+| Push destinations | AWS S3, Azure Blob, Google Cloud Storage, or SFTP. No pull option. Thoth is not a target | User; Open Rail Data wiki |
 | Publisher location | Google Cloud, europe-west2; the SFTP pushes come from one GCP address | SFTP `login` lines |
-| CIF file | `timetable_full.zip`, 77.2–77.9 MB, which extracts to a ~724 MB MCA file. Deflate, about 12 entries | SFTP `Upload` lines; ingest |
-| CIF cadence | Daily, about 20:00 UTC (19:59:59 on 2026-09-30) | SFTP log; PVC mtimes |
+| GCS credential model | **None from us.** "Grant the following service accounts access to your Cloud Storage bucket": two of DTD's service accounts, a malware scanner's in their production project and their project's Storage Transfer Service agent | DTD's instructions |
+| GCS permissions | Each service account gets `roles/storage.objectViewer`, `roles/storage.legacyBucketReader`, `roles/storage.bucketViewer` and `roles/storage.legacyBucketWriter` on the bucket | DTD's instructions |
+| Transfer mechanism | Google's Storage Transfer Service, run from DTD's project, writes into our bucket; the scanner reads objects | DTD's instructions (the STS agent among the principals) |
+| CIF file | `timetable_full.zip`, 77.2–77.9 MB, extracting to a ~724 MB MCA file. Deflate, about 12 entries | SFTP `Upload` lines; ingest |
+| CIF cadence | Daily, about 20:00 UTC | SFTP log; PVC mtimes |
 | CORPUS | `CORPUSExtract.json.gz`, ~788 KB, about monthly. Also `CORPUSExtract.csv.gz` (SMART, ~296 KB, ignored) | Artifact; `config.rs` |
-| Upload behaviour (SFTP) | One session per delivery. It writes straight to the final name and overwrites in place, with no temp name and rename | schedule-feed-sftp.md |
-| Monthly volume | ~2.36 GB and ~33 PUTs | Artifact |
+| Upload behaviour (SFTP) | One session per delivery, straight to the final name, overwriting in place | schedule-feed-sftp.md |
+| Monthly volume | ~2.36 GB and ~33 writes | Artifact |
 
 ### Not confirmed
 
-No public RDM documentation describes the S3 destination form. The
-artifact marks every item below as unconfirmed, and so does this design.
-The chart handles each of them, but the user needs to check them on RDM's
-portal or with RDM support (§12).
-
 | Unknown | Why it matters | How the design copes |
 | --- | --- | --- |
-| **Credential model.** Does RDM take an IAM access key pair, or write as its own AWS principal (cross-account)? Does it need a role ARN or an external ID? | Decides whether we hand over a key or grant a principal | `writer.mode: iamUser` (default) or `crossAccount` with `writer.principalArns` |
-| **Permissions the client needs.** HEAD, LIST, delete, or temp-name-and-rename (copy plus delete)? | Rename or delete weakens write-only | `writer.allowList` (off); delete is never granted. If RDM needs rename, that is a decision for the user (§12) |
-| **Object keys.** The same key overwritten daily, as on SFTP, or dated keys? Is there a prefix we can set? | Change detection and the lifecycle rule | Both work: the source tracks (key, ETag, LastModified, size) and the version id. Filename globs are unchanged (`timetable_full.zip`, `CORPUSExtract.json.gz`) |
-| **Multipart upload** for the 78 MB zip? | A multipart ETag is not an MD5 | No ETag-as-MD5 assumption anywhere. Dedup is by our own SHA-256 |
-| **ACL header and SSE header** on the PUT | `BucketOwnerEnforced` rejects any ACL other than `bucket-owner-full-control`. An `aws:kms` header would need a key grant | Ask RDM. SSE-S3 is the default, so no header is needed |
-| **Delivery timing and retries** to a bucket | Alert windows | Same 30h "no new object" window as SFTP |
-| **Two destinations at once.** Can one subscription push to SFTP and S3 together, or does it need two subscriptions? | Running both sources at once depends on it | Ask before the parallel phase. Fallback: two subscriptions, or alternate destinations (§12) |
-| **Notifications** from RDM | None known | Not relied on |
+| **Object naming.** Root or a prefix? The same names overwritten (as on SFTP), or dated names? | The reader's allowlist; whether DTD overwrites an object we haven't fetched yet | The reader lists the root and matches names against `expectedKeys` (the same globs as SFTP). Anything else is unexpected (§5) |
+| **Scanner behaviour.** Does the malware scanner only read, or does it delete or quarantine in place? | It holds delete; a quarantine-by-delete looks like an unexplained delete | The reader tolerates a vanished object (404). The `DeleteObject` usage alert and the audit rule name the principal |
+| **Read-back after write.** How long after the write do STS and the scanner read the object? | We delete after fetching | The reader waits `deleteMinAgeSecs` (default 1 h) after an object's creation before deleting it |
+| **Probe objects.** Does the destination check write a test object when it is set up? | It would be "unexpected" | Flagged and deleted after `deleteMinAgeSecs`, which lets their check finish |
+| **Dual delivery.** Can one subscription push to SFTP and GCS together, or are two needed? | Running both sources at once | Ask before the parallel phase (§12) |
+| **A test delivery** once the destination is set | Verification | Ask |
 
 ## 2. Today's path, and what stays the same
 
@@ -115,9 +128,8 @@ runs three containers that share a PVC:
 
 - **`sftp`**: SFTPGo v2.7.5. `dtd-push` has upload, overwrite and list on
   one directory. It has the defender, rate limits, JSON audit log,
-  telemetry and the `distant-signal.schedule-sftp` alerts. The Loki rules
-  in Ranma add new-source and off-hours login alerts
-  (Ranma-Config `docs/specs/sftp-audit-observability.md`).
+  telemetry and the `distant-signal.schedule-sftp` alerts. Ranma's Loki
+  rules add new-source and off-hours login alerts.
 - **`ingest`**: `crates/schedule-ingest`. Every `POLL_INTERVAL_SECS` (120)
   it scans `WATCH_DIR`, waits for `STABILITY_CYCLES` (5) unchanged polls,
   then for the CIF zip:
@@ -135,438 +147,436 @@ runs three containers that share a PVC:
 - **`reference`**: `crates/schedule-reference`. It publishes from the
   newest complete delivery directory every 30 minutes.
 
-All of this stays. The S3 source changes only how a candidate file reaches
-the pipeline, and what "delivered at" and "already seen" mean for it.
+All of this stays. The bucket source changes only how a candidate file
+reaches the pipeline, and what "delivered at" and "already seen" mean for
+it.
 
 ## 3. Options and recommendation
 
 ### Cloud
 
-| | AWS S3 eu-west-2 | GCS europe-west2 | Azure Blob UK South |
+DTD's generic connector has the same shape everywhere: write, then read
+back and list to verify. What differs is the credential.
+
+| | **GCS europe-west2** | AWS S3 eu-west-2 | Azure Blob UK South |
 | --- | --- | --- | --- |
-| RDM can push to it | Yes | Yes | Yes |
-| Typical / worst monthly (artifact) | $0.06 / $1.30 | $0.37 / $1.10 | $0.07 / $0.29 |
-| Egress to our node | Within the account-wide 100 GB/month free allowance | $0.12/GiB, no free tier in London | 100 GB/month free |
-| Writer credential | IAM user key (PutObject on a prefix), or a cross-account principal | Service-account key or HMAC, or a grant to RDM's own Google service account | SAS token (create + write) |
-| Reader credential | IAM user key, pinnable to the node's IP by bucket policy (`aws:SourceIp`) | Service-account key or HMAC | SAS or account key |
-| Audit | S3 server access logs (free apart from storage); CloudTrail data events (pennies) | Data Access logs (free tier) | Diagnostic logs |
-| Kubernetes-native provisioning | ACK (AWS-maintained), Crossplane | Config Connector (heavy), Crossplane | ASO, Crossplane |
-| Already in DS | `object_store` `aws` feature (aggregator archive) | No | No |
+| What DTD needs from us | **Nothing secret**: bindings for their service accounts | An **access key** for an IAM user we create, entered in RDM's form | A storage-account **access key** and/or a **SAS** |
+| Revoking | Remove a binding; effective within minutes (IAM propagation), needs no one else | Deactivate the key; deliveries stop until DTD enters a new one | Rotate the account key (breaks every SAS not tied to a stored access policy) |
+| Grant breadth | Create, overwrite, delete, read, list on one bucket | List, get, put on one bucket, plus `ListAllMyBuckets` | Account key: everything in the account |
+| Publisher already in that cloud | Yes (GCP europe-west2): writes stay in-region | No | No |
+| Typical / worst monthly (artifact) | $0.37 / $1.10 | $0.06 / $1.30 | $0.07 / $0.29 |
+| Reader credential | Our service account's key, sealed (§7) | IAM user key, pinnable to an IP by bucket policy | SAS or account key |
+| Reader IP pin | Not per principal (§5) | Yes (`aws:SourceIp`) | SAS IP range |
+| Already in DS | `object_store` `gcp` feature (same dependency tree as `aws`) | `object_store` `aws` | No |
 
-**Decision (user, 2026-10-02): AWS S3 in eu-west-2.** It is the cheapest
-typical case. The reader key can be pinned to an IP. Workspace
-dependencies already cover it. ACK makes it Helm-deployable with three
-small controllers.
+**Decision (D8): GCS in europe-west2.** It is the only option where we
+never create or hand over a secret. The AWS draft of this design ended up
+needing exactly that: DTD's S3 form asks for an access key ID and secret,
+so we would mint a key for an IAM user in our account, send it through
+RDM's form, keep no copy, and rotate it with DTD's cooperation. A leak in
+RDM's systems would be outside our control. GCS costs about $0.30 a month
+more, mostly egress to our node, and loses the reader's IP pin.
 
-**Fallback: GCS europe-west2**, and only if RDM's S3 form turns out to
-need something we won't give, such as an account-wide key.
-
-- GCS can grant RDM's own Google service account `roles/storage.objectCreator`
-  on the bucket, so no long-lived writer key exists at all.
-- It costs about $0.30 a month more.
-- `object_store`'s `gcp` feature covers the reader.
-- The ingest design in §5 is provider-neutral apart from the version
-  token: GCS has `generation`, S3 has `versionId`.
-
-Azure is ruled out. SAS tokens are the weakest writer credential, and
-RDM may ask for an account key.
+**Azure** would be worse still. A storage-account key is effectively root
+over the whole account, with no scoping. A SAS can be scoped (container,
+permissions, expiry, HTTPS-only, an IP range), but an ad-hoc SAS can be
+revoked only by rotating the account key unless it is tied to a stored
+access policy, and a user-delegation SAS lasts at most 7 days, impractical
+for a long-lived feed. If Azure were ever needed: a dedicated storage
+account and a container-scoped, read/write/list, HTTPS-only SAS bound to
+a stored access policy, never the account key.
 
 ### SFTP alongside
 
 Both sources are first-class and switched on separately
-(`scheduleFeed.sftp.enabled`, `scheduleFeed.bucket.enabled`), long-term. §12
-is an adoption plan, not a migration.
+(`scheduleFeed.sftp.enabled`, `scheduleFeed.bucket.enabled`), long-term
+(D6). §12 is an adoption plan, not a migration.
 
-## 4. Provisioning: Helm via ACK (recommended) vs Crossplane vs OpenTofu
+## 4. Provisioning: Helm via Crossplane (recommended) vs Config Connector vs OpenTofu
 
-Helm can't call AWS. A Kubernetes controller that turns custom resources
-into AWS API calls can, and Helm renders those resources. Two serious
-options were considered.
+Helm can't call GCP. A controller that turns custom resources into GCP API
+calls can, and Helm renders those resources.
 
-| | **ACK** (aws-controllers-k8s) | **Crossplane v2** + provider-upjet-aws |
+| | **Crossplane v2** + provider-upjet-gcp | **Config Connector** (KCC) |
 | --- | --- | --- |
-| Pieces | One controller per service: `s3-controller` v1.12.2, `iam-controller` v1.9.1, `sqs-controller` v1.7.1 (all released 2026-09-18) | Crossplane core v2.4.2, plus the provider family and `provider-aws-s3`, `-iam`, `-sqs` (provider-upjet-aws v2.8.1) |
-| Footprint on the single-node k3s | Three small Go controllers with a handful of CRDs: `Bucket`; `User`, `Role`, `Policy` and others (7 in iam); `Queue`; plus ACK's `AdoptedResource` and `FieldExport` | Core, RBAC manager and one pod per provider. Upjet providers wrap Terraform providers and typically need several hundred MiB each. They install large CRD sets unless trimmed with v2 activation policies. On a node whose disk and memory are already shared with every PVC and build cache, this is the deciding point |
-| Maturity | AWS-maintained. These three controllers are GA. API group `v1alpha1` despite GA | CNCF graduated, widely used, more general (compositions) |
-| Access keys | **No `AccessKey` kind** (iam CRDs checked 2026-10-02: groups, instanceprofiles, openidconnectproviders, policies, roles, servicelinkedroles, users). A person mints keys and seals them (§7) | `AccessKey` writes the key into a connection Secret automatically |
-| Controller credentials on k3s | No IRSA or Pod Identity off EKS. The Helm values take a static shared-credentials Secret (`aws.credentials.secretName`, `profile`), which Ranma seals | Same: a `ProviderConfig` pointing at a static-credentials Secret |
-| Least privilege for the controller | Easy. The iam controller never needs `iam:CreateAccessKey`. Scope by IAM path, permissions boundary, exact bucket ARNs and a queue-name prefix | Same scoping is possible, but auto-minted keys need `iam:CreateAccessKey` on the users |
-| Drift | Periodic resync (`reconcile.defaultResyncPeriod`; set 1h). Console changes are reverted at the next resync | Continuous poll, about 10 minutes by default. Stronger |
-| Delete safety | `services.k8s.aws/deletion-policy: retain`, plus Helm `resource-policy: keep` | `deletionPolicy: Orphan` |
+| Versions (2026-10-02) | Crossplane v2.4.2; provider-upjet-gcp v3.0.0 (`provider-gcp-storage`, `-cloudplatform`, `-monitoring`, `-pubsub`) | v1.157.0 |
+| Non-GKE support | Any cluster | Supported through the manual "other Kubernetes distributions" install with a service-account key Secret; Google's docs warn that importing a key into a cluster is "generally considered insecure" and the install is otherwise GKE-focused |
+| Footprint on the single-node k3s | Core, RBAC manager, and one pod per provider family member actually installed. v2's managed-resource activation policies activate only the CRDs used (here about eight kinds) | One controller manager, but it installs CRDs for every supported GCP service (hundreds), each held by the API server on a node whose memory and disk are shared with every PVC |
+| Kinds used | `storage.gcp.m.upbound.io` `Bucket`, `BucketIAMMember`, `Notification`; `cloudplatform.gcp.m.upbound.io` `ProjectIAMCustomRole`; `monitoring.gcp.m.upbound.io` `AlertPolicy`; `pubsub.gcp.m.upbound.io` `Topic`, `Subscription`, `TopicIAMMember`, `SubscriptionIAMMember` (all namespaced, v1beta1; field names checked against the v3.0.0 CRDs) | `StorageBucket`, `IAMPolicyMember`, `IAMCustomRole`, `MonitoringAlertPolicy`, `PubSubTopic`, … |
+| Controller credential | A `ClusterProviderConfig` pointing at a sealed service-account key | A sealed key Secret in `cnrm-system` |
+| Drift | Provider poll, about 10 minutes by default | Reconcile about every 10 minutes by default |
+| Delete safety | Management policies without `Delete` (orphan) | `cnrm.cloud.google.com/deletion-policy: abandon` |
+| Maturity | CNCF graduated; the GCP providers are crossplane-contrib (formerly Upbound's official ones) | Google product |
 
-**Recommendation: ACK.** The footprint is decisive on this node. ACK's
-missing `AccessKey` is a security plus here: the controller can't mint
-credentials, and keys never sit in a custom resource or an unsealed
-Secret that Git doesn't track. That fits Ranma's sealed-secret practice.
+**Recommendation: Crossplane v2.** Footprint is decisive on this node, and
+Config Connector off GKE is a second-class path whose own docs discourage
+the credential model it requires. Both need one sealed controller key, so
+neither wins on bootstrap.
 
-Crossplane would make sense if Ranma later manages many more cloud
-resources and wants compositions.
+**Keys are never minted by the controller.** provider-gcp-cloudplatform has
+a `ServiceAccountKey` kind, but it writes the private key into a
+connection Secret, unsealed, in the cluster. The reader's key is created
+by hand and sealed (§7).
 
-**OpenTofu** (in `mise`) is the non-Helm alternative. It has a plan and
-apply review step, real drift detection on `tofu plan`, and no in-cluster
-controller holding AWS write credentials. It is the better tool for
-**bootstrap**: the account, the controller users, the permissions
-boundary and the budget alarm, which must exist before any controller can
-run. This design uses OpenTofu, or the equivalent CLI, only for that
-bootstrap. The Helm chart is the deliverable for the bucket and its
-access.
-
-**Decided (D3, 2026-10-02):**
-
-- ACK via Helm.
-- Keys created once by hand and sealed in Ranma-Config.
-- OpenTofu only for the one-off setup.
-
-For the record only: every resource in §5 would map one-to-one onto
-OpenTofu `aws_s3_bucket*`, `aws_iam_user*` and `aws_sqs_queue*`, with
-schedule-ingest unchanged.
+**OpenTofu** does the one-off bootstrap in Ranma-Config: the project, its
+budget, the controller's service account and key, the reader's service
+account, the Data Access audit config and sink, and the kill switch. Every
+resource in §5 would also map one-to-one onto `google_storage_*` and
+`google_*_iam_member` if Helm were ever dropped.
 
 ### Chart placement
 
-The chart is separate (`charts/ds-ingest-bucket`), not a subchart or part
-of `charts/distant-signal`, for four reasons:
+The chart is separate (`charts/ds-ingest-bucket`), not part of
+`charts/distant-signal`, because:
 
-- It needs the ACK CRDs. `charts/distant-signal` must keep installing on
-  clusters without them (docker-compose parity, the dev cluster).
-- Its lifecycle differs. AWS resources are retained on uninstall and
-  rarely change. The app chart rolls with every image.
-- It installs into its own namespace (`ds-ingest-aws`), which the ACK
-  controllers watch. App namespaces never get ACK custom resources.
-- Its blast radius and RBAC are separate. Only Ranma's Flux applies it.
+- it needs the Crossplane CRDs, and `charts/distant-signal` must keep
+  installing without them;
+- its resources are retained on uninstall and rarely change, while the app
+  chart rolls with every image;
+- it installs into its own namespace, which the providers serve;
+- only Ranma's Flux applies it.
 
 ## 5. The bucket and its access (`charts/ds-ingest-bucket`)
 
-Committed with this spec, off by default. Its README lists the templates.
-Every resource carries `services.k8s.aws/region: eu-west-2`.
+Committed with this spec, off by default. Its README lists the templates
+and its values file documents every key. The templates are the source of
+truth; this section explains them.
 
-### Delivery bucket (`templates/bucket.yaml`, ACK `Bucket`)
+### Delivery bucket (`templates/bucket.yaml`)
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Name | `bucket.name` (required; no dots) | Virtual-hosted TLS |
-| Region | eu-west-2 (`createBucketConfiguration.locationConstraint`) | Closest to the publisher (GCP London) and to the node; free egress allowance |
-| Block Public Access | all four on | |
-| Object ownership | `BucketOwnerEnforced` | ACLs off; we own cross-account writes |
-| Encryption | SSE-S3 (`AES256`), Bucket Key on | Free, and needs no KMS grant for a cross-account writer. SSE-KMS with a customer managed key costs $1/month and adds a key policy for RDM. It is available (`bucket.encryption.sseAlgorithm: aws:kms`) but not recommended: the data is public timetable data, and this is defence in depth only |
-| Versioning | `Enabled` | Pins each ingest to a version id. Keeps a replaced delivery for 3 days, which is forensics after a leaked writer key. Makes "delete exactly what I ingested" safe if delete is ever turned on |
-| Lifecycle | Prefix `rdm/`: current versions expire after 14 days, noncurrent after 3 (matching `retentionKeepDeliveries: 3`), unfinished multipart uploads abort after 1 day. A second rule removes expired delete markers. S3 rejects `expiredObjectDeleteMarker` together with `days` in one rule | The reader never needs to delete. Storage stays at about 3–4 CIF zips |
-| Policy | Deny any request that is not TLS (`aws:SecureTransport`) or is below TLS 1.2 (`s3:TlsVersion`). Optionally deny the reader from any IP outside `reader.allowedSourceCidrs` (the node's egress /32). In `crossAccount` mode, allow `writer.principalArns` `s3:PutObject` (and `AbortMultipartUpload`) on `rdm/*` | |
-| Access logs | To `<bucket>-logs/s3-access/` | §8 |
-| Deletion | `services.k8s.aws/deletion-policy: retain`, `helm.sh/resource-policy: keep` | An uninstall never destroys deliveries |
-| Object Lock | Off | It would block lifecycle expiry. The data is re-pushed daily |
+| Name | `bucket.name` (required; no dots) | Placeholder in examples; the real name is Ranma's |
+| Location | `EUROPE-WEST2` | The publisher runs there; closest to the node |
+| Uniform bucket-level access | On | IAM only, no object ACLs. DTD's legacy roles are IAM roles and work with it (below) |
+| Public access prevention | `enforced` | `allUsers`/`allAuthenticatedUsers` can never be granted, whatever IAM says |
+| Encryption | Google-managed (recommended); CMEK available (`bucket.encryption.defaultKmsKeyName`) | CMEK adds a KMS key, a grant to the Cloud Storage service agent and a monthly key cost, for public timetable data. Writers need no KMS permission either way |
+| Versioning | **Off** | The bucket holds data in transit only (D11). Noncurrent generations would only retain bytes we deleted on purpose |
+| Soft delete | **7 days** (`bucket.softDeleteRetentionDays`; 0 or 7–90) | Every deleted or overwritten object stays restorable for a week, and no object-level role, the publisher's included, can purge it early. It costs about a cent a month here. It keeps an *unexpected* object, which we delete unread, available for examination, and undoes an overwrite or delete by the publisher before we fetched |
+| Lifecycle | Delete any object older than **7 days** (backstop); abort unfinished XML multipart uploads after **1 day** | The reader deletes within an hour or so; the backstop matters only during a reader outage, and 7 days is well past the reader-outage alerts (§8). Unfinished JSON-API resumable uploads expire on their own after a week |
+| Object retention / retention policy | Off / none | So the publisher's `storage.objects.setRetention` (in `legacyBucketWriter`) can't lock objects against deletion |
+| Usage logs | None | Cloud Storage usage logs have no caller identity; Data Access audit logs do (§8) |
+| Labels | `managed-by: ds-ingest-bucket`, `purpose: schedule-feed-ingest`, plus `labels` | Billing and audit filters |
+| Deletion | Management policies without `Delete`, plus `helm.sh/resource-policy: keep` | An uninstall never destroys the bucket |
 
-The publisher's source address (34.147.132.114 on SFTP) is **not** put
-into the bucket policy. If Google re-homes RDM's egress, deliveries would
-silently fail. A new writer source IP is an alert (§8), the same posture
-as SFTP (`DistantSignalSftpDtdPushNewSource`).
+### Publisher access (D10)
 
-### Access-log bucket (`templates/log-bucket.yaml`)
+`publisher.members` (required; the render fails closed when it is empty)
+lists DTD's principals, each `serviceAccount:<email>`. The concrete emails
+are Ranma's; examples use `serviceAccount:publisher@example-publisher.iam.gserviceaccount.com`.
+Each member gets every role in `publisher.roles`, which defaults to DTD's
+four, as a non-authoritative `BucketIAMMember` **on the bucket only**. The
+render refuses any other member type and any role that can change IAM or
+bucket settings (`storage.admin`, `objectAdmin`, `legacyBucketOwner`,
+`legacyObjectOwner`).
 
-- Same privacy settings as the delivery bucket.
-- SSE-S3, which server access logging requires on the target.
-- The policy allows only `logging.s3.amazonaws.com` to `PutObject` under
-  `s3-access/`, with `aws:SourceArn` set to the delivery bucket and
-  `aws:SourceAccount` set to our account.
-- Objects expire after 400 days, the SFTP delivery-audit retention.
+What the four roles contain (Google's role reference, read 2026-10-02):
 
-### IAM (`templates/iam-users.yaml`, ACK `User` with inline policies)
+| Role | Permissions |
+| --- | --- |
+| `roles/storage.objectViewer` | `storage.objects.get`, `storage.objects.list`, `storage.folders.get/list`, `storage.managedFolders.get/list`, `resourcemanager.projects.get/list` |
+| `roles/storage.legacyBucketReader` | `storage.buckets.get`, `storage.objects.list`, `storage.folders.get/list`, `storage.managedFolders.get/list`, `storage.multipartUploads.list` |
+| `roles/storage.bucketViewer` (beta) | `storage.buckets.get`, `storage.buckets.list` |
+| `roles/storage.legacyBucketWriter` | `storage.buckets.get`, `storage.objects.create`, `storage.objects.createContext`, `storage.objects.delete`, `storage.objects.list`, `storage.objects.restore`, `storage.objects.setRetention`, `storage.multipartUploads.*`, `storage.folders.*`, `storage.managedFolders.create/delete/get/list/update` |
 
-Both users live under path `/ds-ingest/` and carry the permissions
-boundary `iam.permissionsBoundaryArn`.
+So, granted on this bucket, DTD's accounts can **create, overwrite, delete,
+read and list objects**, read bucket metadata, and restore soft-deleted
+objects. They can't change IAM (`setIamPolicy` isn't in any of them),
+bucket settings (`storage.buckets.update` isn't either), soft delete or
+lifecycle. Notes:
 
-| Identity | Grants | Not granted |
+- Overwriting an existing object needs `storage.objects.delete` as well
+  as `create` ("In order to replace existing objects, both
+  `storage.objects.create` and `storage.objects.delete` permissions are
+  required"), which is why `legacyBucketWriter` is needed at all if DTD
+  overwrites daily.
+- Project-level permissions in these roles (`resourcemanager.projects.*`,
+  `storage.buckets.list`) do nothing when the role is granted on a bucket.
+  `bucketViewer`'s bucket listing is harmless anyway in a dedicated
+  project.
+- Legacy bucket roles are ordinary IAM roles grantable only on individual
+  buckets, and work with uniform bucket-level access on. UBLA turns off
+  object ACLs, not these roles.
+- `setRetention` does nothing because object retention is off.
+- Folder and managed-folder permissions are inert: no hierarchical
+  namespace, and creating a managed folder grants nothing without
+  `setIamPolicy`.
+
+This is broad, and acceptable because the bucket is dedicated (D9), holds
+data only in transit (D11), is soft-deleted for a week, and every write
+lands in the audit log and the usage alerts. A smaller custom role
+(create, get, list, delete, `buckets.get`) would work for most clients, but
+STS and the scanner are DTD's code; we grant what DTD specifies and say
+so (§14 keeps the scanner's behaviour as a question).
+
+The publisher can't be pinned by IP: DTD gives no addresses, and STS runs
+on Google's network.
+
+### Reader access
+
+`reader.member` is our own service account in our project (created by
+Ranma, required here). On the delivery bucket it gets:
+
+- `roles/storage.objectViewer`: get and list;
+- the custom role `reader.deleteRole.roleId` (default
+  `dsIngestObjectDeleter`), a `ProjectIAMCustomRole` holding **only**
+  `storage.objects.delete`, also bound on this bucket only.
+
+On the audit-log bucket it gets `objectViewer`. It can never create or
+overwrite an object.
+
+Why not `roles/storage.objectUser`, which also covers get, list and
+delete? It includes `storage.objects.create`, `update`, `move` and
+`restore`. A leaked reader key could then **plant** a delivery, which is
+the one thing the publisher's key and our ingest checks exist to guard
+against. The custom role costs one more resource.
+
+**No IP pin for the reader.** IAM Conditions offer no source-IP attribute
+for Cloud Storage. VPC Service Controls can restrict by IP through access
+levels, but need an organization and a perimeter that DTD's cross-org
+service accounts would have to be let into. Bucket IP filtering exists
+but is **bucket-wide**: a filter allowing only our node would also block
+DTD's scanner (an ordinary service account calling from addresses we
+don't know). Google service agents keep access under a filter, which may
+or may not cover STS; not relied on. So the reader key is protected by
+sealing, rotation and the audit rule "reader used from an address other
+than the node" (§8), which detects but doesn't prevent.
+
+**Workload identity federation** from k3s was evaluated. GCP can trust the
+cluster's service-account token issuer if its OIDC discovery document and
+JWKS are publicly reachable, and the pod would exchange its projected
+token through STS for a short-lived token, so no long-lived key. Against
+it: `object_store` 0.14.2's GCP credentials support service-account keys,
+`authorized_user` and the metadata server, not `external_account`, so we
+would write the token exchange behind `with_credentials` (about 150
+lines). And the issuer's discovery endpoint would have to be published
+through the tunnel or a public bucket. Deferred; the default is a
+hand-made key (§7).
+
+### An object's life (D11)
+
+1. DTD (STS) writes `timetable_full.zip` or `CORPUSExtract.json.gz` at
+   the bucket root. The scanner reads it.
+2. schedule-ingest lists the root (`delimiter=/`, so nested names are
+   never seen) every `pollIntervalSecs`.
+3. For each listed object, by name:
+   - **Expected** (matches `expectedKeys`, the same globs as SFTP) and
+     **not yet confirmed** (name + generation not in the seen-ledger):
+     refuse before download if the listed size is over `maxObjectBytes`
+     (treated as unexpected); otherwise download **that generation**,
+     hashing SHA-256 and CRC32C while writing to local storage; check size
+     and CRC32C (and MD5 when GCS has one) against the object's metadata;
+     fsync; rename into the local archive; record name + generation +
+     SHA-256 in the ledger; hand it to the pipeline (§9).
+   - **Unexpected**: never downloaded. One log line with the name
+     (escaped and truncated; it is attacker-controlled), size and
+     generation, no content; `schedule_feed_source_unexpected_objects_total`
+     and the `...UnexpectedObject` alert.
+4. Once an object is at least `deleteMinAgeSecs` old (default 1 h, so
+   DTD's read-back and scan finish) and either confirmed or unexpected,
+   schedule-ingest **deletes it with `ifGenerationMatch`** set to the
+   generation it saw. A newer upload under the same name in between makes
+   the delete fail with 412, so it is never lost; the next poll picks it
+   up. A 404 means it is already gone, which is fine.
+5. Archival is local: the raw object stays under
+   `storage_dir/sources/bucket/archive/` for `archiveKeep` deliveries, as
+   well as the extracted delivery directory.
+
+The ingest outcome doesn't gate the delete: a quarantined CIF is kept
+locally, as today. A failed verification (size or CRC mismatch) keeps the
+object in the bucket and retries on later polls, within the loop guards.
+
+Residual risk: DTD overwrites or deletes an object **before** we fetch it.
+Soft delete keeps the prior copy for a week, the SFTP path delivers the
+same content, and dedup by SHA-256 ingests it once.
+
+### Audit-log bucket (`templates/log-bucket.yaml`)
+
+The destination of Ranma's Logging sink for this bucket's Cloud Audit
+Logs. Same privacy settings, no versioning, 7-day soft delete, objects
+expire after 400 days (the SFTP audit retention). Only the sink's writer
+identity (`auditLogs.sinkWriterIdentity`, from Ranma) gets
+`objectCreator`; the reader gets `objectViewer`.
+
+### Usage limits (D9)
+
+GCS has no native quota on a bucket's size, request rate or egress, and
+IAM can't cap the size of an upload (objects may be up to 5 TiB). The
+controls are alerts, an automatic kill switch, short retention and
+schedule-ingest's own guards. Who owns what:
+
+| Control | Owner | What |
 | --- | --- | --- |
-| `ds-ingest-rdm-writer` (`writer.mode: iamUser`) | `s3:PutObject` and `s3:AbortMultipartUpload` on `arn:aws:s3:::<bucket>/rdm/*`. Optionally `s3:ListBucket` with an `s3:prefix` condition | Get, delete, list (by default), and anything outside the prefix. With `crossAccount`, no user exists |
-| `ds-ingest-reader` (schedule-ingest) | `s3:ListBucket` and `ListBucketVersions` with `s3:prefix` `rdm/` and `rdm/*`; `s3:GetObject` and `GetObjectVersion` on `rdm/*`; read on `<bucket>-logs/s3-access/*` for the access-log tailer; with SQS, receive, delete and change-visibility on the main queue, and only `GetQueueAttributes` on the DLQ | Any write. Delete only with `reader.allowDelete` |
+| Usage alert policies | This chart, `usageAlerts` (off; needs `provider-gcp-monitoring` and Ranma's notification channels) | Hourly: total bytes, object count, write requests, delete requests, received bytes, sent bytes, all on the free `storage.googleapis.com` metrics for this bucket |
+| Kill switch | Ranma-Config (OpenTofu), user-approved | A dedicated project budget plus Cloud Monitoring alerts on received bytes, write requests and **sent** bytes → Pub/Sub → a function holding only `getIamPolicy`/`setIamPolicy` on this one bucket. It removes bucket bindings and never disables billing: an ingress or write spike removes the publisher members; an egress spike removes our reader; a budget trip removes all of them. Re-enabling is a deliberate reapply of the deploy values. Amounts and identities are Ranma's |
+| $5 budget | Ranma-Config | Alert, and a kill-switch trigger. A budget alone never caps spending |
+| Retention | This chart | 7-day lifecycle backstop, 7-day soft delete, 1-day multipart abort |
+| Reader guards | schedule-ingest (§9) | Expected-name allowlist; size cap before download; never re-download a confirmed generation; per-poll, per-hour and per-day download caps; backoff on errors |
 
-A leaked writer key can write junk under `rdm/`. That is the same blast
-radius as a leaked SFTP password, and schedule-ingest validates every file,
-as it does today. Lifecycle expiry caps the storage cost of junk. A leaked
-reader key can read public timetable data. With `allowedSourceCidrs` set,
-it can do so only from our node.
+**The kill switch and Crossplane.** The bindings are Helm-owned Crossplane
+resources. If the function removes a binding, Crossplane re-creates it at
+the provider's next poll (about 10 minutes by default), which would turn
+a kill into a throttle. So the trip must also stop reconciliation of the
+affected bindings. Recommended: a small Ranma-side watcher pulls the
+kill-switch topic (outbound only) and sets `crossplane.io/paused: "true"`
+on the bucket's `BucketIAMMember` resources selected by the chart's label
+`ds-ingest-bucket/kill-switch-group: publisher` or `reader`. The chart
+never sets `crossplane.io/paused`, so a Helm upgrade leaves a pause in
+place; recovery (Ranma's reapply) removes the annotation. For the reader
+alone, disabling our reader service account (Ranma-owned, not reconciled
+by this chart) is an equivalent lever. Which one Ranma builds is its call
+(§14).
 
-### Deleting processed objects
+### Optional Pub/Sub notifications (`templates/sqs.yaml`, `notifications.pubsub.enabled: false`)
 
-The design chooses **not to delete**. Lifecycle expiry does the cleanup,
-for four reasons:
-
-- The reader stays read-only.
-- A crashed or rolled-back ingest can re-fetch.
-- A bad deploy can't destroy an unprocessed delivery.
-- It needs no conditional delete. Without versioning, "GET, then DELETE"
-  races an overwrite and can delete an unprocessed upload.
-
-If the user wants the bucket emptied on ingest, use
-`reader.allowDelete: true` and `scheduleFeed.bucket.deleteAfterIngest: true`.
-schedule-ingest then deletes **the exact version id it ingested**
-(`DeleteObject` with `versionId`), which can't touch a newer upload.
-
-### Optional SQS (`templates/sqs.yaml`, `notifications.sqs.enabled: false`)
-
-- A standard queue `ds-ingest-events` with SSE-SQS. FIFO queues can't be
-  S3 targets. An AWS-managed KMS key would refuse S3.
-- Long-poll 20s, visibility 900s, retention 4 days.
-- A redrive policy to `ds-ingest-events-dlq` after 5 receives. The DLQ
-  keeps messages 14 days and its redrive-allow policy is limited to the
-  main queue.
-- The queue policy allows only `s3.amazonaws.com` `sqs:SendMessage`, with
-  `aws:SourceArn` set to the bucket and `aws:SourceAccount` set to our
-  account, and denies non-TLS.
-- The bucket's `notification.queueConfigurations` sends
-  `s3:ObjectCreated:*` filtered to prefix `rdm/`.
-- S3 validates the destination when the configuration is written, so the
-  `Bucket` stays unsynced until the queue and its policy exist. ACK
-  retries, so this is eventually consistent.
+The file name is kept from the S3 draft. It renders a topic that only the
+project's Cloud Storage service agent may publish to, a pull subscription
+(never expires) that only the reader may consume, and an `OBJECT_FINALIZE`
+notification on the bucket. No dead-letter topic: messages are hints for a
+LIST reconcile (§6).
 
 ### Rendering and tests
 
 ```sh
 helm lint --strict charts/ds-ingest-bucket                     # renders nothing (enabled: false)
 helm lint --strict charts/ds-ingest-bucket -f charts/ds-ingest-bucket/ci/example-values.yaml
-helm template t charts/ds-ingest-bucket -f charts/ds-ingest-bucket/ci/example-values.yaml \
-  --set notifications.sqs.enabled=true
-uv run scripts/check-ingest-bucket-chart.py                    # policy assertions, CI scripts-lint job
+helm template t charts/ds-ingest-bucket -f charts/ds-ingest-bucket/ci/example-values.yaml
+uv run scripts/check-ingest-bucket-chart.py                    # CI scripts-lint job
 ```
 
-CI runs all four: the `helm-lint` job, and the `scripts-lint` job after it
-installs Helm.
-
-`check-ingest-bucket-chart.py` parses every rendered policy and checks:
-
-- the writer has only `PutObject` and `AbortMultipartUpload` on `rdm/*`,
-  in both writer modes;
-- the reader has no write, and no delete unless allowed;
-- every `ListBucket` has an `s3:prefix` condition;
-- both buckets block public access, are owner-enforced and TLS-only, and
-  have `resource-policy: keep`;
-- the log bucket accepts only the logging service;
-- the queue takes only this bucket's S3 events and redrives to the DLQ;
-- bad values refuse to render.
-
-Install needs the ACK CRDs. `helm template` and `helm lint` don't.
-
-The full templates are in `charts/ds-ingest-bucket/templates/`. They are
-the source of truth and are not repeated here.
+`check-ingest-bucket-chart.py` checks UBLA, enforced PAP, versioning off,
+7-day soft delete, the two lifecycle rules, no retention, orphan-on-delete
+and `keep` on both buckets; that every grant is a bucket-level (or
+topic/subscription) member, fully managed, a service account, and never
+public; the exact publisher (members × four roles) and reader bindings;
+the delete-only custom role; alerts and Pub/Sub only when enabled; and
+that bad values (no members, `allUsers`, `domain:`, admin roles, soft
+delete out of range, …) refuse to render.
 
 ## 6. How DS learns of a new object
 
 The cluster has no inbound path except the Cloudflare tunnel, so only
-**pull** consumers were considered seriously. Inbound push options are
-assessed for completeness.
+**pull** consumers are viable.
 
-| Option | Latency | Reliability | Cost at a few objects a day | Extra AWS and IAM | Extra in charts and controllers | Rust at MSRV 1.88 |
-| --- | --- | --- | --- | --- | --- | --- |
-| **A. Poll `ListObjectsV2`** on `rdm/` every 5 min, then HEAD and GET new objects | ≤5 min (average 2.5) | Self-healing. A missed cycle is caught by the next. Nothing to lose | ~8,800 LISTs a month, about $0.05 | None beyond `ListBucket` | None | `object_store` 0.14.2 (`aws`, already in the workspace, MSRV 1.85): `list`, `head`, `get_opts` (`if_match`, `version`); `ObjectMeta` has `e_tag` and `version` |
-| **B. S3 → SQS**, schedule-ingest long-polls (`ReceiveMessage`, `WaitTimeSeconds=20`) | Seconds; AWS says "typically seconds, sometimes a minute or longer" | At-least-once: duplicates happen, there is no ordering (`sequencer` orders events per key), and notifications for concurrent writes to one key can be coalesced. Needs a DLQ and an alert. Visibility of 900s must exceed the 1–2 min CIF extraction | ~131k long-polls a month, inside SQS's 1M free requests (otherwise about $0.05) | Queue policy for `s3.amazonaws.com` with `aws:SourceArn`/`aws:SourceAccount`; reader gets `sqs:ReceiveMessage`/`DeleteMessage`/`ChangeMessageVisibility`/`GetQueueAttributes` | ACK sqs-controller; `Queue` + DLQ; bucket `notification` (all templated, off) | **`aws-sdk-sqs` is out:** v1.114.0 needs rustc 1.94.1 (checked 2026-10-02), and the smithy tree would bring cargo-deny duplicates. The viable route is the SQS JSON protocol (`application/x-amz-json-1.0`, `X-Amz-Target: AmazonSQS.ReceiveMessage`) over the existing `reqwest`, with a ~150-line SigV4 signer on `hmac` 0.12.1 and `sha2` (both already in `Cargo.lock`), tested against AWS's published SigV4 vectors. `object_store`'s signer is not public API |
-| **C. S3 → EventBridge → SQS** | As B, plus about 1 s | As B. EventBridge adds an archive and replay, content filtering (key, size) and fan-out to several targets | S3 events to the default bus are free; the rule target is SQS as in B | Bucket `EventBridgeConfiguration`, a rule, a target role or queue policy for `events.amazonaws.com` | ACK's `Bucket.notification` has no EventBridge switch, so a second mechanism would be needed (eventbridge-controller, or OpenTofu) | As B |
-| **D. S3 → SNS → SQS** | As B | As B, plus SNS retries | Free tier | Topic and its policy, a subscription, a queue policy for SNS | ACK sns-controller as well | As B |
-| **D′. S3 → SNS → HTTPS push** to an endpoint behind the tunnel | Seconds | SNS HTTP retries are bounded (the default delivery policy gives up after a few attempts over about 20s) and need the endpoint up. Subscription confirmation and signature verification would have to be built | Free tier | Topic, subscription, an internet-reachable endpoint | A new **inbound** route through the Cloudflare tunnel to schedule-ingest, which has no HTTP surface today | New HTTP handler and SNS signature verification |
-| **E. S3 → Lambda** | Seconds | Good | Pennies | Function, role | Code outside the cluster | Out of scope: processing happens in the cluster. A Lambda could only relay to B or D′ |
-| **F. Hybrid**: B for latency, plus A every hour as a safety net and for bootstrap and backfill | Seconds, or ≤1h if events are lost | Best of both. Messages are hints; the LIST is the truth | As B, plus ~730 LISTs (a cent) | As B | As B | As B |
+| Option | Latency | Reliability | Cost | Extra GCP and IAM | Rust at MSRV 1.88 |
+| --- | --- | --- | --- | --- | --- |
+| **A. Poll** the bucket root every 5 min | ≤5 min | Self-healing: a missed cycle is caught by the next | ~8,600 Class A LISTs a month, about $0.04 | None | `object_store` 0.14.2 (`gcp` feature, MSRV 1.85; its dependencies are the ones `aws` already brings): `list_with_delimiter`, `get_opts` with `version` = generation |
+| **B. Pub/Sub** `OBJECT_FINALIZE` → topic → **pull** subscription | Seconds | At-least-once, unordered; needs ack-deadline extension during extraction | Inside Pub/Sub's free tier | Topic with the Cloud Storage service agent as publisher; reader as subscriber | REST `subscriptions.pull`, `acknowledge`, `modifyAckDeadline` over the existing `reqwest`, with the bearer token from `GoogleCloudStorage::credentials()` (public API, `cloud-platform` scope). No new crates, no hand-written signing |
+| **C. Hybrid**: B for latency plus A hourly as the safety net | Seconds, or ≤1 h | Messages are hints; the LIST is the truth | As B | As B | As B |
+| **D. Push** subscription to an endpoint behind the tunnel | Seconds | Needs the endpoint up | Free tier | Topic, push subscription, OIDC-token verification | Re-opens an **inbound** path, which the bucket source exists partly to remove. Rejected |
 
-**Recommendation: A, polling.**
-
-- The pipeline after ingest is not latency-sensitive. schedule-reference
-  publishes from the newest complete delivery every 30 minutes
-  (`scheduleFeed.reference.pollIntervalSecs: 1800`), and the CIF lands once
-  a day at about 20:00 UTC. The ≤5 minutes polling costs is lost in that
-  interval.
-- Polling has no failure mode that loses a delivery. B and C have three:
-  coalesced events, DLQ stalls, and a missed `s3:TestEvent` edge.
-- Polling needs no third controller, no queue, no extra IAM and no SigV4
-  code.
-- The cost difference is pennies either way.
-
-D′ is the worst fit. It is the only option that **re-opens an inbound
-path**, which the S3 source exists partly to remove.
-
-If latency ever matters, for example if schedule-reference becomes
-event-driven, switch to **F** with both charts' SQS switches.
-
-- `ds-ingest-bucket`'s `notifications.sqs.*` is already templated and
-  tested.
-- `scheduleFeed.bucket.notifications.sqs.*` is designed in §10.
-
-In F, schedule-ingest treats each message only as a **wake-up hint**:
-
-1. It runs the normal LIST reconcile, which is idempotent by version id.
-2. It deletes the message once that cycle has handled the object.
-3. It extends visibility with `ChangeMessageVisibility` while a long
-   extraction runs.
-4. It ignores `s3:TestEvent`.
-5. It exports the DLQ depth (`GetQueueAttributes ApproximateNumberOfMessages`)
-   for the `DistantSignalScheduleBucketDeadLetters` alert.
-
-Duplicates and misordering then don't matter. The S3 event's
-`object.key`, `versionId`, `eTag`, `size` and `sequencer` are logged with
-the cycle but are not trusted as the source of truth.
-
-**Testing B or F:** a wiremock fake of the SQS JSON endpoint (wiremock is
-already a dev-dependency) for receive, delete, visibility and the DLQ
-gauge, plus the SigV4 vectors. LocalStack (S3 + SQS + notifications) is
-for `--ignored` integration tests in CI as a service container. The
-sandbox has no Docker.
+**Recommendation: A, polling.** schedule-reference publishes every 30
+minutes and the CIF lands once a day, so seconds buy nothing; polling has
+no failure mode that loses a delivery and needs no extra resources. If
+latency ever matters, switch to C with both charts' Pub/Sub switches.
 
 ## 7. Credentials and their handling
 
-Workload identity (IRSA, Pod Identity) is not available on k3s, so every
-AWS principal used from the cluster is an IAM user with a static key. Each
-key is minted by a person and sealed with `kubeseal` into Ranma-Config. No
-key is ever written to Git unencrypted, to a custom resource, or to this
-repo.
+| Credential | Holder | Created by | Sealed as | Rotation |
+| --- | --- | --- | --- | --- |
+| Crossplane provider's service-account key | `crossplane-system` | Ranma's OpenTofu bootstrap, once | A SealedSecret referenced by the `ClusterProviderConfig` | 180 days |
+| Reader service-account key (JSON) | schedule-ingest | A person, once: `gcloud iam service-accounts keys create` piped into `kubeseal`, never written to disk | `distant-signal-schedulefeed-bucket` (key `service-account.json`) | 90 days, two-key overlap: create, reseal, roll, confirm a poll, delete the old key |
+| DTD's | DTD | — | Nothing: **we hold no publisher credential** | Revoking = removing a member |
 
-| Key | Holder | Sealed as | Rotation |
-| --- | --- | --- | --- |
-| `ack-s3-controller`, `ack-iam-controller`, `ack-sqs-controller` (only if notifications are on) | ACK controllers in `ack-system` | One SealedSecret each, a shared-credentials file referenced by the chart's `aws.credentials.secretName` | 180 days |
-| `ds-ingest-reader` | schedule-ingest | `distant-signal-schedulefeed-bucket` (`access-key-id`, `secret-access-key`), the same shape as `archive.s3.existingSecret` | 90 days, two-key overlap: create the new key, reseal, roll, then delete the old one |
-| `ds-ingest-rdm-writer` (`iamUser` mode) | RDM | Not stored by us. It is entered in RDM's destination form and never kept | 90 days, or as RDM allows; two-key overlap, then confirm the next delivery |
+An HMAC key for the reader (S3-compatible XML API through `object_store`'s
+`aws` client) was considered and rejected: it is still a long-lived
+secret, and the JSON API calls the reader needs (generation-conditional
+delete, CRC32C metadata) use OAuth tokens anyway.
 
-### Controller credentials: bootstrap and least privilege
+The controller's service account needs, on the dedicated project, a
+custom role with `storage.buckets.create/get/update/delete/getIamPolicy/setIamPolicy`,
+`iam.roles.create/get/update/delete/undelete` (for the delete-only role)
+and, when enabled, `monitoring.alertPolicies.*` and the Pub/Sub topic and
+subscription permissions. Bucket `setIamPolicy` on the project lets a
+stolen controller key grant anything on any bucket in it; the project is
+dedicated, so that is the whole blast radius.
 
-Bootstrap runs once, with an admin profile, as OpenTofu in a new
-`aws/ds-ingest-bootstrap/` stack in Ranma-Config, or the equivalent
-`aws iam` CLI. It creates three things.
+### Org policies
 
-**1. The permissions boundary `ds-ingest-boundary`** (path `/ds-ingest/`).
-It is the ceiling for every user the iam controller creates:
+A dedicated project with **no organization** has no org policies, and
+nothing below applies. If the project sits in an organization:
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {"Sid": "DeliveryObjects", "Effect": "Allow",
-     "Action": ["s3:PutObject", "s3:AbortMultipartUpload", "s3:GetObject", "s3:GetObjectVersion",
-                "s3:DeleteObject", "s3:DeleteObjectVersion"],
-     "Resource": ["arn:aws:s3:::<bucket>/rdm/*", "arn:aws:s3:::<bucket>-logs/s3-access/*"]},
-    {"Sid": "ListPrefixes", "Effect": "Allow",
-     "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
-     "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>-logs"]},
-    {"Sid": "Events", "Effect": "Allow",
-     "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility",
-                "sqs:GetQueueAttributes", "sqs:GetQueueUrl"],
-     "Resource": "arn:aws:sqs:eu-west-2:<account>:ds-ingest-*"}
-  ]
-}
-```
+- **Domain-restricted sharing** (`iam.allowedPolicyMemberDomains`) blocks
+  granting DTD's service accounts, which belong to DTD's organization.
+  Allow DTD's customer ID for this project, or exempt it.
+- **`iam.disableServiceAccountKeyCreation`** blocks the reader's key.
+  Override it for this project only.
+- `storage.uniformBucketLevelAccess` and `storage.publicAccessPrevention`
+  match this design and can stay enforced.
 
-**2. Controller users with these inline policies.** Treat them as a
-starting point, and compare each with the controller's own
-`config/iam/recommended-inline-policy` at install. Trim what that file
-lists beyond what the chart uses.
-
-- **s3 controller:**
-  - `s3:CreateBucket`, `DeleteBucket`, `Get*`/`Put*` for
-    `BucketPolicy`, `BucketVersioning`, `EncryptionConfiguration`,
-    `LifecycleConfiguration`, `BucketLogging`, `BucketNotification`,
-    `BucketTagging`, `BucketOwnershipControls`,
-    `BucketPublicAccessBlock` and `BucketLocation`, plus
-    `DeleteBucketPolicy`, all on exactly the two bucket ARNs;
-  - `s3:ListAllMyBuckets` on `*`, which the controller uses for
-    existence checks.
-- **iam controller:**
-  - `iam:CreateUser`, `PutUserPolicy`, `DeleteUserPolicy`,
-    `AttachUserPolicy`, `DetachUserPolicy` and
-    `PutUserPermissionsBoundary`, with a
-    `Condition: StringEquals iam:PermissionsBoundary = <boundary ARN>`;
-  - `iam:GetUser`, `UpdateUser`, `DeleteUser`, `TagUser`, `UntagUser`,
-    `ListUserTags`, `GetUserPolicy`, `ListUserPolicies`,
-    `ListAttachedUserPolicies`, `ListAccessKeys` and
-    `ListGroupsForUser`;
-  - everything on `arn:aws:iam::<account>:user/ds-ingest/*` only;
-  - an explicit **Deny** on `iam:CreateAccessKey`,
-    `iam:DeleteUserPermissionsBoundary`, `iam:CreatePolicyVersion`,
-    `iam:SetDefaultPolicyVersion` and `iam:DeletePolicy` for the
-    boundary. The controller can't mint keys, can't lift the ceiling,
-    and can't touch anyone outside `/ds-ingest/`.
-- **sqs controller:** `sqs:CreateQueue`, `DeleteQueue`,
-  `GetQueueAttributes`, `SetQueueAttributes`, `GetQueueUrl`, `TagQueue`,
-  `UntagQueue` and `ListQueueTags` on
-  `arn:aws:sqs:eu-west-2:<account>:ds-ingest-*`.
-
-**3. Account hygiene** (D2: a new, dedicated account).
-
-- The user holds root MFA. There are no console users beyond one admin.
-- An AWS Budget at $5 a month, alerting by email (the artifact's runaway
-  re-download case is $270–380 a month). The recipient address is still
-  open (§14).
-- CloudTrail's default 90-day management event history, which records
-  every IAM and bucket change the controllers make.
-
-A compromised controller key can, at worst, re-shape these two buckets
-and their users, and only within the boundary.
+Organizations created since May 2024 enforce several of these by default.
+Check the effective policies on the project before step 3 of §12.
 
 ## 8. Audit and alerting for the bucket source
 
-The SFTP audit, including the Loki rules, defender and telemetry, stays
-exactly as it is while SFTP is enabled. For the bucket source:
+The SFTP audit stays exactly as it is while SFTP is enabled.
 
-### Audit trail
+### Audit trail (D4)
 
-S3 server access logs land in `<bucket>-logs/s3-access/`. Each record
-gives the requester ARN, remote IP, time, operation (`REST.PUT.OBJECT`),
-key, HTTP status, error code, bytes, user agent and version id.
+Cloud Audit Logs for Cloud Storage: **Admin Activity** (IAM and bucket
+changes) is always on and free. **Data Access** (`DATA_READ`,
+`DATA_WRITE`) must be enabled explicitly, for `storage.googleapis.com` in
+the project's audit config. At a few dozen operations a day it stays far
+inside Cloud Logging's free ingestion allowance. Each entry has the
+principal (`authenticationInfo.principalEmail`), `requestMetadata.callerIp`
+and user agent, `methodName` (`storage.objects.create`, `.get`, `.delete`,
+…), `resourceName` and status. This is the equivalent of S3 server access
+logs, with the caller's identity included.
 
-Delivery is best-effort, typically within an hour. That is good enough for
-anomaly alerts, not for real-time ones.
+### Shipping to Loki: the simplest pull path
 
-**Decided (D4, 2026-10-02): server access logs are the only object-level
-audit.** CloudTrail S3 data events, the guaranteed alternative, are not
-used. ACK's `Trail` couldn't configure them anyway. Because access logs
-can be delayed or, rarely, lost, the Prometheus alerts below, driven by
-schedule-ingest's own observations, are the timely signal. The Loki
-rules are forensic and anomaly checks.
+Ranma's Logging sink (filter: `resource.type="gcs_bucket"` and this
+bucket's name, `cloudaudit.googleapis.com` logs) writes hourly JSON files
+into the audit-log bucket. schedule-ingest's optional audit tailer
+(`scheduleFeed.bucket.auditLogs.ship`) lists that bucket after a persisted
+cursor, reads new files with the same reader key, and writes one JSON line
+per entry (`target=schedule_ingest::bucket_access`: `principal`,
+`caller_ip`, `method`, `object`, `status`, `time`). Alloy tags them
+`audit="bucket-delivery"`, kept 400 days.
 
-### Shipping to Loki
-
-An optional access-log tailer in schedule-ingest
-(`scheduleFeed.bucket.accessLogs.ship`):
-
-1. Every 10 minutes it lists `s3-access/` after a persisted cursor (the
-   keys sort by time).
-2. It GETs each new log object.
-3. It parses the space-delimited format.
-4. It logs one JSON line per record with
-   `target=schedule_ingest::bucket_access` and the fields `requester`,
-   `remote_ip`, `operation`, `key`, `status`, `error_code`, `bytes`,
-   `version_id` and `time`.
-
-Alloy, on the Ranma side, tags these `audit="bucket-delivery"` with the
-same retention as the SFTP delivery audit (400 days).
+Rejected: a sink to Pub/Sub (another subscription to pull) and polling
+the Logging API (another client and quota). The bucket path reuses the
+reader's client and key.
 
 ### Loki rules (Ranma `loki-rules`, group `distant-signal-bucket-audit`)
 
-The bucket equivalents of the SFTP rules:
-
 | Alert | Fires when |
 | --- | --- |
-| `DistantSignalBucketWriterNewSource` | A `REST.PUT.OBJECT` by the writer principal from an IP not seen in the previous 7 days. Same shape as `DistantSignalSftpDtdPushNewSource` |
-| `DistantSignalBucketWriterOffHours` | A writer PUT outside the observed window |
-| `DistantSignalBucketAccessDenied` | Five or more 403s on the bucket in 15 minutes, which means someone is probing with a bad or stale key |
-| `DistantSignalBucketUnexpectedPrincipal` | Any write or delete by a principal other than the writer, or (with `allowDelete`) the reader |
+| `DistantSignalBucketUnexpectedPrincipal` | Any `storage.objects.*` call by a principal that is neither a publisher member nor the reader. Keyed on principal, which is the strongest signal: STS runs on Google's network, so its `callerIp` says little |
+| `DistantSignalBucketPublisherDelete` | A `storage.objects.delete` by a publisher principal (the scanner question in §1 decides whether this is noise) |
+| `DistantSignalBucketReaderNewSource` | A reader call from an address other than the node's (the detection half of the missing IP pin) |
+| `DistantSignalBucketPublisherOffHours` | A publisher write outside the observed delivery window |
+| `DistantSignalBucketAccessDenied` | Five or more `PERMISSION_DENIED` entries in 15 minutes |
+| `DistantSignalBucketIamChanged` | Any Admin Activity `SetIamPolicy` on the bucket: a deploy, or the kill switch |
 
-Login failures and brute force have no equivalent: there is no listener
-to attack. AWS authentication failures surface only as 403s on our
-bucket.
+### Prometheus (new schedule-ingest metrics, labelled `source`)
 
-### Prometheus
+Group `distant-signal.schedule-bucket`, rendered only with
+`scheduleFeed.bucket.enabled`.
 
-These are new schedule-ingest metrics, all labelled `source`. The alerts
-are in a new chart group, `distant-signal.schedule-bucket`, which renders
-only with `scheduleFeed.bucket.enabled`.
-
-| Alert | Expression (sketch) | Default |
+| Alert | Expression (sketch) | Severity |
 | --- | --- | --- |
-| `DistantSignalScheduleBucketNoNewObject` | `time() - schedule_feed_source_last_new_object_seconds{source="bucket"} > 30h` (only once one has been seen) | 30h, warning. This is the bucket twin of `DistantSignalSftpNoUpload` |
-| `DistantSignalScheduleBucketReadErrors` | `increase(schedule_feed_source_errors_total{source="bucket"}[1h]) > 0` for 15m. `kind` is `auth` (403, expired or rotated key: **critical**), `list`, `get` or `size` | warning; critical for `auth` |
-| `DistantSignalScheduleBucketDownloadBudget` | `increase(schedule_feed_source_downloaded_bytes_total{source="bucket"}[1d]) > 500 MB` | The runaway-loop guard (normal is ~80 MB a day) |
-| `DistantSignalScheduleBucketDeadLetters` | DLQ depth > 0, only in SQS mode | |
-| `DistantSignalScheduleFeedSourcesDisagree` | `increase(schedule_feed_source_disagreement_total[1d]) > 0`, only with both sources on | §9, "When the two sources disagree" |
+| `DistantSignalScheduleBucketAccessRevoked` | `schedule_feed_source_access_revoked{source="bucket"} == 1` for 10m | critical. "Bucket access revoked": the kill switch tripped, or the key was rotated or disabled. SFTP carries on |
+| `DistantSignalScheduleBucketNoNewObject` | `time() - schedule_feed_source_last_new_object_seconds{source="bucket"} > 30h` (only once one has been seen) | warning |
+| `DistantSignalScheduleBucketReadErrors` | `increase(schedule_feed_source_errors_total{source="bucket",kind!="auth"}[1h]) > 0` for 15m (`list`, `get`, `verify`, `delete`) | warning |
+| `DistantSignalScheduleBucketUnexpectedObject` | `increase(schedule_feed_source_unexpected_objects_total[1h]) > 0` | warning |
+| `DistantSignalScheduleBucketDownloadBudget` | `schedule_feed_source_download_capped{source="bucket"} == 1` (a per-hour or per-day cap hit) | critical: a loop or an attack, stopped by the reader itself |
+| `DistantSignalScheduleFeedSourcesDisagree` | `increase(schedule_feed_source_disagreement_total[1d]) > 0`, only with both sources on | warning |
 
-The existing `DistantSignalScheduleFeedZipRejected`,
-`DistantSignalCorpusRejected` and
-`DistantSignalScheduleReferencePublishStale` stay source-agnostic.
-`...PublishStale` remains the authoritative "no timetable" signal. The
-quarantine counters gain a `source` label.
+`DistantSignalScheduleReferencePublishStale` remains the authoritative "no
+timetable" signal.
+
+### A kill-switch trip, seen from DS (runbook material)
+
+| Trip | What DS sees | What to do |
+| --- | --- | --- |
+| Egress spike → reader removed | `...AccessRevoked` within minutes; the bucket source backs off and logs once per state change; SFTP ingest continues | Find the cause in the audit log (a reader loop shows as repeated `objects.get` of one generation). Fix it, then ask Ranma to reapply. Nothing in DS restarts it |
+| Ingress or write spike → publishers removed | Nothing new in the bucket; `...NoNewObject` after 30 h if SFTP is off; DTD's transfers fail on their side | Read the audit log for what was written and by whom; examine soft-deleted or unexpected objects; then a deliberate reapply |
+| Budget trip → everything removed | Both of the above | As above, plus the billing report |
+
+Recovery is always a deliberate Ranma reapply of the deploy values.
+These go into `docs/schedule-feed-bucket.md` and `docs/alerts.md` with the
+alerts (plan tasks 4.3 and 4.4).
 
 ## 9. schedule-ingest: several concurrent sources
 
@@ -581,50 +591,71 @@ enum SourceId { Sftp, Bucket }
 struct Candidate {
     source: SourceId,
     name: String,                 // file name the routing globs see ("timetable_full.zip")
-    delivered_at: DateTime<Utc>,  // SFTP: mtime at upload close; S3: LastModified (PUT completion)
+    delivered_at: DateTime<Utc>,  // SFTP: mtime at upload close; GCS: object creation time
     bytes: u64,
     identity: SourceIdentity,     // what "seen before" means for this source
 }
 enum SourceIdentity {
-    File { mtime: SystemTime },                                           // + bytes
-    Object { key: String, e_tag: String, version: Option<String> },       // + bytes, LastModified
+    File { mtime: SystemTime },                              // + bytes
+    Object { name: String, generation: i64, crc32c: u32 },   // + bytes
 }
 
-/// A peer source. Enum dispatch rather than `dyn` (no async-trait
-/// dependency; async fn in traits is stable but not object-safe).
-enum Source { WatchDir(WatchDirSource), Bucket(ObjectStoreSource) }
+/// A peer source. Enum dispatch rather than `dyn`.
+enum Source { WatchDir(WatchDirSource), Bucket(GcsSource) }
 
 impl Source {
     /// Complete, routable candidates now. WatchDir applies today's
-    /// stability gate inside; Bucket lists `prefix` (uploads are atomic,
-    /// so no gate) and skips identities already in its seen-ledger.
+    /// stability gate. Bucket lists the root (finalized objects only, so no
+    /// gate), flags unexpected names, and skips (name, generation) pairs
+    /// already in its ledger.
     async fn poll(&mut self) -> anyhow::Result<Vec<Candidate>>;
-    /// A local, fully-read copy to work on, plus its SHA-256 and size,
-    /// hashed while reading. WatchDir: the file in place (hash only).
-    /// Bucket: streamed GET with `if_match` = listed ETag into
-    /// `sources/bucket/.partial`, size checked against the listing and
-    /// `maxObjectBytes`, fsync, rename to `sources/bucket/<name>`, mtime set
-    /// to LastModified (File::set_modified), version id from the response.
+    /// A local, fully-read, verified copy plus its SHA-256. Bucket: GET of
+    /// exactly that generation into `sources/bucket/.partial`, hashing
+    /// SHA-256 and CRC32C, size and CRC32C (and MD5 when present) checked
+    /// against the object's metadata, fsync, rename into the archive.
     async fn fetch(&mut self, c: &Candidate) -> anyhow::Result<LocalDelivery>;
-    /// After a decision: WatchDir moves CORPUS out of the watch dir as
-    /// today (the CIF zip stays, as today). Bucket records the identity
-    /// as seen and, only with deleteAfterIngest, deletes that version.
+    /// After a decision: WatchDir moves CORPUS out as today. Bucket records
+    /// the generation as confirmed and, once deleteMinAgeSecs has passed,
+    /// deletes it with ifGenerationMatch.
     async fn settle(&mut self, c: &Candidate, d: &Decision) -> anyhow::Result<()>;
 }
 ```
 
-`WatchDirSource` is today's `scan.rs` + `StabilityTracker`, unchanged
-in behaviour. `ObjectStoreSource` wraps `object_store::aws::AmazonS3`.
-It is built with the region, bucket, the static key from env, and an
-optional `endpoint` and `allow_http` for MinIO or LocalStack tests. It
-keeps a seen-ledger, `sources/bucket/.seen`: one tab-separated line per
-handled `(key, version or ETag, LastModified ns, bytes, sha256)`,
-bounded to the last 50. After a restart it doesn't re-download what it
-already handled, so egress stays at one download per version.
+`GcsSource` wraps `object_store::gcp::GoogleCloudStorage`, built from the
+bucket name and `GOOGLE_SERVICE_ACCOUNT_PATH` (the mounted key), with an
+optional base URL for a fake-GCS test server. `object_store` has no
+preconditioned delete and doesn't expose `x-goog-hash`, so two small JSON
+API calls go over the existing `reqwest` with the bearer token from
+`GoogleCloudStorage::credentials()`:
 
-The main loop builds `Vec<Source>` from the enabled sources. Each cycle
-it polls every source, so one failing source never blocks the other. It
-then hands all candidates to the source-agnostic pipeline.
+- `GET /storage/v1/b/{b}/o/{o}?generation={g}&fields=size,generation,crc32c,md5Hash,timeCreated`;
+- `DELETE /storage/v1/b/{b}/o/{o}?ifGenerationMatch={g}`.
+
+CRC32C uses the already-locked `crc` crate (`CRC_32_ISCSI`); MD5 the
+already-locked `md-5`. Nothing new enters `Cargo.lock`.
+
+### Loop and revocation guards
+
+The looping reader is the realistic expensive failure, so the bucket source
+guards against it on its own, independent of the alerts and the kill
+switch:
+
+- **Never re-download a confirmed generation.** The ledger
+  (`sources/bucket/.seen`, last 200 entries, atomic writes) holds name,
+  generation, CRC32C and SHA-256. A failed delete doesn't cause a
+  re-download; the object is simply deleted again later, or expires.
+- **Caps.** At most `maxDownloadsPerPoll` (2) downloads per poll,
+  `maxDownloadBytesPerHour` (256 MiB) and `maxDownloadBytesPerDay`
+  (1 GiB). Hitting a cap stops downloads until the window passes, sets
+  `schedule_feed_source_download_capped` and fires the alert.
+- **Backoff.** Errors back the poll interval off exponentially, to
+  `maxBackoffSecs` (3600), and reset on success. A verification failure
+  counts against the caps.
+- **Revocation.** A 401 or 403 from any call sets
+  `schedule_feed_source_access_revoked{source="bucket"} = 1`, logs **one**
+  line per state change (not per poll), and backs off to
+  `maxBackoffSecs`. It never crashes the process or blocks the SFTP
+  source. The first successful call clears it.
 
 ### One pipeline, deduplicated by content
 
@@ -634,85 +665,50 @@ For each kind (CIF, CORPUS):
    same second, order by `sourcePrecedence`.
 2. For the newest candidate not yet settled:
    1. `fetch` it and get the SHA-256.
-   2. **Dedup.** Look up the SHA-256 in the *content ledger*: every
+   2. **Dedup.** If the SHA-256 is already in the *content ledger* (every
       delivery directory's `.delivery-ingested` and the quarantine
-      records. If it is already accepted or quarantined, do no
-      extraction, check or POST. Log an audit line, `outcome: duplicate`,
-      with `source`, `duplicate_of` (the delivery directory) and
-      `first_source`. Append the arrival to that directory's
-      `.delivery-sources`. Then `settle`.
+      records), do no extraction, check or POST. Log `outcome: duplicate`
+      with `source`, `duplicate_of` and `first_source`; append the arrival
+      to `.delivery-sources`; `settle`.
    3. **Otherwise** run today's path: extract with caps, run the CIF
-      checks, mark complete, POST, record. One `accepted` or
-      `quarantined` line with `source`.
+      checks, mark complete, POST, record.
 3. Older unsettled candidates are superseded, as `corpus.rs` already
-   does: logged and settled, never ingested over newer data.
-
-Size, SHA-256 and the content checks all stay. Only the stability gate
-is skipped for the bucket source, because an S3 object is visible only
-after its PUT or CompleteMultipartUpload succeeds. A zero-byte or
-truncated object fails the existing zip and CIF checks as it does today.
+   does.
 
 ### Records
 
-- **`.delivery-ingested` v2** adds `source` and `source_ref`. `source_ref`
-  is `sftp:<file>` or `s3://<bucket>/<key>#<versionId>`. A v1 (4-field)
+- **`.delivery-ingested` v2** adds `source` and `source_ref`
+  (`sftp:<file>` or `gs://<bucket>/<name>#<generation>`). A v1 (4-field)
   record reads as `source=sftp`.
 - **`.delivery-sources`** (new, append-only) lists every arrival of this
-  content: `source`, `source_ref`, `delivered_at` and the outcome
-  (`accepted` or `duplicate`).
-- The **delivery directory name** is still `delivery_dir_name(delivered_at)`.
-  A different-content collision in the same second (practically
-  impossible) gets a `-<source>` suffix, which `is_delivery_dir_name`
-  learns to accept and schedule-reference already sorts correctly.
-- **api.** `schedule_feed_ingests.delivery_source` (nullable text) and
-  `corpus_deliveries.delivery_source` record the source of the accepted
-  copy. Duplicates are not posted, because api's unique
-  `delivered_at` + `ON CONFLICT DO NOTHING` would drop them anyway. They
-  live in the audit stream.
+  content.
+- The **delivery directory name** is still `delivery_dir_name(delivered_at)`;
+  a different-content collision in the same second gets a `-<source>`
+  suffix.
+- **api.** `schedule_feed_ingests.delivery_source` and
+  `corpus_deliveries.delivery_source` (nullable text) record the source
+  of the accepted copy.
 - The **audit line** gains `source`, plus `duplicate_of` and
   `first_source` on `duplicate`.
 
 ### When the two sources disagree
 
-Same content means dedup, ingested once. Different content within
-`disagreementWindowMinutes` (default 120) of each other means RDM pushed
-two different files to two destinations, which is unexpected:
+Same content means dedup. Different content within
+`disagreementWindowMinutes` (default 120) is unexpected:
 
-- `schedule_feed_source_disagreement_total{kind}` is incremented, which
-  drives `DistantSignalScheduleFeedSourcesDisagree`. Both SHA-256s,
-  sizes and sources are logged.
-- **The bucket wins** (D5, decided 2026-10-02). `sourcePrecedence`
-  defaults to `[bucket, sftp]` and stays configurable only for tests and
-  emergencies. The
-  higher-precedence copy is ingested, whichever arrived first. The other
-  gets `outcome: superseded` with `reason: "source precedence: <winner>"`
-  and is not ingested. The bucket comes first because its writer
-  credential is a scoped IAM key, while SFTP's password faces the public
-  internet.
-- **Every check still applies to the winner.** If it fails a check, it is
-  quarantined. The loser is then **not** promoted automatically: an
-  operator decides, as with any quarantine today, by lowering a threshold
-  or re-pushing. A forged delivery on one channel can't win by causing
-  the genuine one to be quarantined.
-- Outside the window, the later delivery is simply the newer delivery,
-  as with an SFTP re-push today. The existing checks still apply: the
-  `Generated` date must not be older than the last accepted delivery,
-  and the record-count drop limit still holds.
-
-CORPUS follows the same rules. `corpus_deliveries.sha256` already exists,
-and loading is idempotent on the api side.
+- `schedule_feed_source_disagreement_total{kind}` is incremented and both
+  SHA-256s, sizes and sources are logged.
+- **The bucket wins** (D5). The other copy gets `outcome: superseded`.
+  The bucket comes first because its publisher authenticates as DTD's
+  own Google identity, while SFTP's password faces the public internet.
+- **Every check still applies to the winner.** A quarantined winner does
+  **not** promote the loser automatically.
+- Outside the window, the later delivery is simply the newer one, and the
+  existing `Generated`-date and record-count checks apply.
 
 ## 10. Chart: `charts/distant-signal` `scheduleFeed`
 
-**Separate switches, not a `sources:` list.**
-
-- Every component in this chart is switched with its own `enabled`.
-- Each source has its own block of settings anyway.
-- `--set scheduleFeed.sftp.enabled=false` is a single, obvious override.
-- `chart-values-doc.py` documents the keys naturally.
-
-`sourcePrecedence` is the only list, and it orders sources that already
-exist.
+Separate switches, not a `sources:` list.
 
 ```yaml
 scheduleFeed:
@@ -722,27 +718,28 @@ scheduleFeed:
     # ... every existing sftp.* key, unchanged
   bucket:
     enabled: false           # NEW, off by default
-    provider: s3             # only s3 is implemented; gcs is the documented fallback
-    bucket: ""               # required when enabled
-    prefix: rdm/
-    region: eu-west-2
-    endpoint: ""             # empty = AWS's regional endpoint; set for MinIO/LocalStack tests
-    existingSecret: ""       # required: sealed reader key (access-key-id / secret-access-key)
-    accessKeyIdKey: access-key-id
-    secretAccessKeyKey: secret-access-key
+    provider: gcs            # only gcs is implemented
+    bucket: ""               # required when enabled (Ranma's value)
+    baseUrl: ""              # empty = storage.googleapis.com; set for a fake-GCS test server
+    existingSecret: ""       # required: sealed reader key
+    serviceAccountKey: service-account.json
+    expectedKeys: [timetable_full.zip, CORPUSExtract.json.gz]   # same globs as SFTP routing
     pollIntervalSecs: 300
-    maxObjectBytes: 536870912     # same 512 MiB cap as sftp.maxUploadFileSize
-    maxDownloadBytesPerDay: 1073741824   # hard stop on a runaway re-download loop
-    deleteAfterIngest: false      # needs ds-ingest-bucket reader.allowDelete
+    deleteMinAgeSecs: 3600        # let the publisher's read-back and scan finish
+    archiveKeep: 5                # raw objects kept locally
+    maxObjectBytes: 536870912     # 512 MiB, as sftp.maxUploadFileSize
+    maxDownloadsPerPoll: 2
+    maxDownloadBytesPerHour: 268435456
+    maxDownloadBytesPerDay: 1073741824
+    maxBackoffSecs: 3600
     notifications:
-      sqs:
+      pubsub:
         enabled: false
-        queueUrl: ""
-        reconcileIntervalSecs: 3600   # the hybrid's safety-net LIST
-    accessLogs:
+        subscription: ""      # projects/<p>/subscriptions/<s>
+        reconcileIntervalSecs: 3600
+    auditLogs:
       ship: false
-      bucket: ""             # e.g. <bucket>-logs
-      prefix: s3-access/
+      bucket: ""             # the audit-log bucket
       pollIntervalSecs: 600
   sourcePrecedence: [bucket, sftp]
   disagreementWindowMinutes: 120
@@ -751,224 +748,175 @@ scheduleFeed:
 ### Rendering rules
 
 - `scheduleFeed.enabled` with neither source enabled → `fail`.
-- **SFTP off.** No `sftp` container. No schedulefeed `Service`, so no
-  NodePort or LoadBalancer. No `sftp-entrypoint` ConfigMap or
-  `checksum/sftp-entrypoint` annotation. No host-key Secret, volume or
-  mount, and no `sftp-bootstrap` emptyDir. No 2022 ingress rule. No
-  `sftp-metrics` PodMonitor endpoint. No `distant-signal.schedule-sftp`
-  alert group. The `authMethod` guard is skipped. `ingest` gets
-  `SFTP_SOURCE_ENABLED=false` and does not scan `WATCH_DIR`. The PVC
-  stays, because extraction needs it.
-- **Bucket off.** No `BUCKET_*` env and no AWS secret reference, so no
-  credentials are needed. No `distant-signal.schedule-bucket` alerts.
-- **Bucket on.** `BUCKET_SOURCE_ENABLED=true` and the `BUCKET_*` env,
-  with `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` from `existingSecret`
-  (`fail` if it is empty).
-- **NetworkPolicy.** The schedulefeed egress policy already has the
-  public-internet rule on 443, for the OAuth token URL, which excludes
-  private CIDRs. The S3 regional endpoint is public, so no new rule is
-  needed. The chart adds the S3 endpoint to the `urls` list it passes to
-  `egressSection`, so a custom `endpoint` port is allowed too. Pinning to
-  AWS's published eu-west-2 S3 ranges (`ip-ranges.json`) was rejected:
-  they change without notice, and a stale list fails silently. The
-  bucket-policy `aws:SourceIp` pin on the reader key protects the other
-  direction.
+- **SFTP off.** No `sftp` container, Service, NodePort, entrypoint
+  ConfigMap, host-key Secret or volume, 2022 ingress rule, `sftp-metrics`
+  PodMonitor endpoint or `schedule-sftp` alert group. `ingest` gets
+  `SFTP_SOURCE_ENABLED=false`. The PVC stays.
+- **Bucket off.** No `BUCKET_*` env, no key mount, no bucket alerts.
+- **Bucket on.** `BUCKET_SOURCE_ENABLED=true`, the `BUCKET_*` env, and the
+  key from `existingSecret` mounted read-only with
+  `GOOGLE_SERVICE_ACCOUNT_PATH` pointing at it (`fail` if
+  `existingSecret` is empty).
+- **NetworkPolicy.** The existing public-internet rule on 443 covers
+  `storage.googleapis.com` and `oauth2.googleapis.com`; the chart adds
+  both to the `egressSection` `urls` list so a custom `baseUrl` port is
+  allowed too.
 - `scheduleFeed.sftp.enabled` defaults to `true`, so every existing values
-  file renders the same until someone changes it. The CI render test
-  asserts this byte for byte against `origin/main`'s defaults.
+  file renders the same. The CI render test asserts this byte for byte.
 
 Settings that ship **off by default**: `scheduleFeed.bucket.enabled`,
-`bucket.deleteAfterIngest`, `bucket.notifications.sqs.enabled`,
-`bucket.accessLogs.ship`, `ds-ingest-bucket` `enabled`,
-`reader.allowDelete`, `writer.allowList` and `notifications.sqs.enabled`.
+`bucket.notifications.pubsub.enabled`, `bucket.auditLogs.ship`, and in
+`ds-ingest-bucket`: `enabled`, `usageAlerts.enabled`,
+`notifications.pubsub.enabled`.
 
-## 11. Security: threat model compared with SFTP
+## 11. Security review: threat model compared with SFTP
 
 | Concern | SFTP source | Bucket source |
 | --- | --- | --- |
-| Inbound exposure | NodePort 30450 on the public IP. Scanned and brute-forced. Mitigated by the defender, rate limits, a 190-bit password and login-anomaly rules | **None.** Outbound HTTPS from the ingest pod only |
-| Publisher authentication | A shared password. JSch 0.1.54 can't pin our host key | An IAM key (or a cross-account principal) over AWS TLS; no host-key question |
-| Publisher authority | upload, overwrite, list in one directory | `PutObject` (+ abort) on one prefix |
-| Our authority | Filesystem access to the PVC | List and get on one prefix, optionally pinned to our IP; no delete by default |
-| What a stolen publisher credential does | Replace the timetable with a crafted file, which ingest checks reject | Same, and a replaced version survives 3 days for forensics |
-| Detection | SFTPGo login and upload log → Loki rules (new source, off hours, failed logins, bans) | Access logs → Loki rules (new writer source, off hours, 403 bursts, unexpected principal); metrics for no-new-object, read and auth errors, and download budget |
-| New dependency | None | An AWS account to secure: root MFA, budget alert, key rotation, and ACK controllers holding scoped AWS keys in the cluster |
+| Inbound exposure | NodePort 30450 on the public IP. Scanned and brute-forced; mitigated by the defender, rate limits, a 190-bit password and login-anomaly rules | **None.** Outbound HTTPS from the ingest pod only |
+| Publisher credential | A shared password we created and gave DTD | **None of ours.** DTD's own Google service accounts; nothing to leak from our side, nothing to rotate with DTD |
+| Publisher authority | Upload, overwrite, list in one directory | Create, overwrite, delete, read, list objects in one dedicated bucket; no IAM or bucket settings |
+| Our authority | Filesystem access to the PVC | Get, list and delete on one bucket; never create |
+| A compromised DTD identity | Replaces the timetable with a crafted file | The same: a poisoned or junk file. Mitigated by ingest content checks, quarantine, the SHA-256 audit, the expected-name allowlist, the audit-log rules, usage alerts and the kill switch. An overwrite or delete before we fetch is restorable from soft delete for a week, and SFTP plus dedup delivers the genuine copy |
+| A leaked reader key | — | Reads public timetable data (egress cost, capped by alerts and the kill switch's egress trigger) and can delete undelivered objects (soft delete restores them; SFTP still delivers). Can't plant a file. No IP pin; detected by the "reader new source" rule |
+| Cost abuse | None | A looping reader or a flood of uploads. Reader guards, usage alerts, the kill switch and the $5 budget (§5) |
+| Public exposure of the bucket | — | Impossible: public access prevention enforced, UBLA on, and the render refuses public members |
+| Detection | SFTPGo logs → Loki rules | Data Access audit logs → Loki rules; Prometheus for revocation, no-new-object, unexpected objects, download caps |
+| New dependency | None | A GCP project to secure, Crossplane in the cluster holding a scoped project key |
+
+**Why no private access path.** Private Service Connect or VPC endpoints
+would keep traffic off the internet only for clients inside a VPC. The
+publisher is STS in DTD's project and the reader is on our netcup node,
+outside any VPC, so both must use the public endpoint. TLS and IAM
+protect it.
 
 **Running bucket-only removes the node's only public listener.** That is
-the operator's choice (§12, step 7), not a plan step. If chosen, Ranma
-updates `public-exposure-check.yml`'s allowed list and the NodePort
-monitoring exception. The SFTP Loki rules simply go quiet.
+the operator's choice (§12, step 7). If chosen, Ranma updates
+`public-exposure-check.yml` and the NodePort monitoring exception.
 
 ## 12. Adoption plan
 
 Nothing here retires SFTPGo. Each step can be undone by flipping a value.
 
-1. **AWS account and bootstrap** (user and Ranma, OpenTofu, D2/D3).
-   - The user creates the **new dedicated account** and holds its root
-     MFA. There are no console users beyond one admin.
-   - OpenTofu, run once, creates:
-     - the boundary policy;
-     - the three controller users and their policies;
-     - the **$5/month budget alert** (recipient and other account
-       specifics live in Ranma-Config, not here; see D6).
-   - Seal the controller keys into `ack-system`.
-   - *Rollback:* destroy the stack; nothing depends on it yet.
-2. **ACK controllers** (Ranma, `clusters/mine-bringer/controllers/6.ack/`).
-   - Add a `HelmRepository` (`type: oci`,
-     `url: oci://public.ecr.aws/aws-controllers-k8s`).
-   - Add HelmReleases `s3-chart`, `iam-chart` and later `sqs-chart`,
-     pinned to the versions above, with:
-     - `aws.region: eu-west-2`;
-     - `aws.credentials.secretName` (the sealed Secret) and `profile`;
-     - `installScope: namespace` with `watchNamespace: ds-ingest-aws`;
-     - `reconcile.defaultResyncPeriod: 3600`;
-     - `deployment.resources` set.
-   - Add PSA `restricted` namespace labels; check the charts'
-     securityContext against `psa-enforcement.md` first.
-   - Add an egress NetworkPolicy allowing 443 to the internet, which is
-     the AWS APIs.
-   - Add a Flux Kustomization `c06-ack` that `dependsOn` `c00-sealed-secrets`.
-   - *Rollback:* remove the Kustomization. CRs with `retain` leave AWS
-     untouched.
-3. **The bucket** (Ranma, a HelmRelease of `charts/ds-ingest-bucket`).
-   - Source: package the chart in DS's `push-helm-chart` job next to
-     `distant-signal`.
-   - Namespace `ds-ingest-aws`, with values `enabled: true`, the account,
-     the bucket name and the boundary ARN. `writer.mode` depends on RDM's
-     answer.
-   - Wait for `ACK.ResourceSynced=True` on every resource.
-   - Mint the reader key, then seal it as
+1. **Project and bootstrap** (Ranma, OpenTofu, D2/D3/D7).
+   - The dedicated project, its billing link and the $5 budget.
+   - Check the effective org policies (§7).
+   - The Crossplane provider's service account, its custom role and its
+     key, sealed.
+   - The reader's service account; its key made by hand and sealed as
      `distant-signal/distant-signal-schedulefeed-bucket`.
-   - Mint the writer key (`iamUser`) for RDM's form.
-   - *Rollback:* set `enabled: false`. With `retain` and `keep`, the
-     bucket stays.
-4. **DS code and chart** (the plan's phases 1–4).
-   - Release, then turn on `scheduleFeed.bucket.enabled: true` **with
-     SFTP still on**. Until RDM pushes, the bucket source just lists an
-     empty prefix, and `...NoNewObject` stays quiet until the first
-     object arrives.
-   - *Rollback:* `bucket.enabled: false`.
+   - The Data Access audit config for `storage.googleapis.com` and the
+     sink to the audit-log bucket.
+   - The kill switch: alert policies, topic, function and its narrow IAM.
+   - *Rollback:* destroy the stack.
+2. **Crossplane** (Ranma): Crossplane v2 and provider-upjet-gcp
+   (`provider-gcp-storage`, `-cloudplatform`; `-monitoring` and `-pubsub`
+   only if used), activation limited to the kinds used, the
+   `ClusterProviderConfig`, PSA labels, an egress policy for 443, and the
+   kill-switch watcher (§5).
+3. **The bucket** (Ranma, a HelmRelease of `charts/ds-ingest-bucket`):
+   `enabled: true`, project, bucket name, `publisher.members` (DTD's
+   service accounts), `reader.member`, `auditLogs.sinkWriterIdentity`.
+   Wait for every resource to be `READY`. *Rollback:* `enabled: false`;
+   the buckets stay.
+4. **DS code and chart** (the plan's phases 1–4): turn on
+   `scheduleFeed.bucket.enabled: true` **with SFTP still on**.
 5. **Ask RDM to add the bucket** as a destination for the timetable and
-   CORPUS subscriptions, **in addition to SFTP**. Send the questions in
-   §14, "Questions for DTD/RDM", ideally before step 3, because the answer
-   decides `writer.mode`.
+   CORPUS subscriptions, **in addition to SFTP**, and send §14's
+   questions.
+6. **Verify both** for at least 7 daily deliveries and one CORPUS: each
+   CIF has one `accepted` and one `duplicate` line with the same
+   `sha256`; zero disagreement; the bucket's `delivered_at` within
+   minutes of SFTP's; the audit log shows only DTD's principals writing
+   and the reader reading and deleting; `...PublishStale` quiet.
+7. **Steady state: the operator's choice**, reversible: both (default),
+   bucket-only (closes the public port), or SFTP-only.
 
-   No credentials go by email. The writer key goes only into their
-   portal form.
-6. **Verify both**, for at least 7 daily deliveries and one CORPUS:
-   - each CIF has exactly one `accepted` and one `duplicate` audit line,
-     with the same `sha256` and both `source`s;
-   - `schedule_feed_source_disagreement_total` stays at 0;
-   - the bucket's `delivered_at` is within minutes of the SFTP one;
-   - the access-log tailer shows only the writer's PUTs and our GETs;
-   - `...PublishStale` stays quiet.
-7. **Steady state: the operator's choice**, reversible at any time:
-   - **both** (default): redundancy, so either channel can fail;
-   - **bucket-only**: `scheduleFeed.sftp.enabled: false`, and ask RDM to
-     drop the SFTP destination. This closes the public port; Ranma
-     updates the exposure check;
-   - **SFTP-only**: `scheduleFeed.bucket.enabled: false`. AWS resources
-     stay until removed by hand.
+## 13. Costs (rough, monthly, USD)
 
-## 13. Costs (rough, monthly, USD before VAT)
-
-From the artifact, for eu-west-2.
+From the artifact's europe-west2 figures, adjusted for D11.
 
 | Item | Typical | Worst realistic |
 | --- | --- | --- |
-| S3 storage (3–4 versions of a 78 MB zip, CORPUS, logs) | $0.01 | $0.02 |
-| Requests (LIST every 5 min; GET per new version) | $0.05 | $0.24 (LIST every minute) |
-| Egress to the node (~2.4 GB) | $0 (100 GB free; the dedicated account, D2, has nothing else using it) | $0.32 only if the allowance were used elsewhere |
-| Access logs | <$0.01 | <$0.01 |
-| SQS (only if enabled) | $0 (free tier) | $0.05 |
-| KMS | $0 (SSE-S3) | $1 if `aws:kms` is chosen |
-| **Total** | **≈ $0.06** | **≈ $1.30** |
-| Runaway bug (re-downloading the zip every minute) | — | ≈ $297. Prevented by the seen-ledger and `maxDownloadBytesPerDay`, and caught by `...DownloadBudget` and the $5 budget |
-
-The ACK controllers cost nothing in AWS. In the cluster they are three
-small pods; measure them at install.
+| Storage (objects in transit for under an hour; 7 days of soft-deleted CIFs, ~0.55 GB) | $0.01 | $0.02 |
+| Requests (LIST every 5 min; a GET and a DELETE per delivery) | $0.04 | $0.22 (LIST every minute) |
+| Egress to the node (~2.4 GB) | $0.29 | $0.29 |
+| Audit logs (Data Access, sink, audit-log bucket) | $0 (inside the free allowance) | <$0.01 |
+| Usage alert policies (if enabled) | cents | cents |
+| Pub/Sub (only if enabled) | $0 (free tier) | $0 |
+| **Total** | **≈ $0.35** | **≈ $0.55** |
+| Runaway reader (re-downloading the zip every few minutes) | — | Hundreds of dollars a month. Prevented by the ledger and caps (§9), and stopped by the egress kill switch and the budget |
 
 ## 14. Open questions
 
-**Repo scope (D6, user, 2026-10-02).** This repo defines only the bucket
-deployment: the `ds-ingest-bucket` chart, its values contract and the
-schedule-ingest side. Everything account- or deploy-specific (the AWS
-account itself, the OpenTofu bootstrap stack, the boundary policy and
-controller users, the budget and its alert recipient, controller
-installs, sealed keys, the concrete values for the chart) belongs to
-Ranma-Config and is handed off to the deploy session.
-
-Answered 2026-10-02 and recorded under "Decisions": the account (D2),
-ACK vs OpenTofu (D3), the audit trail (D4) and source precedence (D5).
+Answered 2026-10-02 and recorded under "Decisions": the cloud (D8), the
+project (D2), provisioning (D3, with Crossplane recommended), the audit
+trail (D4), precedence (D5), repo scope (D7), the dedicated bucket (D9),
+the publisher's access (D10), and the in-transit object life (D11).
+DTD's credential model and permissions are answered by their
+instructions (§1).
 
 ### For the user
 
-1. **Cleanup.** The default is lifecycle expiry only: `reader.allowDelete`
-   and `deleteAfterIngest` stay off. This stands unless the user objects
-   and wants the bucket emptied on ingest.
-2. **Reader IP pin.** Is the node's public egress address stable enough
-   to set `reader.allowedSourceCidrs`? Until it is confirmed, the list
-   stays empty.
-3. **Steady state** after verification (§12, step 7): both (the
-   default), bucket-only or SFTP-only.
+1. **Provisioning controller.** Crossplane v2 (recommended, §4) or
+   Config Connector.
+2. **Kill switch vs reconciliation** (§5): the watcher that pauses the
+   bindings, disabling the reader account, or both. Ranma's call; until
+   one exists, a trip lasts only until the next provider poll.
+3. **Steady state** after verification (§12, step 7).
 
 ### Questions for DTD/RDM (ready to send)
 
-Send these through the RDM support channel or the subscription's
-destination settings, not to the user. They are about RDM's S3
-destination for our timetable (`timetable_full.zip`) and CORPUS
-(`CORPUSExtract.json.gz`) subscriptions. Don't send credentials by
-email.
+Send these through the RDM support channel, not to the user. Don't send
+any credential: none is needed.
 
-> We'd like to add an AWS S3 bucket (region eu-west-2, key prefix `rdm/`)
-> as a delivery destination for our timetable and CORPUS file
-> subscriptions, alongside our existing SFTP destination.
+> We'd like to add a Google Cloud Storage bucket (europe-west2) as a
+> delivery destination for our timetable and CORPUS file subscriptions,
+> alongside our existing SFTP destination. We'll grant your service
+> accounts the roles in your instructions on that bucket only.
 >
-> 1. **Credentials.** Does your S3 destination take an IAM access key
->    pair, or do you write as your own AWS principal (cross-account)? If
->    it's the latter, what is the principal ARN, and do you use an
->    external ID?
-> 2. **Permissions.** Besides `s3:PutObject`, does your client need
->    anything else on the bucket, such as `HeadObject`, `ListBucket`,
->    `GetBucketLocation`, `AbortMultipartUpload`, or a write-then-rename
->    (copy and delete)?
-> 3. **Object keys.** Can we set the key prefix? Will the files keep the
+> 1. **Object names.** Will files land at the bucket root, and keep the
 >    names `timetable_full.zip` and `CORPUSExtract.json.gz`, overwritten
->    on each delivery, or are keys dated or otherwise varied?
-> 4. **Headers.** Do you send an ACL header (our bucket only accepts none,
->    or `bucket-owner-full-control`) or a server-side-encryption header
->    (our default is SSE-S3; `AES256` is fine, `aws:kms` isn't)?
-> 5. **Uploads.** Do you use multipart upload for the ~78 MB timetable
->    zip? What are your retry behaviour and expected delivery time (today
->    about 20:00 UTC)?
-> 6. **Dual delivery.** Can one subscription deliver to both SFTP and S3
+>    on each delivery? Or are names dated, or under a prefix we can set?
+> 2. **Scanner.** Does the malware scanner only read objects, or can it
+>    delete or quarantine them in place? Does it, or the transfer, write
+>    any other object (a probe or marker) into the bucket?
+> 3. **Read-back.** After writing, how long do the transfer and the scanner
+>    keep reading the object? We remove objects once we've downloaded
+>    them, and want to wait long enough.
+> 4. **Dual delivery.** Can one subscription deliver to both SFTP and GCS
 >    at the same time, or would we need a second subscription?
-> 7. **Testing.** Is there a way to trigger a test delivery once the
->    destination is configured?
+> 5. **Testing.** Can you trigger a test delivery once the destination is
+>    configured?
 
 ## Previously open, now decided (kept for the record)
 
-- Which AWS account owns this → D2: a new dedicated account.
-- OpenTofu alone vs ACK in the cluster → D3: ACK, with OpenTofu for the
-  one-off setup.
-- CloudTrail data events → D4: no, access logs only.
+- Which account owns this → D2: a new dedicated project.
+- OpenTofu alone vs a controller → D3: Helm with a controller, OpenTofu
+  for the one-off setup.
+- Object-level audit → D4: the storage service's own logs.
 - Source precedence → D5: the bucket wins.
+- AWS's credential model (an access key we create and hand to DTD), and
+  Azure's (account key or SAS) → D8: GCS instead.
+- Reader IP pin → not available per principal on GCS (§5); detection
+  instead.
+- Cleanup → D11: the reader deletes after a verified download.
 
 ## Sources
 
-- "Cloud Bucket Ingest Costs" artifact (user's, read 2026-10-02): prices,
-  volumes, security comparison, open questions.
-- Open Rail Data wiki, "Rail Data Marketplace": push to AWS, Azure, GCP
-  or SFTP; no pull.
-- ACK API reference, S3 `Bucket` and SQS `Queue`; the `iam-controller`
-  CRD list and `users` and `policies` CRDs; release tags for the
-  s3, iam, sqs and cloudtrail controllers (GitHub, 2026-10-02).
-- crossplane/crossplane and crossplane-contrib/provider-upjet-aws release
-  tags (2026-10-02).
-- `cargo info aws-sdk-sqs` / `aws-config` (rust-version 1.94.1);
-  `object_store` 0.14.2's `Cargo.toml` (rust-version 1.85; `aws`, `gcp`
-  and `azure` features) and `ObjectMeta`/`GetOptions`.
+- "Cloud Bucket Ingest Costs" artifact (user's, read 2026-10-02).
+- DTD's GCS destination instructions (via the user, 2026-10-02).
+- Google Cloud docs (2026-10-02): IAM roles for Cloud Storage
+  (`iam-roles`), IAM permissions (`iam-permissions`: overwrite needs
+  create and delete), soft delete (retains deleted and overwritten
+  objects; 7–90 days), bucket IP filtering overview, Config Connector
+  "Installing on other Kubernetes distributions".
+- crossplane/crossplane v2.4.2 and crossplane-contrib/provider-upjet-gcp
+  v3.0.0 release tags and CRDs (`package/crds`, namespaced `*.m.upbound.io`
+  kinds); GoogleCloudPlatform/k8s-config-connector v1.157.0.
+- `object_store` 0.14.2 source: `gcp` feature dependencies,
+  `GoogleCloudStorageBuilder` credential options,
+  `ApplicationDefaultCredentials` (no `external_account`),
+  `GoogleCloudStorage::credentials()`, `get_opts` generation support.
 - This repo: `crates/schedule-ingest`, `charts/distant-signal/templates/schedulefeed-*.yaml`,
-  `networkpolicy.yaml`, `prometheusrule.yaml`, `docs/schedule-feed-sftp.md`;
-  Ranma-Config `docs/specs/sftp-audit-observability.md` and the
-  controllers layout (read-only).
+  `networkpolicy.yaml`, `prometheusrule.yaml`, `docs/schedule-feed-sftp.md`.
