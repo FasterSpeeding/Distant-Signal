@@ -200,6 +200,20 @@ pub(crate) struct LlmClient {
     in_flight: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
+/// One pass's raw chat-completion result: the unparsed `content` (or the
+/// typed [`LlmCallError`] / other error that ended the call) plus how many
+/// in-call retries ([`ProviderPolicy`]'s 429/gateway budgets) were spent
+/// before it. The service only reads `content` (through `extract_*`); the
+/// model-eval harness (`eval`) also records `retries`.
+pub(crate) struct RawCall {
+    pub content: anyhow::Result<String>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by the test-only model-eval harness")
+    )]
+    pub retries: u32,
+}
+
 // ---------------------------------------------------------------------------
 // Provider policy (2026-09-27): the per-provider knobs a slow, rate-limited
 // hosted endpoint needs (reasoning models, 429s, a gateway that cuts calls
@@ -731,13 +745,16 @@ impl LlmClient {
         }
     }
 
+    /// One pass's chat completion, in-call retries included. Returns the raw
+    /// `content` string (not yet parsed) and how many in-call retries the
+    /// provider policy spent on it -- see [`RawCall`].
     async fn chat_completion(
         &self,
         system_prompt: &str,
         user_content: String,
         schema_name: &'static str,
         schema: serde_json::Value,
-    ) -> anyhow::Result<String> {
+    ) -> RawCall {
         let request = ChatCompletionRequest {
             model: &self.model,
             messages: vec![
@@ -769,19 +786,29 @@ impl LlmClient {
         let mut rate_limit_retries = 0;
         let mut gateway_retries = 0;
         loop {
+            let retries = rate_limit_retries + gateway_retries;
             let attempt = {
                 let _permit = match &self.in_flight {
-                    Some(sem) => Some(
-                        sem.acquire()
-                            .await
-                            .map_err(|err| anyhow::anyhow!("in-flight limiter closed: {err}"))?,
-                    ),
+                    Some(sem) => match sem.acquire().await {
+                        Ok(permit) => Some(permit),
+                        Err(err) => {
+                            return RawCall {
+                                content: Err(anyhow::anyhow!("in-flight limiter closed: {err}")),
+                                retries,
+                            };
+                        }
+                    },
                     None => None,
                 };
                 self.send_once(&request).await
             };
             match attempt {
-                Ok(content) => return Ok(content),
+                Ok(content) => {
+                    return RawCall {
+                        content: Ok(content),
+                        retries,
+                    };
+                }
                 Err(LlmCallError::RateLimited { retry_after })
                     if rate_limit_retries < self.policy.max_rate_limit_retries
                         && retry_after.is_none_or(|wait| wait <= MAX_RETRY_AFTER) =>
@@ -799,7 +826,12 @@ impl LlmClient {
                     gateway_retries += 1;
                     tracing::warn!(error = %err, attempt = gateway_retries, "LLM gateway failure; retrying");
                 }
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    return RawCall {
+                        content: Err(err.into()),
+                        retries,
+                    };
+                }
             }
         }
     }
@@ -865,51 +897,36 @@ impl LlmClient {
         description: &str,
         reference_date: DateTime<Utc>,
     ) -> anyhow::Result<PrimaryExtraction> {
+        let content = self
+            .primary_raw(summary, description, reference_date)
+            .await
+            .content?;
+        parse_primary(&content)
+    }
+
+    /// The primary pass's request (real prompt and schema) without the
+    /// parse step: `extract_primary` is exactly this followed by
+    /// [`parse_primary`]. Split out so the model-eval harness (`eval`) can
+    /// record the raw output and score it later, offline, through the same
+    /// parse path.
+    pub(crate) async fn primary_raw(
+        &self,
+        summary: &str,
+        description: &str,
+        reference_date: DateTime<Utc>,
+    ) -> RawCall {
         let user_content = format!(
             "This incident was first reported around {}. Resolve any year-less date in the text below \
              relative to that reference date.\nSummary: {summary}\nDescription: {description}",
             reference_date.to_rfc3339()
         );
-        let content = self
-            .chat_completion(
-                PRIMARY_PROMPT,
-                user_content,
-                PRIMARY_SCHEMA_NAME,
-                primary_schema(),
-            )
-            .await?;
-        let mut extraction: PrimaryExtraction = serde_json::from_str(&content)
-            .map_err(|err| anyhow::anyhow!("primary extraction returned malformed JSON: {err}"))?;
-        if extraction.periods.is_empty() {
-            // Design §1: an empty `periods` array parses without a schema
-            // error (no `minItems`), but recording it as a "successful"
-            // extraction would permanently short-circuit `process_incident`'s
-            // unchanged-text guard for this incident on every subsequent
-            // sweep/reclaim pass. Treat it as a hard parse failure instead --
-            // discarded, existing columns untouched, sweep retries later.
-            anyhow::bail!("primary extraction returned an empty `periods` array");
-        }
-        // Decision 3 of docs/superpowers/specs/2026-09-01-enricher-period-cap-remediation-design.md:
-        // an over-cap response used to be a hard failure here (discarded,
-        // sweep retries forever, all NLP-derived severity signal lost for
-        // this incident). Instead, keep the MAX_PERIODS most-severe/soonest
-        // periods and let extraction succeed -- `dropped_period_count`
-        // records how many were cut, so `process_incident` (main.rs) can
-        // log/count it without any downstream step (extract_adversarial,
-        // extract_severity_adversarial, combine::combine_periods,
-        // queries::write_extraction) needing to know anything unusual
-        // happened; they only ever see an already-in-bounds `periods` list.
-        let original_count = extraction.periods.len();
-        if original_count > MAX_PERIODS {
-            extraction.periods = select_periods_within_cap(extraction.periods);
-        }
-        extraction.dropped_period_count = original_count.saturating_sub(MAX_PERIODS);
-        // Before the adversarial passes, which echo each period's scope back
-        // and are checked against exactly what was sent.
-        for period in &mut extraction.periods {
-            bound_scope_description(&mut period.scope_description);
-        }
-        Ok(extraction)
+        self.chat_completion(
+            PRIMARY_PROMPT,
+            user_content,
+            PRIMARY_SCHEMA_NAME,
+            primary_schema(),
+        )
+        .await
     }
 
     /// `periods` is the primary pass's already-segmented period list
@@ -922,19 +939,36 @@ impl LlmClient {
         description: &str,
         periods: &[ExtractionPeriod],
     ) -> anyhow::Result<Vec<AdversarialPeriodVerdict>> {
-        let user_content = build_period_user_content(summary, description, periods)?;
         let content = self
-            .chat_completion(
-                ADVERSARIAL_PROMPT,
-                user_content,
-                ADVERSARIAL_SCHEMA_NAME,
-                adversarial_schema(),
-            )
-            .await?;
-        let extraction: AdversarialExtraction = serde_json::from_str(&content).map_err(|err| {
-            anyhow::anyhow!("adversarial extraction returned malformed JSON: {err}")
-        })?;
-        Ok(extraction.periods)
+            .adversarial_raw(summary, description, periods)
+            .await
+            .content?;
+        parse_adversarial(&content)
+    }
+
+    /// `extract_adversarial` minus the parse step (see [`Self::primary_raw`]).
+    pub(crate) async fn adversarial_raw(
+        &self,
+        summary: &str,
+        description: &str,
+        periods: &[ExtractionPeriod],
+    ) -> RawCall {
+        let user_content = match build_period_user_content(summary, description, periods) {
+            Ok(content) => content,
+            Err(err) => {
+                return RawCall {
+                    content: Err(err),
+                    retries: 0,
+                };
+            }
+        };
+        self.chat_completion(
+            ADVERSARIAL_PROMPT,
+            user_content,
+            ADVERSARIAL_SCHEMA_NAME,
+            adversarial_schema(),
+        )
+        .await
     }
 
     pub(crate) async fn extract_severity_adversarial(
@@ -943,21 +977,97 @@ impl LlmClient {
         description: &str,
         periods: &[ExtractionPeriod],
     ) -> anyhow::Result<Vec<SeverityAdversarialPeriodVerdict>> {
-        let user_content = build_period_user_content(summary, description, periods)?;
         let content = self
-            .chat_completion(
-                SEVERITY_ADVERSARIAL_PROMPT,
-                user_content,
-                SEVERITY_ADVERSARIAL_SCHEMA_NAME,
-                severity_adversarial_schema(),
-            )
-            .await?;
-        let extraction: SeverityAdversarialExtraction =
-            serde_json::from_str(&content).map_err(|err| {
-                anyhow::anyhow!("severity adversarial extraction returned malformed JSON: {err}")
-            })?;
-        Ok(extraction.periods)
+            .severity_adversarial_raw(summary, description, periods)
+            .await
+            .content?;
+        parse_severity_adversarial(&content)
     }
+
+    /// `extract_severity_adversarial` minus the parse step (see
+    /// [`Self::primary_raw`]).
+    pub(crate) async fn severity_adversarial_raw(
+        &self,
+        summary: &str,
+        description: &str,
+        periods: &[ExtractionPeriod],
+    ) -> RawCall {
+        let user_content = match build_period_user_content(summary, description, periods) {
+            Ok(content) => content,
+            Err(err) => {
+                return RawCall {
+                    content: Err(err),
+                    retries: 0,
+                };
+            }
+        };
+        self.chat_completion(
+            SEVERITY_ADVERSARIAL_PROMPT,
+            user_content,
+            SEVERITY_ADVERSARIAL_SCHEMA_NAME,
+            severity_adversarial_schema(),
+        )
+        .await
+    }
+}
+
+/// Parses (and post-processes) the primary pass's raw `content`: the
+/// non-empty check, the `MAX_PERIODS` cap and the scope-description bound.
+/// Pure, so recorded model output can be re-scored offline exactly as the
+/// service would have read it.
+pub(crate) fn parse_primary(content: &str) -> anyhow::Result<PrimaryExtraction> {
+    let mut extraction: PrimaryExtraction = serde_json::from_str(content)
+        .map_err(|err| anyhow::anyhow!("primary extraction returned malformed JSON: {err}"))?;
+    if extraction.periods.is_empty() {
+        // Design §1: an empty `periods` array parses without a schema
+        // error (no `minItems`), but recording it as a "successful"
+        // extraction would permanently short-circuit `process_incident`'s
+        // unchanged-text guard for this incident on every subsequent
+        // sweep/reclaim pass. Treat it as a hard parse failure instead --
+        // discarded, existing columns untouched, sweep retries later.
+        anyhow::bail!("primary extraction returned an empty `periods` array");
+    }
+    // Decision 3 of docs/superpowers/specs/2026-09-01-enricher-period-cap-remediation-design.md:
+    // an over-cap response used to be a hard failure here (discarded,
+    // sweep retries forever, all NLP-derived severity signal lost for
+    // this incident). Instead, keep the MAX_PERIODS most-severe/soonest
+    // periods and let extraction succeed -- `dropped_period_count`
+    // records how many were cut, so `process_incident` (main.rs) can
+    // log/count it without any downstream step (extract_adversarial,
+    // extract_severity_adversarial, combine::combine_periods,
+    // queries::write_extraction) needing to know anything unusual
+    // happened; they only ever see an already-in-bounds `periods` list.
+    let original_count = extraction.periods.len();
+    if original_count > MAX_PERIODS {
+        extraction.periods = select_periods_within_cap(extraction.periods);
+    }
+    extraction.dropped_period_count = original_count.saturating_sub(MAX_PERIODS);
+    // Before the adversarial passes, which echo each period's scope back
+    // and are checked against exactly what was sent.
+    for period in &mut extraction.periods {
+        bound_scope_description(&mut period.scope_description);
+    }
+    Ok(extraction)
+}
+
+/// Parses the resolution-adversarial pass's raw `content` (see
+/// [`parse_primary`]).
+pub(crate) fn parse_adversarial(content: &str) -> anyhow::Result<Vec<AdversarialPeriodVerdict>> {
+    let extraction: AdversarialExtraction = serde_json::from_str(content)
+        .map_err(|err| anyhow::anyhow!("adversarial extraction returned malformed JSON: {err}"))?;
+    Ok(extraction.periods)
+}
+
+/// Parses the severity-adversarial pass's raw `content` (see
+/// [`parse_primary`]).
+pub(crate) fn parse_severity_adversarial(
+    content: &str,
+) -> anyhow::Result<Vec<SeverityAdversarialPeriodVerdict>> {
+    let extraction: SeverityAdversarialExtraction =
+        serde_json::from_str(content).map_err(|err| {
+            anyhow::anyhow!("severity adversarial extraction returned malformed JSON: {err}")
+        })?;
+    Ok(extraction.periods)
 }
 
 /// `None` (whether from a wholly absent `date_range`, or an explicit
@@ -2580,6 +2690,7 @@ mod tests {
                 primary_schema(),
             )
             .await
+            .content
             .expect("raw chat completion should succeed");
         eprintln!(
             "=== RAW CONTENT ({} bytes) ===\n{raw}\n=== END RAW CONTENT ===",
