@@ -821,6 +821,7 @@ pub(crate) fn score(
     let mut scores = Vec::new();
     let mut outputs: BTreeMap<&str, Vec<Extraction>> = BTreeMap::new();
     let mut seen: BTreeSet<(&str, u32)> = BTreeSet::new();
+    let mut used: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
     for record in records {
         let Some((case, input_hash)) = by_id.get(record.case_id.as_str()) else {
             summary.unknown_case_records += 1;
@@ -854,7 +855,13 @@ pub(crate) fn score(
         if record.prompt_fingerprint != current_prompts {
             summary.other_prompt_records += 1;
         }
-        summary.repetitions = summary.repetitions.max(record.repetition + 1);
+        // The most repetitions any one case had scored, not the highest
+        // index: a stale #1 between a used #0 and #2 makes it 2, not 3.
+        let reps = used.entry(case.id.as_str()).or_default();
+        reps.insert(record.repetition);
+        summary.repetitions = summary
+            .repetitions
+            .max(u32::try_from(reps.len()).unwrap_or(u32::MAX));
         let outcome = record.outcome();
         if let Ok(extraction) = &outcome {
             outputs
@@ -2219,6 +2226,16 @@ mod tests {
             [0, 2, 1]
         );
         assert_eq!(summary.repetitions, 3);
+
+        // A gap left by a skipped repetition isn't counted: #0 and #2 used,
+        // #1 stale, is 2 repetitions.
+        let gapped = [
+            record(current.clone(), 0),
+            record("0123456789abcdef".into(), 1),
+            record(current.clone(), 2),
+        ];
+        let (gapped_summary, _) = score(std::slice::from_ref(&case), &gapped, opts());
+        assert_eq!(gapped_summary.repetitions, 2);
         let warnings = record_warnings("t", &summary);
         assert!(
             warnings

@@ -97,10 +97,13 @@ pub(crate) struct CallStats {
     pub latency_all: Option<LatencyStats>,
     /// Send time of successful attempts (for display).
     pub send_latency: Option<LatencyStats>,
-    /// Send time of every attempt that didn't time out: successes, empty
-    /// content, HTTP errors, 429s... Each of these got its answer within
-    /// the request timeout, so this is what the timeout fit judges: a slow
-    /// failure is as close to the timeout as a slow success.
+    /// Send time of every attempt that got an HTTP response: successes,
+    /// empty content, HTTP errors, 429s... Each of these got its answer
+    /// within the request timeout, so this is what the timeout fit judges:
+    /// a slow failure is as close to the timeout as a slow success.
+    /// Timeouts are left out (they're judged separately), and so are
+    /// `error` attempts (connection failures and the like), which never got
+    /// a response and would only drag the p95 down.
     pub response_latency: Option<LatencyStats>,
     /// Per call, time spent waiting rather than sending: `max_in_flight`
     /// queueing plus 429 back-off sleeps.
@@ -136,7 +139,7 @@ pub(crate) fn call_stats<'a>(calls: impl Iterator<Item = &'a pipeline::CallRecor
             if attempt.outcome == "success" {
                 send.push(attempt.send_ms);
             }
-            if attempt.outcome != "timeout" {
+            if attempt.outcome != "timeout" && attempt.outcome != "error" {
                 responded.push(attempt.send_ms);
             }
         }
@@ -463,7 +466,7 @@ fn fit_and_calls_section(md: &mut String, s: &PerfSummary) {
         md,
         "**{}**: {} of {} attempt(s) hit the client timeout ({} recovered by a retry, {} call(s) \
          ended in a timeout); send p95 of the attempts that got a response (any outcome but a \
-         timeout) is {} and max {} of the {}s request timeout. Queue/back-off wait per call: \
+         timeout or a connection-level error) is {} and max {} of the {}s request timeout. Queue/back-off wait per call: \
          p95 {}, max {} (not part of the fit: the timeout bounds each attempt, not the wait). \
          Completed-document p95 is {} of `RECLAIM_MIN_IDLE_SECS` ({}s).\n",
         fit.verdict.label(),
@@ -852,6 +855,16 @@ mod tests {
         let responded = stats.response_latency.unwrap();
         assert_eq!((responded.count, responded.max_ms), (5, 1_000));
         assert_eq!(responded.min_ms, 50);
+
+        // Connection-level errors never got a response, so they stay out of
+        // the fit's figure rather than dragging its p95 down.
+        let with_errors = [
+            ok(9_000),
+            call(Pass::Primary, 5, "error", &[("error", 5, 0)]),
+            call(Pass::Primary, 5, "error", &[("error", 5, 0)]),
+        ];
+        let responded = call_stats(with_errors.iter()).response_latency.unwrap();
+        assert_eq!((responded.count, responded.min_ms), (1, 9_000));
         assert_eq!(stats.wait.unwrap().max_ms, 1_400);
     }
 

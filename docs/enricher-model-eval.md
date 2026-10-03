@@ -144,8 +144,9 @@ count and the first few `case_id#repetition` examples, for example:
 warning: target "local-qwen": skipped 4 stale record(s): their input hash doesn't match the case's current text (re-run those cases); e.g. eta-a#0, eta-a#1, bst-b#0, ...
 ```
 
-The report's `repetitions` counts only the records actually used, not
-skipped ones.
+The report's `repetitions` is the most repetitions any one case had
+scored, counting only the records actually used: if a case's #0 and #2
+are used and #1 is skipped as stale, that's 2.
 
 **Prompt changes.** Each record also stores `prompt_fingerprint`, a short
 hash over the three passes' system prompts, schema names and JSON schemas
@@ -364,13 +365,13 @@ Other sections:
   timeout (the report says how many attempts timed out, how many of those
   were recovered and how many calls ended in a timeout). `tight` if the
   send p95 of every attempt that got a response is at least 80% of
-  `request_timeout_secs`. That set is every outcome except `timeout`:
-  successes, but also `empty_content`, HTTP and gateway errors and 429s,
-  because a slow answer the service rejects came just as close to the
-  timeout as a slow success. Otherwise `fits` (`no data` without any such
-  attempt). Queue and
-  back-off wait is reported next to it but not part of the verdict. The
-  report also gives completed-document p95 as a share of
+  `request_timeout_secs`. That set is every outcome except `timeout` and
+  `error` (a connection-level failure that never got a response, which
+  would only pull the p95 down): successes, but also `empty_content`, HTTP
+  and gateway errors and 429s, because a slow answer the service rejects
+  came just as close to the timeout as a slow success. Otherwise `fits`
+  (`no data` without any such attempt). Queue and back-off wait is
+  reported next to it but not part of the verdict. The report also gives completed-document p95 as a share of
   `RECLAIM_MIN_IDLE_SECS`: a document slower than that gets reclaimed and
   skipped while it is still in flight. That's churn, not an error, but
   worth avoiding.

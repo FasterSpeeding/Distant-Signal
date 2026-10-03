@@ -107,14 +107,19 @@ pub(crate) fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
 /// A boolean env var: `1`/`true` is on; unset, empty, `0` or `false` is
 /// off. Anything else panics, like [`env_parse`].
 pub(crate) fn env_flag(name: &str) -> bool {
-    parse_flag(name, std::env::var(name).ok().as_deref())
+    let raw = std::env::var_os(name).map(|raw| {
+        raw.into_string()
+            .unwrap_or_else(|raw| panic!("{name}={raw:?} is not valid UTF-8 (use 1 or 0)"))
+    });
+    parse_flag(name, raw.as_deref())
 }
 
 fn parse_flag(name: &str, raw: Option<&str>) -> bool {
-    match raw.map(|raw| raw.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("" | "0" | "false") => false,
-        Some("1" | "true") => true,
-        Some(_) => panic!("{name}={raw:?} is not a valid flag (use 1 or 0)"),
+    let Some(raw) = raw else { return false };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" => false,
+        "1" | "true" => true,
+        _ => panic!("{name}={raw:?} is not a valid flag (use 1 or 0)"),
     }
 }
 
@@ -209,7 +214,9 @@ mod tests {
         for on in ["1", "true", "True"] {
             assert!(parse_flag("F", Some(on)), "{on:?}");
         }
-        assert!(std::panic::catch_unwind(|| parse_flag("F", Some("yes"))).is_err());
+        let err = std::panic::catch_unwind(|| parse_flag("F", Some("yes"))).unwrap_err();
+        let msg = err.downcast_ref::<String>().unwrap();
+        assert_eq!(msg, r#"F="yes" is not a valid flag (use 1 or 0)"#);
     }
 
     #[test]
