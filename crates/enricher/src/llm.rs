@@ -539,11 +539,13 @@ const PRIMARY_PROMPT: &str = "You extract structured facts from UK National Rail
     at Clapham Junction is closed, trains call at platform 4. Saturday 16 May to Sunday 14 June: Platform 5 \
     is closed, trains call at platform 6.\" segments into exactly two periods -- period 1: \
     `scope_description` \"platform 3 closed, calls at platform 4\", `date_range` `{\"from_date\": \
-    \"2026-04-06T00:00:00Z\", \"to_date\": \"2026-05-16T00:00:00Z\"}` (2026 because that's the closest \
-    occurrence to the March 2026 reference date; `to_date` is the day AFTER the stated 15 May end), \
+    \"2026-04-05T23:00:00Z\", \"to_date\": \"2026-05-15T23:00:00Z\"}` (2026 because that's the closest \
+    occurrence to the March 2026 reference date; `to_date` is the day AFTER the stated 15 May end; both \
+    dates fall in BST, UTC+1, so each Europe/London midnight is 23:00Z on the previous UTC day -- in GMT \
+    it would be 00:00Z), \
     `schedule_window: null`, `resolution_status: \"ongoing\"` (no statement that it has ended); period 2: \
     `scope_description` \"platform 5 closed, calls at platform 6\", `date_range` `{\"from_date\": \
-    \"2026-05-16T00:00:00Z\", \"to_date\": \"2026-06-15T00:00:00Z\"}`, `resolution_status: \"ongoing\"`. Note \
+    \"2026-05-15T23:00:00Z\", \"to_date\": \"2026-06-14T23:00:00Z\"}`, `resolution_status: \"ongoing\"`. Note \
     both periods got real `date_range` values -- never null when dates are stated -- and neither was marked \
     `resolved` just because the text is matter-of-fact. \
     Second worked example, reference date 2026-08-01T00:00:00Z: input \"From Saturday 29 August to Friday \
@@ -553,8 +555,8 @@ const PRIMARY_PROMPT: &str = "You extract structured facts from UK National Rail
     Sundays.\" segments into exactly three periods, all sharing the same overall date range but none \
     merged into one, because each names a different leg and/or a different treatment: period 1 -- \
     `scope_description` \"buses replace trains, Barrhead to Kilmarnock / Dumfries\", `date_range` \
-    `{\"from_date\": \"2026-08-29T00:00:00Z\", \"to_date\": \"2026-09-12T00:00:00Z\"}`, `schedule_window: \
-    null` (applies every day of the range), `apparent_severity: \"severe_disruption\"`; period 2 -- \
+    `{\"from_date\": \"2026-08-28T23:00:00Z\", \"to_date\": \"2026-09-11T23:00:00Z\"}` (BST again), \
+    `schedule_window: null` (applies every day of the range), `apparent_severity: \"severe_disruption\"`; period 2 -- \
     `scope_description` \"buses operate Kilmarnock to Troon, connecting to Ayr trains\", same `date_range`, \
     `schedule_window` `{\"days_of_week\": [1,2,3,4,5,6], \"start_time\": \"00:00\", \"end_time\": \"23:59\"}` \
     (Monday-Saturday only), `apparent_severity: \"severe_disruption\"`; period 3 -- `scope_description` \"no \

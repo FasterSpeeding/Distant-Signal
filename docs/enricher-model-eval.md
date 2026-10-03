@@ -312,12 +312,6 @@ the prefixes CI's ignored-tests step already skips
 
 ## Limitations and open questions
 
-- **Prompt vs rule on BST.** `PRIMARY_PROMPT`'s worked examples write
-  bare dates as `00:00Z`, but its rule (3) says to convert Europe/London to
-  UTC (23:00Z in BST). The gold labels follow the rule, so a model that
-  copies the examples scores `off_by_1h`. The *Wrong dates by kind* table
-  makes this visible, and `EVAL_DATE_TOLERANCE_MINS=60` forgives it. The
-  prompt should be made consistent either way.
 - **Category is free text** (the schema has no enum), so category accuracy
   is only as good as each case's synonym list.
 - **Greedy period matching** can mis-pair two near-identical periods. It

@@ -696,11 +696,11 @@ fn aggregate(summary: &mut QualitySummary, scores: &[CaseScore]) {
     let mut fields: BTreeMap<&'static str, FieldTally> = BTreeMap::new();
     let mut low = LowConfidence::default();
     let mut abs_error = 0;
-    let (mut exact, mut scored) = (0, 0);
+    let (mut exact, mut labelled) = (0, 0);
     let p = &mut summary.periods;
     for score in scores {
         summary.attempts += 1;
-        scored += usize::from(score.scored);
+        labelled += usize::from(score.scored);
         for tag in &score.tags {
             let t = summary.by_tag.entry(tag.clone()).or_default();
             t.attempts += 1;
@@ -760,7 +760,7 @@ fn aggregate(summary: &mut QualitySummary, scores: &[CaseScore]) {
             abs_error += gold.abs_diff(predicted);
         }
     }
-    summary.exact_match_rate = ratio(exact, scored);
+    summary.exact_match_rate = ratio(exact, labelled);
     for t in summary.by_tag.values_mut() {
         t.exact_rate = ratio(t.exact, t.attempts);
     }
