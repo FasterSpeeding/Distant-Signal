@@ -2,14 +2,17 @@
 //! environment, under the service's real request timeout and provider
 //! policy. Says nothing about answer quality: a document "completes" here
 //! if the service would have written *something*. (The records it saves can
-//! still be quality-scored offline, but timeouts then count against the
-//! model; use the quality eval for quality.)
+//! still be quality-scored offline, with transport failures left out of
+//! the rates, but under the real, tighter timeout; use the quality eval for
+//! quality.)
 //!
 //! Per target it reports, per pass and over all calls: outcome counts
-//! (`main.rs::llm_outcome` labels), timeout/error rates, in-call retries
-//! and latency percentiles; per document: completion, failures by stage and
-//! end-to-end latency; throughput at the chosen concurrency; and whether
-//! the latencies fit the configured timeouts.
+//! (`main.rs::llm_outcome` labels), timeout/error rates, in-call retries,
+//! per-attempt timeouts, end-to-end call latency (what the service's
+//! histogram measures), per-attempt send latency and queue/back-off wait;
+//! per document: completion, transport vs invalid-output failures, failures
+//! by stage and end-to-end latency; throughput at the chosen concurrency;
+//! and whether the per-attempt latencies fit the configured timeout.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -68,26 +71,40 @@ pub(crate) fn latency_stats(samples: &[u64]) -> Option<LatencyStats> {
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct CallStats {
     pub calls: usize,
-    /// Outcome label -> count.
+    /// Final outcome label -> count.
     pub outcomes: BTreeMap<String, usize>,
-    /// Calls whose outcome wasn't `success`.
+    /// Calls whose final outcome wasn't `success`.
     pub error_rate: Option<f64>,
-    /// Calls that ended in a client-side timeout.
+    /// Calls whose final outcome was a client-side timeout.
     pub timeout_rate: Option<f64>,
     /// In-call retries spent in total, and how many calls needed any.
     pub retries: u64,
     pub calls_with_retries: usize,
     pub retry_rate: Option<f64>,
-    /// Latency of successful calls.
+    /// HTTP attempts made (one per call plus one per retry).
+    pub attempts: usize,
+    /// Attempts that hit the client timeout, whether or not a gateway
+    /// retry then recovered the call.
+    pub attempt_timeouts: usize,
+    /// ...of which the call still succeeded.
+    pub recovered_timeouts: usize,
+    /// End-to-end latency of successful calls: retries, `max_in_flight`
+    /// queueing and 429 back-off included, like
+    /// `enricher_llm_call_duration_seconds`.
     pub latency: Option<LatencyStats>,
-    /// Latency of every call, failures included (how long a call occupies
-    /// the service's loop).
+    /// End-to-end latency of every call, failures included (how long a
+    /// call occupies the service's loop).
     pub latency_all: Option<LatencyStats>,
+    /// Send time of successful attempts: what the request timeout bounds.
+    pub send_latency: Option<LatencyStats>,
+    /// Per call, time spent waiting rather than sending: `max_in_flight`
+    /// queueing plus 429 back-off sleeps.
+    pub wait: Option<LatencyStats>,
 }
 
 pub(crate) fn call_stats<'a>(calls: impl Iterator<Item = &'a pipeline::CallRecord>) -> CallStats {
     let mut stats = CallStats::default();
-    let (mut ok, mut all) = (Vec::new(), Vec::new());
+    let (mut ok, mut all, mut send, mut wait) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for call in calls {
         stats.calls += 1;
         *stats.outcomes.entry(call.outcome.clone()).or_default() += 1;
@@ -99,6 +116,30 @@ pub(crate) fn call_stats<'a>(calls: impl Iterator<Item = &'a pipeline::CallRecor
         if call.outcome == "success" {
             ok.push(call.elapsed_ms);
         }
+        stats.attempts += call.attempts.len();
+        let timeouts = call
+            .attempts
+            .iter()
+            .filter(|a| a.outcome == "timeout")
+            .count();
+        stats.attempt_timeouts += timeouts;
+        if call.outcome == "success" {
+            stats.recovered_timeouts += timeouts;
+        }
+        send.extend(
+            call.attempts
+                .iter()
+                .filter(|a| a.outcome == "success")
+                .map(|a| a.send_ms),
+        );
+        if !call.attempts.is_empty() {
+            wait.push(
+                call.attempts
+                    .iter()
+                    .map(|a| a.queued_ms.saturating_add(a.backoff_ms))
+                    .sum(),
+            );
+        }
     }
     let count = |label: &str| stats.outcomes.get(label).copied().unwrap_or(0);
     stats.error_rate = ratio(stats.calls - count("success"), stats.calls);
@@ -106,6 +147,8 @@ pub(crate) fn call_stats<'a>(calls: impl Iterator<Item = &'a pipeline::CallRecor
     stats.retry_rate = ratio(stats.calls_with_retries, stats.calls);
     stats.latency = latency_stats(&ok);
     stats.latency_all = latency_stats(&all);
+    stats.send_latency = latency_stats(&send);
+    stats.wait = latency_stats(&wait);
     stats
 }
 
@@ -113,9 +156,12 @@ pub(crate) fn call_stats<'a>(calls: impl Iterator<Item = &'a pipeline::CallRecor
 pub(crate) struct DocStats {
     pub documents: usize,
     pub completed: usize,
+    /// Documents stopped by a failed call (timeout, gateway/HTTP error,
+    /// 429...): the environment's problem.
     pub transport_failures: usize,
-    /// Answers the service would reject: a quality problem, but it also
-    /// costs a retry in production.
+    /// Answers the service would reject (empty content, bad JSON,
+    /// misaligned verdicts): a quality problem, but it also costs a retry
+    /// in production. Kept apart so perf doesn't blame the environment.
     pub invalid_outputs: usize,
     pub failures_by_stage: BTreeMap<&'static str, usize>,
     pub completed_rate: Option<f64>,
@@ -156,13 +202,15 @@ pub(crate) fn doc_stats(records: &[PipelineRecord]) -> DocStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Fit {
-    /// No timeouts, successful-call p95 under 80% of the timeout.
+    /// No attempt timed out, successful-attempt send p95 under 80% of the
+    /// timeout.
     Fits,
-    /// No timeouts, but p95 at or above 80% of the timeout.
+    /// No attempt timed out, but send p95 at or above 80% of the timeout.
     Tight,
-    /// At least one call hit the client timeout.
+    /// At least one attempt hit the client timeout (even if a gateway
+    /// retry then recovered the call).
     Exceeds,
-    /// No successful calls to judge by.
+    /// No successful attempts to judge by.
     NoData,
 }
 
@@ -177,15 +225,23 @@ impl Fit {
     }
 }
 
-/// How the latencies compare with the configured timeouts.
+/// How the latencies compare with the configured timeouts. The request
+/// timeout bounds each HTTP attempt, so this judges per-attempt send times
+/// and attempt timeouts, not end-to-end call latency (which also holds
+/// retries, queueing and 429 back-off).
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct TimeoutFit {
     pub request_timeout_secs: u64,
     pub verdict: Fit,
-    pub timeouts: usize,
-    /// Successful-call p95 / request timeout.
+    /// Attempts that hit the client timeout, retried or not.
+    pub attempt_timeouts: usize,
+    /// ...of which the call still succeeded on a retry.
+    pub recovered_timeouts: usize,
+    /// Calls whose final outcome was a timeout.
+    pub timed_out_calls: usize,
+    /// Successful-attempt send p95 / request timeout.
     pub p95_share_of_timeout: Option<f64>,
-    /// Successful-call max / request timeout.
+    /// Successful-attempt send max / request timeout.
     pub max_share_of_timeout: Option<f64>,
     /// `RECLAIM_MIN_IDLE_SECS`, and completed-document p95 against it (a
     /// document slower than this gets reclaimed and skipped while still in
@@ -201,10 +257,10 @@ pub(crate) fn timeout_fit(
     reclaim_min_idle_secs: u64,
 ) -> TimeoutFit {
     let timeout_ms = request_timeout_secs.saturating_mul(1000);
-    let timeouts = calls.outcomes.get("timeout").copied().unwrap_or(0);
-    let p95_share = calls.latency.and_then(|l| ratio_u64(l.p95_ms, timeout_ms));
+    let send = calls.send_latency;
+    let p95_share = send.and_then(|l| ratio_u64(l.p95_ms, timeout_ms));
     let verdict = match p95_share {
-        _ if timeouts > 0 => Fit::Exceeds,
+        _ if calls.attempt_timeouts > 0 => Fit::Exceeds,
         None => Fit::NoData,
         Some(share) if share >= TIGHT_SHARE => Fit::Tight,
         Some(_) => Fit::Fits,
@@ -212,9 +268,11 @@ pub(crate) fn timeout_fit(
     TimeoutFit {
         request_timeout_secs,
         verdict,
-        timeouts,
+        attempt_timeouts: calls.attempt_timeouts,
+        recovered_timeouts: calls.recovered_timeouts,
+        timed_out_calls: calls.outcomes.get("timeout").copied().unwrap_or(0),
         p95_share_of_timeout: p95_share,
-        max_share_of_timeout: calls.latency.and_then(|l| ratio_u64(l.max_ms, timeout_ms)),
+        max_share_of_timeout: send.and_then(|l| ratio_u64(l.max_ms, timeout_ms)),
         reclaim_min_idle_secs,
         doc_p95_share_of_reclaim_idle: docs
             .latency
@@ -228,7 +286,11 @@ pub(crate) struct PerfSummary {
     pub repetitions: u32,
     pub warmup_runs: u32,
     pub wall_ms: u64,
+    /// Attempted documents per minute, whatever their outcome: throughput
+    /// that doesn't depend on answer quality. The headline figure.
     pub documents_per_minute: Option<f64>,
+    /// Completed documents per minute (depends on output validity too).
+    pub completed_documents_per_minute: Option<f64>,
     pub calls_per_minute: Option<f64>,
     pub all_calls: CallStats,
     pub per_pass: BTreeMap<&'static str, CallStats>,
@@ -275,7 +337,8 @@ pub(crate) fn summarize(records: &[PipelineRecord], run: PerfRun) -> PerfSummary
         repetitions: run.repetitions,
         warmup_runs: run.warmup_runs,
         wall_ms: run.wall_ms,
-        documents_per_minute: per_minute(documents.completed),
+        documents_per_minute: per_minute(documents.documents),
+        completed_documents_per_minute: per_minute(documents.completed),
         calls_per_minute: per_minute(all_calls.calls),
         all_calls,
         per_pass,
@@ -330,11 +393,16 @@ fn call_row(name: &str, s: &CallStats) -> Vec<String> {
         pct(s.timeout_rate),
         pct(s.error_rate),
         format!("{} ({})", s.retries, pct(s.retry_rate)),
+        format!("{} / {}", s.attempt_timeouts, s.attempts),
         secs(l.map(|l| l.p50_ms)),
         secs(l.map(|l| l.p95_ms)),
         secs(l.map(|l| l.p99_ms)),
         secs(l.map(|l| l.max_ms)),
         secs(s.latency_all.map(|l| l.max_ms)),
+        secs(s.send_latency.map(|l| l.p95_ms)),
+        secs(s.send_latency.map(|l| l.max_ms)),
+        secs(s.wait.map(|l| l.p95_ms)),
+        secs(s.wait.map(|l| l.max_ms)),
     ]
 }
 
@@ -379,13 +447,21 @@ fn fit_and_calls_section(md: &mut String, s: &PerfSummary) {
     md.push_str("## Timeout fit\n\n");
     let _ = writeln!(
         md,
-        "**{}**: {} client timeout(s); successful-call p95 is {} and max {} of the {}s request timeout. \
-         Completed-document p95 is {} of `RECLAIM_MIN_IDLE_SECS` ({}s).\n",
+        "**{}**: {} of {} attempt(s) hit the client timeout ({} recovered by a retry, {} call(s) \
+         ended in a timeout); successful-attempt send p95 is {} and max {} of the {}s request \
+         timeout. Queue/back-off wait per call: p95 {}, max {} (not part of the fit: the timeout \
+         bounds each attempt, not the wait). Completed-document p95 is {} of \
+         `RECLAIM_MIN_IDLE_SECS` ({}s).\n",
         fit.verdict.label(),
-        fit.timeouts,
+        fit.attempt_timeouts,
+        s.all_calls.attempts,
+        fit.recovered_timeouts,
+        fit.timed_out_calls,
         pct(fit.p95_share_of_timeout),
         pct(fit.max_share_of_timeout),
         fit.request_timeout_secs,
+        secs(s.all_calls.wait.map(|l| l.p95_ms)),
+        secs(s.all_calls.wait.map(|l| l.max_ms)),
         pct(fit.doc_p95_share_of_reclaim_idle),
         fit.reclaim_min_idle_secs
     );
@@ -405,16 +481,26 @@ fn fit_and_calls_section(md: &mut String, s: &PerfSummary) {
             "Timeouts",
             "Errors",
             "Retries (calls)",
+            "Timed-out attempts",
             "p50",
             "p95",
             "p99",
             "Max",
             "Max incl. failures",
+            "Send p95",
+            "Send max",
+            "Wait p95",
+            "Wait max",
         ],
         &rows,
     ));
     md.push_str(
-        "\nLatency columns are successful calls, in-call retries and 429 waits included.\n",
+        "\n\"Timeouts\" and \"Errors\" are final call outcomes; \"Timed-out attempts\" also counts \
+         timeouts a gateway retry recovered. p50 to \"Max incl. failures\" are end-to-end call \
+         latency (successful calls unless noted), retries, `max_in_flight` queueing and 429 waits \
+         included, like `enricher_llm_call_duration_seconds`. \"Send\" is one successful HTTP \
+         attempt (what the request timeout bounds); \"Wait\" is per-call queueing plus 429 \
+         back-off.\n",
     );
 }
 
@@ -463,6 +549,7 @@ fn documents_section(md: &mut String, s: &PerfSummary) {
         secs(d.latency.map(|l| l.p95_ms)),
         secs(d.latency.map(|l| l.max_ms)),
         report::num(s.documents_per_minute),
+        report::num(s.completed_documents_per_minute),
     ]];
     md.push_str(&report::table(
         &[
@@ -474,10 +561,17 @@ fn documents_section(md: &mut String, s: &PerfSummary) {
             "p50",
             "p95",
             "Max",
-            "Docs/min",
+            "Docs/min (attempted)",
+            "Completed/min",
         ],
         &rows,
     ));
+    md.push_str(
+        "\nLatency columns are completed documents. A document stops where production stops: \
+         after a failed or invalid primary pass the adversarial passes are never sent, so such \
+         documents are shorter. Transport failures are the environment's; invalid outputs \
+         (including empty content) are the model's or its config's.\n",
+    );
 }
 
 pub(crate) fn comparison_markdown(reports: &[PerfReport]) -> String {
@@ -488,6 +582,7 @@ pub(crate) fn comparison_markdown(reports: &[PerfReport]) -> String {
             let s = &r.summary;
             let l = s.all_calls.latency;
             let d = s.documents.latency;
+            let docs = &s.documents;
             vec![
                 r.target.name.clone(),
                 format!("`{}`", r.target.model),
@@ -496,12 +591,19 @@ pub(crate) fn comparison_markdown(reports: &[PerfReport]) -> String {
                 secs(l.map(|l| l.p50_ms)),
                 secs(l.map(|l| l.p95_ms)),
                 secs(l.map(|l| l.max_ms)),
+                secs(s.all_calls.send_latency.map(|l| l.p95_ms)),
                 secs(d.map(|l| l.p50_ms)),
                 secs(d.map(|l| l.p95_ms)),
-                pct(s.all_calls.timeout_rate),
+                format!(
+                    "{} / {}",
+                    s.all_calls.attempt_timeouts, s.all_calls.attempts
+                ),
                 pct(s.all_calls.error_rate),
                 pct(s.all_calls.retry_rate),
+                format!("{} / {}", docs.transport_failures, docs.documents),
+                format!("{} / {}", docs.invalid_outputs, docs.documents),
                 report::num(s.documents_per_minute),
+                report::num(s.completed_documents_per_minute),
                 format!(
                     "{} ({}s)",
                     s.timeout_fit.verdict.label(),
@@ -519,16 +621,25 @@ pub(crate) fn comparison_markdown(reports: &[PerfReport]) -> String {
             "Call p50",
             "Call p95",
             "Call max",
+            "Send p95",
             "Doc p50",
             "Doc p95",
-            "Timeouts",
-            "Errors",
+            "Timed-out attempts",
+            "Call errors",
             "Retried",
+            "Transport-failed docs",
+            "Invalid-output docs",
             "Docs/min",
+            "Completed/min",
             "Timeout fit",
         ],
         &rows,
     ));
+    md.push_str(
+        "\nCall columns are end-to-end successful calls (as the service's histogram measures); \
+         \"Send p95\" is one successful HTTP attempt, which is what the timeout fit judges. \
+         Docs/min counts every attempted document, whatever its outcome.\n",
+    );
     md
 }
 
@@ -617,7 +728,9 @@ async fn live_eval_perf() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::pipeline::{CallRecord, FakeBackend, FakeReply, TargetLabel, run_jobs};
+    use crate::eval::pipeline::{
+        AttemptRecord, CallRecord, FakeBackend, FakeReply, TargetLabel, run_jobs,
+    };
     use crate::llm::LlmCallError;
 
     fn close(a: Option<f64>, b: f64) -> bool {
@@ -650,24 +763,61 @@ mod tests {
         assert_eq!(latency_stats(&[]), None);
     }
 
-    fn call(pass: Pass, ms: u64, outcome: &str, retries: u32) -> CallRecord {
+    /// `(outcome, send_ms, wait_ms)` per attempt; the wait is booked as
+    /// back-off after the attempt.
+    type Try = (&'static str, u64, u64);
+
+    fn call(pass: Pass, ms: u64, outcome: &str, attempts: &[Try]) -> CallRecord {
         CallRecord {
             pass,
             elapsed_ms: ms,
-            retries,
+            retries: u32::try_from(attempts.len().saturating_sub(1)).unwrap(),
             outcome: outcome.to_string(),
+            attempts: attempts
+                .iter()
+                .map(|&(outcome, send_ms, backoff_ms)| AttemptRecord {
+                    outcome: outcome.to_string(),
+                    queued_ms: 0,
+                    send_ms,
+                    backoff_ms,
+                })
+                .collect(),
             content: None,
             error: None,
         }
     }
 
+    /// A call that succeeded on its only attempt.
+    fn ok(ms: u64) -> CallRecord {
+        call(Pass::Primary, ms, "success", &[("success", ms, 0)])
+    }
+
     #[test]
     fn call_stats_split_outcomes_retries_and_latency() {
         let calls = [
-            call(Pass::Primary, 1_000, "success", 0),
-            call(Pass::Primary, 3_000, "success", 2),
-            call(Pass::Primary, 300_000, "timeout", 1),
-            call(Pass::Primary, 50, "rate_limited", 0),
+            ok(1_000),
+            call(
+                Pass::Primary,
+                3_000,
+                "success",
+                &[
+                    ("gateway_error", 500, 0),
+                    ("rate_limited", 100, 1_400),
+                    ("success", 1_000, 0),
+                ],
+            ),
+            call(
+                Pass::Primary,
+                300_000,
+                "timeout",
+                &[("timeout", 150_000, 0), ("timeout", 150_000, 0)],
+            ),
+            call(
+                Pass::Primary,
+                50,
+                "rate_limited",
+                &[("rate_limited", 50, 0)],
+            ),
         ];
         let stats = call_stats(calls.iter());
         assert_eq!(stats.calls, 4);
@@ -676,40 +826,67 @@ mod tests {
         assert!(close(stats.timeout_rate, 0.25));
         assert_eq!((stats.retries, stats.calls_with_retries), (3, 2));
         assert!(close(stats.retry_rate, 0.5));
+        assert_eq!((stats.attempts, stats.attempt_timeouts), (7, 2));
+        assert_eq!(stats.recovered_timeouts, 0);
         assert_eq!(stats.latency.unwrap().max_ms, 3_000, "successes only");
         assert_eq!(stats.latency_all.unwrap().max_ms, 300_000);
+        // Send latency: successful attempts only, without the back-off.
+        let send = stats.send_latency.unwrap();
+        assert_eq!((send.count, send.max_ms), (2, 1_000));
+        assert_eq!(stats.wait.unwrap().max_ms, 1_400);
     }
 
     #[test]
     fn timeout_fit_verdicts() {
         let docs = DocStats::default();
-        let with = |samples: &[(u64, &str)]| {
-            let calls: Vec<CallRecord> = samples
-                .iter()
-                .map(|&(ms, outcome)| call(Pass::Primary, ms, outcome, 0))
-                .collect();
-            call_stats(calls.iter())
-        };
+        let stats = |calls: &[CallRecord]| call_stats(calls.iter());
         let fit = |stats: &CallStats| timeout_fit(stats, &docs, 10, 1000).verdict;
+        assert_eq!(fit(&stats(&[ok(1_000), ok(2_000)])), Fit::Fits);
+        assert_eq!(fit(&stats(&[ok(1_000), ok(9_000)])), Fit::Tight);
+        let timed_out = call(Pass::Primary, 10_000, "timeout", &[("timeout", 10_000, 0)]);
+        assert_eq!(fit(&stats(&[ok(1_000), timed_out.clone()])), Fit::Exceeds);
+        assert_eq!(fit(&stats(&[timed_out])), Fit::Exceeds);
         assert_eq!(
-            fit(&with(&[(1_000, "success"), (2_000, "success")])),
-            Fit::Fits
+            fit(&stats(&[call(
+                Pass::Primary,
+                5,
+                "http_error",
+                &[("http_error", 5, 0)]
+            )])),
+            Fit::NoData
         );
+        let fit_of = |calls: &[CallRecord]| timeout_fit(&stats(calls), &docs, 10, 1000);
+        assert!(close(fit_of(&[ok(2_000)]).p95_share_of_timeout, 0.2));
+
+        // A timed-out attempt that a gateway retry recovered still exceeds.
+        let recovered = call(
+            Pass::Primary,
+            11_000,
+            "success",
+            &[("timeout", 10_000, 0), ("success", 1_000, 0)],
+        );
+        let fit = fit_of(&[ok(1_000), recovered]);
+        assert_eq!(fit.verdict, Fit::Exceeds);
         assert_eq!(
-            fit(&with(&[(1_000, "success"), (9_000, "success")])),
-            Fit::Tight
+            (
+                fit.attempt_timeouts,
+                fit.recovered_timeouts,
+                fit.timed_out_calls
+            ),
+            (1, 1, 0)
         );
-        assert_eq!(
-            fit(&with(&[(1_000, "success"), (10_000, "timeout")])),
-            Fit::Exceeds
+
+        // Queueing and 429 back-off inflate the call latency, not the
+        // per-attempt send time the fit judges.
+        let waited = call(
+            Pass::Primary,
+            30_000,
+            "success",
+            &[("rate_limited", 100, 28_000), ("success", 1_900, 0)],
         );
-        assert_eq!(fit(&with(&[(10_000, "timeout")])), Fit::Exceeds);
-        assert_eq!(fit(&with(&[(5, "http_error")])), Fit::NoData);
-        let stats = with(&[(2_000, "success")]);
-        assert!(close(
-            timeout_fit(&stats, &docs, 10, 1000).p95_share_of_timeout,
-            0.2
-        ));
+        let fit = fit_of(&[waited]);
+        assert_eq!(fit.verdict, Fit::Fits);
+        assert!(close(fit.p95_share_of_timeout, 0.19));
     }
 
     fn one_period() -> serde_json::Value {
@@ -773,6 +950,9 @@ mod tests {
         assert_eq!(summary.per_pass["severity_adversarial"].calls, 2);
         assert_eq!(summary.all_calls.outcomes["timeout"], 2);
         assert_eq!(summary.all_calls.retries, 2);
+        // slow: two attempts (one retry) per run, both timed out.
+        assert_eq!(summary.all_calls.attempt_timeouts, 4);
+        assert_eq!(summary.timeout_fit.attempt_timeouts, 4);
         let d = &summary.documents;
         assert_eq!(
             (
@@ -784,7 +964,8 @@ mod tests {
             (6, 2, 2, 2)
         );
         assert_eq!(d.failures_by_stage["primary"], 4);
-        assert!(close(summary.documents_per_minute, 2.0));
+        assert!(close(summary.documents_per_minute, 6.0), "all attempted");
+        assert!(close(summary.completed_documents_per_minute, 2.0));
         assert!(close(summary.calls_per_minute, 10.0));
         assert_eq!(summary.timeout_fit.verdict, Fit::Exceeds);
         assert!(
@@ -816,6 +997,10 @@ mod tests {
         };
         let md = render_markdown(&report);
         assert!(md.contains("**exceeds**"), "{md}");
+        assert!(
+            md.contains("4 of 12 attempt(s) hit the client timeout"),
+            "{md}"
+        );
         assert!(md.contains("| `primary` |"));
         assert!(comparison_markdown(&[report]).contains("| t |"));
     }

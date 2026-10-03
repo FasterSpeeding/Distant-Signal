@@ -34,8 +34,11 @@ Code: `crates/enricher/src/eval/`. It is test-only, like the existing
   parsers and provider policy are the service's own (`LlmClient::*_raw` and
   `llm::parse_*` in `llm.rs`), so the harness can't drift from production.
 - Every run is saved as a **record**: one JSONL line per (case,
-  repetition), holding each pass's raw output or error, latency, outcome
-  label and in-call retry count.
+  repetition), holding a short hash of the case's input (`input_hash`),
+  and for each pass its raw output or error, end-to-end latency, final
+  outcome label, in-call retry count and every HTTP attempt (`attempts`:
+  outcome, time queued for a `max_in_flight` permit, send time, and any 429
+  back-off slept after it).
 - What the service would have written is derived from a record by
   replaying it through the same parsers. Quality scoring is a pure function
   of records, so saved records can be re-scored without the model.
@@ -71,8 +74,9 @@ Without `EVAL_TARGETS`, the runners evaluate a single target built from
 the service's own env vars: `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`,
 `LLM_REQUEST_TIMEOUT_SECS` and the `LLM_*` provider-policy knobs. Name it
 with `EVAL_TARGET_NAME` and describe its environment with
-`EVAL_ENVIRONMENT`. This is the quickest way to check an existing
-deployment's `.env`.
+`EVAL_ENVIRONMENT`, and set its quality-eval request timeout with
+`EVAL_QUALITY_TIMEOUT_SECS` (default 1800). This is the quickest way to
+check an existing deployment's `.env`.
 
 ## Targets
 
@@ -88,7 +92,8 @@ the deployment as it would really run.
 - `api_key_env`: the *name* of the env var holding the key. Keys never go
   in the file.
 - `request_timeout_secs`: used by the perf benchmark only.
-  `quality_timeout_secs` is used by the quality eval.
+  `quality_timeout_secs` (default 1800) is used by the quality eval. For
+  the env-var target, set it with `EVAL_QUALITY_TIMEOUT_SECS`.
 - `EVAL_TARGET=a,b`: runs only the named targets.
 
 ## Running the quality eval
@@ -101,6 +106,7 @@ the deployment as it would really run.
 | `EVAL_CONCURRENCY` | 1 | Documents in flight at once. Only for speed: quality doesn't depend on it |
 | `EVAL_DATE_TOLERANCE_MINS` | 0 | Treat predicted and gold instants this close as equal |
 | `EVAL_OUT_DIR` | `target/enricher-eval` | Report root |
+| `EVAL_QUALITY_TIMEOUT_SECS` | 1800 | Request timeout of the env-var target (no `EVAL_TARGETS`); a targets file uses `quality_timeout_secs` |
 | `EVAL_RECORDS` | (replay only) | Comma-separated `*.records.jsonl` files to re-score |
 
 Only labelled cases are run. Per target, the run writes
@@ -110,8 +116,20 @@ Only labelled cases are run. Per target, the run writes
 **Offline re-scoring** (`replay_quality_score`) groups the records by the
 target and model named on each line, and scores them against the
 *current* dataset. Use it when a gold label changes, when you add scoring
-logic, or to score records produced elsewhere. Records for case ids no
-longer in the dataset are counted and skipped.
+logic, or to score records produced elsewhere. Records are skipped, with
+a warning, and counted in the report when:
+
+- their case id is no longer in the dataset;
+- their `input_hash` doesn't match the case's current `summary`,
+  `description` and `reference_date` (the text was edited after the run,
+  so the saved output answers a different question; re-run the case).
+  Gold labels, tags and notes aren't hashed, so fixing a label never
+  invalidates records;
+- they repeat a (case, repetition) already read for the same target and
+  model, which happens when several record files for one target are
+  passed. The record from the file listed **first** in `EVAL_RECORDS` is
+  kept. To combine runs, give them distinct target names, or list the run
+  you want to win first.
 
 ## Running the performance benchmark
 
@@ -132,12 +150,21 @@ re-extraction after a prompt version bump.
 Run the benchmark from a host with the same network path to the endpoint
 as the enricher pod. Use `--release`: client-side overhead is negligible
 either way, but there's no reason to measure a debug build. Every record
-is saved, and the saved records can be quality-scored offline, but any
-timeouts then count against the model.
+is saved, and the saved records can be quality-scored offline; transport
+failures (timeouts included) are then left out of the quality rates, but
+the run used the real, tighter timeout, so prefer the quality eval for
+quality.
+
+Each document stops where production stops: if the primary pass fails or
+its output can't be parsed, the adversarial passes are never sent. A model
+that often produces invalid primary output therefore makes fewer calls per
+document; the report keeps invalid outputs apart from transport failures
+so this doesn't read as an environment problem.
 
 ## The dataset
 
-`crates/enricher/eval/dataset.jsonl` holds one case per line:
+`crates/enricher/eval/dataset.jsonl` holds one case per line (point
+`EVAL_DATASET` at another file to use your own):
 
 ```json
 {"id": "flat-eta-signal-failure", "tags": ["single_period", "eta"], "notes": "why/how labelled",
@@ -152,6 +179,7 @@ timeouts then count against the model.
 | Field | Meaning |
 | --- | --- |
 | `id` | Unique and stable. Records refer to it, so renaming a case orphans its recordings |
+| `summary`, `description` | The incident text, sent to the model exactly as given. Keep it exactly as production would see it. Records store a hash of these and `reference_date`, so editing them makes existing records stale |
 | `reference_date` | What `process_incident` passes as `first_seen_at`. The model resolves year-less dates and bare times against it |
 | `tags`, `notes` | Optional. Tags slice the report (a "By tag" table). Notes record why the case exists and how it was labelled |
 | `expected` | Optional. Without it, the case is perf-only |
@@ -180,22 +208,20 @@ disagree, for example `["moderate_disruption", "severe_disruption"]`.
 
 **Adding a case:**
 
-1. Start from real incident text where possible. `scripts/export-incident-history-for-replay.sql`
-   exports `incident_history` as JSONL, and `incident_id`, `summary`,
-   `description` and `first_seen_at` map directly onto `id`, `summary`,
-   `description` and `reference_date`. Strip anything identifying.
-2. Label it by hand against the rules above. Write `notes` explaining
-   anything non-obvious.
-3. Add tags. Reuse the existing ones (`single_period`, `multi_period`,
+1. Label it against the rules above. Write `notes` explaining anything
+   non-obvious.
+2. Add tags. Reuse the existing ones (`single_period`, `multi_period`,
    `negation`, `eta`, `schedule_window`, `bst`, `gmt`,
    `over_segmentation_trap`, `observational`, ...) so the "By tag" table
    stays useful.
-4. Run `cargo test -p enricher eval::dataset`. The
+3. Run `cargo test -p enricher eval::dataset`. The
    `shipped_dataset_is_valid` test rejects unknown enum values, bad
-   weekdays or times, duplicate ids and unknown keys (typos).
-5. Re-score existing records offline to see how each model does on the
-   new case, without re-running anything (the new case shows up only in
-   new runs).
+   weekdays or times, duplicate ids and unknown keys (typos). A dataset
+   loaded through `EVAL_DATASET` gets the same checks when a runner
+   starts.
+4. Run the quality eval to score models on it. Existing records have no
+   output for a new case, so re-scoring them doesn't cover it. (Once it
+   has been run, fixing its gold labels only needs an offline re-score.)
 
 The 15 seed cases cover the design doc's golden-corpus list (ongoing,
 resolved, residual, an ETA, a schedule window narrower than the date
@@ -211,19 +237,28 @@ incident history.
 A **completed** case is one the service would have written. Failures are
 split in two:
 
-- **Transport failure**: the call failed (timeout, HTTP error, empty
-  content). That's an environment problem, so look at the perf report. It
-  is excluded from the valid-output rate.
+- **Transport failure**: the call failed (timeout, gateway or HTTP error,
+  429). That's an environment problem, so look at the perf report. It is
+  shown as its own count and left out of the denominator of every rate:
+  valid output, exact match (overall and per tag) and the comparison
+  table's columns.
 - **Invalid output**: the model answered, but with something the service
-  rejects (malformed or schema-violating JSON, an empty `periods` array,
-  or adversarial verdicts that don't align with the primary periods).
-  That's a quality problem.
+  rejects: empty content (typically a reasoning model that used up
+  `max_tokens`, which depends on the model and its config, not the
+  environment), malformed or schema-violating JSON, an empty `periods`
+  array, or adversarial verdicts that don't align with the primary
+  periods. That's a quality problem.
 
 **Period matching.** Predicted periods are paired with gold periods
 greedily, by how many scored fields agree (ties go to the closer
-position). An unmatched prediction is a hallucinated (extra) period, and
-an unmatched gold period is a missed one. Period precision is matched /
-predicted, and period recall is matched / gold.
+position). A pair can only match if it agrees enough to be the same
+period: at least one date bound (`from_date` or `to_date`) is correct and
+non-null, or more than half of the gold period's scored fields are
+correct (`date_range`, `from_date` and `to_date` each count as a field). A
+gold period with no scored fields matches any prediction. A pair below
+that bar stays unmatched, so it counts as one hallucinated (extra) period
+plus one missed period, and its fields are not scored. Period precision
+is matched / predicted, and period recall is matched / gold.
 
 **Field verdicts**, per matched pair and scored field:
 
@@ -245,7 +280,9 @@ answer. Fields scored per period: `date_range` (whole range), `from_date`,
 Other sections:
 
 - **Exact case match**: completed, every scored field correct, and the
-  right period count. Observational cases (nothing labelled) are excluded.
+  right period count, out of the attempts that got an answer.
+  Transport failures and observational cases (nothing labelled) are
+  excluded; an invalid output counts as not exact.
 - **Wrong dates by kind** shows how the dates went wrong: `off_by_1h`
   (Europe/London to UTC conversion ignored), `off_by_1d` (end day not
   treated as inclusive), `wrong_year` (year inference) or `other`.
@@ -259,34 +296,53 @@ Other sections:
 - **Consistency** (with repetitions) shows whether repeats of a case gave
   the same output, using `churn::compare`. `scope_description` wording is
   ignored.
+- **By tag**: per tag, attempts, transport failures, completed (with the
+  valid-output rate) and exact / scored, with the same denominators as
+  the headline rates.
 - **Cases** lists every mismatch for every attempt, with `scope_hint`
   labels.
 
 ## Reading the performance report
 
-- **Calls**: per pass and overall, giving the outcome counts (the
+- **Calls**: per pass and overall, giving the final outcome counts (the
   service's `enricher_llm_call_total` labels: `success`, `timeout`,
   `gateway_error`, `rate_limited`, `http_error`, `empty_content`,
-  `error`), timeout and error rates, in-call retries, and latency
-  percentiles. Percentiles use the nearest-rank method, over successful
-  calls, with retries and 429 waits included, like
-  `enricher_llm_call_duration_seconds`. "Max incl. failures" is how long
-  a failing call held the loop.
-- **Documents**: all three passes, end to end. Shows completion, failures
-  by stage, latency and documents per minute at the chosen concurrency.
-- **Timeout fit**: `exceeds` if any call hit the client timeout. `tight`
-  if successful-call p95 is at least 80% of `request_timeout_secs`.
-  Otherwise `fits`. The report also gives completed-document p95 as a
-  share of `RECLAIM_MIN_IDLE_SECS`: a document slower than that gets
-  reclaimed and skipped while it is still in flight. That's churn, not an
-  error, but worth avoiding.
+  `error`), timeout and error rates, in-call retries, timed-out attempts
+  (including timeouts a gateway retry recovered) and three kinds of
+  latency. Percentiles use the nearest-rank method.
+  - End-to-end call latency (p50 to "Max incl. failures"): successful
+    calls, with retries, `max_in_flight` queueing and 429 waits included,
+    like `enricher_llm_call_duration_seconds`. "Max incl. failures" is
+    how long a failing call held the loop.
+  - Send latency: one successful HTTP attempt, which is what
+    `request_timeout_secs` bounds.
+  - Wait: per call, time queued for a `max_in_flight` permit plus 429
+    back-off sleeps.
+- **Documents**: all three passes, end to end. Shows completion,
+  transport failures and invalid outputs separately, failures by stage,
+  latency of completed documents, and throughput at the chosen
+  concurrency: documents per minute over every *attempted* document (the
+  headline, independent of answer quality) and completed documents per
+  minute.
+- **Timeout fit**: judged per attempt, because the request timeout bounds
+  each HTTP attempt. `exceeds` if any attempt hit the client timeout, even
+  if a gateway retry then recovered the call (the report says how many
+  attempts timed out, how many of those were recovered and how many calls
+  ended in a timeout). `tight` if the successful-attempt send p95 is at
+  least 80% of `request_timeout_secs`. Otherwise `fits`. Queue and
+  back-off wait is reported next to it but not part of the verdict. The
+  report also gives completed-document p95 as a share of
+  `RECLAIM_MIN_IDLE_SECS`: a document slower than that gets reclaimed and
+  skipped while it is still in flight. That's churn, not an error, but
+  worth avoiding.
 - A gateway that cuts requests itself (returning 504) shows up as
   `gateway_error`, not `timeout`. As `config.rs` advises, set the timeout
   just above the gateway's cutoff, and consider `gateway_retries`.
 
 ## Choosing a model
 
-1. Shortlist models from the quality comparison: valid-output rate,
+1. Shortlist models from the quality comparison: valid-output rate
+   (with the transport-failure count beside it),
    `resolution_status` with no false `resolved`, segmentation (period
    precision/recall and the `multi_period` tag), and consistency across
    repeats.
@@ -315,7 +371,9 @@ the prefixes CI's ignored-tests step already skips
 - **Category is free text** (the schema has no enum), so category accuracy
   is only as good as each case's synonym list.
 - **Greedy period matching** can mis-pair two near-identical periods. It
-  is deterministic, and the per-case mismatch list shows the pairing.
+  is deterministic, and the per-case mismatch list shows the pairing. The
+  minimum-agreement bar is a heuristic: a prediction that is the right
+  period but gets almost every field wrong counts as extra plus missed.
 - **The seed labels are judgments.** Contested fields use accepted-value
   lists or are left unscored. Review them as the dataset grows.
 - **Small seed set.** 15 cases can separate a broken model from a good one,

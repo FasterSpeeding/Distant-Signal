@@ -203,8 +203,9 @@ pub(crate) struct LlmClient {
 /// One pass's raw chat-completion result: the unparsed `content` (or the
 /// typed [`LlmCallError`] / other error that ended the call) plus how many
 /// in-call retries ([`ProviderPolicy`]'s 429/gateway budgets) were spent
-/// before it. The service only reads `content` (through `extract_*`); the
-/// model-eval harness (`eval`) also records `retries`.
+/// before it, and what each HTTP attempt did. The service only reads
+/// `content` (through `extract_*`); the model-eval harness (`eval`) also
+/// records `retries` and `attempts`.
 pub(crate) struct RawCall {
     pub content: anyhow::Result<String>,
     #[cfg_attr(
@@ -212,6 +213,29 @@ pub(crate) struct RawCall {
         expect(dead_code, reason = "read only by the test-only model-eval harness")
     )]
     pub retries: u32,
+    /// Every HTTP attempt `chat_completion` made, in order (empty when the
+    /// call failed before sending anything). Only observes the retry loop:
+    /// collecting it changes no request, retry decision or metric.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by the test-only model-eval harness")
+    )]
+    pub attempts: Vec<Attempt>,
+}
+
+/// One HTTP attempt of a [`RawCall`], for the model-eval harness's perf
+/// benchmark: a timeout that a gateway retry recovered is still a timeout
+/// against the per-attempt request timeout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Attempt {
+    /// `success`, or the attempt's [`LlmCallError::outcome_label`].
+    pub outcome: &'static str,
+    /// Waiting for an `in_flight` permit before sending.
+    pub queued: std::time::Duration,
+    /// The attempt itself (`send_once`): what `request_timeout` bounds.
+    pub send: std::time::Duration,
+    /// 429 back-off slept after this attempt, before the next one.
+    pub backoff: std::time::Duration,
 }
 
 // ---------------------------------------------------------------------------
@@ -787,28 +811,28 @@ impl LlmClient {
         // returned exactly as before.
         let mut rate_limit_retries = 0;
         let mut gateway_retries = 0;
+        // Observation only (see `RawCall::attempts`): timings around the
+        // unchanged retry loop.
+        let mut attempts: Vec<Attempt> = Vec::with_capacity(1);
         loop {
             let retries = rate_limit_retries + gateway_retries;
-            let attempt = {
-                let _permit = match &self.in_flight {
-                    Some(sem) => match sem.acquire().await {
-                        Ok(permit) => Some(permit),
-                        Err(err) => {
-                            return RawCall {
-                                content: Err(anyhow::anyhow!("in-flight limiter closed: {err}")),
-                                retries,
-                            };
-                        }
-                    },
-                    None => None,
-                };
-                self.send_once(&request).await
+            let (attempt, timing) = match self.limited_send(&request).await {
+                Ok(pair) => pair,
+                Err(err) => {
+                    return RawCall {
+                        content: Err(err),
+                        retries,
+                        attempts,
+                    };
+                }
             };
+            attempts.push(timing);
             match attempt {
                 Ok(content) => {
                     return RawCall {
                         content: Ok(content),
                         retries,
+                        attempts,
                     };
                 }
                 Err(LlmCallError::RateLimited { retry_after })
@@ -820,7 +844,11 @@ impl LlmClient {
                         .unwrap_or_default()
                         .max(self.policy.rate_limit_min_wait);
                     tracing::warn!(?wait, attempt = rate_limit_retries, "LLM 429; backing off");
+                    let sleep_start = tokio::time::Instant::now();
                     tokio::time::sleep(wait).await;
+                    if let Some(last) = attempts.last_mut() {
+                        last.backoff = sleep_start.elapsed();
+                    }
                 }
                 Err(
                     err @ (LlmCallError::GatewayUnavailable { .. } | LlmCallError::ClientTimeout),
@@ -832,10 +860,41 @@ impl LlmClient {
                     return RawCall {
                         content: Err(err.into()),
                         retries,
+                        attempts,
                     };
                 }
             }
         }
+    }
+
+    /// One HTTP attempt under the `in_flight` limit (the permit is held
+    /// for the attempt only), plus its [`Attempt`] timing. `Err` only if
+    /// the limiter is closed.
+    async fn limited_send(
+        &self,
+        request: &ChatCompletionRequest<'_>,
+    ) -> anyhow::Result<(Result<String, LlmCallError>, Attempt)> {
+        let queue_start = tokio::time::Instant::now();
+        let _permit = match &self.in_flight {
+            Some(sem) => Some(
+                sem.acquire()
+                    .await
+                    .map_err(|err| anyhow::anyhow!("in-flight limiter closed: {err}"))?,
+            ),
+            None => None,
+        };
+        let send_start = tokio::time::Instant::now();
+        let attempt = self.send_once(request).await;
+        let timing = Attempt {
+            outcome: match &attempt {
+                Ok(_) => "success",
+                Err(err) => err.outcome_label(),
+            },
+            queued: send_start.duration_since(queue_start),
+            send: send_start.elapsed(),
+            backoff: std::time::Duration::ZERO,
+        };
+        Ok((attempt, timing))
     }
 
     /// One HTTP attempt, classified.
@@ -961,6 +1020,7 @@ impl LlmClient {
                 return RawCall {
                     content: Err(err),
                     retries: 0,
+                    attempts: Vec::new(),
                 };
             }
         };
@@ -1000,6 +1060,7 @@ impl LlmClient {
                 return RawCall {
                     content: Err(err),
                     retries: 0,
+                    attempts: Vec::new(),
                 };
             }
         };
@@ -1947,6 +2008,88 @@ mod tests {
         // 1 initial attempt + max_gateway_retries (2).
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
         assert!(client.is_provider_transient(&err), "{err:?}");
+    }
+
+    /// The model-eval harness's per-attempt record: a gateway failure that
+    /// a retry recovered still shows up as a failed attempt, and a 429's
+    /// back-off is kept apart from the attempt's own send time.
+    #[tokio::test]
+    async fn raw_call_records_every_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(504))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+            .with_provider_policy(ProviderPolicy {
+                rate_limit_min_wait: std::time::Duration::from_millis(50),
+                ..fast_retry_policy()
+            });
+        let raw = client.primary_raw("s", "d", reference_date()).await;
+        assert!(raw.content.is_ok());
+        assert_eq!(raw.retries, 2);
+        let outcomes: Vec<&str> = raw.attempts.iter().map(|a| a.outcome).collect();
+        assert_eq!(outcomes, ["gateway_error", "rate_limited", "success"]);
+        // The back-off is booked on the 429 attempt only, not as send time.
+        assert_eq!(raw.attempts[0].backoff, std::time::Duration::ZERO);
+        assert!(raw.attempts[1].backoff >= std::time::Duration::from_millis(50));
+        assert_eq!(raw.attempts[2].backoff, std::time::Duration::ZERO);
+    }
+
+    /// A client timeout recovered by a gateway retry: the call succeeds,
+    /// but its first attempt is recorded as `timeout`.
+    #[tokio::test]
+    async fn raw_call_keeps_a_recovered_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(flat_primary_body())
+                    .set_delay(std::time::Duration::from_secs(5)),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(
+            server.uri(),
+            None,
+            "m".into(),
+            std::time::Duration::from_millis(500),
+        )
+        .with_provider_policy(ProviderPolicy {
+            // Headroom in case a timed-out request never reaches the server
+            // (see the client-timeout test below).
+            max_gateway_retries: 3,
+            ..ProviderPolicy::default()
+        });
+        let raw = client.primary_raw("s", "d", reference_date()).await;
+        assert!(raw.content.is_ok(), "{:?}", raw.content.err());
+        assert_eq!(raw.attempts[0].outcome, "timeout");
+        assert!(raw.attempts[0].send >= std::time::Duration::from_millis(500));
+        assert_eq!(raw.attempts.last().map(|a| a.outcome), Some("success"));
+        assert_eq!(
+            raw.attempts.len(),
+            usize::try_from(raw.retries).unwrap() + 1
+        );
     }
 
     #[tokio::test]

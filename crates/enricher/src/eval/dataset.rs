@@ -55,6 +55,21 @@ pub(crate) struct Case {
     pub expected: Option<Expected>,
 }
 
+impl Case {
+    /// A short hash of exactly what the model is sent from this case
+    /// (`summary`, `description`, `reference_date`), stored on every
+    /// record. A replay skips a record whose hash no longer matches: the
+    /// case's text was edited after the run, so its output answers a
+    /// different question. Gold labels aren't hashed -- re-scoring old
+    /// outputs against corrected labels is what replay is for.
+    pub(crate) fn input_hash(&self) -> String {
+        let description = format!("{}\0{}", self.description, self.reference_date.to_rfc3339());
+        let mut hash = common::text_hash::text_hash(&self.summary, &description);
+        hash.truncate(16);
+        hash
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Expected {
@@ -375,6 +390,29 @@ mod tests {
         }
         let dup = format!("{}\n{}", line("{}"), line("{}"));
         assert!(parse(&dup).is_err(), "accepted a duplicate id");
+    }
+
+    #[test]
+    fn input_hash_covers_the_model_input_only() {
+        let base =
+            r#"{"id":"a","summary":"s","description":"d","reference_date":"2026-01-01T00:00:00Z"}"#;
+        let hash = |line: &str| parse(line).unwrap()[0].input_hash();
+        let original = hash(base);
+        assert_eq!(original.len(), 16);
+        assert_eq!(original, hash(base), "deterministic");
+        for edited in [
+            base.replace(r#""s""#, r#""s2""#),
+            base.replace(r#""d""#, r#""d2""#),
+            base.replace("2026-01-01", "2026-01-02"),
+        ] {
+            assert_ne!(original, hash(&edited), "{edited}");
+        }
+        // Not the id, tags or labels.
+        let relabelled = base.replace(
+            r#""id":"a""#,
+            r#""id":"b","tags":["x"],"expected":{"category_any_of":["y"]}"#,
+        );
+        assert_eq!(original, hash(&relabelled));
     }
 
     #[test]

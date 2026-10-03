@@ -5,7 +5,7 @@
 //! and parsers in `llm.rs` (`LlmClient::*_raw` + `llm::parse_*`).
 //!
 //! A run produces a [`PipelineRecord`]: every pass's raw output (or error),
-//! latency and in-call retry count. What the service would have written is
+//! latency, in-call retry count and per-attempt timings. What the service would have written is
 //! derived from the record afterwards by [`PipelineRecord::outcome`], which
 //! is pure -- so a record saved to JSONL scores offline exactly as it scored
 //! live, and the quality scorer never needs the model.
@@ -86,19 +86,50 @@ pub(crate) struct TargetLabel {
     pub model: String,
 }
 
+/// One HTTP attempt within a call (see [`llm::Attempt`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AttemptRecord {
+    /// `success`, or the attempt's error label (same labels as
+    /// [`CallRecord::outcome`]).
+    pub outcome: String,
+    /// Waiting for the provider policy's `max_in_flight` permit.
+    pub queued_ms: u64,
+    /// The HTTP attempt itself: what the request timeout bounds.
+    pub send_ms: u64,
+    /// 429 back-off slept after this attempt.
+    pub backoff_ms: u64,
+}
+
+impl From<&llm::Attempt> for AttemptRecord {
+    fn from(attempt: &llm::Attempt) -> Self {
+        Self {
+            outcome: attempt.outcome.to_string(),
+            queued_ms: millis(attempt.queued),
+            send_ms: millis(attempt.send),
+            backoff_ms: millis(attempt.backoff),
+        }
+    }
+}
+
 /// One pass as it happened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct CallRecord {
     pub pass: Pass,
-    /// Wall time of the whole call, in-call retries and 429 waits included
-    /// (what the service's duration histogram measures).
+    /// Wall time of the whole call, in-call retries, `max_in_flight`
+    /// queueing and 429 waits included (what the service's duration
+    /// histogram measures).
     pub elapsed_ms: u64,
     /// In-call retries the target's provider policy spent.
     pub retries: u32,
     /// `success`, or `main.rs::llm_outcome`'s label for the error
     /// (`timeout`, `gateway_error`, `rate_limited`, `http_error`,
-    /// `empty_content`, `error`).
+    /// `empty_content`, `error`). The *final* outcome: an attempt that
+    /// timed out and was retried successfully shows only in `attempts`.
     pub outcome: String,
+    /// Every HTTP attempt, in order. Empty when the call failed before
+    /// sending anything.
+    #[serde(default)]
+    pub attempts: Vec<AttemptRecord>,
     /// The raw `content` string, when the endpoint returned one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
@@ -112,6 +143,10 @@ pub(crate) struct PipelineRecord {
     #[serde(flatten)]
     pub label: TargetLabel,
     pub case_id: String,
+    /// [`Case::input_hash`] of the case as it was run, so a replay can
+    /// tell a record of since-edited case text from a current one.
+    #[serde(default)]
+    pub input_hash: String,
     pub repetition: u32,
     /// Wall time of the whole document (all passes run).
     pub elapsed_ms: u64,
@@ -161,11 +196,13 @@ impl From<Pass> for Stage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FailureKind {
-    /// The call itself failed (timeout, HTTP error, empty content...). An
+    /// The call itself failed (timeout, gateway or HTTP error, 429...). An
     /// environment/perf signal; the quality report counts it separately.
     Transport,
-    /// The model answered, but with output the service rejects: malformed
-    /// or schema-violating JSON, an empty `periods` array, or adversarial
+    /// The model answered, but with output the service rejects: empty
+    /// content (e.g. a reasoning model that spent `max_tokens` thinking --
+    /// a model/config problem, not the environment), malformed or
+    /// schema-violating JSON, an empty `periods` array, or adversarial
     /// verdicts that don't align with the primary periods.
     InvalidOutput,
 }
@@ -174,8 +211,8 @@ pub(crate) enum FailureKind {
 pub(crate) struct Failure {
     pub stage: Stage,
     pub kind: FailureKind,
-    /// The call's outcome label for a transport failure; `invalid_output`
-    /// or `combine_mismatch` otherwise.
+    /// The call's outcome label for a transport failure or empty content;
+    /// `invalid_output` or `combine_mismatch` otherwise.
     pub outcome: String,
     pub message: String,
 }
@@ -213,9 +250,17 @@ impl PipelineRecord {
             });
         };
         let Some(content) = &call.content else {
+            // Empty content is the model's answer (typically a reasoning
+            // model out of `max_tokens`), so it scores as invalid output;
+            // perf still sees the call's own `empty_content` label.
+            let kind = if call.outcome == EMPTY_CONTENT {
+                FailureKind::InvalidOutput
+            } else {
+                FailureKind::Transport
+            };
             return Err(Failure {
                 stage: pass.into(),
-                kind: FailureKind::Transport,
+                kind,
                 outcome: call.outcome.clone(),
                 message: call.error.clone().unwrap_or_default(),
             });
@@ -228,6 +273,9 @@ impl PipelineRecord {
         })
     }
 }
+
+/// `LlmCallError::EmptyContent`'s outcome label.
+const EMPTY_CONTENT: &str = "empty_content";
 
 pub(crate) fn millis(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
@@ -252,13 +300,16 @@ async fn timed_call<B: Backend>(
         elapsed_ms,
         retries: raw.retries,
         outcome,
+        attempts: raw.attempts.iter().map(AttemptRecord::from).collect(),
         content,
         error,
     }
 }
 
 /// Runs one case through the pipeline, stopping where `process_incident`
-/// would: after a failed or unparseable pass.
+/// would: after a failed or unparseable pass. (So a document whose primary
+/// pass fails never sends the adversarial passes, exactly as in production;
+/// its perf numbers have fewer calls.)
 pub(crate) async fn run_pipeline<B: Backend>(
     backend: &B,
     label: &TargetLabel,
@@ -290,6 +341,7 @@ pub(crate) async fn run_pipeline<B: Backend>(
     PipelineRecord {
         label: label.clone(),
         case_id: case.id.clone(),
+        input_hash: case.input_hash(),
         repetition,
         elapsed_ms: millis(start.elapsed()),
         calls,
@@ -355,10 +407,17 @@ pub(crate) enum FakeReply {
     /// A well-formed adversarial verdict list echoing the periods it was
     /// given, each verdict equal to the period's own value (agreement).
     Agree,
-    /// The call fails with this typed error, after `retries` retries.
+    /// The call fails with this typed error, after `retries` retries
+    /// (each recorded as a failed attempt with the same error).
     Error {
         error: fn() -> llm::LlmCallError,
         retries: u32,
+    },
+    /// Attempts that failed with these errors and were retried, then
+    /// `then` (whose own attempts follow).
+    Retried {
+        failed: Vec<fn() -> llm::LlmCallError>,
+        then: Box<FakeReply>,
     },
 }
 
@@ -391,10 +450,32 @@ impl Backend for FakeBackend {
         }
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         let reply = self.replies.get(&(case.id.clone(), pass)).cloned();
+        self.reply(reply, pass, case, periods)
+    }
+}
+
+impl FakeBackend {
+    fn attempt(&self, outcome: &'static str) -> llm::Attempt {
+        llm::Attempt {
+            outcome,
+            queued: Duration::ZERO,
+            send: self.delay,
+            backoff: Duration::ZERO,
+        }
+    }
+
+    fn reply(
+        &self,
+        reply: Option<FakeReply>,
+        pass: Pass,
+        case: &Case,
+        periods: &[ExtractionPeriod],
+    ) -> RawCall {
         match reply {
             Some(FakeReply::Content(content)) => RawCall {
                 content: Ok(content),
                 retries: 0,
+                attempts: vec![self.attempt("success")],
             },
             Some(FakeReply::Agree) => {
                 let verdicts: Vec<serde_json::Value> = periods
@@ -416,12 +497,28 @@ impl Backend for FakeBackend {
                 RawCall {
                     content: Ok(serde_json::json!({ "periods": verdicts }).to_string()),
                     retries: 0,
+                    attempts: vec![self.attempt("success")],
                 }
             }
-            Some(FakeReply::Error { error, retries }) => RawCall {
-                content: Err(error().into()),
-                retries,
-            },
+            Some(FakeReply::Error { error, retries }) => {
+                let label = error().outcome_label();
+                RawCall {
+                    content: Err(error().into()),
+                    retries,
+                    attempts: (0..=retries).map(|_| self.attempt(label)).collect(),
+                }
+            }
+            Some(FakeReply::Retried { failed, then }) => {
+                let mut raw = self.reply(Some(*then), pass, case, periods);
+                let mut attempts: Vec<llm::Attempt> = failed
+                    .iter()
+                    .map(|error| self.attempt(error().outcome_label()))
+                    .collect();
+                attempts.append(&mut raw.attempts);
+                raw.attempts = attempts;
+                raw.retries += u32::try_from(failed.len()).unwrap_or(u32::MAX);
+                raw
+            }
             None => RawCall {
                 content: Err(anyhow::anyhow!(
                     "no scripted reply for {} / {}",
@@ -429,6 +526,7 @@ impl Backend for FakeBackend {
                     pass.label()
                 )),
                 retries: 0,
+                attempts: Vec::new(),
             },
         }
     }
@@ -535,6 +633,52 @@ mod tests {
             .unwrap_err();
         assert_eq!(failure.stage, Stage::Combine);
         assert_eq!(failure.kind, FailureKind::InvalidOutput);
+    }
+
+    #[tokio::test]
+    async fn empty_content_is_invalid_output_not_transport() {
+        let backend = FakeBackend::default().with(
+            "a",
+            Pass::Primary,
+            FakeReply::Error {
+                error: || llm::LlmCallError::EmptyContent {
+                    finish_reason: Some("length".into()),
+                },
+                retries: 0,
+            },
+        );
+        let record = run_pipeline(&backend, &label(), &case("a"), 0).await;
+        assert_eq!(
+            record.calls[0].outcome, "empty_content",
+            "perf keeps its label"
+        );
+        let failure = record.outcome().unwrap_err();
+        assert_eq!(failure.kind, FailureKind::InvalidOutput);
+        assert_eq!(failure.outcome, "empty_content");
+    }
+
+    #[tokio::test]
+    async fn records_keep_each_attempt_and_the_case_input_hash() {
+        let backend = FakeBackend::default().agreeing("a", &one_period()).with(
+            "a",
+            Pass::Primary,
+            FakeReply::Retried {
+                failed: vec![|| llm::LlmCallError::ClientTimeout],
+                then: Box::new(FakeReply::Content(one_period().to_string())),
+            },
+        );
+        let record = run_pipeline(&backend, &label(), &case("a"), 0).await;
+        let primary = &record.calls[0];
+        assert_eq!(primary.outcome, "success");
+        assert_eq!(primary.retries, 1);
+        let outcomes: Vec<&str> = primary
+            .attempts
+            .iter()
+            .map(|a| a.outcome.as_str())
+            .collect();
+        assert_eq!(outcomes, ["timeout", "success"]);
+        assert_eq!(record.input_hash, case("a").input_hash());
+        assert!(record.outcome().is_ok());
     }
 
     #[tokio::test]

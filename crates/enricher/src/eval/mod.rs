@@ -13,8 +13,9 @@
 //!   be re-scored offline (`replay_quality_score`) without the model.
 //! - **Performance** (`perf`): how does this model behave in *this*
 //!   environment? Latency percentiles per call and per document,
-//!   throughput, timeout/error/retry rates and fit against the service's
-//!   configured timeouts. Ignores answer quality.
+//!   throughput, timeout/error/retry rates (per attempt as well as per
+//!   call) and fit against the service's configured timeouts. Ignores
+//!   answer quality.
 //!
 //! Both drive the real pipeline (`pipeline`): the service's prompts,
 //! schemas, parsers, provider policy and `combine_periods`, in
@@ -44,7 +45,9 @@
 //!   `EVAL_CASES` (comma-separated case ids), `EVAL_OUT_DIR` (default
 //!   `target/enricher-eval`).
 //! - Quality: `EVAL_REPEATS` (1), `EVAL_CONCURRENCY` (1),
-//!   `EVAL_DATE_TOLERANCE_MINS` (0), `EVAL_RECORDS` (replay only).
+//!   `EVAL_DATE_TOLERANCE_MINS` (0), `EVAL_RECORDS` (replay only),
+//!   `EVAL_QUALITY_TIMEOUT_SECS` (1800; the env-var target's quality
+//!   request timeout, `quality_timeout_secs` in a targets file).
 //! - Perf: `EVAL_PERF_REPEATS` (3), `EVAL_PERF_CONCURRENCY` (1),
 //!   `EVAL_PERF_WARMUP` (1).
 

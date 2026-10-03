@@ -9,9 +9,13 @@
 //!
 //! - **Completion / valid output**: did the pipeline produce something the
 //!   service would write (parseable, schema-valid, non-empty, aligned)?
+//!   Transport failures are counted on their own and left out of every
+//!   headline rate's denominator; empty content counts as invalid output.
 //! - **Periods**: predicted periods are matched to gold periods greedily by
-//!   field agreement (ties broken by position); unmatched predictions are
-//!   hallucinated periods, unmatched gold periods are missed ones.
+//!   field agreement (ties broken by position), but only pairs that agree
+//!   enough to be the same period ([`same_period`]) can match; unmatched
+//!   predictions are hallucinated periods, unmatched gold periods are
+//!   missed ones.
 //! - **Fields** (per matched pair): each scored field gets a [`Verdict`].
 //!   Accuracy counts both correct verdicts; precision/recall treat a
 //!   non-null value as a positive, so `hallucinated` (non-null where gold
@@ -331,9 +335,29 @@ fn judge_dates(
     out
 }
 
-/// Pairs predicted with gold periods: highest field agreement first, ties
-/// by smaller position difference, then by position. Returns
-/// `(predicted_index, gold_index)` sorted by gold index.
+/// The minimum agreement for a predicted and a gold period to count as the
+/// same period: at least one date bound (`from_date`/`to_date`) correct and
+/// non-null, or more than half of the scored fields correct. A gold period
+/// with no scored fields has nothing to disagree with and matches anything.
+///
+/// Without this, every prediction would pair with *some* gold period and
+/// period precision/recall would reduce to count ratios. A pair below the
+/// bar stays unmatched: one extra (hallucinated) plus one missed period.
+fn same_period(judgements: &[Judgement]) -> bool {
+    if judgements.is_empty() {
+        return true;
+    }
+    let bound = judgements
+        .iter()
+        .any(|j| matches!(j.field, "from_date" | "to_date") && j.verdict == Verdict::Correct);
+    let correct = judgements.iter().filter(|j| j.verdict.is_correct()).count();
+    bound || correct * 2 > judgements.len()
+}
+
+/// Pairs predicted with gold periods: among pairs that pass
+/// [`same_period`], highest field agreement first, ties by smaller position
+/// difference, then by position. Returns `(predicted_index, gold_index)`
+/// sorted by gold index.
 pub(crate) fn match_periods(
     predicted: &[ExtractionPeriod],
     gold: &[GoldPeriod],
@@ -342,10 +366,11 @@ pub(crate) fn match_periods(
     let mut candidates = Vec::new();
     for (p, predicted_period) in predicted.iter().enumerate() {
         for (g, gold_period) in gold.iter().enumerate() {
-            let agreement = judge_period(predicted_period, gold_period, opts)
-                .iter()
-                .filter(|j| j.verdict.is_correct())
-                .count();
+            let judgements = judge_period(predicted_period, gold_period, opts);
+            if !same_period(&judgements) {
+                continue;
+            }
+            let agreement = judgements.iter().filter(|j| j.verdict.is_correct()).count();
             candidates.push((std::cmp::Reverse(agreement), p.abs_diff(g), g, p));
         }
     }
@@ -608,8 +633,17 @@ pub(crate) struct Consistency {
 pub(crate) struct TagSummary {
     pub attempts: usize,
     pub completed: usize,
+    /// Not the model's fault; out of every rate's denominator.
+    pub transport_failures: usize,
+    pub invalid_outputs: usize,
+    /// Attempts that got an answer and whose case scores anything: the
+    /// exact-match denominator.
+    pub scored: usize,
     pub exact: usize,
+    /// Exact / scored.
     pub exact_rate: Option<f64>,
+    /// Completed / (attempts - transport failures).
+    pub valid_output_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -620,15 +654,25 @@ pub(crate) struct QualitySummary {
     pub unlabelled_attempts: usize,
     /// Records naming a case id the dataset doesn't have (skipped).
     pub unknown_case_records: usize,
+    /// Records whose input hash doesn't match the case's current text:
+    /// the case was edited after the run (skipped).
+    pub stale_case_records: usize,
+    /// Further records for a (case, repetition) already seen for this
+    /// target, e.g. from overlapping record files (skipped; the first one
+    /// read wins).
+    pub duplicate_records: usize,
     pub completed: usize,
     pub transport_failures: usize,
     pub invalid_outputs: usize,
     pub failures_by_stage: BTreeMap<&'static str, usize>,
+    /// Completed / attempts, transport failures included (for reference;
+    /// the headline is `valid_output_rate`).
     pub completed_rate: Option<f64>,
     /// Completed / (attempts that got an answer at all).
     pub valid_output_rate: Option<f64>,
-    /// Exact outputs / attempts whose case scores anything (a failure is
-    /// never exact; observational cases are left out).
+    /// Exact outputs / attempts that got an answer and whose case scores
+    /// anything (an invalid output is never exact; transport failures and
+    /// observational cases are left out).
     pub exact_match_rate: Option<f64>,
     pub category: Option<FieldSummary>,
     pub periods: PeriodSummary,
@@ -661,15 +705,37 @@ pub(crate) fn score(
     records: &[PipelineRecord],
     opts: ScoreOptions,
 ) -> (QualitySummary, Vec<CaseScore>) {
-    let by_id: BTreeMap<&str, &Case> = cases.iter().map(|c| (c.id.as_str(), c)).collect();
+    let by_id: BTreeMap<&str, (&Case, String)> = cases
+        .iter()
+        .map(|c| (c.id.as_str(), (c, c.input_hash())))
+        .collect();
     let mut summary = QualitySummary::default();
     let mut scores = Vec::new();
     let mut outputs: BTreeMap<&str, Vec<Extraction>> = BTreeMap::new();
+    let mut seen: BTreeSet<(&str, u32)> = BTreeSet::new();
     for record in records {
-        let Some(case) = by_id.get(record.case_id.as_str()) else {
+        let Some((case, input_hash)) = by_id.get(record.case_id.as_str()) else {
             summary.unknown_case_records += 1;
             continue;
         };
+        if record.input_hash != *input_hash {
+            eprintln!(
+                "warning: skipping a record of case {:?} (repetition {}): its input hash {:?} \
+                 doesn't match the case's current text ({input_hash:?}); re-run the case",
+                record.case_id, record.repetition, record.input_hash
+            );
+            summary.stale_case_records += 1;
+            continue;
+        }
+        if !seen.insert((record.case_id.as_str(), record.repetition)) {
+            eprintln!(
+                "warning: skipping a duplicate record of case {:?} repetition {} for target {:?} \
+                 (the first one read is kept)",
+                record.case_id, record.repetition, record.label.target
+            );
+            summary.duplicate_records += 1;
+            continue;
+        }
         let outcome = record.outcome();
         if let Ok(extraction) = &outcome {
             outputs
@@ -700,11 +766,17 @@ fn aggregate(summary: &mut QualitySummary, scores: &[CaseScore]) {
     let p = &mut summary.periods;
     for score in scores {
         summary.attempts += 1;
-        labelled += usize::from(score.scored);
+        let transport = score.status == CaseStatus::TransportFailure;
+        // A transport failure says nothing about the model's answer.
+        let answered_and_scored = score.scored && !transport;
+        labelled += usize::from(answered_and_scored);
         for tag in &score.tags {
             let t = summary.by_tag.entry(tag.clone()).or_default();
             t.attempts += 1;
             t.completed += usize::from(score.status == CaseStatus::Completed);
+            t.transport_failures += usize::from(transport);
+            t.invalid_outputs += usize::from(score.status == CaseStatus::InvalidOutput);
+            t.scored += usize::from(answered_and_scored);
             t.exact += usize::from(score.exact);
         }
         match score.status {
@@ -762,7 +834,8 @@ fn aggregate(summary: &mut QualitySummary, scores: &[CaseScore]) {
     }
     summary.exact_match_rate = ratio(exact, labelled);
     for t in summary.by_tag.values_mut() {
-        t.exact_rate = ratio(t.exact, t.attempts);
+        t.exact_rate = ratio(t.exact, t.scored);
+        t.valid_output_rate = ratio(t.completed, t.attempts - t.transport_failures);
     }
     summary.completed_rate = ratio(summary.completed, summary.attempts);
     summary.valid_output_rate = ratio(
@@ -825,12 +898,23 @@ pub(crate) fn render_markdown(report: &QualityReport) -> String {
         report.date_tolerance_mins,
         report.generated_at
     );
-    if s.unknown_case_records > 0 {
-        let _ = writeln!(
-            md,
-            "> {} record(s) named case ids missing from the dataset and were skipped.\n",
-            s.unknown_case_records
-        );
+    for (n, what) in [
+        (
+            s.unknown_case_records,
+            "named case ids missing from the dataset",
+        ),
+        (
+            s.stale_case_records,
+            "were recorded from case text that has since changed (input hash mismatch)",
+        ),
+        (
+            s.duplicate_records,
+            "repeated a (case, repetition) already read for this target",
+        ),
+    ] {
+        if n > 0 {
+            let _ = writeln!(md, "> {n} record(s) {what} and were skipped.\n");
+        }
     }
     summary_section(&mut md, s);
     fields_section(&mut md, s);
@@ -844,22 +928,26 @@ fn summary_section(md: &mut String, s: &QualitySummary) {
     let period = &s.periods;
     let rows = vec![
         vec![
-            "Completed (service would write)".into(),
-            format!("{}/{} ({})", s.completed, s.attempts, pct(s.completed_rate)),
-        ],
-        vec![
             "Valid output rate (excludes transport failures)".into(),
-            pct(s.valid_output_rate),
+            format!(
+                "{} ({}/{})",
+                pct(s.valid_output_rate),
+                s.completed,
+                s.attempts - s.transport_failures
+            ),
         ],
         vec![
-            "Transport failures (perf issue, not quality)".into(),
-            s.transport_failures.to_string(),
+            "Transport failures (perf issue, not quality; excluded from every rate)".into(),
+            format!("{}/{}", s.transport_failures, s.attempts),
         ],
         vec![
-            "Invalid outputs (bad JSON / empty / misaligned)".into(),
+            "Invalid outputs (empty / bad JSON / empty periods / misaligned)".into(),
             s.invalid_outputs.to_string(),
         ],
-        vec!["Exact case match".into(), pct(s.exact_match_rate)],
+        vec![
+            "Exact case match (excludes transport failures and unscored cases)".into(),
+            pct(s.exact_match_rate),
+        ],
         vec![
             "Category accuracy".into(),
             pct(s.category.and_then(|c| c.accuracy)),
@@ -993,13 +1081,20 @@ fn diagnostics_section(md: &mut String, s: &QualitySummary) {
                 vec![
                     format!("`{tag}`"),
                     t.attempts.to_string(),
-                    t.completed.to_string(),
-                    format!("{} ({})", t.exact, pct(t.exact_rate)),
+                    t.transport_failures.to_string(),
+                    format!("{} ({})", t.completed, pct(t.valid_output_rate)),
+                    format!("{}/{} ({})", t.exact, t.scored, pct(t.exact_rate)),
                 ]
             })
             .collect();
         md.push_str(&report::table(
-            &["Tag", "Attempts", "Completed", "Exact"],
+            &[
+                "Tag",
+                "Attempts",
+                "Transport failures",
+                "Completed (valid output rate)",
+                "Exact / scored",
+            ],
             &rows,
         ));
     }
@@ -1048,7 +1143,7 @@ pub(crate) fn comparison_markdown(reports: &[QualityReport]) -> String {
             vec![
                 r.target.name.clone(),
                 format!("`{}`", r.target.model),
-                pct(s.completed_rate),
+                format!("{}/{}", s.transport_failures, s.attempts),
                 pct(s.valid_output_rate),
                 pct(s.exact_match_rate),
                 pct(s.category.and_then(|c| c.accuracy)),
@@ -1069,7 +1164,7 @@ pub(crate) fn comparison_markdown(reports: &[QualityReport]) -> String {
         &[
             "Target",
             "Model",
-            "Completed",
+            "Transport failures",
             "Valid output",
             "Exact",
             "Category",
@@ -1084,7 +1179,7 @@ pub(crate) fn comparison_markdown(reports: &[QualityReport]) -> String {
         ],
         &rows,
     ));
-    md.push_str("\nField columns are accuracy over matched periods. See each target's own report for precision/recall, hallucinations and per-case mismatches.\n");
+    md.push_str("\n\"Valid output\" and \"Exact\" leave transport failures out of the denominator (\"Exact\" also leaves out unscored cases). Field columns are accuracy over matched periods. See each target's own report for precision/recall, hallucinations and per-case mismatches.\n");
     md
 }
 
@@ -1178,6 +1273,8 @@ fn run_replay() -> anyhow::Result<()> {
     })?;
     let (dataset_path, cases) = crate::eval::load_cases()?;
     let opts = options_from_env();
+    // In EVAL_RECORDS order, so when files overlap on a (case, repetition)
+    // for one target, `score` keeps the record from the first file listed.
     let mut by_target: BTreeMap<(String, String), Vec<PipelineRecord>> = BTreeMap::new();
     for path in &paths {
         for record in crate::eval::read_records(&crate::eval::resolve(path))? {
@@ -1408,39 +1505,222 @@ mod tests {
         );
     }
 
+    /// One transport failure, two invalid outputs (bad JSON and empty
+    /// content) and one exact answer: the transport failure is counted on
+    /// its own and stays out of every rate's denominator.
     #[tokio::test]
     async fn failures_are_split_by_kind_and_excluded_from_field_scores() {
-        let backend = FakeBackend::default().with(
-            "two",
-            Pass::Primary,
-            FakeReply::Error {
-                error: || LlmCallError::GatewayUnavailable { status: 504 },
-                retries: 1,
-            },
-        );
+        let case_with = |id: &str| {
+            let mut case = labelled_case();
+            case.id = id.into();
+            case
+        };
+        let backend = FakeBackend::default()
+            .with(
+                "two",
+                Pass::Primary,
+                FakeReply::Error {
+                    error: || LlmCallError::GatewayUnavailable { status: 504 },
+                    retries: 1,
+                },
+            )
+            .with("bad", Pass::Primary, FakeReply::Content("[]".into()))
+            .with(
+                "empty",
+                Pass::Primary,
+                FakeReply::Error {
+                    error: || LlmCallError::EmptyContent {
+                        finish_reason: Some("length".into()),
+                    },
+                    retries: 0,
+                },
+            )
+            .agreeing("good", &good_primary());
         let label = TargetLabel {
             target: "fake".into(),
             model: "m".into(),
         };
-        let mut invalid = labelled_case();
-        invalid.id = "bad".into();
-        let backend = backend.with("bad", Pass::Primary, FakeReply::Content("[]".into()));
-        let cases: std::sync::Arc<[Case]> = vec![labelled_case(), invalid].into();
+        let cases: std::sync::Arc<[Case]> = vec![
+            labelled_case(),
+            case_with("bad"),
+            case_with("empty"),
+            case_with("good"),
+        ]
+        .into();
         let records = run_jobs(std::sync::Arc::new(backend), &label, &cases, 1, 1).await;
-        let (summary, _) = score(&cases, &records, opts());
-        assert_eq!(summary.attempts, 2);
+        let (summary, scores) = score(&cases, &records, opts());
+        assert_eq!(summary.attempts, 4);
         assert_eq!(summary.transport_failures, 1);
-        assert_eq!(summary.invalid_outputs, 1);
-        assert!(close(summary.completed_rate, 0.0));
-        assert!(close(summary.valid_output_rate, 0.0));
-        assert!(close(summary.exact_match_rate, 0.0));
-        assert!(summary.fields.is_empty());
-        assert_eq!(summary.failures_by_stage["primary"], 2);
+        assert_eq!(
+            summary.invalid_outputs, 2,
+            "empty content is invalid output"
+        );
+        assert_eq!(summary.completed, 1);
+        assert!(close(summary.completed_rate, 1.0 / 4.0));
+        assert!(close(summary.valid_output_rate, 1.0 / 3.0));
+        assert!(close(summary.exact_match_rate, 1.0 / 3.0));
+        let tag = &summary.by_tag["multi_period"];
+        assert_eq!(
+            (tag.attempts, tag.transport_failures, tag.invalid_outputs),
+            (4, 1, 2)
+        );
+        assert_eq!((tag.scored, tag.exact), (3, 1));
+        assert!(close(tag.exact_rate, 1.0 / 3.0));
+        assert!(close(tag.valid_output_rate, 1.0 / 3.0));
+        // Field scores come from the one completed answer only.
+        assert_eq!(summary.fields["resolution_status"].scored, 2);
+        assert_eq!(summary.failures_by_stage["primary"], 3);
+        let empty = scores.iter().find(|s| s.case_id == "empty").unwrap();
+        assert_eq!(empty.status, CaseStatus::InvalidOutput);
+
+        let report = QualityReport {
+            kind: "quality",
+            generated_at: "now".into(),
+            target: TargetInfo {
+                name: "t".into(),
+                model: "m".into(),
+                environment: None,
+                base_url: None,
+            },
+            dataset: "d".into(),
+            repetitions: 1,
+            date_tolerance_mins: 0,
+            summary,
+            cases: scores,
+        };
+        let comparison = comparison_markdown(&[report]);
+        assert!(
+            comparison.contains("| 1/4 | 33.3% | 33.3% |"),
+            "{comparison}"
+        );
     }
 
-    #[tokio::test]
-    async fn replayed_records_score_identically_and_repeats_measure_consistency() {
-        let good = serde_json::json!({
+    fn predicted_period(value: serde_json::Value) -> ExtractionPeriod {
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// A prediction that shares nothing with the only gold period is not
+    /// paired with it: one hallucinated plus one missed period.
+    #[test]
+    fn unrelated_periods_do_not_match() {
+        let case = labelled_case();
+        let gold = &case.expected.as_ref().unwrap().periods.as_ref().unwrap()[..1];
+        let unrelated = predicted_period(period(
+            "2026-12-01T00:00:00Z",
+            "2026-12-02T00:00:00Z",
+            "normal",
+            Some("diversion"),
+        ));
+        assert!(match_periods(std::slice::from_ref(&unrelated), gold, opts()).is_empty());
+
+        let mut one_gold = labelled_case();
+        one_gold
+            .expected
+            .as_mut()
+            .unwrap()
+            .periods
+            .as_mut()
+            .unwrap()
+            .truncate(1);
+        let extraction = Extraction {
+            category: "engineering_works".into(),
+            periods: vec![unrelated],
+            dropped_period_count: 0,
+        };
+        let score = score_extraction(&one_gold, 0, &extraction, opts());
+        assert_eq!(
+            (
+                score.matched_periods,
+                score.extra_periods,
+                score.missed_periods
+            ),
+            (0, 1, 1)
+        );
+        assert!(score.fields.is_empty(), "nothing paired, nothing scored");
+    }
+
+    #[test]
+    fn a_correct_date_bound_or_a_field_majority_is_enough_to_match() {
+        let case = labelled_case();
+        let gold = &case.expected.as_ref().unwrap().periods.as_ref().unwrap()[..1];
+        // Only `to_date` right (everything else wrong): still the same period.
+        let one_bound = predicted_period(period(
+            "2026-01-01T00:00:00Z",
+            "2026-07-26T23:00:00Z",
+            "normal",
+            Some("diversion"),
+        ));
+        assert_eq!(
+            match_periods(std::slice::from_ref(&one_bound), gold, opts()),
+            [(0, 0)]
+        );
+        // No date right, severity wrong; schedule window, resolution and
+        // impact type right: 3 of 7 scored fields is not a majority...
+        let no_dates = predicted_period(period(
+            "2026-01-01T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+            "normal",
+            Some("rail_replacement_bus"),
+        ));
+        assert!(match_periods(std::slice::from_ref(&no_dates), gold, opts()).is_empty());
+        // ...but with the dates left unscored, 3 of 4 is.
+        let mut undated = gold[0].clone();
+        undated.date_range = Gold::Unscored;
+        assert_eq!(
+            match_periods(
+                std::slice::from_ref(&no_dates),
+                std::slice::from_ref(&undated),
+                opts()
+            ),
+            [(0, 0)]
+        );
+        // A gold period with nothing scored matches anything.
+        let bare = GoldPeriod::default();
+        assert_eq!(
+            match_periods(
+                std::slice::from_ref(&no_dates),
+                std::slice::from_ref(&bare),
+                opts()
+            ),
+            [(0, 0)]
+        );
+    }
+
+    #[test]
+    fn stale_and_duplicate_records_are_skipped() {
+        let case = labelled_case();
+        let record = |hash: String, repetition: u32| PipelineRecord {
+            label: TargetLabel {
+                target: "t".into(),
+                model: "m".into(),
+            },
+            case_id: case.id.clone(),
+            input_hash: hash,
+            repetition,
+            elapsed_ms: 0,
+            calls: Vec::new(),
+        };
+        let current = case.input_hash();
+        let records = [
+            record(current.clone(), 0),
+            record(current.clone(), 0),
+            record("0123456789abcdef".into(), 1),
+            record(String::new(), 2),
+            record(current, 1),
+        ];
+        let (summary, scores) = score(std::slice::from_ref(&case), &records, opts());
+        assert_eq!(summary.stale_case_records, 2);
+        assert_eq!(summary.duplicate_records, 1);
+        assert_eq!(summary.attempts, 2);
+        assert_eq!(
+            scores.iter().map(|s| s.repetition).collect::<Vec<_>>(),
+            [0, 1]
+        );
+    }
+
+    /// A primary output that matches `labelled_case` exactly.
+    fn good_primary() -> serde_json::Value {
+        serde_json::json!({
             "category": "engineering_works",
             "periods": [
                 period("2026-05-10T23:00:00Z", "2026-07-26T23:00:00Z", "severe_disruption", Some("rail_replacement_bus")),
@@ -1453,8 +1733,12 @@ mod tests {
                     "impact_type": null
                 }
             ]
-        });
-        let backend = FakeBackend::default().agreeing("two", &good);
+        })
+    }
+
+    #[tokio::test]
+    async fn replayed_records_score_identically_and_repeats_measure_consistency() {
+        let backend = FakeBackend::default().agreeing("two", &good_primary());
         let label = TargetLabel {
             target: "fake".into(),
             model: "m".into(),
@@ -1529,6 +1813,7 @@ mod tests {
                 model: "m".into(),
             },
             case_id: "gone".into(),
+            input_hash: String::new(),
             repetition: 0,
             elapsed_ms: 0,
             calls: Vec::new(),
@@ -1538,6 +1823,7 @@ mod tests {
         unlabelled.expected = None;
         let mut for_unlabelled = record.clone();
         for_unlabelled.case_id = "u".into();
+        for_unlabelled.input_hash = unlabelled.input_hash();
         let (summary, scores) = score(&[unlabelled], &[record, for_unlabelled], opts());
         assert_eq!(summary.unknown_case_records, 1);
         assert_eq!(summary.unlabelled_attempts, 1);
