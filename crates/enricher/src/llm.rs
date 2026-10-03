@@ -692,6 +692,36 @@ const SEVERITY_ADVERSARIAL_PROMPT: &str = "You are reviewing a UK National Rail 
     given, in the same order, and each element must echo back the exact `period_index` and \
     `scope_description` you were given for that period -- do not renumber, reorder, or reword them.";
 
+/// A short hash over every pass's system prompt, schema name and schema,
+/// for the model-eval harness: each record stores it, so a replay can warn
+/// when saved outputs came from different prompts than the current code.
+/// (The user-content wrappers in the `*_raw` methods aren't covered.)
+#[cfg(test)]
+pub(crate) fn prompt_fingerprint() -> String {
+    let mut text = String::new();
+    for (prompt, schema_name, schema) in [
+        (PRIMARY_PROMPT, PRIMARY_SCHEMA_NAME, primary_schema()),
+        (
+            ADVERSARIAL_PROMPT,
+            ADVERSARIAL_SCHEMA_NAME,
+            adversarial_schema(),
+        ),
+        (
+            SEVERITY_ADVERSARIAL_PROMPT,
+            SEVERITY_ADVERSARIAL_SCHEMA_NAME,
+            severity_adversarial_schema(),
+        ),
+    ] {
+        for part in [prompt, schema_name, &schema.to_string()] {
+            text.push_str(part);
+            text.push('\0');
+        }
+    }
+    let mut hash = common::text_hash::text_hash("enricher-prompts", &text);
+    hash.truncate(16);
+    hash
+}
+
 #[derive(Deserialize)]
 struct SeverityAdversarialExtraction {
     periods: Vec<SeverityAdversarialPeriodVerdict>,
@@ -2047,6 +2077,79 @@ mod tests {
         assert_eq!(raw.attempts[0].backoff, std::time::Duration::ZERO);
         assert!(raw.attempts[1].backoff >= std::time::Duration::from_millis(50));
         assert_eq!(raw.attempts[2].backoff, std::time::Duration::ZERO);
+    }
+
+    /// With `max_in_flight` 1: the permit is held for one HTTP attempt only,
+    /// not through a 429 back-off (B runs while A sleeps one off), and an
+    /// attempt's time waiting for the permit is booked as `queued`, apart
+    /// from its `send` time (C waits for A's retry). Timeline, from the
+    /// start: A gets a 429 at ~0 and sleeps 1.5 s; B sends at 0.15 s and
+    /// is answered at ~0.95 s; A resends at ~1.5 s and holds the permit
+    /// until ~2.3 s; C asks at 1.8 s, so it queues ~0.5 s, then sends for
+    /// ~0.8 s. Every assertion leaves at least ~250 ms of slack.
+    #[tokio::test]
+    async fn permit_is_released_during_429_backoff_and_queueing_is_not_send_time() {
+        const BACKOFF: std::time::Duration = std::time::Duration::from_millis(1500);
+        const RESPONSE_DELAY: std::time::Duration = std::time::Duration::from_millis(800);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(flat_primary_body())
+                    .set_delay(RESPONSE_DELAY),
+            )
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+            .with_provider_policy(ProviderPolicy {
+                max_in_flight: Some(1),
+                rate_limit_min_wait: BACKOFF,
+                max_rate_limit_retries: 1,
+                ..ProviderPolicy::default()
+            });
+        let call_after = |delay_ms: u64| {
+            let client = &client;
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                let start = tokio::time::Instant::now();
+                let raw = client.primary_raw("s", "d", reference_date()).await;
+                (raw, start.elapsed())
+            }
+        };
+        let ((a, _), (b, b_total), (c, c_total)) =
+            tokio::join!(call_after(0), call_after(150), call_after(1800));
+        for raw in [&a, &b, &c] {
+            assert!(raw.content.is_ok(), "{:?}", raw.content);
+        }
+
+        let outcomes: Vec<&str> = a.attempts.iter().map(|x| x.outcome).collect();
+        assert_eq!(outcomes, ["rate_limited", "success"]);
+        assert!(a.attempts[0].backoff >= BACKOFF);
+        // B finished while A was still backing off: the permit was free.
+        assert!(
+            b_total < std::time::Duration::from_millis(1250),
+            "B took {b_total:?}"
+        );
+        assert!(b.attempts[0].queued < std::time::Duration::from_millis(250));
+
+        // C waited for A's retry to release the permit, and that wait is
+        // `queued`, not `send`.
+        let c = &c.attempts[0];
+        assert!(c.queued >= std::time::Duration::from_millis(250), "{c:?}");
+        assert!(c.send >= RESPONSE_DELAY, "{c:?}");
+        assert!(
+            c.queued + c.send <= c_total + std::time::Duration::from_millis(50),
+            "queued {:?} + send {:?} exceeds the call's {c_total:?}",
+            c.queued,
+            c.send
+        );
     }
 
     /// A client timeout recovered by a gateway retry: the call succeeds,

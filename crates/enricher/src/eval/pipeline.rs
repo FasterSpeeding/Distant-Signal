@@ -147,6 +147,11 @@ pub(crate) struct PipelineRecord {
     /// tell a record of since-edited case text from a current one.
     #[serde(default)]
     pub input_hash: String,
+    /// [`llm::prompt_fingerprint`] of the code that ran: prompts and
+    /// schemas. A replay warns about records from other prompts but still
+    /// scores them. Empty in records saved before it was added.
+    #[serde(default)]
+    pub prompt_fingerprint: String,
     pub repetition: u32,
     /// Wall time of the whole document (all passes run).
     pub elapsed_ms: u64,
@@ -342,6 +347,7 @@ pub(crate) async fn run_pipeline<B: Backend>(
         label: label.clone(),
         case_id: case.id.clone(),
         input_hash: case.input_hash(),
+        prompt_fingerprint: llm::prompt_fingerprint(),
         repetition,
         elapsed_ms: millis(start.elapsed()),
         calls,
@@ -658,7 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_keep_each_attempt_and_the_case_input_hash() {
+    async fn records_keep_each_attempt_the_case_input_hash_and_the_prompt_fingerprint() {
         let backend = FakeBackend::default().agreeing("a", &one_period()).with(
             "a",
             Pass::Primary,
@@ -678,6 +684,8 @@ mod tests {
             .collect();
         assert_eq!(outcomes, ["timeout", "success"]);
         assert_eq!(record.input_hash, case("a").input_hash());
+        assert_eq!(record.prompt_fingerprint, llm::prompt_fingerprint());
+        assert_eq!(record.prompt_fingerprint.len(), 16);
         assert!(record.outcome().is_ok());
     }
 

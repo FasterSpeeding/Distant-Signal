@@ -46,6 +46,8 @@
 //!   `target/enricher-eval`).
 //! - Quality: `EVAL_REPEATS` (1), `EVAL_CONCURRENCY` (1),
 //!   `EVAL_DATE_TOLERANCE_MINS` (0), `EVAL_RECORDS` (replay only),
+//!   `EVAL_ACCEPT_UNHASHED` (replay only; `1` scores records saved before
+//!   records had an `input_hash`, unchecked; default skips them),
 //!   `EVAL_QUALITY_TIMEOUT_SECS` (1800; the env-var target's quality
 //!   request timeout, `quality_timeout_secs` in a targets file).
 //! - Perf: `EVAL_PERF_REPEATS` (3), `EVAL_PERF_CONCURRENCY` (1),
@@ -99,6 +101,20 @@ pub(crate) fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
             .parse()
             .unwrap_or_else(|_| panic!("{name}={raw:?} is not a valid value")),
         Err(_) => default,
+    }
+}
+
+/// A boolean env var: `1`/`true` is on; unset, empty, `0` or `false` is
+/// off. Anything else panics, like [`env_parse`].
+pub(crate) fn env_flag(name: &str) -> bool {
+    parse_flag(name, std::env::var(name).ok().as_deref())
+}
+
+fn parse_flag(name: &str, raw: Option<&str>) -> bool {
+    match raw.map(|raw| raw.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("" | "0" | "false") => false,
+        Some("1" | "true") => true,
+        Some(_) => panic!("{name}={raw:?} is not a valid flag (use 1 or 0)"),
     }
 }
 
@@ -182,6 +198,18 @@ mod tests {
         assert!(dataset.is_file(), "{}", dataset.display());
         assert_eq!(display_path(&dataset), "crates/enricher/eval/dataset.jsonl");
         assert_eq!(resolve("/abs/x"), PathBuf::from("/abs/x"));
+    }
+
+    #[test]
+    fn flags_parse_strictly() {
+        assert!(!parse_flag("F", None));
+        for off in ["", "0", "false", " FALSE "] {
+            assert!(!parse_flag("F", Some(off)), "{off:?}");
+        }
+        for on in ["1", "true", "True"] {
+            assert!(parse_flag("F", Some(on)), "{on:?}");
+        }
+        assert!(std::panic::catch_unwind(|| parse_flag("F", Some("yes"))).is_err());
     }
 
     #[test]

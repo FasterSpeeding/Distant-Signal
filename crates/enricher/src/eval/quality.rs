@@ -11,11 +11,11 @@
 //!   service would write (parseable, schema-valid, non-empty, aligned)?
 //!   Transport failures are counted on their own and left out of every
 //!   headline rate's denominator; empty content counts as invalid output.
-//! - **Periods**: predicted periods are matched to gold periods greedily by
-//!   field agreement (ties broken by position), but only pairs that agree
-//!   enough to be the same period ([`same_period`]) can match; unmatched
-//!   predictions are hallucinated periods, unmatched gold periods are
-//!   missed ones.
+//! - **Periods**: only pairs that agree enough to be the same period
+//!   ([`same_period`]) can match; among those, [`match_periods`] pairs as
+//!   many predicted with gold periods as possible, then maximises total
+//!   field agreement (ties broken by position). Unmatched predictions are
+//!   hallucinated periods, unmatched gold periods are missed ones.
 //! - **Fields** (per matched pair): each scored field gets a [`Verdict`].
 //!   Accuracy counts both correct verdicts; precision/recall treat a
 //!   non-null value as a positive, so `hallucinated` (non-null where gold
@@ -32,7 +32,7 @@ use chrono::{DateTime, Datelike, TimeDelta, Utc};
 use serde::Serialize;
 
 use crate::churn::{self, ChurnField};
-use crate::eval::dataset::{Case, Expected, Gold, GoldPeriod, normalize_label};
+use crate::eval::dataset::{Case, Expected, Gold, GoldPeriod, MAX_GOLD_PERIODS, normalize_label};
 use crate::eval::pipeline::{Extraction, Failure, FailureKind, PipelineRecord};
 use crate::eval::report::{self, TargetInfo, pct, ratio};
 use crate::llm::{ExtractionPeriod, ScheduleWindow};
@@ -55,7 +55,14 @@ const CONFUSION_FIELDS: [&str; 3] = ["resolution_status", "apparent_severity", "
 pub(crate) struct ScoreOptions {
     /// Predicted and gold instants this close count as equal (default 0).
     pub date_tolerance: TimeDelta,
+    /// Score records with no `input_hash` (saved before records had one)
+    /// instead of skipping them (`EVAL_ACCEPT_UNHASHED=1`). A hash that is
+    /// present but doesn't match is still skipped.
+    pub accept_unhashed: bool,
 }
+
+/// How many example records a skip warning names.
+const WARNING_EXAMPLES: usize = 3;
 
 /// One scored field of one matched period (or the case's category).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -354,33 +361,98 @@ fn same_period(judgements: &[Judgement]) -> bool {
     bound || correct * 2 > judgements.len()
 }
 
-/// Pairs predicted with gold periods: among pairs that pass
-/// [`same_period`], highest field agreement first, ties by smaller position
-/// difference, then by position. Returns `(predicted_index, gold_index)`
-/// sorted by gold index.
+/// How good a set of pairs is, compared field by field: more pairs, then
+/// more agreeing fields in total, then a smaller total position difference.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct MatchScore {
+    pairs: usize,
+    agreement: usize,
+    closeness: std::cmp::Reverse<usize>,
+}
+
+impl MatchScore {
+    fn with_pair(self, agreement: usize, distance: usize) -> Self {
+        Self {
+            pairs: self.pairs + 1,
+            agreement: self.agreement + agreement,
+            closeness: std::cmp::Reverse(self.closeness.0 + distance),
+        }
+    }
+}
+
+/// Pairs predicted with gold periods. Only pairs that pass [`same_period`]
+/// are eligible. Among eligible pairs it picks a maximum-cardinality
+/// matching (as many pairs as possible), then the one with the most
+/// agreeing fields in total, then the smallest total position difference.
+/// Remaining ties go to the first predicted period taking the
+/// lowest-indexed gold period that still allows an optimal matching, then
+/// the second, and so on. Returns `(predicted_index, gold_index)` sorted by
+/// gold index.
+///
+/// Exact, by dynamic programming over (predicted index, set of gold
+/// periods already used): `O(P * 2^G * G)` for `P` predicted and `G` gold
+/// periods, about 450k steps at `G` = [`MAX_GOLD_PERIODS`] and `P` = 8.
+///
+/// # Panics
+///
+/// If `gold` has more than [`MAX_GOLD_PERIODS`] periods.
 pub(crate) fn match_periods(
     predicted: &[ExtractionPeriod],
     gold: &[GoldPeriod],
     opts: ScoreOptions,
 ) -> Vec<(usize, usize)> {
-    let mut candidates = Vec::new();
-    for (p, predicted_period) in predicted.iter().enumerate() {
-        for (g, gold_period) in gold.iter().enumerate() {
-            let judgements = judge_period(predicted_period, gold_period, opts);
-            if !same_period(&judgements) {
-                continue;
+    assert!(
+        gold.len() <= MAX_GOLD_PERIODS,
+        "{} gold periods; at most {MAX_GOLD_PERIODS} can be matched",
+        gold.len()
+    );
+    // eligible[p][g]: the pair's agreement, when it passes `same_period`.
+    let eligible: Vec<Vec<Option<usize>>> = predicted
+        .iter()
+        .map(|predicted_period| {
+            gold.iter()
+                .map(|gold_period| {
+                    let judgements = judge_period(predicted_period, gold_period, opts);
+                    same_period(&judgements)
+                        .then(|| judgements.iter().filter(|j| j.verdict.is_correct()).count())
+                })
+                .collect()
+        })
+        .collect();
+    let masks = 1_usize << gold.len();
+    // best[p * masks + used]: the best score predicted periods `p..` can
+    // still add when the gold periods in `used` are taken.
+    let mut best = vec![MatchScore::default(); (predicted.len() + 1) * masks];
+    for p in (0..predicted.len()).rev() {
+        for used in 0..masks {
+            let mut value = best[(p + 1) * masks + used];
+            for (g, agreement) in eligible[p].iter().enumerate() {
+                let bit = 1 << g;
+                if let Some(agreement) = *agreement
+                    && used & bit == 0
+                {
+                    let with =
+                        best[(p + 1) * masks + (used | bit)].with_pair(agreement, p.abs_diff(g));
+                    value = value.max(with);
+                }
             }
-            let agreement = judgements.iter().filter(|j| j.verdict.is_correct()).count();
-            candidates.push((std::cmp::Reverse(agreement), p.abs_diff(g), g, p));
+            best[p * masks + used] = value;
         }
     }
-    candidates.sort_unstable();
-    let (mut used_p, mut used_g) = (BTreeSet::new(), BTreeSet::new());
     let mut pairs = Vec::new();
-    for (_, _, g, p) in candidates {
-        if !used_p.contains(&p) && !used_g.contains(&g) {
-            used_p.insert(p);
-            used_g.insert(g);
+    let mut used = 0;
+    for (p, row) in eligible.iter().enumerate() {
+        let target = best[p * masks + used];
+        let taken = row.iter().enumerate().find_map(|(g, agreement)| {
+            let bit = 1 << g;
+            let agreement = (*agreement)?;
+            (used & bit == 0
+                && best[(p + 1) * masks + (used | bit)].with_pair(agreement, p.abs_diff(g))
+                    == target)
+                .then_some(g)
+        });
+        if let Some(g) = taken {
+            used |= 1 << g;
             pairs.push((p, g));
         }
     }
@@ -657,10 +729,31 @@ pub(crate) struct QualitySummary {
     /// Records whose input hash doesn't match the case's current text:
     /// the case was edited after the run (skipped).
     pub stale_case_records: usize,
+    /// Records with no input hash at all, saved before records had one
+    /// (skipped unless `EVAL_ACCEPT_UNHASHED=1`).
+    pub unhashed_records: usize,
+    /// ...scored anyway under `EVAL_ACCEPT_UNHASHED=1`, unchecked against
+    /// the case's current text.
+    pub accepted_unhashed_records: usize,
     /// Further records for a (case, repetition) already seen for this
     /// target, e.g. from overlapping record files (skipped; the first one
     /// read wins).
     pub duplicate_records: usize,
+    /// Up to a few `case_id#repetition` examples per skip reason
+    /// (`unknown_case`, `stale`, `unhashed`, `accepted_unhashed`,
+    /// `duplicate`), for the warnings.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub record_examples: BTreeMap<&'static str, Vec<String>>,
+    /// Prompt fingerprint (`llm::prompt_fingerprint`; empty for records
+    /// saved before it existed) -> how many of the records used it.
+    pub prompt_fingerprints: BTreeMap<String, usize>,
+    /// Records used whose prompt fingerprint isn't the current code's
+    /// (still scored: re-scoring old outputs against new labels can be
+    /// what you want, but they don't measure the current prompts).
+    pub other_prompt_records: usize,
+    /// Highest repetition among the records used, plus one.
+    #[serde(skip)]
+    pub repetitions: u32,
     pub completed: usize,
     pub transport_failures: usize,
     pub invalid_outputs: usize,
@@ -699,6 +792,19 @@ pub(crate) struct QualityReport {
     pub cases: Vec<CaseScore>,
 }
 
+/// Counts a record under `reason` (one of [`QualitySummary`]'s
+/// `record_examples` keys), keeping the first few as examples.
+fn note_record(
+    examples: &mut BTreeMap<&'static str, Vec<String>>,
+    reason: &'static str,
+    record: &PipelineRecord,
+) {
+    let list = examples.entry(reason).or_default();
+    if list.len() < WARNING_EXAMPLES {
+        list.push(format!("{}#{}", record.case_id, record.repetition));
+    }
+}
+
 /// Scores records against the dataset.
 pub(crate) fn score(
     cases: &[Case],
@@ -709,33 +815,46 @@ pub(crate) fn score(
         .iter()
         .map(|c| (c.id.as_str(), (c, c.input_hash())))
         .collect();
+    let current_prompts = crate::llm::prompt_fingerprint();
     let mut summary = QualitySummary::default();
+    let mut examples = BTreeMap::new();
     let mut scores = Vec::new();
     let mut outputs: BTreeMap<&str, Vec<Extraction>> = BTreeMap::new();
     let mut seen: BTreeSet<(&str, u32)> = BTreeSet::new();
     for record in records {
         let Some((case, input_hash)) = by_id.get(record.case_id.as_str()) else {
             summary.unknown_case_records += 1;
+            note_record(&mut examples, "unknown_case", record);
             continue;
         };
-        if record.input_hash != *input_hash {
-            eprintln!(
-                "warning: skipping a record of case {:?} (repetition {}): its input hash {:?} \
-                 doesn't match the case's current text ({input_hash:?}); re-run the case",
-                record.case_id, record.repetition, record.input_hash
-            );
+        let unhashed = record.input_hash.is_empty();
+        if unhashed && !opts.accept_unhashed {
+            summary.unhashed_records += 1;
+            note_record(&mut examples, "unhashed", record);
+            continue;
+        }
+        if !unhashed && record.input_hash != *input_hash {
             summary.stale_case_records += 1;
+            note_record(&mut examples, "stale", record);
             continue;
         }
         if !seen.insert((record.case_id.as_str(), record.repetition)) {
-            eprintln!(
-                "warning: skipping a duplicate record of case {:?} repetition {} for target {:?} \
-                 (the first one read is kept)",
-                record.case_id, record.repetition, record.label.target
-            );
             summary.duplicate_records += 1;
+            note_record(&mut examples, "duplicate", record);
             continue;
         }
+        if unhashed {
+            summary.accepted_unhashed_records += 1;
+            note_record(&mut examples, "accepted_unhashed", record);
+        }
+        *summary
+            .prompt_fingerprints
+            .entry(record.prompt_fingerprint.clone())
+            .or_default() += 1;
+        if record.prompt_fingerprint != current_prompts {
+            summary.other_prompt_records += 1;
+        }
+        summary.repetitions = summary.repetitions.max(record.repetition + 1);
         let outcome = record.outcome();
         if let Ok(extraction) = &outcome {
             outputs
@@ -752,9 +871,85 @@ pub(crate) fn score(
             Err(failure) => score_failure(case, record, failure),
         });
     }
+    summary.record_examples = examples;
     aggregate(&mut summary, &scores);
     summary.consistency = consistency(&outputs);
     (summary, scores)
+}
+
+/// One warning line per kind of record the scoring of `target` skipped (or
+/// used with a caveat), with its count and a few examples, instead of one
+/// line per record.
+pub(crate) fn record_warnings(target: &str, s: &QualitySummary) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (reason, n, what) in [
+        (
+            "unknown_case",
+            s.unknown_case_records,
+            "skipped {n} record(s) naming case ids missing from the dataset",
+        ),
+        (
+            "stale",
+            s.stale_case_records,
+            "skipped {n} stale record(s): their input hash doesn't match the case's current text \
+             (re-run those cases)",
+        ),
+        (
+            "unhashed",
+            s.unhashed_records,
+            "skipped {n} record(s) with no input hash (saved before records had one; \
+             EVAL_ACCEPT_UNHASHED=1 scores them unchecked)",
+        ),
+        (
+            "accepted_unhashed",
+            s.accepted_unhashed_records,
+            "scored {n} record(s) with no input hash unchecked (EVAL_ACCEPT_UNHASHED=1): \
+             their case text may have changed since",
+        ),
+        (
+            "duplicate",
+            s.duplicate_records,
+            "skipped {n} duplicate record(s) of a (case, repetition) already read \
+             (the first one read is kept)",
+        ),
+    ] {
+        if n == 0 {
+            continue;
+        }
+        let examples = s.record_examples.get(reason).map_or_else(String::new, |e| {
+            let more = if n > e.len() { ", ..." } else { "" };
+            format!("; e.g. {}{more}", e.join(", "))
+        });
+        lines.push(format!(
+            "warning: target {target:?}: {}{examples}",
+            what.replace("{n}", &n.to_string())
+        ));
+    }
+    if s.other_prompt_records > 0 {
+        let used: usize = s.prompt_fingerprints.values().sum();
+        let current = crate::llm::prompt_fingerprint();
+        let seen = s
+            .prompt_fingerprints
+            .iter()
+            .filter(|(fingerprint, _)| **fingerprint != current)
+            .map(|(fingerprint, n)| {
+                let shown = if fingerprint.is_empty() {
+                    "(none recorded)"
+                } else {
+                    fingerprint
+                };
+                format!("{shown} x{n}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "warning: target {target:?}: {} of {used} record(s) used came from other prompts/schemas \
+             than the current code's (fingerprint {current}; seen: {seen}); scored anyway, but they \
+             don't measure the current prompts",
+            s.other_prompt_records
+        ));
+    }
+    lines
 }
 
 fn aggregate(summary: &mut QualitySummary, scores: &[CaseScore]) {
@@ -908,6 +1103,10 @@ pub(crate) fn render_markdown(report: &QualityReport) -> String {
             "were recorded from case text that has since changed (input hash mismatch)",
         ),
         (
+            s.unhashed_records,
+            "had no input hash (saved before records had one; EVAL_ACCEPT_UNHASHED=1 scores them)",
+        ),
+        (
             s.duplicate_records,
             "repeated a (case, repetition) already read for this target",
         ),
@@ -915,6 +1114,21 @@ pub(crate) fn render_markdown(report: &QualityReport) -> String {
         if n > 0 {
             let _ = writeln!(md, "> {n} record(s) {what} and were skipped.\n");
         }
+    }
+    if s.accepted_unhashed_records > 0 {
+        let _ = writeln!(
+            md,
+            "> {} record(s) had no input hash and were scored unchecked (EVAL_ACCEPT_UNHASHED=1).\n",
+            s.accepted_unhashed_records
+        );
+    }
+    if s.other_prompt_records > 0 {
+        let _ = writeln!(
+            md,
+            "> {} record(s) came from other prompts/schemas than the current code's (prompt \
+             fingerprint mismatch); they were scored anyway.\n",
+            s.other_prompt_records
+        );
     }
     summary_section(&mut md, s);
     fields_section(&mut md, s);
@@ -1186,6 +1400,32 @@ pub(crate) fn comparison_markdown(reports: &[QualityReport]) -> String {
 fn options_from_env() -> ScoreOptions {
     ScoreOptions {
         date_tolerance: TimeDelta::minutes(crate::eval::env_parse("EVAL_DATE_TOLERANCE_MINS", 0)),
+        accept_unhashed: crate::eval::env_flag("EVAL_ACCEPT_UNHASHED"),
+    }
+}
+
+/// Scores records into a report, printing [`record_warnings`] to stderr.
+fn build_report(
+    target: TargetInfo,
+    dataset_label: &str,
+    cases: &[Case],
+    records: &[PipelineRecord],
+    opts: ScoreOptions,
+) -> QualityReport {
+    let (summary, scores) = score(cases, records, opts);
+    for line in record_warnings(&target.name, &summary) {
+        eprintln!("{line}");
+    }
+    QualityReport {
+        kind: "quality",
+        generated_at: Utc::now().to_rfc3339(),
+        target,
+        dataset: dataset_label.to_string(),
+        // Of the records actually used, not the skipped ones.
+        repetitions: summary.repetitions,
+        date_tolerance_mins: opts.date_tolerance.num_minutes(),
+        summary,
+        cases: scores,
     }
 }
 
@@ -1200,18 +1440,7 @@ fn score_and_write(
     records: &[PipelineRecord],
     opts: ScoreOptions,
 ) -> anyhow::Result<QualityReport> {
-    let (summary, scores) = score(cases, records, opts);
-    let repetitions = records.iter().map(|r| r.repetition + 1).max().unwrap_or(0);
-    let report = QualityReport {
-        kind: "quality",
-        generated_at: Utc::now().to_rfc3339(),
-        target,
-        dataset: dataset_label.to_string(),
-        repetitions,
-        date_tolerance_mins: opts.date_tolerance.num_minutes(),
-        summary,
-        cases: scores,
-    };
+    let report = build_report(target, dataset_label, cases, records, opts);
     crate::eval::write_json(&dir.join(format!("{stem}.json")), &report)?;
     crate::eval::write_text(&dir.join(format!("{stem}.md")), &render_markdown(&report))?;
     Ok(report)
@@ -1331,6 +1560,7 @@ mod tests {
     fn opts() -> ScoreOptions {
         ScoreOptions {
             date_tolerance: TimeDelta::zero(),
+            accept_unhashed: false,
         }
     }
 
@@ -1686,36 +1916,362 @@ mod tests {
         );
     }
 
+    /// A matching null date bound is not evidence of the same period: with
+    /// both `to_date`s null and nothing else agreeing, no match.
     #[test]
-    fn stale_and_duplicate_records_are_skipped() {
+    fn a_matching_null_date_bound_is_not_enough_to_match() {
+        let gold: GoldPeriod = serde_json::from_value(serde_json::json!({
+            "date_range": {"from_date": "2026-05-10T23:00:00Z", "to_date": null},
+            "resolution_status": "ongoing",
+            "apparent_severity": "normal"
+        }))
+        .unwrap();
+        let predicted = predicted_period(serde_json::json!({
+            "scope_description": "x",
+            "date_range": {"from_date": "2026-01-01T00:00:00Z", "to_date": null},
+            "schedule_window": null,
+            "resolution_status": "resolved",
+            "apparent_severity": "severe_disruption",
+            "impact_type": null
+        }));
+        let judgements = judge_period(&predicted, &gold, opts());
+        let to_date = judgements.iter().find(|j| j.field == "to_date").unwrap();
+        assert_eq!(to_date.verdict, Verdict::CorrectNull);
+        assert!(
+            match_periods(
+                std::slice::from_ref(&predicted),
+                std::slice::from_ref(&gold),
+                opts()
+            )
+            .is_empty()
+        );
+    }
+
+    /// "More than half" is strict: exactly half the scored fields right
+    /// (2 of 4, dates unscored) is not a match.
+    #[test]
+    fn exactly_half_the_fields_is_not_a_majority() {
         let case = labelled_case();
-        let record = |hash: String, repetition: u32| PipelineRecord {
+        let mut undated = case.expected.as_ref().unwrap().periods.as_ref().unwrap()[0].clone();
+        undated.date_range = Gold::Unscored;
+        // Schedule window (null) and resolution right; severity and impact
+        // type wrong.
+        let half = predicted_period(period(
+            "2026-01-01T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+            "normal",
+            Some("diversion"),
+        ));
+        let judgements = judge_period(&half, &undated, opts());
+        assert_eq!(judgements.len(), 4);
+        assert_eq!(
+            judgements.iter().filter(|j| j.verdict.is_correct()).count(),
+            2
+        );
+        assert!(
+            match_periods(
+                std::slice::from_ref(&half),
+                std::slice::from_ref(&undated),
+                opts()
+            )
+            .is_empty()
+        );
+    }
+
+    fn dated_period(from: &str, to: &str, status: &str, severity: &str) -> serde_json::Value {
+        serde_json::json!({
+            "scope_description": "x",
+            "date_range": {"from_date": from, "to_date": to},
+            "schedule_window": null,
+            "resolution_status": status,
+            "apparent_severity": severity,
+            "impact_type": null,
+        })
+    }
+
+    /// Highest-agreement-first greedy matching would pair P0 with B (3
+    /// fields agree) and strand both P1 (eligible only with B) and A. The
+    /// matcher keeps both pairs: P0-A (1) and P1-B (2).
+    #[test]
+    fn matching_maximises_pairs_before_agreement() {
+        let gold: Vec<GoldPeriod> = serde_json::from_value(serde_json::json!([
+            {"date_range": {"from_date": "2026-01-01T00:00:00Z", "to_date": "2026-01-10T00:00:00Z"},
+             "resolution_status": "ongoing", "apparent_severity": "moderate_disruption"},
+            {"date_range": {"from_date": "2026-02-01T00:00:00Z", "to_date": "2026-02-10T00:00:00Z"},
+             "resolution_status": "resolved", "apparent_severity": "severe_disruption"}
+        ]))
+        .unwrap();
+        let predicted = [
+            predicted_period(dated_period(
+                "2026-01-01T00:00:00Z",
+                "2026-02-10T00:00:00Z",
+                "resolved",
+                "severe_disruption",
+            )),
+            predicted_period(dated_period(
+                "2026-03-01T00:00:00Z",
+                "2026-02-10T00:00:00Z",
+                "resolved",
+                "moderate_disruption",
+            )),
+        ];
+        let eligible = |predicted: &[ExtractionPeriod], gold: &[GoldPeriod], p: usize, g: usize| {
+            same_period(&judge_period(&predicted[p], &gold[g], opts()))
+        };
+        assert!(
+            eligible(&predicted, &gold, 0, 0)
+                && eligible(&predicted, &gold, 0, 1)
+                && eligible(&predicted, &gold, 1, 1)
+                && !eligible(&predicted, &gold, 1, 0)
+        );
+        assert_eq!(match_periods(&predicted, &gold, opts()), [(0, 0), (1, 1)]);
+
+        // Two pairs win even when a single pair agrees on more fields in
+        // total: B also scores a null window and impact type, which P0 gets
+        // right (P0-B: 5) and P1 doesn't (P1-B: 2; P0-A + P1-B: 3).
+        let mut gold = gold;
+        gold[1].schedule_window = Gold::Expect(None);
+        gold[1].impact_type = Some(crate::eval::dataset::OneOrMany::One(None));
+        let mut p1 = predicted[1].clone();
+        p1.schedule_window = Some(ScheduleWindow {
+            days_of_week: vec![1],
+            start_time: "00:00".into(),
+            end_time: "01:00".into(),
+        });
+        p1.impact_type = Some("diversion".into());
+        let predicted = [predicted[0].clone(), p1];
+        let agreement = |p: usize, g: usize| {
+            judge_period(&predicted[p], &gold[g], opts())
+                .iter()
+                .filter(|j| j.verdict.is_correct())
+                .count()
+        };
+        assert_eq!(
+            (agreement(0, 0), agreement(0, 1), agreement(1, 1)),
+            (1, 5, 2)
+        );
+        assert!(eligible(&predicted, &gold, 1, 1) && !eligible(&predicted, &gold, 1, 0));
+        assert_eq!(match_periods(&predicted, &gold, opts()), [(0, 0), (1, 1)]);
+    }
+
+    /// Equal cardinality: total agreement decides; then the total position
+    /// difference; then the lowest-indexed gold period.
+    #[test]
+    fn matching_tie_breaks_are_deterministic() {
+        let gold = |from: &str, status: Option<&str>| -> GoldPeriod {
+            let mut value = serde_json::json!({"from_date": from});
+            if let Some(status) = status {
+                value["resolution_status"] = status.into();
+            }
+            serde_json::from_value(value).unwrap()
+        };
+        let pred = |from: &str, status: &str| {
+            predicted_period(dated_period(from, "2026-12-01T00:00:00Z", status, "normal"))
+        };
+        let (jan, feb, mar) = (
+            "2026-01-01T00:00:00Z",
+            "2026-02-01T00:00:00Z",
+            "2026-03-01T00:00:00Z",
+        );
+        // Agreement beats position: gold 1 agrees on two fields, gold 0
+        // (closer) on one.
+        assert_eq!(
+            match_periods(
+                &[pred(jan, "ongoing")],
+                &[gold(jan, Some("resolved")), gold(jan, Some("ongoing"))],
+                opts()
+            ),
+            [(0, 1)]
+        );
+        // Identical pairs everywhere: the smaller total position difference
+        // wins (P0-G0 + P1-G1, not the crossed pairing).
+        let twins = [gold(jan, None), gold(jan, None)];
+        assert_eq!(
+            match_periods(
+                &[pred(jan, "ongoing"), pred(jan, "ongoing")],
+                &twins,
+                opts()
+            ),
+            [(0, 0), (1, 1)]
+        );
+        // Position beats index: P1 takes gold 1 (same position), not gold 0.
+        assert_eq!(
+            match_periods(
+                &[pred(mar, "ongoing"), pred(jan, "ongoing")],
+                &twins,
+                opts()
+            ),
+            [(1, 1)]
+        );
+        // A full tie (P1 is one position from both gold 0 and gold 2; P0
+        // and gold 1 match nothing): the lowest-indexed gold period.
+        assert_eq!(
+            match_periods(
+                &[pred(mar, "ongoing"), pred(jan, "ongoing")],
+                &[gold(jan, None), gold(feb, None), gold(jan, None)],
+                opts()
+            ),
+            [(1, 0)]
+        );
+    }
+
+    /// The worst case the dataset allows stays cheap and exact.
+    #[test]
+    fn matching_handles_the_largest_allowed_case() {
+        let jan = "2026-01-01T00:00:00Z";
+        let gold: Vec<GoldPeriod> = (0..MAX_GOLD_PERIODS)
+            .map(|_| serde_json::from_value(serde_json::json!({"from_date": jan})).unwrap())
+            .collect();
+        let predicted: Vec<ExtractionPeriod> = (0..8)
+            .map(|_| predicted_period(dated_period(jan, jan, "ongoing", "normal")))
+            .collect();
+        let start = std::time::Instant::now();
+        let pairs = match_periods(&predicted, &gold, opts());
+        assert_eq!(pairs, (0..8).map(|i| (i, i)).collect::<Vec<_>>());
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    fn bare_record(case_id: &str, hash: String, repetition: u32) -> PipelineRecord {
+        PipelineRecord {
             label: TargetLabel {
                 target: "t".into(),
                 model: "m".into(),
             },
-            case_id: case.id.clone(),
+            case_id: case_id.into(),
             input_hash: hash,
+            prompt_fingerprint: crate::llm::prompt_fingerprint(),
             repetition,
             elapsed_ms: 0,
             calls: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn stale_unhashed_and_duplicate_records_are_skipped() {
+        let case = labelled_case();
+        let record = |hash: String, repetition| bare_record(&case.id, hash, repetition);
         let current = case.input_hash();
         let records = [
             record(current.clone(), 0),
             record(current.clone(), 0),
             record("0123456789abcdef".into(), 1),
             record(String::new(), 2),
-            record(current, 1),
+            record(current.clone(), 1),
+            record("0123456789abcdef".into(), 5),
         ];
         let (summary, scores) = score(std::slice::from_ref(&case), &records, opts());
         assert_eq!(summary.stale_case_records, 2);
+        assert_eq!(summary.unhashed_records, 1);
+        assert_eq!(summary.accepted_unhashed_records, 0);
         assert_eq!(summary.duplicate_records, 1);
         assert_eq!(summary.attempts, 2);
         assert_eq!(
             scores.iter().map(|s| s.repetition).collect::<Vec<_>>(),
             [0, 1]
         );
+        // Skipped records (up to repetition 5) don't count as repetitions.
+        assert_eq!(summary.repetitions, 2);
+        let target = TargetInfo {
+            name: "t".into(),
+            model: "m".into(),
+            environment: None,
+            base_url: None,
+        };
+        let report = build_report(target, "d", std::slice::from_ref(&case), &records, opts());
+        assert_eq!(report.repetitions, 2);
+
+        // One warning line per reason, with counts and examples.
+        let warnings = record_warnings("t", &summary);
+        assert_eq!(warnings.len(), 3, "{warnings:#?}");
+        assert!(
+            warnings[0].contains("skipped 2 stale record(s)")
+                && warnings[0].contains("e.g. two#1, two#5"),
+            "{warnings:#?}"
+        );
+        assert!(
+            warnings[1].contains("1 record(s) with no input hash")
+                && warnings[1].contains("EVAL_ACCEPT_UNHASHED=1")
+                && warnings[1].contains("e.g. two#2"),
+            "{warnings:#?}"
+        );
+        assert!(
+            warnings[2].contains("1 duplicate record(s)") && warnings[2].contains("e.g. two#0"),
+            "{warnings:#?}"
+        );
+
+        // EVAL_ACCEPT_UNHASHED: the hashless record is scored (and said so);
+        // a present but mismatched hash is still stale.
+        let lenient = ScoreOptions {
+            accept_unhashed: true,
+            ..opts()
+        };
+        let (summary, scores) = score(std::slice::from_ref(&case), &records, lenient);
+        assert_eq!(
+            (
+                summary.stale_case_records,
+                summary.unhashed_records,
+                summary.accepted_unhashed_records
+            ),
+            (2, 0, 1)
+        );
+        assert_eq!(
+            scores.iter().map(|s| s.repetition).collect::<Vec<_>>(),
+            [0, 2, 1]
+        );
+        assert_eq!(summary.repetitions, 3);
+        let warnings = record_warnings("t", &summary);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("scored 1 record(s) with no input hash unchecked")),
+            "{warnings:#?}"
+        );
+    }
+
+    #[test]
+    fn warnings_cap_their_examples() {
+        let case = labelled_case();
+        let records: Vec<PipelineRecord> = (0..5)
+            .map(|rep| bare_record("gone", String::new(), rep))
+            .collect();
+        let (summary, _) = score(std::slice::from_ref(&case), &records, opts());
+        let warnings = record_warnings("t", &summary);
+        assert_eq!(
+            warnings,
+            [
+                "warning: target \"t\": skipped 5 record(s) naming case ids missing from the \
+                 dataset; e.g. gone#0, gone#1, gone#2, ..."
+            ]
+        );
+    }
+
+    /// Records from other prompts are scored, with one summary warning.
+    #[test]
+    fn records_from_other_prompts_are_scored_with_a_warning() {
+        let case = labelled_case();
+        let mut old = bare_record(&case.id, case.input_hash(), 0);
+        old.prompt_fingerprint = "0123456789abcdef".into();
+        let mut older = bare_record(&case.id, case.input_hash(), 1);
+        older.prompt_fingerprint = String::new();
+        let current = bare_record(&case.id, case.input_hash(), 2);
+        let (summary, scores) = score(std::slice::from_ref(&case), &[old, older, current], opts());
+        assert_eq!(scores.len(), 3, "not skipped");
+        assert_eq!(summary.other_prompt_records, 2);
+        let warnings = record_warnings("t", &summary);
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(
+            warnings[0].contains("2 of 3 record(s) used came from other prompts")
+                && warnings[0].contains("(none recorded) x1")
+                && warnings[0].contains("0123456789abcdef x1")
+                && warnings[0].contains(&crate::llm::prompt_fingerprint()),
+            "{warnings:#?}"
+        );
+        let (clean, _) = score(
+            std::slice::from_ref(&case),
+            &[bare_record(&case.id, case.input_hash(), 0)],
+            opts(),
+        );
+        assert!(record_warnings("t", &clean).is_empty());
     }
 
     /// A primary output that matches `labelled_case` exactly.
@@ -1807,17 +2363,7 @@ mod tests {
 
     #[test]
     fn records_for_unknown_or_unlabelled_cases_are_not_scored() {
-        let record = PipelineRecord {
-            label: TargetLabel {
-                target: "t".into(),
-                model: "m".into(),
-            },
-            case_id: "gone".into(),
-            input_hash: String::new(),
-            repetition: 0,
-            elapsed_ms: 0,
-            calls: Vec::new(),
-        };
+        let record = bare_record("gone", String::new(), 0);
         let mut unlabelled = labelled_case();
         unlabelled.id = "u".into();
         unlabelled.expected = None;
@@ -1847,6 +2393,7 @@ mod tests {
             gold,
             ScoreOptions {
                 date_tolerance: TimeDelta::hours(1),
+                ..opts()
             },
         );
         let verdict =

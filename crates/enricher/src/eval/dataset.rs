@@ -31,6 +31,13 @@ pub(crate) const SEVERITIES: [&str; 4] = [
 pub(crate) const IMPACT_TYPES: [&str; 3] =
     ["rail_replacement_bus", "no_scheduled_service", "diversion"];
 
+/// The most gold periods a case may have: the quality eval's exact period
+/// matcher (`quality::match_periods`) costs time doubling with each one.
+/// Well above the service's own cap on predicted periods
+/// (`llm::MAX_PERIODS`, 8), so a gold period past it could never be matched
+/// anyway.
+pub(crate) const MAX_GOLD_PERIODS: usize = 12;
+
 /// One incident text plus (optionally) its gold labels.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,7 +68,9 @@ impl Case {
     /// record. A replay skips a record whose hash no longer matches: the
     /// case's text was edited after the run, so its output answers a
     /// different question. Gold labels aren't hashed -- re-scoring old
-    /// outputs against corrected labels is what replay is for.
+    /// outputs against corrected labels is what replay is for. The fields
+    /// are NUL-separated; validation rejects a NUL inside the text, so two
+    /// different inputs can't hash alike by moving one across a boundary.
     pub(crate) fn input_hash(&self) -> String {
         let description = format!("{}\0{}", self.description, self.reference_date.to_rfc3339());
         let mut hash = common::text_hash::text_hash(&self.summary, &description);
@@ -257,6 +266,11 @@ fn validate(cases: &[Case]) -> anyhow::Result<()> {
         if case.summary.trim().is_empty() && case.description.trim().is_empty() {
             anyhow::bail!("case {id:?} has no text");
         }
+        // `input_hash` joins the fields with NUL separators, so a NUL inside
+        // one could make two different inputs hash alike.
+        if case.summary.contains('\0') || case.description.contains('\0') {
+            anyhow::bail!("case {id:?}: summary and description must not contain NUL characters");
+        }
         let Some(expected) = &case.expected else {
             continue;
         };
@@ -264,6 +278,14 @@ fn validate(cases: &[Case]) -> anyhow::Result<()> {
             && categories.iter().all(|c| normalize_label(c).is_empty())
         {
             anyhow::bail!("case {id:?}: category_any_of has no usable value");
+        }
+        if let Some(periods) = &expected.periods
+            && periods.len() > MAX_GOLD_PERIODS
+        {
+            anyhow::bail!(
+                "case {id:?} has {} gold periods; at most {MAX_GOLD_PERIODS} are supported",
+                periods.len()
+            );
         }
         for (index, period) in expected.periods.iter().flatten().enumerate() {
             validate_period(period)
@@ -390,6 +412,29 @@ mod tests {
         }
         let dup = format!("{}\n{}", line("{}"), line("{}"));
         assert!(parse(&dup).is_err(), "accepted a duplicate id");
+        let too_many = format!(
+            r#"{{"periods":[{}]}}"#,
+            vec!["{}"; MAX_GOLD_PERIODS + 1].join(",")
+        );
+        assert!(
+            parse(&line(&too_many)).is_err(),
+            "accepted too many periods"
+        );
+        let enough = format!(r#"{{"periods":[{}]}}"#, ["{}"; MAX_GOLD_PERIODS].join(","));
+        assert!(parse(&line(&enough)).is_ok());
+    }
+
+    /// `input_hash` separates its fields with NUL, so a NUL inside the
+    /// text could make two different inputs collide: rejected outright.
+    #[test]
+    fn validation_rejects_nul_in_the_text() {
+        for (summary, description) in [("a\\u0000b", "c"), ("a", "b\\u0000c")] {
+            let line = format!(
+                r#"{{"id":"a","summary":"{summary}","description":"{description}","reference_date":"2026-01-01T00:00:00Z"}}"#
+            );
+            let err = parse(&line).unwrap_err();
+            assert!(err.to_string().contains("NUL"), "{err}");
+        }
     }
 
     #[test]
