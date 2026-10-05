@@ -1,0 +1,13 @@
+# Time-boxed exceptions for .github/workflows/dependency-scan.yml. Every entry
+# needs a reason and an ignoreUntil, so the scan fails again at expiry.
+
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2026-11-05T00:00:00Z
+reason = """\
+braces 3.0.3 (stack exhaustion on deeply nested patterns), dev-only and \
+transitive via micromatch in the build/lint toolchain; it never ships in an \
+image and only sees patterns from our own config. No fixed release exists \
+(3.0.3 is the latest). Accepted by the user 2026-10-05; at expiry, upgrade \
+if a fix has shipped, otherwise review again.\
+"""
