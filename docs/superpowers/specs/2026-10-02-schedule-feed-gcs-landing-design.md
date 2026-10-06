@@ -28,6 +28,12 @@ build it.
 | D12 | **Crossplane v2** (provider-upjet-gcp) provisions the bucket from Helm, not Config Connector | §4 |
 | D13 | **A kill-switch trip pauses reconciliation of the affected bindings.** The Ranma-side kill switch sets `crossplane.io/paused: "true"` on the labelled `BucketIAMMember` resources before removing the bindings; Ranma's reapply unpauses them | §5, "The kill switch and Crossplane" |
 
+## Decisions (2026-10-06)
+
+| # | Decision | Effect on this design |
+| --- | --- | --- |
+| D14 | **The reader can be keyless.** The deploy side moved to Google workload identity federation: the pool trusts the k3s token issuer through an uploaded JWKS (no public discovery endpoint needed), its provider is pinned to the exact subject `system:serviceaccount:<namespace>:<release>-schedulefeed`, and that principal may impersonate the reader's service account. `charts/distant-signal` gains `scheduleFeed.bucket.auth: key \| workloadIdentity` and `scheduleFeed.serviceAccount`; the reader's credential contract gains `external_account` through a small credential provider. **`key` stays the default** and stays supported for any deployment without workload identity federation (another cluster, a test install); it renders exactly as before | §5 "Reader access", §7, §9 "Keyless reader credentials", §10 |
+
 Also recorded: Ranma-Config's **kill switch** (user-approved): budget and
 Cloud Monitoring alerts → Pub/Sub → a function that removes bucket
 bindings, never billing (§5, "Usage limits").
@@ -342,16 +348,21 @@ or may not cover STS; not relied on. So the reader key is protected by
 sealing, rotation and the audit rule "reader used from an address other
 than the node" (§8), which detects but doesn't prevent.
 
-**Workload identity federation** from k3s was evaluated. GCP can trust the
-cluster's service-account token issuer if its OIDC discovery document and
-JWKS are publicly reachable, and the pod would exchange its projected
-token through STS for a short-lived token, so no long-lived key. Against
-it: `object_store` 0.14.2's GCP credentials support service-account keys,
-`authorized_user` and the metadata server, not `external_account`, so we
-would write the token exchange behind `with_credentials` (about 150
-lines). And the issuer's discovery endpoint would have to be published
-through the tunnel or a public bucket. Deferred; the default is a
-hand-made key (§7).
+**Workload identity federation (D14, 2026-10-06): supported, keyless.**
+First deferred here (2026-10-02) because `object_store` 0.14.2 can't read
+an `external_account` configuration and the issuer's discovery endpoint
+would have had to be public. Both are solved: the pool provider takes an
+**uploaded JWKS** for the k3s issuer, and the token exchange is
+`common::gcp_external_account`, plugged in through `with_credentials`
+(§9, "Keyless reader credentials"). The pod's projected token (audience
+`gcp-ds-ingest`) is exchanged at STS and then impersonates the reader's
+service account for an hour-long token, so there is no long-lived key to
+seal, rotate or leak. The provider is pinned to the subject
+`system:serviceaccount:<namespace>:<release>-schedulefeed`, so the chart
+requires schedulefeed's own ServiceAccount in this mode. The reader's
+bucket roles are unchanged: `reader.member` is still the reader service
+account, which the federated principal impersonates. The key (§7) stays
+the default for deployments without workload identity federation.
 
 ### An object's life (D11)
 
@@ -475,7 +486,8 @@ latency ever matters, switch to C with both charts' Pub/Sub switches.
 | Credential | Holder | Created by | Sealed as | Rotation |
 | --- | --- | --- | --- | --- |
 | Crossplane provider's service-account key | `crossplane-system` | Ranma's OpenTofu bootstrap, once | A SealedSecret referenced by the `ClusterProviderConfig` | 180 days |
-| Reader service-account key (JSON) | schedule-ingest | A person, once: `gcloud iam service-accounts keys create` piped into `kubeseal`, never written to disk | `distant-signal-schedulefeed-bucket` (key `service-account.json`) | 90 days, two-key overlap: create, reseal, roll, confirm a poll, delete the old key |
+| Reader service-account key (JSON), `auth: key` | schedule-ingest | A person, once: `gcloud iam service-accounts keys create` piped into `kubeseal`, never written to disk | `distant-signal-schedulefeed-bucket` (key `service-account.json`) | 90 days, two-key overlap: create, reseal, roll, confirm a poll, delete the old key |
+| Reader, keyless, `auth: workloadIdentity` (D14) | schedule-ingest | Nothing to create: Ranma's workload identity pool and provider (uploaded k3s JWKS, subject `system:serviceaccount:<ns>:<release>-schedulefeed`, audience `gcp-ds-ingest`) and a `roles/iam.workloadIdentityUser` binding on the reader service account | Nothing sealed: an `external_account` configuration in a plain ConfigMap | None. The projected token lasts an hour and the kubelet rotates it; access tokens last an hour. Re-upload the JWKS when the cluster's service-account signing key rotates |
 | DTD's | DTD | — | Nothing: **we hold no publisher credential** | Revoking = removing a member |
 
 An HMAC key for the reader (S3-compatible XML API through `object_store`'s
@@ -634,6 +646,130 @@ API calls go over the existing `reqwest` with the bearer token from
 CRC32C uses the already-locked `crc` crate (`CRC_32_ISCSI`); MD5 the
 already-locked `md-5`. Nothing new enters `Cargo.lock`.
 
+The credential is the mounted key (`GOOGLE_SERVICE_ACCOUNT_PATH`,
+`auth: key`) or, keyless, an `external_account` configuration
+(`GOOGLE_APPLICATION_CREDENTIALS`, `auth: workloadIdentity`; below).
+Exactly one of the two is set; both or neither is a configuration error at
+startup.
+
+### Keyless reader credentials (D14)
+
+With `scheduleFeed.bucket.auth: workloadIdentity` the chart sets
+`GOOGLE_APPLICATION_CREDENTIALS` (instead of `GOOGLE_SERVICE_ACCOUNT_PATH`)
+to an `external_account` credential configuration from a ConfigMap, and
+mounts a projected service-account token (audience `gcp-ds-ingest` by
+default, one hour) at `/var/run/secrets/distant-signal/gcs-token/token`,
+which the configuration's `credential_source.file` names. The ConfigMap's
+exact shape is in the chart README ("Keyless bucket access").
+
+**`object_store` 0.14.2 can't read it** (checked in the local cargo
+registry): `ApplicationDefaultCredentials` in `src/gcp/credential.rs`
+(lines 543-557) has only the `service_account` and `authorized_user`
+variants, so an `external_account` file fails to parse. It does take a
+custom provider, which is the hook the reader uses:
+
+- `GoogleCloudStorageBuilder::with_credentials(self, credentials: GcpCredentialProvider) -> Self`
+  (`src/gcp/builder.rs:490`, "Set the credential provider overriding any
+  other options");
+- `pub type GcpCredentialProvider = Arc<dyn CredentialProvider<Credential = GcpCredential>>`
+  (`src/gcp/mod.rs:75`);
+- `#[async_trait] pub trait CredentialProvider: Debug + Send + Sync { type Credential; async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>>; }`
+  (`src/client/mod.rs:1043`, re-exported as `object_store::CredentialProvider`);
+- `pub struct GcpCredential { pub bearer: String }` (`src/gcp/credential.rs:170`).
+
+With `with_credentials` set, `build()` skips Application Default
+Credentials entirely (`builder.rs` ~575: ADC is read only when
+`service_account_credentials.is_none() && self.credentials.is_none()`),
+so `GOOGLE_APPLICATION_CREDENTIALS` is never handed to `object_store`'s
+parser even though `from_env()` maps it. Don't call `from_env()` anyway;
+pass everything explicitly. Signing credentials fall back to the metadata
+server, lazily: the reader never signs URLs, so they are never fetched.
+`object_store` calls `get_credential` for every request, so the provider
+must cache. The hand-written JSON API calls (metadata GET, conditional
+DELETE) take their bearer from the same provider, via
+`GoogleCloudStorage::credentials()`, as in key mode.
+
+The provider is `common::gcp_external_account::ExternalAccountTokenSource`
+(implemented and tested against wiremock fakes of STS and IAM Credentials;
+not wired into anything until the reader exists). The reader's adapter is
+about fifteen lines, with `async-trait` as a direct dependency (already in
+the lock through `object_store`):
+
+```rust
+#[derive(Debug)]
+struct WifCredentials(Arc<ExternalAccountTokenSource>);
+
+#[async_trait::async_trait]
+impl object_store::CredentialProvider for WifCredentials {
+    type Credential = object_store::gcp::GcpCredential;
+    async fn get_credential(&self) -> object_store::Result<Arc<GcpCredential>> {
+        let token = self.0.access_token().await.map_err(|err| object_store::Error::Generic {
+            store: "GCS",
+            source: Box::new(err),
+        })?;
+        Ok(Arc::new(GcpCredential { bearer: token.expose().to_string() }))
+    }
+}
+// GoogleCloudStorageBuilder::new().with_bucket_name(..).with_credentials(Arc::new(WifCredentials(source)))
+```
+
+What the provider does, for the reader's implementer:
+
+- **Configuration.** `ExternalAccountConfig::from_file(GOOGLE_APPLICATION_CREDENTIALS)`,
+  then `check_google_endpoints()` (https on `*.googleapis.com` only, so a
+  bad ConfigMap can't send the cluster's token elsewhere). Only
+  `type: external_account`, a JWT `subject_token_type` and a **file**
+  `credential_source` (`format` `text`, or `json` with
+  `subject_token_field_name`) are accepted; URL, executable and AWS
+  sources are refused. A missing or invalid file is revoked access, like a
+  missing key: re-read it on each retry.
+- **Subject token.** Read from `credential_source.file` on **every**
+  refresh, never cached: the kubelet rotates it (at 80% of its hour).
+- **STS.** `POST token_url` (`https://sts.googleapis.com/v1/token`),
+  form-encoded RFC 8693: `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
+  `audience=<the pool provider's resource name>`,
+  `scope=https://www.googleapis.com/auth/cloud-platform`,
+  `requested_token_type=urn:ietf:params:oauth:token-type:access_token`,
+  `subject_token`, `subject_token_type=urn:ietf:params:oauth:token-type:jwt`.
+  Returns a federated `access_token` and `expires_in`.
+- **Impersonation.** `POST service_account_impersonation_url`
+  (`https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<sa>:generateAccessToken`)
+  with `Authorization: Bearer <federated>` and `{"scope": [<scope>]}`.
+  Returns `accessToken` and an RFC 3339 `expireTime` (an hour by
+  default). Without an impersonation URL the federated token is used
+  directly (direct resource access); our setup impersonates.
+- **Caching.** The access token is cached until
+  `expiry - max(refresh_skew, 10% of its lifetime)` (skew 60 s by default:
+  about 6 minutes early for an hour-long token), with the lifetime
+  measured from the start of the refresh. Refreshes are single-flight (a
+  tokio mutex; callers that waited behind a failed refresh get that
+  failure instead of repeating it). A refresh that fails inside the margin
+  keeps serving the cached token until 5 s before it expires.
+- **401/403 policy.** A GCS **401** means the token itself was refused:
+  `invalidate(&token)` (a no-op unless it is still the cached one, so
+  concurrent 401s refresh once) and retry the call **once**; a second 401
+  is revoked access. A GCS **403** is IAM refusing a valid token (the
+  kill switch removed the binding): don't refresh, set
+  `schedule_feed_source_access_revoked{source="bucket"}` to 1 and back off
+  at `BUCKET_MAX_BACKOFF_SECS`, as in key mode. A token-exchange failure
+  arrives as `CredentialError { stage, outcome }`;
+  `is_access_revoked()` (`token_file_error`, `invalid_grant`,
+  `invalid_target`, `unauthenticated`, `permission_denied`) also sets the
+  revoked gauge, anything else (`timeout`, `http_error`, `error`,
+  `invalid_request`) is an ordinary `errors_total{kind="auth"}` with
+  backoff.
+- **Metrics,** shaped like the enricher's `enricher_llm_token_exchange_total`:
+  `gcp_token_exchange_total{stage="sts"|"impersonation", outcome}` (every
+  combination the configuration can produce registered at 0) and the gauge
+  `gcp_token_remaining_seconds`, both prefixed `distant_signal_`. Outcomes:
+  `success`, `token_file_error`, `invalid_grant`, `invalid_target`,
+  `invalid_request`, `unauthenticated`, `permission_denied`, `http_error`,
+  `timeout`, `error`.
+- **Secrets.** Every token is a `common::secret::Secret` (redacted
+  `Debug`); an echoed error description is cut to 200 characters and
+  scrubbed of the subject and federated tokens before it is logged.
+
+
 ### Loop and revocation guards
 
 The looping reader is the realistic expensive failure, so the bucket source
@@ -721,8 +857,13 @@ scheduleFeed:
     provider: gcs            # only gcs is implemented
     name: ""                 # bucket name; required when enabled (Ranma's value)
     baseUrl: ""              # empty = storage.googleapis.com; set for a fake-GCS test server
-    existingSecret: ""       # required: sealed reader key
+    auth: key                # key | workloadIdentity (D14)
+    existingSecret: ""       # key mode: required, the sealed reader key
     serviceAccountKey: service-account.json
+    workloadIdentity:        # workloadIdentity mode (D14)
+      audience: gcp-ds-ingest
+      credentialConfigMap: ""   # required: the external_account config (no secret)
+      credentialConfigKey: credential-config.json
     expectedKeys: [timetable_full.zip, CORPUSExtract.json.gz]   # same globs as SFTP routing
     pollIntervalSecs: 300
     deleteMinAgeSecs: 3600        # let the publisher's read-back and scan finish
@@ -743,6 +884,9 @@ scheduleFeed:
       pollIntervalSecs: 600
   sourcePrecedence: [bucket, sftp]
   disagreementWindowMinutes: 120
+  serviceAccount:            # D14: required by auth: workloadIdentity
+    create: false
+    name: ""
 ```
 
 ### Rendering rules
@@ -757,6 +901,16 @@ scheduleFeed:
   key from `existingSecret` mounted read-only with
   `GOOGLE_SERVICE_ACCOUNT_PATH` pointing at it (`fail` if
   `existingSecret` is empty).
+- **Bucket on, `auth: workloadIdentity` (D14).** No key: the ConfigMap
+  mounted read-only at `/var/run/secrets/distant-signal/gcs/credential-config.json`
+  with `GOOGLE_APPLICATION_CREDENTIALS` pointing at it, and a projected
+  token (only a `serviceAccountToken` source, `audience`, 3600 s) at
+  `/var/run/secrets/distant-signal/gcs-token/token`, both on `ingest`
+  only. `fail` without `credentialConfigMap`, with `existingSecret` or a
+  changed `serviceAccountKey`, or with the pod on the shared ServiceAccount.
+  Egress names `sts.googleapis.com` and `iamcredentials.googleapis.com`
+  instead of `oauth2.googleapis.com`. `auth: key` renders byte for byte as
+  before.
 - **NetworkPolicy.** The existing public-internet rule on 443 covers
   `storage.googleapis.com` and `oauth2.googleapis.com`; the chart adds
   both to the `egressSection` `urls` list so a custom `baseUrl` port is
@@ -778,7 +932,7 @@ Settings that ship **off by default**: `scheduleFeed.bucket.enabled`,
 | Publisher authority | Upload, overwrite, list in one directory | Create, overwrite, delete, read, list objects in one dedicated bucket; no IAM or bucket settings |
 | Our authority | Filesystem access to the PVC | Get, list and delete on one bucket; never create |
 | A compromised DTD identity | Replaces the timetable with a crafted file | The same: a poisoned or junk file. Mitigated by ingest content checks, quarantine, the SHA-256 audit, the expected-name allowlist, the audit-log rules, usage alerts and the kill switch. An overwrite or delete before we fetch is restorable from soft delete for a week, and SFTP plus dedup delivers the genuine copy |
-| A leaked reader key | — | Reads public timetable data (egress cost, capped by alerts and the kill switch's egress trigger) and can delete undelivered objects (soft delete restores them; SFTP still delivers). Can't plant a file. No IP pin; detected by the "reader new source" rule |
+| A leaked reader key | — | Reads public timetable data (egress cost, capped by alerts and the kill switch's egress trigger) and can delete undelivered objects (soft delete restores them; SFTP still delivers). Can't plant a file. No IP pin; detected by the "reader new source" rule. **Keyless (D14): no key to leak.** A stolen projected token is good for at most an hour, only from a pod running as schedulefeed's ServiceAccount, and only through STS; a stolen access token for at most an hour |
 | Cost abuse | None | A looping reader or a flood of uploads. Reader guards, usage alerts, the kill switch and the project budget (§5) |
 | Public exposure of the bucket | — | Impossible: public access prevention enforced, UBLA on, and the render refuses public members |
 | Detection | SFTPGo logs → Loki rules | Data Access audit logs → Loki rules; Prometheus for revocation, no-new-object, unexpected objects, download caps |

@@ -41,6 +41,23 @@ ignores the extra env vars (clap only reads the vars it declares).
   access is revoked it raises a clear alert, backs off, doesn't crash-loop,
   and leaves SFTP unaffected.
 
+**Update 2026-10-06 (spec D14): keyless reader.** Done after this plan:
+`scheduleFeed.bucket.auth: key | workloadIdentity` (default `key`, which
+renders byte for byte as before; `check-schedulefeed-chart.py --baseline`
+covers both sources and bucket-only + NetworkPolicy in key mode) and
+`scheduleFeed.serviceAccount.{create,name}`. In `workloadIdentity` mode the
+chart mounts the `external_account` configuration from
+`bucket.workloadIdentity.credentialConfigMap` (key `credentialConfigKey`)
+at `/var/run/secrets/distant-signal/gcs/credential-config.json`, sets
+`GOOGLE_APPLICATION_CREDENTIALS` to it, mounts a projected token
+(`bucket.workloadIdentity.audience`, default `gcp-ds-ingest`, 3600 s) at
+`/var/run/secrets/distant-signal/gcs-token/token`, requires the dedicated
+ServiceAccount (`<release>-schedulefeed`), and opens STS and IAM
+Credentials instead of `oauth2.googleapis.com`. The contract table below
+has the new env var; the spec's §9 "Keyless reader credentials" has the
+reader's side. Key mode stays for deployments without workload identity
+federation.
+
 ## Ground rules
 
 - Follow `/home/coder/ds-review/fix-brief-common.md`:
@@ -551,7 +568,9 @@ already works. This keeps it working when an operator narrows
 `internetPorts`. `object_store` 0.14.2 signs its own JWT from a
 service-account key and never calls a token endpoint
 (`gcp/credential.rs`, `SelfSignedJwt`). `oauth2.googleapis.com` is listed
-only in case the reader ever does.
+only in case the reader ever does. (2026-10-06: in `auth:
+workloadIdentity` mode the list is `storage`, `sts` and `iamcredentials`
+instead; all three are 443.)
 
 **NOTES.txt.** When `bucket.enabled`, print:
 - the bucket name (`gs://<bucket>`);
@@ -783,7 +802,8 @@ prefixes. Task 2 already makes the test read the define.
 | `DISAGREEMENT_WINDOW_MINUTES` | bucket on | `120` | Different SHA-256s for the same kind within this window are a disagreement |
 | `BUCKET_NAME` | bucket on | none (required when enabled) | Bucket to list at the root (`delimiter=/`) |
 | `BUCKET_BASE_URL` | bucket on and set | empty = `https://storage.googleapis.com` | Base URL for both the `object_store` client and the hand-written JSON-API calls (metadata GET, conditional DELETE). Tests only |
-| `GOOGLE_SERVICE_ACCOUNT_PATH` | bucket on | none | Path to the JSON key. Pass it to `GoogleCloudStorageBuilder::with_service_account_path` explicitly; don't rely on `from_env`. **Missing, unreadable or invalid:** don't exit. Treat it as revoked access (gauge 1, one log line per state change, retry at `BUCKET_MAX_BACKOFF_SECS`), and re-read the file on each retry so a fixed or rotated Secret recovers without a restart. Never log the file's contents |
+| `GOOGLE_SERVICE_ACCOUNT_PATH` | bucket on, `auth: key` | none | Path to the JSON key. Pass it to `GoogleCloudStorageBuilder::with_service_account_path` explicitly; don't rely on `from_env`. **Missing, unreadable or invalid:** don't exit. Treat it as revoked access (gauge 1, one log line per state change, retry at `BUCKET_MAX_BACKOFF_SECS`), and re-read the file on each retry so a fixed or rotated Secret recovers without a restart. Never log the file's contents |
+| `GOOGLE_APPLICATION_CREDENTIALS` | bucket on, `auth: workloadIdentity` (2026-10-06) | none | Path to an `external_account` credential configuration (`/var/run/secrets/distant-signal/gcs/credential-config.json`); its `credential_source.file` is the projected token at `/var/run/secrets/distant-signal/gcs-token/token`. Load it with `common::gcp_external_account::ExternalAccountConfig::from_file` plus `check_google_endpoints()`, wrap an `ExternalAccountTokenSource` in an `object_store::CredentialProvider` and pass it to `GoogleCloudStorageBuilder::with_credentials` (spec §9, "Keyless reader credentials"); never `from_env`. Exactly one of this and `GOOGLE_SERVICE_ACCOUNT_PATH` is set; both or neither: exit at start. **Missing, unreadable or invalid, or a token exchange refused** (`CredentialError::is_access_revoked`): revoked access, exactly as for the key, re-reading the file on each retry. Never log the file's subject token or any access token |
 | `BUCKET_EXPECTED_KEYS` | bucket on | none (required, non-empty) | Comma list of case-insensitive `*` globs (same matcher as `CIF_FILE_PATTERN`), matched against root object names. A match is downloaded only if it is also routable: CIF by `CIF_FILE_PATTERN`/`CIF_EXCLUDE_PATTERN`, or CORPUS by `CORPUS_FILE_PATTERN` with `CORPUS_INGEST_ENABLED=true`. A matching name that isn't routable is handled as unexpected, reason `unroutable` |
 | `BUCKET_POLL_INTERVAL_SECS` | bucket on | `300` | The bucket source's own schedule, independent of `POLL_INTERVAL_SECS` |
 | `BUCKET_DELETE_MIN_AGE_SECS` | bucket on | `3600` | Delete a confirmed or unexpected object only once `now - timeCreated ≥` this. Delete with `ifGenerationMatch=<seen generation>`: 412 means a newer upload, keep it; 404 means already gone, fine |
@@ -794,7 +814,7 @@ prefixes. Task 2 already makes the test read the define.
 | `BUCKET_MAX_DOWNLOAD_BYTES_PER_DAY` | bucket on | `1073741824` | Rolling 24 h, same rules |
 | `BUCKET_MAX_BACKOFF_SECS` | bucket on | `3600` | Errors back off exponentially from the poll interval up to this; reset on success. While revoked, retry at this interval |
 | `BUCKET_AUDIT_LOGS_SHIP` | `auditLogs.ship` | `false` | Parent plan, phase 5.1 |
-| `BUCKET_AUDIT_LOGS_BUCKET` | `auditLogs.ship` | none (required with ship) | Audit-log bucket, read with the same key |
+| `BUCKET_AUDIT_LOGS_BUCKET` | `auditLogs.ship` | none (required with ship) | Audit-log bucket, read with the same credential (key or keyless) |
 | `BUCKET_AUDIT_LOGS_POLL_INTERVAL_SECS` | `auditLogs.ship` | `600` | |
 
 Behaviour the chart relies on:
@@ -820,6 +840,8 @@ adds `distant_signal_`; the alerts in task 5 depend on them:
 | `schedule_feed_source_download_capped` | gauge 0/1 | The hour or day cap only |
 | `schedule_feed_source_downloaded_bytes_total` | counter | |
 | `schedule_feed_source_poll_duration_seconds` | histogram | |
+| `gcp_token_exchange_total{stage, outcome}` | counter, no `source` label | Keyless mode only (registered by `ExternalAccountTokenSource`). `stage` ∈ `sts`, `impersonation`; `outcome` ∈ `success`, `token_file_error`, `invalid_grant`, `invalid_target`, `invalid_request`, `unauthenticated`, `permission_denied`, `http_error`, `timeout`, `error` |
+| `gcp_token_remaining_seconds` | gauge, no `source` label | Keyless mode only: the cached access token's remaining lifetime |
 | `schedule_feed_source_disagreement_total{kind}` | counter, no `source` label | `kind` ∈ `cif`, `corpus` |
 
 ## Off-by-default guarantees
@@ -880,8 +902,12 @@ Task 1 makes this check permanent in CI.
 - **Pub/Sub on the DS side** (parent plan 6.3): no
   `scheduleFeed.bucket.notifications.*` values until the code exists.
 - **Ranma-Config**: the HelmRelease values, the sealed reader key
-  `distant-signal-schedulefeed-bucket` (key `service-account.json`), and
-  the kill-switch watcher. Also check that helm-controller drift detection
+  `distant-signal-schedulefeed-bucket` (key `service-account.json`) in
+  key mode, or in keyless mode the `external_account` ConfigMap, the pool
+  provider (uploaded JWKS, subject
+  `system:serviceaccount:<ns>:<release>-schedulefeed`, allowed audience
+  `gcp-ds-ingest`) and the impersonation binding; and the kill-switch
+  watcher. Also check that helm-controller drift detection
   doesn't strip a `crossplane.io/paused` it doesn't own.
 
 ## Open questions (decided 2026-10-02)
