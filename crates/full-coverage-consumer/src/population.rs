@@ -1018,6 +1018,7 @@ mod tests {
                 calling_points: vec![fixture_calling_point("WATRLMN")],
                 operator_atoc: None,
                 train_status: None,
+                ..Default::default()
             }],
         );
         assert_eq!(
@@ -1039,6 +1040,7 @@ mod tests {
             calling_points: vec![fixture_calling_point("WATRLMN")],
             operator_atoc: None,
             train_status: None,
+            ..Default::default()
         };
 
         assert_eq!(population.etag_for("waterloo-reading", today), None);
@@ -1123,6 +1125,7 @@ mod tests {
                 calling_points: heavy_calling_points,
                 operator_atoc: None,
                 train_status: None,
+                ..Default::default()
             }],
         );
 

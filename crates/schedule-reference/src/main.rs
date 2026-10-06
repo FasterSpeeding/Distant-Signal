@@ -1418,11 +1418,28 @@ async fn publish_cif_derived_products(
 /// real, checked-in set of CRS codes (`AFK`/`ASI`, `EBD`/`EBF`, `SDI`/`SFA`,
 /// `POO`/`PFT`) that `tiploc_crs_records` resolves unambiguously.
 ///
-/// The lint suppression below predates this fix (Task 3 Step 5's own
-/// byte-for-byte constraint on this loop, since relaxed by this change):
-/// `index` is `&ScheduleIndex` (caller-supplied) rather than an owned
-/// `ScheduleIndex` built locally, so the loop body's `&index` trips
-/// `clippy::needless_borrow`.
+/// **Train membership (2026-10-06).** Each entry now also carries the
+/// train's membership of the line -- `scope` (`line`/`shared`/`touch`),
+/// its run's first/last station and direction, and `line_due` -- from
+/// [`schedule_query::line_membership`]. Membership needs every line's
+/// population at once (a train's best-fit line is a comparison across
+/// lines, and a line learns its route from its own trains), so each date is
+/// now done in two passes: every schedule of the day is resolved ONCE into
+/// a compact [`schedule_query::DayTrains`] (TIPLOC ids only), classified,
+/// and then each line's members are re-resolved one at a time to build
+/// that line's body -- instead of resolving every UID once per line (the
+/// old `schedules_touching` loop). See
+/// docs/superpowers/specs/2026-10-06-line-membership-design.md.
+///
+/// **Touch logic.** A line's population is still every schedule touching
+/// one of its stations, with two narrow changes: a TIPLOC no train of the
+/// day calls at is not a station, even when the crosswalk files it under a
+/// station's CRS (`ACTONW` Acton West -> `EAL`, `NWTLEJ` Newton East Jn ->
+/// `NTN`: junctions, so trains merely passing them are no longer in
+/// Ealing's or Newton's population), and the line's `crs_aliases` count
+/// (`PDX` -> `PAD` for the Elizabeth line). The crosswalk itself
+/// (`tiploc_crs`/`stanox_crs`, and every other consumer of it) is
+/// unchanged.
 ///
 /// `too_many_arguments` is allowed for the same reason every sibling
 /// `publish_*` in this file takes its inputs individually: they are all
@@ -1432,7 +1449,6 @@ async fn publish_cif_derived_products(
 /// `outcome`, the per-cycle failure ledger the 2026-09-25 retry fix threads
 /// through every publish -- see [`CycleOutcome`].
 #[expect(
-    clippy::needless_borrow,
     clippy::too_many_arguments,
     reason = "each argument is an independent input from the single caller; a struct would only wrap them; see the doc comment"
 )]
@@ -1447,21 +1463,38 @@ async fn publish_schedule_line_population(
     outcome: &mut CycleOutcome,
 ) {
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
-    for line in lines_to_publish(&config.lines, &crs_to_tiploc) {
-        for date in line_population_dates(today) {
+    let tiploc_to_crs = tiploc_to_crs_map(stanox_crs_records, tiploc_crs_records);
+    let lines: Vec<&common::LineDefinition> =
+        lines_to_publish(&config.lines, &crs_to_tiploc).collect();
+    let membership_lines: Vec<schedule_query::MembershipLine> =
+        lines.iter().map(|line| membership_line(line)).collect();
+    for date in line_population_dates(today) {
+        let pending = lines
+            .iter()
+            .any(|line| !outcome.is_published(&product::line_population(&line.id, date)));
+        if !pending {
+            continue;
+        }
+        let mut day = schedule_query::DayTrains::new();
+        for uid in index.uids() {
+            if let Some(resolved) = index.schedule_for_uid(uid, date) {
+                day.push(&resolved);
+            }
+        }
+        let classified = schedule_query::classify(&day, &membership_lines, &tiploc_to_crs);
+        for (line, members) in lines.iter().zip(&classified) {
             let key = product::line_population(&line.id, date);
             if outcome.is_published(&key) {
                 continue;
             }
-            let tiplocs = line_tiplocs(line, &crs_to_tiploc);
-            let resolved = schedule_query::schedules_touching(&index, &tiplocs, date);
-            let population: Vec<schedule_query::LinePopulationEntry> =
-                resolved.into_iter().map(Into::into).collect();
+            let population = line_population_entries(index, date, &day, members);
+            log_membership(&line.id, date, &population);
             let body = serde_json::json!({
                 "line_id": line.id,
                 "service_date": date,
                 "population": population,
             });
+            drop(population);
             match publish_with_retry(&config.publish_retry, &key, async || {
                 post_schedule_line_population(
                     client,
@@ -1478,6 +1511,69 @@ async fn publish_schedule_line_population(
             }
         }
     }
+}
+
+/// A catalogue line as [`schedule_query::classify`] takes it.
+fn membership_line(line: &common::LineDefinition) -> schedule_query::MembershipLine {
+    schedule_query::MembershipLine {
+        id: line.id.clone(),
+        operators: line.operators.clone(),
+        stations: line.stations.iter().map(|s| s.crs.to_uppercase()).collect(),
+        crs_aliases: line
+            .crs_aliases
+            .iter()
+            .map(|(from, to)| (from.to_uppercase(), to.to_uppercase()))
+            .collect(),
+        trunk_for: line.trunk_for.clone(),
+    }
+}
+
+/// One line's population body: each classified member re-resolved (the
+/// classification kept only TIPLOC ids), tagged with its membership and
+/// `line_due`. Same order as before: the index's own UID order.
+fn line_population_entries(
+    index: &schedule_query::ScheduleIndex,
+    date: chrono::NaiveDate,
+    day: &schedule_query::DayTrains,
+    members: &schedule_query::LineMembers,
+) -> Vec<schedule_query::LinePopulationEntry> {
+    members
+        .members
+        .iter()
+        .filter_map(|(train, membership)| {
+            let resolved = index.schedule_for_uid(day.uid(*train), date)?;
+            let mut entry = schedule_query::LinePopulationEntry::from(resolved);
+            entry.line_due = schedule_query::line_due(&entry.calling_points, |tiploc| {
+                members.station_tiplocs.contains(tiploc)
+            });
+            entry.scope = Some(membership.scope);
+            entry.run_first_crs.clone_from(&membership.run_first_crs);
+            entry.run_last_crs.clone_from(&membership.run_last_crs);
+            entry.direction = membership.direction;
+            Some(entry)
+        })
+        .collect()
+}
+
+/// One `info!` per line and date with its membership counts -- the
+/// numbers the line-membership rollout is judged on.
+fn log_membership(
+    line_id: &str,
+    date: chrono::NaiveDate,
+    population: &[schedule_query::LinePopulationEntry],
+) {
+    let count = |scope: schedule_query::LineScope| {
+        population.iter().filter(|e| e.scope == Some(scope)).count()
+    };
+    tracing::info!(
+        line_id,
+        %date,
+        population = population.len(),
+        line = count(schedule_query::LineScope::Line),
+        shared = count(schedule_query::LineScope::Shared),
+        touch = count(schedule_query::LineScope::Touch),
+        "schedule line population membership"
+    );
 }
 
 /// The dates each line's population is published for: today and tomorrow
@@ -1538,18 +1634,7 @@ fn crs_to_tiploc_map(
     stanox_crs_records: &[common::StanoxCrsRecord],
     tiploc_crs_records: &[common::TiplocCrsRecord],
 ) -> std::collections::HashMap<String, Vec<String>> {
-    let mut tiploc_to_crs: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for record in stanox_crs_records {
-        tiploc_to_crs.insert(record.tiploc.clone(), record.crs.clone());
-    }
-    // Inserted second so it overwrites any `stanox_crs_records`-derived
-    // entry for the same TIPLOC key -- `tiploc_crs_records` wins on
-    // conflict, matching `crates/api/src/data/queries.rs`'s own
-    // `tiploc_crs`-preferred union convention.
-    for record in tiploc_crs_records {
-        tiploc_to_crs.insert(record.tiploc.clone(), record.crs.clone());
-    }
+    let tiploc_to_crs = merged_tiploc_crs(stanox_crs_records, tiploc_crs_records);
 
     let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for (tiploc, crs) in tiploc_to_crs {
@@ -1558,10 +1643,53 @@ fn crs_to_tiploc_map(
     map
 }
 
+/// TIPLOC -> CRS, the union of both crosswalks with `tiploc_crs_records`
+/// winning on a conflict (`crates/api/src/data/queries.rs`'s own
+/// `tiploc_crs`-preferred convention). The shared first half of
+/// [`crs_to_tiploc_map`] and [`tiploc_to_crs_map`].
+fn merged_tiploc_crs(
+    stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
+) -> std::collections::HashMap<String, String> {
+    let mut tiploc_to_crs: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for record in stanox_crs_records {
+        tiploc_to_crs.insert(record.tiploc.clone(), record.crs.clone());
+    }
+    // Inserted second so it overwrites any `stanox_crs_records`-derived
+    // entry for the same TIPLOC key.
+    for record in tiploc_crs_records {
+        tiploc_to_crs.insert(record.tiploc.clone(), record.crs.clone());
+    }
+    tiploc_to_crs
+}
+
+/// Normalized TIPLOC -> upper-case CRS, for train membership
+/// ([`schedule_query::classify`]): the same union [`crs_to_tiploc_map`]
+/// inverts.
+fn tiploc_to_crs_map(
+    stanox_crs_records: &[common::StanoxCrsRecord],
+    tiploc_crs_records: &[common::TiplocCrsRecord],
+) -> std::collections::HashMap<String, String> {
+    merged_tiploc_crs(stanox_crs_records, tiploc_crs_records)
+        .into_iter()
+        .map(|(tiploc, crs)| {
+            (
+                schedule_query::normalize_tiploc(&tiploc).to_string(),
+                crs.to_uppercase(),
+            )
+        })
+        .collect()
+}
+
 /// One line's real TIPLOC filter list for `schedule_query::schedules_touching`,
 /// resolved per-station from the real, CIF-derived `crs_to_tiploc` map --
 /// NOT from the TOML `tiploc` field (see `lines_to_publish`'s doc comment
-/// for why that field is no longer used for this).
+/// for why that field is no longer used for this). Test-only since
+/// 2026-10-06: the publisher now finds a line's population through
+/// [`schedule_query::classify`], which also drops never-called junction
+/// TIPLOCs and applies `crs_aliases`.
+#[cfg(test)]
 fn line_tiplocs<'a>(
     line: &common::LineDefinition,
     crs_to_tiploc: &'a std::collections::HashMap<String, Vec<String>>,
@@ -2771,6 +2899,46 @@ mod poll_once_tests {
             !map.contains_key("OLD"),
             "the stale stanox_crs CRS for this TIPLOC must not also appear"
         );
+    }
+
+    /// Membership's crosswalk is the same union, keyed by normalized TIPLOC
+    /// with an upper-case CRS, `tiploc_crs` winning a conflict.
+    #[test]
+    fn tiploc_to_crs_map_is_the_union_normalized_with_tiploc_crs_winning() {
+        let stanox_crs_records = vec![common::StanoxCrsRecord {
+            stanox: "S1".to_string(),
+            crs: "old".to_string(),
+            tiploc: "ZZCONFLICT".to_string(),
+            station_name: "TEST STATION".to_string(),
+            source_sequence: 1,
+            change_time_minutes: None,
+        }];
+        let tiploc_crs_records = vec![
+            fixture_tiploc_crs_record("ZZCONFLICT", "new"),
+            fixture_tiploc_crs_record("ZZPAD ", "pdx"),
+        ];
+        let map = tiploc_to_crs_map(&stanox_crs_records, &tiploc_crs_records);
+        assert_eq!(map.get("ZZCONFLICT").map(String::as_str), Some("NEW"));
+        assert_eq!(map.get("ZZPAD").map(String::as_str), Some("PDX"));
+    }
+
+    /// A catalogue line reaches membership with upper-cased CRS codes and
+    /// its `crs_aliases`/`trunk_for` carried over.
+    #[test]
+    fn membership_line_carries_aliases_and_trunk_for() {
+        let mut line = fixture_line(
+            "zz-line",
+            vec![fixture_station("pad", None), fixture_station("BDS", None)],
+        );
+        line.operators = vec!["XR".to_string()];
+        line.crs_aliases
+            .insert("pdx".to_string(), "pad".to_string());
+        line.trunk_for = vec!["zz-branch".to_string()];
+        let m = membership_line(&line);
+        assert_eq!(m.stations, vec!["PAD".to_string(), "BDS".to_string()]);
+        assert_eq!(m.crs_aliases.get("PDX").map(String::as_str), Some("PAD"));
+        assert_eq!(m.trunk_for, vec!["zz-branch".to_string()]);
+        assert_eq!(m.operators, vec!["XR".to_string()]);
     }
 
     /// The end-to-end regression test this gap fix was reviewed against: a
