@@ -119,9 +119,10 @@ pub fn lines_affected_by<'a>(
         all_operators: needs_all_operator_scope(&operators, &known),
         operators,
     };
+    let summary = incident.summary.to_lowercase();
     let eligible: Vec<&'a LineDefinition> = lines
         .values()
-        .filter(|line| !is_excluded(line, &haystack))
+        .filter(|line| !is_excluded(line, &summary))
         .collect();
     let places = resolve_places(incident, &eligible, &scope, gazetteer);
 
@@ -475,10 +476,19 @@ fn match_one<'a>(
     None
 }
 
-fn is_excluded(line: &LineDefinition, haystack: &str) -> bool {
+/// Whether one of `line`'s `excluded_keywords` vetoes it, given the
+/// incident's lowercased summary.
+///
+/// The summary only (2026-10-06 decision 1). A description routinely names
+/// other lines and operators for ticket acceptance and alternative routes:
+/// 7CE5A87E ("Reduced service between London Paddington and Heathrow
+/// Terminal 5 / Reading") described what "Elizabeth line" and "Heathrow
+/// Express" trains were doing, which vetoed both Heathrow lines -- each
+/// excludes the other's name -- on the incident that was about them.
+fn is_excluded(line: &LineDefinition, summary: &str) -> bool {
     line.excluded_keywords
         .iter()
-        .any(|kw| haystack.contains(&kw.to_lowercase()))
+        .any(|kw| summary.contains(&kw.to_lowercase()))
 }
 
 #[cfg(test)]
@@ -567,6 +577,47 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         assert!(matches.is_empty(), "excluded keyword should veto match");
+    }
+
+    #[test]
+    fn excluded_keywords_veto_on_the_summary_only() {
+        // 7CE5A87E: the description says what Elizabeth line and Heathrow
+        // Express trains are doing; each Heathrow line excludes the other's
+        // name, so a whole-text veto removed both.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "7CE5A87E",
+            "Reduced service between London Paddington and Heathrow Airport Terminal 5 / Reading",
+            "<p>Elizabeth line trains will not serve Heathrow Airport Terminal 5.</p>\
+             <p>Heathrow Express services will operate to Terminal 5.</p>",
+            &["XR", "GW", "HX"],
+            &[],
+        );
+        let found: Vec<&str> = super::lines_affected_by(&inc, &lines, &registry, &real_gazetteer())
+            .into_iter()
+            .map(|m| m.line.id.as_str())
+            .collect();
+        for id in ["elizabeth-heathrow", "heathrow-express"] {
+            assert!(found.contains(&id), "{id}: {found:?}");
+        }
+        // A veto in the summary still applies.
+        let inc = incident(
+            "T",
+            "Heathrow Express: disruption between London Paddington and Heathrow Airport",
+            "",
+            &["XR", "HX"],
+            &[],
+        );
+        let found: Vec<String> =
+            super::lines_affected_by(&inc, &lines, &registry, &real_gazetteer())
+                .into_iter()
+                .map(|m| m.line.id.clone())
+                .collect();
+        assert!(
+            !found.contains(&"elizabeth-heathrow".to_string()),
+            "{found:?}"
+        );
     }
 
     #[test]
