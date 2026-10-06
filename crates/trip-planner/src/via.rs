@@ -117,6 +117,17 @@ impl Vias {
         self.targets.is_empty()
     }
 
+    /// The same vias with via `index` left out (for explaining an empty
+    /// plan: is that via the one that cannot be passed?).
+    #[must_use]
+    pub fn without(&self, index: usize) -> Self {
+        let mut copy = self.clone();
+        if index < copy.targets.len() {
+            copy.targets.remove(index);
+        }
+        copy
+    }
+
     /// The progress after being at `tiploc` (normalized) with progress `v`:
     /// every via in a row that covers it is passed.
     pub(crate) fn advance_at(&self, mut v: usize, tiploc: &str) -> usize {

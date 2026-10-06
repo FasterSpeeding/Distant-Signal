@@ -436,6 +436,7 @@ mod tests {
                 departure_tiploc: None,
                 live_feasible: None,
                 continues_previous_train: false,
+                via_satisfied_by: Vec::new(),
             }],
             capped_by_max_changes: false,
             depart_after_min: None,

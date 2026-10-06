@@ -51,6 +51,15 @@ static WAYPOINT_LIMIT: LazyLock<usize> =
 /// empty segment is explained by re-running it without each list.
 const MAX_AVOIDED: usize = 8;
 
+/// Cap on `?via=` (pass-through vias), checked before any database read.
+/// Each via multiplies the states the joint search carries (one per
+/// waypoint stage and via progress: `(waypoints + 1) * (vias + 1)`), so this
+/// bounds the search's size together with [`MAX_WAYPOINTS`]; the measured
+/// cost is in
+/// docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md.
+/// Three is what a ticket routing ("via X, Y and Z") needs in practice.
+const MAX_VIAS: usize = 3;
+
 /// Global cap on trip plans being computed at once (2026-09-25 review, High
 /// 4c). This is a per-process concurrency gate, NOT a per-IP rate limit --
 /// stated plainly because the two are often conflated: it bounds how much of
@@ -144,6 +153,11 @@ struct TripPlanParams {
     /// stations (staying aboard a train calling there is fine).
     #[serde(default)]
     avoid_change: Option<String>,
+    /// `?via=CRS[,CRS]` (2026-10-06): stations to pass through in order,
+    /// calling there or not. See [`parse_vias`] and
+    /// [`trip_planning_itinerary::build_vias`].
+    #[serde(default)]
+    via: Option<String>,
     #[serde(default = "default_results")]
     results: String,
     /// Optional interchange cap, `?maxChanges=0`..`=4` (inclusive). Absent
@@ -170,7 +184,7 @@ fn default_results() -> String {
     "fastest".to_string()
 }
 
-/// `GET /Trips/plan?origin=&destination=&date=[&waypoints=]
+/// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&via=]
 /// [&departAfter=|&arriveBy=][&avoid=][&avoidStop=][&avoidChange=]
 /// [&results=fastest|options][&maxChanges=0..4][&live=true|false]`.
 ///
@@ -204,6 +218,17 @@ fn default_results() -> String {
 ///   `itineraries` are aligned -- `segments[s].itineraries[j]` is part `s`
 ///   of journey `j` -- and the top-level `journeys` summarises each. A
 ///   waypoint repeating the origin, destination or previous waypoint is a
+///   400.
+/// - `via` (2026-10-06): comma-separated CRS codes (at most [`MAX_VIAS`]),
+///   stations every journey must pass through in this order -- staying
+///   aboard a train that calls there or runs through without stopping,
+///   or changing or walking there. The `via` of Skye's `train-mcp` and the
+///   Distant-Signal-MCP's `plan_journey`. Vias and waypoints are separate
+///   ordered lists that may interleave. Running through is seen only where
+///   CIF records a passing point (timing points); elsewhere only a call
+///   counts. Each journey's `viaSatisfiedBy` names the leg that passed each
+///   via. An unknown code, a via equal to the origin or the destination,
+///   the same via twice in a row, or a via that is also in `avoid`, is a
 ///   400.
 /// - A segment with no itineraries carries `noResultReason`
 ///   (`{constraint, values, message}`, see
@@ -306,6 +331,8 @@ async fn get_trip_plan(
         avoid_change: parse_station_list("avoidChange", params.avoid_change.as_deref())?,
     };
     check_avoid_conflicts(&avoid, &origin, &waypoints, &destination)?;
+    let vias = parse_vias(params.via.as_deref())?;
+    check_via_conflicts(&vias, &avoid, &origin, &destination)?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -373,22 +400,31 @@ async fn get_trip_plan(
     // blocking search (the live overlay may run several) and released only
     // when the last of them finishes -- see bound 3 in this fn's doc comment.
     let permit = Arc::new(permit);
-    // The avoid lists' search restrictions, once per request (`avoid` walks
-    // the day's connections for the trains running through a station).
-    let restrictions = if avoid.is_empty() {
-        None
+    // The avoid lists' search restrictions and the vias' search state, once
+    // per request (each walks the day's connections for the trains that
+    // call at or run through its stations).
+    let (restrictions, via_search) = if avoid.is_empty() && vias.is_empty() {
+        (None, None)
     } else {
         let graph = graph.clone();
         let lists = avoid.clone();
+        let codes = vias.clone();
         let permit = permit.clone();
-        tokio::task::spawn_blocking(move || {
+        let (restrictions, via_search) = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            trip_planning_itinerary::build_restrictions(
+            let restrictions = trip_planning_itinerary::build_restrictions(
                 &graph.connections,
                 &graph.interchange,
                 Some(&graph.passes),
                 &lists,
-            )
+            )?;
+            let via_search = trip_planning_itinerary::build_vias(
+                &graph.connections,
+                &graph.interchange,
+                Some(&graph.passes),
+                &codes,
+            )?;
+            Ok::<_, String>((restrictions, via_search))
         })
         .await
         .map_err(|join_err| {
@@ -398,8 +434,8 @@ async fn get_trip_plan(
                 "failed to plan trip".to_string(),
             )
         })?
-        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?
-        .map(Arc::new)
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+        (restrictions.map(Arc::new), via_search.map(Arc::new))
     };
     let request = Arc::new(PlanRequest {
         date,
@@ -409,6 +445,8 @@ async fn get_trip_plan(
         time,
         avoid,
         restrictions,
+        vias,
+        via_search,
         results: params.results.clone(),
         max_changes,
     });
@@ -483,6 +521,8 @@ async fn get_trip_plan(
         "avoid": request.avoid.avoid,
         "avoidStop": request.avoid.avoid_stop,
         "avoidChange": request.avoid.avoid_change,
+        // Additive (2026-10-06): the pass-through vias as applied.
+        "via": request.vias,
         "segments": segments.iter().map(|segment| serde_json::json!({
             "originCrs": segment.origin_crs,
             "destinationCrs": segment.destination_crs,
@@ -519,6 +559,11 @@ async fn get_trip_plan(
                 if let Some(feasible) = journey.live_feasible {
                     value["liveFeasible"] = feasible.into();
                 }
+                // Additive (2026-10-06), with `via` only: for each via in
+                // order, the leg that passed it.
+                if !request.vias.is_empty() {
+                    value["viaSatisfiedBy"] = serde_json::json!(journey.via_satisfied_by);
+                }
                 value
             })
             .collect::<Vec<_>>(),
@@ -539,6 +584,9 @@ struct PlanRequest {
     avoid: trip_planning_itinerary::AvoidLists,
     /// `build_restrictions(avoid)`, `None` when no list is given.
     restrictions: Option<Arc<trip_planner::Restrictions>>,
+    /// `?via=`, and `build_vias` of it (`None` when empty).
+    vias: Vec<String>,
+    via_search: Option<Arc<trip_planner::Vias>>,
     results: String,
     max_changes: u32,
 }
@@ -573,6 +621,8 @@ async fn run_plan(
             origin_crs: &request.origin,
             waypoints: &request.waypoints,
             destination_crs: &request.destination,
+            vias: &request.vias,
+            via_search: request.via_search.as_deref(),
             time: request.time,
         })
     })
@@ -839,6 +889,61 @@ fn check_avoid_conflicts(
                 format!("{name}: '{code}' is {role}; a trip cannot avoid it"),
             ));
         }
+    }
+    Ok(())
+}
+
+/// Splits, trims and uppercases `?via=`, keeping the order (a via may
+/// repeat, but not twice in a row), capped at [`MAX_VIAS`] -- a 400 before
+/// any database read, like [`parse_waypoints`].
+fn parse_vias(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String)> {
+    let vias: Vec<String> = raw
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect();
+    if vias.len() > MAX_VIAS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "too many via stations: {} given, at most {MAX_VIAS} allowed",
+                vias.len()
+            ),
+        ));
+    }
+    if let Some([repeated, _]) = vias.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("via: '{repeated}' is given twice in a row; name it once"),
+        ));
+    }
+    Ok(vias)
+}
+
+/// A via that is the origin or the destination says nothing (every journey
+/// passes them), and a via that is also avoided (`avoid`: not even passing
+/// through) cannot be satisfied: a 400 naming both, before any database
+/// read. A via in `avoidStop` (pass through without calling) or
+/// `avoidChange` is a meaningful combination and allowed.
+fn check_via_conflicts(
+    vias: &[String],
+    avoid: &trip_planning_itinerary::AvoidLists,
+    origin: &str,
+    destination: &str,
+) -> Result<(), (StatusCode, String)> {
+    for via in vias {
+        let message = if via == origin {
+            format!("via: '{via}' is the origin; every journey passes it already")
+        } else if via == destination {
+            format!("via: '{via}' is the destination; every journey passes it already")
+        } else if avoid.avoid.contains(via) {
+            format!("via: '{via}' is also in avoid; a trip cannot both pass through and avoid it")
+        } else {
+            continue;
+        };
+        return Err((StatusCode::BAD_REQUEST, message));
     }
     Ok(())
 }
@@ -1139,6 +1244,72 @@ mod tests {
             "{message}"
         );
         assert!(check_avoid_conflicts(&lists, "KGX", &[], "EDB").is_ok());
+    }
+
+    #[test]
+    fn via_is_read_from_its_wire_name_normalised_ordered_and_capped() {
+        let uri: axum::http::Uri =
+            "http://example.com/Trips/plan?origin=EUS&destination=MAN&date=2026-10-06&via=wfj,CRE"
+                .parse()
+                .expect("parse uri");
+        let Query(params) =
+            Query::<TripPlanParams>::try_from_uri(&uri).expect("valid query string");
+        assert_eq!(params.via.as_deref(), Some("wfj,CRE"));
+        assert_eq!(
+            parse_vias(params.via.as_deref()),
+            Ok(vec!["WFJ".to_string(), "CRE".to_string()])
+        );
+        // Order is kept; a repeat that is not in a row is allowed.
+        assert_eq!(
+            parse_vias(Some(" cre , wfj,, CRE")),
+            Ok(vec![
+                "CRE".to_string(),
+                "WFJ".to_string(),
+                "CRE".to_string()
+            ])
+        );
+        assert_eq!(parse_vias(None), Ok(Vec::new()));
+        assert_eq!(parse_vias(Some(" , ")), Ok(Vec::new()));
+
+        let raw = (0..=MAX_VIAS)
+            .map(|i| format!("Z{i:02}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let (status, message) = parse_vias(Some(&raw)).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("via") && message.contains(&MAX_VIAS.to_string()));
+        let (status, message) = parse_vias(Some("CRE,cre")).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("twice in a row"), "{message}");
+    }
+
+    #[test]
+    fn a_via_at_either_end_or_also_avoided_is_a_400() {
+        let none = trip_planning_itinerary::AvoidLists::default();
+        let vias = |codes: &[&str]| codes.iter().map(ToString::to_string).collect::<Vec<_>>();
+        for (codes, needle) in [
+            (vias(&["EUS"]), "the origin"),
+            (vias(&["CRE", "MAN"]), "the destination"),
+        ] {
+            let (status, message) = check_via_conflicts(&codes, &none, "EUS", "MAN").unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(message.contains(needle), "{message}");
+        }
+        let avoided = trip_planning_itinerary::AvoidLists {
+            avoid: vec!["CRE".to_string()],
+            ..Default::default()
+        };
+        let (_, message) =
+            check_via_conflicts(&vias(&["CRE"]), &avoided, "EUS", "MAN").unwrap_err();
+        assert!(message.contains("also in avoid"), "{message}");
+        // Passing through without calling (avoidStop) or without changing
+        // (avoidChange) is a meaningful combination.
+        let loose = trip_planning_itinerary::AvoidLists {
+            avoid_stop: vec!["CRE".to_string()],
+            avoid_change: vec!["CRE".to_string()],
+            ..Default::default()
+        };
+        assert!(check_via_conflicts(&vias(&["CRE"]), &loose, "EUS", "MAN").is_ok());
     }
 }
 
@@ -2954,5 +3125,116 @@ mod db_tests {
         assert!(body.as_str().unwrap().contains("too many waypoints"));
 
         cleanup_live(&pool, &["TWXALL"], "TWXNET").await;
+    }
+
+    /// `?via=` end to end: TWVF1 runs ZVA -> ZVC through ZVP without calling
+    /// (an untimed passing row); TWVN1 is faster and goes nowhere near it.
+    /// ZVX is a known station no train touches.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn via_passes_through_without_calling_end_to_end() {
+        let pool = connect().await;
+        let uids = ["TWVF1", "TWVN1"];
+        cleanup_live(&pool, &uids, "TWVNET").await;
+        seed_stations(
+            &pool,
+            "TWVNET",
+            &[
+                ("ZVA", "TWVA"),
+                ("ZVP", "TWVP"),
+                ("ZVC", "TWVC"),
+                ("ZVX", "TWVX"),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TWVF1",
+            &[
+                (0, "TWVA", "origin", None, Some("10:00:00")),
+                (1, "TWVP", "intermediate", None, None),
+                (2, "TWVC", "terminate", Some("11:00:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TWVN1",
+            &[
+                (0, "TWVA", "origin", None, Some("10:05:00")),
+                (1, "TWVC", "terminate", Some("10:50:00"), None),
+            ],
+        )
+        .await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+        let uri = |query: &str| {
+            format!(
+                "/Trips/plan?origin=ZVA&destination=ZVC&date={}{query}",
+                live_date()
+            )
+        };
+
+        for query in [
+            "&via=zvp&departAfter=09:45",
+            "&via=ZVP&departAfter=09:45&live=false",
+            "&via=ZVP&arriveBy=11:30",
+            "&via=ZVP&departAfter=09:45&results=options&maxChanges=0",
+            "&via=ZVP&avoidStop=ZVP&departAfter=09:45",
+        ] {
+            let (status, body) = get(test_router(test_app(pool.clone())), uri(query)).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body:?}");
+            assert_eq!(body["via"], serde_json::json!(["ZVP"]), "{query}");
+            assert_eq!(train_uids(&body, 0), ["TWVF1"], "{query}: {body:?}");
+            assert_eq!(
+                body["journeys"][0]["viaSatisfiedBy"],
+                serde_json::json!([{"crs": "ZVP", "segment": 0, "leg": 0, "how": "pass"}]),
+                "{query}: {body:?}"
+            );
+        }
+
+        // No via: the faster train, `via` empty, no `viaSatisfiedBy`.
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            uri("&departAfter=09:45"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(train_uids(&body, 0), ["TWVN1"]);
+        assert_eq!(body["via"], serde_json::json!([]));
+        assert!(body["journeys"][0].get("viaSatisfiedBy").is_none());
+
+        // Unsatisfiable: still a 200, with the via named.
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            uri("&via=ZVX&departAfter=09:45"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let segment = &body["segments"][0];
+        assert_eq!(segment["itineraries"], serde_json::json!([]));
+        assert_eq!(segment["noResultReason"]["constraint"], "via", "{body:?}");
+        assert_eq!(
+            segment["noResultReason"]["values"],
+            serde_json::json!(["ZVX"])
+        );
+        assert_eq!(body["journeys"], serde_json::json!([]));
+
+        // 400s, consistent with waypoints and the avoid lists.
+        for (query, needle) in [
+            ("&via=ZZQ", "not a recognised station CRS code"),
+            ("&via=ZVA", "the origin"),
+            ("&via=ZVC", "the destination"),
+            ("&via=ZVP&avoid=ZVP", "also in avoid"),
+            ("&via=ZVP,ZVP", "twice in a row"),
+            ("&via=ZVP,ZVX,ZVP,ZVX", "too many via"),
+        ] {
+            let (status, body) = get(test_router(test_app(pool.clone())), uri(query)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body:?}");
+            let message = body.as_str().unwrap_or_default();
+            assert!(message.contains(needle), "{query}: {message}");
+        }
+
+        cleanup_live(&pool, &uids, "TWVNET").await;
     }
 }

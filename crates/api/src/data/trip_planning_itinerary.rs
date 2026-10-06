@@ -168,6 +168,10 @@ pub struct PlannedItinerary {
     /// into the waypoint: the traveller stays aboard and makes no change
     /// there (additive, 2026-09-29; always `false` for the first segment).
     pub continues_previous_train: bool,
+    /// Internal: the vias this itinerary's legs satisfied, collected into
+    /// the response's `journeys[j].viaSatisfiedBy` (see [`journey_summaries`]).
+    #[serde(skip)]
+    pub via_satisfied_by: Vec<ViaSatisfied>,
 }
 
 impl PlannedItinerary {
@@ -192,6 +196,7 @@ impl PlannedItinerary {
             arrival_min,
             live_feasible: None,
             continues_previous_train: false,
+            via_satisfied_by: Vec::new(),
             arrival_tiploc: legs.last().map(|leg| match leg {
                 JourneyLeg::Train(train) => train.to_tiploc.clone(),
                 JourneyLeg::Transfer(transfer) => transfer.to_tiploc.clone(),
@@ -640,6 +645,9 @@ impl SegmentSearch<'_> {
 ///   list (`values`), none with it;
 /// - `avoidCombined`: one exists without the avoid lists, but dropping any
 ///   single list is not enough (`values` is every avoided code);
+/// - `via` (2026-10-06): one exists without the pass-through vias; `values`
+///   is the single via whose removal alone is enough, or every via when no
+///   single one is (every segment carries it);
 /// - `departAfter` / `arriveBy`: nothing leaves late enough / arrives early
 ///   enough (`values` is the time, `HH:MM`), though something runs that day;
 /// - `noRoute`: nothing reaches the destination that service day at all
@@ -827,6 +835,8 @@ pub fn plan_via_waypoints_with_overlay(
         origin_crs,
         waypoints,
         destination_crs,
+        vias: &[],
+        via_search: None,
         time: TimeBound::DepartAfter(clock_minutes(departure_after)),
     })
 }
@@ -967,6 +977,106 @@ pub fn build_restrictions(
     Ok(Some(Restrictions::new(avoid_change, no_call, pass_legs)))
 }
 
+/// Which leg passed one via: served per journey as
+/// `journeys[j].viaSatisfiedBy[k]` for the request's `via[k]`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViaSatisfied {
+    /// The via, as requested.
+    pub crs: String,
+    /// Index into `segments` (the part of the journey).
+    pub segment: usize,
+    /// Index into that segment's `itineraries[j].legs`.
+    pub leg: usize,
+    /// `call` (the train called there: the traveller stayed aboard, boarded
+    /// or alighted), `pass` (it ran through without calling, or past a
+    /// call the live overlay cancelled) or `walk` (a transfer leg into it).
+    pub how: &'static str,
+}
+
+/// The pass-through vias `?via=` asks for, as the search state
+/// ([`trip_planner::Vias`]), or `None` when there are none. `Err` names an
+/// unrecognised code.
+///
+/// Every CRS code covers all of its TIPLOCs. A via is passed by a train
+/// that calls there or runs through it; running through is only visible
+/// where `passes` (the day's [`schedule_query::PassIndex`]) has a row, and
+/// CIF records one only at a timing point -- so at a station that is not a
+/// timing point, only a call (or a change or walk there) satisfies the via.
+/// Every train that calls at or passes a via gets its base connections as
+/// [`trip_planner::PassSpan`]s, so a live replacement over a cancelled call
+/// there still counts as passing it.
+pub fn build_vias(
+    connections: &[schedule_query::Connection],
+    interchange: &InterchangeData,
+    passes: Option<&schedule_query::PassIndex>,
+    vias: &[String],
+) -> Result<Option<trip_planner::Vias>, String> {
+    use std::collections::{HashMap, HashSet};
+
+    if vias.is_empty() {
+        return Ok(None);
+    }
+    let mut targets: Vec<Vec<String>> = Vec::with_capacity(vias.len());
+    for code in vias {
+        match interchange.crs_to_tiplocs.get(code) {
+            Some(found) if !found.is_empty() => targets.push(found.clone()),
+            _ => {
+                return Err(format!(
+                    "via: '{code}' is not a recognised station CRS code"
+                ));
+            }
+        }
+    }
+    let all: HashSet<&str> = targets
+        .iter()
+        .flatten()
+        .map(|t| schedule_query::normalize_tiploc(t))
+        .collect();
+    // Per connection index, the via TIPLOCs it runs through, by position.
+    let mut passed_by: HashMap<usize, Vec<(u16, &str)>> = HashMap::new();
+    if let Some(passes) = passes {
+        for &tiploc in &all {
+            for row in passes.passes_at(tiploc) {
+                passed_by
+                    .entry(row.connection as usize)
+                    .or_default()
+                    .push((row.position, tiploc));
+            }
+        }
+    }
+    let mut uids: HashSet<&str> = passed_by
+        .keys()
+        .filter_map(|&index| connections.get(index))
+        .map(|c| c.uid.as_str())
+        .collect();
+    for connection in connections {
+        if all.contains(schedule_query::normalize_tiploc(&connection.from_tiploc))
+            || all.contains(schedule_query::normalize_tiploc(&connection.to_tiploc))
+        {
+            uids.insert(connection.uid.as_str());
+        }
+    }
+    let mut spans: HashMap<String, Vec<trip_planner::PassSpan>> = HashMap::new();
+    for (index, connection) in connections.iter().enumerate() {
+        if !uids.contains(connection.uid.as_str()) {
+            continue;
+        }
+        let mut ordered = passed_by.get(&index).cloned().unwrap_or_default();
+        ordered.sort_unstable();
+        spans
+            .entry(connection.uid.clone())
+            .or_default()
+            .push(trip_planner::PassSpan {
+                from_tiploc: connection.from_tiploc.clone(),
+                to_tiploc: connection.to_tiploc.clone(),
+                departure_min: connection.departure_min,
+                passed: ordered.into_iter().map(|(_, t)| t.to_string()).collect(),
+            });
+    }
+    Ok(Some(trip_planner::Vias::new(&targets, spans)))
+}
+
 /// Everything [`plan_trip`] needs.
 pub struct TripPlanInput<'a> {
     /// `search.restrictions` must be [`build_restrictions`] of `avoid`.
@@ -978,6 +1088,10 @@ pub struct TripPlanInput<'a> {
     pub origin_crs: &'a str,
     pub waypoints: &'a [String],
     pub destination_crs: &'a str,
+    /// `?via=`: CRS codes to pass through, in order.
+    pub vias: &'a [String],
+    /// [`build_vias`] of `vias` (`None` when there are none).
+    pub via_search: Option<&'a trip_planner::Vias>,
     /// Applies to the first segment (`DepartAfter`) or the last
     /// (`ArriveBy`); the others are chained from their neighbour.
     pub time: TimeBound,
@@ -1003,15 +1117,23 @@ pub struct TripPlanInput<'a> {
 /// ([`plan_via_waypoints`]); that per-segment planner is still what explains
 /// an infeasible joint plan: it finds the segment that fails and why.
 ///
+/// Pass-through vias (`vias`, 2026-10-06) take the same joint search: the
+/// journey must also pass through every via in order, by a train calling
+/// there or running through it, or by changing or walking there (see
+/// [`build_vias`] and `trip_planner::via`). Vias and waypoints are two
+/// independent ordered lists; a via may fall in any segment. Each journey
+/// reports which leg passed each via ([`ViaSatisfied`]).
+///
 /// Every segment's CRS codes are validated before any search, so a bad
 /// code is a 400 naming the first segment that has one. A waypoint equal to
-/// the origin, the destination or the waypoint before it is a 400 too.
+/// the origin, the destination or the waypoint before it is a 400 too, and
+/// so is a via equal to the origin or the destination.
 #[expect(
     clippy::too_many_lines,
     reason = "long but linear; splitting it would scatter its shared state across helpers"
 )]
 pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
-    if input.waypoints.is_empty() {
+    if input.waypoints.is_empty() && input.vias.is_empty() {
         return plan_chained(input);
     }
     let search = &input.search;
@@ -1045,6 +1167,21 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
             ));
         }
     }
+    for via in input.vias {
+        let clash = if via.eq_ignore_ascii_case(input.origin_crs) {
+            "the origin"
+        } else if via.eq_ignore_ascii_case(input.destination_crs) {
+            "the destination"
+        } else {
+            continue;
+        };
+        return Err(format!(
+            "via: '{via}' is {clash}; every journey passes it already"
+        ));
+    }
+    if !input.vias.is_empty() && input.via_search.is_none() {
+        return Err("via: the vias were not resolved".to_string());
+    }
 
     let last = tiplocs.len() - 1;
     let options = ArriveByOptions {
@@ -1053,7 +1190,7 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
         from_tiplocs: &tiplocs[0],
         waypoints: &tiplocs[1..last],
         to_tiplocs: &tiplocs[last],
-        vias: None,
+        vias: input.via_search,
         arrive_by_min: match input.time {
             TimeBound::ArriveBy(deadline) => deadline,
             TimeBound::DepartAfter(_) => 0,
@@ -1066,7 +1203,7 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
         from_tiplocs: &tiplocs[0],
         waypoints: &tiplocs[1..last],
         to_tiplocs: &tiplocs[last],
-        vias: None,
+        vias: input.via_search,
         date: search.date,
     };
     let (overlay, restrictions) = (search.overlay, search.restrictions);
@@ -1173,6 +1310,24 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
             itinerary.continues_previous_train = part.continues_previous_train;
             segment.itineraries.push(itinerary);
         }
+        for (via, hit) in input.vias.iter().zip(&journey.via_legs) {
+            let how = match hit.how {
+                trip_planner::ViaHow::Call => "call",
+                trip_planner::ViaHow::Pass => "pass",
+                trip_planner::ViaHow::Walk => "walk",
+            };
+            if let Some(itinerary) = segments
+                .get_mut(hit.part)
+                .and_then(|segment| segment.itineraries.last_mut())
+            {
+                itinerary.via_satisfied_by.push(ViaSatisfied {
+                    crs: via.clone(),
+                    segment: hit.part,
+                    leg: hit.leg,
+                    how,
+                });
+            }
+        }
     }
 
     // What each segment was, in effect, searched from / for.
@@ -1210,9 +1365,89 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
     }
 
     if journeys.is_empty() {
-        explain_infeasible_joint_plan(input, &mut segments, capped)?;
+        // Would the same plan, without (some of) the vias, find a journey?
+        // The fastest one is enough to tell.
+        let probe = |vias: Option<&trip_planner::Vias>| match input.time {
+            TimeBound::DepartAfter(start) => trip_planner::scan_staged(
+                &trip_planner::StagedOptions { vias, ..staged },
+                start,
+                overlay,
+                restrictions,
+            )
+            .is_some(),
+            TimeBound::ArriveBy(_) => trip_planner::staged_arrive_by(
+                &ArriveByOptions { vias, ..options },
+                overlay,
+                restrictions,
+            )
+            .is_some(),
+        };
+        let via_reason = if capped {
+            None
+        } else {
+            explain_unpassable_via(input, &probe)
+        };
+        match via_reason {
+            Some(reason) => {
+                for segment in &mut segments {
+                    segment.no_result_reason = Some(reason.clone());
+                }
+            }
+            None => explain_infeasible_joint_plan(input, &mut segments, capped)?,
+        }
     }
     Ok(segments)
+}
+
+/// With vias, an empty plan that a plan without them would fill: the reason
+/// is `via`, naming the single via whose removal alone is enough when there
+/// is one, else every via. `None` when even without the vias nothing is
+/// found (another constraint is to blame). `probe(vias)` runs the fastest
+/// search with that via list. Costs one to three extra CSA searches, and
+/// only for an empty plan.
+fn explain_unpassable_via(
+    input: &TripPlanInput<'_>,
+    probe: &dyn Fn(Option<&trip_planner::Vias>) -> bool,
+) -> Option<NoResultReason> {
+    let vias = input.via_search?;
+    if input.vias.is_empty() || !probe(None) {
+        return None;
+    }
+    let single = if input.vias.len() == 1 {
+        Some(0)
+    } else {
+        (0..input.vias.len()).find(|&index| probe(Some(&vias.without(index))))
+    };
+    let (values, described, removed) = match single {
+        Some(index) => (
+            vec![input.vias[index].clone()],
+            input.vias[index].clone(),
+            "that via",
+        ),
+        None => (
+            input.vias.to_vec(),
+            format!("{} in that order", input.vias.join(", then ")),
+            "the vias",
+        ),
+    };
+    let phrase = match input.time {
+        TimeBound::DepartAfter(start) => format!("departing after {}", clock_label(start)),
+        TimeBound::ArriveBy(deadline) => format!("arriving by {}", clock_label(deadline)),
+    };
+    let through = if input.waypoints.is_empty() {
+        String::new()
+    } else {
+        format!(" through {}", input.waypoints.join(", "))
+    };
+    Some(NoResultReason {
+        constraint: "via",
+        values,
+        message: format!(
+            "No itinerary from {}{through} to {} {phrase} on {} passes through {described} \
+             (calling there or not); one exists without {removed}.",
+            input.origin_crs, input.destination_crs, input.search.date
+        ),
+    })
 }
 
 fn leg_departure_min(leg: &JourneyLeg) -> u32 {
@@ -1355,6 +1590,8 @@ pub struct JourneySummary {
     /// Live overlay only: every part live-feasible, and every waypoint
     /// change still made on live times.
     pub live_feasible: Option<bool>,
+    /// For each requested via in order, the leg that passed it.
+    pub via_satisfied_by: Vec<ViaSatisfied>,
 }
 
 /// The journeys of an aligned plan (see [`plan_trip`]). Empty when the
@@ -1406,6 +1643,10 @@ pub fn journey_summaries(
                 arrival_min: final_part.arrival_min,
                 exceeds_recommended_changes: first.exceeds_recommended_changes,
                 live_feasible,
+                via_satisfied_by: parts
+                    .iter()
+                    .flat_map(|part| part.via_satisfied_by.iter().cloned())
+                    .collect(),
             }
         })
         .collect()
@@ -2346,6 +2587,8 @@ mod tests {
             origin_crs: "EUS",
             waypoints: &waypoints,
             destination_crs: "MAN",
+            vias: &[],
+            via_search: None,
             time,
         })
         .expect("valid request")
@@ -2713,6 +2956,8 @@ mod tests {
             origin_crs: "EUS",
             waypoints: &[],
             destination_crs: "MKC",
+            vias: &[],
+            via_search: None,
             time: TimeBound::DepartAfter(0),
         })
         .unwrap();
@@ -2750,6 +2995,8 @@ mod tests {
             origin_crs: "EUS",
             waypoints: &waypoints,
             destination_crs: "MAN",
+            vias: &[],
+            via_search: None,
             time,
         })
     }
@@ -2922,6 +3169,354 @@ mod tests {
             )
             .unwrap_err();
             assert!(err.contains(needle), "{err}");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Pass-through vias (2026-10-06).
+    // -----------------------------------------------------------------
+
+    /// Connections and pass index from calling points `(tiploc, arrival,
+    /// departure)`; a row with neither time is an untimed passing point
+    /// (CIF records one only at a timing point).
+    fn day(
+        trains: &[(&str, Calls<'_>)],
+    ) -> (Vec<schedule_query::Connection>, schedule_query::PassIndex) {
+        use schedule_query::CallingPointForConnections as Cp;
+        let at = |t: Option<&str>| t.map(|t| t.parse::<NaiveTime>().unwrap());
+        let schedules: Vec<(&str, Vec<Cp>)> = trains
+            .iter()
+            .map(|(uid, calls)| {
+                let calls = calls
+                    .iter()
+                    .map(|(tiploc, arrival, departure)| Cp {
+                        tiploc: (*tiploc).to_string(),
+                        booked_arrival: at(*arrival),
+                        booked_departure: at(*departure),
+                        day_offset: 0,
+                        can_board: true,
+                        can_alight: true,
+                        public_arrival: None,
+                        public_departure: None,
+                    })
+                    .collect();
+                (*uid, calls)
+            })
+            .collect();
+        schedule_query::build_connections_with_passes(
+            schedules
+                .iter()
+                .map(|(uid, calls)| (*uid, calls.as_slice())),
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test helper mirroring TripPlanInput's independent inputs"
+    )]
+    fn plan_vias(
+        connections: &[schedule_query::Connection],
+        passes: &schedule_query::PassIndex,
+        waypoints: &[&str],
+        vias: &[&str],
+        time: TimeBound,
+        results: &str,
+        max_changes: u32,
+        avoid: &AvoidLists,
+    ) -> Result<Vec<SegmentResult>, String> {
+        let interchange = stations();
+        let restrictions = build_restrictions(connections, &interchange, Some(passes), avoid)?;
+        let vias: Vec<String> = vias.iter().map(ToString::to_string).collect();
+        let via_search = build_vias(connections, &interchange, Some(passes), &vias)?;
+        let waypoints: Vec<String> = waypoints.iter().map(ToString::to_string).collect();
+        plan_trip(&TripPlanInput {
+            search: SegmentSearch {
+                connections,
+                interchange: &interchange,
+                date: date(),
+                results,
+                max_changes,
+                overlay: None,
+                restrictions: restrictions.as_ref(),
+            },
+            passes: Some(passes),
+            avoid,
+            origin_crs: "EUS",
+            waypoints: &waypoints,
+            destination_crs: "MAN",
+            vias: &vias,
+            via_search: via_search.as_ref(),
+            time,
+        })
+    }
+
+    fn via_hits(segments: &[SegmentResult]) -> Vec<Vec<(String, usize, usize, &'static str)>> {
+        journey_summaries(segments, &stations())
+            .iter()
+            .map(|journey| {
+                journey
+                    .via_satisfied_by
+                    .iter()
+                    .map(|v| (v.crs.clone(), v.segment, v.leg, v.how))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// F1 runs EUSTON -> (passes WATFDJ, a timing point) -> MANCPIC; S1 calls
+    /// at MILTNKC; N1 is the fastest and goes nowhere near either.
+    type Calls<'a> = &'a [(&'a str, Option<&'a str>, Option<&'a str>)];
+    const F1: Calls<'static> = &[
+        ("EUSTON", None, Some("08:00")),
+        ("WATFDJ", None, None),
+        ("MANCPIC", Some("10:00"), None),
+    ];
+    const S1: Calls<'static> = &[
+        ("EUSTON", None, Some("07:30")),
+        ("MILTNKC", Some("08:10"), Some("08:12")),
+        ("MANCPIC", Some("10:30"), None),
+    ];
+    const N1: Calls<'static> = &[
+        ("EUSTON", None, Some("08:05")),
+        ("CREWE", Some("09:20"), Some("09:22")),
+        ("MANCPIC", Some("09:50"), None),
+    ];
+
+    #[test]
+    fn a_via_is_passed_without_calling_and_each_journey_names_the_leg() {
+        let (connections, passes) = day(&[("F1", F1), ("S1", S1), ("N1", N1)]);
+        let none = AvoidLists::default();
+        for time in [TimeBound::DepartAfter(0), TimeBound::ArriveBy(700)] {
+            for results in ["fastest", "options"] {
+                let segments = plan_vias(
+                    &connections,
+                    &passes,
+                    &[],
+                    &["WFJ"],
+                    time,
+                    results,
+                    DEFAULT_MAX_CHANGES,
+                    &none,
+                )
+                .unwrap();
+                assert_eq!(train_uids(&segments[0].itineraries[0]), vec!["F1"]);
+                assert_eq!(
+                    via_hits(&segments)[0],
+                    vec![("WFJ".to_string(), 0, 0, "pass")],
+                    "{time:?} {results}"
+                );
+                let segments = plan_vias(
+                    &connections,
+                    &passes,
+                    &[],
+                    &["MKC"],
+                    time,
+                    results,
+                    DEFAULT_MAX_CHANGES,
+                    &none,
+                )
+                .unwrap();
+                assert_eq!(train_uids(&segments[0].itineraries[0]), vec!["S1"]);
+                assert_eq!(
+                    via_hits(&segments)[0],
+                    vec![("MKC".to_string(), 0, 0, "call")]
+                );
+            }
+        }
+        // Without a via: the fastest, and no viaSatisfiedBy entries.
+        let segments = plan_vias(
+            &connections,
+            &passes,
+            &[],
+            &[],
+            TimeBound::DepartAfter(0),
+            "fastest",
+            DEFAULT_MAX_CHANGES,
+            &none,
+        )
+        .unwrap();
+        assert_eq!(train_uids(&segments[0].itineraries[0]), vec!["N1"]);
+        assert_eq!(via_hits(&segments), vec![Vec::new()]);
+    }
+
+    /// CIF records a passing point only at a timing point. A train running
+    /// through a station that is not one leaves no row there, so it cannot
+    /// satisfy a via at that station -- only a call can (documented in
+    /// `build_vias`).
+    #[test]
+    fn a_via_at_a_non_timing_point_is_seen_only_when_a_train_calls_there() {
+        // N1 physically runs through Stafford but its schedule has no row
+        // there (not a timing point on this route).
+        let (connections, passes) = day(&[("N1", N1)]);
+        let none = AvoidLists::default();
+        let segments = plan_vias(
+            &connections,
+            &passes,
+            &[],
+            &["STA"],
+            TimeBound::DepartAfter(0),
+            "fastest",
+            DEFAULT_MAX_CHANGES,
+            &none,
+        )
+        .unwrap();
+        assert!(segments[0].itineraries.is_empty());
+        let reason = segments[0].no_result_reason.as_ref().unwrap();
+        assert_eq!(
+            (reason.constraint, reason.values.clone()),
+            ("via", vec!["STA".to_string()])
+        );
+        assert!(reason.message.contains("passes through STA"), "{reason:?}");
+        // The same train with Stafford as a timing point (an untimed row) or
+        // a call satisfies it.
+        for (arrival, departure, how) in
+            [(None, None, "pass"), (Some("09:00"), Some("09:01"), "call")]
+        {
+            let calls = [N1[0], ("STAFFRD", arrival, departure), N1[1], N1[2]];
+            let (connections, passes) = day(&[("N1", &calls[..])]);
+            let segments = plan_vias(
+                &connections,
+                &passes,
+                &[],
+                &["STA"],
+                TimeBound::DepartAfter(0),
+                "fastest",
+                DEFAULT_MAX_CHANGES,
+                &none,
+            )
+            .unwrap();
+            assert_eq!(via_hits(&segments)[0], vec![("STA".to_string(), 0, 0, how)]);
+        }
+    }
+
+    #[test]
+    fn vias_and_waypoints_interleave_and_combine_with_avoid_stop() {
+        // W1 passes WATFDJ, then calls at MILTNKC and CREWE.
+        let w1: Calls<'_> = &[
+            ("EUSTON", None, Some("08:00")),
+            ("WATFDJ", None, None),
+            ("MILTNKC", Some("08:40"), Some("08:42")),
+            ("CREWE", Some("09:40"), Some("09:42")),
+            ("MANCPIC", Some("10:10"), None),
+        ];
+        let (connections, passes) = day(&[("W1", w1), ("S1", S1), ("N1", N1)]);
+        let none = AvoidLists::default();
+        let segments = plan_vias(
+            &connections,
+            &passes,
+            &["MKC"],
+            &["WFJ", "CRE"],
+            TimeBound::DepartAfter(0),
+            "fastest",
+            DEFAULT_MAX_CHANGES,
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            via_hits(&segments)[0],
+            vec![
+                ("WFJ".to_string(), 0, 0, "pass"),
+                ("CRE".to_string(), 1, 0, "call")
+            ]
+        );
+        assert!(segments[1].itineraries[0].continues_previous_train);
+        // Pass CREWE without stopping: nothing does.
+        let segments = plan_vias(
+            &connections,
+            &passes,
+            &[],
+            &["CRE"],
+            TimeBound::DepartAfter(0),
+            "fastest",
+            DEFAULT_MAX_CHANGES,
+            &AvoidLists {
+                avoid_stop: vec!["CRE".to_string()],
+                ..AvoidLists::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            segments[0].no_result_reason.as_ref().map(|r| r.constraint),
+            Some("via")
+        );
+        // Pass WATFDJ without stopping: W1 does.
+        let segments = plan_vias(
+            &connections,
+            &passes,
+            &[],
+            &["WFJ"],
+            TimeBound::DepartAfter(0),
+            "fastest",
+            DEFAULT_MAX_CHANGES,
+            &AvoidLists {
+                avoid_stop: vec!["WFJ".to_string()],
+                ..AvoidLists::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(train_uids(&segments[0].itineraries[0]), vec!["W1"]);
+    }
+
+    #[test]
+    fn an_unpassable_via_is_named_and_other_constraints_still_come_first() {
+        let (connections, passes) = day(&[("F1", F1), ("S1", S1)]);
+        let none = AvoidLists::default();
+        // No train both calls at MKC and passes WFJ: either alone works, so
+        // the first whose removal is enough is named.
+        let segments = plan_vias(
+            &connections,
+            &passes,
+            &[],
+            &["MKC", "WFJ"],
+            TimeBound::DepartAfter(0),
+            "options",
+            DEFAULT_MAX_CHANGES,
+            &none,
+        )
+        .unwrap();
+        let reason = segments[0].no_result_reason.clone().unwrap();
+        assert_eq!(reason.constraint, "via");
+        assert_eq!(reason.values, vec!["MKC"]);
+        // Too late for anything: the time is to blame, not the via.
+        let segments = plan_vias(
+            &connections,
+            &passes,
+            &[],
+            &["WFJ"],
+            TimeBound::DepartAfter(23 * 60),
+            "fastest",
+            DEFAULT_MAX_CHANGES,
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            segments[0].no_result_reason.as_ref().map(|r| r.constraint),
+            Some("departAfter")
+        );
+    }
+
+    #[test]
+    fn a_via_equal_to_the_origin_or_destination_or_unknown_is_an_error() {
+        let (connections, passes) = day(&[("F1", F1)]);
+        let none = AvoidLists::default();
+        for (via, needle) in [
+            ("EUS", "the origin"),
+            ("MAN", "the destination"),
+            ("ZZZ", "not a recognised station CRS code"),
+            ("LON", "not a recognised station CRS code"),
+        ] {
+            let err = plan_vias(
+                &connections,
+                &passes,
+                &[],
+                &[via],
+                TimeBound::DepartAfter(0),
+                "fastest",
+                DEFAULT_MAX_CHANGES,
+                &none,
+            )
+            .unwrap_err();
+            assert!(err.contains(needle) && err.contains("via"), "{err}");
         }
     }
 }
