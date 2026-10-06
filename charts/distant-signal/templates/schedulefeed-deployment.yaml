@@ -351,6 +351,10 @@ spec:
             # crate's TIPLOC-primary CRS crosswalk publish, alongside stanox/crs.
             - name: TIPLOC_CRS_URL
               value: {{ printf "%s/private/tiploc-crs" (include "distant-signal.apiBaseUrl" .) | quote }}
+            # docs/superpowers/specs/2026-10-06-tiploc-locations-design.md:
+            # names, location types and parent stations for every TIPLOC.
+            - name: TIPLOC_LOCATIONS_URL
+              value: {{ printf "%s/private/tiploc-locations" (include "distant-signal.apiBaseUrl" .) | quote }}
             - name: LINES_DIR
               value: /app/lines
             - name: INTERNAL_OAUTH_TOKEN_URL

@@ -11,6 +11,7 @@
 mod alf;
 mod config;
 mod discovery;
+mod locations;
 mod parser;
 
 use std::time::Duration;
@@ -443,9 +444,10 @@ mod telemetry {
     const OUTCOMES: [&str; 4] = [PUBLISHED, RETRYABLE, PERMANENT, REJECTED];
 
     /// Every `product` label value [`product_kind`] can return.
-    const PRODUCT_KINDS: [&str; 9] = [
+    const PRODUCT_KINDS: [&str; 10] = [
         "stanox_crs",
         "tiploc_crs",
+        "tiploc_locations",
         "fixed_links",
         "schedule_line_population",
         "schedule_network_departures",
@@ -525,6 +527,7 @@ mod telemetry {
 mod product {
     pub(crate) const STANOX_CRS: &str = "stanox_crs";
     pub(crate) const TIPLOC_CRS: &str = "tiploc_crs";
+    pub(crate) const TIPLOC_LOCATIONS: &str = "tiploc_locations";
     pub(crate) const FIXED_LINKS: &str = "fixed_links";
 
     pub(crate) fn line_population(line_id: &str, date: chrono::NaiveDate) -> String {
@@ -774,6 +777,20 @@ async fn poll_once(
         }
     }
 
+    if !outcome.is_published(product::TIPLOC_LOCATIONS) {
+        publish_tiploc_locations(
+            client,
+            config,
+            &delivery.mca_path,
+            &ti_records,
+            &a_text,
+            internal_oauth,
+            source_sequence,
+            &mut outcome,
+        )
+        .await;
+    }
+
     if outcome.is_published(product::FIXED_LINKS) {
         tracing::debug!("fixed links already published for this delivery; skipping");
     } else if let Some(alf_path) = &delivery.alf_path {
@@ -885,6 +902,77 @@ async fn record_completed_publish(
              still not republish it, but a restart before the next delivery will (wasteful, not \
              incorrect)"
         ),
+    }
+}
+
+/// Builds and POSTs `tiploc_locations` (see [`locations`]): a name, a
+/// location type and, for a bus stop or ferry terminal, a parent station
+/// for every `TI` record. Needs one streamed pass over the `MCA` file for
+/// the per-TIPLOC service-mode tally; a failed read is retryable, like an
+/// unreadable ALF file. An empty result (no `TI` records at all) is never
+/// sent: the route replaces the whole table, so it would wipe it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
+async fn publish_tiploc_locations(
+    client: &Client,
+    config: &Config,
+    mca_path: &std::path::Path,
+    ti_records: &[parser::TiRecord],
+    msn_text: &str,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+    source_sequence: i32,
+    outcome: &mut CycleOutcome,
+) {
+    let tally = match locations::ModeTally::from_mca(mca_path) {
+        Ok(tally) => tally,
+        Err(err) => {
+            tracing::error!(error = ?err, path = ?mca_path, "failed to read the MCA file for the tiploc_locations mode tally");
+            outcome.retryable("tiploc_locations (MCA read failed)");
+            return;
+        }
+    };
+    let records = locations::build_location_records(
+        ti_records,
+        &locations::parse_msn_records(msn_text),
+        &tally,
+        &locations::checked_in_curated_parents(),
+        source_sequence,
+    );
+    if records.is_empty() {
+        tracing::error!("no TI records to publish as tiploc_locations; leaving the previous rows");
+        outcome.permanent("tiploc_locations (no TI records)");
+        return;
+    }
+    let road_or_water = records
+        .iter()
+        .filter(|r| r.location_type.is_road_or_water())
+        .count();
+    let parented = records
+        .iter()
+        .filter(|r| r.location_type.is_road_or_water() && r.parent_crs.is_some())
+        .count();
+    tracing::info!(
+        count = records.len(),
+        road_or_water,
+        parented,
+        "built tiploc_locations"
+    );
+    match publish_with_retry(&config.publish_retry, product::TIPLOC_LOCATIONS, async || {
+        common::ingest::post_batch(
+            client,
+            &config.tiploc_locations_url,
+            internal_oauth,
+            &records,
+            "tiploc location rows",
+        )
+        .await
+    })
+    .await
+    {
+        Ok(()) => outcome.succeeded(product::TIPLOC_LOCATIONS),
+        Err(err) => outcome.failed(product::TIPLOC_LOCATIONS, &err),
     }
 }
 
@@ -3889,6 +3977,7 @@ LTWVRMPTN 2211 22113     TF";
                 "{base}/private/schedule-calling-points-full"
             ),
             tiploc_crs_url: format!("{base}/private/tiploc-crs"),
+            tiploc_locations_url: format!("{base}/private/tiploc-locations"),
             schedule_reference_publishes_url: format!(
                 "{base}/private/schedule-reference-publishes"
             ),
@@ -4368,6 +4457,7 @@ mod poll_once_retry_tests {
         for path in [
             "/private/stanox-crs",
             "/private/tiploc-crs",
+            "/private/tiploc-locations",
             "/private/schedule-line-population",
             "/private/schedule-network-departures",
             "/private/schedule-destination-departures",
