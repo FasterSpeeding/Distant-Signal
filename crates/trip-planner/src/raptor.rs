@@ -141,8 +141,17 @@ impl RoundState {
     }
 }
 
+/// See `csa::Scan::ready_source_at`, including its bus and ferry buffer:
+/// `boarding_uid`'s side, and the arriving service's side read off
+/// `arrived_via` (the previous round's).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
 fn ready_source_at(
     source: &HashMap<String, u32>,
+    arrived_via: &HashMap<String, ArrivalSource>,
+    boarding_uid: &str,
     origin: &HashSet<String>,
     departure_min: u32,
     interchange: &InterchangeData,
@@ -162,11 +171,18 @@ fn ready_source_at(
     let ChangeTime::Finite(change_time) = minimum_change_time(interchange, tiploc) else {
         return None;
     };
+    let change_time = change_time + interchange.modal_change.extra_for(boarding_uid);
+    let alighting_extra = |at: &str| match arrived_via.get(at) {
+        Some(ArrivalSource::Train(connection, _, _)) => {
+            interchange.modal_change.extra_for(&connection.uid)
+        }
+        _ => 0,
+    };
 
     let mut best: Option<ReadySource> = None;
     if let Some(&arrival) = source.get(tiploc) {
         best = Some(ReadySource {
-            time: arrival + change_time,
+            time: arrival + change_time + alighting_extra(tiploc),
             from: tiploc.to_string(),
         });
     }
@@ -174,7 +190,7 @@ fn ready_source_at(
         let Some(&sibling_arrival) = source.get(sibling) else {
             continue;
         };
-        let candidate = sibling_arrival + change_time;
+        let candidate = sibling_arrival + change_time + alighting_extra(sibling);
         if best.as_ref().is_none_or(|b| candidate < b.time) {
             best = Some(ReadySource {
                 time: candidate,
@@ -320,6 +336,8 @@ fn run_one_round<'c>(
             }
             let Some(source) = ready_source_at(
                 &previous.arrival,
+                &previous.arrived_via,
+                &connection.uid,
                 origin,
                 departure_min,
                 interchange,
@@ -574,6 +592,7 @@ mod tests {
 
     fn empty_interchange() -> InterchangeData {
         InterchangeData {
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),

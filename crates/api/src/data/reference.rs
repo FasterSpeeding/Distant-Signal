@@ -12,9 +12,39 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct Suggestion {
     pub code: String,
     pub name: String,
+    /// Only on a `?stops=true` station search's bus stops and ferry
+    /// terminals: `bus` or `ferry`. Absent for a station or operator.
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The stop's parent station, when it has one (same rule as
+    /// `JourneyStop.parentCrs`).
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_crs: Option<String>,
+}
+
+impl Suggestion {
+    /// A bus stop or ferry terminal as a planner location suggestion:
+    /// `tiploc:KESWICK`, `Keswick (bus)`.
+    pub fn from_location(location: &crate::data::tiploc_locations::LocationInfo) -> Self {
+        Suggestion {
+            code: location.code(),
+            name: location.search_label(),
+            kind: Some(
+                match location.location_type {
+                    common::location_naming::LocationType::FerryTerminal => "ferry",
+                    _ => "bus",
+                }
+                .to_string(),
+            ),
+            parent_crs: location.parent_crs.clone(),
+        }
+    }
 }
 
 /// A station returned by [`nearest_stations`]: the same `code`/`name` shape
@@ -138,7 +168,7 @@ pub async fn search_stations(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<S
 /// already defaults to `\` for `ILIKE`, but spelling it out ties the SQL
 /// text to this function's contract instead of leaving the pairing
 /// implicit).
-fn escape_ilike_pattern(raw: &str) -> String {
+pub(crate) fn escape_ilike_pattern(raw: &str) -> String {
     let mut escaped = String::with_capacity(raw.len());
     for ch in raw.chars() {
         match ch {

@@ -15,6 +15,7 @@ use sqlx::PgPool;
 
 use crate::data::eta_blend::london_to_utc;
 use crate::data::queries;
+use crate::data::tiploc_locations::LocationInfo;
 
 /// Mirrors `schedule_matching::ScheduleCallingPointDto`'s exact camelCase
 /// wire shape (the format `trains.calling_points` is stored in) -- a
@@ -397,7 +398,18 @@ pub enum PlatformStatus {
 #[serde(rename_all = "camelCase")]
 pub struct JourneyStop {
     pub crs: Option<String>,
+    /// The stop's display name: the station's name for a station, else the
+    /// `tiploc_locations` (or CORPUS) name -- `Heathrow Terminal 3 (bus
+    /// stop)`, `Marylebone 10 Signal`. `None` only for a TIPLOC no source
+    /// knows.
     pub name: Option<String>,
+    /// What kind of place this is (`station`, `bus_stop`, `ferry_terminal`,
+    /// `junction`, `siding`, `passing_point`, `other`); `station` whenever
+    /// `crs` is set, `None` when nothing is known.
+    pub location_type: Option<common::location_naming::LocationType>,
+    /// For a bus stop or ferry terminal, the station it belongs to (a
+    /// `stations` CRS), to link to instead of a page of its own.
+    pub parent_crs: Option<String>,
     pub tiploc: Option<String>,
     pub kind: Option<schedule_query::CallingPointKind>,
     /// The WORKING-timetable time, truncated to the minute. Deprecated on
@@ -536,6 +548,9 @@ impl JourneyStop {
         Self {
             crs,
             name: None, // filled in by a batch station-name pass in `build_journey_stops`
+            // Both filled in by `apply_locations`, after the name pass.
+            location_type: None,
+            parent_crs: None,
             // Normalized, not the raw padded field: `JourneyStop` is a wire
             // type (`frontend/lib/types.ts`'s `JourneyStop.tiploc`), and
             // emitting `"PUTNEY "` where every other TIPLOC-shaped value
@@ -754,6 +769,36 @@ fn apply_station_names(stops: &mut [JourneyStop], names: &HashMap<String, String
     }
 }
 
+/// Fills in each stop's `location_type` and `parent_crs`, and the `name` of
+/// any stop the station-name pass left unnamed, from `tiploc_locations`
+/// (with its CORPUS fallback), keyed by the stop's normalised TIPLOC.
+///
+/// A stop with a CRS is a `station` whatever the location row says, and
+/// keeps its station name; one whose CRS has no `stations` row takes the
+/// location's name instead of none. Every other stop takes the location's
+/// display name, type and parent. Pure, like [`apply_station_names`].
+fn apply_locations(stops: &mut [JourneyStop], locations: &HashMap<String, LocationInfo>) {
+    for stop in stops {
+        let info = stop
+            .tiploc
+            .as_ref()
+            .and_then(|tiploc| locations.get(tiploc));
+        if stop.crs.is_some() {
+            stop.location_type = Some(common::location_naming::LocationType::Station);
+            if stop.name.is_none() {
+                stop.name = info.map(|info| info.name.clone());
+            }
+            continue;
+        }
+        let Some(info) = info else {
+            continue;
+        };
+        stop.name = Some(info.display_name.clone());
+        stop.location_type = Some(info.location_type);
+        stop.parent_crs.clone_from(&info.parent_crs);
+    }
+}
+
 /// Converts one `schedule_calling_points_full` row into the same
 /// `RawCallingPoint` shape `trains.calling_points_json` deserializes into
 /// (via `serde_json::from_value` in [`build_journey_stops`], below), so
@@ -949,6 +994,7 @@ pub async fn build_journey_stops_batch(
     tiplocs.sort();
     tiplocs.dedup();
     let tiploc_to_crs = queries::crs_for_tiplocs_batch(pool, &tiplocs).await?;
+    let locations = crate::data::tiploc_locations::locations_for_tiplocs(pool, &tiplocs).await?;
 
     let mut built: Vec<anyhow::Result<Option<Vec<JourneyStop>>>> = requests
         .iter()
@@ -1027,6 +1073,7 @@ pub async fn build_journey_stops_batch(
             continue;
         };
         apply_station_names(stops, &names);
+        apply_locations(stops, &locations);
         overlay_movement_events(
             stops,
             events
@@ -1857,6 +1904,8 @@ pub(crate) mod test_support {
         JourneyStop {
             crs: Some(crs.to_string()),
             name: None,
+            location_type: None,
+            parent_crs: None,
             tiploc: Some(tiploc.to_string()),
             kind: Some(kind),
             scheduled_arrival: None,
@@ -1892,6 +1941,8 @@ mod tests {
         JourneyStop {
             crs: None,
             name: None,
+            location_type: None,
+            parent_crs: None,
             tiploc: None,
             kind: None,
             scheduled_arrival: None,
@@ -2245,6 +2296,104 @@ mod tests {
              data is a bare tiploc must end up with a real display name, not \
              fall through to the frontend's generic fallback"
         );
+    }
+
+    fn location(
+        tiploc: &str,
+        display: &str,
+        kind: &str,
+        parent: Option<&str>,
+    ) -> (String, LocationInfo) {
+        let kind = common::location_naming::LocationType::parse(kind).unwrap();
+        let names = common::location_naming::location_name(display, kind);
+        (
+            tiploc.to_string(),
+            LocationInfo {
+                tiploc: tiploc.to_string(),
+                name: names.name,
+                display_name: names.display_name,
+                location_type: kind,
+                parent_crs: parent.map(str::to_string),
+                parent_name: None,
+            },
+        )
+    }
+
+    /// A bus stop, a working-only signal and a station on one journey: the
+    /// bus stop and signal get their `tiploc_locations` names and types, the
+    /// bus stop its parent, the station keeps its own name and is typed
+    /// `station`.
+    #[test]
+    fn locations_name_and_type_every_stop_without_a_station_name() {
+        use common::location_naming::LocationType;
+        let service_date: NaiveDate = "2026-10-07".parse().unwrap();
+        let tiploc_to_crs: HashMap<String, String> = [("RDNGSTN".to_string(), "RDG".to_string())]
+            .into_iter()
+            .collect();
+        let names: HashMap<String, String> = [("RDG".to_string(), "Reading".to_string())]
+            .into_iter()
+            .collect();
+        let locations: HashMap<String, LocationInfo> = [
+            location(
+                "HTRBUS3",
+                "HEATHROW TERMINAL 3 BUS",
+                "bus_stop",
+                Some("HXX"),
+            ),
+            location("MARY10", "MARYLEBONE 10 SIGNAL", "passing_point", None),
+            location("RDNGSTN", "READING", "station", None),
+        ]
+        .into_iter()
+        .collect();
+
+        let raw = vec![
+            raw_cp("HTRBUS3"),
+            raw_cp("MARY10 "),
+            raw_cp("RDNGSTN"),
+            raw_cp("NOWHERE"),
+        ];
+        let mut stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
+        apply_station_names(&mut stops, &names);
+        apply_locations(&mut stops, &locations);
+
+        assert_eq!(
+            stops[0].name.as_deref(),
+            Some("Heathrow Terminal 3 (bus stop)")
+        );
+        assert_eq!(stops[0].location_type, Some(LocationType::BusStop));
+        assert_eq!(stops[0].parent_crs.as_deref(), Some("HXX"));
+        assert_eq!(stops[0].crs, None);
+        assert_eq!(stops[1].name.as_deref(), Some("Marylebone 10 Signal"));
+        assert_eq!(stops[1].location_type, Some(LocationType::PassingPoint));
+        assert_eq!(stops[1].parent_crs, None);
+        assert_eq!(stops[2].name.as_deref(), Some("Reading"));
+        assert_eq!(stops[2].location_type, Some(LocationType::Station));
+        // Unknown everywhere: still unnamed, untyped.
+        assert_eq!(stops[3].name, None);
+        assert_eq!(stops[3].location_type, None);
+
+        let json = serde_json::to_value(&stops[0]).unwrap();
+        assert_eq!(json["locationType"], "bus_stop");
+        assert_eq!(json["parentCrs"], "HXX");
+    }
+
+    /// A station CRS with no `stations` row still gets a name.
+    #[test]
+    fn a_station_without_a_stations_row_takes_the_location_name() {
+        let service_date: NaiveDate = "2026-10-07".parse().unwrap();
+        let tiploc_to_crs: HashMap<String, String> = [("WATCHET".to_string(), "WCT".to_string())]
+            .into_iter()
+            .collect();
+        let locations: HashMap<String, LocationInfo> =
+            [location("WATCHET", "WATCHET", "station", None)]
+                .into_iter()
+                .collect();
+        let mut stops =
+            stops_from_calling_points(&[raw_cp("WATCHET")], &tiploc_to_crs, service_date);
+        apply_station_names(&mut stops, &HashMap::new());
+        apply_locations(&mut stops, &locations);
+        assert_eq!(stops[0].name.as_deref(), Some("Watchet"));
+        assert_eq!(stops[0].crs.as_deref(), Some("WCT"));
     }
 
     /// The train detail page renders its header departure time and its

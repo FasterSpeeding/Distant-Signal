@@ -12,7 +12,14 @@ import {
 } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { PlatformBadge } from './PlatformBadge';
-import { isPassingPoint, stopDirectionLabels, stopDisplayTime } from '@/lib/stopTimes';
+import Link from 'next/link';
+import {
+  isPassingPoint,
+  isRoadOrWaterStop,
+  isWorkingOnlyCall,
+  stopDirectionLabels,
+  stopDisplayTime,
+} from '@/lib/stopTimes';
 import type { JourneyStop } from '@/lib/types';
 
 /** The tracked pin's origin/destination display names (Task 3.6.2) --
@@ -205,6 +212,11 @@ export function isGenuineCallingPoint(stop: JourneyStop): boolean {
   // without stopping) has a CRS but no stop times: it belongs only in the
   // detailed working-timetable view (`WorkingTimetable.tsx`).
   if (isPassingPoint(stop)) return false;
+  // A working-only call (2026-10-06): the train stops at a signal, loop or
+  // depot with no public time there -- a staff-timetable detail, not a
+  // calling point. It used to pass the time check below and render as
+  // "Stop N".
+  if (isWorkingOnlyCall(stop)) return false;
   return stop.crs !== null || stop.scheduledArrival !== null || stop.scheduledDeparture !== null;
 }
 
@@ -376,7 +388,15 @@ function JourneyStopRow({
       <TableTd>
         <Group gap={6} wrap="nowrap">
           <Text fw={bold ? 700 : 400} c={isPastLegDestination ? 'dimmed' : reached ? undefined : 'dimmed'}>
-            {label}
+            {/* A bus stop or ferry terminal has no station page of its own:
+                it links to the station it belongs to, when it has one. */}
+            {isRoadOrWaterStop(stop) && stop.parentCrs ? (
+              <Link href={`/stations/${stop.parentCrs}`} style={{ color: 'inherit' }}>
+                {label}
+              </Link>
+            ) : (
+              label
+            )}
           </Text>
           {isSkippedOnLeg && (
             <Badge color="red" variant="light" size="sm" tt="none">

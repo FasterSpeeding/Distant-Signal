@@ -38,6 +38,7 @@ pub mod stop_live_status;
 pub mod ticket_extraction;
 pub mod ticket_precheck;
 pub mod ticket_subprocess;
+pub mod tiploc_locations;
 pub mod train_operator;
 pub mod train_reasons;
 pub mod train_resolve;

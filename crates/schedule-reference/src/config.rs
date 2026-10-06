@@ -148,6 +148,17 @@ pub(crate) struct Config {
     )]
     pub tiploc_crs_url: String,
 
+    /// The `api` crate's ingestion endpoint for `tiploc_locations`: every
+    /// TIPLOC's name, location type and parent station (see
+    /// `crate::locations`). POST-only, same writer credential as
+    /// `tiploc_crs_url`.
+    #[arg(
+        env = "TIPLOC_LOCATIONS_URL",
+        long,
+        default_value = "http://api:8080/private/tiploc-locations"
+    )]
+    pub tiploc_locations_url: String,
+
     /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
     /// `value_parser` pattern as `crates/aggregator/src/config.rs`'s own
     /// field of the same name. Used to build the per-line TIPLOC set this

@@ -53,6 +53,7 @@ fn network() -> (Vec<Connection>, InterchangeData) {
         conn("DIRECT-LATE", "EUSTON", "MKC", 600, 650),
     ];
     let mut interchange = InterchangeData {
+        modal_change: schedule_query::ModalChangeBuffer::default(),
         change_time_by_tiploc: HashMap::new(),
         tiploc_to_crs: HashMap::new(),
         crs_to_tiplocs: HashMap::new(),
@@ -205,6 +206,7 @@ fn directional_network() -> (Vec<Connection>, InterchangeData) {
     let mut d_z = conn("T1", "D", "Z", 501, 510);
     d_z.can_board = false;
     let interchange = InterchangeData {
+        modal_change: schedule_query::ModalChangeBuffer::default(),
         change_time_by_tiploc: HashMap::new(),
         tiploc_to_crs: HashMap::new(),
         crs_to_tiplocs: HashMap::new(),

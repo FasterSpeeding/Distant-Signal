@@ -50,7 +50,17 @@ pub fn router() -> Router {
 struct SearchQuery {
     #[serde(default)]
     q: String,
+    /// `?stops=true` (station search only): also match bus stops and ferry
+    /// terminals, as `tiploc:` codes named `Keswick (bus)`/`Brodick
+    /// (ferry)`, after the stations. Off by default, so every station picker
+    /// that hands its code to a station page or board keeps getting CRS
+    /// codes only; the journey planner's pickers turn it on.
+    #[serde(default)]
+    stops: Option<String>,
 }
+
+/// How many bus stops and ferry terminals a `?stops=true` search adds.
+const STOP_SUGGESTION_LIMIT: i64 = 10;
 
 async fn search_stations(
     State(app): State<App>,
@@ -59,9 +69,23 @@ async fn search_stations(
     let Some(q) = sanitize_query(&query.q) else {
         return Ok(Json(Vec::new()));
     };
-    let results = reference::search_stations(&app.database, q, SUGGESTION_LIMIT)
+    let mut results = reference::search_stations(&app.database, q, SUGGESTION_LIMIT)
         .await
         .map_err(internal_error)?;
+    let include_stops = query
+        .stops
+        .as_deref()
+        .is_some_and(|raw| raw.trim().eq_ignore_ascii_case("true") || raw.trim() == "1");
+    if include_stops {
+        let stops = crate::data::tiploc_locations::search_road_or_water(
+            &app.database,
+            q,
+            STOP_SUGGESTION_LIMIT,
+        )
+        .await
+        .map_err(internal_error)?;
+        results.extend(stops.iter().map(Suggestion::from_location));
+    }
     Ok(Json(results))
 }
 

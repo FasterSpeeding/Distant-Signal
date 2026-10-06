@@ -1,6 +1,7 @@
 import type { AutocompleteProps } from '@mantine/core';
 import type { Suggestion } from './types';
 import { noMatchOptionContent, withNoMatchPlaceholder } from './autocompleteNoMatch';
+import { codeStationLabel } from './stationLabel';
 
 /** The `data`/`filter`/`renderOption` trio every CRS/TOC-code `Autocomplete`
  * field in this app (station pickers, operator pickers) needs around a live
@@ -39,6 +40,12 @@ import { noMatchOptionContent, withNoMatchPlaceholder } from './autocompleteNoMa
  *    checks `label` (the bare code per point 1 above), which would hide a
  *    correct name/substring match the server already found.
  */
+/** One dropdown row: `CODE — Name`, or for a bus stop or ferry terminal
+ * (a `tiploc:` code) just its name, which already ends `(bus)`/`(ferry)`. */
+export function suggestionOptionLabel(suggestion: Suggestion): string {
+  return codeStationLabel(suggestion.code, suggestion.name);
+}
+
 export function suggestionAutocompleteProps(
   suggestions: Suggestion[],
   {
@@ -75,7 +82,7 @@ export function suggestionAutocompleteProps(
       const placeholder = noMatchOptionContent(option.value, noMatchMessage);
       if (placeholder) return placeholder;
       const match = suggestions.find((s) => s.code === option.value);
-      return match ? `${match.code} — ${match.name}` : option.value;
+      return match ? suggestionOptionLabel(match) : option.value;
     },
   };
 }

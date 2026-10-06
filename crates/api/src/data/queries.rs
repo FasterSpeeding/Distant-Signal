@@ -7122,7 +7122,40 @@ pub async fn station_names_for_crs_batch(
             .bind(&upper)
             .fetch_all(pool)
             .await?;
-    Ok(rows.into_iter().collect())
+    let mut names: HashMap<String, String> = rows.into_iter().collect();
+
+    // A destination with no CRS is keyed by its terminus TIPLOC instead
+    // (`schedule_query`'s `unresolved_destination_key`): `tiploc:HTRBUS3`,
+    // or `~HTRBUS3` in rows published before 2026-10-07. Those get their
+    // `tiploc_locations` display name, under the key as given and its
+    // upper-cased form, so every caller's lookup finds it.
+    let by_tiploc: Vec<(&String, String)> = crs_codes
+        .iter()
+        .filter_map(|code| tiploc_of_destination_key(code).map(|tiploc| (code, tiploc)))
+        .collect();
+    if !by_tiploc.is_empty() {
+        let tiplocs: Vec<String> = by_tiploc.iter().map(|(_, t)| t.clone()).collect();
+        let locations =
+            crate::data::tiploc_locations::locations_for_tiplocs(pool, &tiplocs).await?;
+        for (code, tiploc) in by_tiploc {
+            if let Some(location) = locations.get(&tiploc) {
+                names.insert(code.clone(), location.display_name.clone());
+                names.insert(normalize_code(code), location.display_name.clone());
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// The TIPLOC in a TIPLOC-keyed destination (`tiploc:HTRBUS3`, or the
+/// pre-2026-10-07 `~HTRBUS3`); `None` for a CRS.
+pub fn tiploc_of_destination_key(code: &str) -> Option<String> {
+    let code = code.trim();
+    if let Some(tiploc) = code.strip_prefix('~') {
+        let tiploc = tiploc.trim().to_ascii_uppercase();
+        return (!tiploc.is_empty()).then_some(tiploc);
+    }
+    common::location_naming::tiploc_from_code(code)
 }
 
 #[cfg(test)]

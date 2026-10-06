@@ -288,6 +288,13 @@ fn internal_oauth_route_table(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
+        // POST-only, schedule-reference's writer credential, like
+        // /tiploc-crs: the whole `tiploc_locations` table per delivery.
+        (
+            "/tiploc-locations",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
         // POST-only, one caller: schedule-ingest's CORPUS mode replacing
         // the whole `corpus_locations` table. Its own group, not
         // schedule-ingest's CIF group -- see

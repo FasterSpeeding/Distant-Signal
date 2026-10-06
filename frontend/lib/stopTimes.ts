@@ -30,6 +30,22 @@ export function isPassingPoint(stop: JourneyStop): boolean {
   return stop.workingPass != null && stop.scheduledArrival === null && stop.scheduledDeparture === null;
 }
 
+/** A call only staff timetables show: the train stops (it has a working
+ * arrival or departure) but has no public time there, at a place that is not
+ * a station -- `Marylebone 10 signal`, a loop, a depot. Hidden from the
+ * passenger timeline; listed in the working-timetable view. A response with
+ * no public or working times at all (an older schedule) says nothing here. */
+export function isWorkingOnlyCall(stop: JourneyStop): boolean {
+  if (stop.crs !== null) return false;
+  if (stop.publicArrival != null || stop.publicDeparture != null) return false;
+  return stop.workingArrival != null || stop.workingDeparture != null;
+}
+
+/** A bus stop or ferry terminal rather than a station. */
+export function isRoadOrWaterStop(stop: Pick<JourneyStop, 'locationType'>): boolean {
+  return stop.locationType === 'bus_stop' || stop.locationType === 'ferry_terminal';
+}
+
 /** The passenger-facing direction notes for a stop, in reading order:
  * "Set down only" (you may get off, not on), "Pick up only" (on, not off)
  * and "Request stop". Origin/terminus direction is implied by being the

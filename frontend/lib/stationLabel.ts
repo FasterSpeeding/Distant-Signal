@@ -87,7 +87,27 @@ export function routeLabel(
  * resolve names themselves (see `lib/suggestions.ts`'s `getStationNames`)
  * and hand the result through here. */
 export function codeStationLabel(crs: string, name: string | null | undefined): string {
+  // A bus stop's or ferry terminal's `tiploc:` code means nothing to a
+  // reader, and its name already says what it is ("Keswick (bus)").
+  if (isTiplocCode(crs)) return name ?? crs;
   return name ? `${crs} — ${name}` : crs;
+}
+
+/** The planner's identifier for a bus stop or ferry terminal with no CRS:
+ * `tiploc:` and its TIPLOC (`crates/common/src/location_naming.rs`'s
+ * `tiploc_code`). Never a CRS, so never a station page or board. */
+export const TIPLOC_CODE_PREFIX = 'tiploc:';
+
+export function isTiplocCode(code: string | null | undefined): boolean {
+  return !!code && code.trim().toLowerCase().startsWith(TIPLOC_CODE_PREFIX);
+}
+
+/** A station or stop code as `GET /Trips/plan` takes it: a CRS upper-cased,
+ * a `tiploc:` code as `tiploc:` plus the upper-cased TIPLOC. */
+export function normalizeLocationCode(code: string): string {
+  const trimmed = code.trim();
+  if (isTiplocCode(trimmed)) return TIPLOC_CODE_PREFIX + trimmed.slice(TIPLOC_CODE_PREFIX.length).trim().toUpperCase();
+  return trimmed.toUpperCase();
 }
 
 /** Code-first two-sided join, mirroring `routeLabel`'s own "never mix a

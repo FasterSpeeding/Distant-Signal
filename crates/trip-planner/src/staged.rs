@@ -286,7 +286,14 @@ impl<'a> Forward<'a> {
     }
 
     /// `csa::Scan::ready_source_at`, per stage: the origin only at stage 0.
-    fn ready(&self, labels: &Labels, stage: usize, tiploc: &str) -> Option<(u32, String)> {
+    /// Includes the bus and ferry buffer on both sides of the change.
+    fn ready(
+        &self,
+        labels: &Labels,
+        stage: usize,
+        tiploc: &str,
+        boarding_uid: &str,
+    ) -> Option<(u32, String)> {
         let tiploc = normalize_tiploc(tiploc);
         if stage == 0 && self.origin.contains(tiploc) {
             return Some((self.departure_min, tiploc.to_string()));
@@ -297,18 +304,26 @@ impl<'a> Forward<'a> {
             &self.targets,
             stage,
             tiploc,
-        )?;
+        )? + self.interchange.modal_change.extra_for(boarding_uid);
         let arrivals = &labels.arrival[stage];
-        let mut best: Option<(u32, String)> = arrivals
-            .get(tiploc)
-            .map(|&arrival| (arrival + change, tiploc.to_string()));
+        let alighting_extra = |at: &str| match labels.via[stage].get(at) {
+            Some(Via::Train { connection, .. }) => {
+                self.interchange.modal_change.extra_for(&connection.uid)
+            }
+            _ => 0,
+        };
+        let mut best: Option<(u32, String)> = arrivals.get(tiploc).map(|&arrival| {
+            (
+                arrival + change + alighting_extra(tiploc),
+                tiploc.to_string(),
+            )
+        });
         for sibling in sibling_tiplocs(self.interchange, tiploc) {
-            if let Some(&arrival) = arrivals.get(sibling)
-                && best
-                    .as_ref()
-                    .is_none_or(|(time, _)| arrival + change < *time)
-            {
-                best = Some((arrival + change, sibling.to_string()));
+            if let Some(&arrival) = arrivals.get(sibling) {
+                let candidate = arrival + change + alighting_extra(sibling);
+                if best.as_ref().is_none_or(|(time, _)| candidate < *time) {
+                    best = Some((candidate, sibling.to_string()));
+                }
             }
         }
         best
@@ -359,7 +374,8 @@ impl<'a> Forward<'a> {
                     if stage > 0 && labels.arrival[stage].is_empty() {
                         continue;
                     }
-                    let Some((ready, from)) = self.ready(labels, stage, &connection.from_tiploc)
+                    let Some((ready, from)) =
+                        self.ready(labels, stage, &connection.from_tiploc, &connection.uid)
                     else {
                         continue;
                     };
@@ -652,6 +668,7 @@ mod tests {
 
     fn interchange(change_times: &[(&str, i32)]) -> InterchangeData {
         InterchangeData {
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: change_times
                 .iter()
                 .map(|(t, m)| ((*t).to_string(), *m))

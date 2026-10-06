@@ -91,6 +91,10 @@ pub fn router() -> Router {
         )
         .route("/tiploc-crs", axum::routing::post(post_tiploc_crs))
         .route(
+            "/tiploc-locations",
+            axum::routing::post(post_tiploc_locations),
+        )
+        .route(
             "/corpus-locations",
             axum::routing::post(post_corpus_locations),
         )
@@ -738,6 +742,26 @@ async fn post_tiploc_crs(
         .map_err(internal_error)?;
     let keep_tiplocs: Vec<String> = records.iter().map(|r| r.tiploc.clone()).collect();
     queries::prune_tiploc_crs_not_in(&app.database, &keep_tiplocs)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+/// `crates/schedule-reference`'s whole `tiploc_locations` table for one
+/// delivery -- see `data::tiploc_locations::replace_tiploc_locations`. An
+/// empty batch is a 400 rather than a wipe (schedule-reference never sends
+/// one; this is the backstop).
+async fn post_tiploc_locations(
+    State(app): State<App>,
+    Json(records): Json<Vec<common::TiplocLocationRecord>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    if records.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "refusing an empty tiploc_locations batch: it would clear the table".to_string(),
+        ));
+    }
+    let upserted = crate::data::tiploc_locations::replace_tiploc_locations(&app.database, &records)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))

@@ -227,6 +227,7 @@ mod tests {
             conn("U3", "B", "C", 560, 620),
         ];
         let interchange = InterchangeData {
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::from([("B".to_string(), 5)]),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),

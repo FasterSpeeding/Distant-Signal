@@ -93,6 +93,7 @@ const mockStationNames = new Map<string, string>();
 
 vi.mock('@/lib/suggestions', () => ({
   searchStations: async () => [],
+  searchPlannerLocations: async () => [],
   searchTocs: async () => [],
   getStationNames: async () => new Map(mockStationNames),
 }));
