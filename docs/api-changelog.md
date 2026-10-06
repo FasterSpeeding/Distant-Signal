@@ -3,6 +3,85 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-06: `view=summary` on a line's trains
+
+Design: `docs/superpowers/specs/2026-10-06-line-page-trains-design.md`.
+
+`GET /public/lines/{id}/trains` without `view` (or with `view=full`) is
+**unchanged**: a bare array of every train of the day with its calling
+points (about 20 MB for a main line). The summary parameters below are
+ignored there.
+
+New, opt-in: `GET /public/lines/{id}/trains?view=summary`, the slim
+windowed view the line page uses. Parameters (all optional):
+
+| parameter | meaning |
+|-----------|---------|
+| `date` | `YYYY-MM-DD`, default London today (as before) |
+| `scope` | `line`, `shared`, `touch` (comma list) or `all`; **default `line,shared`** in this view |
+| `from`, `to` | `HH:MM`, hours `00`–`47` (`24:00`+ is the next morning of the service date). Keeps trains whose `lineDue` (first public call on the line) is in `[from, to)`. `to` at or before `from` (both before `24:00`) wraps past midnight: `23:00`–`01:00` is two hours. A missing bound is open. |
+| `direction` | `up`, `down`, `loop` (comma list) |
+| `at` | `HH:MM` (as `from`): also return `running`, the trains between their first and last on-line public call at that moment (last call pushed back by a known delay; not cancelled or completed). Looks back at most 6 hours. |
+| `limit` | 1–2000, default 500: the most `trains` returned (`truncated` says when more matched) |
+
+An unknown `view` and a malformed summary parameter are a `400`; no
+population for the date is the usual `404`.
+
+```json
+{
+  "lineId": "swr-south-west-main",
+  "date": "2026-10-06",
+  "scopeApplied": true,
+  "scopes": ["line", "shared"],
+  "window": {"from": "13:30", "to": "15:30"},
+  "at": "14:00",
+  "directions": null,
+  "stations": [{"crs": "WAT", "name": "London Waterloo", "role": "terminus"}],
+  "counts": {"line": {"down": 9, "up": 8}, "shared": {"down": 31, "up": 29}},
+  "truncated": false,
+  "trains": [{
+    "uid": "L80147",
+    "operator": "SW",
+    "serviceMode": "train",
+    "scope": "line",
+    "direction": "down",
+    "lineDue": {"time": "13:35", "dayOffset": 0},
+    "origin": {"crs": "WAT", "name": "London Waterloo"},
+    "destination": {"crs": "WEY", "name": "Weymouth"},
+    "onLineStops": [{"crs": "WAT", "time": "13:35", "dayOffset": 0}],
+    "live": {"status": "en_route", "delayMinutes": 3, "delayProvisional": false,
+             "cancelled": false, "lastReportedLocation": "WOK"}
+  }],
+  "running": []
+}
+```
+
+- Trains are sorted by `lineDue`, then `uid`. Times are public (GBTT),
+  `HH:MM`, with the day offset after the service date.
+- `onLineStops`: the train's public calls at the line's catalogue
+  stations (a line's `crs_aliases` count as their station).
+- `origin`/`destination`: the first/last calling point whose TIPLOC
+  resolves to a real station (depots, junctions and `X..` pseudo-CRS are
+  walked past); when none does, the first/last on-line call. Never null
+  for a train that calls on the line.
+- `serviceMode`: the population's own field when present, else from the
+  CIF Train Status (`5` `replacementBus`, `B` `bus`, `S`/`4` `ferry`,
+  otherwise `train`).
+- `live` is looked up only for the trains in `trains` and `running`;
+  `null` when TRUST has no record.
+- `counts`: trains in the window per scope and direction (`none` without
+  one), before the `direction` filter, for tab counts.
+- `stations`: the line's catalogue stations, with `role`.
+- `running` is present only with `at`.
+- `scopeApplied: false` (and header `x-scope-applied: false`) for a
+  population published before train membership: nothing is filtered,
+  `scope`/`direction` are null, and `lineDue` is worked out from the
+  calling points.
+
+Also fixed: `GET /public/lines/{id}/trains` (default view, with or
+without `scope`) could time out on a large population (a per-entry
+re-read of the whole population in SQL).
+
 ## 2026-10-06: train membership (`scope`) on a line's trains
 
 Design: `docs/superpowers/specs/2026-10-06-line-membership-design.md`.
