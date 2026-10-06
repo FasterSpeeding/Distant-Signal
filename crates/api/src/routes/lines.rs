@@ -2183,6 +2183,7 @@ mod db_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
+            pass_through: Vec::new(),
         };
 
         let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
@@ -2232,6 +2233,7 @@ mod db_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
+            pass_through: Vec::new(),
         }
     }
 
