@@ -111,6 +111,9 @@ async fn post_subscribe(
             "that push endpoint is already registered to a different account".to_string(),
         )),
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return Err(unavailable);
+            }
             tracing::error!(error = ?err, "failed to upsert push subscription");
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,

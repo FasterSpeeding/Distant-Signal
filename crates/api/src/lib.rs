@@ -35,3 +35,4 @@ pub mod render;
 pub mod routes;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod unavailable;

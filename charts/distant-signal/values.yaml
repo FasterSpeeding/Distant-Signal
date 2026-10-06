@@ -1301,11 +1301,15 @@ api:
   # requestTimeoutSecs (public routes) or privateRequestTimeoutSecs (the
   # /private ingest routes, which take up to 100 MB bodies) gets a 408; an
   # HTTP/1 client that hasn't sent its full headers within
-  # headerReadTimeoutSecs is disconnected.
+  # headerReadTimeoutSecs is disconnected. unavailableRetryAfterSecs is the
+  # Retry-After on a 503 (1-3600): a route that cannot reach the database
+  # answers 503 {"error":"service_unavailable","retryable":true} instead of
+  # a 500 (docs/api-changelog.md, 2026-10-06).
   timeouts:
     requestTimeoutSecs: 30
     privateRequestTimeoutSecs: 300
     headerReadTimeoutSecs: 10
+    unavailableRetryAfterSecs: 30
   # -- Per-client-IP rate limits (API-5, TRIPS-1; crates/api/src/rate_limit.rs).
   # 429 with Retry-After when exceeded; /private/* is never limited. The key
   # is the X-Real-IP header the frontend proxy sets from CF-Connecting-IP

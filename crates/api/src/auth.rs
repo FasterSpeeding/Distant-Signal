@@ -400,6 +400,9 @@ impl FromRequestParts<App> for AuthenticatedUser {
         let session = crate::data::users::get_session_with_user(&app.database, &hashed)
             .await
             .map_err(|err| {
+                if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                    return unavailable;
+                }
                 tracing::error!(error = ?err, "session lookup failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

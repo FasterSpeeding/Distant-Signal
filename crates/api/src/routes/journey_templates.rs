@@ -184,6 +184,9 @@ struct JourneyTemplateDetailResponse {
 
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
     move |err| {
+        if let Some(unavailable) = crate::unavailable::response_for(&err) {
+            return unavailable;
+        }
         tracing::error!(error = ?err, operation, "journey template request failed");
         (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -3,6 +3,40 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-06: 503 + `Retry-After` when DS is temporarily unavailable
+
+Every route, public and `/private`, now answers **503 Service Unavailable**
+instead of 500 when it could not reach its database (or Redis, or an
+upstream HTTP dependency it calls): the pool timed out or is closed, the
+connection was refused, reset or cut, or Postgres said it is shutting down,
+starting up or out of connections (SQLSTATE class 08, 57P01, 57P02, 57P03,
+53300). Every other failure is still a 500. On 2026-10-01 a six-hour
+Postgres outage made every route answer 500.
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+Retry-After: 30
+
+{"error":"service_unavailable","retryable":true,"message":"Distant Signal is temporarily unavailable. Please retry shortly."}
+```
+
+- Match on `error == "service_unavailable"` (or `retryable == true`), never
+  on `message`.
+- `Retry-After` is in seconds (30 by default; the operator's
+  `api.timeouts.unavailableRetryAfterSecs`, 1-3600). Wait at least that
+  long, with backoff and jitter, before retrying.
+- Every other 503 now also carries `Retry-After`, with its own plain-text
+  body as before: `/Trips/plan` shedding load ("too many trip plans are
+  being computed right now"), a ticket parse with every parse slot busy,
+  sign-in while the identity provider cannot be reached, and a schedule
+  publish rolled back by its statement timeout. All 503s are retryable.
+- A 500 still means a bug or a bad request the server could not classify;
+  retrying it is unlikely to help.
+- For DS-MCP: a 503 from `/Trips/plan` means "DS is temporarily
+  unavailable", not "no route found" (still a 200 with no itineraries, or a
+  404 when no schedule is published for the date).
+
 ## 2026-10-06: incidents on the lines they name; `upcoming` on line status
 
 Design:

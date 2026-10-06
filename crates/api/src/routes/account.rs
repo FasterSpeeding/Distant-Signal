@@ -89,6 +89,9 @@ async fn delete_account(
             tracing::info!(?outcome, "account deleted at the user's request");
         }
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return unavailable.into_response();
+            }
             tracing::error!(error = ?err, "account deletion failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "account deletion failed").into_response();
         }
@@ -116,6 +119,9 @@ async fn export_account(State(app): State<App>, user: AuthenticatedUser) -> Resp
         Ok(Some(export)) => export,
         Ok(None) => return (StatusCode::NOT_FOUND, "no such account").into_response(),
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return unavailable.into_response();
+            }
             tracing::error!(error = ?err, "account export failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "account export failed").into_response();
         }

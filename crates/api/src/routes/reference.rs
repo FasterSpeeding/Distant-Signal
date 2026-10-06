@@ -207,6 +207,9 @@ async fn get_station_accessibility(
     reason = "used as a map_err callback, which passes the error by value"
 )]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
+    if let Some(unavailable) = crate::unavailable::response_for(&err) {
+        return unavailable;
+    }
     tracing::error!(error = ?err, "reference read failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,

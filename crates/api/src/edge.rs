@@ -52,6 +52,13 @@ pub struct EdgeSettings {
     /// before the connection is closed.
     #[arg(long, env = "API_HEADER_READ_TIMEOUT_SECS", default_value_t = 10)]
     pub header_read_timeout_secs: u64,
+
+    /// The `Retry-After` (seconds) on a 503: a route that could not reach
+    /// the database answers 503 with this, see `crate::unavailable`. Long
+    /// enough that a client retrying on it doesn't add load to a recovering
+    /// database, short enough that a pod restart is retried promptly.
+    #[arg(long, env = "API_UNAVAILABLE_RETRY_AFTER_SECS", default_value_t = 30)]
+    pub unavailable_retry_after_secs: u64,
 }
 
 impl Default for EdgeSettings {
@@ -60,6 +67,7 @@ impl Default for EdgeSettings {
             request_timeout_secs: 30,
             private_request_timeout_secs: 300,
             header_read_timeout_secs: 10,
+            unavailable_retry_after_secs: 30,
         }
     }
 }
@@ -87,9 +95,17 @@ impl EdgeSettings {
                 "API_HEADER_READ_TIMEOUT_SECS",
                 self.header_read_timeout_secs,
             ),
+            (
+                "API_UNAVAILABLE_RETRY_AFTER_SECS",
+                self.unavailable_retry_after_secs,
+            ),
         ] {
             ensure!(value > 0, "{name} must be at least 1 second");
         }
+        ensure!(
+            self.unavailable_retry_after_secs <= 3600,
+            "API_UNAVAILABLE_RETRY_AFTER_SECS must be at most 3600 seconds"
+        );
         Ok(())
     }
 
@@ -109,6 +125,10 @@ impl EdgeSettings {
 
     pub fn header_read_timeout(&self) -> Duration {
         Duration::from_secs(self.header_read_timeout_secs)
+    }
+
+    pub fn unavailable_retry_after(&self) -> crate::unavailable::RetryAfter {
+        crate::unavailable::RetryAfter(Duration::from_secs(self.unavailable_retry_after_secs))
     }
 }
 
@@ -202,6 +222,17 @@ mod tests {
             ..EdgeSettings::default()
         };
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn an_out_of_range_retry_after_is_rejected() {
+        for secs in [0, 3601] {
+            let settings = EdgeSettings {
+                unavailable_retry_after_secs: secs,
+                ..EdgeSettings::default()
+            };
+            assert!(settings.validate().is_err(), "{secs}");
+        }
     }
 
     async fn spawn(router: axum::Router, header_read_timeout: Duration) -> SocketAddr {
