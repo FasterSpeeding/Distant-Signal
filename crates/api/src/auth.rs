@@ -1330,6 +1330,40 @@ mod route_scoping_tests {
         }
     }
 
+    /// `/tiploc-locations` (2026-10-06): POST-only, schedule-reference only,
+    /// like `/tiploc-crs`.
+    #[tokio::test]
+    async fn only_schedule_reference_may_post_tiploc_locations() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let config = test_config();
+        let token = token_for(
+            &server.uri(),
+            "svc-schedule-reference-1",
+            &["svc-schedule-reference"],
+        );
+        assert_eq!(
+            send(&router, Method::POST, "/tiploc-locations", Some(&token)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(&router, Method::GET, "/tiploc-locations", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+        for group in [
+            &config.internal_oauth_group_schedule_ingest,
+            &config.internal_oauth_group_corpus,
+            &config.internal_oauth_group_stations,
+        ] {
+            let token = token_for(&server.uri(), "svc-under-test", &[group.as_str()]);
+            assert_eq!(
+                send(&router, Method::POST, "/tiploc-locations", Some(&token)).await,
+                StatusCode::FORBIDDEN,
+                "expected group {group} to be rejected on POST /tiploc-locations"
+            );
+        }
+    }
+
     /// `/corpus-locations` (2026-09-28) replaces the whole CORPUS table, so
     /// only its own group may call it -- in particular NOT schedule-ingest's
     /// CIF group, which the same service account already carries, and not

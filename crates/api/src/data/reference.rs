@@ -138,7 +138,7 @@ pub async fn search_stations(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<S
 /// already defaults to `\` for `ILIKE`, but spelling it out ties the SQL
 /// text to this function's contract instead of leaving the pairing
 /// implicit).
-fn escape_ilike_pattern(raw: &str) -> String {
+pub(crate) fn escape_ilike_pattern(raw: &str) -> String {
     let mut escaped = String::with_capacity(raw.len());
     for ch in raw.chars() {
         match ch {
