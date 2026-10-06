@@ -198,3 +198,37 @@ missing from 2 consecutive ones.
 [2026-10-06-incident-source-removal-design.md](2026-10-06-incident-source-removal-design.md)
 has the design. `load_incidents` now also requires
 `source_removed_at IS NULL`.
+
+## Decision (2026-10-06): cutoff anchor and exemptions
+
+User decisions 4-9 of
+[2026-10-06-incident-line-evidence-design.md](2026-10-06-incident-line-evidence-design.md)
+(§3 and §4 there have the details). They change this spec as follows.
+
+- **Anchor.** The rail-day cutoff runs from `incidents.active_since`, not
+  `first_seen_at`. The api stamps it on insert, on a reopen (`is_cleared`
+  true to false) and on a summary/description change while uncleared, so
+  a reopened id (B852BEF3) or a re-stated notice shows for one rail day
+  again, while unchanged stale text (147D1B86) still drops at 02:00.
+  `first_seen_at` keeps its meaning ("our clock, stamped once") and is the
+  fallback for rows without `active_since`. This reverses "deliberately
+  omit it from the `ON CONFLICT DO UPDATE SET` clause" for the anchor only.
+- **Exemptions** (replacing "a currently-`Active` period with a
+  high-confidence `schedule_window`"): past the boundary an unplanned
+  incident stays only while some period is `Active`, `ongoing`,
+  high-confidence and states a `to_date` or a schedule window ("dated"), or
+  is such a period with neither but the text says "until further notice"
+  or similar ("undated", capped at Reduced Service). Each condition is
+  necessary; a resolved/residual or low-confidence period never exempts.
+- **In effect.** A status kept only by a dated exemption is in effect only
+  inside its schedule window, so no live-data escalation attaches on a
+  non-window day and the line also shows its own inferred status.
+- **Purely future notices** (every period high-confidence and not yet
+  started, e.g. a strike next week) contribute no status at all; they are
+  the line's `upcoming` notes instead.
+- **Period dates** are read in Europe/London: a UTC-midnight bound is that
+  London date, and a zero-length or reversed range is the whole London day.
+- **"Ended"** (`source_removed_at`) still beats everything:
+  `load_incidents` never loads such a row.
+
+The "No configurable rail-day boundary hour" non-goal stands.

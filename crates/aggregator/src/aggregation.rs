@@ -421,7 +421,8 @@ pub(crate) fn in_effect_now(status: &LineStatus, now: DateTime<Utc>) -> bool {
 /// Why an incident still contributes a `LineStatus`, which decides how it
 /// is shown (2026-10-06 user decisions 4-7; see
 /// docs/superpowers/specs/2026-07-16-stale-incident-handling-design.md,
-/// "Decisions (2026-10-06)").
+/// "Decision (2026-10-06): cutoff anchor and exemptions", and
+/// docs/superpowers/specs/2026-10-06-incident-line-evidence-design.md §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Keep {
     /// Planned works, or an unplanned incident still inside the rail day

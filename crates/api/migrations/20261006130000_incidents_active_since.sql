@@ -4,7 +4,7 @@ SET LOCAL lock_timeout = '5s';
 -- `incidents.active_since`: when the incident's CURRENT episode began, the
 -- anchor of the unplanned-incident rail-day cutoff (user decision
 -- 2026-10-06; docs/superpowers/specs/2026-07-16-stale-incident-handling-design.md,
--- "Decisions (2026-10-06, cutoff anchor)").
+-- "Decision (2026-10-06): cutoff anchor and exemptions").
 --
 -- The cutoff used to run from `first_seen_at`, which never moves. RDM
 -- reuses incident ids: a cleared incident is reopened days later for a new
