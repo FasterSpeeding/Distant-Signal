@@ -332,9 +332,23 @@ fn resolve_places<'a>(
         |crs| catalogue_pool.contains(crs),
         true,
     ));
+    let localised: Vec<String> = summary
+        .iter()
+        .chain(&gazetteer.places_in(
+            first_paragraph(&incident.description),
+            |crs| catalogue_pool.contains(crs),
+            false,
+        ))
+        .filter(|place| place.localised)
+        .flat_map(|place| place.crs.iter().cloned())
+        .collect();
+    let context = OverlapContext {
+        catalogue: eligible,
+        localised,
+    };
     if summary.is_empty() {
         let description = distinct_places(gazetteer.places_in(
-            &incident.description,
+            first_paragraph(&incident.description),
             |crs| scope_pool.contains(crs),
             false,
         ));
@@ -342,13 +356,13 @@ fn resolve_places<'a>(
             return nothing(false);
         }
         return Resolution {
-            per_line: evidence_of(select_lines(&in_scope, &description)),
+            per_line: evidence_of(select_lines(&in_scope, &description, &context)),
             named: true,
         };
     }
     let in_scope_places = restrict(&summary, |crs| scope_pool.contains(crs));
     if in_scope_places.is_empty() {
-        let mut per_line = select_lines(eligible, &summary);
+        let mut per_line = select_lines(eligible, &summary, &context);
         per_line.retain(|line| line.held >= 2);
         return Resolution {
             per_line: evidence_of(per_line),
@@ -356,9 +370,17 @@ fn resolve_places<'a>(
         };
     }
     Resolution {
-        per_line: evidence_of(select_lines(&in_scope, &in_scope_places)),
+        per_line: evidence_of(select_lines(&in_scope, &in_scope_places, &context)),
         named: true,
     }
+}
+
+/// The description's first paragraph (up to the first `</p>`, or all of a
+/// description without one).
+fn first_paragraph(description: &str) -> &str {
+    description
+        .find("</p>")
+        .map_or(description, |end| &description[..end])
 }
 
 /// `places` with each mention's codes narrowed to those `keep` accepts,
@@ -413,10 +435,13 @@ fn evidence_of(lines: Vec<LinePlaces<'_>>) -> HashMap<&str, Vec<String>> {
 ///
 /// Counted by place, not by code: "London St Pancras" (two codes) or
 /// "Heathrow Airport" (three) is one place, so naming it alone is never a
-/// two-place section.
+/// two-place section. A line holds a place when it is one of its stations
+/// or one its trains run through ([`LineDefinition::holds_place`]).
 ///
 /// - **Sections.** If any line holds two or more of the places ("between
-///   Purley and Gatwick Airport"), only lines holding two or more count.
+///   Purley and Gatwick Airport"), the lines holding two or more count,
+///   plus the lines sharing a significant part of the section
+///   ([`partial_overlaps`]).
 /// - **Hubs.** Otherwise every line holding one counts ("at Clapham
 ///   Junction"), except a hub beside a local place: a place on
 ///   [`RELATIVE_HUB_LINES`] or more of `lines` is dropped when another
@@ -424,7 +449,11 @@ fn evidence_of(lines: Vec<LinePlaces<'_>>) -> HashMap<&str, Vec<String>> {
 ///   Victoria, on four Southern lines, beside Eastbourne), and a place on
 ///   more than [`HUB_LINES`] is dropped when another is on [`HUB_LINES`]
 ///   or fewer. A hub named alone still fans out to all its lines.
-fn select_lines<'a>(lines: &[&'a LineDefinition], places: &[PlaceMention]) -> Vec<LinePlaces<'a>> {
+fn select_lines<'a>(
+    lines: &[&'a LineDefinition],
+    places: &[PlaceMention],
+    context: &OverlapContext<'_>,
+) -> Vec<LinePlaces<'a>> {
     let per_line: Vec<(&'a LineDefinition, Vec<usize>)> = lines
         .iter()
         .map(|line| {
@@ -440,6 +469,19 @@ fn select_lines<'a>(lines: &[&'a LineDefinition], places: &[PlaceMention]) -> Ve
         .map(|(_, held)| held.len())
         .max()
         .unwrap_or(0);
+    if best >= 2 {
+        let sections: Vec<(&'a LineDefinition, Vec<usize>)> = per_line
+            .iter()
+            .filter(|(_, held)| held.len() >= 2)
+            .cloned()
+            .collect();
+        let partial = partial_overlaps(&per_line, &sections, places, context);
+        return sections
+            .iter()
+            .map(|(line, held)| line_places(line, held, places))
+            .chain(partial)
+            .collect();
+    }
     let lines_holding: Vec<usize> = (0..places.len())
         .map(|p| {
             per_line
@@ -455,33 +497,201 @@ fn select_lines<'a>(lines: &[&'a LineDefinition], places: &[PlaceMention]) -> Ve
         .map(|&n| (has_single && n >= RELATIVE_HUB_LINES) || (has_local && n > HUB_LINES))
         .collect();
     per_line
-        .into_iter()
-        .filter(|(_, held)| {
-            if best >= 2 {
-                held.len() >= 2
-            } else {
-                held.iter().any(|&p| !dropped[p])
-            }
-        })
-        .map(|(line, held)| {
-            let mut stations: Vec<String> = Vec::new();
-            for &p in &held {
-                for code in &places[p].crs {
-                    for station in line.stations_for_place(code) {
-                        if !stations.contains(&station) {
-                            stations.push(station);
-                        }
-                    }
-                }
-            }
-            LinePlaces {
-                id: line.id.as_str(),
-                held: held.len(),
-                stations,
-            }
-        })
+        .iter()
+        .filter(|(_, held)| held.iter().any(|&p| !dropped[p]))
+        .map(|(line, held)| line_places(line, held, places))
         .collect()
 }
+
+/// `line`'s evidence for the places it holds: its own stations standing for
+/// them.
+fn line_places<'a>(
+    line: &'a LineDefinition,
+    held: &[usize],
+    places: &[PlaceMention],
+) -> LinePlaces<'a> {
+    let mut stations: Vec<String> = Vec::new();
+    for &p in held {
+        for code in &places[p].crs {
+            for station in line.stations_for_place(code) {
+                if !stations.contains(&station) {
+                    stations.push(station);
+                }
+            }
+        }
+    }
+    LinePlaces {
+        id: line.id.as_str(),
+        held: held.len(),
+        stations,
+    }
+}
+
+/// What the partial-overlap rule needs besides the named places.
+struct OverlapContext<'a> {
+    /// Every eligible catalogue line (any operator), to count the lines
+    /// running through a junction.
+    catalogue: &'a [&'a LineDefinition],
+    /// The CRS codes the text puts the disruption at: "at X", "near X",
+    /// "the X area" in the summary or in the description's first paragraph
+    /// (which says what happened: "a signalling fault at Lewisham" under a
+    /// summary naming the section). Not the rest of the description, which
+    /// is travel advice ("change at Vauxhall", "tickets accepted at ...").
+    localised: Vec<String>,
+}
+
+impl OverlapContext<'_> {
+    /// Whether `crs` is a place the text puts the disruption at and a major
+    /// junction: [`MAJOR_JUNCTION_LINES`] or more catalogue lines run
+    /// through it.
+    fn disrupted_junction(&self, crs: &str) -> bool {
+        self.localised.iter().any(|l| l == crs)
+            && self
+                .catalogue
+                .iter()
+                .filter(|line| line.holds_place(crs))
+                .count()
+                >= MAJOR_JUNCTION_LINES
+    }
+}
+
+/// The stretch of `line`'s route from place `from` to place `to`
+/// (catalogue and pass-through stations, in order), within one run of its
+/// route ([`LineDefinition::route_runs`]: never across a branch boundary);
+/// empty when no run reaches both.
+fn section_path<'l>(
+    line: &'l LineDefinition,
+    from: &PlaceMention,
+    to: &PlaceMention,
+) -> Vec<&'l str> {
+    for run in line.route_runs() {
+        let at = |place: &PlaceMention| {
+            run.iter()
+                .position(|crs| place.crs.iter().any(|c| c == crs))
+        };
+        if let (Some(i), Some(j)) = (at(from), at(to)) {
+            return if i <= j {
+                run[i..=j].to_vec()
+            } else {
+                run[j..=i].iter().rev().copied().collect()
+            };
+        }
+    }
+    Vec::new()
+}
+
+/// Lines holding exactly one of a section's places that share a
+/// significant part of it (2026-10-06 decision 8; the design doc's
+/// "partial overlap" section has worked examples). For a line P holding
+/// place p, and every section line S holding p and another place q, the
+/// shared stretch is the run of S's route from p towards q that P's route
+/// follows station by station (P's own stations and the ones its trains
+/// pass, consecutive on P's route too: `shared_stretch`).
+/// P counts when, for some such S and q:
+///
+/// - (a) the shared stretch is at least [`PARTIAL_SHARE_PERCENT`] of the
+///   stretch from p to q, counted in hops between consecutive stations on
+///   it (so sharing only p itself is sharing none of it); or
+/// - (b) the shared stretch includes a major junction the text puts the
+///   disruption at (`OverlapContext::disrupted_junction`): disruption at a
+///   junction delays every line routed through it.
+///
+/// Otherwise P shares too little of the section for it to be P's
+/// disruption: the Bexleyheath line shares only the London end of
+/// "Maidstone East and London Charing Cross", leaving at Lewisham.
+fn partial_overlaps<'a>(
+    per_line: &[(&'a LineDefinition, Vec<usize>)],
+    sections: &[(&'a LineDefinition, Vec<usize>)],
+    places: &[PlaceMention],
+    context: &OverlapContext<'_>,
+) -> Vec<LinePlaces<'a>> {
+    let mut out = Vec::new();
+    for (line, held) in per_line {
+        let [p] = held.as_slice() else {
+            continue;
+        };
+        // The longest qualifying shared stretch's far end.
+        let mut shared_end: Option<(usize, &str)> = None;
+        for (section, section_held) in sections {
+            if !section_held.contains(p) {
+                continue;
+            }
+            for q in section_held.iter().filter(|q| *q != p) {
+                let path = section_path(section, &places[*p], &places[*q]);
+                let shared = shared_stretch(line, &path);
+                // Another code of the same place (a different London
+                // terminus) shares nothing of this section line's path.
+                let (Some(&last), Some(hops)) = (shared.last(), path.len().checked_sub(1)) else {
+                    continue;
+                };
+                // In hops between consecutive stations: sharing only the
+                // end itself is sharing none of the section.
+                let substantial =
+                    hops > 0 && (shared.len() - 1) * 100 >= hops * PARTIAL_SHARE_PERCENT;
+                let junction = shared.iter().any(|crs| context.disrupted_junction(crs));
+                if (substantial || junction) && shared_end.is_none_or(|(n, _)| shared.len() > n) {
+                    shared_end = Some((shared.len(), last));
+                }
+            }
+        }
+        if let Some((_, end)) = shared_end {
+            let mut evidence = line_places(line, held, places);
+            for station in line.stations_for_place(end) {
+                if !evidence.stations.contains(&station) {
+                    evidence.stations.push(station);
+                }
+            }
+            out.push(evidence);
+        }
+    }
+    out
+}
+
+/// The start of `path` that `line` runs along too, up to the last station
+/// of it that `line` holds with every station of `line`'s before it on the
+/// path next to each other on one run of `line`'s route. Stations of `path`
+/// that `line` does not hold are passed over (CIF records passing points
+/// only at timing points, so one line's route may list a station another's
+/// omits, such as Earlsfield between Clapham Junction and Wimbledon); a
+/// station `line` holds but does not reach next ends the shared part (the
+/// two lines run there by different tracks, or across a branch boundary of
+/// either).
+fn shared_stretch<'p>(line: &LineDefinition, path: &[&'p str]) -> Vec<&'p str> {
+    let Some(first) = path.first() else {
+        return Vec::new();
+    };
+    if !line.holds_place(first) {
+        return Vec::new();
+    }
+    let runs = line.route_runs();
+    let adjacent = |a: &str, b: &str| {
+        runs.iter().any(|run| {
+            run.windows(2)
+                .any(|pair| (pair[0] == a && pair[1] == b) || (pair[0] == b && pair[1] == a))
+        })
+    };
+    let mut last = 0;
+    for (i, crs) in path.iter().enumerate().skip(1) {
+        if !line.holds_place(crs) {
+            continue;
+        }
+        if !adjacent(path[last], crs) {
+            break;
+        }
+        last = i;
+    }
+    path[..=last].to_vec()
+}
+
+/// See [`partial_overlaps`] (a): the share of a section a line must run
+/// along to count, in percent. Chosen from the 2026-10-06 replay (design
+/// doc, "partial overlap"): the prototype's 50%.
+const PARTIAL_SHARE_PERCENT: usize = 50;
+
+/// See [`OverlapContext::disrupted_junction`]: a place this many catalogue
+/// lines (any operator) run through is a major junction. Chosen from the
+/// 2026-10-06 replay (design doc, "partial overlap").
+const MAJOR_JUNCTION_LINES: usize = 4;
 
 /// See [`select_lines`]: a place on more lines than this is a hub beside
 /// any place on this many or fewer.
@@ -12840,6 +13050,106 @@ mod tests {
             .iter()
             .map(|s| s.crs.clone())
             .collect()
+    }
+
+    // ---- Partial overlap (2026-10-06 decision 8; design doc examples) ----
+
+    #[test]
+    fn a_line_sharing_only_a_sections_far_end_is_not_affected() {
+        // 38DE9D6A: the Bexleyheath line shares only the London end of
+        // "Maidstone East and London Charing Cross"; Charing Cross (on many
+        // Southeastern lines) is a hub beside Maidstone East (on one).
+        let found = evidence(
+            "Disruption between Maidstone East and London Charing Cross",
+            "",
+            &["SE"],
+        );
+        assert_eq!(ids(&found), ["southeastern-maidstone-east"]);
+        // 6A545EF3: the Far North line shares Inverness-Dingwall, under a
+        // third of the way to Kyle of Lochalsh.
+        let found = evidence(
+            "Disruption between Inverness and Kyle of Lochalsh",
+            "",
+            &["SR"],
+        );
+        assert_eq!(ids(&found), ["scotrail-kyle"]);
+        // A line sharing only the Clapham Junction end of "Clapham Junction
+        // and London Victoria" (Southern's West London line) is not on it.
+        let found = evidence(
+            "Major disruption between Clapham Junction and London Victoria",
+            "",
+            &["GX", "SN"],
+        );
+        assert!(!ids(&found).contains(&"southern-west-london"), "{found:?}");
+    }
+
+    #[test]
+    fn a_line_sharing_most_of_a_section_is_affected() {
+        // 87C865A3: the South West Main Line (and the other Woking lines)
+        // runs Clapham Junction - Wimbledon, two of the three hops to
+        // Raynes Park, without holding Raynes Park.
+        let found = evidence(
+            "Disruption between Raynes Park and Clapham Junction",
+            "",
+            &["SW"],
+        );
+        let found_ids = ids(&found);
+        for id in [
+            "swr-new-guildford",
+            "swr-south-west-main",
+            "swr-portsmouth-direct",
+        ] {
+            assert!(found_ids.contains(&id), "{id}: {found_ids:?}");
+        }
+        // But not the Windsor lines, which leave at Clapham Junction.
+        assert!(!found_ids.contains(&"swr-windsor-lines"), "{found_ids:?}");
+        // 03552B44: TransPennine's Hull trains run Leeds - Micklefield, most
+        // of the way to York, and are on "Leeds and York".
+        let found = evidence("Disruption between Leeds and York", "", &["NT", "TP"]);
+        let found_ids = ids(&found);
+        assert!(found_ids.contains(&"tpe-north-hull"), "{found_ids:?}");
+        assert!(
+            !found_ids.contains(&"northern-calder-valley"),
+            "{found_ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_disrupted_major_junction_reaches_every_line_through_it() {
+        // "Lewisham and Hayes": alone, the Hayes line; with the fault at
+        // Lewisham (a junction on four or more lines), every line through
+        // Lewisham.
+        let found = evidence("Disruption between Lewisham and Hayes", "", &["SE"]);
+        assert_eq!(ids(&found), ["southeastern-hayes-line"]);
+        let found = evidence(
+            "Disruption between Lewisham and Hayes",
+            "<p>A signalling fault at Lewisham means trains may be delayed.</p>\
+             <p>Tickets are accepted at Bromley South.</p>",
+            &["SE"],
+        );
+        let found_ids = ids(&found);
+        for id in [
+            "southeastern-hayes-line",
+            "southeastern-bexleyheath",
+            "southeastern-dartford-loop",
+        ] {
+            assert!(found_ids.contains(&id), "{id}: {found_ids:?}");
+        }
+        // A points failure at Inverness reaches the Far North line.
+        let found = evidence(
+            "Disruption between Inverness and Kyle of Lochalsh",
+            "<p>A points failure at Inverness means trains may be delayed.</p>",
+            &["SR"],
+        );
+        assert!(ids(&found).contains(&"scotrail-far-north"), "{found:?}");
+        // Only the description's first paragraph localises: travel advice
+        // later on ("change at Lewisham") does not.
+        let found = evidence(
+            "Disruption between Lewisham and Hayes",
+            "<p>A tree has fallen on the line.</p><p>Change at Lewisham for DLR services.</p>",
+            &["SE"],
+        );
+        assert_eq!(ids(&found), ["southeastern-hayes-line"]);
     }
 
     #[test]
