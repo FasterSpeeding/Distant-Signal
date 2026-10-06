@@ -18,7 +18,7 @@
 //!   cannot drift), each × its own method × [`PRE_REGISTERED_STATUSES`]
 //!   (200, 500, 503): the success series rare-route queries count, and the
 //!   two 5xx codes the 5xx-ratio alerts and the 503 contract
-//!   (`crate::unavailable`) care about. About 40 routes × 3 = 120 series.
+//!   (`crate::unavailable`) care about. About 60 routes × 3 = 180 series.
 //! - `distant_signal_http_requests_duration_seconds` only for the key public
 //!   routes' 200s: 16 × 14 = 224 series.
 //! - `distant_signal_api_trip_plan_graph_cache_total{result}` for `hit` and
@@ -207,8 +207,11 @@ mod tests {
     #[tokio::test]
     async fn the_set_stays_bounded() {
         let routes = pre_registered_routes(&private_routes());
-        assert!(routes.len() < 60, "{}", routes.len());
-        assert!(routes.len() * PRE_REGISTERED_STATUSES.len() < 200);
+        // 60 at the 2026-10-06 batch (16 key public + 44 private); the
+        // ceiling leaves room for new ingest routes without letting the set
+        // grow into routes x every status.
+        assert!(routes.len() < 80, "{}", routes.len());
+        assert!(routes.len() * PRE_REGISTERED_STATUSES.len() < 250);
     }
 
     /// Every pre-registered template is a real route of the server's router
