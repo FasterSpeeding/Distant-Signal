@@ -4890,6 +4890,9 @@ pub struct LineStatusRow {
     pub operators: Vec<String>,
     pub statuses: Vec<common::LineStatus>,
     pub computed_at: chrono::DateTime<chrono::Utc>,
+    /// `line_status.upcoming` (2026-10-06): future disruption notes beside
+    /// the statuses, soonest first. Empty for a `TfL` row.
+    pub upcoming: Vec<common::UpcomingDisruption>,
 }
 
 #[expect(
@@ -4899,13 +4902,22 @@ pub struct LineStatusRow {
 fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
     use sqlx::Row;
     let statuses_json: serde_json::Value = row.try_get("statuses")?;
+    let upcoming_json: serde_json::Value = row.try_get("upcoming")?;
+    let id: String = row.try_get("line_id")?;
+    // A note, not the status: a shape this build cannot read is logged and
+    // dropped rather than failing the whole line-status response.
+    let upcoming = serde_json::from_value(upcoming_json).unwrap_or_else(|err| {
+        tracing::warn!(error = %err, line_id = %id, "unreadable line_status.upcoming; omitting it");
+        Vec::new()
+    });
     Ok(LineStatusRow {
-        id: row.try_get("line_id")?,
+        id,
         name: row.try_get("name")?,
         mode_name: row.try_get("mode_name")?,
         operators: row.try_get("operators")?,
         statuses: serde_json::from_value(statuses_json)?,
         computed_at: row.try_get("computed_at")?,
+        upcoming,
     })
 }
 
@@ -4915,7 +4927,8 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
 /// National Rail and the five `TfL` modes in one round trip.
 pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
-        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE mode_name = ANY($1)",
+        "SELECT line_id, name, mode_name, operators, statuses, computed_at, upcoming \
+         FROM line_status WHERE mode_name = ANY($1)",
     )
     .bind(modes)
     .fetch_all(pool)
@@ -4925,7 +4938,8 @@ pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Ve
 
 pub async fn line_status_for_ids(pool: &PgPool, ids: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
-        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE line_id = ANY($1)",
+        "SELECT line_id, name, mode_name, operators, statuses, computed_at, upcoming \
+         FROM line_status WHERE line_id = ANY($1)",
     )
     .bind(ids)
     .fetch_all(pool)
@@ -13910,6 +13924,10 @@ mod db_review_guard_and_normalisation_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a seed-run-assert scenario reads top to bottom"
+    )]
     async fn active_since_backfill_takes_the_latest_reopen_or_text_change() {
         let pool = test_pool().await;
         let ids = [

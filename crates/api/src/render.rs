@@ -49,6 +49,26 @@ pub fn to_tfl_shape_with_overlay(
     out
 }
 
+/// `upcoming` on a line-status report (2026-10-06): disruptions announced
+/// for the line that have not started yet, soonest first. A note beside
+/// `lineStatuses`, never part of a severity. `to` is exclusive and may be
+/// `null` (no stated end).
+pub fn upcoming_json(upcoming: &[common::UpcomingDisruption]) -> Value {
+    Value::Array(
+        upcoming
+            .iter()
+            .map(|note| {
+                json!({
+                    "from": note.from.to_rfc3339(),
+                    "to": note.to.map(|to| to.to_rfc3339()),
+                    "summary": note.summary,
+                    "incidentId": note.incident_id,
+                })
+            })
+            .collect(),
+    )
+}
+
 fn status_to_json(status: &LineStatus, detail: bool) -> Value {
     let mut out = json!({
         "statusSeverity": status.severity as i32,

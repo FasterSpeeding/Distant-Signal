@@ -126,8 +126,11 @@ fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
     rows.into_iter()
         .map(|row| {
             let computed_at = row.computed_at;
+            let upcoming = crate::render::upcoming_json(&row.upcoming);
             let report = to_report(row);
-            to_tfl_shape(&report, computed_at, detail)
+            let mut out = to_tfl_shape(&report, computed_at, detail);
+            out["upcoming"] = upcoming;
+            out
         })
         .collect()
 }
@@ -317,13 +320,16 @@ async fn get_line_status(
             .map(|row| {
                 let computed_at = row.computed_at;
                 let overlay = overlay_for(&row, &tfl_rows);
+                let upcoming = crate::render::upcoming_json(&row.upcoming);
                 let report = to_report(row);
-                crate::render::to_tfl_shape_with_overlay(
+                let mut out = crate::render::to_tfl_shape_with_overlay(
                     &report,
                     computed_at,
                     query.detail,
                     overlay.as_deref(),
-                )
+                );
+                out["upcoming"] = upcoming;
+                out
             })
             .collect(),
     ))
@@ -1096,6 +1102,7 @@ mod tests {
             operators: vec![],
             statuses,
             computed_at: Utc::now(),
+            upcoming: vec![],
         }
     }
 
@@ -1115,6 +1122,31 @@ mod tests {
             full_coverage_stats: None,
             full_coverage_availability: common::FullCoverageAvailability::NotEnabled,
         }
+    }
+
+    /// `upcoming` (2026-10-06) rides beside `lineStatuses` on every row,
+    /// `[]` when there is none, and never touches the statuses.
+    #[test]
+    fn rows_carry_their_upcoming_notes() {
+        let mut with_note = row("tpe-north", vec![]);
+        with_note.upcoming = vec![common::UpcomingDisruption {
+            from: "2026-10-10T23:00:00Z".parse().unwrap(),
+            to: Some("2026-10-11T23:00:00Z".parse().unwrap()),
+            summary: "Industrial action to affect TransPennine Express services".to_string(),
+            incident_id: "1D3D4694".to_string(),
+        }];
+        let json = rows_to_json(vec![with_note, row("tpe-south", vec![])], false);
+        assert_eq!(
+            json[0]["upcoming"],
+            serde_json::json!([{
+                "from": "2026-10-10T23:00:00+00:00",
+                "to": "2026-10-11T23:00:00+00:00",
+                "summary": "Industrial action to affect TransPennine Express services",
+                "incidentId": "1D3D4694",
+            }])
+        );
+        assert_eq!(json[0]["lineStatuses"], serde_json::json!([]));
+        assert_eq!(json[1]["upcoming"], serde_json::json!([]));
     }
 
     #[test]
