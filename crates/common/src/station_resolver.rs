@@ -406,10 +406,18 @@ fn strip_markup(text: &str) -> String {
 /// and "reduced ... service" not when it names a line ("Reduced Mildmay
 /// line service" is that line's). A bridge or lightning strike is not
 /// industrial action.
+///
+/// Industrial action counts anywhere in the text; every other marker only
+/// in the summary. Descriptions of local incidents routinely say "a
+/// severely reduced service is running between X and Y" or "delays may
+/// spread across the network" (6C20E627, 2026-10-06 replay), while a
+/// genuinely network-wide notice says so in its headline.
 pub fn has_network_scope_marker(summary: &str, description: &str) -> bool {
-    let words = words_of(summary, description);
-    if is_industrial_action(&words)
-        || has_phrase(&words, &["intercity", "routes"])
+    if is_industrial_action(&words_of(summary, description)) {
+        return true;
+    }
+    let words = words_of(summary, "");
+    if has_phrase(&words, &["intercity", "routes"])
         || has_phrase(&words, &["network", "wide"])
         || has_phrase(&words, &["across", "the", "network"])
     {
@@ -674,6 +682,16 @@ mod tests {
         assert!(has_network_scope_marker(
             "Disruption to services",
             "<p>The RMT union has announced industrial action.</p>"
+        ));
+        // Other markers only count in the summary (6C20E627's description).
+        assert!(!has_network_scope_marker(
+            "Reduced service between Uckfield and Oxted today",
+            "<p>Services will be affected all day, with a severely reduced service running \
+             directly between Uckfield and London Bridge.</p>"
+        ));
+        assert!(!has_network_scope_marker(
+            "Disruption between Purley and Gatwick Airport",
+            "<p>Delays may spread across the Southern network.</p>"
         ));
     }
 }
