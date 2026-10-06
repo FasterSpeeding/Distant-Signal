@@ -616,9 +616,14 @@ impl AppState {
 
         // No eager connect: only the URL is validated here. See the `redis`
         // field's doc comment on `AppState`.
-        // REDIS_PASSWORD, when set, is applied here (common::redis_auth).
-        let redis_url = common::redis_auth::redis_url_with_password(
+        // REDIS_USERNAME and REDIS_PASSWORD, when set, are applied here
+        // (common::redis_auth). REDIS_USERNAME is read from the environment
+        // rather than declared on `Config`, which ~20 route test modules
+        // build field by field; it joins `Config` with the phase 1A
+        // extraction (docs/redis-acl.md).
+        let redis_url = common::redis_auth::redis_url_with_credentials(
             &config.redis_url,
+            common::redis_auth::username_from_env().as_deref(),
             config.redis_password.as_ref(),
         )?;
         let redis = redis::Client::open(redis_url.expose()).context("Could not parse REDIS_URL")?;
