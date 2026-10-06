@@ -846,7 +846,10 @@ mod tests {
         for attempt in 0..8 {
             let wait = cycle_wait(&Cycle::Failed, &mut failures, None).unwrap();
             let ceiling = CYCLE_RETRY_BACKOFF.ceiling(attempt);
-            assert!(wait >= ceiling / 2 && wait <= ceiling, "{attempt}: {wait:?}");
+            assert!(
+                wait >= ceiling / 2 && wait <= ceiling,
+                "{attempt}: {wait:?}"
+            );
             assert!(ceiling >= previous_ceiling);
             previous_ceiling = ceiling;
         }
@@ -856,7 +859,10 @@ mod tests {
         assert_eq!(cycle_wait(&Cycle::Committed, &mut failures, None), None);
         assert_eq!(failures.failures(), 0);
         let wait = cycle_wait(&Cycle::Failed, &mut failures, Some(Duration::from_secs(30)));
-        assert!(wait.unwrap() >= Duration::from_secs(30), "Retry-After honoured");
+        assert!(
+            wait.unwrap() >= Duration::from_secs(30),
+            "Retry-After honoured"
+        );
     }
 
     /// PL-2: transient failures (timeouts, 5xx, auth, ...) never reach

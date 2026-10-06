@@ -312,7 +312,10 @@ mod tests {
         for attempt in 0..10 {
             let delay = streak.failed(None);
             let ceiling = B.ceiling(attempt);
-            assert!(delay >= ceiling / 2 && delay <= ceiling, "{attempt}: {delay:?}");
+            assert!(
+                delay >= ceiling / 2 && delay <= ceiling,
+                "{attempt}: {delay:?}"
+            );
             assert!(ceiling >= previous_ceiling);
             previous_ceiling = ceiling;
         }

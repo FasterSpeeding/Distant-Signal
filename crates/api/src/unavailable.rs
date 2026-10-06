@@ -143,7 +143,10 @@ pub fn response_for(err: &anyhow::Error) -> Option<(StatusCode, String)> {
     // Outside the middleware (a unit test calling a handler directly) there
     // is nothing to mark; the status and body are still right.
     let _ = MARKED_UNAVAILABLE.try_with(|marked| marked.set(true));
-    Some((StatusCode::SERVICE_UNAVAILABLE, UNAVAILABLE_BODY.to_string()))
+    Some((
+        StatusCode::SERVICE_UNAVAILABLE,
+        UNAVAILABLE_BODY.to_string(),
+    ))
 }
 
 /// [`response_for`], or a logged 500 with `message` as its body: the whole
@@ -238,7 +241,9 @@ mod tests {
 
     #[test]
     fn sqlstates() {
-        for code in ["08000", "08001", "08003", "08004", "08006", "57P01", "57P02", "57P03", "53300"] {
+        for code in [
+            "08000", "08001", "08003", "08004", "08006", "57P01", "57P02", "57P03", "53300",
+        ] {
             assert!(sqlstate_is_unavailable(code), "{code}");
         }
         // statement timeout, unique violation, serialization failure,
@@ -284,7 +289,10 @@ mod tests {
         assert!(response_for(&err).is_none());
         assert_eq!(
             or_internal_error(&err, || "query failed".to_string()),
-            (StatusCode::INTERNAL_SERVER_ERROR, "query failed".to_string())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query failed".to_string()
+            )
         );
     }
 
@@ -319,10 +327,7 @@ mod tests {
     fn assert_unavailable_headers(response: &Response) {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()[header::RETRY_AFTER], "30");
-        assert_eq!(
-            response.headers()[header::CONTENT_TYPE],
-            "application/json"
-        );
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
     }
 
     /// A real route over a pool whose server refuses connections (port 1):
@@ -334,8 +339,8 @@ mod tests {
             .acquire_timeout(Duration::from_millis(500))
             .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
             .unwrap();
-        let router = crate::routes::departures::router()
-            .with_state(crate::test_support::inert_app(pool));
+        let router =
+            crate::routes::departures::router().with_state(crate::test_support::inert_app(pool));
         let response = call(router, "/stations/ZQT/departures").await;
         assert_unavailable_headers(&response);
         let body: serde_json::Value = serde_json::from_str(&body_of(response).await).unwrap();
@@ -349,8 +354,8 @@ mod tests {
             .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
             .unwrap();
         pool.close().await;
-        let router = crate::routes::departures::router()
-            .with_state(crate::test_support::inert_app(pool));
+        let router =
+            crate::routes::departures::router().with_state(crate::test_support::inert_app(pool));
         let response = call(router, "/stations/ZQT/departures").await;
         assert_unavailable_headers(&response);
         assert_eq!(body_of(response).await, UNAVAILABLE_BODY);
@@ -375,10 +380,12 @@ mod tests {
             );
         let busy = call(router.clone(), "/busy").await;
         assert_eq!(busy.headers()[header::RETRY_AFTER], "30");
-        assert!(busy.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .starts_with("text/plain"));
+        assert!(
+            busy.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
         assert_eq!(body_of(busy).await, "too many plans");
         let own = call(router, "/own").await;
         assert_eq!(own.headers()[header::RETRY_AFTER], "5");

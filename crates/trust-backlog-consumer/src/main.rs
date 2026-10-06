@@ -773,7 +773,10 @@ mod deliver_batch_tests {
             let wait = delivery_wait(&Delivery::PostFailed, &mut failures, None)
                 .expect("a failed post waits");
             let ceiling = DELIVERY_RETRY_BACKOFF.ceiling(attempt);
-            assert!(wait >= ceiling / 2 && wait <= ceiling, "{attempt}: {wait:?}");
+            assert!(
+                wait >= ceiling / 2 && wait <= ceiling,
+                "{attempt}: {wait:?}"
+            );
             assert!(ceiling >= previous_ceiling);
             previous_ceiling = ceiling;
         }
@@ -784,12 +787,25 @@ mod deliver_batch_tests {
             Some(Duration::from_secs(90)),
         )
         .unwrap();
-        assert!(wait >= Duration::from_secs(90), "Retry-After honoured: {wait:?}");
+        assert!(
+            wait >= Duration::from_secs(90),
+            "Retry-After honoured: {wait:?}"
+        );
         assert!(delivery_wait(&Delivery::Rejected, &mut failures, None).is_some());
         assert!(delivery_wait(&Delivery::DeadLetterFailed, &mut failures, None).is_some());
-        assert_eq!(delivery_wait(&Delivery::CommitFailed, &mut failures, None), None);
-        assert_eq!(delivery_wait(&Delivery::Committed, &mut failures, None), None);
-        assert_eq!(failures.failures(), 0, "a delivered batch resets the streak");
+        assert_eq!(
+            delivery_wait(&Delivery::CommitFailed, &mut failures, None),
+            None
+        );
+        assert_eq!(
+            delivery_wait(&Delivery::Committed, &mut failures, None),
+            None
+        );
+        assert_eq!(
+            failures.failures(),
+            0,
+            "a delivered batch resets the streak"
+        );
         let wait = delivery_wait(&Delivery::PostFailed, &mut failures, None).unwrap();
         assert!(wait <= Duration::from_secs(2), "{wait:?}");
     }
@@ -808,7 +824,11 @@ mod deliver_batch_tests {
                 let mut buf = vec![0u8; 8192];
                 let n = socket.read(&mut buf).await.unwrap_or(0);
                 let (status, extra, body) = if buf[..n].starts_with(b"POST /token/") {
-                    ("200 OK", "", r#"{"access_token":"fake-jwt","expires_in":300}"#)
+                    (
+                        "200 OK",
+                        "",
+                        r#"{"access_token":"fake-jwt","expires_in":300}"#,
+                    )
                 } else {
                     (
                         "503 Service Unavailable",
