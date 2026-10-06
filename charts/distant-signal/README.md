@@ -1801,6 +1801,16 @@ lifetime)` before it expires (default skew 60 s; set it through
 `enricher.extraEnv`), and keeps using the cached token while a refresh fails
 until it expires.
 
+LLM token usage, in every auth mode, for a keyless spend estimate (the
+query is in [docs/enricher-openai.md](../../docs/enricher-openai.md#cost)):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `distant_signal_enricher_llm_tokens_total{call, kind}` | counter | Tokens the endpoint reported in each response's `usage`, by `call` (`primary`, `resolution_adversarial`, `severity_adversarial`, as on `enricher_llm_call_total`) and `kind` (`prompt`, `completion`, `reasoning`, `cached`). Counted on every 2xx response that carries `usage`, including ones the enricher then rejects (refused, empty, bad JSON), since those are billed; an endpoint that sends no `usage` counts nothing. `cached` is a subset of `prompt`, and `reasoning` a subset of `completion`: never add them on top. All 12 series are registered at 0. |
+| `distant_signal_enricher_llm_model_info{model, base_url_host}` | gauge | Always 1: the configured `enricher.llm.model` and the host (and port) of `enricher.llm.baseUrl`, for joining a price onto the counter. |
+
+No spend alert here: the OpenAI project's own budget is the limit.
+
 ### trustConsumer
 
 Resolves tracked trains from TRUST train movements. It reads
