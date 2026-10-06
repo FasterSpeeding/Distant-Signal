@@ -3,6 +3,40 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-07: named bus stops and timing points; bus stops in the planner
+
+Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`.
+
+### New fields on `JourneyStop`
+
+`locationType` (`station`, `bus_stop`, `ferry_terminal`, `junction`,
+`siding`, `passing_point`, `other`, or `null` when nothing is known) and
+`parentCrs` (a bus stop's or ferry terminal's station, else `null`).
+
+### Changed behaviour
+
+- `JourneyStop.name` is now set for stops with no station name: bus stops
+  (`"Heathrow Terminal 3 (bus stop)"`), ferry terminals (`"Brodick (ferry
+  terminal)"`), timing points (`"Marylebone 10 Signal"`). `null` only for a
+  TIPLOC no source knows.
+- A destination with no CRS (station boards, train search `destinationCrs`)
+  is now keyed `tiploc:HTRBUS3` instead of `~HTRBUS3`, and its
+  `destinationName` is set. Rows published before the change keep the `~`
+  key, also named, until the next daily publish.
+- `GET /Trips/plan`: `origin`, `destination`, `waypoints` and the avoid lists
+  also take a bus stop's or ferry terminal's `tiploc:` code (any case).
+  `originCrs`/`destinationCrs` on segments and legs carry that code for such
+  an end. A change to or from a bus or ferry costs 5 extra minutes per bus or
+  ferry side (configurable), never at the start or end.
+
+### New parameter
+
+`GET /public/stations?q=...&stops=true` appends up to 10 matching bus stops
+and ferry terminals: `{"code": "tiploc:KESWICK", "name": "Keswick (bus)",
+"kind": "bus"}` (`parentCrs` when the stop has a station). Without
+`stops=true` the response is
+unchanged.
+
 ## 2026-10-06: incidents on the lines they name; `upcoming` on line status
 
 Design:
