@@ -81,9 +81,17 @@ struct IncidentSearchParams {
     /// Optional. `true` = planned works only, `false` = unplanned only,
     /// omitted = either.
     planned: Option<bool>,
-    /// Optional. `true` = cleared only, `false` = active only, omitted =
-    /// either. Deliberately not a hidden default filter.
+    /// Optional, legacy spelling of `state`: `true` = `state=cleared`,
+    /// `false` = `state=active`, omitted = any. Since 2026-10-06 `false`
+    /// no longer includes incidents the feed stopped listing without
+    /// clearing ("ended"). Deliberately not a hidden default filter. A
+    /// `400` alongside `state`.
     cleared: Option<bool>,
+    /// Optional. `active` (not cleared, still listed), `cleared` (RDM
+    /// cleared it) or `ended` (no longer listed by the feed, never
+    /// cleared); omitted = any. Anything else is a `400`. See
+    /// docs/superpowers/specs/2026-10-06-incident-source-removal-design.md.
+    state: Option<String>,
     /// Optional. Inclusive lower bound on the raw `priority` integer. No
     /// documented "major"/"minor" mapping exists -- this is a raw numeric
     /// range over an unexplained feed value.
@@ -119,6 +127,32 @@ fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
         ));
     }
     Ok(parsed.min(MAX_INCIDENT_SEARCH_LIMIT))
+}
+
+/// The archive's lifecycle filter: `state` (`active`/`cleared`/`ended`),
+/// or its legacy boolean spelling `cleared`. Both at once is a `400` rather
+/// than a precedence rule a caller would have to know about; so is an
+/// unknown `state` (this route's "a typo must 400, not no-op" posture).
+fn normalize_state(
+    state: Option<&str>,
+    cleared: Option<bool>,
+) -> Result<Option<queries::IncidentState>, (StatusCode, String)> {
+    let state = state.map(str::trim).filter(|s| !s.is_empty());
+    match (state, cleared) {
+        (Some(_), Some(_)) => Err((
+            StatusCode::BAD_REQUEST,
+            "use either state or cleared, not both".to_string(),
+        )),
+        (Some(raw), None) => queries::IncidentState::parse(raw).map(Some).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "state must be one of active, cleared, ended".to_string(),
+            )
+        }),
+        (None, Some(true)) => Ok(Some(queries::IncidentState::Cleared)),
+        (None, Some(false)) => Ok(Some(queries::IncidentState::Active)),
+        (None, None) => Ok(None),
+    }
 }
 
 /// Parses a caller-supplied RFC3339 timestamp for `from`/`to`.
@@ -187,6 +221,7 @@ fn incident_summary_json(row: &queries::IncidentSummaryRow) -> Value {
         "isCleared": row.is_cleared,
         "firstSeenAt": row.first_seen_at.to_rfc3339(),
         "fetchedAt": row.fetched_at.to_rfc3339(),
+        "sourceRemovedAt": row.source_removed_at.map(|t| t.to_rfc3339()),
     })
 }
 
@@ -276,6 +311,8 @@ async fn search_incidents(
         ));
     }
 
+    let state = normalize_state(params.state.as_deref(), params.cleared)?;
+
     let limit = normalize_limit(params.limit.as_deref())?;
     let after = params
         .after
@@ -289,7 +326,7 @@ async fn search_incidents(
         operators,
         line,
         params.planned,
-        params.cleared,
+        state,
         params.priority_min,
         params.priority_max,
         from,
@@ -406,6 +443,7 @@ fn to_incident_detail_json(
         "isCleared": incident.is_cleared,
         "firstSeenAt": incident.first_seen_at.to_rfc3339(),
         "fetchedAt": incident.fetched_at.to_rfc3339(),
+        "sourceRemovedAt": incident.source_removed_at.map(|t| t.to_rfc3339()),
         "currentlyAffectsLines": lines.iter().map(|l| json!({
             "id": l.line_id,
             "name": l.name,
@@ -486,6 +524,7 @@ mod tests {
             is_cleared: false,
             first_seen_at: Utc.with_ymd_and_hms(2026, 8, 30, 9, 0, 0).unwrap(),
             fetched_at: Utc.with_ymd_and_hms(2026, 8, 31, 10, 15, 0).unwrap(),
+            source_removed_at: None,
         }
     }
 
@@ -497,6 +536,55 @@ mod tests {
         assert_eq!(json["affectedStations"][0], "WOK");
         assert_eq!(json["isPlanned"], false);
         assert_eq!(json["isCleared"], false);
+        assert!(
+            json["sourceRemovedAt"].is_null(),
+            "a still-listed incident has an explicit null, not a missing key"
+        );
+    }
+
+    #[test]
+    fn an_ended_incident_renders_when_the_feed_last_listed_it() {
+        let mut incident = sample_incident();
+        incident.source_removed_at = Some(Utc.with_ymd_and_hms(2026, 10, 5, 22, 55, 0).unwrap());
+        let json = to_incident_detail_json(incident, vec![], vec![]);
+        assert_eq!(json["sourceRemovedAt"], "2026-10-05T22:55:00+00:00");
+        assert_eq!(json["isCleared"], false, "ended is not cleared");
+    }
+
+    #[test]
+    fn the_state_filter_and_its_legacy_cleared_spelling() {
+        use queries::IncidentState;
+        assert_eq!(normalize_state(None, None), Ok(None));
+        assert_eq!(normalize_state(Some(" "), None), Ok(None));
+        assert_eq!(
+            normalize_state(Some("active"), None),
+            Ok(Some(IncidentState::Active))
+        );
+        assert_eq!(
+            normalize_state(Some("ended"), None),
+            Ok(Some(IncidentState::Ended))
+        );
+        assert_eq!(
+            normalize_state(Some("cleared"), None),
+            Ok(Some(IncidentState::Cleared))
+        );
+        assert_eq!(
+            normalize_state(None, Some(true)),
+            Ok(Some(IncidentState::Cleared))
+        );
+        assert_eq!(
+            normalize_state(None, Some(false)),
+            Ok(Some(IncidentState::Active)),
+            "cleared=false is active only, never ended rows"
+        );
+        assert_eq!(
+            normalize_state(Some("gone"), None).map_err(|(status, _)| status),
+            Err(StatusCode::BAD_REQUEST)
+        );
+        assert_eq!(
+            normalize_state(Some("active"), Some(false)).map_err(|(status, _)| status),
+            Err(StatusCode::BAD_REQUEST)
+        );
     }
 
     #[test]
@@ -1001,6 +1089,58 @@ mod db_tests {
             rows[0]["affectedLines"][0], "test-line",
             "the row carries its line attribution onto the wire: {body}"
         );
+        delete_fixtures(&pool).await;
+    }
+
+    /// 2026-10-06: `state=active|cleared|ended`, and `cleared=false` (the
+    /// legacy spelling of active) no longer returning ended rows.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search -- --ignored --test-threads=1`"]
+    async fn incident_search_state_filter_and_legacy_cleared() {
+        let pool = connect().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "route-test-st-active", &["QZ"], &[], 1, false, false).await;
+        seed_incident(&pool, "route-test-st-cleared", &["QZ"], &[], 1, false, true).await;
+        seed_incident(&pool, "route-test-st-ended", &["QZ"], &[], 1, true, false).await;
+        sqlx::query(
+            "UPDATE incidents SET source_removed_at = fetched_at, source_missing_polls = 2 \
+             WHERE incident_id = 'route-test-st-ended'",
+        )
+        .execute(&pool)
+        .await
+        .expect("mark ended");
+
+        let ids = |body: &str| -> Vec<String> {
+            results(body)
+                .iter()
+                .map(|r| r["incidentId"].as_str().unwrap().to_string())
+                .collect()
+        };
+        for (query, expected) in [
+            ("state=active", "route-test-st-active"),
+            ("cleared=false", "route-test-st-active"),
+            ("state=cleared", "route-test-st-cleared"),
+            ("cleared=true", "route-test-st-cleared"),
+            ("state=ended", "route-test-st-ended"),
+        ] {
+            let (status, body) =
+                get(&pool, vec![], &format!("/incidents?operator=QZ&{query}")).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body}");
+            assert_eq!(ids(&body), vec![expected.to_string()], "{query}");
+        }
+
+        let (_, body) = get(&pool, vec![], "/incidents?operator=QZ&state=ended").await;
+        let row = &results(&body)[0];
+        assert!(row["sourceRemovedAt"].is_string(), "{row}");
+        assert_eq!(row["isCleared"], false);
+        let (_, body) = get(&pool, vec![], "/incidents?operator=QZ&state=active").await;
+        assert!(results(&body)[0]["sourceRemovedAt"].is_null());
+
+        let (status, _) = get(&pool, vec![], "/incidents?state=gone").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = get(&pool, vec![], "/incidents?state=active&cleared=false").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         delete_fixtures(&pool).await;
     }
 
