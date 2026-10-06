@@ -1273,8 +1273,8 @@ jobs:
             || fail "the projected token must be mounted where credential_source.file points"
           grep -q 'serviceAccountName: distant-signal-schedulefeed$' <<<"${dep}" \
             || fail "keyless needs the dedicated schedulefeed ServiceAccount"
-          render "${cm[@]}" --show-only templates/schedulefeed-serviceaccount.yaml \
-            | grep -q 'automountServiceAccountToken: false' \
+          sa=$(render "${cm[@]}" --show-only templates/schedulefeed-serviceaccount.yaml)
+          grep -q 'automountServiceAccountToken: false' <<<"${sa}" \
             || fail "the schedulefeed ServiceAccount must not automount its token"
           set +e
           out=$(render 2>&1)
