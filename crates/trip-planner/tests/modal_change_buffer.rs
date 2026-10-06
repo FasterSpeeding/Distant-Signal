@@ -127,6 +127,7 @@ fn raptor_and_the_staged_search_agree() {
             from_tiplocs: &from,
             waypoints: &[],
             to_tiplocs: &to,
+            vias: None,
             date: date(),
         },
         hm(6, 0),
@@ -152,6 +153,7 @@ fn arrive_by_mirrors_the_buffer() {
                 waypoints: &[],
                 to_tiplocs: &to,
                 arrive_by_min: deadline,
+                vias: None,
                 date: date(),
             },
             None,
@@ -207,4 +209,89 @@ fn changing_onto_a_bus_owes_it_but_the_ends_of_the_journey_do_not() {
     .unwrap();
     assert_eq!(uids(&direct.legs), ["BUS2"]);
     assert_eq!(direct.arrival_min, hm(7, 7));
+}
+
+/// Pass-through vias and the buffer together: via progress is independent
+/// of the buffer, which a change off a bus owes whether or not the change
+/// station is (or the train then runs through) a via.
+#[test]
+fn the_buffer_applies_alongside_vias() {
+    use std::collections::HashMap;
+    use trip_planner::{PassSpan, ViaHow, Vias, raptor_staged};
+
+    let connections = network();
+    let from = tiplocs(&["SANWBUS"]);
+    let to = tiplocs(&["EDINBUR"]);
+    // Both trains run through Kirkcaldy without calling.
+    let spans: HashMap<String, Vec<PassSpan>> = [("TRAIN17", hm(7, 17)), ("TRAIN30", hm(7, 30))]
+        .into_iter()
+        .map(|(uid, departure_min)| {
+            (
+                uid.to_string(),
+                vec![PassSpan {
+                    from_tiploc: "LEUCHRS".to_string(),
+                    to_tiploc: "EDINBUR".to_string(),
+                    departure_min,
+                    passed: vec!["KRKCLDY".to_string()],
+                }],
+            )
+        })
+        .collect();
+    for (via, how) in [("LEUCHRS", ViaHow::Call), ("KRKCLDY", ViaHow::Pass)] {
+        let vias = Vias::new(&[tiplocs(&[via])], spans.clone());
+        for (buffer, train, arrival) in [(0, "TRAIN17", hm(8, 10)), (5, "TRAIN30", hm(8, 25))] {
+            let ic = interchange(buffer);
+            let options = StagedOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &[],
+                to_tiplocs: &to,
+                vias: Some(&vias),
+                date: date(),
+            };
+            let staged = scan_staged(&options, hm(6, 0), None, None).unwrap();
+            assert_eq!(staged.arrival_min, arrival, "{via}, buffer {buffer}");
+            assert_eq!(uids(&staged.parts[0].legs), ["BUS1", train], "{via}");
+            assert_eq!(staged.via_legs.len(), 1);
+            let raptor = raptor_staged(&options, hm(6, 0), 4, None, None);
+            assert_eq!(
+                raptor.iter().map(|j| j.arrival_min).min(),
+                Some(arrival),
+                "{via}, buffer {buffer}"
+            );
+            if via == "KRKCLDY" {
+                assert_eq!(staged.via_legs[0].how, how);
+                assert_eq!(staged.via_legs[0].leg, 1);
+            }
+
+            // Arrive-by mirrors it: by 08:15 only without the buffer.
+            let arrive_by = |deadline| {
+                scan_connections_arrive_by(
+                    ArriveByOptions {
+                        connections: &connections,
+                        interchange: &ic,
+                        from_tiplocs: &from,
+                        waypoints: &[],
+                        to_tiplocs: &to,
+                        arrive_by_min: deadline,
+                        vias: Some(&vias),
+                        date: date(),
+                    },
+                    None,
+                    None,
+                )
+            };
+            assert_eq!(
+                arrive_by(hm(8, 15)).is_some(),
+                buffer == 0,
+                "{via}, buffer {buffer}"
+            );
+            assert_eq!(
+                arrive_by(hm(8, 30)).unwrap().departure_min,
+                hm(7, 0),
+                "{via}, buffer {buffer}"
+            );
+        }
+    }
 }

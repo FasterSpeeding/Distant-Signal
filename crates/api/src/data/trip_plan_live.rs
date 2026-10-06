@@ -1616,6 +1616,8 @@ mod tests {
                 origin_crs: "AAA",
                 waypoints: &[],
                 destination_crs: "BBB",
+                vias: &[],
+                via_search: None,
                 time: TimeBound::ArriveBy(492),
             })
             .unwrap();
