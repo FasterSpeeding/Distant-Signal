@@ -1682,6 +1682,7 @@ pod that fails every request forever.
 | `enricher.llm.apiKey` | `""` | API key for that endpoint. Rendered into the chart Secret when `existingSecret` is empty. Empty is valid for a local endpoint needing no auth, and is never auto-generated. |
 | `enricher.llm.existingSecret` | `""` | Read the API key from this pre-existing Secret instead. |
 | `enricher.llm.existingSecretApiKeyKey` | `llm-api-key` | Key within `enricher.llm.existingSecret`. |
+| `enricher.llm.reasoningEffort` | `""` | `LLM_REASONING_EFFORT`, sent as `reasoning_effort`. Empty renders nothing (no `reasoning_effort` sent). OpenAI's gpt-6-luna needs `none` (see [docs/enricher-openai.md](../../docs/enricher-openai.md)); NVIDIA's GLM wants `low`. An `enricher.extraEnv` entry of the same name wins. |
 | `enricher.llmRequestTimeoutSecs` | `300` | Per-request timeout for a single LLM call (`LLM_REQUEST_TIMEOUT_SECS`). One incident makes three sequential calls. Behind a gateway that cuts calls itself (e.g. a 504 at ~302 s), set this slightly above the gateway's cutoff (e.g. `320`) so the 504 is what gets reported. |
 | `enricher.sweepIntervalSecs` | `3600` | Cadence of the backstop sweep that re-checks every uncleared incident's text hash and model version. |
 | `enricher.reclaimIntervalSecs` | `60` | How often the reclaim loop checks for stream entries stuck unacked past `reclaimMinIdleSecs` (a timed-out request, or a crash between processing and acking). |
@@ -1696,18 +1697,19 @@ pod that fails every request forever.
 | `enricher.podAnnotations` | `{}` | Pod annotations. |
 | `enricher.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 
-The enricher has off-by-default settings with no dedicated value. Set them
-through `enricher.extraEnv`; with none set, it sends exactly the same
-requests as before and never retries a call in-process.
+The enricher has off-by-default settings with no dedicated value (apart
+from `LLM_REASONING_EFFORT`, which `enricher.llm.reasoningEffort` also
+sets). Set them through `enricher.extraEnv`; with none set, it sends the
+same requests as before and never retries a call in-process.
 
 | Env var | Default | Description |
 |---|---|---|
-| `LLM_REASONING_EFFORT` | unset | Sent as `reasoning_effort` (e.g. `low`). Reasoning models whose default effort is high need it, or they can spend their whole budget thinking and return empty content (`outcome="empty_content"`). |
-| `LLM_MAX_TOKENS` | unset | Sent as `max_tokens` (e.g. `8192`). |
+| `LLM_REASONING_EFFORT` | unset | Sent as `reasoning_effort` (e.g. `low`, or `none` for OpenAI's gpt-6-luna). Reasoning models whose default effort is high need it, or they can spend their whole budget thinking and return empty content (`outcome="empty_content"`). Prefer `enricher.llm.reasoningEffort`. |
+| `LLM_MAX_TOKENS` | unset | Sent as `max_tokens` (e.g. `8192`). Leave unset for OpenAI's gpt-6-luna, which rejects `max_tokens`. |
 | `LLM_MAX_IN_FLIGHT` | unset | Cap on concurrent LLM HTTP requests across the stream, sweep and reclaim loops. |
-| `LLM_RATE_LIMIT_RETRIES` | `0` | In-call retries on HTTP 429. Each waits `Retry-After` (at least `LLM_RATE_LIMIT_RETRY_SECS`); a `Retry-After` over 600 s fails the call instead. |
+| `LLM_RATE_LIMIT_RETRIES` | `0` | In-call retries on HTTP 429. Each waits `Retry-After` (at least `LLM_RATE_LIMIT_RETRY_SECS`); a `Retry-After` over 600 s fails the call instead. A 429 whose body says the account is out of quota or at its billing limit (`insufficient_quota`, `outcome="quota_exhausted"`) is never retried. |
 | `LLM_RATE_LIMIT_RETRY_SECS` | `20` | Minimum wait before a 429 retry. |
-| `LLM_GATEWAY_RETRIES` | `0` | In-call retries on 502/503/504 and client timeouts. Above `0` it also stops a timeout or 504 feeding the per-text retry backoff. (429, 502 and 503 never feed it.) |
+| `LLM_GATEWAY_RETRIES` | `0` | In-call retries on 502/503/504 and client timeouts. A 502/503/504 retry waits the response's `Retry-After` (over 600 s fails the call instead), or else 2 s, 4 s, ... up to 30 s; a client timeout retries at once. Above `0` it also stops a timeout or 504 feeding the per-text retry backoff. (429, 502 and 503 never feed it.) |
 | `CARRY_FORWARD_SEMANTIC_NOOPS` | `false` | When `true`, a text change that only touches HTML, whitespace, entities, case or in-word punctuation re-stamps the existing extraction instead of re-running the LLM (`enricher_extraction_carried_forward_total`). With it off, the edit class only labels `enricher_extraction_rerun_total` and `enricher_extraction_churn_total` (`edit_class`). |
 
 For example, for a slow, rate-limited hosted reasoning model:
@@ -2299,7 +2301,7 @@ recording rules (`distant_signal:*`) in the same group, so the alert's
 | `DistantSignalMovementRelayPublishFailing` | critical | movement-relay failed every `XADD` (`movement_relay_errors_total{operation=~"publish_event\|redis_oom"}`) and published nothing over 10m, for 5m: Redis is refusing writes and TRUST ingestion has stopped. |
 | `DistantSignalRedisPersistenceFailing` | critical | Redis's last AOF write or rewrite failed (`redis_aof_last_write_ok` / `redis_aof_last_bgrewrite_ok` is 0, from movement-relay's `INFO persistence`), or, for the bundled Redis with persistence, AOF is off, for 5m. |
 | `DistantSignalMovementGroupRecreated` | warning | Within 1h a consumer recreated its group after `NOGROUP` (`movement_feed_group_recreated_total`), or movement-relay recreated a missing stream with every group (`movement_relay_stream_created_total`): Redis lost its data. |
-| `DistantSignalEnricherErrors` | warning | Over 30m, more than 50% of an LLM call site's calls (`enricher_llm_call_total{outcome!="success"}`: `error`, `timeout`, `rate_limited`, `gateway_error`, `http_error` or `empty_content`) failed, with at least 3 failures, for 15m. |
+| `DistantSignalEnricherErrors` | warning | Over 30m, more than 50% of an LLM call site's calls (`enricher_llm_call_total{outcome!="success"}`: `error`, `timeout`, `rate_limited`, `quota_exhausted`, `gateway_error`, `http_error`, `empty_content` or `refused`) failed, with at least 3 failures, for 15m. |
 | `DistantSignalFullCoverageWindowFeedStale` | warning | full-coverage-consumer has marked its windows `feed_stale` (`full_coverage_consumer_window_feed_stale` is 1) for 15m. |
 | `DistantSignalFullCoverageWindowPostErrors` | warning | At least 3 POSTs to `/private/full-coverage-window-stats` failed (`full_coverage_consumer_errors_total{operation="post_window_stats"}`) within 5m, continuously for 10m (`postErrorsThreshold`, `postErrorsWindow`, `postErrorsFor`): one POST lost to an api rollout does not fire. |
 | `DistantSignalFullCoverageWindowStatsStalled` | warning | No window rows posted (`full_coverage_consumer_window_rows_posted_total`) over 10m, for 15m. |

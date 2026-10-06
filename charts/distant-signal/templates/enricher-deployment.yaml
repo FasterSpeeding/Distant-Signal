@@ -116,6 +116,10 @@ with enricher.extraEnv, which replaces an entry of the same name.
                 secretKeyRef:
                   name: {{ default (include "distant-signal.secretName" .) .Values.enricher.llm.existingSecret }}
                   key: {{ .Values.enricher.llm.existingSecretApiKeyKey }}
+            {{- with .Values.enricher.llm.reasoningEffort }}
+            - name: LLM_REASONING_EFFORT
+              value: {{ . | quote }}
+            {{- end }}
             - name: LLM_REQUEST_TIMEOUT_SECS
               value: {{ .Values.enricher.llmRequestTimeoutSecs | quote }}
             - name: SWEEP_INTERVAL_SECS

@@ -299,7 +299,12 @@ the window, with at least `minErrors` failures
 (`distant_signal:enricher_llm_call_failures:ratio` and `:increase`, from
 `enricher_llm_call_total{outcome!="success"}`). Incidents are not being
 enriched. Check the LLM endpoint (`enricher.llm.baseUrl`), its credentials
-and rate limits, and enricher's logs.
+and rate limits, and enricher's logs. The `outcome` label narrows it down:
+`quota_exhausted` means the provider account is out of credit or at its
+billing limit (top it up; no retry helps), and `refused` means the model
+declined the text on safety grounds. Failure log lines carry the
+provider's `request_id` where it sends one (OpenAI does); see
+[enricher-openai.md](enricher-openai.md).
 
 ## full-coverage windows
 

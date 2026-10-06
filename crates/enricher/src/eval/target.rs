@@ -277,6 +277,28 @@ mod tests {
         }
     }
 
+    /// The `OpenAI` example target (docs/enricher-openai.md): effort `none`,
+    /// no `max_tokens`, and the documented retry/concurrency settings.
+    #[test]
+    fn example_openai_target_has_the_documented_settings() {
+        let targets = parse_targets(
+            include_str!("../../eval/targets.example.toml"),
+            Some(&["openai-gpt-6-luna-none".to_string()]),
+        )
+        .unwrap();
+        let target = &targets[0];
+        assert_eq!(target.base_url, "https://api.openai.com/v1");
+        assert_eq!(target.model, "gpt-6-luna");
+        assert_eq!(target.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(target.request_timeout_secs, 120);
+        let policy = target.policy();
+        assert_eq!(policy.reasoning_effort.as_deref(), Some("none"));
+        assert_eq!(policy.max_tokens, None);
+        assert_eq!(policy.max_in_flight, Some(3));
+        assert_eq!(policy.max_rate_limit_retries, 3);
+        assert_eq!(policy.max_gateway_retries, 1);
+    }
+
     #[test]
     fn minimal_target_takes_service_defaults() {
         let targets = parse_targets(
