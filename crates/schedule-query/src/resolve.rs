@@ -38,6 +38,18 @@ pub struct ResolvedSchedule {
     /// winning (STP-resolved) record, so an STP bus overlay (`5`) of a
     /// permanent train wins.
     pub train_status: Option<char>,
+    /// See [`crate::records::BasicSchedule::train_category`]; taken from
+    /// the winning record, like `train_status`.
+    pub train_category: Option<crate::records::TrainCategory>,
+}
+
+impl ResolvedSchedule {
+    /// [`crate::records::service_mode`] of the winning record, so an STP
+    /// bus overlay of a permanent train classifies as a replacement bus
+    /// for exactly the dates it covers.
+    pub fn service_mode(&self) -> crate::records::ServiceMode {
+        crate::records::service_mode(self.train_status, self.train_category.as_deref())
+    }
 }
 
 /// Assigns [`CallingPoint::day_offset`] over `calling_points`, IN PLACE, by
@@ -160,6 +172,7 @@ pub fn resolve_for_date(
         headcode: winner.basic.headcode.clone(),
         rsid: winner.basic.rsid.clone(),
         train_status: winner.basic.train_status,
+        train_category: winner.basic.train_category.clone(),
     })
 }
 
@@ -947,6 +960,7 @@ mod tests {
             headcode: None,
             rsid: None,
             train_status: None,
+            train_category: None,
         }
     }
 
@@ -1090,6 +1104,54 @@ mod tests {
                 calling_points: Vec::new(),
             },
         ]
+    }
+
+    /// Classification is per `(uid, date)`: an STP bus overlay (status
+    /// `5`, category `BR`) makes a permanent train a replacement bus for
+    /// exactly the dates it covers -- the P69679..P69695 shape seen in
+    /// production, trains on some dates and buses on others.
+    #[test]
+    fn service_mode_follows_the_stp_winner_per_date() {
+        let mut train = basic(
+            "P69680",
+            StpIndicator::Permanent,
+            "2026-05-18",
+            "2026-12-11",
+            WEEKDAYS,
+        );
+        train.train_status = Some('P');
+        train.train_category = Some("OO".into());
+        let mut bus = basic(
+            "P69680",
+            StpIndicator::Overlay,
+            "2026-10-05",
+            "2026-10-06",
+            WEEKDAYS,
+        );
+        bus.train_status = Some('5');
+        bus.train_category = Some("BR".into());
+        let raw = vec![
+            RawSchedule {
+                basic: train,
+                calling_points: vec![calling_point("EUSTON ", CallingPointKind::Origin)],
+            },
+            RawSchedule {
+                basic: bus,
+                calling_points: vec![calling_point("EUSTON ", CallingPointKind::Origin)],
+            },
+        ];
+        let on = |d: u32| {
+            resolve_for_date(
+                &raw,
+                "P69680",
+                NaiveDate::from_ymd_opt(2026, 10, d).unwrap(),
+            )
+            .unwrap()
+            .service_mode()
+        };
+        assert_eq!(on(5), crate::records::ServiceMode::ReplacementBus);
+        assert_eq!(on(6), crate::records::ServiceMode::ReplacementBus);
+        assert_eq!(on(7), crate::records::ServiceMode::Train);
     }
 
     #[test]
