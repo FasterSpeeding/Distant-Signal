@@ -252,6 +252,9 @@ impl Grid {
 
     /// `a` dominates `b`, or is `b`: at least as far along both lists.
     pub(crate) fn covers(self, a: usize, b: usize) -> bool {
+        if self.width == 1 {
+            return a >= b;
+        }
         self.stage(a) >= self.stage(b) && self.progress(a) >= self.progress(b)
     }
 }
@@ -266,12 +269,13 @@ pub(crate) fn advance_at(vias: Option<&Vias>, progress: usize, tiploc: &str) -> 
     vias.map_or(progress, |vias| vias.advance_at(progress, tiploc))
 }
 
-/// A connection one ride could take this sweep: at `state`, either already
-/// aboard (`Some(boarding)`) or boarding fresh, made ready by an arrival at
-/// `from`.
+/// A connection one ride could take this sweep, at some state: already
+/// aboard (the boarding), or boarding fresh, made ready by an arrival at the
+/// connection's departure stop (`Fresh(0)`) or at its `n`th same-CRS
+/// sibling (`Fresh(n)`).
 enum Candidate {
     Aboard(usize),
-    Fresh(String),
+    Fresh(usize),
 }
 
 struct Forward<'a> {
@@ -403,36 +407,68 @@ impl<'a> Forward<'a> {
     }
 
     /// `csa::Scan::ready_source_at` for every state at once: the states at
-    /// which a fresh boarding at `tiploc` is ready by `departure`, and the
-    /// stop (`tiploc` or a same-CRS sibling) whose arrival made it ready.
-    /// The origin only at the initial state.
+    /// which a fresh boarding at `tiploc` is ready by `departure`, the time,
+    /// and the stop whose arrival made it ready (0: `tiploc` itself, `n`:
+    /// `siblings[n - 1]`, which this fills). The origin only at the initial
+    /// state. States covered by one in `aboard` are skipped: the ride already
+    /// aboard there serves them.
     fn ready_states(
         &self,
         labels: &Labels,
         tiploc: &str,
         departure: u32,
-        out: &mut Vec<(usize, u32, String)>,
+        aboard: &[usize],
+        siblings: &mut Vec<&'a str>,
+        out: &mut Vec<(usize, u32, usize)>,
     ) {
         out.clear();
+        siblings.clear();
+        let grid = self.grid;
         let tiploc = normalize_tiploc(tiploc);
-        if self.origin.contains(tiploc) && self.departure_min <= departure {
-            out.push((0, self.departure_min, tiploc.to_string()));
+        let at_origin = self.origin.contains(tiploc);
+        if at_origin
+            && self.departure_min <= departure
+            && !aboard.iter().any(|&known| grid.covers(known, 0))
+        {
+            out.push((0, self.departure_min, 0));
         }
-        let mut consider = |stop: &str| {
+        siblings.extend(sibling_tiplocs(self.interchange, tiploc));
+        // The change time per stage, computed once.
+        let mut changes: Vec<(usize, Option<u32>)> = Vec::new();
+        for source in 0..=siblings.len() {
+            let stop = if source == 0 {
+                tiploc
+            } else {
+                siblings[source - 1]
+            };
             let Some(found) = labels.stops.get(stop) else {
-                return;
+                continue;
             };
             for label in found {
-                if label.state == 0 && self.origin.contains(tiploc) {
+                if label.state == 0 && at_origin {
                     continue;
                 }
-                let Some(change) = change_minutes(
-                    self.interchange,
-                    self.restrictions,
-                    &self.targets,
-                    self.grid.stage(label.state),
-                    tiploc,
-                ) else {
+                if label.time > departure
+                    || aboard.iter().any(|&known| grid.covers(known, label.state))
+                {
+                    continue;
+                }
+                let stage = grid.stage(label.state);
+                let change =
+                    if let Some(&(_, change)) = changes.iter().find(|(known, _)| *known == stage) {
+                        change
+                    } else {
+                        let change = change_minutes(
+                            self.interchange,
+                            self.restrictions,
+                            &self.targets,
+                            stage,
+                            tiploc,
+                        );
+                        changes.push((stage, change));
+                        change
+                    };
+                let Some(change) = change else {
                     continue;
                 };
                 let ready = label.time + change;
@@ -440,17 +476,11 @@ impl<'a> Forward<'a> {
                     continue;
                 }
                 match out.iter_mut().find(|(state, ..)| *state == label.state) {
-                    Some(entry) if ready < entry.1 => {
-                        *entry = (label.state, ready, stop.to_string());
-                    }
+                    Some(entry) if ready < entry.1 => *entry = (label.state, ready, source),
                     Some(_) => {}
-                    None => out.push((label.state, ready, stop.to_string())),
+                    None => out.push((label.state, ready, source)),
                 }
             }
-        };
-        consider(tiploc);
-        for sibling in sibling_tiplocs(self.interchange, tiploc) {
-            consider(sibling);
         }
     }
 
@@ -474,7 +504,9 @@ impl<'a> Forward<'a> {
         // Per train, the states it is ridden at and their boardings.
         let mut aboard: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         let mut candidates: Vec<(usize, Candidate)> = Vec::new();
-        let mut ready: Vec<(usize, u32, String)> = Vec::new();
+        let mut ready: Vec<(usize, u32, usize)> = Vec::new();
+        let mut aboard_states: Vec<usize> = Vec::new();
+        let mut siblings: Vec<&'a str> = Vec::new();
         let mut riding: Vec<usize> = Vec::new();
         let mut continuations: Vec<(usize, usize, bool)> = Vec::new();
         for connection in connections {
@@ -491,12 +523,14 @@ impl<'a> Forward<'a> {
                 continue;
             }
             candidates.clear();
+            aboard_states.clear();
             if let Some(rides) = aboard.get(&connection.uid) {
                 candidates.extend(
                     rides
                         .iter()
                         .map(|&(state, boarding)| (state, Candidate::Aboard(boarding))),
                 );
+                aboard_states.extend(rides.iter().map(|&(state, _)| state));
             }
             // No fresh boarding at a set-down-only stop.
             if connection.can_board {
@@ -505,13 +539,15 @@ impl<'a> Forward<'a> {
                     labels,
                     &connection.from_tiploc,
                     connection.departure_min,
+                    &aboard_states,
+                    &mut siblings,
                     &mut ready,
                 );
-                for (state, _, from) in ready.drain(..) {
-                    if !candidates.iter().any(|(known, _)| *known == state) {
-                        candidates.push((state, Candidate::Fresh(from)));
-                    }
-                }
+                candidates.extend(
+                    ready
+                        .drain(..)
+                        .map(|(state, _, source)| (state, Candidate::Fresh(source))),
+                );
             }
             if candidates.is_empty() {
                 continue;
@@ -528,10 +564,17 @@ impl<'a> Forward<'a> {
                 riding.push(state);
                 let boarding = match candidate {
                     Candidate::Aboard(boarding) => boarding,
-                    Candidate::Fresh(from) => {
+                    Candidate::Fresh(source) => {
+                        let from = if source == 0 {
+                            normalize_tiploc(&connection.from_tiploc)
+                        } else {
+                            siblings[source - 1]
+                        };
                         arena.push(Boarding {
                             first: Some(connection.clone()),
-                            source: Source::Ready { from },
+                            source: Source::Ready {
+                                from: from.to_string(),
+                            },
                             state,
                         });
                         aboard

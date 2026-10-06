@@ -338,3 +338,132 @@ fn bench_waypoints() {
         );
     }
 }
+
+/// Vias on hubs `S0001..S0003`, and, for every 7th line, a synthetic pass
+/// of one of them on every connection of its trains (so passing is
+/// exercised, not only calls).
+fn bench_vias(connections: &[Connection], count: usize) -> trip_planner::Vias {
+    use trip_planner::{PassSpan, Vias};
+    let targets: Vec<Vec<String>> = (1..=count as u64).map(|i| vec![tiploc(i)]).collect();
+    let mut spans: HashMap<String, Vec<PassSpan>> = HashMap::new();
+    for c in connections {
+        let Some(line) = c.uid[1..]
+            .split('D')
+            .next()
+            .and_then(|n| n.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if count == 0 || !line.is_multiple_of(7) {
+            continue;
+        }
+        spans.entry(c.uid.clone()).or_default().push(PassSpan {
+            from_tiploc: c.from_tiploc.clone(),
+            to_tiploc: c.to_tiploc.clone(),
+            departure_min: c.departure_min,
+            passed: vec![tiploc(1 + line % count as u64)],
+        });
+    }
+    Vias::new(&targets, spans)
+}
+
+/// The cost of raising `maxChanges` from 4 to 6 (RAPTOR rounds
+/// `max_changes + 2`: 6 -> 8) with and without waypoints and pass-through
+/// vias, depart-after and arrive-by; CSA (`fastest`, independent of
+/// `maxChanges`) for reference. Three OD pairs per row: median and max.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_max_changes_and_vias() {
+    use trip_planner::{
+        StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
+    };
+    let (connections, interchange) = network();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    println!(
+        "{:>3} wp {:>2} via | {:>22} | {:>22} | {:>22} | {:>22} | {:>22} | {:>22}",
+        "",
+        "",
+        "csa",
+        "csa arriveBy",
+        "raptor 6 rounds (mc4)",
+        "raptor 8 rounds (mc6)",
+        "arriveBy 6 rounds",
+        "arriveBy 8 rounds"
+    );
+    for waypoint_count in [0usize, 4, 20] {
+        for via_count in [0usize, 3] {
+            let vias = bench_vias(&connections, via_count);
+            let vias = (via_count > 0).then_some(&vias);
+            let mut rng = Rng(17 + waypoint_count as u64);
+            let mut rows = Vec::new();
+            for _ in 0..3 {
+                let from = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+                let to = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+                let mut waypoints: Vec<Vec<String>> = Vec::new();
+                while waypoints.len() < waypoint_count {
+                    let hub = vec![tiploc(4 + rng.next(HUBS - 4))];
+                    if waypoints.last() != Some(&hub) {
+                        waypoints.push(hub);
+                    }
+                }
+                let staged = StagedOptions {
+                    connections: &connections,
+                    interchange: &interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    date,
+                };
+                let arrive = ArriveByOptions {
+                    connections: &connections,
+                    interchange: &interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    arrive_by_min: 1380,
+                    date,
+                };
+                let once = |f: &dyn Fn() -> usize| {
+                    let started = Instant::now();
+                    let found = f();
+                    (started.elapsed(), found)
+                };
+                rows.push([
+                    once(&|| usize::from(scan_staged(&staged, 360, None, None).is_some())),
+                    once(&|| usize::from(staged_arrive_by(&arrive, None, None).is_some())),
+                    once(&|| raptor_staged(&staged, 360, 6, None, None).len()),
+                    once(&|| raptor_staged(&staged, 360, 8, None, None).len()),
+                    once(&|| {
+                        latest_departures_by_trips(&arrive, None, None, 6)
+                            .iter()
+                            .flatten()
+                            .count()
+                    }),
+                    once(&|| {
+                        latest_departures_by_trips(&arrive, None, None, 8)
+                            .iter()
+                            .flatten()
+                            .count()
+                    }),
+                ]);
+            }
+            let column = |i: usize| {
+                let mut values: Vec<Duration> = rows.iter().map(|row| row[i].0).collect();
+                values.sort();
+                let found: usize = rows.iter().map(|row| usize::from(row[i].1 > 0)).sum();
+                format!("{:>7.0?} max {:>7.0?} {found}/3", values[1], values[2])
+            };
+            println!(
+                "{waypoint_count:>3} wp {via_count:>2} via | {} | {} | {} | {} | {} | {}",
+                column(0),
+                column(1),
+                column(2),
+                column(3),
+                column(4),
+                column(5)
+            );
+        }
+    }
+}
