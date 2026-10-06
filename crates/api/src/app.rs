@@ -370,6 +370,12 @@ fn internal_oauth_route_table(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
+        // The per-date service-mode publish (train/bus/ferry); same writer.
+        (
+            "/schedule-services",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
         // Same group, both methods -- this producer reading back its own
         // last write, not a second caller (see Correction 2).
         (

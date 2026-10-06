@@ -2403,6 +2403,9 @@ pub struct LineTrainEntryRow {
     pub uid: Option<String>,
     /// The entry's `calling_points` as raw JSON text, `None` when absent.
     pub calling_points_json: Option<String>,
+    /// The entry's CIF `train_status` (one character), when present -- the
+    /// service-mode fallback when `schedule_services` has no row.
+    pub train_status: Option<String>,
     /// `tiploc` of the first/last element of `calling_points`, when
     /// `calling_points` is an array and that element's `tiploc` is a string
     /// -- exactly `routes::lines::first_and_last_tiploc`'s old contract.
@@ -2478,6 +2481,7 @@ pub async fn list_line_train_entries(
         Option<String>,
         Option<String>,
         Option<i32>,
+        Option<String>,
     )> = sqlx::query_as(&format!(
         r"
         SELECT x.ord,
@@ -2497,7 +2501,9 @@ pub async fn list_line_train_entries(
                x.e ->> 'run_last_crs',
                x.e -> 'line_due' ->> 'time',
                CASE WHEN jsonb_typeof(x.e -> 'line_due' -> 'day_offset') = 'number'
-                    THEN (x.e -> 'line_due' ->> 'day_offset')::int END
+                    THEN (x.e -> 'line_due' ->> 'day_offset')::int END,
+               CASE WHEN jsonb_typeof(x.e -> 'train_status') = 'string'
+                    THEN x.e ->> 'train_status' END
         FROM schedule_line_population p
         LEFT JOIN LATERAL jsonb_array_elements(
             CASE WHEN jsonb_typeof(p.population) = 'array' THEN p.population ELSE '[]'::jsonb END
@@ -2540,10 +2546,12 @@ pub async fn list_line_train_entries(
                 run_last_crs,
                 line_due_time,
                 line_due_day_offset,
+                train_status,
             )| LineTrainEntryRow {
                 uid_json,
                 uid,
                 calling_points_json,
+                train_status,
                 first_tiploc,
                 last_tiploc,
                 scope,

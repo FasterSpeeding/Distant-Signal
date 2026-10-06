@@ -530,18 +530,24 @@ pub struct PublicTrainState {
     /// Its glossary text, under the same rules as `cancel_reason`.
     #[sqlx(skip)]
     pub change_of_origin_reason: Option<String>,
+    /// `serviceMode` (`train`/`replacementBus`/`bus`/`ferry`) and
+    /// `liveTracking` (`false` for a bus or ferry, which TRUST never
+    /// reports), from `schedule_services`; filled after the read by
+    /// `data::schedule_services::attach`. A train when unknown.
+    #[sqlx(skip)]
+    #[serde(flatten)]
+    pub service: crate::data::schedule_services::ServiceModeFields,
 }
 
 /// Whether `(train_uid, service_date)` is a real, CIF-published scheduled
 /// train, per `schedule_destination_departures` -- the same product the
 /// `/trains` search page itself reads
 /// (`queries::search_schedule_destination_departures`). The sole caller is
-/// `routes::train::get_by_uid_and_date`'s read-triggered `find_or_create_train`
-/// upsert: a GET must be able to conjure a shared `trains` row into
-/// existence for an identity a search result actually pointed at (see that
-/// route's own doc comment for the bug this closes), but never for an
-/// arbitrary string someone puts in the URL -- this is the gate that tells
-/// those two cases apart.
+/// `routes::train::get_by_uid_and_date`'s schedule-only view: a GET must be
+/// able to show a train a search result actually pointed at (see that
+/// route's own doc comment), but never invent one for an arbitrary string
+/// someone puts in the URL -- this is the gate that tells those two cases
+/// apart. (Until 2026-10-06 that view was a `trains` row the GET created.)
 ///
 /// Deliberately a bare existence probe scoped to `train_uid` +
 /// `service_date` only, ignoring `destination_crs`/`origin_crs`/`scheduled`
@@ -602,6 +608,7 @@ pub async fn get_public_train_state(
     .await?;
     let mut rows: Vec<PublicTrainState> = row.into_iter().collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    crate::data::schedule_services::attach(pool, &mut rows).await;
     Ok(rows.pop())
 }
 
@@ -654,6 +661,7 @@ pub async fn get_public_train_states_for_line(
     .await?;
     let mut rows = rows;
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    crate::data::schedule_services::attach(pool, &mut rows).await;
     Ok(rows)
 }
 

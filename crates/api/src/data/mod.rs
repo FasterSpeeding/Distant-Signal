@@ -29,6 +29,7 @@ pub mod reference;
 pub mod retention;
 pub mod samples;
 pub mod schedule_matching;
+pub mod schedule_services;
 pub mod station_skip;
 pub mod station_stats;
 pub mod stop_board;

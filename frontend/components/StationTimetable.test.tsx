@@ -429,3 +429,47 @@ describe('StationTimetable', () => {
     ).toBeInTheDocument();
   });
 });
+
+describe('StationTimetable: buses and ferries', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows a bus with its badge and a "View timetable" link; a train keeps "View live status"', async () => {
+    const rows = [
+      { uid: 'C30818', scheduled: '08:22', stationCrs: 'RDG', originCrs: 'RDG', destinationCrs: 'WOK' },
+      { uid: 'C10002', scheduled: '10:05', stationCrs: 'RDG', originCrs: 'WAT', destinationCrs: 'EXD' },
+    ];
+    const body = JSON.stringify({
+      results: [
+        {
+          ...rows[0],
+          destinationArrival: null,
+          destinationArrivalDayOffset: 0,
+          serviceMode: 'replacementBus',
+          liveTracking: false,
+        },
+        {
+          ...rows[1],
+          destinationArrival: null,
+          destinationArrivalDayOffset: 0,
+          serviceMode: 'train',
+          liveTracking: true,
+        },
+      ],
+      nextCursor: null,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(body, { status: 200 }))),
+    );
+    renderWithMantine(<StationTimetable crs="RDG" />);
+    fireEvent.click(expand());
+
+    await waitFor(() => expect(screen.getByText('Rail replacement bus')).toBeInTheDocument());
+    const timetable = screen.getByRole('link', { name: 'View timetable' });
+    expect(timetable.getAttribute('href')).toMatch(/^\/train\/C30818\//);
+    const live = screen.getByRole('link', { name: 'View live status' });
+    expect(live.getAttribute('href')).toMatch(/^\/train\/C10002\//);
+  });
+});

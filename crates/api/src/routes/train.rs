@@ -191,7 +191,19 @@ struct DelayRepayEstimateResponse {
     // Constraints.
     claim_url: String,
     disclaimer: &'static str,
+    /// `serviceMode`/`liveTracking` of the tracked service (2026-10-06).
+    #[serde(flatten)]
+    service: crate::data::schedule_services::ServiceModeFields,
+    /// Why there is no delay at all, when that is known up front: a bus or
+    /// ferry is never reported live, so its delay cannot be measured.
+    /// `None` for a train.
+    unmeasurable_reason: Option<&'static str>,
 }
+
+/// [`DelayRepayEstimateResponse::unmeasurable_reason`] for a bus or ferry.
+const TIMETABLE_ONLY_DELAY_REPAY_REASON: &str = "Buses and ferries aren't tracked live, so \
+    we can't measure a delay on this leg. If it ran late, claim with the operator using the \
+    times you recorded.";
 
 async fn post_ticket(
     State(app): State<App>,
@@ -459,7 +471,26 @@ async fn get_delay_repay_estimate(
             "no tracked train with that id".to_string(),
         ))?;
 
+    let mode = match state.train_uid.as_deref() {
+        Some(uid) => {
+            crate::data::schedule_services::mode_for_or_train(
+                &app.database,
+                uid,
+                state.service_date,
+            )
+            .await
+        }
+        None => crate::data::schedule_services::ServiceMode::Train,
+    };
     let measured_at_crs = delay_repay_destination(&ticket, &state);
+    if mode.is_timetable_only() {
+        return Ok(Json(build_delay_repay_response(
+            &ticket,
+            None,
+            measured_at_crs,
+            mode,
+        )));
+    }
     let target = crate::data::stop_delay::target(
         state.trains_id,
         state.train_uid.as_deref(),
@@ -483,6 +514,7 @@ async fn get_delay_repay_estimate(
         &ticket,
         delay,
         measured_at_crs,
+        mode,
     )))
 }
 
@@ -511,11 +543,15 @@ fn delay_repay_destination(
 /// whole feature's "the estimator's own call sites stay provably
 /// read-only/pure" posture (see `delay_repay_rules`'s module doc).
 /// `delay` is the delay against the public arrival at `measured_at_crs`.
+/// A bus or ferry (`mode`) never has a delay: the caller passes `None`, and
+/// the response says why in `unmeasurable_reason`.
 fn build_delay_repay_response(
     ticket: &train_tracking::TrackedTrainTicket,
     delay: Option<crate::data::stop_delay::StopDelay>,
     measured_at_crs: Option<String>,
+    mode: crate::data::schedule_services::ServiceMode,
 ) -> DelayRepayEstimateResponse {
+    let delay = delay.filter(|_| mode.live_tracking());
     let estimate = delay_repay_rules::estimate_for(ticket.operator.as_deref(), delay);
     let claim_url = ticket.operator.as_deref().map_or(
         delay_repay_rules::GENERIC_CLAIM_URL,
@@ -531,6 +567,10 @@ fn build_delay_repay_response(
         estimate,
         claim_url: claim_url.to_string(),
         disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
+        service: crate::data::schedule_services::ServiceModeFields(mode),
+        unmeasurable_reason: mode
+            .is_timetable_only()
+            .then_some(TIMETABLE_ONLY_DELAY_REPAY_REASON),
     }
 }
 
@@ -704,6 +744,7 @@ async fn get_by_tracking_id(
         Some(state) => {
             let state =
                 crate::data::train_operator::attach_to_tracked_state(&app.database, state).await;
+            let state = crate::data::schedule_services::attach_one(&app.database, state).await;
             let state = attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await;
             Ok(Json(
                 crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
@@ -795,7 +836,15 @@ async fn post_tracked_train_name(
 /// field -- there is nothing in this response shape that COULD leak another
 /// user's private per-subscription data, regardless of caller.
 ///
-/// READ-TRIGGERED UPSERT (bug fix, post-Task-19): the `/trains` search page
+/// NO WRITES ON READ (2026-10-06). The paragraphs below describe the
+/// read-triggered `find_or_create_train` upsert this route used to do for a
+/// published schedule with no `trains` row; it now builds the same view
+/// read-only instead (`schedule_only_public_state`, `trainsId: 0`), so a
+/// visitor or crawler can no longer add `trains` rows. The existing-row
+/// enrichment further down (a COALESCE-only UPDATE of a row something else
+/// created) is unchanged.
+///
+/// History -- READ-TRIGGERED UPSERT (bug fix, post-Task-19): the `/trains` search page
 /// links every result straight here using a `(train_uid, service_date)` it
 /// read off `schedule_destination_departures` -- a table populated for
 /// every scheduled train regardless of tracking status. A `trains` row,
@@ -848,18 +897,20 @@ async fn get_by_uid_and_date(
         .await
         .map_err(internal_error("read public train state"))?;
 
-    if state.is_none() {
-        let known = crate::data::trains::is_known_scheduled_train(&app.database, &train_uid, date)
+    // No shared row: a published schedule is still shown, built read-only
+    // from the CIF products (see `schedule_only_public_state`). This used
+    // to INSERT a `trains` row on every such read, so any visitor or bot
+    // could add rows by walking UIDs.
+    if state.is_none()
+        && crate::data::trains::is_known_scheduled_train(&app.database, &train_uid, date)
             .await
-            .map_err(internal_error("check schedule for train"))?;
-        if known {
-            crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
+            .map_err(internal_error("check schedule for train"))?
+    {
+        state = Some(
+            schedule_only_public_state(&app, &train_uid, date)
                 .await
-                .map_err(internal_error("find or create train"))?;
-            state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
-                .await
-                .map_err(internal_error("read public train state"))?;
-        }
+                .map_err(internal_error("read schedule-only train state"))?,
+        );
     }
 
     // Best-effort CIF-only schedule enrichment for a train nobody has ever
@@ -884,6 +935,7 @@ async fn get_by_uid_and_date(
     // crawler. See `ScheduleMatchFailureCache`'s own doc comment for the
     // negative-cache fix.
     if let Some(current) = &state
+        && current.trains_id != SCHEDULE_ONLY_TRAINS_ID
         && current.origin_crs.is_none()
         && !SCHEDULE_MATCH_FAILURE_CACHE.recently_failed(&train_uid, date)
     {
@@ -912,6 +964,119 @@ async fn get_by_uid_and_date(
             "no known train for that uid/date".to_string(),
         )),
     }
+}
+
+/// `trainsId` of a [`schedule_only_public_state`]: no `trains` row exists
+/// (`BIGSERIAL` never issues 0). Kept a number, not `null`, because
+/// existing clients (DS-MCP's `trainsId: z.number()`) validate it as one.
+pub(crate) const SCHEDULE_ONLY_TRAINS_ID: i64 = 0;
+
+/// The public view of a published schedule nobody has tracked and TRUST has
+/// not reported yet, built entirely from reads: the CIF origin departure
+/// (`schedule_destination_departures`), the read-only schedule match (origin,
+/// destination, departure, calling points) and the published headcode.
+/// `trainsId` is [`SCHEDULE_ONLY_TRAINS_ID`]; every live field is `null`.
+///
+/// Replaces the read-triggered `find_or_create_train` upsert, which created
+/// a `trains` row on a public GET. Nothing relied on that row: tracking
+/// creates its own (`post_track_by_uid`), live TRUST resolution creates its
+/// own, the line-trains route never wrote one, and a later read finds
+/// whichever of those exists. A failed match is negative-cached like the
+/// enrichment it replaces, so a crawler re-reading the same UID pays for at
+/// most one match per `SCHEDULE_MATCH_FAILURE_TTL`.
+async fn schedule_only_public_state(
+    app: &App,
+    train_uid: &str,
+    date: NaiveDate,
+) -> anyhow::Result<crate::data::trains::PublicTrainState> {
+    let headcode: Option<String> = sqlx::query_scalar(
+        "SELECT CASE WHEN COUNT(DISTINCT headcode) = 1 THEN MIN(headcode) END \
+         FROM schedule_destination_departures WHERE train_uid = $1 AND service_date = $2",
+    )
+    .bind(train_uid)
+    .bind(date)
+    .fetch_one(&app.database)
+    .await?;
+    let mut state = crate::data::trains::PublicTrainState {
+        trains_id: SCHEDULE_ONLY_TRAINS_ID,
+        train_uid: train_uid.to_string(),
+        service_date: date,
+        origin_crs: None,
+        origin_name: None,
+        destination_crs: None,
+        destination_name: None,
+        scheduled_departure: None,
+        calling_points: None,
+        train_id: None,
+        headcode,
+        status: None,
+        last_reported_location: None,
+        last_event_type: None,
+        delay_minutes: None,
+        delay_basis: None,
+        delay_provisional: false,
+        working_delay_minutes: None,
+        next_calling_point: None,
+        eta_next: None,
+        eta_source: None,
+        skipped_stations: Vec::new(),
+        platform: None,
+        planned_platform: None,
+        journey_stops: None,
+        may_have_arrived: false,
+        operator_code: None,
+        operator_name: None,
+        cancelled: false,
+        cancel_reason_code: None,
+        cancel_reason: None,
+        change_of_origin_reason_code: None,
+        change_of_origin_reason: None,
+        service: crate::data::schedule_services::ServiceModeFields::default(),
+    };
+
+    if let Some((origin_crs, scheduled)) =
+        crate::data::reconciliation::true_origin_departure(&app.database, train_uid, date).await?
+    {
+        state.origin_crs = Some(origin_crs.clone());
+        state.scheduled_departure = eta_blend::london_to_utc(date.and_time(scheduled));
+        if let Some(departure) = state.scheduled_departure
+            && !SCHEDULE_MATCH_FAILURE_CACHE.recently_failed(train_uid, date)
+        {
+            match schedule_matching::find_schedule_match_for_known_train(
+                &app.database,
+                train_uid,
+                &origin_crs,
+                departure,
+                date,
+                &app.schedule_crs_line_index,
+            )
+            .await?
+            {
+                Some(matched) => {
+                    state.origin_crs = matched.origin_crs.or(state.origin_crs);
+                    state.scheduled_departure =
+                        matched.origin_departure.or(state.scheduled_departure);
+                    state.destination_crs = matched.destination_crs;
+                    state.calling_points = Some(matched.calling_points_json);
+                }
+                None => SCHEDULE_MATCH_FAILURE_CACHE.record_failure(train_uid, date),
+            }
+        }
+    }
+
+    let codes: Vec<String> = [&state.origin_crs, &state.destination_crs]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+    let names = crate::data::queries::station_names_for_crs_batch(&app.database, &codes).await?;
+    let name_of = |crs: &Option<String>| {
+        crs.as_deref()
+            .and_then(|c| names.get(&c.to_uppercase()).cloned())
+    };
+    state.origin_name = name_of(&state.origin_crs);
+    state.destination_name = name_of(&state.destination_crs);
+    Ok(crate::data::schedule_services::attach_one(&app.database, state).await)
 }
 
 #[derive(Debug, Serialize)]
@@ -1069,6 +1234,16 @@ pub(crate) async fn enrich_shared_train(
         }
     }
 
+    // A bus or ferry is timetable-only: TRUST has no history to replay and
+    // never will, and the reconciliation sweep skips it, so its schedule is
+    // matched here, once, straight from CIF.
+    let mode =
+        crate::data::schedule_services::mode_for_or_train(&app.database, train_uid, date).await;
+    if mode.is_timetable_only() {
+        enrich_timetable_only_service(app, trains_id, train_uid, date).await;
+        return;
+    }
+
     let outcome = match crate::data::trust_event_backlog_match::attempt_backlog_match_by_uid(
         &app.database,
         tracking_id,
@@ -1126,6 +1301,69 @@ pub(crate) async fn enrich_shared_train(
         ),
         Err(err) => {
             tracing::warn!(error = ?err, train_uid, "schedule match failed for a shared train row");
+        }
+    }
+}
+
+/// [`enrich_shared_train`] for a bus or ferry: schedule-match the shared
+/// row from its CIF true-origin departure immediately (no TRUST grace
+/// period to wait out), and move every `'pending'` subscriber to
+/// `'schedule_matched'` -- the furthest a timetable-only service ever gets,
+/// since nothing can ever resolve it to `'resolved'`. Best-effort and
+/// logged, like the train path: the subscription the caller asked for
+/// stands whatever happens here.
+async fn enrich_timetable_only_service(
+    app: &App,
+    trains_id: i64,
+    train_uid: &str,
+    date: NaiveDate,
+) {
+    let origin = match crate::data::reconciliation::true_origin_departure(
+        &app.database,
+        train_uid,
+        date,
+    )
+    .await
+    {
+        Ok(Some(origin)) => origin,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(error = ?err, train_uid, "true-origin lookup failed for a bus/ferry");
+            return;
+        }
+    };
+    let (origin_crs, scheduled) = origin;
+    let Some(scheduled_departure) = eta_blend::london_to_utc(date.and_time(scheduled)) else {
+        return;
+    };
+    match schedule_matching::attempt_schedule_match_for_shared_train(
+        &app.database,
+        train_uid,
+        &origin_crs,
+        scheduled_departure,
+        date,
+        &app.schedule_crs_line_index,
+    )
+    .await
+    {
+        Ok(true) => {
+            if let Err(err) = sqlx::query(
+                "UPDATE train_subscriptions SET resolution_status = 'schedule_matched' \
+                 WHERE trains_id = $1 AND resolution_status = 'pending'",
+            )
+            .bind(trains_id)
+            .execute(&app.database)
+            .await
+            {
+                tracing::warn!(error = ?err, trains_id, "could not advance bus/ferry subscribers");
+            }
+        }
+        Ok(false) => tracing::debug!(
+            train_uid,
+            "no schedule match for a bus/ferry; its page uses the published calling points"
+        ),
+        Err(err) => {
+            tracing::warn!(error = ?err, train_uid, "schedule match failed for a bus/ferry");
         }
     }
 }
@@ -1888,6 +2126,7 @@ mod tests {
 
     fn state(delay_minutes: Option<i32>) -> train_tracking::TrackedTrainState {
         train_tracking::TrackedTrainState {
+            service: crate::data::schedule_services::ServiceModeFields::default(),
             id: 1,
             service_date: "2026-08-29".parse().unwrap(),
             pin_origin_crs: Some("KGX".to_string()),
@@ -1985,6 +2224,7 @@ mod tests {
             &ticket(Some("LNER")),
             Some(arrived(45)),
             Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
         );
 
         let estimate = response
@@ -2023,6 +2263,7 @@ mod tests {
             &ticket(Some("Southeastern")),
             projected,
             Some("ASH".into()),
+            crate::data::schedule_services::ServiceMode::Train,
         );
         assert!(response.provisional);
         let estimate = response.estimate.unwrap();
@@ -2041,6 +2282,7 @@ mod tests {
             &ticket(Some("Southeastern")),
             Some(arrived(14)),
             Some("ASH".into()),
+            crate::data::schedule_services::ServiceMode::Train,
         );
         assert!(!response.provisional);
         assert_eq!(
@@ -2074,12 +2316,53 @@ mod tests {
 
     #[test]
     fn no_operator_on_the_ticket_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
-        let response =
-            build_delay_repay_response(&ticket(None), Some(arrived(45)), Some("EDB".into()));
+        let response = build_delay_repay_response(
+            &ticket(None),
+            Some(arrived(45)),
+            Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
+        );
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
         assert!(!response.disclaimer.is_empty());
+    }
+
+    /// A bus or ferry leg is never measured: no delay, no estimate, a
+    /// reason saying why, and still the claim link and disclaimer.
+    #[test]
+    fn a_bus_leg_says_its_delay_cannot_be_measured() {
+        for mode in [
+            crate::data::schedule_services::ServiceMode::ReplacementBus,
+            crate::data::schedule_services::ServiceMode::Bus,
+            crate::data::schedule_services::ServiceMode::Ferry,
+        ] {
+            let response = build_delay_repay_response(
+                &ticket(Some("LNER")),
+                Some(arrived(45)),
+                Some("EDB".into()),
+                mode,
+            );
+            assert_eq!(response.delay_minutes, None);
+            assert_eq!(response.estimate, None);
+            assert_eq!(response.measured_at_crs, None);
+            assert_eq!(
+                response.unmeasurable_reason,
+                Some(TIMETABLE_ONLY_DELAY_REPAY_REASON)
+            );
+            assert!(!response.claim_url.is_empty());
+            let json = serde_json::to_value(&response).unwrap();
+            assert_eq!(json["liveTracking"], false);
+            assert!(json["unmeasurableReason"].is_string());
+        }
+        let train = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            Some(arrived(45)),
+            Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
+        );
+        assert_eq!(train.unmeasurable_reason, None);
+        assert!(train.estimate.is_some());
     }
 
     // --- ScheduleMatchFailureCache (negative cache for
@@ -2167,7 +2450,12 @@ mod tests {
     fn an_unresolved_delay_yields_no_estimate_but_claim_url_and_disclaimer_are_still_populated() {
         // Safety property #3: a caller must never see a bare/absent
         // caveat, even when the train hasn't resolved/reported a delay yet.
-        let response = build_delay_repay_response(&ticket(Some("LNER")), None, Some("EDB".into()));
+        let response = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            None,
+            Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
+        );
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.delay_minutes, None);
@@ -4277,14 +4565,16 @@ mod db_tests {
     /// has no `trains` row at all yet -- the exact state a train sits in
     /// between being searched and either being tracked or activating in
     /// TRUST. Before the fix this 404'd identically to a wholly unknown
-    /// uid (`get_by_uid_and_date_an_unknown_pair_is_404` above); after it,
-    /// the route read-triggers `find_or_create_train` and returns the new,
-    /// bare shared row.
+    /// uid (`get_by_uid_and_date_an_unknown_pair_is_404` above). It then
+    /// read-triggered `find_or_create_train`, so any visitor could add
+    /// `trains` rows (2026-10-06); now it serves the schedule-only view
+    /// (`trainsId: 0`) and the GET leaves `trains` exactly as it was. The
+    /// schedule is a bus here, so the view also says it is timetable-only.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                get_by_uid_and_date_creates_the_shared_row_for_a_search_visible_train \
+                get_by_uid_and_date_serves_a_search_visible_train_without_creating_a_row \
                 -- --ignored --test-threads=1`"]
-    async fn get_by_uid_and_date_creates_the_shared_row_for_a_search_visible_train() {
+    async fn get_by_uid_and_date_serves_a_search_visible_train_without_creating_a_row() {
         let pool = connect().await;
         let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
@@ -4296,14 +4586,35 @@ mod db_tests {
         // real, valid search result" with no prior tracking/TRUST activity.
         sqlx::query(
             "INSERT INTO schedule_destination_departures \
-                (service_date, destination_crs, scheduled, train_uid, origin_crs) \
-             VALUES ($1, 'EDB', '12:00:00', $2, 'KGX')",
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                 true_origin_crs, headcode) \
+             VALUES ($1, 'EDB', '12:00:00', $2, 'KGX', 'KGX', '0B00')",
         )
         .bind(service_date)
         .bind(train_uid)
         .execute(&pool)
         .await
         .expect("seed fixture schedule_destination_departures row");
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, train_status, \
+                train_category, stp) VALUES ($1, $2, 'bus', 'B', 'BS', 'P')",
+        )
+        .bind(service_date)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed fixture schedule_services row");
+        let trains_rows = || {
+            let pool = pool.clone();
+            async move {
+                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trains")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                count
+            }
+        };
+        let before = trains_rows().await;
 
         // Also seed `schedule_calling_points_full` -- `journey::build_journey_stops`'s
         // own fallback source since the 2026-09-23 fix (see
@@ -4384,18 +4695,26 @@ mod db_tests {
             body.get("trainUid").and_then(Value::as_str),
             Some(train_uid)
         );
-        assert!(
-            body.get("trainsId").and_then(Value::as_i64).is_some(),
-            "the read must have created and returned a real shared trains row: {body:?}"
+        assert_eq!(
+            body.get("trainsId").and_then(Value::as_i64),
+            Some(0),
+            "a schedule-only view has no shared row: {body:?}"
         );
+        assert_eq!(
+            trains_rows().await,
+            before,
+            "a GET must not insert a trains row"
+        );
+        assert_eq!(body["originCrs"], "KGX", "{body:?}");
+        assert!(body["scheduledDeparture"].is_string(), "{body:?}");
+        assert_eq!(body["headcode"], "0B00");
+        assert_eq!(body["serviceMode"], "bus");
+        assert_eq!(body["liveTracking"], false);
+        assert!(body["status"].is_null());
         // Regression coverage for the final whole-branch review's Finding
-        // 3: this row was created BARE (`origin_crs`/`train_id` both
-        // `None`) by the read-triggered `find_or_create_train` above, but
-        // the identity IS provably CIF-scheduled (the same
-        // `schedule_destination_departures` row seeded above), so
-        // `attach_journey_stops_public` must not gate `journeyStops` to
-        // `null` on `origin_crs`/`train_id` being unset -- it must still
-        // build a fallback stop list from `schedule_destination_departures`.
+        // 3: with no schedule-matched row, `attach_journey_stops_public`
+        // must not gate `journeyStops` to `null` -- it must still build a
+        // fallback stop list from the published calling points.
         let stops = body
             .get("journeyStops")
             .expect("journeyStops present")
@@ -4423,12 +4742,14 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "response: {second_body:?}");
-        assert_eq!(
-            second_body.get("trainsId"),
-            body.get("trainsId"),
-            "a repeat read must resolve to the SAME trains row, not create a second one"
-        );
+        assert_eq!(second_body, body, "a repeat read serves the same view");
+        assert_eq!(trains_rows().await, before, "nor does a repeat GET");
 
+        sqlx::query("DELETE FROM schedule_services WHERE uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM trains WHERE train_uid = $1")
             .bind(train_uid)
             .execute(&pool)

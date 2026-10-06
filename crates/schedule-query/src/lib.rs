@@ -93,8 +93,8 @@ pub use line_membership::{
 pub use parse::{ScheduleRecordParser, parse_schedule_records};
 pub use records::{
     Activity, BasicSchedule, CallingPoint, CallingPointKind, DestinationDeparture, HalfMinuteTime,
-    LinePopulationEntry, Platform, RawSchedule, ScheduleDeparture, StpIndicator, Tiploc,
-    is_bus_or_ship,
+    LinePopulationEntry, Platform, RawSchedule, ScheduleDeparture, ServiceMode, StpIndicator,
+    Tiploc, TrainCategory, is_bus_or_ship, service_mode,
 };
 pub use resolve::{
     ResolvedSchedule, ScheduleIndex, ScheduleIndexBuilder, departures_by_crs,

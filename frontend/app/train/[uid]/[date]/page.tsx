@@ -11,6 +11,8 @@ import { TextLink } from '@/components/TextLink';
 import { LastUpdated } from '@/components/LastUpdated';
 import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
+import { isTimetableOnly, serviceModeLabel, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
+import { ServiceModeIcon } from '@/components/ServiceModeIcon';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -65,7 +67,22 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
     customName: null,
     journeyStops: train.journeyStops,
     mayHaveArrived: train.mayHaveArrived,
+    serviceMode: train.serviceMode,
+    liveTracking: train.liveTracking,
   };
+}
+
+/** "Train" for a train (or an older backend), else the mode's own label:
+ * "Rail replacement bus", "Bus service", "Ferry". */
+export function serviceHeading(train: Pick<PublicTrainState, 'serviceMode'>): string {
+  return serviceModeLabel(train.serviceMode) ?? 'Train';
+}
+
+/** The button's noun for a service. */
+function trackNoun(train: Pick<PublicTrainState, 'serviceMode'>): 'train' | 'bus' | 'ferry' {
+  if (train.serviceMode === 'ferry') return 'ferry';
+  if (train.serviceMode === 'bus' || train.serviceMode === 'replacementBus') return 'bus';
+  return 'train';
 }
 
 /** Plain-text status summary for a train, sharing the exact phrasing
@@ -82,6 +99,9 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
  * train -- but is handled honestly rather than silently falling through,
  * in case that invariant ever changes. */
 export function trainStatusSummary(state: TrainJourneyState): string {
+  if (isTimetableOnly(state)) {
+    return `${serviceModeLabel(state.serviceMode) ?? 'This service'}: ${TIMETABLE_ONLY_MESSAGE}.`;
+  }
   if (state.resolutionStatus === 'pending') {
     return "Waiting to hear from Network Rail — this train hasn't been matched to a live service yet.";
   }
@@ -166,7 +186,9 @@ export async function generateMetadata({
   const origin = train.originName ?? train.originCrs;
   const destination = train.destinationName ?? train.destinationCrs;
   const title =
-    origin && destination ? `${origin} to ${destination} — Distant Signal` : `Train ${uid} — Distant Signal`;
+    origin && destination
+      ? `${origin} to ${destination} — Distant Signal`
+      : `${serviceHeading(train)} ${uid} — Distant Signal`;
   const description = trainStatusSummary(toJourneyState(train));
 
   return {
@@ -287,7 +309,12 @@ export default async function TrackedTrainByUidPage({ params }: { params: Promis
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
-        <Title order={1}>Train {uid}</Title>
+        <Group gap="xs" wrap="nowrap">
+          {train.serviceMode && train.serviceMode !== 'train' && <ServiceModeIcon mode={train.serviceMode} size={28} />}
+          <Title order={1}>
+            {serviceHeading(train)} {uid}
+          </Title>
+        </Group>
         <Group gap="sm">
           {match ? (
             // `afterDelete="refresh"` -- unlike `/train/by-id/[trackingId]`
@@ -310,7 +337,7 @@ export default async function TrackedTrainByUidPage({ params }: { params: Promis
             // explicitly out of scope
             // (docs/superpowers/specs/2026-09-07-train-listing-page-design.md
             // §5/§6). Only /trains' own row action attaches tickets.
-            <TrackThisTrainButton uid={uid} date={date} />
+            <TrackThisTrainButton uid={uid} date={date} noun={trackNoun(train)} />
           )}
           {/* Independent of ownership -- shown regardless of which branch
               above rendered. */}
@@ -348,6 +375,15 @@ export default async function TrackedTrainByUidPage({ params }: { params: Promis
         {match ? (
           <>
             You&apos;re already tracking this service.{' '}
+            <TextLink href="/trains" inline underline="always">
+              Find a train
+            </TextLink>{' '}
+            going somewhere else.
+          </>
+        ) : isTimetableOnly(train) ? (
+          <>
+            This is the public view of this service. Track it above to keep its scheduled times in your list (there are
+            no live alerts for buses and ferries), or{' '}
             <TextLink href="/trains" inline underline="always">
               Find a train
             </TextLink>{' '}

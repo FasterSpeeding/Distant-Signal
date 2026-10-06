@@ -75,11 +75,16 @@ export function TrackThisTrainButton({
   date,
   attachTicketId,
   size = 'sm',
+  noun = 'train',
 }: {
   uid: string;
   date: string;
   attachTicketId?: number;
   size?: 'xs' | 'sm' | 'md';
+  /** What the service is, for the button text ("Track this bus"). A bus or
+   * ferry is tracked timetable-only: it is added to your list with its
+   * scheduled times, but gets no live alerts. */
+  noun?: 'train' | 'bus' | 'ferry';
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -154,10 +159,10 @@ export function TrackThisTrainButton({
   return (
     <Stack gap="xs">
       <Button size={size} onClick={handleClick} disabled={busy}>
-        {busy ? 'Tracking…' : 'Track this train'}
+        {busy ? 'Tracking…' : `Track this ${noun}`}
       </Button>
       {error && (
-        <Alert color="red" title="Couldn't track this train">
+        <Alert color="red" title={`Couldn't track this ${noun}`}>
           {error}
         </Alert>
       )}

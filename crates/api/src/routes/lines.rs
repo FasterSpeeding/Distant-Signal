@@ -351,6 +351,10 @@ fn raw_json_or_null(
 /// exactly what it was before. Each entry also carries its membership
 /// fields when the population has them (`LineMembershipJson`). The line
 /// page passes `scope=line,shared`; see docs/api-changelog.md.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pipeline: population, live states, endpoints, modes; splitting scatters it"
+)]
 async fn get_line_trains(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -378,6 +382,9 @@ async fn get_line_trains(
         return Err(no_population(&id, service_date));
     };
     let uids: Vec<String> = entries.iter().filter_map(|e| e.uid.clone()).collect();
+    let service_modes =
+        crate::data::schedule_services::modes_for_or_trains(&app.database, service_date, &uids)
+            .await;
 
     let mut live_states =
         trains::get_public_train_states_for_line(&app.database, &uids, service_date)
@@ -466,6 +473,7 @@ async fn get_line_trains(
                 destination_crs: destination_crs.clone(),
             };
             let membership = membership_json(&mut entry);
+            let mode = entry_service_mode(&entry, &service_modes);
             let uid = raw_json_or_null(entry.uid_json)?;
             let calling_points = raw_json_or_null(entry.calling_points_json)?;
             Ok(line_train_json(
@@ -474,6 +482,7 @@ async fn get_line_trains(
                 live,
                 &schedule_route,
                 membership,
+                mode,
             ))
         })
         .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
@@ -512,6 +521,27 @@ fn with_scope_applied(
         );
     }
     response
+}
+
+/// A line-population entry's service mode: `schedule_services` first (it
+/// knows the category, so a permanent bus and a replacement bus differ),
+/// else the population's own Train Status.
+fn entry_service_mode(
+    entry: &queries::LineTrainEntryRow,
+    modes: &HashMap<String, crate::data::schedule_services::ServiceMode>,
+) -> crate::data::schedule_services::ServiceMode {
+    entry
+        .uid
+        .as_deref()
+        .and_then(|uid| modes.get(uid).copied())
+        .unwrap_or_else(|| {
+            crate::data::schedule_services::ServiceMode::from_train_status(
+                entry
+                    .train_status
+                    .as_deref()
+                    .and_then(|status| status.chars().next()),
+            )
+        })
 }
 
 async fn get_line_definition(

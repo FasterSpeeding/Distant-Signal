@@ -731,6 +731,20 @@ export interface StopBoard {
  * no `scheduledDeparture` field -- the backend's read query does not
  * select `pin_scheduled_departure`, only `serviceDate` (a date). See
  * `components/TrainJourney.tsx` for the full per-state rendering rules. */
+/** What a schedule's vehicle is (`crates/api/src/data/schedule_services.rs`).
+ * Network Rail's live feed never reports a bus or a ferry, so anything but
+ * `train` is timetable-only. */
+export type ServiceMode = 'train' | 'replacementBus' | 'bus' | 'ferry';
+
+/** `serviceMode`/`liveTracking`, added 2026-10-06 to every response that
+ * describes a scheduled service. Optional: absent from an older backend,
+ * which means a train. `liveTracking` is `false` exactly when
+ * `serviceMode` is not `train`. See `lib/serviceMode.ts`. */
+export interface ServiceModeFields {
+  serviceMode?: ServiceMode | null;
+  liveTracking?: boolean | null;
+}
+
 export interface TrackedTrainState extends TrainJourneyState {
   // The `train_subscriptions.id` every `/Train/{trackingId}` route keys
   // off. Lives here and NOT on `TrainJourneyState`, precisely so a public,
@@ -756,7 +770,7 @@ export interface TrackedTrainState extends TrainJourneyState {
  * fabricate a `trackingId` it doesn't have. See `PublicTrainState` below
  * for the surrogate-key collision that made that distinction load-bearing
  * rather than cosmetic. */
-export interface TrainJourneyState {
+export interface TrainJourneyState extends ServiceModeFields {
   serviceDate: string; // "YYYY-MM-DD"
   // `null` for a subscription created the NR-primary way
   // (`POST /Train/by-uid/{uid}/{date}/track`) against a shared `trains` row
@@ -855,7 +869,7 @@ export interface TrainJourneyState {
  * `BIGSERIAL` space that also starts at 1, so the two collide freely. That
  * is exactly the bug this field's old name (`id`) caused on
  * `app/train/[uid]/[date]/page.tsx`. */
-export interface PublicTrainState {
+export interface PublicTrainState extends ServiceModeFields {
   trainsId: number;
   trainUid: string;
   serviceDate: string; // "YYYY-MM-DD"
@@ -926,7 +940,7 @@ export interface TrainResolveResult {
  * calling point, ETA), appropriate for one train's detail page, not a
  * multi-row list. `pinScheduledDeparture` is new: neither
  * `TrackedTrainState` nor any other existing route exposes it. */
-export interface TrackedTrainListItem {
+export interface TrackedTrainListItem extends ServiceModeFields {
   id: number;
   serviceDate: string; // "YYYY-MM-DD"
   // See `TrackedTrainState.pinOriginCrs`'s comment -- same contract, same
@@ -1112,6 +1126,9 @@ export type TripPlanLeg =
       // The live overlay's view of this leg: absent unless live data was
       // applied, `null` when nothing is known (or outside the live window).
       live?: TripPlanLegLive | null;
+      // A bus or ferry leg keeps `kind: 'train'`; these say what it is.
+      serviceMode?: ServiceMode | null;
+      liveTracking?: boolean | null;
     }
   | {
       kind: 'transfer';
@@ -1605,6 +1622,11 @@ export interface DelayRepayEstimateResponse {
   estimate: DelayRepayEstimate | null;
   claimUrl: string;
   disclaimer: string;
+  /** What the ticket's service is; a bus or ferry has no measurable delay. */
+  serviceMode?: ServiceMode | null;
+  liveTracking?: boolean | null;
+  /** Why there is no delay at all (a bus or ferry leg); `null` for a train. */
+  unmeasurableReason?: string | null;
 }
 
 /** `GET /Train/tickets/mine`'s per-item response shape
@@ -2012,7 +2034,7 @@ export interface LineTrainLiveStatus {
  * §5.3. The full response is `LineTrainEntry[]`, not wrapped in an
  * envelope -- unlike `GET /public/trains/search`, this route has no cursor
  * of its own; it always returns the whole day's population in one call. */
-export interface LineTrainEntry {
+export interface LineTrainEntry extends ServiceModeFields {
   uid: string;
   callingPoints: LineTrainCallingPoint[] | null;
   /** The schedule side's own origin/destination -- the first and last

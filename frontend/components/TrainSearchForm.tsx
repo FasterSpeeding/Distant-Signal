@@ -10,6 +10,9 @@ import { RouteArrow } from './RouteArrow';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
+import { ServiceModeBadge } from './ServiceModeBadge';
+import { isTimetableOnly } from '@/lib/serviceMode';
+import type { ServiceModeFields } from '@/lib/types';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
@@ -62,7 +65,14 @@ function dateWindow() {
  * `schedule_query::DestinationDeparture`'s own doc comment). Like every
  * CIF-derived row in this app it carries NO operator and NO live running
  * status. */
-interface TrainSearchRow {
+/** The track button's noun for a search row. */
+function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {
+  if (row.serviceMode === 'ferry') return 'ferry';
+  if (row.serviceMode === 'bus' || row.serviceMode === 'replacementBus') return 'bus';
+  return 'train';
+}
+
+interface TrainSearchRow extends ServiceModeFields {
   uid: string;
   scheduled: string;
   /** The public (timetable) departure, shown in place of `scheduled` (the
@@ -634,9 +644,18 @@ export function TrainSearchForm({
                 {row.publicDeparture ?? row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs}{' '}
                 <RouteArrow /> {row.destinationName ?? row.destinationCrs ?? '?'}
               </Text>
+              <ServiceModeBadge mode={row.serviceMode} />
               <Group gap="sm" wrap="nowrap" style={{ marginInlineStart: 'auto' }}>
-                <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>
-                <TrackThisTrainButton uid={row.uid} date={displayDate} attachTicketId={attachTicketId} size="xs" />
+                <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
+                  {isTimetableOnly(row) ? 'View timetable' : 'View live status'}
+                </TextLink>
+                <TrackThisTrainButton
+                  uid={row.uid}
+                  date={displayDate}
+                  attachTicketId={attachTicketId}
+                  size="xs"
+                  noun={trackNoun(row)}
+                />
               </Group>
             </Group>
           ))}

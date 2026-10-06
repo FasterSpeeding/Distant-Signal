@@ -31,6 +31,10 @@ use crate::data::queries::{
 };
 use crate::data::train_tracking as queries_train_tracking;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "a flat route table, one entry per private route; splitting it would hide routes"
+)]
 pub fn router() -> Router {
     Router::new()
         .route(
@@ -115,6 +119,10 @@ pub fn router() -> Router {
         .route(
             "/schedule-calling-points-full",
             axum::routing::post(post_schedule_calling_points_full),
+        )
+        .route(
+            "/schedule-services",
+            axum::routing::post(post_schedule_services),
         )
         .route(
             "/island-of-ireland-stations",
@@ -1180,6 +1188,33 @@ async fn post_schedule_calling_points_full(
         queries::upsert_schedule_calling_points_full_publish_part(&app.database, &rows, part).await
     }
     .map_err(schedule_publish_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ScheduleServicesParams {
+    service_date: chrono::NaiveDate,
+}
+
+/// `schedule-reference`'s per-date publish of every schedule's service mode
+/// (train, replacement bus, bus, ferry) -- see
+/// `data::schedule_services::replace_for_date`. One request is the whole
+/// day (~30k rows), replacing it atomically; `service_date` names the day,
+/// so an empty body clears it. A row for any other date is a 400.
+async fn post_schedule_services(
+    State(app): State<App>,
+    axum::extract::Query(params): axum::extract::Query<ScheduleServicesParams>,
+    Json(rows): Json<Vec<crate::data::schedule_services::ScheduleServiceRow>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted =
+        crate::data::schedule_services::replace_for_date(&app.database, params.service_date, &rows)
+            .await
+            .map_err(|err| {
+                match err.downcast_ref::<crate::data::schedule_services::InvalidPublish>() {
+                    Some(invalid) => (StatusCode::BAD_REQUEST, invalid.to_string()),
+                    None => internal_error(err),
+                }
+            })?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
@@ -3372,6 +3407,98 @@ mod db_tests {
             serde_json::from_slice(&retry_body).unwrap();
         assert!(parsed.rejected.is_empty());
         assert_eq!(movements, 1, "the retry landed the shared movement");
+    }
+
+    /// `POST /schedule-services` replaces a date atomically through the
+    /// router, and a row for another date is a 400 that writes nothing.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                post_schedule_services -- --ignored --test-threads=1`"]
+    async fn post_schedule_services_replaces_the_date_and_rejects_foreign_rows() {
+        let pool = connect().await;
+        let date = "2099-07-21";
+        crate::test_support::assert_synthetic_date(date.parse().expect("valid fixture date"));
+        let _day = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [format!(
+                "DELETE FROM schedule_services WHERE service_date = '{date}'"
+            )],
+        )
+        .await;
+        let row = |uid: &str, mode: &str, status: &str, category: &str| {
+            json!({
+                "service_date": date,
+                "uid": uid,
+                "mode": mode,
+                "train_status": status,
+                "train_category": category,
+                "headcode": "0B00",
+                "rsid": null,
+                "operator_atoc": "NT",
+                "stp": "P"
+            })
+        };
+        let router: axum::Router = Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let post = |body: Value| {
+            let router = router.clone();
+            async move {
+                router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!("/schedule-services?service_date={date}"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        let modes = || {
+            let pool = pool.clone();
+            async move {
+                let rows: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT uid, mode FROM schedule_services \
+                     WHERE service_date = $1::date ORDER BY uid",
+                )
+                .bind(date)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+                rows
+            }
+        };
+
+        assert_eq!(
+            post(json!([
+                row("TPSV001", "train", "P", "OO"),
+                row("TPSV002", "bus", "B", "BS"),
+            ]))
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post(json!([row("TPSV002", "replacement_bus", "5", "BR")])).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            modes().await,
+            vec![("TPSV002".to_string(), "replacement_bus".to_string())]
+        );
+
+        let mut foreign = row("TPSV003", "ferry", "S", "  ");
+        foreign["service_date"] = json!("2099-07-22");
+        foreign["train_category"] = Value::Null;
+        assert_eq!(post(json!([foreign])).await, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            modes().await,
+            vec![("TPSV002".to_string(), "replacement_bus".to_string())],
+            "a refused publish changes nothing"
+        );
     }
 
     /// The diff chunk protocol end to end through the router, exactly as

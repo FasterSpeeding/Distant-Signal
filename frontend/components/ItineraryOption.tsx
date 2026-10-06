@@ -1,6 +1,7 @@
 import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
 import { codeRouteLabel } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
+import { ServiceModeBadge } from './ServiceModeBadge';
 import type { TripPlanItinerary, TripPlanLeg, TripPlanLegLive } from '@/lib/types';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
@@ -67,9 +68,14 @@ export function ItineraryOption({
           label={
             <Stack gap={4}>
               {itinerary.legs.map((leg, index) => (
-                <Text key={index} size="sm">
-                  <RouteText>{legSummary(leg, stationNames)}</RouteText>
-                </Text>
+                // A bus or ferry leg keeps `kind: 'train'`; its own badge
+                // says what it really is (and that it isn't tracked live).
+                <Group key={index} gap="xs" wrap="wrap">
+                  <Text size="sm">
+                    <RouteText>{legSummary(leg, stationNames)}</RouteText>
+                  </Text>
+                  {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
+                </Group>
               ))}
             </Stack>
           }

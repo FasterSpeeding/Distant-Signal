@@ -1,5 +1,6 @@
 import { Alert, Stack, Text } from '@mantine/core';
 import { TextLink } from './TextLink';
+import { isTimetableOnly, serviceModeLabel } from '@/lib/serviceMode';
 import type { DelayRepayEstimateResponse } from '@/lib/types';
 
 /** Renders one ticket's Delay Repay estimate, per
@@ -29,6 +30,11 @@ import type { DelayRepayEstimateResponse } from '@/lib/types';
  * against each operator's own page -- the "as of 2026-08-29" date in
  * `crates/api/src/data/delay_repay_rules.rs`. Update both together. */
 export const DELAY_REPAY_RULES_CHECKED_ON = '29 August 2026';
+
+/** Shown for a bus or ferry when the backend sends no `unmeasurableReason`
+ * of its own. */
+const TIMETABLE_ONLY_DELAY_REPAY_FALLBACK =
+  "buses and ferries aren't tracked live, so we can't measure a delay on this leg. If it ran late, claim with the operator using the times you recorded.";
 
 export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateResponse }) {
   return (
@@ -67,6 +73,18 @@ function ProvisionalNote({ response }: { response: DelayRepayEstimateResponse })
 
 function EstimateSummary({ response }: { response: DelayRepayEstimateResponse }) {
   const { estimate, delayMinutes } = response;
+
+  // A bus or ferry is never reported live, so there is no delay to measure
+  // -- say that, rather than "no delay data recorded yet", which implies
+  // some may arrive.
+  if (isTimetableOnly(response)) {
+    const what = serviceModeLabel(response.serviceMode) ?? 'This service';
+    return (
+      <Text size="sm">
+        {what}: {response.unmeasurableReason ?? TIMETABLE_ONLY_DELAY_REPAY_FALLBACK}
+      </Text>
+    );
+  }
 
   if (estimate) {
     const fare = estimate.fareBasis === 'return' ? 'your return fare' : 'your fare';

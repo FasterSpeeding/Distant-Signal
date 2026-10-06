@@ -218,11 +218,12 @@ async fn get_station_schedule_departures(
     let destination_names = queries::station_names_for_crs_batch(&app.database, &destination_crs)
         .await
         .map_err(internal_error)?;
-    Ok(Json(
-        rows.iter()
-            .map(|d| schedule_departure_json(d, &destination_names))
-            .collect(),
-    ))
+    let mut rendered: Vec<Value> = rows
+        .iter()
+        .map(|d| schedule_departure_json(d, &destination_names))
+        .collect();
+    crate::data::schedule_services::annotate_uid_rows(&app.database, today, &mut rendered).await;
+    Ok(Json(rendered))
 }
 
 #[expect(

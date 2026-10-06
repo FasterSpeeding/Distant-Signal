@@ -1216,3 +1216,34 @@ describe('TrainSearchForm', () => {
     });
   });
 });
+
+describe('TrainSearchForm: buses and ferries', () => {
+  it('a bus row has its badge, a "View timetable" link and a "Track this bus" button', async () => {
+    const body = JSON.stringify({
+      results: [
+        {
+          uid: 'C30818',
+          scheduled: '08:22',
+          stationCrs: 'MAN',
+          originCrs: 'MAN',
+          destinationCrs: 'WAT',
+          destinationArrival: null,
+          destinationName: null,
+          serviceMode: 'bus',
+          liveTracking: false,
+        },
+        { ...PAGE_ONE[1], destinationArrival: null, destinationName: null, serviceMode: 'train', liveTracking: true },
+      ],
+      nextCursor: null,
+    });
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(body, { status: 200 }) }));
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    await clickSearch();
+
+    expect(await screen.findByText('Bus service')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View timetable' }).getAttribute('href')).toMatch(/^\/train\/C30818\//);
+    expect(screen.getByRole('link', { name: 'View live status' }).getAttribute('href')).toMatch(/^\/train\/C10002\//);
+    expect(screen.getByRole('button', { name: 'Track this bus' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+  });
+});

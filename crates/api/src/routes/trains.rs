@@ -671,12 +671,15 @@ async fn get_trains_search(
         .await
         .map_err(internal_error)?;
 
+    let mut results: Vec<Value> = page
+        .departures
+        .iter()
+        .map(|row| calling_point_departure_json(row, &station, &destination_names))
+        .collect();
+    crate::data::schedule_services::annotate_uid_rows(&app.database, service_date, &mut results)
+        .await;
     Ok(Json(json!({
-        "results": page
-            .departures
-            .iter()
-            .map(|row| calling_point_departure_json(row, &station, &destination_names))
-            .collect::<Vec<Value>>(),
+        "results": results,
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
     })))
 }
@@ -1141,6 +1144,44 @@ mod db_tests {
             "no stray snake_case field"
         );
 
+        delete_today(&pool).await;
+    }
+
+    /// Each row carries `serviceMode`/`liveTracking` from
+    /// `schedule_services`; a uid with no row there is a train.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_rows_carry_the_service_mode() {
+        let (pool, _guards) = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let today = crate::routes::london_today();
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, train_status, \
+                train_category, stp) VALUES ($1, 'C10002', 'ferry', 'S', NULL, 'P') \
+             ON CONFLICT (service_date, uid) DO UPDATE SET mode = EXCLUDED.mode",
+        )
+        .bind(today)
+        .execute(&pool)
+        .await
+        .expect("seed schedule_services");
+
+        let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["uid"], "C10001");
+        assert_eq!(rows[0]["serviceMode"], "train");
+        assert_eq!(rows[0]["liveTracking"], true);
+        assert_eq!(rows[1]["uid"], "C10002");
+        assert_eq!(rows[1]["serviceMode"], "ferry");
+        assert_eq!(rows[1]["liveTracking"], false);
+
+        sqlx::query("DELETE FROM schedule_services WHERE service_date = $1 AND uid = 'C10002'")
+            .bind(today)
+            .execute(&pool)
+            .await
+            .ok();
         delete_today(&pool).await;
     }
 
